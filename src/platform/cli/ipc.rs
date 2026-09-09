@@ -9,7 +9,6 @@ pub use crate::core::runtime::shell::daemon::{Request, Response};
 mod tests {
     use super::*;
     use crate::core::protocol::command::CliCommand;
-    use crate::core::protocol::state::StateChange;
     use crate::core::runtime::shell::daemon::OutputFormat;
     use crate::core::types::PaneId;
 
@@ -47,10 +46,14 @@ mod tests {
     fn response_round_trips_runtime_events() {
         let response = Response::ok_with_events(
             "events".into(),
-            vec![StateChange::PaneOutput {
-                pane: PaneId(1),
-                data: vec![0, 0xff, 0x1b],
-            }],
+            vec![serde_json::json!({
+                "workspace_id": "local//demo/shell/",
+                "kind": "pane_output",
+                "pane_id": 1,
+                "tab_id": 1,
+                "data": [0, 255, 27],
+                "name": ""
+            })],
         );
         let json = serde_json::to_string(&response).unwrap();
         let decoded: Response = serde_json::from_str(&json).unwrap();

@@ -11,12 +11,15 @@ use std::ffi::{CStr, CString};
 use std::ptr::{self, NonNull};
 
 use crate::ffi::{
-    self, CLayoutNode, CPane, CStateChange, CTab, CTask, CWorkspaceStateChange, LAYOUT_LEAF,
-    LAYOUT_SPLIT_H, LAYOUT_SPLIT_V, STATE_ACTIVE_PANE_CHANGED, STATE_ACTIVE_TAB_CHANGED,
-    STATE_BACKEND_STATUS, STATE_LAYOUT_CHANGED, STATE_PANE_ADDED, STATE_PANE_CLOSED,
-    STATE_PANE_FRAME, STATE_PANE_HISTORY, STATE_PANE_OUTPUT, STATE_PANE_RESIZED,
-    STATE_PANE_SNAPSHOT, STATE_POOL_CHANGED, STATE_TAB_ADDED, STATE_TAB_CLOSED,
-    STATE_TAB_ORDER_CHANGED, STATE_TAB_RENAMED, STATE_WORKSPACE_RENAMED,
+    self, CLayoutNode, CPane, CStateChange, CTab, CTask, CWorkspaceStateChange,
+    BACKEND_STATUS_CONNECTED, BACKEND_STATUS_CONNECTING, BACKEND_STATUS_DISCONNECTED,
+    BACKEND_STATUS_ERROR, BACKEND_STATUS_EXITED, LAYOUT_LEAF, LAYOUT_SPLIT_H, LAYOUT_SPLIT_V,
+    STATE_ACTIVE_PANE_CHANGED, STATE_ACTIVE_TAB_CHANGED, STATE_BACKEND_STATUS,
+    STATE_LAYOUT_CHANGED, STATE_MUTATION_SETTLED, STATE_OTHER, STATE_PANE_ADDED,
+    STATE_PANE_AGENT_CHANGED, STATE_PANE_CLOSED, STATE_PANE_FRAME, STATE_PANE_HISTORY,
+    STATE_PANE_OUTPUT, STATE_PANE_RESIZED, STATE_PANE_SNAPSHOT, STATE_POOL_CHANGED,
+    STATE_STATUS_SUBSCRIPTION, STATE_TAB_ADDED, STATE_TAB_CLOSED, STATE_TAB_ORDER_CHANGED,
+    STATE_TAB_RENAMED, STATE_WORKSPACE_RENAMED,
 };
 
 const DISCOVERY_TIMEOUT_MS: u32 = 10_000;
@@ -27,7 +30,7 @@ const PANE_CAPACITY: usize = 64;
 const PANE_OUTPUT_CAPACITY: usize = 256 * 1024;
 
 /// An owned event copied from a single C ABI poll.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
 pub struct ClientEvent {
     pub type_: u32,
     pub pane_id: u32,
@@ -51,10 +54,43 @@ pub struct ClientWorkspace {
 
 /// An owned workspace event.  The workspace identity is copied before the C
 /// buffer is released, so callers never retain a pointer into the handle.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
 pub struct ClientWorkspaceEvent {
     pub workspace_id: String,
     pub event: ClientEvent,
+}
+
+impl ClientWorkspaceEvent {
+    /// Convert this owned FFI event to the daemon's semantic JSON wire.
+    pub fn to_wire_json(&self) -> serde_json::Value {
+        self.event.to_wire_json(&self.workspace_id)
+    }
+}
+
+fn client_layout_to_json(layout: &ClientLayout) -> serde_json::Value {
+    match layout {
+        ClientLayout::Leaf { pane_id } => serde_json::json!({ "Leaf": pane_id }),
+        ClientLayout::Split {
+            horizontal,
+            ratio,
+            first,
+            second,
+        } => serde_json::json!({
+            "Split": {
+                "dir": if *horizontal { "Horizontal" } else { "Vertical" },
+                "ratio": ratio,
+                "first": client_layout_to_json(first),
+                "second": client_layout_to_json(second),
+            }
+        }),
+    }
+}
+
+fn client_layout_first_pane(layout: &ClientLayout) -> u32 {
+    match layout {
+        ClientLayout::Leaf { pane_id } => *pane_id,
+        ClientLayout::Split { first, .. } => client_layout_first_pane(first),
+    }
 }
 
 /// Target data accepted by the semantic workspace-open ABI.
@@ -266,6 +302,85 @@ pub enum ClientEventKind {
 }
 
 impl ClientEvent {
+    /// Convert the borrowed-ABI event into the daemon's semantic JSON wire.
+    ///
+    /// The daemon process must not forward raw C field names as its long-term
+    /// contract: `type_` is an ABI detail, while `kind` is the product event
+    /// vocabulary understood by Core's shell runtime.  The raw type and the
+    /// common fields remain present so newer/unknown events can be diagnosed
+    /// without making an older daemon client fail.
+    pub fn to_wire_json(&self, workspace_id: &str) -> serde_json::Value {
+        let mut value = serde_json::json!({
+            "workspace_id": workspace_id,
+            "kind": self.wire_kind(),
+            "type": self.type_,
+            "pane_id": self.pane_id,
+            "tab_id": self.tab_id,
+            "window_id": self.window_id,
+            "data": self.data,
+            "name": self.name,
+        });
+
+        let object = value
+            .as_object_mut()
+            .expect("event wire JSON is always an object");
+        match self.type_ {
+            STATE_BACKEND_STATUS => {
+                object.insert(
+                    "status".into(),
+                    serde_json::Value::String(backend_status_wire_name(self.pane_id).into()),
+                );
+            }
+            STATE_PANE_RESIZED => {
+                if let Some((cols, rows)) = decode_resize_data(&self.data) {
+                    object.insert("cols".into(), serde_json::Value::from(cols));
+                    object.insert("rows".into(), serde_json::Value::from(rows));
+                }
+            }
+            STATE_STATUS_SUBSCRIPTION => {
+                object.insert(
+                    "value".into(),
+                    serde_json::Value::String(String::from_utf8_lossy(&self.data).into_owned()),
+                );
+            }
+            STATE_PANE_AGENT_CHANGED | STATE_MUTATION_SETTLED => {
+                if let Ok(payload) = serde_json::from_slice::<serde_json::Value>(&self.data) {
+                    object.insert("payload".into(), payload);
+                }
+            }
+            _ => {}
+        }
+
+        value
+    }
+
+    fn wire_kind(&self) -> &'static str {
+        match self.type_ {
+            STATE_PANE_OUTPUT => "pane_output",
+            STATE_PANE_FRAME => "pane_frame",
+            STATE_PANE_SNAPSHOT => "pane_snapshot",
+            STATE_PANE_HISTORY => "pane_history",
+            STATE_TAB_ADDED => "tab_added",
+            STATE_TAB_CLOSED => "tab_closed",
+            STATE_LAYOUT_CHANGED => "layout_changed",
+            STATE_PANE_ADDED => "pane_added",
+            STATE_PANE_CLOSED => "pane_closed",
+            STATE_ACTIVE_TAB_CHANGED => "active_tab_changed",
+            STATE_ACTIVE_PANE_CHANGED => "active_pane_changed",
+            STATE_TAB_RENAMED => "tab_renamed",
+            STATE_TAB_ORDER_CHANGED => "tab_order_changed",
+            STATE_PANE_RESIZED => "pane_resized",
+            STATE_BACKEND_STATUS => "backend_status",
+            STATE_STATUS_SUBSCRIPTION => "status_subscription",
+            STATE_WORKSPACE_RENAMED => "workspace_renamed",
+            STATE_POOL_CHANGED => "pool_changed",
+            STATE_PANE_AGENT_CHANGED => "pane_agent_changed",
+            STATE_MUTATION_SETTLED => "mutation_settled",
+            STATE_OTHER => "other",
+            _ => "unknown",
+        }
+    }
+
     pub fn kind(&self) -> ClientEventKind {
         match self.type_ {
             STATE_PANE_OUTPUT => ClientEventKind::PaneOutput,
@@ -295,6 +410,27 @@ impl ClientEvent {
                 | STATE_POOL_CHANGED
                 | STATE_TAB_ORDER_CHANGED
         )
+    }
+}
+
+fn decode_resize_data(data: &[u8]) -> Option<(u16, u16)> {
+    let [cols_lo, cols_hi, rows_lo, rows_hi, ..] = data else {
+        return None;
+    };
+    Some((
+        u16::from_le_bytes([*cols_lo, *cols_hi]),
+        u16::from_le_bytes([*rows_lo, *rows_hi]),
+    ))
+}
+
+fn backend_status_wire_name(status: u32) -> &'static str {
+    match status {
+        BACKEND_STATUS_DISCONNECTED => "disconnected",
+        BACKEND_STATUS_CONNECTING => "connecting",
+        BACKEND_STATUS_CONNECTED => "connected",
+        BACKEND_STATUS_ERROR => "error",
+        BACKEND_STATUS_EXITED => "exited",
+        _ => "unknown",
     }
 }
 
@@ -971,6 +1107,89 @@ impl FfiClient {
         let value =
             Self::discovery_json(|| unsafe { ffi::muxterm_workspace_list(self.handle.as_ptr()) })?;
         Ok(serde_json::from_value(value["workspaces"].clone())?)
+    }
+
+    /// Build a control-lane topology baseline for the daemon event stream.
+    ///
+    /// This deliberately queries only workspace metadata, tabs, panes, and
+    /// layouts.  Pane output is never read here: render data must travel as
+    /// incremental FFI events so the daemon client does not recreate the old
+    /// cumulative `DumpState` protocol.
+    pub fn workspace_topology_json(&self, workspace_id: &str) -> anyhow::Result<serde_json::Value> {
+        let workspace = self
+            .workspace_list()?
+            .into_iter()
+            .find(|item| item.id == workspace_id)
+            .ok_or_else(|| anyhow::anyhow!("Core workspace not found: {workspace_id}"))?;
+        let tabs = self.get_workspace_tabs(workspace_id);
+        let panes_by_tab: Vec<(u32, Vec<ClientPane>)> = tabs
+            .iter()
+            .map(|tab| (tab.id, self.get_workspace_panes(workspace_id, tab.id)))
+            .collect();
+        let layouts: Vec<serde_json::Value> = tabs
+            .iter()
+            .filter_map(|tab| {
+                let layout = self.get_workspace_layout(workspace_id, tab.id)?;
+                let active = panes_by_tab
+                    .iter()
+                    .find(|(tab_id, _)| *tab_id == tab.id)
+                    .and_then(|(_, panes)| panes.iter().find(|pane| pane.is_active))
+                    .map(|pane| pane.id)
+                    .unwrap_or_else(|| client_layout_first_pane(&layout));
+                Some(serde_json::json!({
+                    "tab": tab.id,
+                    "tree": client_layout_to_json(&layout),
+                    "active": active,
+                }))
+            })
+            .collect();
+        let tabs_json: Vec<serde_json::Value> = tabs
+            .iter()
+            .map(|tab| {
+                serde_json::json!({
+                    "id": tab.id,
+                    "name": tab.name,
+                    "active": tab.is_active,
+                })
+            })
+            .collect();
+        let panes_json: Vec<serde_json::Value> = panes_by_tab
+            .iter()
+            .flat_map(|(tab_id, panes)| {
+                panes.iter().map(move |pane| {
+                    serde_json::json!({
+                        "id": pane.id,
+                        "tab": tab_id,
+                        "active": pane.is_active,
+                        "title": pane.title,
+                        "cols": pane.cols,
+                        "rows": pane.rows,
+                    })
+                })
+            })
+            .collect();
+        let active_tab = tabs.iter().find(|tab| tab.is_active).map(|tab| tab.id);
+        let active_pane = active_tab.and_then(|tab_id| {
+            panes_by_tab
+                .iter()
+                .find(|(id, _)| *id == tab_id)
+                .and_then(|(_, panes)| panes.iter().find(|pane| pane.is_active))
+                .map(|pane| pane.id)
+        });
+
+        Ok(serde_json::json!({
+            "kind": "workspace_topology",
+            "workspace_id": workspace_id,
+            "snapshot": {
+                "workspace_name": workspace.name,
+                "workspace_runtime": workspace.runtime,
+                "tabs": tabs_json,
+                "panes": panes_json,
+                "layouts": layouts,
+                "active_tab": active_tab,
+                "active_pane": active_pane,
+            },
+        }))
     }
 
     /// Activate a Core-owned workspace by its stable product identity.
@@ -2189,6 +2408,53 @@ mod tests {
             .kind(),
             ClientEventKind::Other(u32::MAX)
         );
+    }
+
+    #[test]
+    fn event_wire_uses_semantic_kind_and_keeps_common_fields() {
+        let event = ClientEvent {
+            type_: STATE_PANE_OUTPUT,
+            pane_id: 7,
+            tab_id: 3,
+            window_id: 0,
+            data: vec![0, 255, 27],
+            name: String::new(),
+        };
+        let wire = event.to_wire_json("local//demo/shell/");
+        assert_eq!(wire["workspace_id"], "local//demo/shell/");
+        assert_eq!(wire["kind"], "pane_output");
+        assert_eq!(wire["pane_id"], 7);
+        assert_eq!(wire["tab_id"], 3);
+        assert_eq!(wire["data"], serde_json::json!([0, 255, 27]));
+    }
+
+    #[test]
+    fn event_wire_adds_resize_and_payload_semantics() {
+        let resized = ClientEvent {
+            type_: STATE_PANE_RESIZED,
+            pane_id: 7,
+            tab_id: 3,
+            window_id: 0,
+            data: vec![120, 0, 40, 0],
+            name: String::new(),
+        };
+        let wire = resized.to_wire_json("ws");
+        assert_eq!(wire["kind"], "pane_resized");
+        assert_eq!(wire["cols"], 120);
+        assert_eq!(wire["rows"], 40);
+
+        let agent = ClientEvent {
+            type_: STATE_PANE_AGENT_CHANGED,
+            pane_id: 7,
+            tab_id: 3,
+            window_id: 0,
+            data: br#"{"initial":true,"agent":null}"#.to_vec(),
+            name: String::new(),
+        };
+        let wire = agent.to_wire_json("ws");
+        assert_eq!(wire["kind"], "pane_agent_changed");
+        assert_eq!(wire["payload"]["initial"], true);
+        assert!(wire["payload"]["agent"].is_null());
     }
 
     #[test]

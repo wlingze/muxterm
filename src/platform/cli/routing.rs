@@ -228,6 +228,7 @@ impl FfiCliSession {
             | ListLayout
             | CapturePane { .. }
             | DisplayMessage { .. }
+            | PollEvents
             | DumpState => Ok(()),
             CloseWorkspace { .. } => self.execute(ClientTask::Shutdown),
             Detach { .. } => self.execute(ClientTask::Detach),

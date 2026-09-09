@@ -2,13 +2,13 @@
 //!
 //! The daemon is a shell-runtime execution form, so its request/response
 //! types live beside the shell runtime rather than under the CLI frontend.
-//! The snapshot fields remain temporarily compatible with the existing wire;
-//! the event-stream replacement is a later migration step.
+//! The snapshot fields remain temporarily compatible with the existing query
+//! wire, while mutations and render/control notifications use the semantic
+//! JSON event stream below.
 
 use crate::protocol::command::CliCommand;
-use crate::protocol::layout::SplitDir;
+use crate::protocol::layout::{SplitDir, TabLayout};
 use crate::protocol::state::State;
-use crate::protocol::state::StateChange;
 use crate::protocol::task::Task;
 use crate::protocol::terminal::input::KeyEvent;
 
@@ -44,6 +44,21 @@ pub struct StateSnapshot {
     pub active_pane: Option<u32>,
 }
 
+/// Control-lane baseline sent by the daemon when a client connects or when
+/// topology changes.  It intentionally contains no cumulative pane output;
+/// render data stays in the event stream as `PaneOutput`/`PaneSnapshot`/
+/// `PaneFrame`/`PaneHistory` events.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TopologySnapshot {
+    pub workspace_name: String,
+    pub workspace_runtime: String,
+    pub tabs: Vec<crate::protocol::state::TabInfo>,
+    pub panes: Vec<crate::protocol::state::PaneInfo>,
+    pub layouts: Vec<TabLayout>,
+    pub active_tab: Option<u32>,
+    pub active_pane: Option<u32>,
+}
+
 /// Client → shell daemon request.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Request {
@@ -57,9 +72,13 @@ pub struct Response {
     pub ok: bool,
     pub output: String,
     pub error: String,
-    /// Runtime events produced while handling this request.
+    /// Owned FFI event values produced while handling this request.
+    ///
+    /// The daemon wire keeps the event payload JSON-shaped so the CLI server
+    /// can forward FFI DTOs without importing Core state types. Core's
+    /// `DaemonRuntime` decodes the values at its runtime boundary.
     #[serde(default)]
-    pub events: Vec<StateChange>,
+    pub events: Vec<serde_json::Value>,
 }
 
 impl Response {
@@ -72,7 +91,7 @@ impl Response {
         }
     }
 
-    pub fn ok_with_events(output: String, events: Vec<StateChange>) -> Self {
+    pub fn ok_with_events(output: String, events: Vec<serde_json::Value>) -> Self {
         Self {
             ok: true,
             output,
@@ -190,7 +209,7 @@ pub fn cli_command_to_task(cmd: &CliCommand, state: &dyn State) -> Option<Task> 
         }
         CapturePane { .. } => None,
 
-        ListWorkspaces | ListTabs | ListPanes { .. } | ListLayout | DumpState => None,
+        ListWorkspaces | ListTabs | ListPanes { .. } | ListLayout | PollEvents | DumpState => None,
         DisplayMessage { .. } => None,
     }
 }

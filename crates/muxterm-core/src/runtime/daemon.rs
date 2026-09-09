@@ -1,9 +1,9 @@
 //! DaemonRuntime：TUI 作为 client 连接本地 daemon（unix socket IPC）。
 //!
 //! 生命周期：
-//! - `connect()`：检查 socket 存在，拉取 DumpState 建立初始快照
-//! - `execute(Task)`：映射为 CliCommand，经 IPC 发给 daemon，再同步快照
-//! - `take_events()`：再次 DumpState，对输出/布局 diff 后产生 StateChange
+//! - `connect()`：检查 socket 存在，消费 daemon 的初始拓扑/事件批次
+//! - `execute(Task)`：映射为 CliCommand，经 IPC 发给 daemon，再消费事件批次
+//! - `take_events()`：轮询 semantic event wire，不重建累计状态快照
 //! - `shutdown()`：仅断开 client（不 kill daemon，detach 语义）
 
 use std::collections::{HashMap, VecDeque};
@@ -12,13 +12,17 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 
+use crate::buffer_cap::{append_capped, MAX_PANE_OUTPUT_BYTES};
 use crate::protocol::command::CliCommand;
 use crate::protocol::layout::{SplitDir, TabLayout};
-use crate::protocol::state::{BackendStatus, PaneInfo, State, StateChange, TabInfo};
+use crate::protocol::state::{
+    BackendStatus, MutationKind, MutationResult, PaneAgentInfo, PaneInfo, State, StateChange,
+    TabInfo,
+};
 use crate::protocol::task::{Task, TaskOutcome};
 use crate::protocol::terminal::input::encode;
 use crate::runtime::daemon_client::send_command;
-use crate::runtime::shell::daemon::{OutputFormat, StateSnapshot};
+use crate::runtime::shell::daemon::{OutputFormat, TopologySnapshot};
 use crate::runtime::{Runtime, RuntimeCapability};
 use crate::types::{PaneId, TabId};
 
@@ -77,48 +81,222 @@ impl DaemonRuntime {
         }
     }
 
-    fn sync_from_daemon(&mut self) -> Result<()> {
+    fn poll_from_daemon(&mut self) -> Result<()> {
         let resp = send_command(
             &self.socket_path,
-            &CliCommand::DumpState,
+            &CliCommand::PollEvents,
             OutputFormat::Json,
         )
         .with_context(|| {
             format!(
-                "同步 daemon 状态失败（session={} socket={}）",
+                "轮询 daemon 事件失败（session={} socket={}）",
                 self.session_name,
                 self.socket_path.display()
             )
         })?;
         if !resp.ok {
-            bail!("daemon DumpState 失败: {}", resp.error);
+            bail!("daemon PollEvents 失败: {}", resp.error);
         }
-        let snap: StateSnapshot =
-            serde_json::from_str(&resp.output).context("反序列化 DumpState 失败")?;
-        self.replace_snapshot(snap);
-        self.events.extend(resp.events);
+        self.enqueue_wire_events(resp.events);
         Ok(())
     }
 
-    /// Replace the state query cache without synthesizing render events.
+    fn apply_topology_event(&mut self, value: &serde_json::Value) -> bool {
+        if value.get("kind").and_then(serde_json::Value::as_str) != Some("workspace_topology") {
+            return false;
+        }
+        let Some(snapshot) = value
+            .get("snapshot")
+            .cloned()
+            .and_then(|snapshot| serde_json::from_value::<TopologySnapshot>(snapshot).ok())
+        else {
+            return false;
+        };
+        self.session_name = snapshot.workspace_name;
+        self.workspace_runtime = snapshot.workspace_runtime;
+        self.tabs = snapshot.tabs;
+        self.panes = snapshot.panes;
+        self.layouts = snapshot.layouts.into_iter().map(|l| (l.tab, l)).collect();
+        self.active_tab = snapshot.active_tab.map(TabId);
+        self.active_pane = snapshot.active_pane.map(PaneId);
+        true
+    }
+
+    fn apply_render_cache(&mut self, value: &serde_json::Value) {
+        let Some(kind) = value.get("kind").and_then(serde_json::Value::as_str) else {
+            return;
+        };
+        if kind == "backend_status" {
+            if let Some(status) = wire_backend_status(value) {
+                self.status = status;
+            }
+            return;
+        }
+        let Some(pane) = wire_u32(value, "pane_id").map(PaneId) else {
+            return;
+        };
+        match kind {
+            "pane_output" | "pane_history" => {
+                if let Some(data) = wire_bytes(value) {
+                    append_capped(
+                        self.outputs.entry(pane).or_default(),
+                        &data,
+                        MAX_PANE_OUTPUT_BYTES,
+                    );
+                }
+            }
+            "pane_snapshot" => {
+                if let Some(data) = wire_bytes(value) {
+                    self.outputs.insert(pane, data);
+                }
+            }
+            "pane_closed" => {
+                self.outputs.remove(&pane);
+            }
+            _ => {}
+        }
+    }
+
+    /// Decode the semantic daemon event wire at the Core runtime boundary.
     ///
-    /// The daemon response carries the authoritative `StateChange` values.
-    /// Keeping snapshot replacement separate prevents the client from
-    /// re-creating a second, lossy event protocol by diffing cumulative text.
-    fn replace_snapshot(&mut self, snap: StateSnapshot) {
-        self.session_name = snap.workspace_name;
-        self.workspace_runtime = snap.workspace_runtime;
-        self.tabs = snap.tabs;
-        self.panes = snap.panes;
-        self.layouts = snap.layouts.into_iter().map(|l| (l.tab, l)).collect();
-        self.outputs = snap
-            .outputs
-            .into_iter()
-            .map(|(id, s)| (PaneId(id), s.into_bytes()))
-            .collect();
-        self.status = snap.status;
-        self.active_tab = snap.active_tab.map(TabId);
-        self.active_pane = snap.active_pane.map(PaneId);
+    /// The daemon response deliberately carries JSON values instead of Core
+    /// `StateChange` values: the CLI host owns the FFI DTOs, while this client
+    /// owns the product event vocabulary. Unknown events are ignored so a
+    /// newer FFI producer can still be consumed by an older daemon client.
+    fn enqueue_wire_events(&mut self, events: impl IntoIterator<Item = serde_json::Value>) {
+        for value in events {
+            if self.apply_topology_event(&value) {
+                continue;
+            }
+            self.apply_render_cache(&value);
+            if let Some(event) = self.decode_wire_event(&value) {
+                self.events.push_back(event);
+            } else {
+                tracing::debug!(
+                    target = "muxterm::daemon",
+                    kind = value.get("kind").and_then(serde_json::Value::as_str),
+                    "忽略无法解码的 daemon event"
+                );
+            }
+        }
+    }
+
+    fn decode_wire_event(&self, value: &serde_json::Value) -> Option<StateChange> {
+        let kind = value.get("kind")?.as_str()?;
+        match kind {
+            "pane_output" => Some(StateChange::PaneOutput {
+                pane: PaneId(wire_u32(value, "pane_id")?),
+                data: wire_bytes(value)?,
+            }),
+            "pane_frame" => Some(StateChange::PaneFrame {
+                pane: PaneId(wire_u32(value, "pane_id")?),
+                data: wire_bytes(value)?,
+            }),
+            "pane_snapshot" => Some(StateChange::PaneSnapshot {
+                pane: PaneId(wire_u32(value, "pane_id")?),
+                data: wire_bytes(value)?,
+            }),
+            "pane_history" => Some(StateChange::PaneHistory {
+                pane: PaneId(wire_u32(value, "pane_id")?),
+                data: wire_bytes(value)?,
+            }),
+            "tab_added" => Some(StateChange::TabAdded {
+                tab: TabId(wire_u32(value, "tab_id")?),
+            }),
+            "tab_closed" => Some(StateChange::TabClosed {
+                tab: TabId(wire_u32(value, "tab_id")?),
+            }),
+            "layout_changed" => {
+                let tab = TabId(wire_u32(value, "tab_id")?);
+                self.layouts
+                    .get(&tab)
+                    .cloned()
+                    .map(|layout| StateChange::LayoutChanged { tab, layout })
+            }
+            "pane_added" => Some(StateChange::PaneAdded {
+                pane: PaneId(wire_u32(value, "pane_id")?),
+                tab: TabId(wire_u32(value, "tab_id")?),
+            }),
+            "pane_closed" => Some(StateChange::PaneClosed {
+                pane: PaneId(wire_u32(value, "pane_id")?),
+            }),
+            "active_tab_changed" => Some(StateChange::ActiveTabChanged {
+                tab: TabId(wire_u32(value, "tab_id")?),
+            }),
+            "active_pane_changed" => Some(StateChange::ActivePaneChanged {
+                tab: TabId(wire_u32(value, "tab_id")?),
+                pane: PaneId(wire_u32(value, "pane_id")?),
+            }),
+            "tab_renamed" => Some(StateChange::TabRenamed {
+                tab: TabId(wire_u32(value, "tab_id")?),
+                name: wire_string(value, "name")?,
+            }),
+            "tab_order_changed" => Some(StateChange::TabOrderChanged),
+            "pane_resized" => {
+                let pane = PaneId(wire_u32(value, "pane_id")?);
+                let (cols, rows) = wire_resize(value)?;
+                Some(StateChange::PaneResized { pane, cols, rows })
+            }
+            "pane_agent_changed" => {
+                let payload = wire_payload(value)?;
+                let initial = payload
+                    .get("initial")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false);
+                let agent = payload
+                    .get("agent")
+                    .cloned()
+                    .and_then(|agent| {
+                        serde_json::from_value::<Option<Box<PaneAgentInfo>>>(agent).ok()
+                    })
+                    .flatten();
+                Some(StateChange::PaneAgentChanged {
+                    pane: PaneId(wire_u32(value, "pane_id")?),
+                    agent,
+                    initial,
+                })
+            }
+            "status_subscription" => Some(StateChange::StatusBarSubscription {
+                name: wire_string(value, "name")?,
+                value: value
+                    .get("value")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                pane: nonzero_pane(value, "pane_id"),
+            }),
+            "workspace_renamed" => Some(StateChange::WorkspaceRenamed {
+                name: wire_string(value, "name")?,
+            }),
+            "pool_changed" => Some(StateChange::PoolChanged),
+            "backend_status" => Some(StateChange::BackendStatusChanged(wire_backend_status(
+                value,
+            )?)),
+            "mutation_settled" => {
+                let payload = wire_payload(value)?;
+                Some(StateChange::MutationSettled {
+                    operation_id: payload.get("operation_id")?.as_u64()?,
+                    kind: serde_json::from_value::<MutationKind>(payload.get("kind")?.clone())
+                        .ok()?,
+                    result: serde_json::from_value::<MutationResult>(
+                        payload.get("result")?.clone(),
+                    )
+                    .ok()?,
+                })
+            }
+            // `STATE_OTHER` is used by the C ABI for PaneTitleChanged.  The
+            // only other producer, PaneIndexSnapshot, is filtered before FFI
+            // export, so a non-empty title is safe to recover here.
+            "other"
+                if wire_u32(value, "pane_id").is_some() && wire_string(value, "name").is_some() =>
+            {
+                Some(StateChange::PaneTitleChanged {
+                    pane: PaneId(wire_u32(value, "pane_id")?),
+                    title: wire_string(value, "name")?,
+                })
+            }
+            _ => None,
+        }
     }
 
     fn send_cli(&mut self, cmd: CliCommand) -> Result<()> {
@@ -127,8 +305,8 @@ impl DaemonRuntime {
         if !resp.ok {
             bail!("daemon 执行失败: {}", resp.error);
         }
-        self.events.extend(resp.events);
-        self.sync_from_daemon()?;
+        self.enqueue_wire_events(resp.events);
+        self.poll_from_daemon()?;
         Ok(())
     }
 
@@ -194,6 +372,67 @@ impl DaemonRuntime {
             | Task::ReportPaneColours { .. }
             | Task::RequestPaneSnapshot { .. } => None,
         }
+    }
+}
+
+fn wire_u32(value: &serde_json::Value, key: &str) -> Option<u32> {
+    value.get(key)?.as_u64()?.try_into().ok()
+}
+
+fn wire_string(value: &serde_json::Value, key: &str) -> Option<String> {
+    value.get(key)?.as_str().map(ToOwned::to_owned)
+}
+
+fn wire_bytes(value: &serde_json::Value) -> Option<Vec<u8>> {
+    serde_json::from_value(value.get("data")?.clone()).ok()
+}
+
+fn wire_payload(value: &serde_json::Value) -> Option<serde_json::Value> {
+    value
+        .get("payload")
+        .cloned()
+        .or_else(|| serde_json::from_value(value.get("data")?.clone()).ok())
+}
+
+fn wire_resize(value: &serde_json::Value) -> Option<(u16, u16)> {
+    if let (Some(cols), Some(rows)) = (
+        value.get("cols").and_then(serde_json::Value::as_u64),
+        value.get("rows").and_then(serde_json::Value::as_u64),
+    ) {
+        return Some((cols.try_into().ok()?, rows.try_into().ok()?));
+    }
+
+    let data: Vec<u8> = wire_bytes(value)?;
+    let [cols_lo, cols_hi, rows_lo, rows_hi, ..] = data.as_slice() else {
+        return None;
+    };
+    Some((
+        u16::from_le_bytes([*cols_lo, *cols_hi]),
+        u16::from_le_bytes([*rows_lo, *rows_hi]),
+    ))
+}
+
+fn nonzero_pane(value: &serde_json::Value, key: &str) -> Option<PaneId> {
+    let pane = wire_u32(value, key)?;
+    (pane != 0).then_some(PaneId(pane))
+}
+
+fn wire_backend_status(value: &serde_json::Value) -> Option<BackendStatus> {
+    match value.get("status").and_then(serde_json::Value::as_str) {
+        Some("disconnected" | "Disconnected") => Some(BackendStatus::Disconnected),
+        Some("connecting" | "Connecting") => Some(BackendStatus::Connecting),
+        Some("connected" | "Connected") => Some(BackendStatus::Connected),
+        Some("error" | "Error") => Some(BackendStatus::Error),
+        Some("exited" | "Exited") => Some(BackendStatus::Exited),
+        Some(_) => None,
+        None => match wire_u32(value, "pane_id")? {
+            0 => Some(BackendStatus::Disconnected),
+            1 => Some(BackendStatus::Connecting),
+            2 => Some(BackendStatus::Connected),
+            3 => Some(BackendStatus::Error),
+            4 => Some(BackendStatus::Exited),
+            _ => None,
+        },
     }
 }
 
@@ -283,7 +522,7 @@ impl Runtime for DaemonRuntime {
                 self.session_name
             );
         }
-        self.sync_from_daemon()?;
+        self.poll_from_daemon()?;
         self.status = BackendStatus::Connected;
         self.events
             .push_back(StateChange::BackendStatusChanged(BackendStatus::Connected));
@@ -310,9 +549,10 @@ impl Runtime for DaemonRuntime {
     }
 
     fn take_events(&mut self) -> Vec<StateChange> {
-        // 每次拉取前先同步 daemon（pty 输出等）
+        // 每次拉取前只消费事件流；拓扑 baseline 由 daemon 作为 control
+        // event 提供，render bytes 不通过累计状态查询回读。
         if self.status == BackendStatus::Connected {
-            let _ = self.sync_from_daemon();
+            let _ = self.poll_from_daemon();
         }
         self.events.drain(..).collect()
     }
@@ -355,30 +595,164 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_replacement_does_not_synthesize_render_events() {
+    fn topology_event_updates_state_without_reading_render_snapshot() {
         let mut runtime = DaemonRuntime::new("/tmp/muxterm-test-daemon.sock", "test");
-        runtime.events.push_back(StateChange::PaneOutput {
-            pane: PaneId(1),
-            data: b"already-wired".to_vec(),
-        });
-        let event_count = runtime.events.len();
-
-        runtime.replace_snapshot(StateSnapshot {
-            workspace_name: "test".into(),
+        let topology = TopologySnapshot {
+            workspace_name: "workspace".into(),
             workspace_runtime: "shell".into(),
-            tabs: vec![],
-            panes: vec![],
-            layouts: vec![],
-            outputs: vec![(1, "cumulative".into())],
-            status: BackendStatus::Connected,
-            active_tab: None,
-            active_pane: None,
-        });
+            tabs: vec![TabInfo {
+                id: TabId(1),
+                name: "main".into(),
+                active: true,
+            }],
+            panes: vec![PaneInfo {
+                id: PaneId(7),
+                tab: TabId(1),
+                active: true,
+                title: "bash".into(),
+                cols: 120,
+                rows: 40,
+            }],
+            layouts: vec![TabLayout {
+                tab: TabId(1),
+                tree: crate::protocol::layout::LayoutNode::Leaf(PaneId(7)),
+                active: PaneId(7),
+            }],
+            active_tab: Some(1),
+            active_pane: Some(7),
+        };
+        runtime.enqueue_wire_events([
+            serde_json::json!({
+                "kind": "workspace_topology",
+                "workspace_id": "ws",
+                "snapshot": serde_json::to_value(topology).unwrap(),
+            }),
+            serde_json::json!({
+                "kind": "pane_output",
+                "pane_id": 7,
+                "data": [99, 117, 109, 117, 108, 97, 116, 105, 118, 101]
+            }),
+        ]);
 
-        assert_eq!(runtime.events.len(), event_count);
+        assert_eq!(runtime.workspace_name(), "workspace");
+        assert_eq!(runtime.workspace_runtime(), "shell");
+        assert_eq!(runtime.tabs().len(), 1);
+        assert_eq!(runtime.panes(&TabId(1)).len(), 1);
         assert_eq!(
-            runtime.pane_output(&PaneId(1)),
+            runtime.pane_output(&PaneId(7)),
             Some(b"cumulative".as_slice())
         );
+        assert_eq!(runtime.events.len(), 1);
+        assert!(matches!(
+            runtime.events.front(),
+            Some(StateChange::PaneOutput {
+                pane: PaneId(7),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn pane_snapshot_replaces_only_event_derived_render_cache() {
+        let mut runtime = DaemonRuntime::new("/tmp/muxterm-test-daemon.sock", "test");
+        runtime.enqueue_wire_events([
+            serde_json::json!({
+                "kind": "pane_output",
+                "pane_id": 1,
+                "data": [111, 108, 100]
+            }),
+            serde_json::json!({
+                "kind": "pane_snapshot",
+                "pane_id": 1,
+                "data": [110, 101, 119]
+            }),
+        ]);
+
+        assert_eq!(runtime.pane_output(&PaneId(1)), Some(b"new".as_slice()));
+        assert_eq!(runtime.events.len(), 2);
+    }
+
+    #[test]
+    fn semantic_wire_decodes_render_resize_and_backend_events() {
+        let mut runtime = DaemonRuntime::new("/tmp/muxterm-test-daemon.sock", "test");
+        runtime.enqueue_wire_events([
+            serde_json::json!({
+                "workspace_id": "ws",
+                "kind": "pane_output",
+                "pane_id": 7,
+                "data": [0, 255, 27]
+            }),
+            serde_json::json!({
+                "workspace_id": "ws",
+                "kind": "pane_resized",
+                "pane_id": 7,
+                "cols": 120,
+                "rows": 40
+            }),
+            serde_json::json!({
+                "workspace_id": "ws",
+                "kind": "backend_status",
+                "status": "connected"
+            }),
+        ]);
+
+        let events: Vec<_> = runtime.events.drain(..).collect();
+        assert!(matches!(
+            &events[0],
+            StateChange::PaneOutput { pane: PaneId(7), data }
+                if data == &[0, 255, 27]
+        ));
+        assert!(matches!(
+            events[1],
+            StateChange::PaneResized {
+                pane: PaneId(7),
+                cols: 120,
+                rows: 40,
+            }
+        ));
+        assert_eq!(
+            events[2],
+            StateChange::BackendStatusChanged(BackendStatus::Connected)
+        );
+    }
+
+    #[test]
+    fn semantic_wire_decodes_agent_and_mutation_payloads() {
+        let mut runtime = DaemonRuntime::new("/tmp/muxterm-test-daemon.sock", "test");
+        runtime.enqueue_wire_events([
+            serde_json::json!({
+                "kind": "pane_agent_changed",
+                "pane_id": 3,
+                "payload": {"initial": true, "agent": null}
+            }),
+            serde_json::json!({
+                "kind": "mutation_settled",
+                "payload": {
+                    "operation_id": 42,
+                    "kind": "new_tab",
+                    "result": "completed"
+                }
+            }),
+            serde_json::json!({"kind": "future_event"}),
+        ]);
+
+        let events: Vec<_> = runtime.events.drain(..).collect();
+        assert!(matches!(
+            events[0],
+            StateChange::PaneAgentChanged {
+                pane: PaneId(3),
+                agent: None,
+                initial: true,
+            }
+        ));
+        assert!(matches!(
+            events[1],
+            StateChange::MutationSettled {
+                operation_id: 42,
+                kind: crate::protocol::state::MutationKind::NewTab,
+                result: crate::protocol::state::MutationResult::Completed,
+            }
+        ));
+        assert_eq!(events.len(), 2);
     }
 }
