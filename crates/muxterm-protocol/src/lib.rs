@@ -12,6 +12,7 @@ pub mod color;
 pub mod input;
 pub mod layout;
 pub mod state;
+pub mod task;
 
 pub use color::Rgb;
 
