@@ -5108,18 +5108,20 @@ fn open_tmux_attach(state: &Rc<RefCell<UiState>>, parent: &Window, _create_only:
     let st = state.clone();
     tmux_dialog::show(parent, socket_opt.as_deref(), move |action| match action {
         TmuxAction::Attach { session } => {
-            connect_target(
+            connect_open_request(
                 &st,
-                TargetConfig::tmux_session(session, TargetTransport::Local),
+                ExistingEntry::tmux(session, ExistingTransport::Local, socket.clone())
+                    .open_request(),
             );
         }
         TmuxAction::NewWorkspace { name } => {
             let session = name.unwrap_or_else(|| "muxterm".into());
             let dir = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
             match FfiClient::create_workspace("local", None, socket.as_deref(), &session, &dir) {
-                Ok(created) => connect_target(
+                Ok(created) => connect_open_request(
                     &st,
-                    TargetConfig::tmux_session(created, TargetTransport::Local),
+                    ExistingEntry::tmux(created, ExistingTransport::Local, socket.clone())
+                        .open_request(),
                 ),
                 Err(e) => tracing::error!(target = "muxterm::linux", "create tmux session: {e}"),
             }
@@ -5192,17 +5194,17 @@ fn open_connect_sessions(state: &Rc<RefCell<UiState>>, parent: &Window, connect:
                     };
                     match FfiClient::create_workspace(transport, target, None, &name, &dir) {
                         Ok(created) => {
-                            let cfg = if connect == "local" {
-                                TargetConfig::tmux_session(created, TargetTransport::Local)
+                            let transport = if connect == "local" {
+                                ExistingTransport::Local
                             } else {
-                                TargetConfig::tmux_session(
-                                    created,
-                                    TargetTransport::Ssh {
-                                        name: connect.clone(),
-                                    },
-                                )
+                                ExistingTransport::Ssh {
+                                    name: connect.clone(),
+                                }
                             };
-                            connect_target(&st, cfg);
+                            connect_open_request(
+                                &st,
+                                ExistingEntry::tmux(created, transport, None).open_request(),
+                            );
                         }
                         Err(e) => tracing::error!(
                             target = "muxterm::linux",
@@ -5211,17 +5213,17 @@ fn open_connect_sessions(state: &Rc<RefCell<UiState>>, parent: &Window, connect:
                     }
                 });
             } else {
-                let cfg = if connect_for_attach == "local" {
-                    TargetConfig::tmux_session(item.id, TargetTransport::Local)
+                let transport = if connect_for_attach == "local" {
+                    ExistingTransport::Local
                 } else {
-                    TargetConfig::tmux_session(
-                        item.id,
-                        TargetTransport::Ssh {
-                            name: connect_for_attach.clone(),
-                        },
-                    )
+                    ExistingTransport::Ssh {
+                        name: connect_for_attach.clone(),
+                    }
                 };
-                connect_target(&st, cfg);
+                connect_open_request(
+                    &st,
+                    ExistingEntry::tmux(item.id, transport, None).open_request(),
+                );
             }
         },
     );
