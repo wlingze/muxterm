@@ -394,7 +394,7 @@ impl Catalog {
             {
                 anyhow::bail!("runtime 不支持 native WorktreeCreate");
             }
-            workspace.runtime().create_worktree_spec(worktree)?
+            WorkspaceSpec::from_runtime_spec(workspace.runtime().create_worktree_spec(worktree)?)
         };
         spec.provenance = provenance.clone();
         spec.template = template;
@@ -441,7 +441,7 @@ impl Catalog {
             {
                 anyhow::bail!("runtime 不支持 native WorktreeCreate");
             }
-            workspace.runtime().create_worktree_spec(worktree)?
+            WorkspaceSpec::from_runtime_spec(workspace.runtime().create_worktree_spec(worktree)?)
         };
         spec.provenance = provenance.clone();
         spec.template = template;

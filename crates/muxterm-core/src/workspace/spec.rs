@@ -145,6 +145,36 @@ impl WorkspaceSpec {
         self
     }
 
+    /// Convert the Core-owned product spec to the runtime crate boundary.
+    pub fn runtime_spec(&self) -> muxterm_runtime::RuntimeSpec {
+        muxterm_runtime::RuntimeSpec {
+            transport: self.transport.clone(),
+            alias: self.alias.clone(),
+            session: self.session.clone(),
+            runtime: self.runtime.clone(),
+            path: self.path.clone(),
+            socket: self.socket.clone(),
+            create: self.create,
+            scrollback_lines: self.scrollback_lines,
+        }
+    }
+
+    /// Rebuild a product spec returned by a Runtime-native operation.
+    pub fn from_runtime_spec(spec: muxterm_runtime::RuntimeSpec) -> Self {
+        Self {
+            transport: spec.transport,
+            alias: spec.alias,
+            session: spec.session,
+            runtime: spec.runtime,
+            path: spec.path,
+            socket: spec.socket,
+            create: spec.create,
+            scrollback_lines: spec.scrollback_lines,
+            provenance: None,
+            template: None,
+        }
+    }
+
     /// 稳定 WorkspaceId。
     pub fn id(&self) -> WorkspaceId {
         WorkspaceId::new(
@@ -199,6 +229,24 @@ mod tests {
         assert_eq!(ssh_shell.id().alias.as_deref(), Some("dev"));
         assert_eq!(ssh_shell.id().runtime, "shell");
         assert_eq!(ssh_shell.id().path, "/srv/project");
+    }
+
+    #[test]
+    fn runtime_spec_round_trip_preserves_runtime_fields() {
+        let spec = WorkspaceSpec::ssh_tmux("dev".into(), Some("demo".into()), Some("sock".into()))
+            .with_scrollback_lines(512);
+        let runtime_spec = spec.runtime_spec();
+        let rebuilt = WorkspaceSpec::from_runtime_spec(runtime_spec);
+        assert_eq!(rebuilt.transport, spec.transport);
+        assert_eq!(rebuilt.alias, spec.alias);
+        assert_eq!(rebuilt.session, spec.session);
+        assert_eq!(rebuilt.runtime, spec.runtime);
+        assert_eq!(rebuilt.path, spec.path);
+        assert_eq!(rebuilt.socket, spec.socket);
+        assert_eq!(rebuilt.create, spec.create);
+        assert_eq!(rebuilt.scrollback_lines, spec.scrollback_lines);
+        assert!(rebuilt.provenance.is_none());
+        assert!(rebuilt.template.is_none());
     }
 
     #[test]

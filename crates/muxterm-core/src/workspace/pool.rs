@@ -334,7 +334,9 @@ impl WorkspacePool {
         if !caps.contains(&RuntimeCapability::WorktreeCreate) {
             return Err(anyhow::anyhow!("runtime 不支持 WorktreeCreate"));
         }
-        let new_spec = slot.workspace.runtime().create_worktree_spec(spec)?;
+        let new_spec = crate::workspace::spec::WorkspaceSpec::from_runtime_spec(
+            slot.workspace.runtime().create_worktree_spec(spec)?,
+        );
         let new_id = new_spec.id();
         self.open_spec(&new_spec, create).await?;
         Ok(new_id)
@@ -356,7 +358,9 @@ impl WorkspacePool {
         if !caps.contains(&RuntimeCapability::WorktreeOpen) {
             return Err(anyhow::anyhow!("runtime 不支持 WorktreeOpen"));
         }
-        let new_spec = slot.workspace.runtime().open_worktree_spec(path)?;
+        let new_spec = crate::workspace::spec::WorkspaceSpec::from_runtime_spec(
+            slot.workspace.runtime().open_worktree_spec(path)?,
+        );
         let new_id = new_spec.id();
         self.open_spec(&new_spec, create).await?;
         Ok(new_id)
