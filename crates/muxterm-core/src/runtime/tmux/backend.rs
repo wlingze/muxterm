@@ -37,6 +37,7 @@ use crate::runtime::tmux::protocol::{
     parse_layout_tree, LayoutTree, Message, NotificationKind, TmuxSessionId,
 };
 use crate::runtime::{Runtime, RuntimeCapability};
+use crate::transport::TargetConnection;
 use crate::types::{PaneId, TabId};
 
 /// 后台命令查询标记：记录发出去的命令，收到 %end 时处理响应行。
@@ -154,6 +155,7 @@ struct PaneResync {
 /// tmux -CC 后端。
 pub struct TmuxRuntime {
     config: TmuxClientConfig,
+    target_connection: Option<std::sync::Arc<dyn TargetConnection>>,
     handle: Option<TmuxClientHandle>,
     event_rx: Option<TmuxEventReceiver>,
     /// 命令发送 channel：execute 把 TmuxCommand 字符串塞进来，
@@ -726,6 +728,7 @@ impl TmuxRuntime {
                 event_buffer: 0,
                 ssh_alias: None,
             },
+            target_connection: None,
             handle: None,
             event_rx: None,
             cmd_tx: None,
@@ -801,6 +804,22 @@ impl TmuxRuntime {
             attach_followup_flushed: false,
             held_colour_reports: Vec::new(),
         }
+    }
+
+    /// Create a Runtime backed by the transport-owned target connection.
+    pub fn new_with_connection(
+        connection: std::sync::Arc<dyn TargetConnection>,
+        socket: Option<&str>,
+        session: Option<&str>,
+        create: bool,
+    ) -> Self {
+        let mut backend = match session.filter(|session| !session.is_empty()) {
+            Some(session) if create => Self::new_with_session_name(socket, session),
+            Some(session) => Self::new_with_attach(socket, session),
+            None => Self::new(socket),
+        };
+        backend.target_connection = Some(connection);
+        backend
     }
 
     /// 创建后端并指定 attach 模式（连接已有 tmux session）。
@@ -3707,9 +3726,15 @@ impl Runtime for TmuxRuntime {
             .push_back(StateChange::BackendStatusChanged(BackendStatus::Connecting));
 
         let config = self.config.clone();
-        let (handle, rx) = TmuxClient::spawn(config)
-            .await
-            .context("spawn tmux -CC 失败")?;
+        let (handle, rx) = if let Some(connection) = self.target_connection.clone() {
+            TmuxClient::spawn_channel(connection, config)
+                .await
+                .context("spawn tmux -CC through target channel 失败")?
+        } else {
+            TmuxClient::spawn(config)
+                .await
+                .context("spawn tmux -CC 失败")?
+        };
         self.traffic = handle.traffic.clone();
 
         // 命令发送 channel + 后台 sender task（持有 handle）。

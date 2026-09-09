@@ -24,10 +24,13 @@ use crate::types::PaneId;
 use anyhow::{anyhow, Context, Result};
 use std::collections::HashSet;
 use std::collections::VecDeque;
+use std::io::{self, Write};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use tokio::process::{Child, ChildStdout};
 use tokio::sync::mpsc;
+
+use crate::transport::{ByteChannel, ChannelRequest, TargetConnection};
 
 /// tmux reader → runtime 的事件发送端。
 ///
@@ -575,6 +578,9 @@ pub struct TmuxClient;
 pub struct TmuxClientHandle {
     /// pty 写端（pty 模式）。
     pty_writer: Option<PtyWriter>,
+    /// TargetConnection-backed channel, when the Runtime provider path is used.
+    channel: Option<Arc<Mutex<Box<dyn ByteChannel>>>>,
+    channel_stop: Option<Arc<std::sync::atomic::AtomicBool>>,
     /// 直 spawn 模式的 stdin。
     stdin: Option<tokio::process::ChildStdin>,
     /// 直 spawn 模式的子进程。
@@ -583,6 +589,24 @@ pub struct TmuxClientHandle {
     pty_child: Option<PtyChild>,
     /// SSH 读写字节计数（本地 pty 模式为 None）。
     pub traffic: Option<crate::transport::TrafficCounters>,
+}
+
+/// `PtyWriter` adapter for a transport-owned ByteChannel.
+struct ChannelWriter {
+    channel: Arc<Mutex<Box<dyn ByteChannel>>>,
+}
+
+impl Write for ChannelWriter {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        self.channel
+            .lock()
+            .map_err(|_| io::Error::other("channel lock poisoned"))?
+            .write(data)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 /// 事件：tmux → 客户端。
@@ -698,10 +722,89 @@ impl TmuxClient {
 
         let handle = TmuxClientHandle {
             pty_writer: Some(writer),
+            channel: None,
+            channel_stop: None,
             stdin: None,
             child: None,
             pty_child: None,
             traffic: Some(traffic),
+        };
+        Ok((handle, rx))
+    }
+
+    /// Spawn tmux through the Runtime-facing TargetConnection contract.
+    pub async fn spawn_channel(
+        connection: Arc<dyn TargetConnection>,
+        config: TmuxClientConfig,
+    ) -> Result<(TmuxClientHandle, TmuxEventReceiver)> {
+        let bin = config
+            .tmux_bin
+            .clone()
+            .unwrap_or_else(crate::executable::resolve_tmux_binary);
+        let mut argv = Vec::with_capacity(1 + config.extra_args.len() + 8);
+        argv.push(bin);
+        argv.extend(build_argv(&config));
+        let env = pty::client_terminal_env()
+            .into_iter()
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect();
+        let channel = connection
+            .open_channel(ChannelRequest::Exec {
+                argv,
+                cwd: None,
+                env,
+                pty: Some(crate::transport::PtySize::new(
+                    config.cols.unwrap_or(80) as u16,
+                    config.rows.unwrap_or(24) as u16,
+                )),
+            })
+            .context("open tmux Exec channel 失败")?;
+        let channel = Arc::new(Mutex::new(channel));
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (read_tx, read_rx) = mpsc::channel::<std::io::Result<Vec<u8>>>(4096);
+        let reader_channel = Arc::clone(&channel);
+        let reader_stop = Arc::clone(&stop);
+        std::thread::Builder::new()
+            .name("muxterm-target-tmux-read".into())
+            .spawn(move || loop {
+                if reader_stop.load(std::sync::atomic::Ordering::Relaxed) || read_tx.is_closed() {
+                    break;
+                }
+                let result = reader_channel
+                    .lock()
+                    .map_err(|_| std::io::Error::other("channel lock poisoned"))
+                    .and_then(|mut channel| channel.read());
+                match result {
+                    Ok(Some(data)) => {
+                        if read_tx.blocking_send(Ok(data)).is_err() {
+                            break;
+                        }
+                    }
+                    Ok(None) => std::thread::sleep(std::time::Duration::from_millis(10)),
+                    Err(error) => {
+                        let _ = read_tx.blocking_send(Err(error));
+                        break;
+                    }
+                }
+            })
+            .context("spawn tmux channel read thread")?;
+        let reader = PtyReader::from_channel(read_rx);
+        let (tx, rx) = event_channel();
+        let tx_clone = tx.clone();
+        tokio::spawn(async move {
+            read_pty_loop(reader, OutputBatcher::new(tx_clone)).await;
+        });
+        let writer = PtyWriter::new(Box::new(ChannelWriter {
+            channel: Arc::clone(&channel),
+        }));
+        let handle = TmuxClientHandle {
+            pty_writer: Some(writer),
+            channel: Some(channel),
+            channel_stop: Some(stop),
+            stdin: None,
+            child: None,
+            pty_child: None,
+            traffic: None,
         };
         Ok((handle, rx))
     }
@@ -731,6 +834,8 @@ impl TmuxClient {
 
         let handle = TmuxClientHandle {
             pty_writer: Some(writer),
+            channel: None,
+            channel_stop: None,
             stdin: None,
             child: None,
             pty_child: Some(pty_child),
@@ -781,6 +886,8 @@ impl TmuxClient {
 
         let handle = TmuxClientHandle {
             pty_writer: None,
+            channel: None,
+            channel_stop: None,
             stdin: Some(stdin),
             child: Some(child),
             pty_child: None,
@@ -921,6 +1028,14 @@ impl TmuxClientHandle {
     /// 不先 `detach`：pty 写可能阻塞，导致 sender task / `shutdown` 永远等不到。
     pub async fn kill(&mut self) -> Result<()> {
         self.close_writer();
+        if let Some(stop) = self.channel_stop.take() {
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        if let Some(channel) = self.channel.take() {
+            if let Ok(mut channel) = channel.lock() {
+                let _ = channel.shutdown();
+            }
+        }
         if let Some(mut child) = self.child.take() {
             let _ = child.kill().await;
             let _ = child.wait().await;
@@ -934,6 +1049,14 @@ impl TmuxClientHandle {
     /// 等待子进程退出，返回退出码。
     pub async fn wait(mut self) -> Result<Option<i32>> {
         self.close_writer();
+        if let Some(stop) = self.channel_stop.take() {
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        if let Some(channel) = self.channel.take() {
+            if let Ok(mut channel) = channel.lock() {
+                let _ = channel.shutdown();
+            }
+        }
         if let Some(mut child) = self.child {
             let status = child.wait().await.context("等待 tmux 退出失败")?;
             Ok(status.code())
@@ -1389,6 +1512,109 @@ mod tests {
             .iter()
             .any(|m| matches!(m, Message::ResponseBoundary(_))));
         assert!(lines.contains(&"cmd: 1 windows (created ...)".to_string()));
+    }
+
+    struct RecordingChannel {
+        writes: Arc<Mutex<Vec<u8>>>,
+        shutdowns: Arc<AtomicU64>,
+    }
+
+    impl ByteChannel for RecordingChannel {
+        fn read(&mut self) -> std::io::Result<Option<Vec<u8>>> {
+            Ok(None)
+        }
+
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            self.writes.lock().unwrap().extend_from_slice(data);
+            Ok(data.len())
+        }
+
+        fn resize(&mut self, _cols: u16, _rows: u16) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn shutdown(&mut self) -> anyhow::Result<()> {
+            self.shutdowns.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    struct RecordingConnection {
+        request: Arc<Mutex<Option<ChannelRequest>>>,
+        writes: Arc<Mutex<Vec<u8>>>,
+        shutdowns: Arc<AtomicU64>,
+    }
+
+    impl TargetConnection for RecordingConnection {
+        fn transport_id(&self) -> &str {
+            "test"
+        }
+
+        fn target(&self) -> &str {
+            "recording"
+        }
+
+        fn open_channel(&self, request: ChannelRequest) -> anyhow::Result<Box<dyn ByteChannel>> {
+            *self.request.lock().unwrap() = Some(request);
+            Ok(Box::new(RecordingChannel {
+                writes: Arc::clone(&self.writes),
+                shutdowns: Arc::clone(&self.shutdowns),
+            }))
+        }
+
+        fn probe(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn spawn_channel_uses_target_connection_for_io_and_shutdown() {
+        let request = Arc::new(Mutex::new(None));
+        let writes = Arc::new(Mutex::new(Vec::new()));
+        let shutdowns = Arc::new(AtomicU64::new(0));
+        let connection = Arc::new(RecordingConnection {
+            request: Arc::clone(&request),
+            writes: Arc::clone(&writes),
+            shutdowns: Arc::clone(&shutdowns),
+        });
+        let config = TmuxClientConfig {
+            mode: Some(ConnectMode::NewSession {
+                name: Some("recording".into()),
+                start_directory: None,
+            }),
+            extra_args: vec!["-L".into(), "muxterm-test-recording".into()],
+            cols: Some(100),
+            rows: Some(40),
+            ..TmuxClientConfig::default()
+        };
+
+        let (mut handle, _events) = TmuxClient::spawn_channel(connection, config)
+            .await
+            .expect("spawn through target connection");
+        handle
+            .send_raw("list-sessions\n")
+            .await
+            .expect("write through target channel");
+
+        let request = request.lock().unwrap().clone().expect("Exec request");
+        let ChannelRequest::Exec {
+            argv,
+            cwd,
+            env,
+            pty,
+        } = request
+        else {
+            panic!("tmux must use an Exec channel");
+        };
+        assert_eq!(argv[0], "tmux");
+        assert!(argv.contains(&"-CC".to_string()));
+        assert_eq!(cwd, None);
+        assert_eq!(env.len(), 5);
+        assert_eq!(pty, Some(crate::transport::PtySize::new(100, 40)));
+        assert_eq!(&*writes.lock().unwrap(), b"list-sessions\n");
+
+        handle.kill().await.expect("shutdown target channel");
+        assert_eq!(shutdowns.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test]
