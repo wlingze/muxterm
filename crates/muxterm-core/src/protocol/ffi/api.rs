@@ -12,7 +12,6 @@ use crate::attention::clock::RealClock;
 use crate::attention::engine::AttentionEngine;
 use crate::attention::signal::AttentionSignal;
 use crate::config_service::SettingsService;
-use crate::logging::{init_logging, LoggingConfig};
 use crate::projects::{ProjectStore, ProjectsService};
 use crate::protocol::layout::{LayoutNode, SplitDir};
 use crate::protocol::state::StateChange;
@@ -46,7 +45,8 @@ pub(crate) use super::functions::events::state_change_to_c;
 pub use super::functions::events::{muxterm_poll_events, muxterm_poll_workspace_events};
 pub(crate) use super::functions::handle::configured_scrollback_lines;
 pub use super::functions::handle::{
-    muxterm_catalog_new, muxterm_free, muxterm_new, muxterm_new_connect, muxterm_new_connect_sized,
+    muxterm_catalog_new, muxterm_free, muxterm_free_string, muxterm_init_logging, muxterm_new,
+    muxterm_new_connect, muxterm_new_connect_sized,
 };
 pub use super::functions::runtime::{
     muxterm_connect, muxterm_detach, muxterm_runtime_list_json, muxterm_shutdown,
@@ -109,35 +109,6 @@ use super::types::{
 };
 
 pub(crate) use crate::muxterm::should_export_state_change;
-
-/// 初始化核心日志（macOS .app 由 Swift 在创建 CoreBridge 前调用）。
-///
-/// `level` 取 `trace` / `debug` / `info` / `warn` / `error`；`log_file` 为
-/// `NULL` 时写 stderr。重复调用（AlreadyInitialized）视为成功，不会 panic。
-/// 返回 0=ok，-1=err。
-#[no_mangle]
-pub extern "C" fn muxterm_init_logging(log_file: *const c_char, level: *const c_char) -> i32 {
-    catch_unwind(AssertUnwindSafe(|| {
-        let level = cstr_opt(level).unwrap_or_else(|| "info".into());
-        let file = cstr_opt(log_file).map(std::path::PathBuf::from);
-        match init_logging(LoggingConfig { level, file }) {
-            Ok(()) => 0,
-            Err(_) => -1,
-        }
-    }))
-    .unwrap_or(-1)
-}
-
-/// 释放 discovery API 返回的 JSON 字符串。
-///
-/// # Safety
-/// `value` 必须是本库返回且尚未释放的指针。
-#[no_mangle]
-pub unsafe extern "C" fn muxterm_free_string(value: *mut c_char) {
-    if !value.is_null() {
-        drop(CString::from_raw(value));
-    }
-}
 
 #[cfg(test)]
 mod tests {
