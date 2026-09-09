@@ -8,6 +8,7 @@ publish = false
 anyhow = "1"
 async-trait = "0.1"
 muxterm-protocol = { path = "../muxterm-protocol" }
+muxterm-transport = { path = "../muxterm-transport" }
 serde = { version = "1", features = ["derive"] }
 thiserror = "1"
 tracing = "0.1"

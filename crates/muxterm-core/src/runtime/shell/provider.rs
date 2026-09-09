@@ -9,7 +9,7 @@ use crate::runtime::provider::RuntimeProvider;
 use crate::runtime::shell::ShellRuntime;
 use crate::runtime::{Runtime, RuntimeCapability};
 use crate::transport::TargetConnection;
-use crate::workspace::spec::WorkspaceSpec;
+use muxterm_runtime::RuntimeSpec;
 
 /// shell 插件：transport 差异在 Runtime 构造时归一化。
 pub struct ShellDriver;
@@ -38,7 +38,7 @@ impl RuntimeProvider for ShellDriver {
     fn new_instance(
         &self,
         connect: Arc<dyn TargetConnection>,
-        spec: &WorkspaceSpec,
+        spec: &RuntimeSpec,
     ) -> Result<Box<dyn Runtime>> {
         match spec.transport.as_str() {
             "local" => Ok(Box::new(ShellRuntime::new("$SHELL", &spec.path))),
