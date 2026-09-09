@@ -4,8 +4,8 @@ use std::ffi::{c_char, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 
-use crate::attention::clock::RealClock;
-use crate::attention::engine::AttentionEngine;
+use crate::activity::attention::clock::RealClock;
+use crate::activity::attention::engine::AttentionEngine;
 use crate::config::SettingsService;
 use crate::logging::{init_logging, LoggingConfig};
 use crate::projects::{ProjectStore, ProjectsService};

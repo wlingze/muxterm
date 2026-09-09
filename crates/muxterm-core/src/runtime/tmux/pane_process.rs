@@ -51,7 +51,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::attention::engine::known_agent_process_name;
+    use crate::activity::attention::engine::known_agent_process_name;
 
     #[test]
     fn captured_wrapped_codex_uses_full_foreground_argv() {

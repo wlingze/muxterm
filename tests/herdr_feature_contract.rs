@@ -6,8 +6,8 @@ mod support;
 use std::sync::Arc;
 use std::time::Instant;
 
-use muxterm::test_support::core::attention::signal::AttentionSignal;
-use muxterm::test_support::core::attention::state::PaneStatus;
+use muxterm::test_support::core::activity::attention::signal::AttentionSignal;
+use muxterm::test_support::core::activity::attention::state::PaneStatus;
 use muxterm::test_support::core::protocol::layout::{LayoutNode, SplitDir};
 use muxterm::test_support::core::protocol::state::{
     PaneAgentSessionKind, PaneAgentStatus, StateChange,

@@ -10,8 +10,8 @@ mod support;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use muxterm::test_support::core::attention::signal::AttentionSignal;
-use muxterm::test_support::core::attention::state::PaneStatus;
+use muxterm::test_support::core::activity::attention::signal::AttentionSignal;
+use muxterm::test_support::core::activity::attention::state::PaneStatus;
 use muxterm::test_support::core::catalog::Catalog;
 use muxterm::test_support::core::discovery::existing::{
     discover_local_herdr, discover_ssh_herdr, discover_ssh_tmux,

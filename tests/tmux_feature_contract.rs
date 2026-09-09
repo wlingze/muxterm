@@ -6,7 +6,7 @@ mod support;
 
 use std::time::{Duration, Instant};
 
-use muxterm::test_support::core::attention::signal::AttentionSignal;
+use muxterm::test_support::core::activity::attention::signal::AttentionSignal;
 use muxterm::test_support::core::runtime::TmuxRuntime;
 use muxterm::test_support::core::types::PaneId;
 use muxterm::test_support::core::workspace::id::WorkspaceId;
