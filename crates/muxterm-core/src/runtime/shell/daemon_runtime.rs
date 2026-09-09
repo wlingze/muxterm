@@ -21,7 +21,7 @@ use crate::protocol::state::{
 use crate::protocol::task::{Task, TaskOutcome};
 use crate::protocol::terminal::input::encode;
 use crate::runtime::shell::daemon_client::send_command;
-use crate::runtime::{Runtime, RuntimeCapability};
+use crate::runtime::{Runtime, RuntimeBatch, RuntimeCapability};
 use muxterm_protocol::command::CliCommand;
 use muxterm_protocol::daemon::{OutputFormat, TopologySnapshot};
 use muxterm_protocol::{PaneId, TabId};
@@ -38,7 +38,7 @@ pub struct DaemonRuntime {
     status: BackendStatus,
     active_tab: Option<TabId>,
     active_pane: Option<PaneId>,
-    events: VecDeque<StateChange>,
+    events: VecDeque<RuntimeBatch>,
 }
 
 impl DaemonRuntime {
@@ -57,6 +57,10 @@ impl DaemonRuntime {
             active_pane: None,
             events: VecDeque::new(),
         }
+    }
+
+    fn push_event(&mut self, event: StateChange) {
+        self.events.push_back(RuntimeBatch::from(event));
     }
 
     fn poll_from_daemon(&mut self) -> Result<()> {
@@ -148,7 +152,7 @@ impl DaemonRuntime {
             }
             self.apply_render_cache(&value);
             if let Some(event) = self.decode_wire_event(&value) {
-                self.events.push_back(event);
+                self.push_event(event);
             } else {
                 tracing::debug!(
                     target = "muxterm::daemon",
@@ -508,8 +512,7 @@ impl Runtime for DaemonRuntime {
         }
         self.poll_from_daemon()?;
         self.status = BackendStatus::Connected;
-        self.events
-            .push_back(StateChange::BackendStatusChanged(BackendStatus::Connected));
+        self.push_event(StateChange::BackendStatusChanged(BackendStatus::Connected));
         Ok(())
     }
 
@@ -517,7 +520,7 @@ impl Runtime for DaemonRuntime {
         if matches!(task, Task::Detach) {
             // detach：不向 daemon 发 KillSession
             self.status = BackendStatus::Disconnected;
-            self.events.push_back(StateChange::BackendStatusChanged(
+            self.push_event(StateChange::BackendStatusChanged(
                 BackendStatus::Disconnected,
             ));
             return Ok(TaskOutcome::Done);
@@ -530,20 +533,28 @@ impl Runtime for DaemonRuntime {
         tracing::debug!(target = "muxterm::daemon", task = ?task, cli = ?cmd, "daemon execute");
         self.send_cli(cmd)?;
         if matches!(task, Task::Shutdown) {
-            self.events.push_back(StateChange::BackendStatusChanged(
+            self.push_event(StateChange::BackendStatusChanged(
                 BackendStatus::Disconnected,
             ));
         }
         Ok(TaskOutcome::Done)
     }
 
-    fn take_events(&mut self) -> Vec<StateChange> {
+    fn drain_events(&mut self, out: &mut RuntimeBatch) {
         // 每次拉取前只消费事件流；拓扑 baseline 由 daemon 作为 control
         // event 提供，render bytes 不通过累计状态查询回读。
         if self.status == BackendStatus::Connected {
             let _ = self.poll_from_daemon();
         }
-        self.events.drain(..).collect()
+        for batch in self.events.drain(..) {
+            out.append(batch);
+        }
+    }
+
+    fn take_events(&mut self) -> Vec<StateChange> {
+        let mut batch = RuntimeBatch::default();
+        self.drain_events(&mut batch);
+        batch.into_state_changes()
     }
 
     async fn shutdown(&mut self) -> muxterm_runtime::RuntimeResult<()> {
@@ -635,12 +646,13 @@ mod tests {
             Some(b"cumulative".as_slice())
         );
         assert_eq!(runtime.events.len(), 1);
+        let events = runtime.events.front().unwrap().clone().into_state_changes();
         assert!(matches!(
-            runtime.events.front(),
-            Some(StateChange::PaneOutput {
+            events.as_slice(),
+            [StateChange::PaneOutput {
                 pane: PaneId(7),
                 ..
-            })
+            }]
         ));
     }
 
@@ -688,23 +700,29 @@ mod tests {
             }),
         ]);
 
-        let events: Vec<_> = runtime.events.drain(..).collect();
+        let mut batch = RuntimeBatch::default();
+        for event in runtime.events.drain(..) {
+            batch.append(event);
+        }
+        let events = batch.into_state_changes();
         assert!(matches!(
             &events[0],
-            StateChange::PaneOutput { pane: PaneId(7), data }
-                if data == &[0, 255, 27]
-        ));
-        assert!(matches!(
-            events[1],
             StateChange::PaneResized {
                 pane: PaneId(7),
                 cols: 120,
                 rows: 40,
             }
         ));
+        assert!(matches!(
+            events[1],
+            StateChange::BackendStatusChanged(BackendStatus::Connected)
+        ));
         assert_eq!(
             events[2],
-            StateChange::BackendStatusChanged(BackendStatus::Connected)
+            StateChange::PaneOutput {
+                pane: PaneId(7),
+                data: vec![0, 255, 27],
+            }
         );
     }
 
@@ -728,21 +746,25 @@ mod tests {
             serde_json::json!({"kind": "future_event"}),
         ]);
 
-        let events: Vec<_> = runtime.events.drain(..).collect();
+        let mut batch = RuntimeBatch::default();
+        for event in runtime.events.drain(..) {
+            batch.append(event);
+        }
+        let events = batch.into_state_changes();
         assert!(matches!(
             events[0],
-            StateChange::PaneAgentChanged {
-                pane: PaneId(3),
-                agent: None,
-                initial: true,
-            }
-        ));
-        assert!(matches!(
-            events[1],
             StateChange::MutationSettled {
                 operation_id: 42,
                 kind: crate::protocol::state::MutationKind::NewTab,
                 result: crate::protocol::state::MutationResult::Completed,
+            }
+        ));
+        assert!(matches!(
+            events[1],
+            StateChange::PaneAgentChanged {
+                pane: PaneId(3),
+                agent: None,
+                initial: true,
             }
         ));
         assert_eq!(events.len(), 2);
