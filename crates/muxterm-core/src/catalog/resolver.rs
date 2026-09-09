@@ -40,13 +40,119 @@ fn default_activate() -> bool {
 }
 
 /// 解析失败阶段（用户通知显示阶段 + 身份摘要）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResolveErrorStage {
     Discovery,
     IdentityResolution,
     WorkspaceCreate,
     SocketForward,
     RuntimeConnect,
+}
+
+/// Structured failures produced while resolving or constructing a product
+/// workspace. FFI converts this domain error into an error envelope; callers
+/// must not infer a local fallback from its display text.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ResolveError {
+    #[error("unknown runtime '{id}' 未注册")]
+    UnknownRuntime { id: String },
+    #[error("unknown transport '{id}' 未注册")]
+    UnknownTransport { id: String },
+    #[error(
+        "runtime '{runtime_id}' requires channels {required:?}, but transport '{transport_id}' supports {supported:?}"
+    )]
+    IncompatibleChannels {
+        runtime_id: String,
+        transport_id: String,
+        required: Vec<crate::transport::ChannelKind>,
+        supported: Vec<crate::transport::ChannelKind>,
+    },
+    #[error("target connection failed (transport={transport_id}, target={target}): {message}")]
+    TargetConnection {
+        transport_id: String,
+        target: String,
+        message: String,
+    },
+    #[error(
+        "runtime discovery failed (runtime={runtime_id}, transport={transport_id}, target={target}): {message}"
+    )]
+    Discovery {
+        runtime_id: String,
+        transport_id: String,
+        target: String,
+        message: String,
+    },
+    #[error(
+        "runtime open failed (runtime={runtime_id}, transport={transport_id}, target={target}): {message}"
+    )]
+    RuntimeOpen {
+        runtime_id: String,
+        transport_id: String,
+        target: String,
+        message: String,
+    },
+    #[error("project 不存在: {id}")]
+    ProjectNotFound { id: String },
+    #[error("worktree 不存在: project={project_id}, worktree={worktree_id}")]
+    WorktreeNotFound {
+        project_id: String,
+        worktree_id: String,
+    },
+    #[error("existing candidate identity 不存在: {key}")]
+    ExistingCandidateNotFound { key: String },
+    #[error("recent candidate 不存在: {key}")]
+    RecentNotFound { key: String },
+    #[error("没有匹配的 Runtime workspace（identity={identity}, intent={intent}）")]
+    NoMatch { identity: String, intent: String },
+    #[error("不能创建 Runtime workspace（identity={identity}）：{reason}")]
+    CreateNotAllowed { identity: String, reason: String },
+    #[error("同名候选 ambiguity（identity={identity}）：{candidates:?}")]
+    AmbiguousCandidate {
+        identity: String,
+        candidates: Vec<String>,
+    },
+    #[error("workspace identity 不完整（identity={identity}）：{reason}")]
+    InvalidIdentity { identity: String, reason: String },
+}
+
+impl ResolveError {
+    pub fn stage(&self) -> ResolveErrorStage {
+        match self {
+            Self::Discovery { .. } => ResolveErrorStage::Discovery,
+            Self::UnknownRuntime { .. }
+            | Self::UnknownTransport { .. }
+            | Self::IncompatibleChannels { .. }
+            | Self::TargetConnection { .. }
+            | Self::ProjectNotFound { .. }
+            | Self::WorktreeNotFound { .. }
+            | Self::ExistingCandidateNotFound { .. }
+            | Self::RecentNotFound { .. }
+            | Self::NoMatch { .. }
+            | Self::CreateNotAllowed { .. }
+            | Self::AmbiguousCandidate { .. }
+            | Self::InvalidIdentity { .. } => ResolveErrorStage::IdentityResolution,
+            Self::RuntimeOpen { .. } => ResolveErrorStage::RuntimeConnect,
+        }
+    }
+
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::UnknownRuntime { .. } => "unknown_runtime",
+            Self::UnknownTransport { .. } => "unknown_transport",
+            Self::IncompatibleChannels { .. } => "incompatible_channels",
+            Self::TargetConnection { .. } => "target_connection",
+            Self::Discovery { .. } => "discovery",
+            Self::RuntimeOpen { .. } => "runtime_open",
+            Self::ProjectNotFound { .. } => "project_not_found",
+            Self::WorktreeNotFound { .. } => "worktree_not_found",
+            Self::ExistingCandidateNotFound { .. } => "existing_candidate_not_found",
+            Self::RecentNotFound { .. } => "recent_not_found",
+            Self::NoMatch { .. } => "no_match",
+            Self::CreateNotAllowed { .. } => "create_not_allowed",
+            Self::AmbiguousCandidate { .. } => "ambiguous_candidate",
+            Self::InvalidIdentity { .. } => "invalid_identity",
+        }
+    }
 }
 
 impl std::fmt::Display for ResolveErrorStage {

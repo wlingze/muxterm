@@ -106,7 +106,17 @@ impl Muxterm {
             .and_then(|name| catalog.template_registry().get(name))
             .cloned();
         let runtime = catalog.new_runtime_with_connections(connections, spec)?;
-        let workspace = pool.open_spec_with_runtime(spec, runtime).await?;
+        let workspace = pool
+            .open_spec_with_runtime(spec, runtime)
+            .await
+            .map_err(|error| {
+                anyhow::Error::new(crate::catalog::ResolveError::RuntimeOpen {
+                    runtime_id: spec.runtime.clone(),
+                    transport_id: spec.transport.clone(),
+                    target: spec.alias.clone().unwrap_or_default(),
+                    message: format!("{error:#}"),
+                })
+            })?;
         if should_apply_template {
             if let Some(template) = template {
                 workspace.start_template(template)?;
@@ -158,7 +168,7 @@ impl Muxterm {
     pub(crate) fn resolve_open_request(
         &mut self,
         request: &OpenRequest,
-    ) -> anyhow::Result<ResolvedTarget> {
+    ) -> Result<ResolvedTarget, crate::catalog::ResolveError> {
         let recent: Vec<ResolvedTarget> = self
             .pool
             .list()

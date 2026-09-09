@@ -34,7 +34,9 @@ pub use connect::Connect;
 pub use driver::SessionCandidate;
 #[allow(unused_imports)] // 给 FFI / 测试用的公开类型
 pub use inventory::{Inventory, InventorySnapshot, Reach};
-pub use resolver::{config_to_spec, OpenRequest, ResolveIntent, ResolvedTarget};
+pub use resolver::{
+    config_to_spec, OpenRequest, ResolveError, ResolveErrorStage, ResolveIntent, ResolvedTarget,
+};
 pub use transport::{TargetInfo, TransportInfo, TransportProvider};
 
 type DiscoveryJob = (String, Option<Arc<dyn TargetConnection>>, Vec<ChannelKind>);
@@ -282,12 +284,12 @@ impl Catalog {
     ///
     /// 未知 runtime / 不接受的 transport → Err。禁止悄悄变成 Shell。
     pub fn new_runtime(&mut self, spec: &WorkspaceSpec) -> anyhow::Result<Box<dyn Runtime>> {
-        Self::build_runtime(
+        Ok(Self::build_runtime(
             &self.runtimes,
             &self.transports,
             &mut self.connections,
             spec,
-        )
+        )?)
     }
 
     /// Construct a Runtime using a ConnectionRegistry owned by the product
@@ -298,7 +300,12 @@ impl Catalog {
         connections: &mut ConnectionRegistry,
         spec: &WorkspaceSpec,
     ) -> anyhow::Result<Box<dyn Runtime>> {
-        Self::build_runtime(&self.runtimes, &self.transports, connections, spec)
+        Ok(Self::build_runtime(
+            &self.runtimes,
+            &self.transports,
+            connections,
+            spec,
+        )?)
     }
 
     fn build_runtime(
@@ -306,52 +313,52 @@ impl Catalog {
         transports: &[Box<dyn TransportProvider>],
         connections: &mut ConnectionRegistry,
         spec: &WorkspaceSpec,
-    ) -> anyhow::Result<Box<dyn Runtime>> {
+    ) -> Result<Box<dyn Runtime>, resolver::ResolveError> {
         let runtime_id = spec.runtime.as_str();
         let transport_id = spec.transport.as_str();
-        let requirements = {
-            let driver = runtimes
-                .iter()
-                .find(|driver| driver.id() == runtime_id)
-                .ok_or_else(|| anyhow::anyhow!("unknown runtime '{runtime_id}'"))?;
-            driver.channel_requirements()
-        };
-        let compatible = {
-            let transport = transports
-                .iter()
-                .find(|transport| transport.id() == transport_id)
-                .ok_or_else(|| anyhow::anyhow!("unknown transport '{transport_id}'"))?;
-            runtime_supports_channels(
-                runtimes
-                    .iter()
-                    .find(|driver| driver.id() == runtime_id)
-                    .expect("刚查过的 RuntimeProvider 必须仍在")
-                    .as_ref(),
-                transport.supported_channels(),
-            )
-        };
-        if !compatible {
-            return Err(anyhow::anyhow!(
-                "runtime '{runtime_id}' requires channels {requirements:?}, but transport '{transport_id}' supports a different set"
-            ));
+        let driver = runtimes
+            .iter()
+            .find(|driver| driver.id() == runtime_id)
+            .ok_or_else(|| resolver::ResolveError::UnknownRuntime {
+                id: runtime_id.to_string(),
+            })?;
+        let transport = transports
+            .iter()
+            .find(|transport| transport.id() == transport_id)
+            .ok_or_else(|| resolver::ResolveError::UnknownTransport {
+                id: transport_id.to_string(),
+            })?;
+        let requirements = driver.channel_requirements().to_vec();
+        let supported = transport.supported_channels().to_vec();
+        if !runtime_supports_channels(driver.as_ref(), &supported) {
+            return Err(resolver::ResolveError::IncompatibleChannels {
+                runtime_id: runtime_id.to_string(),
+                transport_id: transport_id.to_string(),
+                required: requirements,
+                supported,
+            });
         }
         let target = spec.alias.as_deref().unwrap_or("");
         let connect = if let Some(existing) = connections.get(transport_id, target) {
             existing
         } else {
-            let transport = transports
-                .iter()
-                .find(|transport| transport.id() == transport_id)
-                .expect("刚查过的 TransportProvider 必须仍在");
-            let connected = transport.connect(target)?;
-            connections.acquire(transport_id, target, || Ok(connected.clone()))?
+            connections
+                .acquire(transport_id, target, || transport.connect(target))
+                .map_err(|error| resolver::ResolveError::TargetConnection {
+                    transport_id: transport_id.to_string(),
+                    target: target.to_string(),
+                    message: format!("{error:#}"),
+                })?
         };
         let runtime_spec = spec.runtime_spec();
-        let runtime = runtimes
-            .iter()
-            .find(|driver| driver.id() == runtime_id)
-            .expect("刚查过的 Driver 必须仍在")
-            .new_instance(Arc::clone(&connect), &runtime_spec)?;
+        let runtime = driver
+            .new_instance(Arc::clone(&connect), &runtime_spec)
+            .map_err(|error| resolver::ResolveError::RuntimeOpen {
+                runtime_id: runtime_id.to_string(),
+                transport_id: transport_id.to_string(),
+                target: target.to_string(),
+                message: format!("{error:#}"),
+            })?;
         Ok(runtime)
     }
 
@@ -365,7 +372,11 @@ impl Catalog {
             .and_then(|name| self.templates.get(name))
             .cloned();
         let runtime = self.new_runtime(spec)?;
-        let workspace = self.pool.open_spec_with_runtime(spec, runtime).await?;
+        let workspace = self
+            .pool
+            .open_spec_with_runtime(spec, runtime)
+            .await
+            .map_err(|error| runtime_open_error(spec, error))?;
         if should_apply_template {
             if let Some(template) = template {
                 workspace.start_template(template)?;
@@ -515,7 +526,7 @@ impl Catalog {
         &mut self,
         config: &crate::quickconnect::model::TargetConfig,
         intent: ResolveIntent,
-    ) -> anyhow::Result<ResolvedTarget> {
+    ) -> Result<ResolvedTarget, resolver::ResolveError> {
         use crate::quickconnect::model::{TargetRuntime, TargetTransport};
 
         let identity = config.identity_key();
@@ -531,12 +542,35 @@ impl Catalog {
                     TargetTransport::Ssh { name } => name.as_str(),
                     TargetTransport::Local => "",
                 };
-                let connect = self.connect(transport, target)?;
+                if self.transport(transport).is_none() {
+                    return Err(resolver::ResolveError::UnknownTransport {
+                        id: transport.to_string(),
+                    });
+                }
+                if self.runtime("herdr").is_none() {
+                    return Err(resolver::ResolveError::UnknownRuntime {
+                        id: "herdr".to_string(),
+                    });
+                }
+                let connect = self.connect(transport, target).map_err(|error| {
+                    resolver::ResolveError::TargetConnection {
+                        transport_id: transport.to_string(),
+                        target: target.to_string(),
+                        message: format!("{error:#}"),
+                    }
+                })?;
                 let driver = self
                     .runtime("herdr")
-                    .ok_or_else(|| anyhow::anyhow!("herdr runtime 未注册"))?;
+                    .expect("刚检查过的 Herdr RuntimeProvider 必须仍在");
                 let namespace = config.session.clone();
-                let candidates = driver.discover(connect.as_ref(), namespace.as_deref())?;
+                let candidates = driver
+                    .discover(connect.as_ref(), namespace.as_deref())
+                    .map_err(|error| resolver::ResolveError::Discovery {
+                        runtime_id: "herdr".to_string(),
+                        transport_id: transport.to_string(),
+                        target: target.to_string(),
+                        message: format!("{error:#}"),
+                    })?;
 
                 // exact identity：workspace_id 精确命中。
                 if let Some(wid) = &config.workspace_id {
@@ -554,43 +588,47 @@ impl Catalog {
                     .collect();
                 match named.as_slice() {
                     [] => match intent {
-                        ResolveIntent::AttachOnly => Err(anyhow::anyhow!(
-                            "AttachOnly 无匹配不创建（identity={identity}）"
-                        )),
+                        ResolveIntent::AttachOnly => Err(resolver::ResolveError::NoMatch {
+                            identity,
+                            intent: format!("{intent:?}"),
+                        }),
                         ResolveIntent::CreateIfMissing => {
                             if transport == "ssh" {
-                                Err(anyhow::anyhow!(
-                                    "CreateIfMissing 禁止 SSH 启动创建命令（identity={identity}）"
-                                ))
+                                Err(resolver::ResolveError::CreateNotAllowed {
+                                    identity,
+                                    reason: "SSH target 不允许启动 workspace.create".to_string(),
+                                })
                             } else {
                                 // 只允许显式 named session/socket 且该 session
                                 // 已运行；未明确或不可达返回 choice-required，
                                 // 禁止偷偷换 default 或启动 server。
                                 let Some(session_name) = config.session.clone() else {
-                                    return Err(anyhow::anyhow!(
-                                        "CreateIfMissing 需要显式 named session（identity={identity}）"
-                                    ));
+                                    return Err(resolver::ResolveError::CreateNotAllowed {
+                                        identity,
+                                        reason: "需要显式 named session".to_string(),
+                                    });
                                 };
                                 let Some(socket) = config.socket.clone() else {
-                                    return Err(anyhow::anyhow!(
-                                        "CreateIfMissing 需要显式 socket 路径（identity={identity}）"
-                                    ));
+                                    return Err(resolver::ResolveError::CreateNotAllowed {
+                                        identity,
+                                        reason: "需要显式 socket 路径".to_string(),
+                                    });
                                 };
                                 let herdr = crate::runtime::herdr::session::HerdrSession::new(
                                     &session_name,
                                     &socket,
                                 );
                                 if herdr.ping().is_err() {
-                                    return Err(anyhow::anyhow!(
-                                        "CreateIfMissing 目标 named session 未运行（identity={identity}）"
-                                    ));
+                                    return Err(resolver::ResolveError::CreateNotAllowed {
+                                        identity,
+                                        reason: "目标 named session 未运行".to_string(),
+                                    });
                                 }
                                 let created = herdr
                                     .workspace_create(&config.path, &config.name)
-                                    .map_err(|e| {
-                                        anyhow::anyhow!(
-                                            "CreateIfMissing workspace.create 失败（identity={identity}）: {e:#}"
-                                        )
+                                    .map_err(|error| resolver::ResolveError::CreateNotAllowed {
+                                        identity: identity.clone(),
+                                        reason: format!("workspace.create 失败: {error:#}"),
                                     })?;
                                 let mut canonical = config.clone();
                                 canonical.workspace_id = Some(created.workspace_id);
@@ -600,13 +638,13 @@ impl Catalog {
                         }
                     },
                     [one] => Ok(self.resolved_from_candidate(config, one)),
-                    many => Err(anyhow::anyhow!(
-                        "同名候选 ambiguity（identity={identity}）：{}；请按 id 选择",
-                        many.iter()
-                            .map(|c| c.extra.clone())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    )),
+                    many => Err(resolver::ResolveError::AmbiguousCandidate {
+                        identity,
+                        candidates: many
+                            .iter()
+                            .map(|candidate| candidate.extra.clone())
+                            .collect(),
+                    }),
                 }
             }
             _ => {
@@ -628,7 +666,7 @@ impl Catalog {
         &mut self,
         request: &OpenRequest,
         projects: &[Project],
-    ) -> anyhow::Result<ResolvedTarget> {
+    ) -> Result<ResolvedTarget, resolver::ResolveError> {
         let recent: Vec<ResolvedTarget> = self
             .pool
             .list()
@@ -648,13 +686,15 @@ impl Catalog {
         request: &OpenRequest,
         projects: &[Project],
         recent: &[ResolvedTarget],
-    ) -> anyhow::Result<ResolvedTarget> {
+    ) -> Result<ResolvedTarget, resolver::ResolveError> {
         match &request.candidate {
             CandidateRef::Project { project_id } => {
                 let project = projects
                     .iter()
                     .find(|project| project.id.as_str() == project_id)
-                    .ok_or_else(|| anyhow::anyhow!("project 不存在: {project_id}"))?;
+                    .ok_or_else(|| resolver::ResolveError::ProjectNotFound {
+                        id: project_id.clone(),
+                    })?;
                 let mut resolved = self.resolve_target(&project.target, request.intent)?;
                 resolved.spec.provenance = Some(project.provenance());
                 resolved.spec.template = request
@@ -671,12 +711,17 @@ impl Catalog {
                 let project = projects
                     .iter()
                     .find(|project| project.id.as_str() == project_id)
-                    .ok_or_else(|| anyhow::anyhow!("project 不存在: {project_id}"))?;
+                    .ok_or_else(|| resolver::ResolveError::ProjectNotFound {
+                        id: project_id.clone(),
+                    })?;
                 let worktree = project
                     .worktrees
                     .iter()
                     .find(|worktree| worktree.id.as_str() == worktree_id)
-                    .ok_or_else(|| anyhow::anyhow!("worktree 不存在: {worktree_id}"))?;
+                    .ok_or_else(|| resolver::ResolveError::WorktreeNotFound {
+                        project_id: project_id.clone(),
+                        worktree_id: worktree_id.clone(),
+                    })?;
 
                 let mut target = project.target.clone();
                 target.name = if worktree.branch.trim().is_empty() {
@@ -714,7 +759,7 @@ impl Catalog {
                     .iter()
                     .find(|resolved| resolved.canonical.identity_key() == *key)
                     .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("recent candidate 不存在: {key}"))?;
+                    .ok_or_else(|| resolver::ResolveError::RecentNotFound { key: key.clone() })?;
                 resolved.spec.template = request.template.clone().or(resolved.spec.template);
                 resolved.spec.create = false;
                 Ok(resolved)
@@ -852,20 +897,48 @@ impl Catalog {
     fn resolve_existing_candidate(
         &mut self,
         identity: &ExistingCandidateRef,
-    ) -> anyhow::Result<ResolvedTarget> {
+    ) -> Result<ResolvedTarget, resolver::ResolveError> {
         let connect_target = existing_connect_target(identity);
-        let connect = self.connect(&identity.transport_id, connect_target)?;
+        if self.transport(&identity.transport_id).is_none() {
+            return Err(resolver::ResolveError::UnknownTransport {
+                id: identity.transport_id.clone(),
+            });
+        }
+        if self.runtime(&identity.runtime_id).is_none() {
+            return Err(resolver::ResolveError::UnknownRuntime {
+                id: identity.runtime_id.clone(),
+            });
+        }
+        let connect = self
+            .connect(&identity.transport_id, connect_target)
+            .map_err(|error| resolver::ResolveError::TargetConnection {
+                transport_id: identity.transport_id.clone(),
+                target: connect_target.to_string(),
+                message: format!("{error:#}"),
+            })?;
         let driver = self
             .runtime(&identity.runtime_id)
-            .ok_or_else(|| anyhow::anyhow!("unknown runtime '{}'", identity.runtime_id))?;
-        let candidates = driver.discover(connect.as_ref(), identity.session.as_deref())?;
+            .expect("刚检查过的 RuntimeProvider 必须仍在");
+        let candidates = driver
+            .discover(connect.as_ref(), identity.session.as_deref())
+            .map_err(|error| resolver::ResolveError::Discovery {
+                runtime_id: identity.runtime_id.clone(),
+                transport_id: identity.transport_id.clone(),
+                target: connect_target.to_string(),
+                message: format!("{error:#}"),
+            })?;
         let candidate = candidates
             .iter()
             .find(|candidate| existing_identity_matches(candidate, identity))
-            .ok_or_else(|| {
-                anyhow::anyhow!("existing candidate identity 不存在: {}", identity.key())
+            .ok_or_else(|| resolver::ResolveError::ExistingCandidateNotFound {
+                key: identity.key(),
             })?;
-        let config = target_config_from_existing(candidate)?;
+        let config = target_config_from_existing(candidate).map_err(|error| {
+            resolver::ResolveError::InvalidIdentity {
+                identity: identity.key(),
+                reason: format!("{error:#}"),
+            }
+        })?;
         Ok(self.resolved_from_candidate(&config, candidate))
     }
 
@@ -1066,6 +1139,15 @@ fn target_config_from_existing(
     config.socket = candidate.socket.clone();
     config.workspace_id = candidate.workspace_id.clone();
     Ok(config)
+}
+
+fn runtime_open_error(spec: &WorkspaceSpec, error: anyhow::Error) -> anyhow::Error {
+    anyhow::Error::new(resolver::ResolveError::RuntimeOpen {
+        runtime_id: spec.runtime.clone(),
+        transport_id: spec.transport.clone(),
+        target: spec.alias.clone().unwrap_or_default(),
+        message: format!("{error:#}"),
+    })
 }
 
 /// 对一条 Connect 扇出所有接受该 transport 的 Driver。
