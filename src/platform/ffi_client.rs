@@ -341,6 +341,34 @@ pub struct ClientAttentionPane {
     pub shell_name: Option<String>,
 }
 
+/// Frontend view of the Core attention state machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientAttentionStatus {
+    Unknown,
+    Working,
+    Done,
+    Blocked,
+    Idle,
+}
+
+impl ClientAttentionStatus {
+    pub fn parse(value: &str) -> Self {
+        match value {
+            "working" => Self::Working,
+            "done" => Self::Done,
+            "blocked" => Self::Blocked,
+            "idle" => Self::Idle,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+impl ClientAttentionPane {
+    pub fn status_kind(&self) -> ClientAttentionStatus {
+        ClientAttentionStatus::parse(&self.status)
+    }
+}
+
 /// Owned cross-workspace activity/attention aggregate.
 #[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
 pub struct ClientWorkspaceAttention {

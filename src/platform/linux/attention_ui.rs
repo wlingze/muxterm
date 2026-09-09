@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use gtk4::gio::prelude::ApplicationExt;
 
-use crate::core::attention::state::PaneStatus;
+use crate::platform::ffi_client::ClientAttentionStatus;
 
 /// 状态栏红点文案：0 → None（隐藏），否则 `● N`。
 pub fn badge_label(n: usize) -> Option<String> {
@@ -26,10 +26,10 @@ pub fn window_title(n: usize, workspace: &str) -> String {
 }
 
 /// tab 前缀：blocked `● `，done `✓ `，其余空。
-pub fn tab_prefix(status: Option<PaneStatus>) -> &'static str {
+pub fn tab_prefix(status: Option<ClientAttentionStatus>) -> &'static str {
     match status {
-        Some(PaneStatus::Blocked) => "● ",
-        Some(PaneStatus::Done) => "✓ ",
+        Some(ClientAttentionStatus::Blocked) => "● ",
+        Some(ClientAttentionStatus::Done) => "✓ ",
         _ => "",
     }
 }
@@ -125,9 +125,9 @@ mod tests {
 
     #[test]
     fn tab_prefix_maps_status() {
-        assert_eq!(tab_prefix(Some(PaneStatus::Blocked)), "● ");
-        assert_eq!(tab_prefix(Some(PaneStatus::Done)), "✓ ");
-        assert_eq!(tab_prefix(Some(PaneStatus::Working)), "");
+        assert_eq!(tab_prefix(Some(ClientAttentionStatus::Blocked)), "● ");
+        assert_eq!(tab_prefix(Some(ClientAttentionStatus::Done)), "✓ ");
+        assert_eq!(tab_prefix(Some(ClientAttentionStatus::Working)), "");
         assert_eq!(tab_prefix(None), "");
     }
 
