@@ -156,7 +156,7 @@ impl PaneAgentInfo {
 /// 状态变更事件（Runtime → TerminalModel → 前端）。
 ///
 /// 细粒度事件，避免每次小变动都全量重渲染。前端可按需聚合。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum StateChange {
     /// 某 pane 有新输出（增量字节）。
     PaneOutput {

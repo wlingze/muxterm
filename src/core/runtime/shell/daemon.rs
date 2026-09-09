@@ -8,6 +8,7 @@
 use crate::core::protocol::command::CliCommand;
 use crate::core::protocol::layout::SplitDir;
 use crate::core::protocol::state::State;
+use crate::core::protocol::state::StateChange;
 use crate::core::protocol::task::Task;
 use crate::core::protocol::terminal::input::KeyEvent;
 
@@ -56,6 +57,9 @@ pub struct Response {
     pub ok: bool,
     pub output: String,
     pub error: String,
+    /// Runtime events produced while handling this request.
+    #[serde(default)]
+    pub events: Vec<StateChange>,
 }
 
 impl Response {
@@ -64,6 +68,16 @@ impl Response {
             ok: true,
             output,
             error: String::new(),
+            events: Vec::new(),
+        }
+    }
+
+    pub fn ok_with_events(output: String, events: Vec<StateChange>) -> Self {
+        Self {
+            ok: true,
+            output,
+            error: String::new(),
+            events,
         }
     }
 
@@ -72,6 +86,7 @@ impl Response {
             ok: false,
             output: String::new(),
             error: error.into(),
+            events: Vec::new(),
         }
     }
 }
