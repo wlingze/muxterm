@@ -182,6 +182,15 @@ pub struct ClientTheme {
     pub colors: [ClientRgb; 16],
 }
 
+/// One effective key binding returned by the Core shortcut resolver.
+#[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
+pub struct ClientKeyBinding {
+    pub key: String,
+    #[serde(default)]
+    pub mods: Vec<String>,
+    pub action: String,
+}
+
 /// Owned configuration snapshot returned by the Core configuration ABI.
 #[derive(Debug, Clone, serde::Deserialize, PartialEq)]
 pub struct ClientConfigSnapshot {
@@ -196,6 +205,8 @@ pub struct ClientConfigSnapshot {
     pub action_catalog: serde_json::Value,
     #[serde(default)]
     pub resolved_theme: Option<ClientTheme>,
+    #[serde(default)]
+    pub effective_keybindings: Vec<ClientKeyBinding>,
 }
 
 /// RFC 6902-style patch operation accepted by the Core configuration ABI.
@@ -2306,8 +2317,13 @@ mod tests {
                 "background": [255, 255, 255],
                 "foreground": [31, 35, 40],
                 "cursor": [31, 35, 40],
-                "colors": colors,
+            "colors": colors,
             },
+            "effective_keybindings": [{
+                "key": "n",
+                "mods": ["alt"],
+                "action": "new_window",
+            }],
         }))
         .expect("config snapshot decodes");
         assert_eq!(snapshot.path, "/tmp/config.toml");
@@ -2317,6 +2333,7 @@ mod tests {
             snapshot.resolved_theme.as_ref().unwrap().background,
             ClientRgb(255, 255, 255)
         );
+        assert_eq!(snapshot.effective_keybindings[0].action, "new_window");
 
         let draft: ClientConfigDraft = serde_json::from_value(serde_json::json!({
             "transaction": "tx-1",

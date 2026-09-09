@@ -4,6 +4,7 @@ use std::ffi::c_char;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use crate::config::{Rgb, Theme};
+use crate::config_service::action_catalog::resolve_effective_keybindings;
 use crate::config_service::{ConfigEvent, JsonPatchOperation, SettingsService};
 
 use super::super::api::{cstr_opt, json_string, MuxtermHandle};
@@ -63,12 +64,17 @@ pub unsafe extern "C" fn muxterm_config_describe_json(h: *mut MuxtermHandle) -> 
         let resolved_theme =
             resolved_theme_json(data.get("values").unwrap_or(&serde_json::Value::Null))
                 .unwrap_or(serde_json::Value::Null);
+        let effective_keybindings = serde_json::to_value(resolve_effective_keybindings(
+            &(&*h).settings.document().shortcuts,
+        ))
+        .unwrap_or_else(|_| serde_json::Value::Array(Vec::new()));
         if let Some(data) = data.as_object_mut() {
             data.insert(
                 "path".into(),
                 serde_json::json!((&*h).settings.path().to_string_lossy()),
             );
             data.insert("resolved_theme".into(), resolved_theme);
+            data.insert("effective_keybindings".into(), effective_keybindings);
         }
         json_string(serde_json::json!({
             "ok": true,

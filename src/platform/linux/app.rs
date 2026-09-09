@@ -7,6 +7,7 @@ use gtk4::Application;
 
 use crate::core::config_service::ConfigDocument;
 use crate::platform::ffi_client::FfiClient;
+use crate::platform::linux::keymap::default_keybindings;
 use crate::platform::linux::theme::fallback_theme;
 #[cfg(test)]
 use crate::platform::linux::theme::Rgb;
@@ -31,12 +32,13 @@ pub fn run(socket: Option<String>) -> anyhow::Result<()> {
 
     app.connect_activate(move |a| {
         let default_document = ConfigDocument::default();
-        let (mut cfg, shortcuts, theme) = match FfiClient::new_catalog()
+        let (mut cfg, keybindings, theme) = match FfiClient::new_catalog()
             .and_then(|client| client.config_describe())
             .and_then(|snapshot| {
                 let theme = snapshot.resolved_theme.unwrap_or_else(fallback_theme);
+                let keybindings = snapshot.effective_keybindings;
                 serde_json::from_value::<ConfigDocument>(snapshot.values)
-                    .map(|document| (document.config, document.shortcuts, theme))
+                    .map(|document| (document.config, keybindings, theme))
                     .map_err(anyhow::Error::from)
             }) {
             Ok(document) => document,
@@ -47,7 +49,7 @@ pub fn run(socket: Option<String>) -> anyhow::Result<()> {
                 );
                 (
                     default_document.config.clone(),
-                    default_document.shortcuts.clone(),
+                    default_keybindings(),
                     fallback_theme(),
                 )
             }
@@ -59,7 +61,9 @@ pub fn run(socket: Option<String>) -> anyhow::Result<()> {
             }
         }
         let win = crate::platform::linux::window::AppWindow::new_with_effective_keybindings(
-            cfg, theme, &shortcuts,
+            cfg,
+            theme,
+            &keybindings,
         );
         a.add_window(&win.window);
         win.window.present();

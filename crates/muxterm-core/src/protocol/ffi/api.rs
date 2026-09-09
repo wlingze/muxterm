@@ -1414,6 +1414,7 @@ mod tests {
             assert!(envelope["data"]["manifest"].is_object());
             assert!(envelope["data"]["action_catalog"].is_array());
             assert!(envelope["data"]["resolved_theme"].is_object());
+            assert!(envelope["data"]["effective_keybindings"].is_array());
 
             let path = std::env::temp_dir().join(format!(
                 "muxterm-ffi-config-validate-missing-{}",

@@ -23,10 +23,11 @@ use gtk4::gdk;
 use gtk4::prelude::*;
 
 use muxterm::test_support::core::catalog::Catalog;
-use muxterm::test_support::core::config::{Action, Config};
+use muxterm::test_support::core::config::Config;
 use muxterm::test_support::core::protocol::task::TaskOutcome;
 use muxterm::test_support::core::quickconnect::model::{QuickConnect, TargetConfig};
 use muxterm::test_support::core::runtime::RuntimeCapability;
+use muxterm::test_support::platform::linux::keymap::Action;
 use muxterm::test_support::platform::linux::window::AppWindow;
 
 use support::herdr_test_support::herdr_available;

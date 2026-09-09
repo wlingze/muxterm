@@ -26,7 +26,7 @@ use crate::core::attention::clock::RealClock;
 use crate::core::attention::engine::{AttentionEngine, PaneAttention};
 use crate::core::attention::signal::{AttentionSignal, AttentionSource};
 use crate::core::attention::state::PaneStatus;
-use crate::core::config::{Action, Config, KeyBinding, OnLastPaneExit};
+use crate::core::config::{Config, OnLastPaneExit};
 use crate::core::quickconnect::model::QuickConnect;
 use crate::core::runtime::RuntimeCapability;
 use crate::core::workspace::pool::WorkspaceCapacityCandidate;
@@ -34,15 +34,15 @@ use crate::core::workspace::spec::WorkspaceSpec;
 use crate::platform::event_pump::EventPump;
 use crate::platform::ffi_client::{
     ClientActivitySnapshot, ClientAttentionConfig, ClientAttentionPane, ClientCandidateRef,
-    ClientEventKind, ClientOpenIntent, ClientOpenRequest, ClientOpenedWorkspace, ClientTarget,
-    ClientTask, ClientWorkspaceAttention, ClientWorkspaceEvent, FfiClient,
+    ClientEventKind, ClientKeyBinding, ClientOpenIntent, ClientOpenRequest, ClientOpenedWorkspace,
+    ClientTarget, ClientTask, ClientWorkspaceAttention, ClientWorkspaceEvent, FfiClient,
 };
 use crate::platform::i18n::{self, Key};
 use crate::platform::linux::attention_ui::{window_title, GioSink, NotificationSink};
 use crate::platform::linux::command_palette::{parse_palette_action, PaletteAction};
 #[cfg(test)]
 use crate::platform::linux::event_batch::batch_order_plan;
-use crate::platform::linux::keymap::KeyMap;
+use crate::platform::linux::keymap::{Action, KeyMap};
 use crate::platform::linux::layout_host::LayoutHost;
 use crate::platform::linux::lifecycle::{cycle_pane_id, should_close_window};
 use crate::platform::linux::pane_view::{PaneMenuAction, PaneView};
@@ -502,22 +502,28 @@ impl AppWindow {
     }
 
     pub fn new(cfg: Config, theme: Theme) -> Self {
-        Self::new_with_keybindings(cfg.clone(), theme, cfg.keybindings.clone())
-    }
-
-    /// Construct the window with shortcuts resolved from the Core shortcut
-    /// config (preset + primary key + overrides) instead of the legacy list.
-    pub fn new_with_effective_keybindings(
-        cfg: Config,
-        theme: Theme,
-        shortcuts: &crate::core::config_service::ShortcutConfig,
-    ) -> Self {
-        let keybindings =
-            crate::core::config_service::action_catalog::resolve_effective_keybindings(shortcuts);
+        let keybindings = cfg
+            .keybindings
+            .iter()
+            .map(|binding| ClientKeyBinding {
+                key: binding.key.clone(),
+                mods: binding.mods.clone(),
+                action: binding.action.clone(),
+            })
+            .collect();
         Self::new_with_keybindings(cfg, theme, keybindings)
     }
 
-    fn new_with_keybindings(cfg: Config, theme: Theme, keybindings: Vec<KeyBinding>) -> Self {
+    /// Construct the window with effective bindings resolved by Core.
+    pub fn new_with_effective_keybindings(
+        cfg: Config,
+        theme: Theme,
+        keybindings: &[ClientKeyBinding],
+    ) -> Self {
+        Self::new_with_keybindings(cfg, theme, keybindings.to_vec())
+    }
+
+    fn new_with_keybindings(cfg: Config, theme: Theme, keybindings: Vec<ClientKeyBinding>) -> Self {
         let window = ApplicationWindow::builder()
             .title("muxterm")
             .default_width(960)
@@ -4281,6 +4287,7 @@ fn open_preferences(state: &Rc<RefCell<UiState>>, window: &Window) {
             // 保存后重新读取 Core FFI 快照，重建 keymap 并刷新运行期状态。
             if let Ok(snapshot) = snapshot {
                 let resolved_theme = snapshot.resolved_theme.clone();
+                let effective_keybindings = snapshot.effective_keybindings.clone();
                 let document = match serde_json::from_value::<
                     crate::core::config_service::ConfigDocument,
                 >(snapshot.values)
@@ -4295,12 +4302,7 @@ fn open_preferences(state: &Rc<RefCell<UiState>>, window: &Window) {
                     }
                 };
                 let cfg = &document.config;
-                let shortcuts = &document.shortcuts;
-                let bindings =
-                    crate::core::config_service::action_catalog::resolve_effective_keybindings(
-                        shortcuts,
-                    );
-                s.keymap = KeyMap::from_bindings(&bindings);
+                s.keymap = KeyMap::from_bindings(&effective_keybindings);
                 let attention_config = ClientAttentionConfig {
                     enabled: cfg.attention.enabled,
                     blocked_regex: cfg.attention.blocked_regex.clone(),
