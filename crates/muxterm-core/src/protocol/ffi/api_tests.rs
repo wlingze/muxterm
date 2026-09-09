@@ -365,6 +365,53 @@ fn ffi_agent_event_updates_attention_without_surface_output() {
 }
 
 #[test]
+fn ffi_command_marks_update_activity_lane() {
+    let h = muxterm_new(c"local".as_ptr(), ptr::null(), ptr::null());
+    assert!(!h.is_null());
+    unsafe {
+        let mut runtime = MockRuntime::with_single_pane();
+        runtime.events.push(StateChange::PaneOutput {
+            pane: PaneId(1),
+            data: b"\x1b]133;B\x07cargo test\r\n\x1b]133;C\x07out\r\n\x1b]133;D;0\x07".to_vec(),
+        });
+        let workspace = Workspace::new(
+            WorkspaceId::new("local", None, "commands", "shell", "w1"),
+            "commands".into(),
+            Box::new(runtime),
+        );
+        (&mut *h).pool_mut().insert_connected(workspace);
+
+        let mut events = [CStateChange::default(); 16];
+        assert!(muxterm_poll_events(h, events.as_mut_ptr(), events.len() as i32) > 0);
+
+        let raw = muxterm_activity_snapshot_json(h);
+        let text = CStr::from_ptr(raw).to_string_lossy().into_owned();
+        muxterm_free_string(raw);
+        let snapshot: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(snapshot["records"].as_array().unwrap().len(), 1, "{text}");
+        assert_eq!(snapshot["records"][0]["kind"], "command", "{text}");
+        assert_eq!(snapshot["records"][0]["name"], "cargo test", "{text}");
+        assert_eq!(snapshot["records"][0]["status"]["state"], "done", "{text}");
+
+        let raw = muxterm_activity_take_events_json(h);
+        let text = CStr::from_ptr(raw).to_string_lossy().into_owned();
+        muxterm_free_string(raw);
+        let events: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(events["events"].as_array().unwrap().len(), 2, "{text}");
+        assert_eq!(
+            events["events"][0]["event"]["Upsert"]["status"]["state"],
+            "running"
+        );
+        assert_eq!(
+            events["events"][1]["event"]["Upsert"]["status"]["state"],
+            "done"
+        );
+
+        muxterm_free(h);
+    }
+}
+
+#[test]
 fn ffi_pane_frame_event_keeps_full_frame_type() {
     let h = muxterm_new(c"local".as_ptr(), ptr::null(), ptr::null());
     assert!(!h.is_null());

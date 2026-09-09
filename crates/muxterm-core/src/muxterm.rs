@@ -30,6 +30,14 @@ use crate::transport::registry::{ConnectionRegistry, TransportRegistry};
 
 type PendingAttentionUpdate = (u32, Vec<AttentionSignal>, String, u64, Option<String>);
 
+#[derive(Debug, Clone, Copy)]
+enum CommandActivityPhase {
+    Start,
+    Done(Option<u8>),
+}
+
+type PendingCommandActivity = (u32, Option<String>, CommandActivityPhase);
+
 /// One product session composed from Core domains.
 ///
 /// The fields remain crate-visible while the FFI function modules are being
@@ -406,6 +414,7 @@ impl Muxterm {
         let mut pending: Vec<PendingAttentionUpdate> = Vec::new();
         let mut pending_process_names: Vec<(u32, Option<String>, bool)> = Vec::new();
         let mut pending_agents: Vec<(u32, Option<PaneAgentInfo>)> = Vec::new();
+        let mut pending_commands: Vec<PendingCommandActivity> = Vec::new();
         let mut removed_panes = Vec::new();
         {
             let Some(ws) = self.pool_mut().get_mut(ws_id) else {
@@ -437,16 +446,37 @@ impl Muxterm {
                     }
                     let signals = ws.take_attention_signals(*pane);
                     let (last_line, seq) = ws.pane_last_line_seq(*pane);
-                    let command = signals
+                    let command_name = ws
+                        .pane_command_marks(*pane)
+                        .last()
+                        .map(|mark| mark.command.clone());
+                    let command_started = signals
                         .iter()
-                        .any(|signal| matches!(signal, AttentionSignal::CommandStart))
-                        .then(|| {
-                            ws.pane_command_marks(*pane)
-                                .last()
-                                .map(|mark| mark.command.clone())
-                        })
-                        .flatten();
-                    pending.push((pane.0, signals, last_line, seq, command));
+                        .any(|signal| matches!(signal, AttentionSignal::CommandStart));
+                    if command_started {
+                        pending_commands.push((
+                            pane.0,
+                            command_name.clone(),
+                            CommandActivityPhase::Start,
+                        ));
+                    }
+                    for exit_code in signals.iter().filter_map(|signal| match signal {
+                        AttentionSignal::CommandDone { exit_code } => Some(*exit_code),
+                        _ => None,
+                    }) {
+                        pending_commands.push((
+                            pane.0,
+                            command_name.clone(),
+                            CommandActivityPhase::Done(exit_code),
+                        ));
+                    }
+                    pending.push((
+                        pane.0,
+                        signals,
+                        last_line,
+                        seq,
+                        command_started.then_some(command_name).flatten(),
+                    ));
                 } else if let StateChange::PaneClosed { pane } = event {
                     removed_panes.push(pane.0);
                 } else if let StateChange::StatusBarSubscription {
@@ -469,6 +499,18 @@ impl Muxterm {
         for (pane, agent) in pending_agents {
             if let Some(context) = self.activity_context(ws_id, pane) {
                 let event = self.activity.apply_agent_signal(context, agent.as_ref());
+                self.deferred_activity_events
+                    .push_back((ws_id.clone(), event));
+            }
+        }
+        for (pane, name, phase) in pending_commands {
+            if let Some(context) = self.activity_context(ws_id, pane) {
+                let event = match phase {
+                    CommandActivityPhase::Start => self.activity.apply_command_start(context, name),
+                    CommandActivityPhase::Done(exit_code) => {
+                        self.activity.apply_command_done(context, name, exit_code)
+                    }
+                };
                 self.deferred_activity_events
                     .push_back((ws_id.clone(), event));
             }

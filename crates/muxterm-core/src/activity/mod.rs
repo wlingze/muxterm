@@ -83,6 +83,74 @@ impl ActivityState {
         event
     }
 
+    /// Normalize an OSC 133 command-start signal into a running record.
+    pub(crate) fn apply_command_start(
+        &mut self,
+        context: ActivityContext,
+        name: Option<String>,
+    ) -> ActivityEvent {
+        let id = command_activity_id(&context.workspace, context.pane);
+        let now = unix_timestamp();
+        let fallback_name = self.records.get(&id).map(|record| record.name.clone());
+        self.records.upsert(ActivityRecord {
+            id,
+            kind: ActivityKind::Command,
+            name: name.or(fallback_name).unwrap_or_else(|| "command".into()),
+            status: ActivityStatus::Running,
+            location: PaneRef {
+                workspace: context.workspace,
+                tab: context.tab,
+                pane: context.pane,
+            },
+            cwd: None,
+            workspace_name: context.workspace_name,
+            runtime_name: context.runtime_name,
+            transport_name: context.transport_name,
+            started_at: Some(now),
+            updated_at: now,
+            revision: 0,
+        })
+    }
+
+    /// Normalize an OSC 133 command-done signal.  A non-zero exit code is a
+    /// failed activity; an absent code remains a completed-but-unknown exit.
+    pub(crate) fn apply_command_done(
+        &mut self,
+        context: ActivityContext,
+        name: Option<String>,
+        exit_code: Option<u8>,
+    ) -> ActivityEvent {
+        let id = command_activity_id(&context.workspace, context.pane);
+        let existing = self.records.get(&id);
+        let fallback_name = existing.map(|record| record.name.clone());
+        let started_at = existing.and_then(|record| record.started_at);
+        let now = unix_timestamp();
+        let status = match exit_code {
+            Some(code) if code != 0 => ActivityStatus::Failed,
+            code => ActivityStatus::Done {
+                exit_code: code.map(i32::from),
+            },
+        };
+        self.records.upsert(ActivityRecord {
+            id,
+            kind: ActivityKind::Command,
+            name: name.or(fallback_name).unwrap_or_else(|| "command".into()),
+            status,
+            location: PaneRef {
+                workspace: context.workspace,
+                tab: context.tab,
+                pane: context.pane,
+            },
+            cwd: None,
+            workspace_name: context.workspace_name,
+            runtime_name: context.runtime_name,
+            transport_name: context.transport_name,
+            started_at,
+            updated_at: now,
+            revision: 0,
+        })
+    }
+
     pub(crate) fn agent_record(
         &self,
         workspace: &WorkspaceId,
@@ -105,6 +173,11 @@ impl ActivityState {
 
 fn agent_activity_id(workspace: &WorkspaceId, pane: PaneId) -> ActivityId {
     ActivityId::new(format!("agent:{workspace}:{pane}")).expect("agent activity id is non-empty")
+}
+
+fn command_activity_id(workspace: &WorkspaceId, pane: PaneId) -> ActivityId {
+    ActivityId::new(format!("command:{workspace}:{pane}"))
+        .expect("command activity id is non-empty")
 }
 
 fn agent_display_name(agent: &PaneAgentInfo) -> String {
@@ -214,5 +287,28 @@ mod tests {
         assert!(state
             .agent_record(&context().workspace, PaneId(2))
             .is_none());
+    }
+
+    #[test]
+    fn command_start_and_done_share_identity_and_revision() {
+        let mut state = ActivityState::new(AttentionConfig::default());
+        let started = state.apply_command_start(context(), Some("cargo test".into()));
+        let ActivityEvent::Upsert(started) = started else {
+            panic!("command start must upsert");
+        };
+        assert_eq!(started.kind, ActivityKind::Command);
+        assert_eq!(started.status, ActivityStatus::Running);
+        assert!(started.started_at.is_some());
+        assert!(started.updated_at >= started.started_at.unwrap());
+
+        let done = state.apply_command_done(context(), None, Some(0));
+        let ActivityEvent::Upsert(done) = done else {
+            panic!("command done must upsert");
+        };
+        assert_eq!(done.id, started.id);
+        assert_eq!(done.name, "cargo test");
+        assert_eq!(done.status, ActivityStatus::Done { exit_code: Some(0) });
+        assert_eq!(done.revision, started.revision + 1);
+        assert_eq!(done.started_at, started.started_at);
     }
 }
