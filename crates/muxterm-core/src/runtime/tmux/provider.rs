@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 
-use crate::protocol::candidate::ExistingCandidate as SessionCandidate;
+use crate::protocol::candidate::ExistingCandidate;
 use crate::runtime::provider::RuntimeProvider;
 use crate::runtime::tmux::backend::TmuxRuntime;
 use crate::runtime::{Runtime, RuntimeCapability};
@@ -44,7 +44,7 @@ impl RuntimeProvider for TmuxDriver {
         &self,
         connect: &dyn TargetConnection,
         _namespace: Option<&str>,
-    ) -> Result<Vec<SessionCandidate>> {
+    ) -> Result<Vec<ExistingCandidate>> {
         let ssh_config = Self::ssh_config();
         let (sessions, socket) = if connect.transport_id() == "ssh" {
             // 测试隔离远端 tmux：MUXTERM_TEST_REMOTE_TMUX_SOCKET（对标
@@ -66,7 +66,7 @@ impl RuntimeProvider for TmuxDriver {
         };
         Ok(sessions
             .into_iter()
-            .map(|s| SessionCandidate {
+            .map(|s| ExistingCandidate {
                 runtime_id: "tmux".into(),
                 transport_id: connect.transport_id().into(),
                 target: connect.target().into(),

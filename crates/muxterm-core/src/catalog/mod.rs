@@ -6,7 +6,6 @@
 //! 都在 Catalog：provider 视图、ConnectionRegistry、Inventory、Pool。
 
 pub mod connect;
-pub mod driver;
 pub mod inventory;
 pub mod resolver;
 pub mod transport;
@@ -15,9 +14,7 @@ use std::sync::Arc;
 use std::thread;
 
 use crate::projects::Project;
-use crate::protocol::candidate::{
-    Candidate, CandidateRef, ExistingCandidate, ExistingCandidateRef,
-};
+use crate::protocol::candidate::{Candidate, CandidateRef, ExistingCandidateRef};
 use crate::runtime::provider::runtime_supports_channels;
 use crate::runtime::Runtime;
 use crate::transport::registry::ConnectionRegistry;
@@ -29,9 +26,9 @@ use crate::workspace::spec::WorkspaceSpec;
 use crate::workspace::template::{TemplateName, TemplateRegistry, WorkspaceTemplate};
 use crate::workspace::workspace::Workspace;
 
+pub use crate::protocol::candidate::ExistingCandidate;
 pub use crate::runtime::provider::{RuntimeInfo, RuntimeProvider};
 pub use connect::Connect;
-pub use driver::SessionCandidate;
 #[allow(unused_imports)] // 给 FFI / 测试用的公开类型
 pub use inventory::{Inventory, InventorySnapshot, Reach};
 pub use resolver::{
@@ -205,7 +202,7 @@ impl Catalog {
         &mut self,
         transport_id: &str,
         target: &str,
-    ) -> anyhow::Result<Vec<SessionCandidate>> {
+    ) -> anyhow::Result<Vec<ExistingCandidate>> {
         if transport_id == "all" {
             let names = self.all_connect_names();
             let mut jobs: Vec<DiscoveryJob> = Vec::new();
@@ -582,7 +579,7 @@ impl Catalog {
                     }
                 }
                 // name/label 命中；同名两候选 → ambiguity。
-                let named: Vec<&SessionCandidate> = candidates
+                let named: Vec<&ExistingCandidate> = candidates
                     .iter()
                     .filter(|c| c.name == config.name)
                     .collect();
@@ -942,12 +939,12 @@ impl Catalog {
         Ok(self.resolved_from_candidate(&config, candidate))
     }
 
-    /// SessionCandidate → ResolvedTarget（identity 字段保留；W6 §11.1 用
+    /// ExistingCandidate → ResolvedTarget（identity 字段保留；W6 §11.1 用
     /// typed session/socket/workspace_id，禁止从 extra 猜身份）。
     fn resolved_from_candidate(
         &self,
         config: &crate::quickconnect::model::TargetConfig,
-        candidate: &SessionCandidate,
+        candidate: &ExistingCandidate,
     ) -> ResolvedTarget {
         let mut canonical = config.clone();
         // 缺权威 project path 时保持空；绝不回填 workspace id 当目录。
@@ -1078,7 +1075,7 @@ impl Catalog {
 }
 
 fn existing_identity_matches(
-    candidate: &SessionCandidate,
+    candidate: &ExistingCandidate,
     identity: &ExistingCandidateRef,
 ) -> bool {
     candidate.runtime_id == identity.runtime_id
@@ -1100,7 +1097,7 @@ fn existing_connect_target(identity: &ExistingCandidateRef) -> &str {
     }
 }
 
-fn existing_target_matches(candidate: &SessionCandidate, identity: &ExistingCandidateRef) -> bool {
+fn existing_target_matches(candidate: &ExistingCandidate, identity: &ExistingCandidateRef) -> bool {
     candidate.target == identity.target
         || (identity.transport_id == "local"
             && identity.target == "local"
@@ -1108,7 +1105,7 @@ fn existing_target_matches(candidate: &SessionCandidate, identity: &ExistingCand
 }
 
 fn target_config_from_existing(
-    candidate: &SessionCandidate,
+    candidate: &ExistingCandidate,
 ) -> anyhow::Result<crate::quickconnect::model::TargetConfig> {
     use crate::quickconnect::model::{TargetRuntime, TargetTransport};
 
@@ -1156,7 +1153,7 @@ fn list_sessions_on_connect(
     runtimes: &[Box<dyn RuntimeProvider>],
     supported_channels: &[ChannelKind],
     connect: &dyn TargetConnection,
-) -> Vec<SessionCandidate> {
+) -> Vec<ExistingCandidate> {
     thread::scope(|scope| {
         let handles: Vec<_> = runtimes
             .iter()
