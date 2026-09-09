@@ -4,3 +4,4 @@
 //! their lane events will join this owner as the Activity contract lands.
 
 pub mod attention;
+pub mod record;

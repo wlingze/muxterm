@@ -72,6 +72,33 @@ impl std::fmt::Display for TabId {
     }
 }
 
+/// Stable identity for one command or agent activity record.
+#[derive(
+    Debug, Clone, PartialEq, Eq, Hash, Ord, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
+#[serde(transparent)]
+pub struct ActivityId(String);
+
+impl ActivityId {
+    pub fn new(value: impl Into<String>) -> Result<Self, String> {
+        let value = value.into();
+        if value.trim().is_empty() {
+            return Err("activity id 不能为空".into());
+        }
+        Ok(Self(value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for ActivityId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// Stable product workspace identity: `transport/alias/session/runtime/path`.
 #[derive(
     Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
@@ -171,5 +198,13 @@ mod tests {
         let first = WorkspaceId::new("local", None, "shared", "shell", "one");
         let second = WorkspaceId::new("local", None, "shared", "shell", "two");
         assert_ne!(first.replica_id(), second.replica_id());
+    }
+
+    #[test]
+    fn activity_id_is_non_empty_and_displayable() {
+        assert!(ActivityId::new("  ").is_err());
+        let id = ActivityId::new("command-1").unwrap();
+        assert_eq!(id.as_str(), "command-1");
+        assert_eq!(id.to_string(), "command-1");
     }
 }
