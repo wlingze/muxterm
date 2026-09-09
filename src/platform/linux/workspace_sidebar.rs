@@ -20,14 +20,14 @@ use crate::core::attention::engine::{PaneAttention, WorkspaceAttention};
 #[cfg(test)]
 use crate::core::attention::state::PaneStatus;
 #[cfg(test)]
-use crate::core::protocol::state::{PaneAgentInfo, PaneAgentStatus};
-use crate::core::workspace::id::WorkspaceId;
-#[cfg(test)]
 use crate::core::workspace::pool::WorkspacePool;
 #[cfg(test)]
 use crate::core::workspace::workspace::Workspace;
 use crate::platform::ffi_client::{ClientActivitySnapshot, ClientAttentionPane, ClientWorkspace};
 use crate::platform::linux::view_store::ViewStore;
+#[cfg(test)]
+use muxterm_protocol::state::{PaneAgentInfo, PaneAgentStatus};
+use muxterm_protocol::WorkspaceId;
 
 /// A workspace row in the sidebar.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1486,9 +1486,9 @@ mod tests {
         assert_eq!(sidebar_split_position(false, true, 0, 260, 64), 260);
     }
 
-    use crate::core::protocol::state::StateChange;
     use crate::core::runtime::mock::MockRuntime;
-    use crate::core::types::PaneId;
+    use muxterm_protocol::state::StateChange;
+    use muxterm_protocol::PaneId;
     use std::collections::BTreeMap;
     use std::time::Instant;
 

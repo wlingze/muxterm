@@ -27,15 +27,8 @@ use crate::core::attention::engine::{AttentionEngine, PaneAttention};
 use crate::core::attention::signal::{AttentionSignal, AttentionSource};
 use crate::core::attention::state::PaneStatus;
 use crate::core::config::{Action, Config, KeyBinding, OnLastPaneExit, Theme};
-#[cfg(test)]
-use crate::core::protocol::state::StateChange;
-use crate::core::protocol::task::TaskOutcome;
 use crate::core::quickconnect::model::QuickConnect;
 use crate::core::runtime::RuntimeCapability;
-use crate::core::types::PaneId;
-#[cfg(test)]
-use crate::core::types::TabId;
-use crate::core::workspace::id::WorkspaceId;
 use crate::core::workspace::pool::WorkspaceCapacityCandidate;
 use crate::core::workspace::spec::WorkspaceSpec;
 use crate::platform::event_pump::EventPump;
@@ -74,6 +67,13 @@ use crate::platform::linux::workspace_sidebar::{
     AgentSidebarItem, CommandSidebarItem, WorkspaceSidebar, WorkspaceSidebarItem,
 };
 use crate::platform::ssh_probe::{classify_ssh_probe, ssh_probe_args, SshReach};
+#[cfg(test)]
+use muxterm_protocol::state::StateChange;
+use muxterm_protocol::task::TaskOutcome;
+use muxterm_protocol::PaneId;
+#[cfg(test)]
+use muxterm_protocol::TabId;
+use muxterm_protocol::WorkspaceId;
 
 /// 主窗口。
 pub struct AppWindow {
@@ -809,7 +809,7 @@ impl AppWindow {
             quit_requested: false,
             capacity_limit: cfg.pool.max_slots.max(1) as usize,
             capacity_warning_presented_for_slot_count: None,
-            runtime_status: crate::core::protocol::ffi::types::BACKEND_STATUS_CONNECTED,
+            runtime_status: crate::ffi::types::BACKEND_STATUS_CONNECTED,
             status_left: None,
             status_right: None,
             workspace_sockets: startup_sockets,
@@ -2588,8 +2588,8 @@ fn refresh_connection_summary(s: &mut UiState) {
         .clone()
         .or_else(|| (!id.session.is_empty()).then(|| id.session.clone()));
     let status = match s.runtime_status {
-        crate::core::protocol::ffi::types::BACKEND_STATUS_CONNECTED => "connected",
-        crate::core::protocol::ffi::types::BACKEND_STATUS_CONNECTING => "connecting",
+        crate::ffi::types::BACKEND_STATUS_CONNECTED => "connected",
+        crate::ffi::types::BACKEND_STATUS_CONNECTING => "connecting",
         _ => "disconnected",
     };
     let (down, up) = s.event_pump.client().traffic_bytes();
@@ -3867,9 +3867,7 @@ fn drain_existing_ssh(state: &Rc<RefCell<UiState>>) {
 fn maybe_schedule_reconnect(state: &Rc<RefCell<UiState>>) {
     let should_retry = {
         let mut s = state.borrow_mut();
-        if s.reconnecting
-            || s.runtime_status == crate::core::protocol::ffi::types::BACKEND_STATUS_CONNECTED
-        {
+        if s.reconnecting || s.runtime_status == crate::ffi::types::BACKEND_STATUS_CONNECTED {
             return;
         }
         let now = Instant::now();
@@ -5614,9 +5612,9 @@ mod tests {
             },
             "layout" => StateChange::LayoutChanged {
                 tab: TabId(1),
-                layout: crate::core::protocol::layout::TabLayout {
+                layout: muxterm_protocol::layout::TabLayout {
                     tab: TabId(1),
-                    tree: crate::core::protocol::layout::LayoutNode::leaf(PaneId(1)),
+                    tree: muxterm_protocol::layout::LayoutNode::leaf(PaneId(1)),
                     active: PaneId(1),
                 },
             },

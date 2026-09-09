@@ -14,7 +14,7 @@ use gtk4::glib;
 use gtk4::prelude::*;
 use vte4::prelude::*;
 
-use crate::core::config::{Rgb, Theme};
+use crate::core::config::Theme;
 use crate::core::protocol::terminal::emulate::TerminalState;
 use crate::platform::linux::quickconnect::font::FontSettings;
 use crate::platform::linux::renderer::{TerminalRenderer, VteRenderer};
@@ -26,6 +26,7 @@ use crate::platform::mouse::{
     gtk_button_to_sgr, pointer_cell as pixel_to_cell, sgr_report, SGR_HOVER, SGR_MOTION,
 };
 use crate::platform::url_opener::UrlOpener;
+use muxterm_protocol::Rgb;
 
 /// 同一 pane 输出合并后刷新的窗口（毫秒）。
 pub const FEED_COALESCE_MS: u64 = 25;
