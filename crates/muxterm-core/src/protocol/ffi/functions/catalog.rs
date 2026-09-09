@@ -7,7 +7,9 @@ use crate::catalog::{OpenRequest, ResolveIntent};
 use crate::muxterm::Muxterm;
 use crate::protocol::candidate::CandidateRef;
 
-use super::super::api::{cstr_opt, json_error, json_string, MuxtermHandle};
+use super::super::api::{
+    cstr_opt, json_error, json_open_error, json_resolve_error, json_string, MuxtermHandle,
+};
 use super::support::parse_workspace_id;
 
 /// List the unified Project/Worktree/Existing/Recent candidates.
@@ -75,7 +77,7 @@ pub unsafe extern "C" fn muxterm_open_json(
         let previous_active = handle.pool().active_id().cloned();
         let resolved = match handle.resolve_open_request(&request) {
             Ok(resolved) => resolved,
-            Err(error) => return json_error(error),
+            Err(error) => return json_resolve_error(&error),
         };
         let workspace_id = resolved.workspace_id();
         let result = {
@@ -97,7 +99,7 @@ pub unsafe extern "C" fn muxterm_open_json(
                 workspace.name().to_string(),
                 workspace.resolved_target().map(resolved_target_json),
             ),
-            Err(error) => return json_error(error),
+            Err(error) => return json_open_error(&error),
         };
 
         if !request.activate {
@@ -171,7 +173,7 @@ pub unsafe extern "C" fn muxterm_workspace_open_target_json(
             );
             let resolved = match catalog.resolve_target(&config, intent) {
                 Ok(resolved) => resolved,
-                Err(error) => return json_error(error),
+                Err(error) => return json_resolve_error(&error),
             };
             rt.block_on(Muxterm::open_resolved_parts(
                 &*catalog,
@@ -187,7 +189,7 @@ pub unsafe extern "C" fn muxterm_workspace_open_target_json(
                 "name": workspace.name(),
                 "resolved_target": workspace.resolved_target().map(resolved_target_json),
             })),
-            Err(err) => json_error(err),
+            Err(err) => json_open_error(&err),
         }
     }))
     .unwrap_or_else(|_| json_error("workspace_open_target_json panic"))

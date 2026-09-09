@@ -35,6 +35,25 @@ pub(crate) fn json_error(error: impl std::fmt::Display) -> *mut c_char {
     }))
 }
 
+pub(crate) fn json_resolve_error(error: &crate::catalog::ResolveError) -> *mut c_char {
+    json_string(serde_json::json!({
+        "ok": false,
+        "error": {
+            "code": error.code(),
+            "stage": error.stage().to_string(),
+            "message": error.to_string(),
+        },
+    }))
+}
+
+pub(crate) fn json_open_error(error: &anyhow::Error) -> *mut c_char {
+    if let Some(resolve_error) = error.downcast_ref::<crate::catalog::ResolveError>() {
+        json_resolve_error(resolve_error)
+    } else {
+        json_error(error)
+    }
+}
+
 pub(crate) fn discovery_timeout(timeout_ms: u32) -> std::time::Duration {
     std::time::Duration::from_millis(u64::from(timeout_ms.clamp(100, 60_000)))
 }

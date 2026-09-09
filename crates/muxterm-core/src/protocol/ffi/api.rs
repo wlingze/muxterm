@@ -67,7 +67,8 @@ pub use super::functions::snapshot::{
 };
 pub use super::functions::support::MuxtermHandle;
 pub(crate) use super::functions::support::{
-    cstr_opt, discovery_timeout, json_error, json_string, resolve_c_io_pane,
+    cstr_opt, discovery_timeout, json_error, json_open_error, json_resolve_error, json_string,
+    resolve_c_io_pane,
 };
 pub(crate) use super::functions::task::{ctask_to_task, task_result_code};
 pub use super::functions::task::{
@@ -197,6 +198,64 @@ mod tests {
                 (*h).catalog.pool().is_empty(),
                 "production FFI handle must not leave a live pool in Catalog"
             );
+            muxterm_free(h);
+        }
+    }
+
+    #[test]
+    fn ffi_open_json_returns_structured_resolve_error() {
+        let h = muxterm_catalog_new();
+        assert!(!h.is_null());
+        unsafe {
+            let request = CString::new(
+                r#"{"candidate":{"kind":"project","value":{"project_id":"missing-project"}},"intent":"attach_only"}"#,
+            )
+            .unwrap();
+
+            let response = muxterm_open_json(h, request.as_ptr());
+            assert!(!response.is_null());
+            let text = CStr::from_ptr(response).to_string_lossy().into_owned();
+            muxterm_free_string(response);
+            let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(value["ok"], false, "{text}");
+            assert_eq!(value["error"]["code"], "project_not_found", "{text}");
+            assert_eq!(value["error"]["stage"], "identity", "{text}");
+            assert_eq!(
+                value["error"]["message"], "project 不存在: missing-project",
+                "{text}"
+            );
+
+            muxterm_free(h);
+        }
+    }
+
+    #[test]
+    fn ffi_workspace_open_target_json_returns_structured_provider_error() {
+        let h = muxterm_catalog_new();
+        assert!(!h.is_null());
+        unsafe {
+            // The compatibility target parser accepts this product runtime;
+            // replace the built-in Catalog to exercise provider resolution.
+            (*h).catalog = crate::catalog::Catalog::new();
+            let response = muxterm_workspace_open_target_json(
+                h,
+                c"{\"name\":\"missing-runtime\",\"runtime\":\"shell\",\"transport\":\"local\",\"path\":\"/tmp\"}".as_ptr(),
+                c"attach_only".as_ptr(),
+            );
+            assert!(!response.is_null());
+            let text = CStr::from_ptr(response).to_string_lossy().into_owned();
+            muxterm_free_string(response);
+            let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(value["ok"], false, "{text}");
+            assert_eq!(value["error"]["code"], "unknown_runtime", "{text}");
+            assert_eq!(value["error"]["stage"], "identity", "{text}");
+            assert!(
+                value["error"]["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("unknown runtime")),
+                "{text}"
+            );
+
             muxterm_free(h);
         }
     }
