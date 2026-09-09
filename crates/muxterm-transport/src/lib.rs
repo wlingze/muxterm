@@ -11,7 +11,7 @@ pub mod provider;
 pub mod registry;
 pub mod ssh;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -185,6 +185,28 @@ pub trait Transport: Send {
     /// `pty_size` 初始字符格尺寸。
     fn spawn_exec(&mut self, program: &str, args: &[&str], pty_size: PtySize)
         -> anyhow::Result<()>;
+
+    /// Spawn a PTY process with target-side working directory and environment.
+    ///
+    /// Existing callers that only need the basic process contract can keep
+    /// using [`Transport::spawn_exec`]. Providers that expose an
+    /// `Exec` [`ChannelRequest`] should override this method when the
+    /// underlying process supports these options.
+    fn spawn_exec_with_options(
+        &mut self,
+        program: &str,
+        args: &[&str],
+        pty_size: PtySize,
+        cwd: Option<&Path>,
+        env: &[(String, String)],
+    ) -> anyhow::Result<()> {
+        if cwd.is_some() || !env.is_empty() {
+            return Err(anyhow::anyhow!(
+                "transport does not support process cwd/env options"
+            ));
+        }
+        self.spawn_exec(program, args, pty_size)
+    }
 
     /// 非阻塞读取 stdout/pty master 的下一块字节。None 表示 EOF / 进程退出。
     fn read(&mut self) -> std::io::Result<Option<Vec<u8>>>;

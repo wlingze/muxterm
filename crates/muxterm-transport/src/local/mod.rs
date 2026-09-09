@@ -6,6 +6,7 @@
 pub mod provider;
 
 use std::io::{Read, Write};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
@@ -41,8 +42,13 @@ impl Default for LocalProcessTransport {
     }
 }
 
-impl Transport for LocalProcessTransport {
-    fn spawn_exec(&mut self, program: &str, args: &[&str], pty_size: crate::PtySize) -> Result<()> {
+impl LocalProcessTransport {
+    fn spawn_command(
+        &mut self,
+        program: &str,
+        cmd: CommandBuilder,
+        pty_size: crate::PtySize,
+    ) -> Result<()> {
         let pty_system = NativePtySystem::default();
         let pair = pty_system
             .openpty(PtySize {
@@ -53,10 +59,6 @@ impl Transport for LocalProcessTransport {
             })
             .map_err(|e| anyhow::anyhow!(TransportError::Spawn(e.to_string())))?;
 
-        let mut cmd = CommandBuilder::new(program);
-        for arg in args {
-            cmd.arg(arg);
-        }
         let child = pair.slave.spawn_command(cmd).map_err(|e| {
             anyhow::anyhow!(TransportError::Spawn(format!("spawn {program} 失败: {e}")))
         })?;
@@ -87,6 +89,37 @@ impl Transport for LocalProcessTransport {
         self.child = Some(child);
         self.reader = Some(rx);
         Ok(())
+    }
+}
+
+impl Transport for LocalProcessTransport {
+    fn spawn_exec(&mut self, program: &str, args: &[&str], pty_size: crate::PtySize) -> Result<()> {
+        let mut cmd = CommandBuilder::new(program);
+        for arg in args {
+            cmd.arg(arg);
+        }
+        self.spawn_command(program, cmd, pty_size)
+    }
+
+    fn spawn_exec_with_options(
+        &mut self,
+        program: &str,
+        args: &[&str],
+        pty_size: crate::PtySize,
+        cwd: Option<&Path>,
+        env: &[(String, String)],
+    ) -> Result<()> {
+        let mut cmd = CommandBuilder::new(program);
+        for arg in args {
+            cmd.arg(arg);
+        }
+        if let Some(cwd) = cwd {
+            cmd.cwd(cwd);
+        }
+        for (key, value) in env {
+            cmd.env(key, value);
+        }
+        self.spawn_command(program, cmd, pty_size)
     }
 
     fn read(&mut self) -> std::io::Result<Option<Vec<u8>>> {
