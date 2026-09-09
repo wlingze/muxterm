@@ -26,6 +26,62 @@ pub fn resolve_tmux_binary() -> String {
     "tmux".to_string()
 }
 
+/// 展开命令和工作目录中的简单环境变量占位（`$SHELL` / `$HOME`）。
+pub fn expand_config_value(raw: &str) -> String {
+    let t = raw.trim();
+    if t == "$SHELL" {
+        return std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+    }
+    if t == "$HOME" {
+        return std::env::var("HOME").unwrap_or_else(|_| "/".into());
+    }
+    if let Some(rest) = t.strip_prefix('$') {
+        if let Ok(v) = std::env::var(rest) {
+            return v;
+        }
+    }
+    if t == "~" {
+        return std::env::var("HOME").unwrap_or_else(|_| "/".into());
+    }
+    if let Some(rest) = t.strip_prefix("~/") {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
+        return format!("{}/{}", home.trim_end_matches('/'), rest);
+    }
+    t.to_string()
+}
+
+/// 从默认命令解析 argv；空命令回退到当前 shell。
+pub fn parse_command_argv(command: &str) -> Vec<String> {
+    let expanded = expand_config_value(command);
+    let parts: Vec<String> = expanded.split_whitespace().map(str::to_string).collect();
+    if parts.is_empty() {
+        vec![expand_config_value("$SHELL")]
+    } else {
+        parts
+    }
+}
+
+/// macOS GUI 以登录 shell 启动单独指定的 zsh/bash，补齐 Terminal.app 的环境。
+pub fn prepare_pane_argv_for_platform(mut argv: Vec<String>, is_macos: bool) -> Vec<String> {
+    if !is_macos || argv.len() != 1 {
+        return argv;
+    }
+    let shell = program_basename(&argv[0]);
+    if matches!(shell.as_str(), "zsh" | "bash") {
+        argv.push("-l".into());
+    }
+    argv
+}
+
+/// 返回 argv[0] 的 basename，用作 pane 默认显示名。
+pub fn program_basename(argv0: &str) -> String {
+    Path::new(argv0)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(argv0)
+        .to_string()
+}
+
 fn which(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path) {
@@ -40,6 +96,57 @@ fn which(name: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn expand_and_parse_command() {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+        assert_eq!(expand_config_value("$SHELL"), shell);
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
+        assert_eq!(expand_config_value("$HOME"), home);
+        assert_eq!(expand_config_value("~"), home);
+        assert_eq!(
+            expand_config_value("~/Developer/muxterm"),
+            format!("{}/Developer/muxterm", home.trim_end_matches('/'))
+        );
+        assert_eq!(expand_config_value("/bin/bash"), "/bin/bash");
+        assert_eq!(
+            parse_command_argv("/usr/bin/python3 script.py"),
+            vec!["/usr/bin/python3".to_string(), "script.py".to_string()]
+        );
+        assert_eq!(program_basename("/usr/bin/bash"), "bash");
+        assert_eq!(program_basename("vim"), "vim");
+    }
+
+    #[test]
+    fn program_basename_handles_paths() {
+        assert_eq!(program_basename("/usr/bin/bash"), "bash");
+        assert_eq!(program_basename("/usr/local/bin/opencode"), "opencode");
+        assert_eq!(program_basename("python3"), "python3");
+        assert_eq!(program_basename(""), "");
+    }
+
+    #[test]
+    fn macos_default_shell_uses_login_mode() {
+        assert_eq!(
+            prepare_pane_argv_for_platform(vec!["/bin/zsh".into()], true),
+            vec!["/bin/zsh".to_string(), "-l".to_string()]
+        );
+    }
+
+    #[test]
+    fn explicit_shell_arguments_are_preserved() {
+        assert_eq!(
+            prepare_pane_argv_for_platform(vec!["/bin/zsh".into(), "-f".into()], true),
+            vec!["/bin/zsh".to_string(), "-f".to_string()]
+        );
+    }
+
+    #[test]
+    fn empty_command_uses_shell() {
+        let shell = expand_config_value("$SHELL");
+        assert_eq!(parse_command_argv(""), vec![shell.clone()]);
+        assert_eq!(parse_command_argv("   "), vec![shell]);
+    }
 
     #[test]
     fn resolve_tmux_returns_nonempty_path() {

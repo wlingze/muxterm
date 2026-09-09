@@ -22,7 +22,9 @@
 use anyhow::{Context, Result};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::path::Path;
+use std::path::PathBuf;
 
 // ============================================================================
 // 顶层配置
@@ -411,66 +413,6 @@ impl Default for Config {
             keybindings: default_keybindings(),
         }
     }
-}
-
-/// 展开配置里的简单环境变量占位（`$SHELL` / `$HOME`）。
-pub fn expand_config_value(raw: &str) -> String {
-    let t = raw.trim();
-    if t == "$SHELL" {
-        return std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
-    }
-    if t == "$HOME" {
-        return std::env::var("HOME").unwrap_or_else(|_| "/".into());
-    }
-    if let Some(rest) = t.strip_prefix('$') {
-        if let Ok(v) = std::env::var(rest) {
-            return v;
-        }
-    }
-    // QuickConnect/配置文件里的 `~` / `~/...`：展开成用户主目录，否则
-    // tmux new-session -c / local shell cwd 会拿到字面 `~` 报 ENOENT。
-    if t == "~" {
-        return std::env::var("HOME").unwrap_or_else(|_| "/".into());
-    }
-    if let Some(rest) = t.strip_prefix("~/") {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
-        return format!("{}/{}", home.trim_end_matches('/'), rest);
-    }
-    t.to_string()
-}
-
-/// 从 `default_command` 解析 argv（空白分割；无空白则单元素）。
-pub fn parse_command_argv(command: &str) -> Vec<String> {
-    let expanded = expand_config_value(command);
-    let parts: Vec<String> = expanded.split_whitespace().map(|s| s.to_string()).collect();
-    if parts.is_empty() {
-        vec![expand_config_value("$SHELL")]
-    } else {
-        parts
-    }
-}
-
-/// macOS GUI applications start with a minimal environment. Launch the user's
-/// default zsh/bash as a login shell so /etc/zprofile and ~/.zprofile establish
-/// the same Homebrew PATH as Terminal.app. Explicit command arguments are kept.
-pub fn prepare_pane_argv_for_platform(mut argv: Vec<String>, is_macos: bool) -> Vec<String> {
-    if !is_macos || argv.len() != 1 {
-        return argv;
-    }
-    let shell = program_basename(&argv[0]);
-    if matches!(shell.as_str(), "zsh" | "bash") {
-        argv.push("-l".into());
-    }
-    argv
-}
-
-/// argv[0] 的 basename，用作 pane 默认显示名。
-pub fn program_basename(argv0: &str) -> String {
-    Path::new(argv0)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or(argv0)
-        .to_string()
 }
 
 /// 解码 waitpid 风格的 status → 退出码（信号终止为 128+sig）。
@@ -1003,26 +945,6 @@ on_program_exit_abnormal = "close"
     }
 
     #[test]
-    fn expand_and_parse_command() {
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
-        assert_eq!(expand_config_value("$SHELL"), shell);
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
-        assert_eq!(expand_config_value("$HOME"), home);
-        assert_eq!(expand_config_value("~"), home);
-        assert_eq!(
-            expand_config_value("~/Developer/muxterm"),
-            format!("{}/Developer/muxterm", home.trim_end_matches('/'))
-        );
-        assert_eq!(expand_config_value("/bin/bash"), "/bin/bash");
-        assert_eq!(
-            parse_command_argv("/usr/bin/python3 script.py"),
-            vec!["/usr/bin/python3".to_string(), "script.py".to_string()]
-        );
-        assert_eq!(program_basename("/usr/bin/bash"), "bash");
-        assert_eq!(program_basename("vim"), "vim");
-    }
-
-    #[test]
     fn decode_wait_status_exited_and_signaled() {
         // exit 0 → status 0
         assert_eq!(decode_wait_status(0), 0);
@@ -1125,38 +1047,6 @@ action = "new_tab"
         assert!(!ui.tab_bar_at_bottom());
         ui.tab_bar_position = "Bottom".into();
         assert!(ui.tab_bar_at_bottom());
-    }
-
-    #[test]
-    fn test_config_program_basename_paths() {
-        // 对应：标题栏/tab 名从路径抽 basename
-        assert_eq!(program_basename("/usr/bin/bash"), "bash");
-        assert_eq!(program_basename("/usr/local/bin/opencode"), "opencode");
-        assert_eq!(program_basename("python3"), "python3");
-        assert_eq!(program_basename(""), "");
-    }
-
-    #[test]
-    fn macos_default_shell_uses_login_mode() {
-        assert_eq!(
-            prepare_pane_argv_for_platform(vec!["/bin/zsh".into()], true),
-            vec!["/bin/zsh".to_string(), "-l".to_string()]
-        );
-    }
-
-    #[test]
-    fn explicit_shell_arguments_are_preserved() {
-        assert_eq!(
-            prepare_pane_argv_for_platform(vec!["/bin/zsh".into(), "-f".into()], true),
-            vec!["/bin/zsh".to_string(), "-f".to_string()]
-        );
-    }
-
-    #[test]
-    fn test_config_parse_command_argv_empty_uses_shell() {
-        let shell = expand_config_value("$SHELL");
-        assert_eq!(parse_command_argv(""), vec![shell.clone()]);
-        assert_eq!(parse_command_argv("   "), vec![shell]);
     }
 
     #[test]

@@ -8,7 +8,7 @@ use std::collections::{HashSet, VecDeque};
 
 use anyhow::Result;
 
-use crate::config::parse_command_argv;
+use crate::executable::parse_command_argv;
 use crate::protocol::state::{MutationKind, MutationResult, State, StateChange};
 use crate::protocol::task::{Task, TaskOutcome};
 use crate::protocol::terminal::input::KeyEvent;

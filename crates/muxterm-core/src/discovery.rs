@@ -67,7 +67,7 @@ pub fn create_local_tmux_session(
         cmd.args(["-L", socket]);
     }
     // 展开 `~`：QuickConnect 的 path 常写 `~/Developer/...`，tmux 不认字面 ~。
-    let directory = crate::config::expand_config_value(directory);
+    let directory = crate::executable::expand_config_value(directory);
     cmd.args(["new-session", "-d", "-s", session, "-c", &directory]);
     let output = cmd.output()?;
     if output.status.success() {
