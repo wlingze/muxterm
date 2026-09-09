@@ -4,21 +4,21 @@
 //! poll。这样后续 GTK 的主线程桥可以把同一批带身份事件写入 `ViewStore`，
 //! 而不会再出现多个 frontend 路径分别读取同一个 Core handle。
 
-#[cfg(feature = "gtk")]
+#[cfg(all(feature = "gtk", test))]
 use crate::platform::ffi_client::{ClientLayout, ClientPane, ClientTab, ClientWorkspace};
 use crate::platform::ffi_client::{ClientWorkspaceEvent, FfiClient};
 
-#[cfg(feature = "gtk")]
+#[cfg(all(feature = "gtk", test))]
 use crate::core::protocol::layout::{LayoutNode, SplitDir};
-#[cfg(feature = "gtk")]
+#[cfg(all(feature = "gtk", test))]
 use crate::core::protocol::state::StateChange;
-#[cfg(feature = "gtk")]
+#[cfg(all(feature = "gtk", test))]
 use crate::core::protocol::task::Task;
-#[cfg(feature = "gtk")]
+#[cfg(all(feature = "gtk", test))]
 use crate::core::types::PaneId;
-#[cfg(feature = "gtk")]
+#[cfg(all(feature = "gtk", test))]
 use crate::core::workspace::id::WorkspaceId;
-#[cfg(feature = "gtk")]
+#[cfg(all(feature = "gtk", test))]
 use crate::core::workspace::pool::WorkspacePool;
 #[cfg(feature = "gtk")]
 use crate::platform::linux::view_store::ViewStore;
@@ -28,7 +28,7 @@ pub struct EventPump {
     client: FfiClient,
 }
 
-#[cfg(feature = "gtk")]
+#[cfg(all(feature = "gtk", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PoolInputOutcome {
     Sent,
@@ -93,7 +93,7 @@ impl EventPump {
     /// Send one coalesced Surface input through the compatibility source.
     /// The public shape deliberately matches the eventual FFI command path,
     /// so GTK input does not own a second direct Workspace execution branch.
-    #[cfg(feature = "gtk")]
+    #[cfg(all(feature = "gtk", test))]
     pub fn send_pool_input(
         pool: &mut WorkspacePool,
         workspace_id: &WorkspaceId,
@@ -116,7 +116,7 @@ impl EventPump {
     /// Copy one compatibility-pool topology into the same owned DTO sink used
     /// by the real FFI event source. The pool is only a temporary source while
     /// GTK finishes moving to the production Muxterm handle.
-    #[cfg(feature = "gtk")]
+    #[cfg(all(feature = "gtk", test))]
     pub fn sync_pool_workspace(
         pool: &WorkspacePool,
         store: &mut ViewStore,
@@ -203,14 +203,14 @@ impl EventPump {
     /// Poll the legacy GTK pool through the same event-pump boundary used by
     /// the FFI source. This adapter is temporary: it keeps the production
     /// migration to one consumer from adding a second runtime owner.
-    #[cfg(feature = "gtk")]
+    #[cfg(all(feature = "gtk", test))]
     pub fn poll_pool_background(pool: &mut WorkspacePool) -> Vec<(WorkspaceId, Vec<StateChange>)> {
         pool.poll_background()
     }
 
     /// Poll the active workspace through the compatibility source and retain
     /// its stable identity next to the batch for the eventual FFI path.
-    #[cfg(feature = "gtk")]
+    #[cfg(all(feature = "gtk", test))]
     pub fn poll_pool_active(pool: &mut WorkspacePool) -> Option<(WorkspaceId, Vec<StateChange>)> {
         let workspace_id = pool.active_id()?.clone();
         let events = pool.active_mut()?.refresh();
@@ -263,6 +263,7 @@ impl EventPump {
 }
 
 #[cfg(feature = "gtk")]
+#[cfg(all(feature = "gtk", test))]
 fn client_layout_from_core(layout: &LayoutNode) -> ClientLayout {
     match layout {
         LayoutNode::Leaf(pane_id) => ClientLayout::Leaf { pane_id: pane_id.0 },
