@@ -18,10 +18,91 @@ use gtk4::{
 };
 use serde_json::Value;
 
-use crate::core::config_service::{JsonPatchOperation, SettingsService};
-use crate::platform::ffi_client::ClientRuntimeInfo;
+use crate::platform::ffi_client::{
+    ClientConfigSnapshot, ClientJsonPatchOperation, ClientRuntimeInfo, FfiClient,
+};
 use crate::platform::i18n::{self, Key as TextKey};
 use crate::platform::linux::quickconnect::store::QuickConnectStore;
+
+/// FFI-backed configuration operations used by the GTK settings views.
+///
+/// The GTK callbacks outlive the stack frame that opened the window, so they
+/// receive operations rather than a borrowed `FfiClient`. The production
+/// window resolves the client from `EventPump` at call time; tests can keep a
+/// dedicated catalog client in an `Rc<RefCell<_>>`.
+type ConfigDescribeFn = dyn Fn() -> anyhow::Result<ClientConfigSnapshot>;
+type ConfigApplyFn = dyn Fn(&[ClientJsonPatchOperation]) -> anyhow::Result<ClientConfigSnapshot>;
+type ConfigReloadFn = dyn Fn() -> anyhow::Result<ClientConfigSnapshot>;
+
+#[derive(Clone)]
+pub struct ConfigApi {
+    describe: Rc<ConfigDescribeFn>,
+    apply: Rc<ConfigApplyFn>,
+    reload: Rc<ConfigReloadFn>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+struct ShortcutBindingDto {
+    key: String,
+    #[serde(default)]
+    modifiers: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+struct ShortcutOverrideDto {
+    action: String,
+    #[serde(default)]
+    bindings: Vec<ShortcutBindingDto>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct ActionDescriptorDto {
+    id: String,
+    title_key: String,
+}
+
+impl ConfigApi {
+    pub fn from_callbacks(
+        describe: impl Fn() -> anyhow::Result<ClientConfigSnapshot> + 'static,
+        apply: impl Fn(&[ClientJsonPatchOperation]) -> anyhow::Result<ClientConfigSnapshot> + 'static,
+        reload: impl Fn() -> anyhow::Result<ClientConfigSnapshot> + 'static,
+    ) -> Self {
+        Self {
+            describe: Rc::new(describe),
+            apply: Rc::new(apply),
+            reload: Rc::new(reload),
+        }
+    }
+
+    pub fn from_client(client: Rc<RefCell<FfiClient>>) -> Self {
+        let describe_client = client.clone();
+        let apply_client = client.clone();
+        let reload_client = client;
+        Self::from_callbacks(
+            move || describe_client.borrow().config_describe(),
+            move |patch| apply_client.borrow().config_apply(patch),
+            move || {
+                reload_client.borrow().config_reload()?;
+                reload_client.borrow().config_describe()
+            },
+        )
+    }
+
+    pub fn describe(&self) -> anyhow::Result<ClientConfigSnapshot> {
+        (self.describe)()
+    }
+
+    pub fn apply(
+        &self,
+        patch: &[ClientJsonPatchOperation],
+    ) -> anyhow::Result<ClientConfigSnapshot> {
+        (self.apply)(patch)
+    }
+
+    pub fn reload(&self) -> anyhow::Result<ClientConfigSnapshot> {
+        (self.reload)()
+    }
+}
 
 enum ControlKind {
     Switch(gtk4::Switch),
@@ -341,6 +422,8 @@ fn control_row(field: &Value, values: &Value) -> (GtkBox, Option<FieldControl>) 
 pub fn show(
     parent: &impl IsA<Window>,
     config_path: PathBuf,
+    config: ConfigApi,
+    snapshot: ClientConfigSnapshot,
     on_saved: Box<dyn Fn() + 'static>,
     project_editor: Option<(
         Vec<ClientRuntimeInfo>,
@@ -359,14 +442,6 @@ pub fn show(
     win.set_widget_name("muxterm-prefs-window");
     win.add_css_class("muxterm-preferences-window");
 
-    let service = SettingsService::open(&config_path).unwrap_or_else(|error| {
-        tracing::warn!(
-            target = "muxterm::config",
-            "设置窗口使用内存默认值: {error}"
-        );
-        SettingsService::in_memory_default(config_path.clone())
-    });
-    let snapshot = service.snapshot();
     let values = snapshot.values.clone();
     let manifest = snapshot.manifest.clone();
 
@@ -656,6 +731,7 @@ pub fn show(
         for control in controls.borrow().iter() {
             if let ControlKind::Summary(button) = &control.kind {
                 let config_path = config_path.clone();
+                let config = config.clone();
                 let on_saved = on_saved.clone();
                 let project_editor = project_editor.clone();
                 let editor_window = editor_window.clone();
@@ -665,6 +741,7 @@ pub fn show(
                             show_project_manager(
                                 &editor_window,
                                 config_path.clone(),
+                                config.clone(),
                                 runtimes.clone(),
                                 hosts.clone(),
                                 on_saved.clone(),
@@ -676,6 +753,7 @@ pub fn show(
                         show_shortcut_manager(
                             &editor_window,
                             config_path.clone(),
+                            config.clone(),
                             on_saved.clone(),
                         );
                     });
@@ -741,33 +819,18 @@ pub fn show(
     save.connect_clicked({
         let win = win.clone();
         let on_saved = on_saved.clone();
-        let config_path = config_path.clone();
+        let config = config.clone();
         let controls = controls.clone();
         let allow_close = allow_close.clone();
         let save_status = save_status.clone();
         move |_| {
-            let mut service = match SettingsService::open(&config_path) {
-                Ok(service) => service,
-                Err(error) => {
-                    tracing::error!(target = "muxterm::config", "打开配置事务失败: {error}");
-                    save_status
-                        .set_text("Could not read config.toml. Check the file and try again.");
-                    save_status.add_css_class("error");
-                    return;
-                }
-            };
-            let transaction = service.begin();
-            let operations: Vec<JsonPatchOperation> = controls
+            let operations: Vec<ClientJsonPatchOperation> = controls
                 .borrow()
                 .iter()
                 .filter_map(|control| control.value().map(|value| replace(&control.path, value)))
                 .collect();
-            if let Err(error) = service
-                .patch(&transaction, &operations)
-                .and_then(|_| service.commit(&transaction).map(|_| ()))
-            {
+            if let Err(error) = config.apply(&operations) {
                 tracing::error!(target = "muxterm::config", "保存设置失败: {error}");
-                let _ = service.cancel(&transaction);
                 save_status.set_text(&format!("Could not save settings: {error}"));
                 save_status.add_css_class("error");
                 return;
@@ -806,20 +869,40 @@ pub fn show(
         gtk4::gio::FileMonitorFlags::NONE,
         gtk4::gio::Cancellable::NONE,
     ) {
+        let config = config.clone();
         let on_saved = on_saved.clone();
-        monitor.connect_changed(move |_, _, _, _| on_saved());
+        monitor.connect_changed(move |_, _, _, _| match config.reload() {
+            Ok(_) => on_saved(),
+            Err(error) => tracing::warn!(
+                target = "muxterm::config",
+                "外部配置变更重新加载失败: {error}"
+            ),
+        });
     }
 
     win.present();
     win
 }
 
-fn replace(path: &str, value: Value) -> JsonPatchOperation {
-    JsonPatchOperation {
+fn replace(path: &str, value: Value) -> ClientJsonPatchOperation {
+    ClientJsonPatchOperation {
         op: "replace".into(),
         path: path.into(),
         value: Some(value),
     }
+}
+
+fn project_documents(
+    snapshot: &ClientConfigSnapshot,
+) -> anyhow::Result<Vec<crate::core::config_service::ProjectDocument>> {
+    Ok(serde_json::from_value(snapshot.values["projects"].clone())?)
+}
+
+fn persist_projects(
+    config: &ConfigApi,
+    projects: &[crate::core::config_service::ProjectDocument],
+) -> anyhow::Result<ClientConfigSnapshot> {
+    config.apply(&[replace("/projects", serde_json::to_value(projects)?)])
 }
 
 fn pointer<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
@@ -890,6 +973,7 @@ fn confirm_discard(parent: &impl IsA<Window>, on_discard: impl Fn() + 'static) {
 fn show_project_manager(
     parent: &impl IsA<Window>,
     config_path: PathBuf,
+    config: ConfigApi,
     runtimes: Vec<ClientRuntimeInfo>,
     hosts: Vec<crate::platform::ffi_client::SshHostEntry>,
     on_changed: Rc<Box<dyn Fn() + 'static>>,
@@ -944,7 +1028,7 @@ fn show_project_manager(
 
     let refresh = {
         let list = list.clone();
-        let config_path = config_path.clone();
+        let config = config.clone();
         let win_for_rows = win.clone();
         let hosts_for_rows = hosts.clone();
         let runtimes_for_rows = runtimes.clone();
@@ -953,17 +1037,17 @@ fn show_project_manager(
             while let Some(child) = list.first_child() {
                 list.remove(&child);
             }
-            let mut service = match SettingsService::open(&config_path) {
-                Ok(service) => service,
-                Err(_) => return,
+            let projects = match config
+                .describe()
+                .and_then(|snapshot| project_documents(&snapshot))
+            {
+                Ok(projects) => projects,
+                Err(error) => {
+                    tracing::warn!(target = "muxterm::config", "读取 Project 配置失败: {error}");
+                    return;
+                }
             };
-            if let Err(error) = service.migrate_legacy_quickconnect() {
-                tracing::warn!(
-                    target = "muxterm::config",
-                    "QuickConnect 迁移未完成: {error}"
-                );
-            }
-            let projects = service.document().projects.clone();
+            let project_store = QuickConnectStore::from_project_documents(&projects);
             for project in &projects {
                 let row = GtkBox::builder()
                     .orientation(Orientation::Horizontal)
@@ -998,15 +1082,14 @@ fn show_project_manager(
                 let remove = Button::with_label("Remove");
                 remove.add_css_class("destructive-action");
                 let project_for_edit = project.clone();
-                let config_for_edit = config_path.clone();
+                let config_api_for_edit = config.clone();
+                let store_for_edit = project_store.clone();
                 let on_changed = on_changed_for_rows.clone();
                 let win = win_for_rows.clone();
                 let hosts = hosts_for_rows.clone();
                 let runtimes = runtimes_for_rows.clone();
                 edit.connect_clicked(move |_| {
-                    let store = Rc::new(RefCell::new(QuickConnectStore::new_unified(Some(
-                        config_for_edit.clone(),
-                    ))));
+                    let store = Rc::new(RefCell::new(store_for_edit.clone()));
                     let target = match project_for_edit.to_target() {
                         Ok(target) => target,
                         Err(error) => {
@@ -1018,6 +1101,7 @@ fn show_project_manager(
                         }
                     };
                     let store_inner = store.clone();
+                    let config = config_api_for_edit.clone();
                     let on_changed = on_changed.clone();
                     crate::platform::linux::target_config_window::show(
                         &win,
@@ -1026,42 +1110,41 @@ fn show_project_manager(
                         hosts.clone(),
                         runtimes.clone(),
                         move |saved| {
-                            store_inner.borrow_mut().upsert_project(&saved);
-                            on_changed();
+                            let mut store = store_inner.borrow_mut();
+                            store.upsert_project(&saved);
+                            let projects = store.project_documents();
+                            drop(store);
+                            match persist_projects(&config, &projects) {
+                                Ok(_) => on_changed(),
+                                Err(error) => tracing::error!(
+                                    target = "muxterm::config",
+                                    "保存 Project 失败: {error}"
+                                ),
+                            }
                         },
                         || {},
                     );
                 });
                 let project_for_remove = project.clone();
-                let config_for_remove = config_path.clone();
+                let config_for_remove = config.clone();
                 let on_changed = on_changed_for_rows.clone();
                 remove.connect_clicked(move |_| {
-                    let mut service = match SettingsService::open(&config_for_remove) {
-                        Ok(service) => service,
+                    let mut projects = match config_for_remove
+                        .describe()
+                        .and_then(|snapshot| project_documents(&snapshot))
+                    {
+                        Ok(projects) => projects,
                         Err(error) => {
-                            tracing::error!(target = "muxterm::config", "打开配置失败: {error}");
+                            tracing::error!(
+                                target = "muxterm::config",
+                                "读取 Project 配置失败: {error}"
+                            );
                             return;
                         }
                     };
-                    let transaction = service.begin();
-                    let index = service
-                        .document()
-                        .projects
-                        .iter()
-                        .position(|item| item.id == project_for_remove.id);
-                    if let Some(index) = index {
-                        let operation = JsonPatchOperation {
-                            op: "remove".into(),
-                            path: format!("/projects/{index}"),
-                            value: None,
-                        };
-                        if service
-                            .patch(&transaction, &[operation])
-                            .and_then(|_| service.commit(&transaction).map(|_| ()))
-                            .is_ok()
-                        {
-                            on_changed();
-                        }
+                    projects.retain(|item| item.id != project_for_remove.id);
+                    if persist_projects(&config_for_remove, &projects).is_ok() {
+                        on_changed();
                     }
                 });
                 row.append(&edit);
@@ -1078,8 +1161,13 @@ fn show_project_manager(
         gtk4::gio::FileMonitorFlags::NONE,
         gtk4::gio::Cancellable::NONE,
     ) {
+        let config = config.clone();
         let refresh = refresh.clone();
-        monitor.connect_changed(move |_, _, _, _| refresh.borrow()());
+        monitor.connect_changed(move |_, _, _, _| {
+            if config.reload().is_ok() {
+                refresh.borrow()();
+            }
+        });
     }
 
     {
@@ -1090,14 +1178,25 @@ fn show_project_manager(
         let win = win.clone();
         let hosts = hosts.clone();
         let runtimes = runtimes.clone();
+        let config = config.clone();
         let on_changed = on_changed.clone();
         let refresh = refresh.clone();
         add.connect_clicked(move |_| {
-            let config_path = config_path.clone();
-            let store = Rc::new(RefCell::new(QuickConnectStore::new_unified(Some(
-                config_path.clone(),
-            ))));
+            let projects = match config
+                .describe()
+                .and_then(|snapshot| project_documents(&snapshot))
+            {
+                Ok(projects) => projects,
+                Err(error) => {
+                    tracing::error!(target = "muxterm::config", "读取 Project 配置失败: {error}");
+                    return;
+                }
+            };
+            let store = Rc::new(RefCell::new(QuickConnectStore::from_project_documents(
+                &projects,
+            )));
             let store_inner = store.clone();
+            let config_for_save = config.clone();
             let refresh = refresh.clone();
             let on_changed = on_changed.clone();
             crate::platform::linux::target_config_window::show(
@@ -1107,9 +1206,20 @@ fn show_project_manager(
                 hosts.clone(),
                 runtimes.clone(),
                 move |saved| {
-                    store_inner.borrow_mut().upsert_project(&saved);
-                    on_changed();
-                    refresh.borrow()();
+                    let mut store = store_inner.borrow_mut();
+                    store.upsert_project(&saved);
+                    let projects = store.project_documents();
+                    drop(store);
+                    match persist_projects(&config_for_save, &projects) {
+                        Ok(_) => {
+                            on_changed();
+                            refresh.borrow()();
+                        }
+                        Err(error) => tracing::error!(
+                            target = "muxterm::config",
+                            "保存 Project 失败: {error}"
+                        ),
+                    }
                 },
                 || {},
             );
@@ -1121,6 +1231,7 @@ fn show_project_manager(
 fn show_shortcut_manager(
     app: &impl IsA<Window>,
     config_path: PathBuf,
+    config: ConfigApi,
     on_changed: Rc<Box<dyn Fn() + 'static>>,
 ) {
     install_preferences_css();
@@ -1170,30 +1281,27 @@ fn show_shortcut_manager(
 
     let refresh = {
         let list = list.clone();
-        let config_path = config_path.clone();
+        let config = config.clone();
         let win_for_rows = win.clone();
         let on_changed_for_rows = on_changed.clone();
         move || {
             while let Some(child) = list.first_child() {
                 list.remove(&child);
             }
-            let mut service = match SettingsService::open(&config_path) {
-                Ok(service) => service,
-                Err(_) => return,
+            let snapshot = match config.describe() {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    tracing::warn!(target = "muxterm::config", "读取快捷键配置失败: {error}");
+                    return;
+                }
             };
-            if let Err(error) = service.migrate_legacy_quickconnect() {
-                tracing::warn!(
-                    target = "muxterm::config",
-                    "QuickConnect 迁移未完成: {error}"
-                );
-            }
-            let shortcuts = service.document().shortcuts.clone();
-            let catalog = crate::core::config_service::action_catalog();
+            let shortcuts: Vec<ShortcutOverrideDto> =
+                serde_json::from_value(snapshot.values["shortcuts"]["overrides"].clone())
+                    .unwrap_or_default();
+            let catalog: Vec<ActionDescriptorDto> =
+                serde_json::from_value(snapshot.action_catalog.clone()).unwrap_or_default();
             for action in &catalog {
-                let override_item = shortcuts
-                    .overrides
-                    .iter()
-                    .find(|item| item.action == action.id);
+                let override_item = shortcuts.iter().find(|item| item.action == action.id);
                 let row = GtkBox::builder()
                     .orientation(Orientation::Horizontal)
                     .spacing(8)
@@ -1232,46 +1340,39 @@ fn show_shortcut_manager(
                 bind.add_css_class("prefs-inline-action");
                 let unbind = Button::with_label("Unbind");
                 unbind.add_css_class("prefs-inline-action");
-                let action_id = action.id.to_string();
-                let config_for_bind = config_path.clone();
+                let action_id = action.id.clone();
+                let config_for_bind = config.clone();
                 let win_for_capture = win_for_rows.clone();
                 let on_changed = on_changed_for_rows.clone();
                 bind.connect_clicked(move |_| {
                     let action_id = action_id.clone();
                     capture_shortcut(&win_for_capture, {
-                        let config_path = config_for_bind.clone();
+                        let config = config_for_bind.clone();
                         let on_changed = on_changed.clone();
                         move |key, modifiers| {
-                            let mut service = match SettingsService::open(&config_path) {
-                                Ok(service) => service,
+                            let snapshot = match config.describe() {
+                                Ok(snapshot) => snapshot,
                                 Err(error) => {
                                     tracing::error!(
                                         target = "muxterm::config",
-                                        "打开配置事务失败: {error}"
+                                        "读取快捷键配置失败: {error}"
                                     );
                                     return;
                                 }
                             };
-                            let transaction = service.begin();
-                            let mut overrides = service.document().shortcuts.overrides.clone();
+                            let mut overrides: Vec<ShortcutOverrideDto> = serde_json::from_value(
+                                snapshot.values["shortcuts"]["overrides"].clone(),
+                            )
+                            .unwrap_or_default();
                             overrides.retain(|item| item.action != action_id);
-                            overrides.push(crate::core::config_service::ShortcutOverride {
+                            overrides.push(ShortcutOverrideDto {
                                 action: action_id.clone(),
-                                bindings: vec![crate::core::config_service::ShortcutBinding {
-                                    key,
-                                    modifiers,
-                                }],
+                                bindings: vec![ShortcutBindingDto { key, modifiers }],
                             });
                             let value =
                                 serde_json::to_value(overrides).unwrap_or(Value::Array(Vec::new()));
-                            let operation = JsonPatchOperation {
-                                op: "replace".into(),
-                                path: "/shortcuts/overrides".into(),
-                                value: Some(value),
-                            };
-                            if service
-                                .patch(&transaction, &[operation])
-                                .and_then(|_| service.commit(&transaction).map(|_| ()))
+                            if config
+                                .apply(&[replace("/shortcuts/overrides", value)])
                                 .is_ok()
                             {
                                 on_changed();
@@ -1279,32 +1380,27 @@ fn show_shortcut_manager(
                         }
                     });
                 });
-                let action_id = action.id.to_string();
-                let config_for_unbind = config_path.clone();
+                let action_id = action.id.clone();
+                let config_for_unbind = config.clone();
                 let on_changed = on_changed_for_rows.clone();
                 unbind.connect_clicked(move |_| {
-                    let mut service = match SettingsService::open(&config_for_unbind) {
-                        Ok(service) => service,
+                    let snapshot = match config_for_unbind.describe() {
+                        Ok(snapshot) => snapshot,
                         Err(error) => {
                             tracing::error!(
                                 target = "muxterm::config",
-                                "打开配置事务失败: {error}"
+                                "读取快捷键配置失败: {error}"
                             );
                             return;
                         }
                     };
-                    let transaction = service.begin();
-                    let mut overrides = service.document().shortcuts.overrides.clone();
+                    let mut overrides: Vec<ShortcutOverrideDto> =
+                        serde_json::from_value(snapshot.values["shortcuts"]["overrides"].clone())
+                            .unwrap_or_default();
                     overrides.retain(|item| item.action != action_id);
                     let value = serde_json::to_value(overrides).unwrap_or(Value::Array(Vec::new()));
-                    let operation = JsonPatchOperation {
-                        op: "replace".into(),
-                        path: "/shortcuts/overrides".into(),
-                        value: Some(value),
-                    };
-                    if service
-                        .patch(&transaction, &[operation])
-                        .and_then(|_| service.commit(&transaction).map(|_| ()))
+                    if config_for_unbind
+                        .apply(&[replace("/shortcuts/overrides", value)])
                         .is_ok()
                     {
                         on_changed();
@@ -1324,8 +1420,13 @@ fn show_shortcut_manager(
         gtk4::gio::FileMonitorFlags::NONE,
         gtk4::gio::Cancellable::NONE,
     ) {
+        let config = config.clone();
         let refresh = refresh.clone();
-        monitor.connect_changed(move |_, _, _, _| refresh.borrow()());
+        monitor.connect_changed(move |_, _, _, _| {
+            if config.reload().is_ok() {
+                refresh.borrow()();
+            }
+        });
     }
 
     {
@@ -1505,7 +1606,7 @@ fn action_title(title_key: &str) -> String {
     humanize_words(raw)
 }
 
-fn shortcut_binding_label(binding: &crate::core::config_service::ShortcutBinding) -> String {
+fn shortcut_binding_label(binding: &ShortcutBindingDto) -> String {
     let mut parts = binding
         .modifiers
         .iter()
@@ -2160,9 +2261,16 @@ mod tests {
         }
         gtk4::test_synced(|| {
             let parent = gtk4::Window::builder().build();
+            let client = Rc::new(RefCell::new(
+                FfiClient::new_catalog().expect("catalog FFI handle"),
+            ));
+            let config = ConfigApi::from_client(client);
+            let snapshot = config.describe().expect("config snapshot");
             let win = show(
                 &parent,
                 PathBuf::from("/tmp/nonexistent-config.toml"),
+                config,
+                snapshot,
                 Box::new(|| {}),
                 None,
             );

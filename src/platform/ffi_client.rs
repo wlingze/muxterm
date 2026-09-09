@@ -689,6 +689,43 @@ impl FfiClient {
         Ok(())
     }
 
+    /// Apply a complete configuration patch through one Core-owned draft
+    /// transaction and return the committed snapshot.
+    pub fn config_apply(
+        &self,
+        patch: &[ClientJsonPatchOperation],
+    ) -> anyhow::Result<ClientConfigSnapshot> {
+        let transaction = self.config_begin()?;
+        if let Err(error) = self.config_patch(&transaction, patch) {
+            let _ = self.config_cancel(&transaction);
+            return Err(error);
+        }
+        if let Err(error) = self.config_commit(&transaction) {
+            let _ = self.config_cancel(&transaction);
+            return Err(error);
+        }
+        self.config_describe()
+    }
+
+    /// Reload the Core-owned configuration from disk and return its revision.
+    pub fn config_reload(&self) -> anyhow::Result<String> {
+        let value = Self::discovery_json(|| unsafe {
+            ffi::muxterm_config_reload_json(self.handle.as_ptr())
+        })?;
+        value["data"]["revision"]
+            .as_str()
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| anyhow::anyhow!("Core config reload returned no revision"))
+    }
+
+    /// Drain Core-owned configuration events as owned JSON values.
+    pub fn config_events(&self) -> anyhow::Result<Vec<serde_json::Value>> {
+        let value = Self::discovery_json(|| unsafe {
+            ffi::muxterm_config_events_json(self.handle.as_ptr())
+        })?;
+        Ok(serde_json::from_value(value["data"]["events"].clone())?)
+    }
+
     /// Configure the Core-owned attention engine before frontend polling starts.
     pub fn configure_attention(&self, config: &ClientAttentionConfig) -> anyhow::Result<()> {
         let config = serde_json::to_string(config)?;

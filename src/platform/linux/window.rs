@@ -55,6 +55,7 @@ use crate::platform::linux::layout_host::LayoutHost;
 use crate::platform::linux::lifecycle::{cycle_pane_id, should_close_window};
 use crate::platform::linux::pane_view::{PaneMenuAction, PaneView};
 use crate::platform::linux::panel_model::PanelTab;
+use crate::platform::linux::preferences_window::ConfigApi;
 use crate::platform::linux::quickconnect::event_policy::ClientSizePolicy;
 use crate::platform::linux::quickconnect::existing::{ExistingEntry, ExistingTransport};
 use crate::platform::linux::quickconnect::font::FontSettings;
@@ -4226,16 +4227,59 @@ fn open_preferences(state: &Rc<RefCell<UiState>>, window: &Window) {
     let st = state.clone();
     let hosts = FfiClient::discover_ssh_hosts().unwrap_or_default();
     let runtimes = FfiClient::discover_runtimes().unwrap_or_default();
-    let callback_path = path.clone();
+    let config_api = ConfigApi::from_callbacks(
+        {
+            let state = Rc::downgrade(state);
+            move || with_config_client(&state, FfiClient::config_describe)
+        },
+        {
+            let state = Rc::downgrade(state);
+            move |patch| with_config_client(&state, |client| client.config_apply(patch))
+        },
+        {
+            let state = Rc::downgrade(state);
+            move || {
+                with_config_client(&state, |client| {
+                    client.config_reload()?;
+                    client.config_describe()
+                })
+            }
+        },
+    );
+    let snapshot = match config_api.describe() {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            tracing::warn!(
+                target = "muxterm::config",
+                "打开设置页读取配置失败: {error}"
+            );
+            return;
+        }
+    };
+    let config_for_saved = config_api.clone();
     crate::platform::linux::preferences_window::show(
         window,
         path,
+        config_api,
+        snapshot,
         std::boxed::Box::new(move || {
+            let snapshot = config_for_saved.describe();
             let mut s = st.borrow_mut();
-            // 保存后重新打开 Core 事务中的文档，重建 keymap 并刷新可由
-            // SettingsService 验证过的运行期状态；platform 不直接读 config.toml。
-            if let Ok(service) = SettingsService::open(&callback_path) {
-                let document = service.document();
+            // 保存后重新读取 Core FFI 快照，重建 keymap 并刷新运行期状态。
+            if let Ok(snapshot) = snapshot {
+                let document = match serde_json::from_value::<
+                    crate::core::config_service::ConfigDocument,
+                >(snapshot.values)
+                {
+                    Ok(document) => document,
+                    Err(error) => {
+                        tracing::warn!(
+                            target = "muxterm::config",
+                            "配置快照解码失败，跳过热应用: {error}"
+                        );
+                        return;
+                    }
+                };
                 let cfg = &document.config;
                 let shortcuts = &document.shortcuts;
                 let bindings =
@@ -4275,6 +4319,17 @@ fn open_preferences(state: &Rc<RefCell<UiState>>, window: &Window) {
         }),
         Some((runtimes, hosts)),
     );
+}
+
+fn with_config_client<T>(
+    state: &std::rc::Weak<RefCell<UiState>>,
+    operation: impl FnOnce(&FfiClient) -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    let state = state.upgrade().ok_or_else(|| anyhow!("主窗口状态已销毁"))?;
+    let state = state
+        .try_borrow()
+        .map_err(|error| anyhow!("主窗口状态正在更新: {error}"))?;
+    operation(state.event_pump.client())
 }
 
 fn open_target_config(

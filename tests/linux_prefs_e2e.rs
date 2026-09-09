@@ -12,7 +12,8 @@ use gtk4::{ListBox, ListBoxRow, Stack};
 use support::linux_gtk::*;
 
 use muxterm::test_support::core::config::parse_config_toml;
-use muxterm::test_support::platform::linux::preferences_window::show;
+use muxterm::test_support::platform::ffi_client::FfiClient;
+use muxterm::test_support::platform::linux::preferences_window::{show, ConfigApi};
 
 /// S10：Ctrl+= 增大字号并写 config.toml（不新建 preferences.toml）。
 /// 纯逻辑测试，不需要 GTK 窗口（避免本机 xvfb/Mesa 多窗口崩溃）。
@@ -73,9 +74,16 @@ fn prefs_save_writes_font_size_and_preserves_comments() {
 
         let saved = std::rc::Rc::new(std::cell::RefCell::new(false));
         let saved_cb = saved.clone();
+        let client = std::rc::Rc::new(std::cell::RefCell::new(
+            FfiClient::new_catalog().expect("catalog FFI handle"),
+        ));
+        let config = ConfigApi::from_client(client);
+        let snapshot = config.describe().expect("config snapshot");
         let win = show(
             &parent,
             config_path.clone(),
+            config,
+            snapshot,
             Box::new(move || {
                 *saved_cb.borrow_mut() = true;
             }),
@@ -157,9 +165,16 @@ fn prefs_window_exposes_project_and_shortcut_editors() {
 
         let saved = std::rc::Rc::new(std::cell::RefCell::new(false));
         let saved_cb = saved.clone();
+        let client = std::rc::Rc::new(std::cell::RefCell::new(
+            FfiClient::new_catalog().expect("catalog FFI handle"),
+        ));
+        let config = ConfigApi::from_client(client);
+        let snapshot = config.describe().expect("config snapshot");
         let win = show(
             &parent,
             config_path.clone(),
+            config,
+            snapshot,
             Box::new(move || {
                 *saved_cb.borrow_mut() = true;
             }),
