@@ -27,7 +27,9 @@ fn ctrl_equal_increases_font_and_writes_config_toml() {
     std::fs::write(&config_path, "[font]\nsize = 12.0\n").unwrap();
 
     // 与生产 adjust_font 相同的持久化路径。
+    let client = FfiClient::new_catalog().expect("catalog FFI handle");
     muxterm::test_support::platform::linux::window::persist_config(
+        &client,
         "font.size",
         serde_json::json!(13.0f64),
     );

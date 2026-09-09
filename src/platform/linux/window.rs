@@ -27,7 +27,6 @@ use crate::core::attention::engine::{AttentionEngine, PaneAttention};
 use crate::core::attention::signal::{AttentionSignal, AttentionSource};
 use crate::core::attention::state::PaneStatus;
 use crate::core::config::{Action, Config, KeyBinding, OnLastPaneExit, Theme};
-use crate::core::config_service::SettingsService;
 #[cfg(test)]
 use crate::core::protocol::state::StateChange;
 use crate::core::protocol::task::TaskOutcome;
@@ -1295,13 +1294,13 @@ impl AppWindow {
     /// 测试用：走生产 `adjust_font(+1)`（Ctrl+= 热路径）。
     pub fn test_increase_font(&self) {
         let mut s = self._state.borrow_mut();
-        adjust_font(&mut s, 1);
+        adjust_font(&mut s, &self._state, 1);
     }
 
     /// 测试用：走生产 `adjust_font(-1)`（Ctrl+- 热路径）。
     pub fn test_decrease_font(&self) {
         let mut s = self._state.borrow_mut();
-        adjust_font(&mut s, -1);
+        adjust_font(&mut s, &self._state, -1);
     }
 
     /// 测试用：当前 UiState 字号（缩放热路径断言）。
@@ -2030,8 +2029,8 @@ fn handle_action(s: &mut UiState, action: Action, window: &Window, state: &Rc<Re
             paste_active_pane(s, state);
             return;
         }
-        Action::IncreaseFontSize => adjust_font(s, 1),
-        Action::DecreaseFontSize => adjust_font(s, -1),
+        Action::IncreaseFontSize => adjust_font(s, state, 1),
+        Action::DecreaseFontSize => adjust_font(s, state, -1),
         Action::ResetFontSize => reset_font(s),
         Action::TogglePaneFullscreen => toggle_fullscreen(s),
     }
@@ -2112,11 +2111,11 @@ fn run_palette_command(state: &Rc<RefCell<UiState>>, window: &Window, parent: &W
         }
         PaletteAction::IncreaseFontSize => {
             let mut s = state.borrow_mut();
-            adjust_font(&mut s, 1);
+            adjust_font(&mut s, state, 1);
         }
         PaletteAction::DecreaseFontSize => {
             let mut s = state.borrow_mut();
-            adjust_font(&mut s, -1);
+            adjust_font(&mut s, state, -1);
         }
         PaletteAction::ResetFontSize => {
             let mut s = state.borrow_mut();
@@ -2204,42 +2203,17 @@ fn toggle_fullscreen(s: &mut UiState) {
     }
 }
 
-/// 通过 Core SettingsService 事务写回 config.toml（唯一事实源）。
+/// 通过统一 FFI client 的 Core 配置事务写回 config.toml（唯一事实源）。
 /// 平台禁止直接解析或写 TOML；失败只记日志，不覆盖用户文件。
-pub fn persist_config(dotted: &str, value: serde_json::Value) {
-    let Some(path) = Config::user_config_path() else {
-        return;
-    };
-    let mut service = match SettingsService::open(&path) {
-        Ok(service) => service,
-        Err(error) => {
-            tracing::warn!(target = "muxterm::config", "打开配置事务失败: {error}");
-            return;
-        }
-    };
-    let Ok(pointer) = crate::core::config_service::dotted_pointer(dotted) else {
-        return;
-    };
-    let transaction = service.begin();
-    if let Err(error) = service
-        .patch(
-            &transaction,
-            &[crate::core::config_service::JsonPatchOperation {
-                op: "replace".into(),
-                path: pointer,
-                value: Some(value),
-            }],
-        )
-        .and_then(|_| service.commit(&transaction).map(|_| ()))
-    {
+pub fn persist_config(client: &FfiClient, dotted: &str, value: serde_json::Value) {
+    if let Err(error) = client.config_apply_path(dotted, value) {
         tracing::warn!(target = "muxterm::config", "保存设置失败: {error}");
-        let _ = service.cancel(&transaction);
     }
 }
 
 /// C8：字号写盘防抖（300ms），避免 Ctrl+= 热路径同步写 config.toml。
 /// 用 generation 作废旧回调，不 remove 已触发的 SourceId（glib 会 panic）。
-fn schedule_font_persist(size: f32) {
+fn schedule_font_persist(state: &Rc<RefCell<UiState>>, size: f32) {
     use std::cell::Cell;
     thread_local! {
         static FONT_PERSIST_GEN: Cell<u64> = const { Cell::new(0) };
@@ -2247,17 +2221,30 @@ fn schedule_font_persist(size: f32) {
     FONT_PERSIST_GEN.with(|gen| {
         let my_gen = gen.get().wrapping_add(1);
         gen.set(my_gen);
+        let state = Rc::downgrade(state);
         glib::timeout_add_local(std::time::Duration::from_millis(300), move || {
             let current = FONT_PERSIST_GEN.with(|g| g.get());
             if current == my_gen {
-                persist_config("font.size", serde_json::Value::from(f64::from(size)));
+                if let Some(state) = state.upgrade() {
+                    match state.try_borrow() {
+                        Ok(s) => persist_config(
+                            s.event_pump.client(),
+                            "font.size",
+                            serde_json::Value::from(f64::from(size)),
+                        ),
+                        Err(error) => tracing::warn!(
+                            target = "muxterm::config",
+                            "字号防抖写盘时主窗口状态仍被占用: {error}"
+                        ),
+                    }
+                }
             }
             glib::ControlFlow::Break
         });
     });
 }
 
-fn adjust_font(s: &mut UiState, direction: i32) {
+fn adjust_font(s: &mut UiState, state: &Rc<RefCell<UiState>>, direction: i32) {
     let next = FontSettings::zoomed(s.font.size, direction);
     if (next - s.font.size).abs() < f32::EPSILON {
         return;
@@ -2266,7 +2253,7 @@ fn adjust_font(s: &mut UiState, direction: i32) {
     // C8：热路径只改当前前台 LayoutHost，立刻返回；后台 cache 在 activate
     // 时按尺寸差补。写盘防抖 300ms，不阻塞按键。
     s.active_layout_mut().set_font_size(next);
-    schedule_font_persist(next);
+    schedule_font_persist(state, next);
 }
 
 fn reset_font(s: &mut UiState) {
@@ -2276,6 +2263,7 @@ fn reset_font(s: &mut UiState) {
         layout.set_font(&font);
     }
     persist_config(
+        s.event_pump.client(),
         "font.size",
         serde_json::Value::from(f64::from(s.config_font_size)),
     );
@@ -2298,6 +2286,7 @@ fn toggle_theme(s: &mut UiState) {
     s.status.apply_theme(&theme);
     apply_chrome_css(&theme);
     persist_config(
+        s.event_pump.client(),
         "theme.name",
         serde_json::Value::String(next_name.to_string()),
     );
@@ -2312,6 +2301,7 @@ fn toggle_status_mode(s: &mut UiState) {
     s.status_mode = next;
     s.status.set_mode(next);
     persist_config(
+        s.event_pump.client(),
         "statusbar.mode",
         serde_json::Value::String(next.as_str().to_string()),
     );

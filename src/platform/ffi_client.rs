@@ -707,6 +707,23 @@ impl FfiClient {
         self.config_describe()
     }
 
+    /// Apply one dotted configuration field through the Core-owned transaction.
+    ///
+    /// Frontends use dotted paths because they mirror the settings manifest;
+    /// the FFI contract itself receives RFC 6902 JSON Pointers.
+    pub fn config_apply_path(
+        &self,
+        dotted: &str,
+        value: serde_json::Value,
+    ) -> anyhow::Result<ClientConfigSnapshot> {
+        let path = dotted_config_pointer(dotted)?;
+        self.config_apply(&[ClientJsonPatchOperation {
+            op: "replace".into(),
+            path,
+            value: Some(value),
+        }])
+    }
+
     /// Reload the Core-owned configuration from disk and return its revision.
     pub fn config_reload(&self) -> anyhow::Result<String> {
         let value = Self::discovery_json(|| unsafe {
@@ -1856,6 +1873,20 @@ fn task_to_ffi(task: ClientTask) -> CTask {
     }
 }
 
+/// Convert a settings-manifest dotted path to an RFC 6902 JSON Pointer.
+fn dotted_config_pointer(path: &str) -> anyhow::Result<String> {
+    if path.trim().is_empty() {
+        anyhow::bail!("配置路径不能为空");
+    }
+    Ok(format!(
+        "/{}",
+        path.split('.')
+            .map(|part| part.replace('~', "~0").replace('/', "~1"))
+            .collect::<Vec<_>>()
+            .join("/")
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1894,6 +1925,23 @@ mod tests {
                 "value": 14.0,
             }])
         );
+    }
+
+    #[test]
+    fn dotted_config_pointer_escapes_json_pointer_tokens() {
+        assert_eq!(
+            dotted_config_pointer("theme.name").expect("valid config path"),
+            "/theme/name"
+        );
+        assert_eq!(
+            dotted_config_pointer("extensions.vendor~name.value/name").expect("valid config path"),
+            "/extensions/vendor~0name/value~1name"
+        );
+    }
+
+    #[test]
+    fn dotted_config_pointer_rejects_empty_path() {
+        assert!(dotted_config_pointer(" ").is_err());
     }
 
     #[test]
