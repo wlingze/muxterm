@@ -1,34 +1,3 @@
-//! Local TransportProvider：本机单例。
+//! Compatibility path for the transport-owned local provider.
 
-use std::sync::Arc;
-
-use anyhow::Result;
-
-use crate::transport::connection::Connect;
-use crate::transport::provider::{TargetInfo, TransportProvider};
-use crate::transport::{ChannelKind, TargetConnection};
-
-/// local 传输插件。
-pub struct LocalTransport;
-
-impl TransportProvider for LocalTransport {
-    fn id(&self) -> &'static str {
-        "local"
-    }
-
-    fn name(&self) -> &'static str {
-        "Local"
-    }
-
-    fn supported_channels(&self) -> &'static [ChannelKind] {
-        &[ChannelKind::Exec, ChannelKind::UnixSocket]
-    }
-
-    fn list_targets(&self) -> Result<Vec<TargetInfo>> {
-        Ok(vec![TargetInfo::new("", "local")])
-    }
-
-    fn connect(&self, target: &str) -> Result<Arc<dyn TargetConnection>> {
-        Ok(Connect::new("local", target))
-    }
-}
+pub use muxterm_transport::local::provider::LocalTransport;
