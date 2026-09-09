@@ -2,21 +2,18 @@
 //!
 //! 不依赖 serde_json（避免增加依赖），手写 JSON 序列化。
 
-use crate::core::protocol::state::State;
-use crate::core::types::{PaneId, TabId};
 use crate::platform::ffi_client::{
     ClientLayout, ClientPane, ClientTab, ClientWorkspace, FfiClient,
 };
+use muxterm_protocol::layout::{LayoutNode, SplitDir};
+use muxterm_protocol::state::State;
+use muxterm_protocol::{PaneId, TabId};
 
-pub use crate::core::runtime::shell::daemon::{OutputFormat, StateSnapshot};
+pub use muxterm_protocol::daemon::{OutputFormat, StateSnapshot};
 
 /// 格式化查询结果输出。
-pub fn format_output(
-    state: &dyn State,
-    cmd: &super::command::CliCommand,
-    format: OutputFormat,
-) -> String {
-    use super::command::CliCommand::*;
+pub fn format_output(state: &dyn State, cmd: &super::CliCommand, format: OutputFormat) -> String {
+    use super::CliCommand::*;
     match cmd {
         ListWorkspaces => format_workspaces(state, format),
         ListTabs => format_tabs(state, format),
@@ -40,10 +37,10 @@ pub fn format_output(
 pub fn format_ffi_output(
     client: &FfiClient,
     workspace_id: &str,
-    cmd: &super::command::CliCommand,
+    cmd: &super::CliCommand,
     format: OutputFormat,
 ) -> anyhow::Result<String> {
-    use super::command::CliCommand::*;
+    use super::CliCommand::*;
 
     if matches!(cmd, ListWorkspaces) {
         return format_ffi_workspaces(client, format);
@@ -686,8 +683,7 @@ fn format_layout(state: &dyn State, format: OutputFormat) -> String {
     }
 }
 
-fn layout_node_to_json(node: &crate::core::protocol::layout::LayoutNode) -> String {
-    use crate::core::protocol::layout::LayoutNode;
+fn layout_node_to_json(node: &LayoutNode) -> String {
     match node {
         LayoutNode::Leaf(pid) => format!(r#""@{}""#, pid.0),
         LayoutNode::Split {
@@ -697,8 +693,8 @@ fn layout_node_to_json(node: &crate::core::protocol::layout::LayoutNode) -> Stri
             second,
         } => {
             let dir_str = match dir {
-                crate::core::protocol::layout::SplitDir::Horizontal => "horizontal",
-                crate::core::protocol::layout::SplitDir::Vertical => "vertical",
+                SplitDir::Horizontal => "horizontal",
+                SplitDir::Vertical => "vertical",
             };
             format!(
                 r#"{{"type":"split","dir":"{}","ratio":{},"first":{},"second":{}}}"#,
@@ -753,8 +749,8 @@ fn json_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::runtime::mock::MockRuntime;
-    use crate::platform::cli::command::CliCommand;
+    use muxterm_core::runtime::mock::MockRuntime;
+    use muxterm_protocol::command::CliCommand;
 
     fn mock_with_pane() -> MockRuntime {
         MockRuntime::with_single_pane()
