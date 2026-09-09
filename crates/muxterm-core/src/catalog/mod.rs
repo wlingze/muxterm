@@ -5,10 +5,8 @@
 //! `trait Runtime` 只表示已经 attach 的格子。列出候选、拿管道、探活
 //! 都在 Catalog：provider 视图、ConnectionRegistry、Inventory、Pool。
 
-pub mod connect;
 pub mod inventory;
 pub mod resolver;
-pub mod transport;
 
 use std::sync::Arc;
 use std::thread;
@@ -28,13 +26,13 @@ use muxterm_protocol::WorkspaceId;
 
 pub use crate::protocol::candidate::ExistingCandidate;
 pub use crate::runtime::{RuntimeInfo, RuntimeProvider};
-pub use connect::Connect;
 #[allow(unused_imports)] // 给 FFI / 测试用的公开类型
 pub use inventory::{Inventory, InventorySnapshot, Reach};
+pub use muxterm_transport::provider::{TargetInfo, TransportInfo, TransportProvider};
+pub use muxterm_transport::Connect;
 pub use resolver::{
     config_to_spec, OpenRequest, ResolveError, ResolveErrorStage, ResolveIntent, ResolvedTarget,
 };
-pub use transport::{TargetInfo, TransportInfo, TransportProvider};
 
 type DiscoveryJob = (String, Option<Arc<dyn TargetConnection>>, Vec<ChannelKind>);
 

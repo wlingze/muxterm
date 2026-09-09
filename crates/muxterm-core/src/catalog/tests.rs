@@ -4,8 +4,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use super::{Catalog, OpenRequest, Reach, ResolveIntent, ResolvedTarget};
-use crate::catalog::connect::Connect;
-use crate::catalog::transport::{TargetInfo, TransportProvider};
 use crate::projects::{Project, Worktree};
 use crate::protocol::candidate::{CandidateRef, ExistingCandidate, ExistingCandidateRef};
 use crate::runtime::mock::MockRuntime;
@@ -17,6 +15,8 @@ use crate::workspace::spec::WorkspaceSpec;
 use crate::workspace::template::{
     PaneTemplate, TabTemplate, TemplateLayout, TemplateName, WorkspaceTemplate,
 };
+use muxterm_transport::provider::{TargetInfo, TransportProvider};
+use muxterm_transport::Connect;
 
 struct MockDriver {
     id: &'static str,
