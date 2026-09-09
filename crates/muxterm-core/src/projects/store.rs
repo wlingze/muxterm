@@ -4,7 +4,7 @@ use anyhow::{anyhow, Result};
 use std::path::PathBuf;
 
 use super::Project;
-use crate::config_service::{JsonPatchOperation, SettingsService};
+use crate::config::{JsonPatchOperation, SettingsService};
 
 /// Core-owned Project persistence. It does not own live Runtime instances.
 #[derive(Debug, Clone, Default)]
@@ -120,7 +120,7 @@ fn validate_project(project: &Project) -> Result<()> {
 mod tests {
     use super::*;
     use crate::config::ConfigDocument;
-    use crate::config_service::SettingsService;
+    use crate::config::SettingsService;
     use crate::projects::Project;
     use crate::quickconnect::model::{TargetConfig, TargetRuntime, TargetTransport};
     use std::fs;

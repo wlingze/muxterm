@@ -23,6 +23,7 @@ pub mod action_catalog;
 pub mod document;
 pub mod edit;
 pub mod migration;
+pub mod service;
 pub mod storage;
 
 use anyhow::{Context, Result};
@@ -482,6 +483,8 @@ pub use action_catalog::*;
 pub use document::*;
 #[allow(unused_imports)]
 pub use migration::*;
+#[allow(unused_imports)]
+pub use service::*;
 #[allow(unused_imports)]
 pub use shortcut::{default_keybindings, Action, KeyBinding, ModSet, Modifiers};
 #[allow(unused_imports)]

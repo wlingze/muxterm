@@ -75,7 +75,7 @@ impl QuickConnectStore {
             config_path: Some(path.clone()),
             ..Default::default()
         };
-        match crate::config_service::SettingsService::open(&path) {
+        match crate::config::SettingsService::open(&path) {
             Ok(mut service) => {
                 if let Err(error) = service.migrate_legacy_quickconnect() {
                     tracing::warn!(
@@ -170,7 +170,7 @@ impl QuickConnectStore {
         let Some(path) = &self.config_path else {
             return;
         };
-        let Ok(mut service) = crate::config_service::SettingsService::open(path) else {
+        let Ok(mut service) = crate::config::SettingsService::open(path) else {
             return;
         };
         let transaction = service.begin();
@@ -188,7 +188,7 @@ impl QuickConnectStore {
                 .filter_map(|project| serde_json::to_value(project).ok())
                 .collect(),
         );
-        let operation = crate::config_service::JsonPatchOperation {
+        let operation = crate::config::JsonPatchOperation {
             op: "replace".into(),
             path: "/projects".into(),
             value: Some(value),
@@ -309,7 +309,7 @@ mod tests {
         ));
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(raw.contains("name = \"muxterm\""), "{raw}");
-        let service = crate::config_service::SettingsService::open(&path).unwrap();
+        let service = crate::config::SettingsService::open(&path).unwrap();
         assert_eq!(service.document().projects.len(), 1);
         assert_eq!(service.document().projects[0].name, "muxterm");
         let _ = std::fs::remove_dir_all(&dir);
@@ -328,7 +328,7 @@ mod tests {
         assert_eq!(store.projects.len(), 1);
         store.remove_project(&project);
         assert!(store.projects.is_empty());
-        let service = crate::config_service::SettingsService::open(&path).unwrap();
+        let service = crate::config::SettingsService::open(&path).unwrap();
         assert!(service.document().projects.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }

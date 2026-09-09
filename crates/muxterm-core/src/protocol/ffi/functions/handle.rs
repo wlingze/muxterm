@@ -6,7 +6,7 @@ use std::ptr;
 
 use crate::attention::clock::RealClock;
 use crate::attention::engine::AttentionEngine;
-use crate::config_service::SettingsService;
+use crate::config::SettingsService;
 use crate::logging::{init_logging, LoggingConfig};
 use crate::projects::{ProjectStore, ProjectsService};
 use crate::protocol::terminal::emulate::DEFAULT_SCROLLBACK_LINES;
