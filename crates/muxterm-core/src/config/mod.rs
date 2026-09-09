@@ -23,6 +23,7 @@ pub mod action_catalog;
 pub mod document;
 pub mod edit;
 pub mod migration;
+pub mod storage;
 
 use anyhow::{Context, Result};
 use schemars::JsonSchema;
@@ -483,6 +484,8 @@ pub use document::*;
 pub use migration::*;
 #[allow(unused_imports)]
 pub use shortcut::{default_keybindings, Action, KeyBinding, ModSet, Modifiers};
+#[allow(unused_imports)]
+pub use storage::*;
 #[allow(unused_imports)]
 pub use theme::{parse_hex, parse_theme_toml, Rgb, Theme};
 

@@ -7,10 +7,10 @@ use std::path::{Path, PathBuf};
 
 use crate::config::action_catalog::action_catalog;
 use crate::config::migration::import_legacy_projects;
-use crate::config::ConfigDocument;
-use crate::config_service::storage::{
+use crate::config::storage::{
     atomic_write, preserve_toml_metadata, revision_for, ConfigRevision, ConfigSnapshot,
 };
+use crate::config::ConfigDocument;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonPatchOperation {
     pub op: String,
