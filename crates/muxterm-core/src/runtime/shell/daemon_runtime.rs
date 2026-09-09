@@ -1,4 +1,4 @@
-//! DaemonRuntime：TUI 作为 client 连接本地 daemon（unix socket IPC）。
+//! Shell daemon adapter：TUI/CLI 作为 client 连接本地 daemon（unix socket IPC）。
 //!
 //! 生命周期：
 //! - `connect()`：检查 socket 存在，消费 daemon 的初始拓扑/事件批次

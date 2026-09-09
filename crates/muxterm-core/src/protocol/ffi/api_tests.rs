@@ -17,7 +17,7 @@ use crate::protocol::layout::{LayoutNode, SplitDir};
 use crate::protocol::state::StateChange;
 use crate::protocol::task::{Task, TaskOutcome};
 use crate::protocol::terminal::emulate::DEFAULT_SCROLLBACK_LINES;
-use crate::runtime::daemon::DaemonRuntime;
+use crate::runtime::shell::daemon_runtime::DaemonRuntime;
 use crate::runtime::shell::ShellRuntime;
 use crate::runtime::tmux::backend::TmuxRuntime;
 use crate::workspace::pool::{WorkspacePool, WorkspacePoolPolicy};
