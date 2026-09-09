@@ -6,6 +6,7 @@
 //! next query/poll and must never escape this module.
 
 use std::cell::Cell;
+use std::collections::BTreeMap;
 use std::ffi::{CStr, CString};
 use std::ptr::{self, NonNull};
 
@@ -84,6 +85,54 @@ pub struct ClientOpenedWorkspace {
     #[serde(default)]
     pub resolved_target: Option<serde_json::Value>,
 }
+
+/// Structured error envelope returned by a JSON FFI operation.
+///
+/// Older Core endpoints returned a string in the error field; those responses
+/// are represented with code and stage absent so callers can migrate without
+/// losing the human-readable message. Unknown object fields remain available
+/// in details for endpoint-specific diagnostics.
+#[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
+pub struct ClientError {
+    #[serde(default)]
+    pub code: Option<String>,
+    #[serde(default)]
+    pub stage: Option<String>,
+    pub message: String,
+    #[serde(flatten)]
+    pub details: BTreeMap<String, serde_json::Value>,
+}
+
+impl ClientError {
+    fn from_json(value: &serde_json::Value) -> Self {
+        match value {
+            serde_json::Value::Object(_) => {
+                serde_json::from_value(value.clone()).unwrap_or_else(|error| {
+                    Self::legacy(format!("Core returned invalid error envelope: {error}"))
+                })
+            }
+            serde_json::Value::String(message) => Self::legacy(message.clone()),
+            other => Self::legacy(format!("Core returned invalid error value: {other}")),
+        }
+    }
+
+    fn legacy(message: String) -> Self {
+        Self {
+            code: None,
+            stage: None,
+            message,
+            details: BTreeMap::new(),
+        }
+    }
+}
+
+impl std::fmt::Display for ClientError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ClientError {}
 
 /// Candidate source exposed by the Catalog FFI.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -1400,9 +1449,9 @@ impl FfiClient {
         if value.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
             let error = value
                 .get("error")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("unknown Core discovery error");
-            anyhow::bail!(error.to_string());
+                .map(ClientError::from_json)
+                .unwrap_or_else(|| ClientError::legacy("unknown Core discovery error".into()));
+            return Err(anyhow::Error::new(error));
         }
         Ok(value)
     }
@@ -1935,5 +1984,36 @@ mod tests {
         assert_eq!(value["target"], "devbox");
         assert_eq!(value["session"], "agent");
         assert_eq!(value["socket"], "/tmp/herdr.sock");
+    }
+
+    #[test]
+    fn discovery_json_preserves_structured_error_envelope() {
+        let raw = CString::new(
+            r#"{"ok":false,"error":{"code":"incompatible_channels","stage":"identity","message":"channel mismatch","runtime_id":"herdr"}}"#,
+        )
+        .unwrap();
+        let error = FfiClient::discovery_json(|| raw.into_raw()).unwrap_err();
+        let error = error
+            .downcast_ref::<ClientError>()
+            .expect("structured Core errors should remain typed");
+
+        assert_eq!(error.code.as_deref(), Some("incompatible_channels"));
+        assert_eq!(error.stage.as_deref(), Some("identity"));
+        assert_eq!(error.message, "channel mismatch");
+        assert_eq!(error.details["runtime_id"], "herdr");
+    }
+
+    #[test]
+    fn discovery_json_keeps_legacy_string_errors_compatible() {
+        let raw = CString::new(r#"{"ok":false,"error":"legacy failure"}"#).unwrap();
+        let error = FfiClient::discovery_json(|| raw.into_raw()).unwrap_err();
+        let error = error
+            .downcast_ref::<ClientError>()
+            .expect("legacy errors should use the common client error type");
+
+        assert_eq!(error.code, None);
+        assert_eq!(error.stage, None);
+        assert_eq!(error.message, "legacy failure");
+        assert!(error.details.is_empty());
     }
 }
