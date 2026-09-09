@@ -11,11 +11,11 @@ use std::ptr;
 use std::sync::Arc;
 
 use crate::activity::attention::signal::AttentionSignal;
-use crate::activity::ActivityState;
+use crate::activity::{ActivityContext, ActivityState};
 use crate::catalog::{OpenRequest, ResolveError, ResolveIntent, ResolvedTarget};
 use crate::config::SettingsService;
 use crate::projects::ProjectsService;
-use crate::protocol::state::StateChange;
+use crate::protocol::state::{PaneAgentInfo, StateChange};
 use crate::runtime::registry::RuntimeRegistry;
 use crate::runtime::{runtime_supports_channels, Runtime};
 use crate::workspace::pool::WorkspacePool;
@@ -23,6 +23,7 @@ use crate::workspace::spec::WorkspaceSpec;
 use crate::workspace::template::TemplateRegistry;
 use crate::workspace::workspace::Workspace;
 
+use crate::activity::record::ActivityEvent;
 use crate::protocol::ffi::callbacks::FfiCallbacks;
 use crate::protocol::ffi::types::CLayoutNode;
 use crate::transport::registry::{ConnectionRegistry, TransportRegistry};
@@ -65,6 +66,8 @@ pub struct Muxterm {
     pub(crate) tab_names: Vec<CString>,
     pub(crate) layout_nodes: Vec<CLayoutNode>,
     pub(crate) deferred_events: VecDeque<(muxterm_protocol::WorkspaceId, StateChange)>,
+    /// Product Activity lane events waiting for the Activity FFI poll.
+    pub(crate) deferred_activity_events: VecDeque<(muxterm_protocol::WorkspaceId, ActivityEvent)>,
     pub(crate) workspace_ids: Vec<CString>,
 }
 
@@ -402,6 +405,7 @@ impl Muxterm {
     ) {
         let mut pending: Vec<PendingAttentionUpdate> = Vec::new();
         let mut pending_process_names: Vec<(u32, Option<String>, bool)> = Vec::new();
+        let mut pending_agents: Vec<(u32, Option<PaneAgentInfo>)> = Vec::new();
         let mut removed_panes = Vec::new();
         {
             let Some(ws) = self.pool_mut().get_mut(ws_id) else {
@@ -416,6 +420,7 @@ impl Muxterm {
                 | StateChange::PaneAgentChanged { pane, .. } = event
                 {
                     if let StateChange::PaneAgentChanged { agent, .. } = event {
+                        pending_agents.push((pane.0, agent.as_deref().cloned()));
                         let process_name = agent.as_deref().and_then(|agent| {
                             [
                                 agent.display_name.as_deref(),
@@ -461,6 +466,13 @@ impl Muxterm {
             }
         }
         let ws_name = ws_id.replica_id();
+        for (pane, agent) in pending_agents {
+            if let Some(context) = self.activity_context(ws_id, pane) {
+                let event = self.activity.apply_agent_signal(context, agent.as_ref());
+                self.deferred_activity_events
+                    .push_back((ws_id.clone(), event));
+            }
+        }
         for (pane, name, is_agent) in pending_process_names {
             if is_agent {
                 self.activity
@@ -484,7 +496,42 @@ impl Muxterm {
         }
         for pane in removed_panes {
             self.activity.attention.remove_pane(&ws_name, pane);
+            if let Some(event) = self
+                .activity
+                .remove_agent(ws_id, muxterm_protocol::PaneId(pane))
+            {
+                self.deferred_activity_events
+                    .push_back((ws_id.clone(), event));
+            }
         }
+    }
+
+    fn activity_context(
+        &self,
+        ws_id: &muxterm_protocol::WorkspaceId,
+        pane: u32,
+    ) -> Option<ActivityContext> {
+        let workspace = self.pool().get(ws_id)?;
+        let pane_id = muxterm_protocol::PaneId(pane);
+        let tab = workspace
+            .state()
+            .pane(&pane_id)
+            .map(|info| info.tab)
+            .unwrap_or(muxterm_protocol::TabId(0));
+        Some(ActivityContext {
+            workspace: ws_id.clone(),
+            pane: pane_id,
+            tab,
+            workspace_name: workspace.name().to_string(),
+            runtime_name: workspace.state().workspace_runtime().to_string(),
+            transport_name: ws_id.transport.clone(),
+        })
+    }
+
+    pub(crate) fn take_activity_events(
+        &mut self,
+    ) -> Vec<(muxterm_protocol::WorkspaceId, ActivityEvent)> {
+        self.deferred_activity_events.drain(..).collect()
     }
 }
 
