@@ -5,3 +5,10 @@ edition = "2021"
 publish = false
 
 [dependencies]
+muxterm-protocol = { path = "../muxterm-protocol" }
+serde = { version = "1", features = ["derive"] }
+thiserror = "1"
+tracing = "0.1"
+
+[dev-dependencies]
+pretty_assertions = "1"
