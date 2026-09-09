@@ -1,5 +1,6 @@
 //! Domain-oriented C ABI functions.
 
+pub mod activity;
 pub mod attention;
 pub mod catalog;
 pub mod config;

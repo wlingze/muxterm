@@ -1,6 +1,9 @@
 //! `#[no_mangle] extern "C"` 导出函数。
 //!
 //! 对外全部同步；具体实现按领域位于 `functions/`。
+pub use super::functions::activity::{
+    muxterm_activity_snapshot_json, muxterm_activity_take_events_json,
+};
 pub use super::functions::attention::{
     muxterm_attention_acknowledge, muxterm_attention_configure_json, muxterm_attention_mute,
     muxterm_attention_on_became_visible, muxterm_attention_set_process_name,
