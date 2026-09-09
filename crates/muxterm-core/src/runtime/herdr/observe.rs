@@ -13,15 +13,18 @@
 //! 严格递增的事件。start/handshake 由 generation-tagged worker 完成，调用线程
 //! 只登记 `Starting`，不能同步等 socket。
 
-use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::Arc;
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 
 use crate::types::PaneId;
 
+use super::channel::{shutdown, ChannelIo, SharedChannel};
+use super::session::HerdrSession;
 use super::wire::{
     read_message, write_message, ClientKeybindings, ClientLaunchMode, ClientMessage,
     RenderEncoding, ServerMessage, HERDR_PROTOCOL_VERSION, MAX_FRAME_SIZE,
@@ -93,8 +96,8 @@ pub struct ObserveStream {
     pane: PaneId,
     generation: u64,
     mode: StreamMode,
-    command_stream: Option<UnixStream>,
-    shutdown_stream: Option<UnixStream>,
+    command_stream: Option<ChannelIo>,
+    shutdown_channel: Option<SharedChannel>,
     handle: Option<JoinHandle<()>>,
     /// Drop/replace 时置位：reader 据此把「主动关闭造成的 EOF/Error」静默
     /// 掉，不向 Runtime 误报流死亡（否则 replace 替换流会残留一个假的
@@ -121,11 +124,33 @@ impl ObserveStream {
         rows: u16,
         tx: Sender<PaneStreamEvent>,
     ) -> Result<Self> {
-        let mut stream = UnixStream::connect(socket_path)
-            .with_context(|| format!("连接 Herdr client socket 失败: {}", socket_path.display()))?;
-        stream
-            .set_read_timeout(Some(std::time::Duration::from_secs(30)))
-            .context("设置流读超时失败")?;
+        Self::start_with_session(
+            Arc::new(HerdrSession::new("default", socket_path)),
+            target,
+            pane,
+            generation,
+            mode,
+            takeover,
+            cols,
+            rows,
+            tx,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_with_session(
+        session: Arc<HerdrSession>,
+        target: &str,
+        pane: PaneId,
+        generation: u64,
+        mode: StreamMode,
+        takeover: bool,
+        cols: u16,
+        rows: u16,
+        tx: Sender<PaneStreamEvent>,
+    ) -> Result<Self> {
+        let channel = session.open_socket_channel(session.client_socket_path())?;
+        let mut stream = ChannelIo::with_read_timeout(channel.clone(), Duration::from_secs(30));
 
         let hello = ClientMessage::Hello {
             version: HERDR_PROTOCOL_VERSION,
@@ -161,7 +186,7 @@ impl ObserveStream {
             other => bail!("Herdr 握手响应不是 Welcome: {other:?}"),
         }
         // Welcome 之后去掉握手超时：空闲 Observe 不应每 30s 假死（dogfood 帧长度失败）。
-        stream.set_read_timeout(None).context("清除流读超时失败")?;
+        stream.clear_read_timeout();
 
         let message = match mode {
             StreamMode::Observe => ClientMessage::ObserveTerminal {
@@ -173,10 +198,7 @@ impl ObserveStream {
             },
         };
         write_message(&mut stream, &message).context("写 Herdr terminal 请求失败")?;
-        let command_stream = stream.try_clone().context("复制 Herdr 写 socket 失败")?;
-        let shutdown_stream = stream
-            .try_clone()
-            .context("复制 Herdr shutdown socket 失败")?;
+        let command_stream = ChannelIo::new(channel.clone());
 
         let dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let reader_dropped = std::sync::Arc::clone(&dropped);
@@ -239,7 +261,7 @@ impl ObserveStream {
             generation,
             mode,
             command_stream: Some(command_stream),
-            shutdown_stream: Some(shutdown_stream),
+            shutdown_channel: Some(channel),
             handle: Some(handle),
             dropped,
         })
@@ -249,7 +271,7 @@ impl ObserveStream {
     /// 调用线程只登记 `Starting`，不能同步等 socket。
     #[allow(clippy::too_many_arguments)]
     pub fn start_async(
-        socket_path: PathBuf,
+        session: Arc<HerdrSession>,
         target: String,
         pane: PaneId,
         generation: u64,
@@ -261,16 +283,8 @@ impl ObserveStream {
         start_tx: Sender<StreamStartResult>,
     ) {
         std::thread::spawn(move || {
-            let result = Self::start(
-                &socket_path,
-                &target,
-                pane,
-                generation,
-                mode,
-                takeover,
-                cols,
-                rows,
-                event_tx,
+            let result = Self::start_with_session(
+                session, &target, pane, generation, mode, takeover, cols, rows, event_tx,
             );
             match result {
                 Ok(stream) => {
@@ -346,8 +360,8 @@ impl Drop for ObserveStream {
         // 主线程持有同一 socket 的 clone；shutdown 会打断 reader 的阻塞读，
         // 这样 resize 时替换 observer 不会留下重复流。仍不 join，避免 Drop
         // 因平台 socket 行为阻塞 GTK 线程。
-        if let Some(stream) = self.shutdown_stream.take() {
-            let _ = stream.shutdown(std::net::Shutdown::Both);
+        if let Some(channel) = self.shutdown_channel.take() {
+            let _ = shutdown(&channel);
         }
         self.handle.take();
     }

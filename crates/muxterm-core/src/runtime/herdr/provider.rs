@@ -6,7 +6,6 @@ use std::time::Duration;
 use anyhow::{anyhow, Result};
 
 use crate::protocol::candidate::ExistingCandidate as SessionCandidate;
-use crate::runtime::herdr::forward::start_herdr_ssh_forward;
 use crate::runtime::herdr::runtime::HerdrRuntime;
 use crate::runtime::herdr::session::HerdrSession;
 use crate::runtime::provider::RuntimeProvider;
@@ -126,28 +125,15 @@ impl RuntimeProvider for HerdrDriver {
         } else {
             &spec.session
         };
-        if connect.transport_id() == "ssh" {
-            let remote_socket = spec
-                .socket
-                .clone()
-                .ok_or_else(|| anyhow!("SSH Herdr 缺远端 socket 路径"))?;
-            let (local_socket, forward) = start_herdr_ssh_forward(
-                connect.target(),
-                &remote_socket,
-                std::env::var("MUXTERM_SSH_CONFIG_PATH").ok().as_deref(),
-            )?;
-            let session =
-                HerdrSession::shared(session_name, local_socket.to_string_lossy().to_string());
-            Ok(Box::new(HerdrRuntime::with_forward(
-                session, &spec.path, forward,
-            )))
-        } else {
-            let socket = spec.socket.clone().unwrap_or_else(|| {
+        let socket = match spec.socket.clone() {
+            Some(socket) => socket,
+            None if connect.transport_id() == "local" => {
                 let home = std::env::var("HOME").unwrap_or_default();
                 format!("{home}/.config/herdr/herdr.sock")
-            });
-            let session = HerdrSession::shared(session_name, &socket);
-            Ok(Box::new(HerdrRuntime::new(session, &spec.path)))
-        }
+            }
+            None => return Err(anyhow!("SSH Herdr 缺远端 socket 路径")),
+        };
+        let session = HerdrSession::shared_with_connection(connect, session_name, socket);
+        Ok(Box::new(HerdrRuntime::new(session, &spec.path)))
     }
 }

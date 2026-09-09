@@ -9,7 +9,6 @@
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,15 +16,19 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::Value;
 
+use super::channel::{open_unix_socket, ChannelIo, SharedChannel};
+use crate::transport::{connection::Connect, TargetConnection};
+
 /// 单次请求超时。
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// 一条 Herdr named session 的连接身份（不是产品 Session 类型）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct HerdrSession {
     name: String,
     socket_path: PathBuf,
     client_socket_path: PathBuf,
+    connection: Arc<dyn TargetConnection>,
 }
 
 /// 进程内共享的 HerdrSession 缓存（同一 named session + socket 一份 Arc）。
@@ -33,7 +36,8 @@ pub struct HerdrSession {
 /// 旧 WorkspacePool.herdr_sessions 旁路表迁到这里：Catalog 的 Connect /
 /// provider construction 都从这里拿，语义相同、位置不同。
 /// 共享 session 缓存类型：(named session, socket) → Arc。
-type SharedSessionMap = std::collections::HashMap<(String, String), Arc<HerdrSession>>;
+type SharedSessionMap =
+    std::collections::HashMap<(String, String, String, String), Arc<HerdrSession>>;
 
 static SHARED_SESSIONS: std::sync::LazyLock<std::sync::Mutex<SharedSessionMap>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
@@ -41,28 +45,54 @@ static SHARED_SESSIONS: std::sync::LazyLock<std::sync::Mutex<SharedSessionMap>> 
 impl HerdrSession {
     /// 取（或建）共享 session：同一 `(name, socket)` 返回同一 `Arc`。
     pub fn shared(name: impl Into<String>, socket_path: impl Into<PathBuf>) -> Arc<Self> {
+        let connection: Arc<dyn TargetConnection> = Connect::new("local", "");
+        Self::shared_with_connection(connection, name, socket_path)
+    }
+
+    /// 取（或建）绑定到同一 target connection 的共享 session。
+    pub fn shared_with_connection(
+        connection: Arc<dyn TargetConnection>,
+        name: impl Into<String>,
+        socket_path: impl Into<PathBuf>,
+    ) -> Arc<Self> {
         let name = name.into();
         let socket = socket_path.into().to_string_lossy().to_string();
-        let key = (name.clone(), socket.clone());
+        let key = (
+            connection.transport_id().to_string(),
+            connection.target().to_string(),
+            name.clone(),
+            socket.clone(),
+        );
         if let Ok(mut cache) = SHARED_SESSIONS.lock() {
             if let Some(existing) = cache.get(&key) {
                 return Arc::clone(existing);
             }
-            let session = Arc::new(Self::new(name, socket));
+            let session = Arc::new(Self::with_connection(connection, name, socket));
             cache.insert(key, Arc::clone(&session));
             return session;
         }
-        Arc::new(Self::new(name, socket))
+        Arc::new(Self::with_connection(connection, name, socket))
     }
 
     /// 绑定 named session 名 + API socket 绝对路径。
     pub fn new(name: impl Into<String>, socket_path: impl Into<PathBuf>) -> Self {
+        let connection: Arc<dyn TargetConnection> = Connect::new("local", "");
+        Self::with_connection(connection, name, socket_path)
+    }
+
+    /// 绑定 named session、target connection 和 target-side API socket。
+    pub fn with_connection(
+        connection: Arc<dyn TargetConnection>,
+        name: impl Into<String>,
+        socket_path: impl Into<PathBuf>,
+    ) -> Self {
         let socket_path = socket_path.into();
         let client_socket_path = client_socket_path_from_api(&socket_path);
         Self {
             name: name.into(),
             socket_path,
             client_socket_path,
+            connection,
         }
     }
 
@@ -78,20 +108,16 @@ impl HerdrSession {
         &self.client_socket_path
     }
 
+    pub(crate) fn open_socket_channel(&self, path: &Path) -> Result<SharedChannel> {
+        open_unix_socket(self.connection.as_ref(), path)
+    }
+
     /// 发一条 JSON 请求并取 `result`（error 直接 bail）。
     ///
     /// 每次请求一条新连接（与 herdr CLI 每次调用同构）；响应是单行 JSON。
     pub fn call(&self, method: &str, params: Value) -> Result<Value> {
-        let mut stream = UnixStream::connect(&self.socket_path).with_context(|| {
-            format!(
-                "连接 Herdr socket 失败（session={} path={}）",
-                self.name,
-                self.socket_path.display()
-            )
-        })?;
-        stream
-            .set_read_timeout(Some(REQUEST_TIMEOUT))
-            .context("设置 Herdr socket 读超时失败")?;
+        let channel = self.open_socket_channel(&self.socket_path)?;
+        let mut stream = ChannelIo::with_read_timeout(channel, REQUEST_TIMEOUT);
         let req = serde_json::json!({
             "id": format!("muxterm-{}", self.name),
             "method": method,
@@ -925,6 +951,85 @@ impl HerdrWorktreeRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct RecordingChannel {
+        response: Vec<u8>,
+    }
+
+    impl crate::transport::ByteChannel for RecordingChannel {
+        fn read(&mut self) -> std::io::Result<Option<Vec<u8>>> {
+            if self.response.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(std::mem::take(&mut self.response)))
+            }
+        }
+
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            assert!(String::from_utf8_lossy(data).contains("\"method\":\"ping\""));
+            self.response = br#"{"result":{"type":"pong"}}
+"#
+            .to_vec();
+            Ok(data.len())
+        }
+
+        fn resize(&mut self, _cols: u16, _rows: u16) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn shutdown(&mut self) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct RecordingConnection {
+        path: std::sync::Arc<std::sync::Mutex<Option<PathBuf>>>,
+    }
+
+    impl crate::transport::TargetConnection for RecordingConnection {
+        fn transport_id(&self) -> &str {
+            "recording"
+        }
+
+        fn target(&self) -> &str {
+            "test-target"
+        }
+
+        fn open_channel(
+            &self,
+            request: crate::transport::ChannelRequest,
+        ) -> anyhow::Result<Box<dyn crate::transport::ByteChannel>> {
+            let crate::transport::ChannelRequest::UnixSocket { path } = request else {
+                anyhow::bail!("Herdr must open a UnixSocket channel");
+            };
+            *self.path.lock().unwrap() = Some(path);
+            Ok(Box::new(RecordingChannel {
+                response: Vec::new(),
+            }))
+        }
+
+        fn probe(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn api_calls_use_target_connection_unix_socket_channel() {
+        let path = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let connection: std::sync::Arc<dyn crate::transport::TargetConnection> =
+            std::sync::Arc::new(RecordingConnection {
+                path: std::sync::Arc::clone(&path),
+            });
+        let session = HerdrSession::with_connection(connection, "test", "/remote/herdr.sock");
+
+        session
+            .ping()
+            .expect("recording channel should answer ping");
+        assert_eq!(
+            path.lock().unwrap().as_deref(),
+            Some(Path::new("/remote/herdr.sock"))
+        );
+    }
 
     #[test]
     fn session_derives_client_socket_from_api_socket() {

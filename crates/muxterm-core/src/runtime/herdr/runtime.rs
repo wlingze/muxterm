@@ -107,7 +107,8 @@ pub struct HerdrRuntime {
     /// 通道未排序），晚到会把焦点回退到创建前。短窗口内钉住 settled 焦点，
     /// 直到用户焦点意图或窗口到期。
     focus_pin: Option<FocusPin>,
-    /// SSH 远端 socket 转发进程（Drop/shutdown 时杀掉）。
+    /// Compatibility-only SSH forwarding child for direct test construction.
+    /// Production provider paths use TargetConnection-backed channels.
     forward: Option<std::process::Child>,
 }
 
@@ -166,15 +167,16 @@ impl HerdrRuntime {
         }
     }
 
-    /// 绑定共享 session + workspace，并接管 SSH socket 转发进程。
+    /// Compatibility constructor for direct loopback/SSH tests. Provider
+    /// construction uses `HerdrSession::shared_with_connection` instead.
     pub fn with_forward(
         session: Arc<HerdrSession>,
         workspace_id: impl Into<String>,
         forward: std::process::Child,
     ) -> Self {
-        let mut rt = Self::new(session, workspace_id);
-        rt.forward = Some(forward);
-        rt
+        let mut runtime = Self::new(session, workspace_id);
+        runtime.forward = Some(forward);
+        runtime
     }
 
     pub fn workspace_id(&self) -> &str {
@@ -1147,7 +1149,6 @@ impl HerdrRuntime {
         let generation = slot.generation;
         let target = slot.target.clone();
         let (cols, rows) = self.hello_client_size(pane);
-        let socket = self.session.client_socket_path().to_path_buf();
         let (Some(event_tx), Some(start_tx)) = (
             self.stream_tx.as_ref().cloned(),
             self.start_tx.as_ref().cloned(),
@@ -1170,7 +1171,16 @@ impl HerdrRuntime {
             ));
         }
         ObserveStream::start_async(
-            socket, target, pane, generation, mode, takeover, cols, rows, event_tx, start_tx,
+            Arc::clone(&self.session),
+            target,
+            pane,
+            generation,
+            mode,
+            takeover,
+            cols,
+            rows,
+            event_tx,
+            start_tx,
         );
     }
 
@@ -2471,28 +2481,13 @@ impl HerdrRuntime {
         self.pane_to_herdr_pane.get(&pane).map(String::as_str)
     }
 
-    /// 关闭本 Runtime 自己启动的 SSH 转发，并只清理它在系统临时目录下的
-    /// `muxterm-herdr-fwd-*` socket。绝不删除默认 Herdr socket。
+    /// Compatibility cleanup for a Runtime constructed with `with_forward`.
     fn stop_forward(&mut self) {
         let Some(mut forward) = self.forward.take() else {
             return;
         };
         let _ = forward.kill();
         let _ = forward.wait();
-        let temp_dir = std::env::temp_dir();
-        for socket in [
-            self.session.socket_path(),
-            self.session.client_socket_path(),
-        ] {
-            let is_ours = socket.parent() == Some(temp_dir.as_path())
-                && socket
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.starts_with("muxterm-herdr-fwd-"));
-            if is_ours {
-                let _ = std::fs::remove_file(socket);
-            }
-        }
     }
 }
 
@@ -4771,7 +4766,7 @@ mod tests {
             drop(second_reader);
         });
 
-        let mut runtime = HerdrRuntime::new(session, "w1");
+        let mut runtime = HerdrRuntime::new(Arc::clone(&session), "w1");
         runtime.status = BackendStatus::Connected;
         runtime.foreground = true;
         let pane = PaneId(1);
@@ -4790,8 +4785,8 @@ mod tests {
 
         // 初始 control 流（generation 1；open/activate 语义 takeover=false）。
         let generation = 1u64;
-        let stream = ObserveStream::start(
-            &client_socket,
+        let stream = ObserveStream::start_with_session(
+            Arc::clone(&session),
             "w1:p1",
             pane,
             generation,
