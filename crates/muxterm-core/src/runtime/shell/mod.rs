@@ -27,7 +27,7 @@ use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 use tokio::sync::mpsc;
 
 use crate::buffer_cap::{append_capped, MAX_PANE_OUTPUT_BYTES, MAX_STATE_EVENTS};
-use crate::config::{
+use crate::executable::{
     expand_config_value, parse_command_argv, prepare_pane_argv_for_platform, program_basename,
 };
 use crate::protocol::layout::{LayoutNode, TabLayout};
@@ -193,14 +193,6 @@ impl ShellRuntime {
     #[cfg(test)]
     pub(crate) fn test_ssh_alias(&self) -> Option<&str> {
         self.ssh_alias.as_deref()
-    }
-
-    /// 用 `Config` 创建。
-    pub fn from_config(config: &crate::config::Config) -> Self {
-        Self::new(
-            config.pane.default_command.clone(),
-            config.pane.workdir.clone(),
-        )
     }
 
     /// drain pty 读线程的字节块，转成 PaneOutput 事件并累积输出。
@@ -1307,7 +1299,6 @@ impl Runtime for ShellRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
     use crate::protocol::layout::SplitDir;
 
     fn runtime() -> ShellRuntime {
@@ -1654,14 +1645,6 @@ mod tests {
         assert_eq!(b.panes(&TabId(1)).len(), 1);
         assert!(b.layout(&TabId(1)).is_some());
         assert!(b.pane_output(&PaneId(1)).is_some());
-    }
-
-    #[tokio::test]
-    async fn from_config_uses_pane_config() {
-        let cfg = Config::default();
-        let b = ShellRuntime::from_config(&cfg);
-        assert_eq!(b.default_command, cfg.pane.default_command);
-        assert_eq!(b.default_workdir, cfg.pane.workdir);
     }
 
     #[tokio::test]

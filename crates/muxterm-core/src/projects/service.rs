@@ -4,7 +4,7 @@ use anyhow::{anyhow, Result};
 
 use crate::catalog::OpenRequest;
 use crate::catalog::{Catalog, ResolveIntent};
-use crate::config::expand_config_value;
+use crate::executable::expand_config_value;
 use crate::protocol::candidate::CandidateRef;
 use crate::quickconnect::model::{TargetRuntime, TargetTransport};
 use crate::runtime::WorktreeCreateSpec;
