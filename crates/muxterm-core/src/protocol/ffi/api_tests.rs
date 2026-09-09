@@ -82,10 +82,6 @@ fn ffi_open_json_resolves_a_project_candidate() {
             1,
             "opened workspace belongs to Muxterm pool"
         );
-        assert!(
-            (*h).catalog.pool().is_empty(),
-            "production FFI handle must not leave a live pool in Catalog"
-        );
         muxterm_free(h);
     }
 }

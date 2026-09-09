@@ -26,6 +26,7 @@ use muxterm::test_support::core::catalog::Catalog;
 use muxterm::test_support::core::config::Config;
 use muxterm::test_support::core::protocol::task::TaskOutcome;
 use muxterm::test_support::core::quickconnect::model::{QuickConnect, TargetConfig};
+use muxterm::test_support::core::workspace::pool::WorkspacePool;
 use muxterm::test_support::platform::ffi_client::ClientRuntimeCapability;
 use muxterm::test_support::platform::linux::keymap::Action;
 use muxterm::test_support::platform::linux::window::AppWindow;
@@ -721,8 +722,10 @@ fn prepare_existing_fixture(fixture: &MatrixFixture, runtime: &str, transport: &
         .build()
         .context("创建 Existing fixture Tokio runtime")?;
     let mut catalog = Catalog::with_builtins();
+    let mut pool = WorkspacePool::default();
+    let runtime_instance = catalog.new_runtime(&fixture.spec)?;
     let workspace = rt
-        .block_on(catalog.open(&fixture.spec))
+        .block_on(pool.open_spec_with_runtime(&fixture.spec, runtime_instance))
         .with_context(|| format!("预置 {runtime} x {transport} Existing fixture"))?;
     build_2tab3pane(workspace, runtime, transport)?;
     rt.block_on(workspace.shutdown())?;

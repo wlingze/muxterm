@@ -9,13 +9,14 @@ use crate::protocol::candidate::CandidateRef;
 use crate::quickconnect::model::{TargetRuntime, TargetTransport};
 use crate::runtime::WorktreeCreateSpec;
 use crate::transport::ChannelRequest;
+use crate::workspace::pool::WorkspacePool;
 use crate::workspace::template::TemplateName;
 use muxterm_protocol::WorkspaceId;
 
 use super::{git_worktree_add_argv, Project, ProjectId, ProjectStore, Worktree, WorktreeId};
 
-/// Projects facade. It owns records, while Catalog owns connections and live
-/// Workspace instances.
+/// Projects facade. It owns records, while Catalog owns connection/provider
+/// services and the caller owns live Workspace instances in a pool.
 #[derive(Debug, Clone, Default)]
 pub struct ProjectsService {
     store: ProjectStore,
@@ -165,6 +166,7 @@ impl ProjectsService {
     pub async fn create_generic_worktree_and_open(
         &mut self,
         catalog: &mut Catalog,
+        pool: &mut WorkspacePool,
         project_id: &ProjectId,
         spec: &WorktreeCreateSpec,
         template_override: Option<TemplateName>,
@@ -172,6 +174,7 @@ impl ProjectsService {
         let worktree_id = self.create_generic_worktree(catalog, project_id, spec)?;
         self.open_worktree(
             catalog,
+            pool,
             project_id,
             &worktree_id,
             ResolveIntent::CreateIfMissing,
@@ -185,6 +188,7 @@ impl ProjectsService {
     pub async fn create_native_worktree_and_open(
         &mut self,
         catalog: &mut Catalog,
+        pool: &mut WorkspacePool,
         project_id: &ProjectId,
         spec: &WorktreeCreateSpec,
         template_override: Option<TemplateName>,
@@ -199,12 +203,13 @@ impl ProjectsService {
             ));
         }
         let source = self
-            .open_project(catalog, project_id, ResolveIntent::AttachOnly, None)
+            .open_project(catalog, pool, project_id, ResolveIntent::AttachOnly, None)
             .await?;
         let worktree_id = allocate_worktree_id(&project, spec);
         let template = template_override.or(project.template.clone());
         let workspace_id = catalog
-            .create_native_worktree(
+            .create_native_worktree_with_pool(
+                pool,
                 &source,
                 spec,
                 Some(project.worktree_provenance(&worktree_id)),
@@ -229,6 +234,7 @@ impl ProjectsService {
     pub async fn create_worktree(
         &mut self,
         catalog: &mut Catalog,
+        pool: &mut WorkspacePool,
         project_id: &ProjectId,
         spec: &WorktreeCreateSpec,
         template_override: Option<TemplateName>,
@@ -239,11 +245,17 @@ impl ProjectsService {
             .target
             .runtime;
         if runtime == TargetRuntime::Herdr {
-            self.create_native_worktree_and_open(catalog, project_id, spec, template_override)
+            self.create_native_worktree_and_open(catalog, pool, project_id, spec, template_override)
                 .await
         } else {
-            self.create_generic_worktree_and_open(catalog, project_id, spec, template_override)
-                .await
+            self.create_generic_worktree_and_open(
+                catalog,
+                pool,
+                project_id,
+                spec,
+                template_override,
+            )
+            .await
         }
     }
 
@@ -251,6 +263,7 @@ impl ProjectsService {
     pub async fn open_project(
         &self,
         catalog: &mut Catalog,
+        pool: &mut WorkspacePool,
         id: &ProjectId,
         intent: ResolveIntent,
         template_override: Option<TemplateName>,
@@ -268,7 +281,7 @@ impl ProjectsService {
         };
         let resolved = catalog.resolve_open_request(&request, self.list_projects())?;
         let workspace_id = resolved.workspace_id();
-        catalog.open_resolved(resolved).await?;
+        catalog.open_resolved(pool, resolved).await?;
         Ok(workspace_id)
     }
 
@@ -276,6 +289,7 @@ impl ProjectsService {
     pub async fn open_worktree(
         &mut self,
         catalog: &mut Catalog,
+        pool: &mut WorkspacePool,
         project_id: &ProjectId,
         worktree_id: &super::WorktreeId,
         intent: ResolveIntent,
@@ -299,7 +313,7 @@ impl ProjectsService {
         };
         let resolved = catalog.resolve_open_request(&request, self.list_projects())?;
         let workspace_id = resolved.workspace_id();
-        catalog.open_resolved(resolved).await?;
+        catalog.open_resolved(pool, resolved).await?;
 
         if let Some(record) = self
             .store

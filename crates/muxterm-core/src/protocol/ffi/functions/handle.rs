@@ -10,6 +10,7 @@ use crate::logging::{init_logging, LoggingConfig};
 use crate::projects::{ProjectStore, ProjectsService};
 use crate::protocol::terminal::emulate::DEFAULT_SCROLLBACK_LINES;
 use crate::runtime::{DaemonRuntime, ShellRuntime, TmuxRuntime};
+use crate::workspace::pool::WorkspacePool;
 use crate::workspace::template::WorkspaceTemplate;
 use muxterm_protocol::WorkspaceId;
 
@@ -52,7 +53,11 @@ pub extern "C" fn muxterm_catalog_new() -> *mut MuxtermHandle {
         let Some(rt) = new_ffi_runtime() else {
             return ptr::null_mut();
         };
-        boxed_handle(crate::catalog::Catalog::with_builtins(), rt)
+        boxed_handle(
+            crate::catalog::Catalog::with_builtins(),
+            WorkspacePool::default(),
+            rt,
+        )
     }))
     .unwrap_or(ptr::null_mut())
 }
@@ -133,22 +138,20 @@ fn legacy_new_handle(
     let Some(rt) = new_ffi_runtime() else {
         return ptr::null_mut();
     };
-    let mut catalog = crate::catalog::Catalog::with_builtins();
+    let catalog = crate::catalog::Catalog::with_builtins();
 
     let (id, name, runtime, scrollback_lines) =
         match legacy_runtime_spec(&kind, sock, sess, alias, start_dir, client_size) {
             Some(spec) => spec,
             None => return ptr::null_mut(),
         };
-    let fut =
-        catalog
-            .pool_mut()
-            .open_with_scrollback(id.clone(), name, scrollback_lines, move |_| Ok(runtime));
+    let mut pool = WorkspacePool::default();
+    let fut = pool.open_with_scrollback(id.clone(), name, scrollback_lines, move |_| Ok(runtime));
     if rt.block_on(fut).is_err() {
         return ptr::null_mut();
     }
 
-    boxed_handle(catalog, rt)
+    boxed_handle(catalog, pool, rt)
 }
 
 fn new_ffi_runtime() -> Option<tokio::runtime::Runtime> {
@@ -161,6 +164,7 @@ fn new_ffi_runtime() -> Option<tokio::runtime::Runtime> {
 
 fn boxed_handle(
     mut catalog: crate::catalog::Catalog,
+    pool: WorkspacePool,
     rt: tokio::runtime::Runtime,
 ) -> *mut MuxtermHandle {
     let attention_config = crate::config::Config::load()
@@ -191,10 +195,6 @@ fn boxed_handle(
             ProjectsService::in_memory()
         }
     };
-    // The FFI handle is the product composition root. Move the live pool out
-    // of Catalog so all runtimes and target connections have one Core owner
-    // in production.
-    let pool = catalog.take_pool();
     let connections = catalog.take_connections();
     Box::into_raw(Box::new(MuxtermHandle {
         catalog,

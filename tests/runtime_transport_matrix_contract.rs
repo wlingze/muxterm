@@ -14,6 +14,7 @@ use anyhow::{ensure, Context, Result};
 
 use muxterm::test_support::core::catalog::Catalog;
 use muxterm::test_support::core::protocol::task::{Task, TaskOutcome};
+use muxterm::test_support::core::workspace::pool::WorkspacePool;
 use muxterm::test_support::core::workspace::spec::WorkspaceSpec;
 use support::herdr_test_support::herdr_available;
 use support::runtime_transport_matrix::{
@@ -63,9 +64,11 @@ fn run_case(runtime_id: &str, transport_id: &str, sshd: &LoopbackSshd) -> Result
         .context("创建 Tokio runtime")?;
 
     let mut catalog = Catalog::with_builtins();
+    let mut pool = WorkspacePool::default();
     let snapshot = {
+        let runtime = catalog.new_runtime(&spec)?;
         let workspace = rt
-            .block_on(catalog.open(&spec))
+            .block_on(pool.open_spec_with_runtime(&spec, runtime))
             .with_context(|| format!("打开 {runtime_id} x {transport_id}"))?;
         ensure!(
             workspace.runtime().workspace_runtime() == runtime_id,
@@ -85,8 +88,9 @@ fn run_case(runtime_id: &str, transport_id: &str, sshd: &LoopbackSshd) -> Result
     };
 
     let alternate_token = {
+        let runtime = catalog.new_runtime(&alternate_spec)?;
         let alternate = rt
-            .block_on(catalog.open(&alternate_spec))
+            .block_on(pool.open_spec_with_runtime(&alternate_spec, runtime))
             .with_context(|| format!("创建第二个 {runtime_id} x {transport_id} Workspace"))?;
         ensure!(
             alternate.runtime().workspace_runtime() == runtime_id,
@@ -96,17 +100,16 @@ fn run_case(runtime_id: &str, transport_id: &str, sshd: &LoopbackSshd) -> Result
         verify_fresh_workspace(alternate, runtime_id, transport_id)?
     };
     ensure!(
-        catalog.pool().len() == 2,
+        pool.len() == 2,
         "{runtime_id} x {transport_id} 创建第二个 Workspace 后池中必须恰有两个，实际 {}",
-        catalog.pool().len()
+        pool.len()
     );
     ensure!(
-        catalog.pool().active_id() == Some(&alternate_id),
+        pool.active_id() == Some(&alternate_id),
         "创建第二个 Workspace 后必须切到它"
     );
     {
-        let workspace = catalog
-            .pool_mut()
+        let workspace = pool
             .activate(&workspace_id)
             .context("WorkspacePool::activate 无法切回原 Workspace")?;
         verify_after_pool_switch(
@@ -118,13 +121,12 @@ fn run_case(runtime_id: &str, transport_id: &str, sshd: &LoopbackSshd) -> Result
         )?;
     }
     ensure!(
-        catalog.pool().active_id() == Some(&workspace_id),
+        pool.active_id() == Some(&workspace_id),
         "WorkspacePool::activate 后 active_id 必须是原 Workspace"
     );
 
     if snapshot.persistent {
-        let workspace = catalog
-            .pool_mut()
+        let workspace = pool
             .get_mut(&workspace_id)
             .context("detach 前原 Workspace 不应从池中消失")?;
         let outcome = workspace.execute(Task::Detach)?;
@@ -132,28 +134,32 @@ fn run_case(runtime_id: &str, transport_id: &str, sshd: &LoopbackSshd) -> Result
             outcome == TaskOutcome::Done,
             "{runtime_id} x {transport_id} 声明 PersistDetach 后 detach 必须成功，实际 {outcome:?}"
         );
-        if let Some(alternate) = catalog.pool_mut().get_mut(&alternate_id) {
+        if let Some(alternate) = pool.get_mut(&alternate_id) {
             rt.block_on(alternate.shutdown())?;
         }
         // 真正丢掉旧 Runtime，再从相同 spec 新建实例 attach；不能依赖旧本地状态。
         drop(catalog);
+        drop(pool);
         let mut attached_catalog = Catalog::with_builtins();
-        let attached = rt.block_on(attached_catalog.open(&spec)).with_context(|| {
-            if runtime_id == "tmux" {
-                format!(
-                    "重新 attach {runtime_id} x {transport_id}: {}",
-                    tmux_fixture_diagnostics(&spec)
-                )
-            } else {
-                format!("重新 attach {runtime_id} x {transport_id}")
-            }
-        })?;
+        let mut attached_pool = WorkspacePool::default();
+        let attached_runtime = attached_catalog.new_runtime(&spec)?;
+        let attached = rt
+            .block_on(attached_pool.open_spec_with_runtime(&spec, attached_runtime))
+            .with_context(|| {
+                if runtime_id == "tmux" {
+                    format!(
+                        "重新 attach {runtime_id} x {transport_id}: {}",
+                        tmux_fixture_diagnostics(&spec)
+                    )
+                } else {
+                    format!("重新 attach {runtime_id} x {transport_id}")
+                }
+            })?;
         verify_after_attach(attached, runtime_id, transport_id, &snapshot)?;
         rt.block_on(attached.shutdown())?;
     } else {
         // 非持久 Runtime 不伪造 detach/attach；池内切走、切回和继续输入即是契约。
-        let workspace = catalog
-            .pool_mut()
+        let workspace = pool
             .get_mut(&workspace_id)
             .context("切回后 shell Workspace 不应从池中消失")?;
         ensure!(
@@ -171,7 +177,7 @@ fn run_case(runtime_id: &str, transport_id: &str, sshd: &LoopbackSshd) -> Result
             "shell 不得伪造 detach 成功"
         );
         rt.block_on(workspace.shutdown())?;
-        if let Some(alternate) = catalog.pool_mut().get_mut(&alternate_id) {
+        if let Some(alternate) = pool.get_mut(&alternate_id) {
             rt.block_on(alternate.shutdown())?;
         }
     }

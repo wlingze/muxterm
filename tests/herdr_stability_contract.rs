@@ -26,6 +26,7 @@ use muxterm::test_support::core::runtime::herdr::wire::{
     RenderEncoding, ServerMessage, HERDR_PROTOCOL_VERSION, MAX_FRAME_SIZE,
 };
 use muxterm::test_support::core::runtime::HerdrRuntime;
+use muxterm::test_support::core::workspace::pool::WorkspacePool;
 use muxterm::test_support::core::workspace::spec::WorkspaceSpec;
 use muxterm::test_support::core::workspace::workspace::Workspace;
 use support::herdr_test_support::{herdr_available, IsolatedHerdr};
@@ -197,7 +198,9 @@ fn run_stability_case(
         other => anyhow::bail!("未知 transport {other}"),
     };
     let mut catalog = Catalog::with_builtins();
-    let workspace = rt.block_on(catalog.open(&spec))?;
+    let mut pool = WorkspacePool::default();
+    let runtime = catalog.new_runtime(&spec)?;
+    let workspace = rt.block_on(pool.open_spec_with_runtime(&spec, runtime))?;
     wait_until(workspace, "初始 Herdr tab/pane", |ws| {
         ws.state().tabs().len() == 4 && ws.state().active_pane().is_some()
     })?;

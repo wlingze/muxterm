@@ -3,7 +3,7 @@
 //! 契约：`docs/CATALOG.md`。施工：`docs/CATALOG-PLAN.md`。
 //!
 //! `trait Runtime` 只表示已经 attach 的格子。列出候选、拿管道、探活
-//! 都在 Catalog：provider 视图、ConnectionRegistry、Inventory、Pool。
+//! 都在 Catalog：provider 视图、ConnectionRegistry、Inventory、resolver。
 
 pub mod inventory;
 pub mod resolver;
@@ -44,7 +44,6 @@ pub struct Catalog {
     transports: Vec<Box<dyn TransportProvider>>,
     connections: ConnectionRegistry,
     inventory: Inventory,
-    pool: WorkspacePool,
     templates: TemplateRegistry,
 }
 
@@ -62,7 +61,6 @@ impl Catalog {
             transports: Vec::new(),
             connections: ConnectionRegistry::new(),
             inventory: Inventory::new(),
-            pool: WorkspacePool::default(),
             templates: TemplateRegistry::default(),
         }
     }
@@ -357,78 +355,11 @@ impl Catalog {
         Ok(runtime)
     }
 
-    /// 按 spec 打开工作区：查 provider → 复用 Connect → 构造 Runtime → 进 Pool。
-    pub async fn open(&mut self, spec: &WorkspaceSpec) -> anyhow::Result<&mut Workspace> {
-        let workspace_id = spec.id();
-        let should_apply_template = self.pool.get(&workspace_id).is_none() && spec.create;
-        let template = spec
-            .template
-            .as_ref()
-            .and_then(|name| self.templates.get(name))
-            .cloned();
-        let runtime = self.new_runtime(spec)?;
-        let workspace = self
-            .pool
-            .open_spec_with_runtime(spec, runtime)
-            .await
-            .map_err(|error| runtime_open_error(spec, error))?;
-        if should_apply_template {
-            if let Some(template) = template {
-                workspace.start_template(template)?;
-            }
-        }
-        Ok(workspace)
-    }
-
-    /// Native Runtime worktree path: ask the source Runtime for a new spec,
-    /// then construct and insert the resulting Workspace through the pool.
-    pub async fn create_native_worktree(
-        &mut self,
-        source: &WorkspaceId,
-        worktree: &crate::runtime::WorktreeCreateSpec,
-        provenance: Option<WorkspaceProvenance>,
-        template: Option<TemplateName>,
-    ) -> anyhow::Result<WorkspaceId> {
-        let mut spec = {
-            let workspace = self
-                .pool
-                .get(source)
-                .ok_or_else(|| anyhow::anyhow!("workspace {source} 不在池里"))?;
-            if !workspace
-                .runtime()
-                .support()
-                .contains(&crate::runtime::RuntimeCapability::WorktreeCreate)
-            {
-                anyhow::bail!("runtime 不支持 native WorktreeCreate");
-            }
-            WorkspaceSpec::from_runtime_spec(workspace.runtime().create_worktree_spec(worktree)?)
-        };
-        spec.provenance = provenance.clone();
-        spec.template = template;
-        let workspace_id = spec.id();
-        let should_apply_template = self.pool.get(&workspace_id).is_none() && spec.create;
-        let template_record = spec
-            .template
-            .as_ref()
-            .and_then(|name| self.templates.get(name))
-            .cloned();
-        let runtime = self.new_runtime(&spec)?;
-        let workspace = self.pool.open_spec_with_runtime(&spec, runtime).await?;
-        workspace.set_provenance(provenance);
-        if should_apply_template {
-            if let Some(template) = template_record {
-                workspace.start_template(template)?;
-            }
-        }
-        Ok(workspace_id)
-    }
-
     /// Native worktree creation against an explicitly supplied live pool.
     ///
-    /// The product FFI handle owns the live `WorkspacePool`; the Catalog keeps
-    /// a separate compatibility pool for standalone callers. This variant
-    /// keeps provider construction in Catalog while inserting the new runtime
-    /// into the caller's actual product pool.
+    /// The product composition root owns the live `WorkspacePool`; Catalog
+    /// keeps provider construction while inserting the new runtime into the
+    /// caller's pool.
     pub async fn create_native_worktree_with_pool(
         &mut self,
         pool: &mut WorkspacePool,
@@ -468,6 +399,58 @@ impl Catalog {
             }
         }
         Ok(workspace_id)
+    }
+
+    /// Open a WorkspaceSpec into the caller-owned pool.
+    ///
+    /// Template application is intentionally limited to create specs; an
+    /// attach always follows the remote topology already present.
+    pub async fn open_spec<'a>(
+        &mut self,
+        pool: &'a mut WorkspacePool,
+        spec: &WorkspaceSpec,
+    ) -> anyhow::Result<&'a mut Workspace> {
+        let workspace_id = spec.id();
+        let should_apply_template = pool.get(&workspace_id).is_none() && spec.create;
+        let template = spec
+            .template
+            .as_ref()
+            .and_then(|name| self.templates.get(name))
+            .cloned();
+        let runtime = self.new_runtime(spec)?;
+        let workspace = pool
+            .open_spec_with_runtime(spec, runtime)
+            .await
+            .map_err(|error| runtime_open_error(spec, error))?;
+        if should_apply_template {
+            if let Some(template) = template {
+                workspace.start_template(template)?;
+            }
+        }
+        Ok(workspace)
+    }
+
+    /// Open a resolved target into the caller-owned WorkspacePool.
+    ///
+    /// Catalog resolves identities and constructs Runtime instances, but it
+    /// never owns live Workspace slots.
+    pub async fn open_resolved<'a>(
+        &mut self,
+        pool: &'a mut WorkspacePool,
+        resolved: ResolvedTarget,
+    ) -> anyhow::Result<&'a mut Workspace> {
+        let id = resolved.workspace_id();
+        if let Some(existing) = pool.get(&id) {
+            if existing.resolved_target().map(|r| &r.spec) == Some(&resolved.spec) {
+                return Ok(pool.get_mut(&id).expect("刚查过必须存在"));
+            }
+            anyhow::bail!("identity key 撞到已打开 WorkspaceId {}（spec 不一致）", id);
+        }
+        let spec = resolved.spec.clone();
+        let canonical = resolved.canonical.clone();
+        let workspace = self.open_spec(pool, &spec).await?;
+        workspace.set_resolved_target(ResolvedTarget { canonical, spec });
+        Ok(workspace)
     }
 
     /// 打开一个 spec 并返回**自有** Workspace（不进本 Catalog 池）。
@@ -662,13 +645,7 @@ impl Catalog {
         request: &OpenRequest,
         projects: &[Project],
     ) -> Result<ResolvedTarget, resolver::ResolveError> {
-        let recent: Vec<ResolvedTarget> = self
-            .pool
-            .list()
-            .into_iter()
-            .filter_map(|workspace| workspace.resolved_target().cloned())
-            .collect();
-        self.resolve_open_request_with_recent(request, projects, &recent)
+        self.resolve_open_request_with_recent(request, projects, &[])
     }
 
     /// Resolve an open request while the live pool is owned by Muxterm.
@@ -769,8 +746,9 @@ impl Catalog {
         projects: &[Project],
         existing: &[ExistingCandidate],
         recent_limit: usize,
+        pool: &WorkspacePool,
     ) -> Vec<Candidate> {
-        self.candidates_with_pool(projects, existing, recent_limit, &self.pool)
+        self.candidates_with_pool(projects, existing, recent_limit, pool)
     }
 
     /// Build candidates against a live pool owned by Muxterm.
@@ -965,38 +943,6 @@ impl Catalog {
         ResolvedTarget { canonical, spec }
     }
 
-    /// TargetConfig → 打开（resolve 后 attach）。Project/Recent/Existing 共用。
-    pub async fn open_target(
-        &mut self,
-        config: &crate::quickconnect::model::TargetConfig,
-        intent: ResolveIntent,
-    ) -> anyhow::Result<&mut Workspace> {
-        let resolved = self.resolve_target(config, intent)?;
-        self.open_resolved(resolved).await
-    }
-
-    /// 打开已解析目标；Workspace 保存 canonical descriptor（Core 唯一所有权）。
-    pub async fn open_resolved(
-        &mut self,
-        resolved: ResolvedTarget,
-    ) -> anyhow::Result<&mut Workspace> {
-        let id = resolved.workspace_id();
-        // 存在性检查用不可变借用；命中后重新取可变借用返回。
-        if let Some(existing) = self.pool.get(&id) {
-            // 同 identity slot 复用只允许整值补全 canonical name/path，
-            // 不能改变 attach identity（spec 一致才能复用）。
-            if existing.resolved_target().map(|r| &r.spec) == Some(&resolved.spec) {
-                return Ok(self.pool.get_mut(&id).expect("刚查过必须存在"));
-            }
-            anyhow::bail!("identity key 撞到已打开 WorkspaceId {}（spec 不一致）", id);
-        }
-        let spec = resolved.spec.clone();
-        let canonical = resolved.canonical.clone();
-        let workspace = self.open(&spec).await?;
-        workspace.set_resolved_target(ResolvedTarget { canonical, spec });
-        Ok(workspace)
-    }
-
     /// 探活未打开的 target。禁止为此 attach Runtime。
     ///
     /// 对每个 TransportProvider 的 target：connect 失败 → Reach::Err；成功 →
@@ -1047,23 +993,6 @@ impl Catalog {
 
     pub fn inventory_mut(&mut self) -> &mut Inventory {
         &mut self.inventory
-    }
-
-    pub fn pool(&self) -> &WorkspacePool {
-        &self.pool
-    }
-
-    pub fn pool_mut(&mut self) -> &mut WorkspacePool {
-        &mut self.pool
-    }
-
-    /// Move the compatibility pool into the product composition root.
-    ///
-    /// A production FFI handle owns the live pool on [`Muxterm`], not inside
-    /// Catalog.  Catalog retains this field only so its resolver/open unit
-    /// tests and legacy in-process callers can migrate independently.
-    pub(crate) fn take_pool(&mut self) -> WorkspacePool {
-        std::mem::take(&mut self.pool)
     }
 
     /// Move the compatibility connection registry into the product root.

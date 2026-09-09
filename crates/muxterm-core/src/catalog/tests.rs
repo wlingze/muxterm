@@ -11,6 +11,7 @@ use crate::runtime::RuntimeProvider;
 use crate::runtime::{Runtime, RuntimeCapability};
 use crate::transport::registry::ConnectionRegistry;
 use crate::transport::{ChannelKind, TargetConnection};
+use crate::workspace::pool::WorkspacePool;
 use crate::workspace::spec::WorkspaceSpec;
 use crate::workspace::template::{
     PaneTemplate, TabTemplate, TemplateLayout, TemplateName, WorkspaceTemplate,
@@ -148,6 +149,14 @@ fn mock_spec(runtime: &str, transport: &str, alias: Option<&str>, session: &str)
         provenance: None,
         template: None,
     }
+}
+
+async fn open_in_pool<'a>(
+    catalog: &mut Catalog,
+    pool: &'a mut WorkspacePool,
+    spec: &WorkspaceSpec,
+) -> anyhow::Result<&'a mut crate::workspace::workspace::Workspace> {
+    catalog.open_spec(pool, spec).await
 }
 
 #[test]
@@ -302,18 +311,27 @@ async fn two_opens_same_target_share_one_connect() {
         list_err: false,
         opened: Arc::new(AtomicUsize::new(0)),
     }));
-    cat.open(&mock_spec("tmux", "ssh", Some("ryzen"), "a"))
-        .await
-        .unwrap();
-    cat.open(&mock_spec("tmux", "ssh", Some("ryzen"), "b"))
-        .await
-        .unwrap();
+    let mut pool = WorkspacePool::default();
+    open_in_pool(
+        &mut cat,
+        &mut pool,
+        &mock_spec("tmux", "ssh", Some("ryzen"), "a"),
+    )
+    .await
+    .unwrap();
+    open_in_pool(
+        &mut cat,
+        &mut pool,
+        &mock_spec("tmux", "ssh", Some("ryzen"), "b"),
+    )
+    .await
+    .unwrap();
     assert_eq!(
         n.load(Ordering::SeqCst),
         1,
         "同一 SSH target 只 connect 一次"
     );
-    assert_eq!(cat.pool().len(), 2);
+    assert_eq!(pool.len(), 2);
 }
 
 #[tokio::test]
@@ -364,8 +382,7 @@ async fn open_rejects_unknown_runtime() {
         targets: vec![],
     }));
     let err = cat
-        .open(&mock_spec("unknown", "local", None, "x"))
-        .await
+        .new_runtime(&mock_spec("unknown", "local", None, "x"))
         .map(|_| ())
         .expect_err("未知 runtime 必须 Err");
     assert!(
@@ -394,10 +411,14 @@ async fn open_uses_provider_not_spec_factory() {
         list_err: false,
         opened: Arc::clone(&opened),
     }));
-    let ws = cat
-        .open(&mock_spec("mockrt", "local", None, "demo"))
-        .await
-        .unwrap();
+    let mut pool = WorkspacePool::default();
+    let ws = open_in_pool(
+        &mut cat,
+        &mut pool,
+        &mock_spec("mockrt", "local", None, "demo"),
+    )
+    .await
+    .unwrap();
     assert_eq!(ws.runtime().workspace_runtime(), "mockrt");
     assert_eq!(opened.load(Ordering::SeqCst), 1);
 }
@@ -432,8 +453,9 @@ async fn open_resolved_uses_canonical_workspace_name() {
         session: Some("default".into()),
         workspace_id: Some("w2".into()),
     };
+    let mut pool = WorkspacePool::default();
     let ws = cat
-        .open_resolved(ResolvedTarget { canonical, spec })
+        .open_resolved(&mut pool, ResolvedTarget { canonical, spec })
         .await
         .unwrap();
 
@@ -464,7 +486,6 @@ fn refresh_inventory_marks_unreachable_without_opening() {
         cat.inventory_snapshot().reach("ssh", "dead"),
         Some(Reach::Err)
     );
-    assert_eq!(cat.pool().len(), 0, "探活不得打开 Workspace");
 }
 
 #[test]
@@ -652,9 +673,7 @@ async fn incompatible_channel_requirements_are_rejected_without_fallback() {
     }));
     cat.register_runtime(Box::new(UnixSocketOnlyDriver));
 
-    let result = cat
-        .open(&mock_spec("unix-only", "exec-only", None, ""))
-        .await;
+    let result = cat.new_runtime(&mock_spec("unix-only", "exec-only", None, ""));
     assert!(
         result.is_err(),
         "UnixSocket runtime must not silently fall back to Exec"
@@ -865,10 +884,10 @@ async fn catalog_applies_templates_only_to_create_specs() {
     let mut attach = mock_spec("mock", "local", None, "attach");
     attach.template = Some(template_name.clone());
     let attach_id = attach.id();
-    cat.open(&attach).await.unwrap();
+    let mut pool = WorkspacePool::default();
+    open_in_pool(&mut cat, &mut pool, &attach).await.unwrap();
     assert!(
-        cat.pool()
-            .get(&attach_id)
+        pool.get(&attach_id)
             .unwrap()
             .template_apply_report()
             .is_none(),
@@ -879,9 +898,8 @@ async fn catalog_applies_templates_only_to_create_specs() {
     create.create = true;
     create.template = Some(template_name);
     let create_id = create.id();
-    cat.open(&create).await.unwrap();
-    let report = cat
-        .pool()
+    open_in_pool(&mut cat, &mut pool, &create).await.unwrap();
+    let report = pool
         .get(&create_id)
         .unwrap()
         .template_apply_report()
@@ -898,13 +916,12 @@ async fn candidate_resolver_rehydrates_recent_from_core_descriptor() {
     let mut catalog = Catalog::new();
     let spec = WorkspaceSpec::local_shell("/repo");
     let workspace_id = spec.id();
-    catalog
-        .pool_mut()
-        .open(workspace_id.clone(), "recent".into(), |_| {
-            Box::new(MockRuntime::with_single_pane())
-        })
-        .await
-        .unwrap();
+    let mut pool = WorkspacePool::default();
+    pool.open(workspace_id.clone(), "recent".into(), |_| {
+        Box::new(MockRuntime::with_single_pane())
+    })
+    .await
+    .unwrap();
     let canonical = TargetConfig::new(
         "Recent Project",
         TargetRuntime::Shell,
@@ -912,9 +929,7 @@ async fn candidate_resolver_rehydrates_recent_from_core_descriptor() {
         "/repo",
     );
     let key = canonical.identity_key();
-    catalog
-        .pool_mut()
-        .get_mut(&workspace_id)
+    pool.get_mut(&workspace_id)
         .unwrap()
         .set_resolved_target(ResolvedTarget {
             canonical,
@@ -927,7 +942,14 @@ async fn candidate_resolver_rehydrates_recent_from_core_descriptor() {
         template: None,
         activate: true,
     };
-    let resolved = catalog.resolve_open_request(&request, &[]).unwrap();
+    let recent = pool
+        .get(&workspace_id)
+        .and_then(|workspace| workspace.resolved_target().cloned())
+        .into_iter()
+        .collect::<Vec<_>>();
+    let resolved = catalog
+        .resolve_open_request_with_recent(&request, &[], &recent)
+        .unwrap();
     assert_eq!(resolved.spec, spec);
     assert_eq!(resolved.canonical.name, "Recent Project");
 }
@@ -973,29 +995,24 @@ async fn catalog_candidates_aggregates_four_kinds_and_marks_pool_membership() {
     let spec =
         WorkspaceSpec::local_tmux(Some("demo".into()), Some("muxterm-test-candidates".into()));
     let workspace_id = spec.id();
-    let mut catalog = Catalog::new();
-    catalog
-        .pool_mut()
-        .open(workspace_id.clone(), "demo".into(), |_| {
-            Box::new(MockRuntime::with_single_pane())
-        })
-        .await
-        .unwrap();
-    catalog
-        .pool_mut()
-        .get_mut(&workspace_id)
+    let catalog = Catalog::new();
+    let mut pool = WorkspacePool::default();
+    pool.open(workspace_id.clone(), "demo".into(), |_| {
+        Box::new(MockRuntime::with_single_pane())
+    })
+    .await
+    .unwrap();
+    pool.get_mut(&workspace_id)
         .unwrap()
         .set_resolved_target(ResolvedTarget {
             canonical: project.target.clone(),
             spec,
         });
-    catalog
-        .pool_mut()
-        .get_mut(&workspace_id)
+    pool.get_mut(&workspace_id)
         .unwrap()
         .set_provenance(Some(WorkspaceProvenance::project("project-a")));
 
-    let rows = catalog.candidates(&[project], &[existing], 1);
+    let rows = catalog.candidates(&[project], &[existing], 1, &pool);
     assert_eq!(rows.len(), 4);
     assert_eq!(
         rows.iter().map(|row| row.kind).collect::<Vec<_>>(),
