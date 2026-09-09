@@ -22,6 +22,7 @@ use crate::platform::ffi_client::{
     ClientConfigSnapshot, ClientJsonPatchOperation, ClientRuntimeInfo, FfiClient,
 };
 use crate::platform::i18n::{self, Key as TextKey};
+use crate::platform::linux::quickconnect::model::ProjectDocument;
 use crate::platform::linux::quickconnect::store::QuickConnectStore;
 
 /// FFI-backed configuration operations used by the GTK settings views.
@@ -892,15 +893,13 @@ fn replace(path: &str, value: Value) -> ClientJsonPatchOperation {
     }
 }
 
-fn project_documents(
-    snapshot: &ClientConfigSnapshot,
-) -> anyhow::Result<Vec<crate::core::config_service::ProjectDocument>> {
+fn project_documents(snapshot: &ClientConfigSnapshot) -> anyhow::Result<Vec<ProjectDocument>> {
     Ok(serde_json::from_value(snapshot.values["projects"].clone())?)
 }
 
 fn persist_projects(
     config: &ConfigApi,
-    projects: &[crate::core::config_service::ProjectDocument],
+    projects: &[ProjectDocument],
 ) -> anyhow::Result<ClientConfigSnapshot> {
     config.apply(&[replace("/projects", serde_json::to_value(projects)?)])
 }

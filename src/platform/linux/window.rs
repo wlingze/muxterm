@@ -22,7 +22,6 @@ use vte4::prelude::*;
 
 use anyhow::anyhow;
 
-use crate::core::quickconnect::model::QuickConnect;
 use crate::core::workspace::spec::WorkspaceSpec;
 use crate::platform::event_pump::EventPump;
 use crate::platform::ffi_client::{
@@ -46,7 +45,9 @@ use crate::platform::linux::preferences_window::ConfigApi;
 use crate::platform::linux::quickconnect::event_policy::ClientSizePolicy;
 use crate::platform::linux::quickconnect::existing::{ExistingEntry, ExistingTransport};
 use crate::platform::linux::quickconnect::font::FontSettings;
-use crate::platform::linux::quickconnect::model::{TargetConfig, TargetRuntime, TargetTransport};
+use crate::platform::linux::quickconnect::model::{
+    QuickConnect, TargetConfig, TargetRuntime, TargetTransport,
+};
 use crate::platform::linux::quickconnect::project_flow::ProjectConnectIntent;
 use crate::platform::linux::quickconnect::status_style::{StatusBarMode, StatusBarSnapshot};
 use crate::platform::linux::quickconnect::store::QuickConnectStore;
