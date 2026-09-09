@@ -140,6 +140,7 @@ int muxterm_workspace_close(struct MuxtermHandle* h, const char* id);
 // Each function returns a JSON envelope allocated by Rust; release it with
 // muxterm_free_string. Patch is an RFC 6902-style JSON array.
 char* muxterm_config_describe_json(struct MuxtermHandle* h);
+char* muxterm_config_validate_json(const char* path);
 char* muxterm_config_begin_json(struct MuxtermHandle* h);
 char* muxterm_config_patch_json(
     struct MuxtermHandle* h, const char* transaction, const char* patch_json);

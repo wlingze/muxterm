@@ -1,7 +1,7 @@
-//! Daemon 进程：持有 ShellRuntime + TerminalModel，监听 unix socket 接收命令。
+//! Daemon 进程：持有一个 FFI client，监听 unix socket 接收命令。
 //!
 //! 架构（参考 tmux server/client）：
-//! - daemon 启动后 connect ShellRuntime（spawn 默认 shell）
+//! - daemon 启动后经 FFI 打开 shell 或 tmux workspace
 //! - 监听 unix socket，每收到一个 Request 就执行对应 Task
 //! - 返回格式化输出给 client
 //! - 收到 KillSession 或 SIGTERM/SIGINT 时优雅退出
@@ -10,30 +10,227 @@
 
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
-use tokio::runtime::Runtime;
 use tracing::{info, warn};
 
-use crate::core::runtime::shell::daemon::cli_command_to_task;
-use crate::core::runtime::shell::ShellRuntime;
-use crate::core::workspace::terminal_model::TerminalModel;
-use crate::platform::cli::format_output;
+use crate::platform::cli::format_ffi_output;
 use crate::platform::cli::ipc::{Request, Response};
+use crate::platform::cli::CliCommand;
+use crate::platform::ffi_client::{
+    ClientOpenIntent, ClientResizeAxis, ClientTarget, ClientTask, FfiClient,
+};
 
-/// daemon 共享状态：单个 TerminalModel（线程安全包装）。
+/// daemon 共享状态：一个 Core FFI handle 与其 workspace identity。
 struct DaemonState {
-    model: TerminalModel,
-    #[allow(dead_code)]
-    rt: Runtime,
+    client: FfiClient,
+    workspace_id: String,
 }
 
-// DaemonState 内含 Runtime（!Sync），但 daemon 是单线程的，
-// Arc<Mutex<>> 仅为满足函数签名，实际不会跨线程共享。
-unsafe impl Send for DaemonState {}
-unsafe impl Sync for DaemonState {}
+impl DaemonState {
+    fn connect(name: &str, tmux_socket: Option<&str>) -> Result<Self> {
+        if let Some(socket) = tmux_socket {
+            let sessions = FfiClient::discover_tmux_sessions("local", None, Some(socket))?;
+            if !sessions.iter().any(|session| session.name == name) {
+                FfiClient::create_workspace("tmux", None, Some(socket), name, "")?;
+            }
+            let client = FfiClient::new_connect("tmux", Some(socket), Some(name), None, None)
+                .with_context(|| format!("attach tmux session failed: {name}"))?;
+            let workspaces = client.workspace_list()?;
+            let workspace_id = workspaces
+                .iter()
+                .find(|workspace| workspace.active)
+                .or_else(|| workspaces.first())
+                .map(|workspace| workspace.id.clone())
+                .ok_or_else(|| anyhow::anyhow!("Core returned no tmux workspace"))?;
+            return Ok(Self {
+                client,
+                workspace_id,
+            });
+        }
+
+        let client = FfiClient::new_catalog()?;
+        let opened = client.open_target(
+            &ClientTarget {
+                name: name.to_string(),
+                runtime: "shell".into(),
+                transport: "local".into(),
+                target: None,
+                path: String::new(),
+                session: None,
+                socket: None,
+            },
+            ClientOpenIntent::CreateIfMissing,
+        )?;
+        Ok(Self {
+            client,
+            workspace_id: opened.id,
+        })
+    }
+
+    fn poll(&self) {
+        let _ = self.client.poll_workspace_events();
+    }
+
+    fn active_tab_id(&self) -> Option<u32> {
+        self.client
+            .get_workspace_tabs(&self.workspace_id)
+            .into_iter()
+            .find(|tab| tab.is_active)
+            .map(|tab| tab.id)
+    }
+
+    fn active_pane_id(&self) -> Option<u32> {
+        let tab_id = self.active_tab_id()?;
+        self.client
+            .get_workspace_panes(&self.workspace_id, tab_id)
+            .into_iter()
+            .find(|pane| pane.is_active)
+            .map(|pane| pane.id)
+    }
+
+    fn execute(&self, command: &CliCommand) -> Result<()> {
+        use CliCommand::*;
+
+        let code = match command {
+            Config { .. } | NewWorkspace { .. } | AttachWorkspace { .. } => return Ok(()),
+            CloseWorkspace { .. } => self
+                .client
+                .execute_workspace_task(&self.workspace_id, ClientTask::Shutdown),
+            Detach { .. } => self
+                .client
+                .execute_workspace_task(&self.workspace_id, ClientTask::Detach),
+            RenameWorkspace { new_name } => {
+                self.client.rename_workspace(&self.workspace_id, new_name)
+            }
+            NewTab { name } => self
+                .client
+                .new_workspace_tab(&self.workspace_id, name.as_deref()),
+            KillTab { target } => {
+                let Some(tab_id) = target
+                    .map(|tab_id| tab_id.0)
+                    .or_else(|| self.active_tab_id())
+                else {
+                    return Ok(());
+                };
+                self.client
+                    .execute_workspace_task(&self.workspace_id, ClientTask::CloseTab { tab_id })
+            }
+            SelectTab { target } => self.client.execute_workspace_task(
+                &self.workspace_id,
+                ClientTask::SwitchTab { tab_id: target.0 },
+            ),
+            RenameTab { new_name } => {
+                let Some(tab_id) = self.active_tab_id() else {
+                    return Ok(());
+                };
+                self.client
+                    .rename_workspace_tab(&self.workspace_id, tab_id, new_name)
+            }
+            SplitPane {
+                horizontal, target, ..
+            } => {
+                let Some(pane_id) = target
+                    .map(|pane_id| pane_id.0)
+                    .or_else(|| self.active_pane_id())
+                else {
+                    return Ok(());
+                };
+                self.client.execute_workspace_task(
+                    &self.workspace_id,
+                    ClientTask::SplitPane {
+                        pane_id,
+                        horizontal: *horizontal,
+                    },
+                )
+            }
+            KillPane { target } => {
+                let Some(pane_id) = target
+                    .map(|pane_id| pane_id.0)
+                    .or_else(|| self.active_pane_id())
+                else {
+                    return Ok(());
+                };
+                self.client
+                    .execute_workspace_task(&self.workspace_id, ClientTask::ClosePane { pane_id })
+            }
+            SelectPane { target } => self.client.execute_workspace_task(
+                &self.workspace_id,
+                ClientTask::SwitchPane { pane_id: target.0 },
+            ),
+            ResizePane {
+                target,
+                width: Some(width),
+                height: Some(height),
+            } => self
+                .client
+                .resize_workspace_pane(&self.workspace_id, target.0, *width, *height),
+            ResizePane {
+                target,
+                width: Some(size),
+                height: None,
+            } => self.client.resize_workspace_pane_axis(
+                &self.workspace_id,
+                target.0,
+                ClientResizeAxis::Horizontal,
+                *size,
+            ),
+            ResizePane {
+                target,
+                width: None,
+                height: Some(size),
+            } => self.client.resize_workspace_pane_axis(
+                &self.workspace_id,
+                target.0,
+                ClientResizeAxis::Vertical,
+                *size,
+            ),
+            ResizePane {
+                width: None,
+                height: None,
+                ..
+            } => return Ok(()),
+            ResizeClient { width, height } => {
+                self.client
+                    .resize_workspace_client(&self.workspace_id, *width, *height)
+            }
+            SendKeys { target, text } => {
+                let Some(pane_id) = target
+                    .map(|pane_id| pane_id.0)
+                    .or_else(|| self.active_pane_id())
+                else {
+                    return Ok(());
+                };
+                self.client
+                    .send_workspace_input(&self.workspace_id, pane_id, text.as_bytes())
+            }
+            WriteRaw { target, data } => {
+                let Some(pane_id) = target
+                    .map(|pane_id| pane_id.0)
+                    .or_else(|| self.active_pane_id())
+                else {
+                    return Ok(());
+                };
+                self.client
+                    .send_workspace_input(&self.workspace_id, pane_id, data)
+            }
+            CapturePane { .. }
+            | ListWorkspaces
+            | ListTabs
+            | ListPanes { .. }
+            | ListLayout
+            | DumpState
+            | DisplayMessage { .. } => return Ok(()),
+        };
+
+        if code == 0 {
+            Ok(())
+        } else {
+            anyhow::bail!("Core FFI daemon task failed with code {code}")
+        }
+    }
+}
 
 /// 启动 daemon：connect backend → 监听 socket → 处理请求循环。
 ///
@@ -42,36 +239,8 @@ unsafe impl Sync for DaemonState {}
 pub fn run_daemon(socket_path: PathBuf, name: String, tmux_socket: Option<String>) -> Result<()> {
     info!(target: "muxterm", session = %name, "daemon 启动");
 
-    // 创建 backend + model
-    // 有 tmux_socket → TmuxRuntime（-CC 连接 tmux），否则 ShellRuntime
-    let runtime: Box<dyn crate::core::runtime::Runtime> = if let Some(ref ts) = tmux_socket {
-        // 检查 tmux server 是否已有同名 session
-        let existing = crate::core::discovery::list_local_tmux_sessions(Some(ts))
-            .into_iter()
-            .find(|s| s.name == name)
-            .map(|s| s.name);
-        let runtime = if existing.as_deref() == Some(&name) {
-            // session 已存在 → attach
-            crate::core::runtime::tmux::TmuxRuntime::new_with_attach(Some(ts), &name)
-        } else {
-            // session 不存在 → new-session -s <name>
-            crate::core::runtime::tmux::TmuxRuntime::new_with_session_name(Some(ts), &name)
-        };
-        Box::new(runtime)
-    } else {
-        Box::new(ShellRuntime::new("$SHELL", ""))
-    };
-    let mut model = TerminalModel::new(runtime);
-    // TmuxRuntime 需要 multi_thread runtime（后台 I/O task）
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .worker_threads(2)
-        .build()
-        .context("build tokio runtime")?;
-    rt.block_on(model.connect())?;
-    let _ = model.poll_events();
-
-    let state = Arc::new(Mutex::new(DaemonState { model, rt }));
+    let mut state = DaemonState::connect(&name, tmux_socket.as_deref())?;
+    state.poll();
 
     // 绑定 unix socket
     // 先删除可能残留的旧 socket 文件
@@ -103,7 +272,7 @@ pub fn run_daemon(socket_path: PathBuf, name: String, tmux_socket: Option<String
 
         match listener.accept() {
             Ok((stream, _)) => {
-                if handle_connection(stream, &state)? {
+                if handle_connection(stream, &mut state)? {
                     // KillSession：daemon 退出
                     break;
                 }
@@ -128,7 +297,7 @@ pub fn run_daemon(socket_path: PathBuf, name: String, tmux_socket: Option<String
 /// 处理单个 client 连接。
 fn handle_connection(
     stream: std::os::unix::net::UnixStream,
-    state: &Arc<Mutex<DaemonState>>,
+    state: &mut DaemonState,
 ) -> Result<bool> {
     use std::io::{BufRead, BufReader, Write};
 
@@ -179,23 +348,34 @@ fn handle_connection(
 }
 
 /// 执行单个请求，返回 Response。
-fn execute_request(req: &Request, state: &Arc<Mutex<DaemonState>>) -> Response {
-    let mut st = state.lock().unwrap();
-
-    // 先从 backend 拉取最新事件（pty 输出等）
-    let mut events = st.model.refresh();
-
-    // 操作类命令转成 Task 执行
-    if let Some(task) = cli_command_to_task(&req.command, st.model.state()) {
-        if let Err(e) = st.model.execute(task) {
-            return Response::err(format!("执行失败: {e}"));
-        }
-        events.extend(st.model.refresh());
+fn execute_request(req: &Request, state: &mut DaemonState) -> Response {
+    state.poll();
+    if let Err(error) = state.execute(&req.command) {
+        return Response::err(format!("执行失败: {error}"));
     }
 
-    // 格式化输出
-    let output = format_output(st.model.state(), &req.command, req.format);
-    Response::ok_with_events(output, events)
+    let output = if is_query(&req.command) {
+        match format_ffi_output(&state.client, &state.workspace_id, &req.command, req.format) {
+            Ok(output) => output,
+            Err(error) => return Response::err(format!("格式化输出失败: {error}")),
+        }
+    } else {
+        String::new()
+    };
+    Response::ok(output)
+}
+
+fn is_query(command: &CliCommand) -> bool {
+    matches!(
+        command,
+        CliCommand::ListWorkspaces
+            | CliCommand::ListTabs
+            | CliCommand::ListPanes { .. }
+            | CliCommand::ListLayout
+            | CliCommand::CapturePane { .. }
+            | CliCommand::DisplayMessage { .. }
+            | CliCommand::DumpState
+    )
 }
 
 /// 简易 ctrl-c handler：安装 SIGINT/SIGTERM handler 设置 flag。

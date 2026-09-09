@@ -1,18 +1,19 @@
 //! `muxterm config` adapter.
 //!
 //! All parsing, validation, patching and persistence is delegated to the Core
-//! `SettingsService`; this module only translates command-line arguments and
-//! formats the result.
+//! Core owns validation, patching and persistence behind the FFI boundary;
+//! this module only translates command-line arguments and formats the result.
 
 use anyhow::{anyhow, Context, Result};
 use serde_json::Value;
 use std::path::PathBuf;
 
 use super::format::OutputFormat;
-use crate::core::config_service::{
-    dotted_pointer, ConfigDocument, JsonPatchOperation, ProjectDocument, ProjectRuntime,
-    ProjectTransport, SettingsService, ShortcutBinding, ShortcutOverride,
-};
+use crate::platform::ffi_client::{ClientJsonPatchOperation, FfiClient};
+
+fn new_client() -> Result<FfiClient> {
+    FfiClient::new_catalog().context("创建配置 FFI client 失败")
+}
 
 pub fn run(args: &[String], format: OutputFormat) -> Result<()> {
     let Some(command) = args.first().map(String::as_str) else {
@@ -25,9 +26,10 @@ pub fn run(args: &[String], format: OutputFormat) -> Result<()> {
     }
     match command {
         "path" => {
-            let service = SettingsService::default_user_or_memory();
+            let client = new_client()?;
+            let snapshot = client.config_describe()?;
             emit(
-                serde_json::json!({"ok": true, "path": service.path()}),
+                serde_json::json!({"ok": true, "path": snapshot.path}),
                 format,
             )
         }
@@ -45,9 +47,9 @@ pub fn run(args: &[String], format: OutputFormat) -> Result<()> {
 }
 
 fn show(args: &[String], format: OutputFormat) -> Result<()> {
-    let service = SettingsService::default_user_or_memory();
+    let client = new_client()?;
     let resolved = args.iter().any(|arg| arg == "--resolved");
-    let snapshot = service.snapshot();
+    let snapshot = client.config_describe()?;
     let value = if resolved {
         snapshot.values
     } else {
@@ -60,34 +62,33 @@ fn show(args: &[String], format: OutputFormat) -> Result<()> {
 }
 
 fn schema(args: &[String], format: OutputFormat) -> Result<()> {
-    let mut value = serde_json::json!({"schema": ConfigDocument::schema_json()});
+    let client = new_client()?;
+    let snapshot = client.config_describe()?;
+    let mut value = serde_json::json!({"schema": snapshot.schema});
     if args.iter().any(|arg| arg == "--manifest") {
-        value["manifest"] = ConfigDocument::manifest_json();
+        value["manifest"] = snapshot.manifest;
     }
     emit(serde_json::json!({"ok": true, "data": value}), format)
 }
 
 fn validate(args: &[String], format: OutputFormat) -> Result<()> {
     let path = args.first().map(PathBuf::from);
-    let service = match path {
-        Some(path) => SettingsService::open(path),
-        None => SettingsService::default_user(),
-    }?;
-    service.document().validate()?;
+    let client = new_client()?;
+    let data = client.config_validate(path.as_deref())?;
     emit(
-        serde_json::json!({"ok": true, "valid": true, "path": service.path()}),
+        serde_json::json!({"ok": true, "valid": data["valid"], "path": data["path"]}),
         format,
     )
 }
 
 fn doctor(format: OutputFormat) -> Result<()> {
-    let service = SettingsService::default_user_or_memory();
-    let document = service.document();
+    let client = new_client()?;
+    let snapshot = client.config_describe()?;
     let mut checks = Vec::new();
-    checks.push(serde_json::json!({"id":"path","ok":service.path().parent().is_some()}));
-    checks.push(serde_json::json!({"id":"schema","ok":ConfigDocument::schema_json().is_object()}));
-    checks.push(serde_json::json!({"id":"validation","ok":document.validate().is_ok()}));
-    checks.push(serde_json::json!({"id":"themes","ok":!document.config.theme.name.is_empty()}));
+    checks.push(serde_json::json!({"id":"path","ok":!snapshot.path.is_empty()}));
+    checks.push(serde_json::json!({"id":"schema","ok":snapshot.schema.is_object()}));
+    checks.push(serde_json::json!({"id":"validation","ok":client.config_validate(None).is_ok()}));
+    checks.push(serde_json::json!({"id":"themes","ok":snapshot.values["theme"]["name"].as_str().is_some_and(|name| !name.is_empty())}));
     emit(
         serde_json::json!({"ok": checks.iter().all(|item| item["ok"] == true), "checks": checks}),
         format,
@@ -98,8 +99,8 @@ fn get(args: &[String], format: OutputFormat) -> Result<()> {
     let path = args
         .first()
         .ok_or_else(|| anyhow!("config get 需要 PATH"))?;
-    let service = SettingsService::default_user_or_memory();
-    let snapshot = service.snapshot();
+    let client = new_client()?;
+    let snapshot = client.config_describe()?;
     let value = pointer(&snapshot.values, &dotted_pointer(path)?)?;
     emit(
         serde_json::json!({"ok": true, "path": path, "value": value}),
@@ -116,20 +117,18 @@ fn set(args: &[String], format: OutputFormat) -> Result<()> {
         .ok_or_else(|| anyhow!("config set 需要 VALUE"))?;
     let force_string = args.iter().any(|arg| arg == "--string");
     let value = parse_value(raw_value, force_string)?;
-    let mut service = SettingsService::default_user_or_memory();
-    let snapshot = service.snapshot();
+    let client = new_client()?;
+    let snapshot = client.config_describe()?;
     let json_pointer = dotted_pointer(path)?;
     let exists = pointer(&snapshot.values, &json_pointer).is_ok();
-    let transaction = service.begin();
-    service.patch(
-        &transaction,
-        &[JsonPatchOperation {
+    let revision = commit_patch(
+        &client,
+        &[ClientJsonPatchOperation {
             op: if exists { "replace" } else { "add" }.into(),
             path: json_pointer,
             value: Some(value),
         }],
     )?;
-    let revision = service.commit(&transaction)?;
     emit(
         serde_json::json!({"ok": true, "revision": revision}),
         format,
@@ -140,17 +139,14 @@ fn unset(args: &[String], format: OutputFormat) -> Result<()> {
     let path = args
         .first()
         .ok_or_else(|| anyhow!("config unset 需要 PATH"))?;
-    let mut service = SettingsService::default_user_or_memory();
-    let transaction = service.begin();
-    service.patch(
-        &transaction,
-        &[JsonPatchOperation {
+    let revision = commit_patch(
+        &new_client()?,
+        &[ClientJsonPatchOperation {
             op: "remove".into(),
             path: dotted_pointer(path)?,
             value: None,
         }],
     )?;
-    let revision = service.commit(&transaction)?;
     emit(
         serde_json::json!({"ok": true, "revision": revision}),
         format,
@@ -159,24 +155,25 @@ fn unset(args: &[String], format: OutputFormat) -> Result<()> {
 
 fn project(args: &[String], format: OutputFormat) -> Result<()> {
     let action = args.first().map(String::as_str).unwrap_or("list");
-    let mut service = SettingsService::default_user_or_memory();
+    let client = new_client()?;
     match action {
-        "list" => emit(
-            serde_json::json!({"ok": true, "projects": service.snapshot().values["projects"]}),
-            format,
-        ),
+        "list" => {
+            let snapshot = client.config_describe()?;
+            emit(
+                serde_json::json!({"ok": true, "projects": snapshot.values["projects"]}),
+                format,
+            )
+        }
         "add" => {
             let document = project_from_args(&args[1..])?;
-            let transaction = service.begin();
-            service.patch(
-                &transaction,
-                &[JsonPatchOperation {
+            let revision = commit_patch(
+                &client,
+                &[ClientJsonPatchOperation {
                     op: "add".into(),
                     path: "/projects/-".into(),
-                    value: Some(serde_json::to_value(document)?),
+                    value: Some(document),
                 }],
             )?;
-            let revision = service.commit(&transaction)?;
             emit(
                 serde_json::json!({"ok": true, "revision": revision}),
                 format,
@@ -186,17 +183,16 @@ fn project(args: &[String], format: OutputFormat) -> Result<()> {
             let id = args
                 .get(1)
                 .ok_or_else(|| anyhow!("config project remove 需要 ID"))?;
-            let index = project_index(&service.snapshot().values, id)?;
-            let transaction = service.begin();
-            service.patch(
-                &transaction,
-                &[JsonPatchOperation {
+            let snapshot = client.config_describe()?;
+            let index = project_index(&snapshot.values, id)?;
+            let revision = commit_patch(
+                &client,
+                &[ClientJsonPatchOperation {
                     op: "remove".into(),
                     path: format!("/projects/{index}"),
                     value: None,
                 }],
             )?;
-            let revision = service.commit(&transaction)?;
             emit(
                 serde_json::json!({"ok": true, "revision": revision}),
                 format,
@@ -206,19 +202,17 @@ fn project(args: &[String], format: OutputFormat) -> Result<()> {
             let id = args
                 .get(1)
                 .ok_or_else(|| anyhow!("config project edit 需要 ID"))?;
-            let index = project_index(&service.snapshot().values, id)?;
-            let transaction = service.begin();
-            for (field, value) in project_field_patches(&args[2..])? {
-                service.patch(
-                    &transaction,
-                    &[JsonPatchOperation {
-                        op: "replace".into(),
-                        path: format!("/projects/{index}/{field}"),
-                        value: Some(value),
-                    }],
-                )?;
-            }
-            let revision = service.commit(&transaction)?;
+            let snapshot = client.config_describe()?;
+            let index = project_index(&snapshot.values, id)?;
+            let operations = project_field_patches(&args[2..])?
+                .into_iter()
+                .map(|(field, value)| ClientJsonPatchOperation {
+                    op: "replace".into(),
+                    path: format!("/projects/{index}/{field}"),
+                    value: Some(value),
+                })
+                .collect::<Vec<_>>();
+            let revision = commit_patch(&client, &operations)?;
             emit(
                 serde_json::json!({"ok": true, "revision": revision}),
                 format,
@@ -230,26 +224,27 @@ fn project(args: &[String], format: OutputFormat) -> Result<()> {
 
 fn shortcut(args: &[String], format: OutputFormat) -> Result<()> {
     let action = args.first().map(String::as_str).unwrap_or("list");
-    let mut service = SettingsService::default_user_or_memory();
+    let client = new_client()?;
     match action {
-        "list" => emit(
-            serde_json::json!({"ok": true, "shortcuts": service.snapshot().values["shortcuts"]}),
-            format,
-        ),
+        "list" => {
+            let snapshot = client.config_describe()?;
+            emit(
+                serde_json::json!({"ok": true, "shortcuts": snapshot.values["shortcuts"]}),
+                format,
+            )
+        }
         "preset" => {
             let preset = args
                 .get(1)
                 .ok_or_else(|| anyhow!("config shortcut preset 需要 qwerty 或 colemak"))?;
-            let transaction = service.begin();
-            service.patch(
-                &transaction,
-                &[JsonPatchOperation {
+            let revision = commit_patch(
+                &client,
+                &[ClientJsonPatchOperation {
                     op: "replace".into(),
                     path: "/shortcuts/preset".into(),
                     value: Some(Value::String(preset.clone())),
                 }],
             )?;
-            let revision = service.commit(&transaction)?;
             emit(
                 serde_json::json!({"ok": true, "revision": revision}),
                 format,
@@ -263,33 +258,32 @@ fn shortcut(args: &[String], format: OutputFormat) -> Result<()> {
                 .get(2)
                 .ok_or_else(|| anyhow!("config shortcut bind 需要 CHORD"))?;
             let binding = parse_chord(chord)?;
-            let value = serde_json::to_value(ShortcutOverride {
-                action: action_id.clone(),
-                bindings: vec![binding],
-            })?;
-            let existing = service.snapshot().values["shortcuts"]["overrides"]
+            let value = serde_json::json!({
+                "action": action_id,
+                "bindings": [binding],
+            });
+            let snapshot = client.config_describe()?;
+            let existing = snapshot.values["shortcuts"]["overrides"]
                 .as_array()
                 .cloned()
                 .unwrap_or_default();
             let index = existing
                 .iter()
                 .position(|item| item["action"] == *action_id);
-            let transaction = service.begin();
             let operation = if let Some(index) = index {
-                JsonPatchOperation {
+                ClientJsonPatchOperation {
                     op: "replace".into(),
                     path: format!("/shortcuts/overrides/{index}"),
                     value: Some(value),
                 }
             } else {
-                JsonPatchOperation {
+                ClientJsonPatchOperation {
                     op: "add".into(),
                     path: "/shortcuts/overrides/-".into(),
                     value: Some(value),
                 }
             };
-            service.patch(&transaction, &[operation])?;
-            let revision = service.commit(&transaction)?;
+            let revision = commit_patch(&client, &[operation])?;
             emit(
                 serde_json::json!({"ok": true, "revision": revision}),
                 format,
@@ -299,7 +293,8 @@ fn shortcut(args: &[String], format: OutputFormat) -> Result<()> {
             let action_id = args
                 .get(1)
                 .ok_or_else(|| anyhow!("config shortcut unbind 需要 ACTION"))?;
-            let existing = service.snapshot().values["shortcuts"]["overrides"]
+            let snapshot = client.config_describe()?;
+            let existing = snapshot.values["shortcuts"]["overrides"]
                 .as_array()
                 .cloned()
                 .unwrap_or_default();
@@ -307,32 +302,28 @@ fn shortcut(args: &[String], format: OutputFormat) -> Result<()> {
                 .iter()
                 .position(|item| item["action"] == *action_id)
                 .ok_or_else(|| anyhow!("找不到 shortcut action: {action_id}"))?;
-            let transaction = service.begin();
-            service.patch(
-                &transaction,
-                &[JsonPatchOperation {
+            let revision = commit_patch(
+                &client,
+                &[ClientJsonPatchOperation {
                     op: "replace".into(),
                     path: format!("/shortcuts/overrides/{index}/bindings"),
                     value: Some(Value::Array(Vec::new())),
                 }],
             )?;
-            let revision = service.commit(&transaction)?;
             emit(
                 serde_json::json!({"ok": true, "revision": revision}),
                 format,
             )
         }
         "reset" => {
-            let transaction = service.begin();
-            service.patch(
-                &transaction,
-                &[JsonPatchOperation {
+            let revision = commit_patch(
+                &client,
+                &[ClientJsonPatchOperation {
                     op: "replace".into(),
                     path: "/shortcuts/overrides".into(),
                     value: Some(Value::Array(Vec::new())),
                 }],
             )?;
-            let revision = service.commit(&transaction)?;
             emit(
                 serde_json::json!({"ok": true, "revision": revision}),
                 format,
@@ -342,67 +333,68 @@ fn shortcut(args: &[String], format: OutputFormat) -> Result<()> {
     }
 }
 
-fn project_from_args(args: &[String]) -> Result<ProjectDocument> {
+fn project_from_args(args: &[String]) -> Result<Value> {
     let required =
         |flag: &str| flag_value(args, flag).ok_or_else(|| anyhow!("project add 需要 {flag}"));
-    Ok(ProjectDocument {
-        id: required("--id")?,
-        name: required("--name")?,
-        path: required("--path")?,
-        runtime: ProjectRuntime {
-            id: required("--runtime")?,
-            options: Default::default(),
-            session: flag_value(args, "--session"),
-            socket: flag_value(args, "--socket"),
-            workspace_id: None,
-        },
-        transport: ProjectTransport {
-            id: required("--transport")?,
-            target: flag_value(args, "--target").unwrap_or_default(),
-            options: Default::default(),
-        },
-        template: None,
-        worktrees: Vec::new(),
-        command: args
-            .iter()
-            .enumerate()
-            .find_map(|(index, arg)| {
-                (arg == "--command")
-                    .then(|| args.get(index + 1).map(String::as_str))
-                    .flatten()
+    let command = args
+        .iter()
+        .enumerate()
+        .find_map(|(index, arg)| {
+            (arg == "--command")
+                .then(|| args.get(index + 1).map(String::as_str))
+                .flatten()
+        })
+        .map(|raw| parse_value(raw, false))
+        .transpose()?
+        .and_then(|value| {
+            value.as_array().map(|items| {
+                items
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
             })
-            .map(|raw| parse_value(raw, false))
-            .transpose()?
-            .and_then(|value| {
-                value.as_array().map(|items| {
-                    items
-                        .iter()
-                        .filter_map(serde_json::Value::as_str)
-                        .map(str::to_string)
-                        .collect()
+        })
+        .unwrap_or_default();
+    let env = args
+        .iter()
+        .enumerate()
+        .find_map(|(index, arg)| {
+            (arg == "--env")
+                .then(|| args.get(index + 1).map(String::as_str))
+                .flatten()
+        })
+        .map(|raw| parse_value(raw, false))
+        .transpose()?
+        .and_then(|value| value.as_object().cloned())
+        .map(|map| {
+            map.iter()
+                .filter_map(|(key, value)| {
+                    value.as_str().map(|value| (key.clone(), value.to_string()))
                 })
-            })
-            .unwrap_or_default(),
-        env: args
-            .iter()
-            .enumerate()
-            .find_map(|(index, arg)| {
-                (arg == "--env")
-                    .then(|| args.get(index + 1).map(String::as_str))
-                    .flatten()
-            })
-            .map(|raw| parse_value(raw, false))
-            .transpose()?
-            .and_then(|value| value.as_object().cloned())
-            .map(|map| {
-                map.iter()
-                    .filter_map(|(key, value)| {
-                        value.as_str().map(|value| (key.clone(), value.to_string()))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default(),
-    })
+                .collect::<std::collections::BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
+
+    Ok(serde_json::json!({
+        "id": required("--id")?,
+        "name": required("--name")?,
+        "path": required("--path")?,
+        "runtime": {
+            "id": required("--runtime")?,
+            "options": {},
+            "session": flag_value(args, "--session"),
+            "socket": flag_value(args, "--socket"),
+            "workspace_id": null,
+        },
+        "transport": {
+            "id": required("--transport")?,
+            "target": flag_value(args, "--target").unwrap_or_default(),
+            "options": {},
+        },
+        "command": command,
+        "env": env,
+    }))
 }
 
 fn project_field_patches(args: &[String]) -> Result<Vec<(String, Value)>> {
@@ -452,7 +444,7 @@ fn flag_value(args: &[String], flag: &str) -> Option<String> {
     })
 }
 
-fn parse_chord(chord: &str) -> Result<ShortcutBinding> {
+fn parse_chord(chord: &str) -> Result<Value> {
     let mut parts = chord
         .split('+')
         .map(str::trim)
@@ -461,8 +453,11 @@ fn parse_chord(chord: &str) -> Result<ShortcutBinding> {
         .next_back()
         .ok_or_else(|| anyhow!("快捷键 chord 不能为空"))?
         .to_string();
-    let modifiers = parts.map(str::to_ascii_lowercase).collect();
-    Ok(ShortcutBinding { key, modifiers })
+    let modifiers: Vec<String> = parts.map(str::to_ascii_lowercase).collect();
+    Ok(serde_json::json!({
+        "key": key,
+        "modifiers": modifiers,
+    }))
 }
 
 fn parse_value(raw: &str, force_string: bool) -> Result<Value> {
@@ -504,6 +499,34 @@ fn pointer<'a>(value: &'a Value, path: &str) -> Result<&'a Value> {
             .ok_or_else(|| anyhow!("配置路径不存在: {path}"))?;
     }
     Ok(current)
+}
+
+fn dotted_pointer(path: &str) -> Result<String> {
+    if path.trim().is_empty() {
+        return Err(anyhow!("配置路径不能为空"));
+    }
+    Ok(format!(
+        "/{}",
+        path.split('.')
+            .map(|part| part.replace('~', "~0").replace('/', "~1"))
+            .collect::<Vec<_>>()
+            .join("/")
+    ))
+}
+
+fn commit_patch(client: &FfiClient, operations: &[ClientJsonPatchOperation]) -> Result<String> {
+    let transaction = client.config_begin()?;
+    if let Err(error) = client.config_patch(&transaction, operations) {
+        let _ = client.config_cancel(&transaction);
+        return Err(error);
+    }
+    match client.config_commit(&transaction) {
+        Ok(revision) => Ok(revision),
+        Err(error) => {
+            let _ = client.config_cancel(&transaction);
+            Err(error)
+        }
+    }
 }
 
 /// Map a configuration command failure to the documented CLI exit code:
@@ -562,29 +585,6 @@ fn text_value(value: &Value) -> String {
     }
 }
 
-trait DefaultUserSettings {
-    fn default_user_or_memory() -> Self;
-}
-
-impl DefaultUserSettings for SettingsService {
-    fn default_user_or_memory() -> Self {
-        match SettingsService::default_user() {
-            Ok(mut service) => {
-                if let Err(error) = service.migrate_legacy_quickconnect() {
-                    eprintln!("warning: QuickConnect 迁移未完成: {error}");
-                }
-                service
-            }
-            Err(error) => {
-                eprintln!("warning: 使用内存默认配置: {error}");
-                let path = crate::core::config::Config::user_config_path()
-                    .unwrap_or_else(|| PathBuf::from("config.toml"));
-                SettingsService::in_memory_default(path)
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -619,8 +619,8 @@ mod tests {
     #[test]
     fn parse_chord_splits_modifiers_and_key() {
         let binding = parse_chord("ctrl+shift+p").unwrap();
-        assert_eq!(binding.key, "p");
-        assert_eq!(binding.modifiers, vec!["ctrl", "shift"]);
+        assert_eq!(binding["key"], "p");
+        assert_eq!(binding["modifiers"], serde_json::json!(["ctrl", "shift"]));
     }
 
     #[test]

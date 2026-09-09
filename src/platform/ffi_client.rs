@@ -129,6 +129,8 @@ impl ClientError {
 /// Owned configuration snapshot returned by the Core configuration ABI.
 #[derive(Debug, Clone, serde::Deserialize, PartialEq)]
 pub struct ClientConfigSnapshot {
+    #[serde(default)]
+    pub path: String,
     pub revision: String,
     pub raw: serde_json::Value,
     pub values: serde_json::Value,
@@ -524,6 +526,16 @@ pub struct TmuxSessionEntry {
     pub created: u64,
 }
 
+/// An owned tmux pane row returned by SSH transport discovery.
+#[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
+pub struct ClientTmuxPane {
+    pub id: u32,
+    pub active: bool,
+    pub cols: u16,
+    pub rows: u16,
+    pub title: String,
+}
+
 /// Filesystem entry returned by Core discovery.
 #[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
 pub struct FsEntry {
@@ -548,6 +560,13 @@ pub enum ClientTask {
     RequestPaneSnapshot { pane_id: u32 },
     Detach,
     Shutdown,
+}
+
+/// Axis used by the Core pane-resize FFI operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientResizeAxis {
+    Horizontal,
+    Vertical,
 }
 
 /// Safe ownership boundary for one Core FFI handle.
@@ -637,6 +656,20 @@ impl FfiClient {
             ffi::muxterm_config_describe_json(self.handle.as_ptr())
         })?;
         Ok(serde_json::from_value(value["data"].clone())?)
+    }
+
+    /// Validate the default configuration or one explicit file through Core.
+    pub fn config_validate(
+        &self,
+        path: Option<&std::path::Path>,
+    ) -> anyhow::Result<serde_json::Value> {
+        let path = path.map(|value| cstring(value.to_string_lossy().as_ref()));
+        let value = Self::discovery_json(|| {
+            ffi::muxterm_config_validate_json(
+                path.as_ref().map_or(ptr::null(), |value| value.as_ptr()),
+            )
+        })?;
+        Ok(value["data"].clone())
     }
 
     /// Start a Core-owned draft configuration transaction.
@@ -793,6 +826,48 @@ impl FfiClient {
         unsafe { ffi::muxterm_execute_workspace(self.handle.as_ptr(), workspace_id.as_ptr(), &raw) }
     }
 
+    /// Create a tab with an optional frontend-provided name.
+    pub fn new_workspace_tab(&self, workspace_id: &str, name: Option<&str>) -> i32 {
+        let workspace_id = cstring(workspace_id);
+        let name = cstring_opt(name);
+        let raw = CTask {
+            type_: ffi::TASK_NEW_TAB,
+            target_pane: 0,
+            target_tab: 0,
+            dir: 0,
+            name: name.as_ref().map_or(ptr::null(), |value| value.as_ptr()),
+        };
+        unsafe { ffi::muxterm_execute_workspace(self.handle.as_ptr(), workspace_id.as_ptr(), &raw) }
+    }
+
+    /// Rename a Core-owned workspace without exposing a C task DTO to callers.
+    pub fn rename_workspace(&self, workspace_id: &str, name: &str) -> i32 {
+        let workspace_id = cstring(workspace_id);
+        let name = cstring(name);
+        let raw = CTask {
+            type_: ffi::TASK_RENAME_WORKSPACE,
+            target_pane: 0,
+            target_tab: 0,
+            dir: 0,
+            name: name.as_ptr(),
+        };
+        unsafe { ffi::muxterm_execute_workspace(self.handle.as_ptr(), workspace_id.as_ptr(), &raw) }
+    }
+
+    /// Rename a tab in a Core-owned workspace without exposing a C task DTO.
+    pub fn rename_workspace_tab(&self, workspace_id: &str, tab_id: u32, name: &str) -> i32 {
+        let workspace_id = cstring(workspace_id);
+        let name = cstring(name);
+        let raw = CTask {
+            type_: ffi::TASK_RENAME_TAB,
+            target_pane: 0,
+            target_tab: tab_id,
+            dir: 0,
+            name: name.as_ptr(),
+        };
+        unsafe { ffi::muxterm_execute_workspace(self.handle.as_ptr(), workspace_id.as_ptr(), &raw) }
+    }
+
     /// Write input to a pane in a specific workspace without activating it.
     pub fn send_workspace_input(&self, workspace_id: &str, pane_id: u32, data: &[u8]) -> i32 {
         if data.is_empty() {
@@ -862,10 +937,14 @@ impl FfiClient {
         &self,
         workspace_id: &str,
         pane_id: u32,
-        axis: u32,
+        axis: ClientResizeAxis,
         size: u16,
     ) -> i32 {
         let workspace_id = cstring(workspace_id);
+        let axis = match axis {
+            ClientResizeAxis::Horizontal => ffi::DIR_HORIZONTAL,
+            ClientResizeAxis::Vertical => ffi::DIR_VERTICAL,
+        };
         unsafe {
             ffi::muxterm_workspace_resize_pane_axis(
                 self.handle.as_ptr(),
@@ -1711,6 +1790,31 @@ impl FfiClient {
         Ok(serde_json::from_value(value["sessions"].clone())?)
     }
 
+    /// Discover pane snapshots in one SSH tmux session through the public FFI.
+    pub fn discover_ssh_tmux_panes(
+        target: &str,
+        socket: Option<&str>,
+        session: &str,
+    ) -> anyhow::Result<Vec<ClientTmuxPane>> {
+        let target = cstring(target);
+        let socket = cstring_opt(socket);
+        let session = cstring(session);
+        let config_path = std::env::var("MUXTERM_SSH_CONFIG_PATH").ok();
+        let config_path = cstring_opt(config_path.as_deref());
+        let value = Self::discovery_json(|| {
+            ffi::muxterm_discover_ssh_tmux_panes_json(
+                target.as_ptr(),
+                socket.as_ref().map_or(ptr::null(), |value| value.as_ptr()),
+                session.as_ptr(),
+                config_path
+                    .as_ref()
+                    .map_or(ptr::null(), |value| value.as_ptr()),
+                DISCOVERY_TIMEOUT_MS,
+            )
+        })?;
+        Ok(serde_json::from_value(value["panes"].clone())?)
+    }
+
     pub fn create_workspace(
         runtime_type: &str,
         target: Option<&str>,
@@ -1947,6 +2051,7 @@ mod tests {
     #[test]
     fn config_snapshot_and_draft_decode_as_owned_values() {
         let snapshot: ClientConfigSnapshot = serde_json::from_value(serde_json::json!({
+            "path": "/tmp/config.toml",
             "revision": "rev-1",
             "raw": {"font": {"size": 13.0}},
             "values": {"font": {"size": 13.0}},
@@ -1956,6 +2061,7 @@ mod tests {
             "action_catalog": {"actions": []},
         }))
         .expect("config snapshot decodes");
+        assert_eq!(snapshot.path, "/tmp/config.toml");
         assert_eq!(snapshot.revision, "rev-1");
         assert_eq!(snapshot.values["font"]["size"], 13.0);
 
@@ -2287,5 +2393,23 @@ mod tests {
         assert_eq!(error.stage, None);
         assert_eq!(error.message, "legacy failure");
         assert!(error.details.is_empty());
+    }
+
+    #[test]
+    fn client_tmux_pane_decodes_owned_snapshot() {
+        let pane: ClientTmuxPane = serde_json::from_value(serde_json::json!({
+            "id": 7,
+            "active": true,
+            "cols": 120,
+            "rows": 40,
+            "title": "build shell",
+        }))
+        .expect("SSH pane discovery DTO should decode");
+
+        assert_eq!(pane.id, 7);
+        assert!(pane.active);
+        assert_eq!(pane.cols, 120);
+        assert_eq!(pane.rows, 40);
+        assert_eq!(pane.title, "build shell");
     }
 }
