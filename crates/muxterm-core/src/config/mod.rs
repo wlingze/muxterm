@@ -232,21 +232,6 @@ impl SshFileConfig {
     pub fn is_configured(&self) -> bool {
         !self.host.trim().is_empty()
     }
-
-    /// 转为运行时 [`crate::config::SshConfig`]。
-    pub fn to_ssh_config(&self) -> crate::config::SshConfig {
-        let user = if self.user.trim().is_empty() {
-            std::env::var("USER").unwrap_or_else(|_| "root".into())
-        } else {
-            self.user.clone()
-        };
-        crate::config::SshConfig::from_file_fields(
-            self.host.clone(),
-            self.port,
-            user,
-            self.key_path.clone(),
-        )
-    }
 }
 
 /// `[scrollback]`。
@@ -503,11 +488,6 @@ fn dirs_themes() -> Option<PathBuf> {
     dirs_config().map(|d| d.join("themes"))
 }
 
-#[allow(unused_imports)]
-pub use crate::runtime::tmux::ssh_client::{
-    parse_ssh_connect_line, parse_ssh_target, SshAuth, SshConfig, SshError,
-};
-
 // ============================================================================
 // 测试
 // ============================================================================
@@ -692,10 +672,8 @@ key_path = "~/.ssh/id_rsa"
         .unwrap();
         assert!(c.ssh.is_configured());
         assert_eq!(c.ssh.port, 2200);
-        let runtime = c.ssh.to_ssh_config();
-        assert_eq!(runtime.host, "box");
-        assert_eq!(runtime.user, "bob");
-        assert_eq!(runtime.port, 2200);
+        assert_eq!(c.ssh.host, "box");
+        assert_eq!(c.ssh.user, "bob");
     }
 
     #[test]
