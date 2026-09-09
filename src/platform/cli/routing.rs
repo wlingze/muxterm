@@ -389,7 +389,7 @@ fn cli_mode_daemon(
     format: OutputFormat,
     tmux_socket: Option<&str>,
 ) -> anyhow::Result<()> {
-    use crate::platform::cli::client::send_command;
+    use crate::core::runtime::daemon_client::send_command;
     use crate::platform::cli::session::session_socket_path;
 
     let sock = session_socket_path(name);

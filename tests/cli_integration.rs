@@ -9,10 +9,10 @@
 #![cfg(feature = "tui")]
 
 use muxterm::test_support::core::protocol::task::Task;
+use muxterm::test_support::core::runtime::shell::daemon::cli_command_to_task;
 use muxterm::test_support::core::runtime::ShellRuntime;
 use muxterm::test_support::core::types::{PaneId, TabId};
 use muxterm::test_support::core::workspace::terminal_model::TerminalModel;
-use muxterm::test_support::core::runtime::shell::daemon::cli_command_to_task;
 use muxterm::test_support::platform::cli::{
     format_output, parse_cli_command, CliCommand, OutputFormat,
 };
@@ -679,8 +679,8 @@ fn cli_tmux_backend_send_keys() {
 #[cfg(unix)]
 mod daemon_tests {
     use super::*;
+    use muxterm::test_support::core::runtime::daemon_client::send_command;
     use muxterm::test_support::core::types::PaneId;
-    use muxterm::test_support::platform::cli::client::send_command;
     use muxterm::test_support::platform::cli::session::session_socket_path;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};

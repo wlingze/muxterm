@@ -6,109 +6,15 @@
 //! wire, while mutations and render/control notifications use the semantic
 //! JSON event stream below.
 
-use crate::protocol::command::CliCommand;
-use crate::protocol::layout::{SplitDir, TabLayout};
+use crate::protocol::layout::SplitDir;
 use crate::protocol::state::State;
 use crate::protocol::task::Task;
 use crate::protocol::terminal::input::KeyEvent;
 
-/// Output format requested by a daemon client.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum OutputFormat {
-    Json,
-    Text,
-}
-
-impl OutputFormat {
-    #[allow(clippy::should_implement_trait)]
-    pub fn from_str(s: &str) -> Self {
-        match s.to_lowercase().as_str() {
-            "text" | "txt" => Self::Text,
-            _ => Self::Json,
-        }
-    }
-}
-
-/// Complete state snapshot exchanged by the legacy daemon wire.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct StateSnapshot {
-    pub workspace_name: String,
-    pub workspace_runtime: String,
-    pub tabs: Vec<crate::protocol::state::TabInfo>,
-    pub panes: Vec<crate::protocol::state::PaneInfo>,
-    pub layouts: Vec<crate::protocol::layout::TabLayout>,
-    /// pane_id.0 → cumulative output (lossy UTF-8; contains ANSI).
-    pub outputs: Vec<(u32, String)>,
-    pub status: crate::protocol::state::BackendStatus,
-    pub active_tab: Option<u32>,
-    pub active_pane: Option<u32>,
-}
-
-/// Control-lane baseline sent by the daemon when a client connects or when
-/// topology changes.  It intentionally contains no cumulative pane output;
-/// render data stays in the event stream as `PaneOutput`/`PaneSnapshot`/
-/// `PaneFrame`/`PaneHistory` events.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct TopologySnapshot {
-    pub workspace_name: String,
-    pub workspace_runtime: String,
-    pub tabs: Vec<crate::protocol::state::TabInfo>,
-    pub panes: Vec<crate::protocol::state::PaneInfo>,
-    pub layouts: Vec<TabLayout>,
-    pub active_tab: Option<u32>,
-    pub active_pane: Option<u32>,
-}
-
-/// Client → shell daemon request.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct Request {
-    pub command: CliCommand,
-    pub format: OutputFormat,
-}
-
-/// Shell daemon → client response.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct Response {
-    pub ok: bool,
-    pub output: String,
-    pub error: String,
-    /// Owned FFI event values produced while handling this request.
-    ///
-    /// The daemon wire keeps the event payload JSON-shaped so the CLI server
-    /// can forward FFI DTOs without importing Core state types. Core's
-    /// `DaemonRuntime` decodes the values at its runtime boundary.
-    #[serde(default)]
-    pub events: Vec<serde_json::Value>,
-}
-
-impl Response {
-    pub fn ok(output: String) -> Self {
-        Self {
-            ok: true,
-            output,
-            error: String::new(),
-            events: Vec::new(),
-        }
-    }
-
-    pub fn ok_with_events(output: String, events: Vec<serde_json::Value>) -> Self {
-        Self {
-            ok: true,
-            output,
-            error: String::new(),
-            events,
-        }
-    }
-
-    pub fn err(error: impl Into<String>) -> Self {
-        Self {
-            ok: false,
-            output: String::new(),
-            error: error.into(),
-            events: Vec::new(),
-        }
-    }
-}
+pub use muxterm_protocol::command::CliCommand;
+pub use muxterm_protocol::daemon::{
+    OutputFormat, Request, Response, StateSnapshot, TopologySnapshot,
+};
 
 /// Map a daemon wire command to a shell-runtime Task.
 ///

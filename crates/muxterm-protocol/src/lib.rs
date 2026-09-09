@@ -9,6 +9,8 @@ use std::str::FromStr;
 
 pub mod candidate;
 pub mod color;
+pub mod command;
+pub mod daemon;
 pub mod error;
 pub mod input;
 pub mod layout;

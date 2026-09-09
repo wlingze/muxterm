@@ -13,7 +13,6 @@ use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 
 use crate::buffer_cap::{append_capped, MAX_PANE_OUTPUT_BYTES};
-use crate::protocol::command::CliCommand;
 use crate::protocol::layout::{SplitDir, TabLayout};
 use crate::protocol::state::{
     BackendStatus, MutationKind, MutationResult, PaneAgentInfo, PaneInfo, State, StateChange,
@@ -22,9 +21,10 @@ use crate::protocol::state::{
 use crate::protocol::task::{Task, TaskOutcome};
 use crate::protocol::terminal::input::encode;
 use crate::runtime::daemon_client::send_command;
-use crate::runtime::shell::daemon::{OutputFormat, TopologySnapshot};
 use crate::runtime::{Runtime, RuntimeCapability};
 use crate::types::{PaneId, TabId};
+use muxterm_protocol::command::CliCommand;
+use muxterm_protocol::daemon::{OutputFormat, TopologySnapshot};
 
 /// 通过 unix socket 连接本地 daemon 的 Runtime。
 pub struct DaemonRuntime {
