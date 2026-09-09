@@ -6,6 +6,7 @@
 //! Runtime 不关心 Transport 是 local 还是 SSH；Transport 不理解 shell/tmux 语义。
 
 pub mod provider;
+pub mod registry;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -77,6 +78,8 @@ pub trait TargetConnection: Send + Sync {
     }
     fn probe(&self) -> anyhow::Result<()>;
 }
+
+pub use registry::ConnectionRegistry;
 
 /// PTY 字符格尺寸。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
