@@ -59,10 +59,6 @@ check_absent \
     'ffi_bridge' \
     src crates/muxterm-core/src
 check_absent \
-    "config service must not depend on runtime/workspace/projects domains" \
-    'crate::(runtime|workspace|projects)' \
-    crates/muxterm-core/src/config_service
-check_absent \
     "FFI function modules must not depend on the api facade" \
     'super::super::api|crate::protocol::ffi::api' \
     crates/muxterm-core/src/protocol/ffi/functions

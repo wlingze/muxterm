@@ -9,7 +9,7 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 
 use crate::config::{default_keybindings, KeyBinding};
-use crate::config_service::schema::{ShortcutBinding, ShortcutConfig};
+use crate::config::{ShortcutBinding, ShortcutConfig};
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ActionDescriptor {
@@ -298,15 +298,13 @@ fn resolve_effective_keybindings_applies_primary_and_overrides() {
         .expect("workspace shortcut");
     assert_eq!(workspace.mods, ["control", "alt"]);
 
-    shortcuts
-        .overrides
-        .push(crate::config_service::schema::ShortcutOverride {
-            action: "quick_connect".into(),
-            bindings: vec![crate::config_service::schema::ShortcutBinding {
-                key: "q".into(),
-                modifiers: vec!["alt".into()],
-            }],
-        });
+    shortcuts.overrides.push(crate::config::ShortcutOverride {
+        action: "quick_connect".into(),
+        bindings: vec![ShortcutBinding {
+            key: "q".into(),
+            modifiers: vec!["alt".into()],
+        }],
+    });
     let bindings = resolve_effective_keybindings(&shortcuts);
     assert!(
         bindings

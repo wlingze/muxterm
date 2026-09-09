@@ -19,6 +19,13 @@
 //! 主题：`configs/themes/<name>.toml` 或 `~/.config/muxterm/themes/<name>.toml`，
 //! 定义 ANSI 16 色 + 背景/前景/光标。解析逻辑是纯函数，附单元测试。
 
+pub mod action_catalog;
+pub mod document;
+pub mod edit;
+pub mod migration;
+pub mod service;
+pub mod storage;
+
 use anyhow::{Context, Result};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -224,21 +231,6 @@ impl SshFileConfig {
     /// 是否已配置可用 host。
     pub fn is_configured(&self) -> bool {
         !self.host.trim().is_empty()
-    }
-
-    /// 转为运行时 [`crate::config::SshConfig`]。
-    pub fn to_ssh_config(&self) -> crate::config::SshConfig {
-        let user = if self.user.trim().is_empty() {
-            std::env::var("USER").unwrap_or_else(|_| "root".into())
-        } else {
-            self.user.clone()
-        };
-        crate::config::SshConfig::from_file_fields(
-            self.host.clone(),
-            self.port,
-            user,
-            self.key_path.clone(),
-        )
     }
 }
 
@@ -472,7 +464,16 @@ mod theme;
 
 // 这些类型是 config 兼容 facade 的公开接口；不同前端只会消费其中一部分。
 #[allow(unused_imports)]
+pub use action_catalog::*;
+pub use document::*;
+#[allow(unused_imports)]
+pub use migration::*;
+#[allow(unused_imports)]
+pub use service::*;
+#[allow(unused_imports)]
 pub use shortcut::{default_keybindings, Action, KeyBinding, ModSet, Modifiers};
+#[allow(unused_imports)]
+pub use storage::*;
 #[allow(unused_imports)]
 pub use theme::{parse_hex, parse_theme_toml, Rgb, Theme};
 
@@ -486,11 +487,6 @@ fn dirs_config() -> Option<PathBuf> {
 fn dirs_themes() -> Option<PathBuf> {
     dirs_config().map(|d| d.join("themes"))
 }
-
-#[allow(unused_imports)]
-pub use crate::runtime::tmux::ssh_client::{
-    parse_ssh_connect_line, parse_ssh_target, SshAuth, SshConfig, SshError,
-};
 
 // ============================================================================
 // 测试
@@ -676,10 +672,8 @@ key_path = "~/.ssh/id_rsa"
         .unwrap();
         assert!(c.ssh.is_configured());
         assert_eq!(c.ssh.port, 2200);
-        let runtime = c.ssh.to_ssh_config();
-        assert_eq!(runtime.host, "box");
-        assert_eq!(runtime.user, "bob");
-        assert_eq!(runtime.port, 2200);
+        assert_eq!(c.ssh.host, "box");
+        assert_eq!(c.ssh.user, "bob");
     }
 
     #[test]

@@ -11,7 +11,7 @@ use std::ptr;
 use crate::attention::clock::RealClock;
 use crate::attention::engine::AttentionEngine;
 use crate::attention::signal::AttentionSignal;
-use crate::config_service::SettingsService;
+use crate::config::SettingsService;
 use crate::projects::{ProjectStore, ProjectsService};
 use crate::protocol::layout::{LayoutNode, SplitDir};
 use crate::protocol::state::StateChange;

@@ -2,7 +2,7 @@
 
 use anyhow::{anyhow, Result};
 
-use crate::config_service::ProjectDocument;
+use crate::config::ProjectDocument;
 use crate::quickconnect::model::TargetConfig;
 use crate::workspace::provenance::WorkspaceProvenance;
 use crate::workspace::template::TemplateName;

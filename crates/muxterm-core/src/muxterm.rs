@@ -13,7 +13,7 @@ use crate::attention::clock::RealClock;
 use crate::attention::engine::AttentionEngine;
 use crate::attention::signal::AttentionSignal;
 use crate::catalog::{OpenRequest, ResolveIntent, ResolvedTarget};
-use crate::config_service::SettingsService;
+use crate::config::SettingsService;
 use crate::projects::ProjectsService;
 use crate::protocol::state::StateChange;
 use crate::workspace::pool::WorkspacePool;

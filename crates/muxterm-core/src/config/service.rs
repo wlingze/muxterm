@@ -5,12 +5,12 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::config_service::action_catalog::action_catalog;
-use crate::config_service::migration::import_legacy_projects;
-use crate::config_service::schema::ConfigDocument;
-use crate::config_service::storage::{
+use crate::config::action_catalog::action_catalog;
+use crate::config::migration::import_legacy_projects;
+use crate::config::storage::{
     atomic_write, preserve_toml_metadata, revision_for, ConfigRevision, ConfigSnapshot,
 };
+use crate::config::ConfigDocument;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonPatchOperation {
     pub op: String,

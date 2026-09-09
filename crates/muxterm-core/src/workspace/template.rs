@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::config_service::{
+use crate::config::{
     TemplateDocument, TemplateLayoutDocument, TemplatePaneDocument, TemplateTabDocument,
 };
 use crate::protocol::layout::SplitDir;

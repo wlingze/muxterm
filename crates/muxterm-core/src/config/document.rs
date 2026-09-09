@@ -1,8 +1,7 @@
-//! Core-owned configuration document, schema, validation and draft transactions.
+//! Core-owned persisted configuration documents, schema and validation.
 //!
-//! `core::config` remains the compatibility facade used by the existing GTK code.
-//! New callers should use this module.  Keeping the service separate for the first
-//! migration step lets the old UI move to the transaction API without a flag day.
+//! This module owns the serialized shapes used by `config.toml` and the
+//! configuration transaction service that operates on them.
 
 use anyhow::{anyhow, Context, Result};
 use schemars::schema_for;

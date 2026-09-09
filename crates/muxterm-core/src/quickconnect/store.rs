@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use super::model::{QuickConnect, TargetConfig};
+use crate::config::ProjectDocument;
 
 /// QuickConnect 数据存储。
 #[derive(Debug, Clone, Default)]
@@ -36,7 +37,7 @@ impl QuickConnectStore {
     /// The GTK project editor can then update the list without opening the
     /// configuration file itself; the caller persists the resulting records
     /// through the public configuration transaction API.
-    pub fn from_project_documents(projects: &[crate::config_service::ProjectDocument]) -> Self {
+    pub fn from_project_documents(projects: &[ProjectDocument]) -> Self {
         let mut store = Self::in_memory();
         for project in projects {
             let Ok(target) = project.to_target() else {
@@ -51,11 +52,11 @@ impl QuickConnectStore {
     }
 
     /// Convert the in-memory editor list back to Core-owned project records.
-    pub fn project_documents(&self) -> Vec<crate::config_service::ProjectDocument> {
+    pub fn project_documents(&self) -> Vec<ProjectDocument> {
         self.projects
             .iter()
             .map(|config| {
-                let mut project = crate::config_service::ProjectDocument::from_target(config);
+                let mut project = ProjectDocument::from_target(config);
                 if let Some(project_id) = self.project_ids.get(&QuickConnect::unique_id(config)) {
                     project.id.clone_from(project_id);
                 }
@@ -74,7 +75,7 @@ impl QuickConnectStore {
             config_path: Some(path.clone()),
             ..Default::default()
         };
-        match crate::config_service::SettingsService::open(&path) {
+        match crate::config::SettingsService::open(&path) {
             Ok(mut service) => {
                 if let Err(error) = service.migrate_legacy_quickconnect() {
                     tracing::warn!(
@@ -138,7 +139,7 @@ impl QuickConnectStore {
             .project_ids
             .get(&id)
             .cloned()
-            .unwrap_or_else(|| crate::config_service::ProjectDocument::from_target(config).id);
+            .unwrap_or_else(|| ProjectDocument::from_target(config).id);
         self.project_ids.insert(id.clone(), project_id);
         let added = if let Some(idx) = self
             .projects
@@ -169,7 +170,7 @@ impl QuickConnectStore {
         let Some(path) = &self.config_path else {
             return;
         };
-        let Ok(mut service) = crate::config_service::SettingsService::open(path) else {
+        let Ok(mut service) = crate::config::SettingsService::open(path) else {
             return;
         };
         let transaction = service.begin();
@@ -177,7 +178,7 @@ impl QuickConnectStore {
             self.projects
                 .iter()
                 .map(|config| {
-                    let mut project = crate::config_service::ProjectDocument::from_target(config);
+                    let mut project = ProjectDocument::from_target(config);
                     if let Some(project_id) = self.project_ids.get(&QuickConnect::unique_id(config))
                     {
                         project.id.clone_from(project_id);
@@ -187,7 +188,7 @@ impl QuickConnectStore {
                 .filter_map(|project| serde_json::to_value(project).ok())
                 .collect(),
         );
-        let operation = crate::config_service::JsonPatchOperation {
+        let operation = crate::config::JsonPatchOperation {
             op: "replace".into(),
             path: "/projects".into(),
             value: Some(value),
@@ -308,7 +309,7 @@ mod tests {
         ));
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(raw.contains("name = \"muxterm\""), "{raw}");
-        let service = crate::config_service::SettingsService::open(&path).unwrap();
+        let service = crate::config::SettingsService::open(&path).unwrap();
         assert_eq!(service.document().projects.len(), 1);
         assert_eq!(service.document().projects[0].name, "muxterm");
         let _ = std::fs::remove_dir_all(&dir);
@@ -327,7 +328,7 @@ mod tests {
         assert_eq!(store.projects.len(), 1);
         store.remove_project(&project);
         assert!(store.projects.is_empty());
-        let service = crate::config_service::SettingsService::open(&path).unwrap();
+        let service = crate::config::SettingsService::open(&path).unwrap();
         assert!(service.document().projects.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
