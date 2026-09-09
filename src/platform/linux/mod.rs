@@ -12,6 +12,7 @@ pub mod keymap;
 pub mod layout_host;
 pub mod lifecycle;
 pub mod notebook;
+pub(crate) mod pane_input_state;
 pub mod pane_switcher;
 pub mod pane_view;
 pub mod panel_model;

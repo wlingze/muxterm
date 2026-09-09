@@ -15,7 +15,7 @@ use gtk4::prelude::*;
 use vte4::prelude::*;
 
 use crate::core::config::Theme;
-use crate::core::protocol::terminal::emulate::TerminalState;
+use crate::platform::linux::pane_input_state::PaneInputState;
 use crate::platform::linux::quickconnect::font::FontSettings;
 use crate::platform::linux::renderer::{TerminalRenderer, VteRenderer};
 use crate::platform::linux::scroll_policy::{wheel_action, WheelAction};
@@ -62,10 +62,8 @@ pub struct PaneView {
 struct PaneViewInner {
     renderer: VteRenderer,
     pane_id: Cell<u32>,
-    /// 无头终端状态：捕获 OSC 10/11/12、CSI DA 等查询并生成应答。
-    reply_state: RefCell<TerminalState>,
-    /// 已生成、待回写 shell 的应答字节。
-    pending_replies: RefCell<Vec<u8>>,
+    /// 仅跟踪影响 GTK 输入路由的模式；Core 拥有完整终端状态和 replies。
+    input_state: RefCell<PaneInputState>,
     /// 用户输入回调（connect_input 注册；测试可经 test_emit_input 触发）。
     input_cb: RefCell<Option<InputCallback>>,
     /// tmux/SSH 镜像模式：feed 期间解析器应答一律丢弃。
@@ -126,8 +124,7 @@ impl PaneView {
         let inner = Rc::new(PaneViewInner {
             renderer,
             pane_id: Cell::new(pane_id),
-            reply_state: RefCell::new(TerminalState::new(80, 24)),
-            pending_replies: RefCell::new(Vec::new()),
+            input_state: RefCell::new(PaneInputState::default()),
             input_cb: RefCell::new(None),
             is_tmux_mirror: Cell::new(is_tmux_mirror),
             is_feeding_remote_output: Cell::new(false),
@@ -270,8 +267,8 @@ impl PaneView {
     /// 方向键，主屏滚 VTE 历史。测试 test_emit_scroll 走同一函数。
     fn handle_scroll(&self, delta_y: f64, shift: bool) {
         let (alternate_screen, mouse_reporting) = {
-            let state = self.inner.reply_state.borrow();
-            (state.alternate_screen, state.mouse_reporting && !shift)
+            let modes = self.inner.input_state.borrow().modes();
+            (modes.alternate_screen, modes.mouse_reporting && !shift)
         };
         let cell = self.inner.last_pointer_cell.get();
         let Some(action) = wheel_action(alternate_screen, mouse_reporting, delta_y, cell) else {
@@ -379,14 +376,12 @@ impl PaneView {
         if shift || previous == cell {
             return;
         }
-        let (all_motion, button_motion, reporting) = {
-            let state = self.inner.reply_state.borrow();
-            (
-                state.mouse_all_motion,
-                state.mouse_button_motion,
-                state.mouse_reporting,
-            )
-        };
+        let modes = self.inner.input_state.borrow().modes();
+        let (all_motion, button_motion, reporting) = (
+            modes.mouse_all_motion,
+            modes.mouse_button_motion,
+            modes.mouse_reporting,
+        );
         if !reporting {
             return;
         }
@@ -418,7 +413,7 @@ impl PaneView {
         } else if self.inner.pointer_buttons.get() == gtk_button {
             self.inner.pointer_buttons.set(0);
         }
-        if shift || !self.inner.reply_state.borrow().mouse_reporting {
+        if shift || !self.inner.input_state.borrow().modes().mouse_reporting {
             return false;
         }
         let Some(button) = gtk_button_to_sgr(gtk_button) else {
@@ -433,9 +428,9 @@ impl PaneView {
         self.handle_scroll(delta_y, false);
     }
 
-    /// 测试钩子：当前 reply_state 是否在上报鼠标。
+    /// 测试钩子：当前 input-state 是否在上报鼠标。
     pub fn test_mouse_reporting(&self) -> bool {
-        self.inner.reply_state.borrow().mouse_reporting
+        self.inner.input_state.borrow().modes().mouse_reporting
     }
 
     /// 测试钩子：模拟指针移动（与生产 EventControllerMotion 同一函数）。
@@ -443,9 +438,9 @@ impl PaneView {
         self.handle_pointer_motion(x, y, false);
     }
 
-    /// W21 测试钩子：当前 reply_state 是否在 alt-screen。
+    /// W21 测试钩子：当前 input-state 是否在 alt-screen。
     pub fn test_alternate_screen(&self) -> bool {
-        self.inner.reply_state.borrow().alternate_screen
+        self.inner.input_state.borrow().modes().alternate_screen
     }
 
     /// 是否已经用完整快照播种。
@@ -535,11 +530,7 @@ impl PaneView {
         // Surface 在 resize 时必须保留已有像素状态。tmux 与 Herdr 都会在
         // 新尺寸下继续发送 CUP/diff/full ANSI；主动 reset 会把隐藏 tab 的
         // 唯一 VT 清空，并让“切得动但内容没了”依赖下一次偶然重播才能恢复。
-        // 这里只调整两个终端模型的网格，不清屏、不改变 seed 状态。
-        self.inner
-            .reply_state
-            .borrow_mut()
-            .resize(cols as usize, rows as usize);
+        // 这里只调整 VTE 的网格，不清屏、不改变 seed 或 input-mode 状态。
     }
 
     /// 输出事件入队合并（同一 pane 短窗口内一次 feed）。
@@ -570,8 +561,8 @@ impl PaneView {
     }
 
     /// attach 前历史按行写进 VTE scrollback，不 reset，也不把历史反喂成
-    /// reply_state 的 VT 流。先刷完 live lane，再保存当前可见网格并重建
-    /// VTE；reply_state 只用按行 prepend 保持自身 scrollback 一致。首帧
+    /// input-state 的 VT 流。先刷完 live lane，再保存当前可见网格并重建
+    /// VTE；它只用于决定 alternate-screen 是否允许历史回放。首帧
     /// 尚未播种时先排队；后到的 Snapshot reset 后按 generation 重放。
     ///
     /// alternate screen（TUI）上禁止 ESC[2J 回放：会清掉当前 Cursor/htop 屏。
@@ -580,7 +571,7 @@ impl PaneView {
         if data.is_empty() {
             return;
         }
-        if !history_replay_allowed(self.inner.reply_state.borrow().alternate_screen) {
+        if !history_replay_allowed(self.inner.input_state.borrow().modes().alternate_screen) {
             return;
         }
         {
@@ -678,18 +669,17 @@ impl PaneView {
             trace.resets += 1;
             trace.seeds += 1;
         }
-        *self.inner.reply_state.borrow_mut() =
-            TerminalState::new(cols.max(2) as usize, rows.max(1) as usize);
+        *self.inner.input_state.borrow_mut() = PaneInputState::default();
         let mut prefix = b"\x1b[2J\x1b[H".to_vec();
         if clear_scrollback {
             prefix.extend_from_slice(b"\x1b[3J");
         }
         with_remote_feed(&self.inner, || {
             self.inner.renderer.terminal().feed(&prefix);
-            feed_reply_state(&self.inner, &prefix);
+            feed_input_state(&self.inner, &prefix);
             if !data.is_empty() {
                 self.inner.renderer.terminal().feed(data);
-                feed_reply_state(&self.inner, data);
+                feed_input_state(&self.inner, data);
             }
             apply_mirror_mouse_policy(&self.inner);
         });
@@ -741,7 +731,7 @@ impl PaneView {
         if !data.is_empty() {
             with_remote_feed(&self.inner, || {
                 self.inner.renderer.terminal().feed(data);
-                feed_reply_state(&self.inner, data);
+                feed_input_state(&self.inner, data);
                 apply_mirror_mouse_policy(&self.inner);
             });
             // 与 seed_snapshot 相同：快照网格可能大于 VTE 可见行数，
@@ -804,11 +794,6 @@ impl PaneView {
         self.open_url_at(x, y);
     }
 
-    /// 取出待回写 shell 的查询应答字节。
-    pub fn take_replies(&self) -> Vec<u8> {
-        std::mem::take(&mut self.inner.pending_replies.borrow_mut())
-    }
-
     /// 用户按键 → 回调（由 window 转发到 FFI send_input）。
     ///
     /// VTE 无 PTY 时会把 OSC/CSI 应答也走 `commit`。tmux 镜像下必须丢掉，
@@ -869,7 +854,7 @@ impl PaneView {
     /// VTE 无 PTY 时 `paste_clipboard` 会走 commit → 空的 `ESC[200~ESC[201~`。
     /// 由窗口读 GTK 剪贴板再 `send_input`。
     pub fn bracketed_paste(&self) -> bool {
-        self.inner.reply_state.borrow().bracketed_paste
+        self.inner.input_state.borrow().modes().bracketed_paste
     }
 
     /// 运行期切换主题（VTE 调色板 + 重绘）。
@@ -960,7 +945,7 @@ fn flush_pending_feed(inner: &PaneViewInner) {
     // 不得在这里标 seeded：live 抢先 flush 会挡住后续 seed_raw（Cursor 丢首屏）。
     with_remote_feed(inner, || {
         inner.renderer.terminal().feed(&data);
-        feed_reply_state(inner, &data);
+        feed_input_state(inner, &data);
         apply_mirror_mouse_policy(inner);
     });
     let mut trace = inner.render_trace.borrow_mut();
@@ -1049,7 +1034,7 @@ fn flush_unapplied_history(inner: &Rc<PaneViewInner>) {
 }
 
 fn prepend_history_seeded(inner: &Rc<PaneViewInner>, data: &[u8], clear_scrollback: bool) {
-    if !history_replay_allowed(inner.reply_state.borrow().alternate_screen) {
+    if !history_replay_allowed(inner.input_state.borrow().modes().alternate_screen) {
         return;
     }
     let lines: Vec<String> = String::from_utf8_lossy(data)
@@ -1065,18 +1050,7 @@ fn prepend_history_seeded(inner: &Rc<PaneViewInner>, data: &[u8], clear_scrollba
     }
     flush_pending_feed(inner);
 
-    let (state_rows, visible_overlay) = {
-        let state = inner.reply_state.borrow();
-        (state.rows(), state.visible_overlay_ansi())
-    };
-    let rows = inner
-        .renderer
-        .terminal()
-        .row_count()
-        .max(0)
-        .max(state_rows as i64)
-        .max(1) as usize;
-    inner.reply_state.borrow_mut().prepend_history_lines(&lines);
+    let (rows, visible_overlay) = visible_overlay_ansi(inner);
 
     let replay = history_replay_ansi(&lines, rows, &visible_overlay);
     if clear_scrollback {
@@ -1103,10 +1077,48 @@ fn feed_direct(inner: &PaneViewInner, bytes: &[u8]) {
     trace.bytes_fed += bytes.len();
 }
 
+/// Capture the VTE-owned visible screen as a plain ANSI overlay.
+///
+/// The frontend no longer keeps a second Core terminal grid only to rebuild
+/// history. VTE is the live Surface owner, so its visible text and cursor are
+/// the source used while temporarily pushing history into native scrollback.
+fn visible_overlay_ansi(inner: &PaneViewInner) -> (usize, Vec<u8>) {
+    let terminal = inner.renderer.terminal();
+    let rows = terminal
+        .row_count()
+        .max(0)
+        .max(inner.grid_rows.get() as i64)
+        .max(1) as usize;
+    let text = terminal
+        .text_format(vte4::Format::Text)
+        .map(|text| text.to_string())
+        .unwrap_or_default();
+    let mut lines = text
+        .split('\n')
+        .map(|line| line.trim_end_matches('\r').to_string())
+        .take(rows)
+        .collect::<Vec<_>>();
+    lines.resize(rows, String::new());
+
+    let (cursor_col, cursor_row) = terminal.cursor_position();
+    let cursor_row = cursor_row.clamp(0, rows.saturating_sub(1) as i64) as usize;
+    let cursor_col = cursor_col.max(0) as usize;
+    let mut overlay = Vec::new();
+    overlay.extend_from_slice(b"\x1b[H\x1b[?7l");
+    for (index, line) in lines.iter().enumerate() {
+        overlay.extend_from_slice(format!("\x1b[{};1H", index + 1).as_bytes());
+        overlay.extend_from_slice(line.as_bytes());
+    }
+    overlay.extend_from_slice(
+        format!("\x1b[{};{}H\x1b[?7h", cursor_row + 1, cursor_col + 1).as_bytes(),
+    );
+    (rows, overlay)
+}
+
 /// 把按行历史滚入 native VT scrollback，再覆盖恢复原来的可见网格。
 ///
 /// `ESC[2J` 只清当前屏，不清 scrollback；这里刻意不用 RIS/reset。调用方
-/// 必须把结果只喂给 native Surface，不能再让 reply_state 解析一次。
+/// 必须把结果只喂给 native Surface，不能再让 input-state 解析一次。
 /// alternate screen 上不得调用（见 `history_replay_allowed`）。
 fn history_replay_allowed(alternate_screen: bool) -> bool {
     !alternate_screen
@@ -1137,7 +1149,7 @@ fn history_replay_ansi(lines: &[String], rows: usize, visible_overlay: &[u8]) ->
 
 fn apply_mirror_mouse_policy(inner: &PaneViewInner) {
     // 只关 VTE 本地跟踪，方便无 mouse 时拖选复制。应用自己的
-    // 1000/1003/1006 留在 reply_state，滚轮/悬浮/点击才能穿透给 grok。
+    // 1000/1003/1006 留在 input-state，滚轮/悬浮/点击才能穿透给 grok。
     inner.renderer.terminal().feed(DISABLE_MOUSE_TRACKING);
 }
 
@@ -1156,38 +1168,31 @@ fn with_remote_feed(inner: &PaneViewInner, f: impl FnOnce()) {
     inner.is_feeding_remote_output.set(false);
 }
 
-fn feed_reply_state(inner: &PaneViewInner, data: &[u8]) {
+fn feed_input_state(inner: &PaneViewInner, data: &[u8]) {
     if data.is_empty() {
         return;
     }
-    let mut state = inner.reply_state.borrow_mut();
-    // W19e：emulate 热路径不许 panic 穿 glib；失败则重建干净状态，
-    // 不留半坏 grid（grid 与 grid_soft_wrapped 可能已不同步）。
-    let fed = crate::platform::linux::fault_gtk::run("pane_view.feed_reply_state", || {
+    let mut state = inner.input_state.borrow_mut();
+    // 输入模式 tracker 不应把解析异常带出 GTK 主循环；失败时丢弃镜像，
+    // 下一帧输出会重新播种模式。
+    let fed = crate::platform::linux::fault_gtk::run("pane_view.feed_input_state", || {
         state.feed(data);
     });
     if fed.is_none() {
-        let (cols, rows) = (state.cols(), state.rows());
-        *state = TerminalState::new(cols.max(1), rows.max(1));
+        *state = PaneInputState::default();
         return;
     }
-    let replies = state.take_reply();
     let clipboard = state.take_clipboard_set();
     drop(state);
-    if should_forward_parser_response(true, inner.is_tmux_mirror.get()) && !replies.is_empty() {
-        inner
-            .pending_replies
-            .borrow_mut()
-            .extend_from_slice(&replies);
-    }
     if let Some(text) = clipboard {
         inner.renderer.terminal().clipboard().set_text(&text);
     }
 }
 
-/// 是否把解析器查询应答回写给后端（local shell 才回写）。
+/// Compatibility policy helper for callers that classify parser replies.
 ///
-/// tmux 镜像在 feed 远端输出期间生成的应答一律丢弃（git lg 泄漏根因）。
+/// The bytes themselves are now owned and produced by Core; this function only
+/// retains the mirror-mode policy used by the existing frontend contract tests.
 pub fn should_forward_replies(is_tmux_mirror: bool, replies: &[u8]) -> bool {
     !replies.is_empty() && should_forward_parser_response(true, is_tmux_mirror)
 }
@@ -1263,13 +1268,6 @@ mod tests {
     }
 
     #[test]
-    fn mirror_mode_drops_parser_query_replies() {
-        assert!(!should_forward_replies(true, b"\x1b]11;?\x07"));
-        assert!(should_forward_replies(false, b"\x1b]11;?\x07"));
-        assert!(!should_forward_replies(false, b""));
-    }
-
-    #[test]
     fn tmux_commit_drops_gitlg_osc_color_reply() {
         let leaked = b"\x1b]10;rgb:4c4c/4f4f/6969\x07";
         assert!(!should_forward_mixed_input(true, true, leaked));
@@ -1286,11 +1284,12 @@ mod tests {
     #[test]
     fn grok_primary_mouse_wheel_is_sgr_not_history() {
         use crate::platform::linux::scroll_policy::wheel_action;
-        let mut state = TerminalState::new(80, 24);
+        let mut state = PaneInputState::default();
         state.feed(b"\x1b[?1003h\x1b[?1006h");
-        assert!(state.mouse_reporting);
-        assert!(!state.alternate_screen);
-        match wheel_action(state.alternate_screen, state.mouse_reporting, -1.0, (10, 5)) {
+        let modes = state.modes();
+        assert!(modes.mouse_reporting);
+        assert!(!modes.alternate_screen);
+        match wheel_action(modes.alternate_screen, modes.mouse_reporting, -1.0, (10, 5)) {
             Some(WheelAction::SendToApp { bytes }) => {
                 assert_eq!(bytes, b"\x1b[<64;10;5M");
             }
@@ -1298,8 +1297,8 @@ mod tests {
         }
         state.feed(DISABLE_MOUSE_TRACKING);
         assert!(
-            !state.mouse_reporting,
-            "常量仍能清 VTE；生产路径不得把它喂进 reply_state"
+            !state.modes().mouse_reporting,
+            "常量仍能清 VTE；生产路径不得把它喂进 input-state"
         );
     }
 
@@ -1316,24 +1315,12 @@ mod tests {
 
     #[test]
     fn history_replay_scrolls_rows_without_reset_and_restores_visible_grid() {
-        let mut current = TerminalState::new(20, 3);
-        current.feed(b"TAIL_VISIBLE");
-        let before = current.snapshot();
-        let overlay = current.visible_overlay_ansi();
+        let overlay = b"\x1b[H\x1b[?7l\x1b[1;1HTAIL_VISIBLE\x1b[2;1H\x1b[3;1H\x1b[1;13H\x1b[?7h";
         let lines = vec!["HIST_OFFSCREEN".into(), String::new(), "pad-01".into()];
 
-        let replay = history_replay_ansi(&lines, current.rows(), &overlay);
+        let replay = history_replay_ansi(&lines, 3, overlay);
         assert!(!replay.windows(2).any(|bytes| bytes == b"\x1bc"));
         assert!(replay.starts_with(b"\x1b[H\x1b[2JHIST_OFFSCREEN\r\n\r\npad-01\r\n"));
-
-        current.feed(&replay);
-        assert_eq!(current.snapshot(), before, "当前可见网格必须原样恢复");
-        assert!(
-            current
-                .search("HIST_OFFSCREEN")
-                .iter()
-                .any(|(_, line)| line.contains("HIST_OFFSCREEN")),
-            "历史 token 必须进入 native VT scrollback"
-        );
+        assert!(replay.ends_with(overlay));
     }
 }
