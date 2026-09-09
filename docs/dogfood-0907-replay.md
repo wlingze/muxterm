@@ -688,6 +688,29 @@ Working · Codex · Implement runtime events · Tab 2
 
 验收：Herdr 契约里 `title = "Implement runtime events"` 的 pane，Agents 和 Attention 必须能看到这段文字，不能只剩 Codex。
 
+### 20.3 tmux 上的 Codex title：能拿到，但不是 Herdr 那种字段
+
+**结论**
+
+- Herdr：`PaneAgentInfo.title` 是协议字段，已经解析（契约测试 `"Implement runtime events"`）。
+- tmux：没有同等的 agent JSON。Codex **不会**给 tmux 一条 `title=`。能用的是它写到终端里的 **OSC 0**（`ESC ] 0 ; … BEL`），tmux 会收成 `#{pane_title}`。
+- 当前 Muxterm **没有**把这条接到 Agents/Attention。tmux Runtime 不填 `PaneAgentInfo`；`list-panes` 连 `#{pane_title}` 都不订；VT 虽然解析 OSC 0 进 `TerminalState.title`，但没有导出成产品 title。
+
+**Codex 实际发什么（2026-09 核对 openai/codex）**
+
+新版 Codex TUI 会周期性 `set_terminal_title`，默认片段是 `activity` + `thread-name` + `project-name`（用户可用 `/title` 改）。未命名 thread 在开始生成前会省略名字。旧版 Codex 曾经几乎不设有意义的 OSC title。
+
+所以 tmux 上能看到的常常是一整串，例如 `⠋ Working | Implement runtime events | muxterm`，不是干净的 Herdr `title`。
+
+**重做时怎么取（不要去刮 TUI 画面）**
+
+1. 订 `#{pane_title}`（以及 `%output` 里若漏下来的 OSC 0，已经在 `TerminalState.title`）。
+2. 进程是 Codex/Grok 时，把 pane title 拆开：去掉 spinner / `Working` / `codex` 前缀，剩下的 thread-name 才进 `sessionTitle`。
+3. 画面正则（`›` 提示、状态行）只作没有 OSC 时的弱后备，不要当主路径。
+4. Grok 等同理：它如果写 OSC 0/`#{pane_title}` 就能用；没有结构化协议就不要假装有 Herdr title。
+
+验收：tmux 里两个 Codex pane、thread 名不同，Agents/Attention 第二行能区分；没有 OSC 的旧 Codex 允许只有 `Codex`，不要编造。
+
 ---
 
 ## 21. 待做对照（尚未实现，不要从旧分支抄成「已完成」）
@@ -700,3 +723,4 @@ Working · Codex · Implement runtime events · Tab 2
 | 19 | Agents/Attention 标 local/ryzen | 标题带 transport |
 | 20.1 | 键盘切 Agent / 面板 Ctrl+数字 | `Cmd+Option+1..9`；面板 `Ctrl+1..9` |
 | 20.2 | Herdr session title | `agentName` 与 `title` 分列显示 |
+| 20.3 | tmux Codex title | `#{pane_title}` / OSC 0，不要刮 TUI 画面 |
