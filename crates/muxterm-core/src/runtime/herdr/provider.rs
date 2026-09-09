@@ -8,7 +8,7 @@ use anyhow::{anyhow, Result};
 use crate::protocol::candidate::ExistingCandidate;
 use crate::runtime::herdr::runtime::HerdrRuntime;
 use crate::runtime::herdr::session::HerdrSession;
-use crate::runtime::provider::RuntimeProvider;
+use crate::runtime::RuntimeProvider;
 use crate::runtime::{Runtime, RuntimeCapability};
 use crate::transport::{ChannelKind, TargetConnection};
 use muxterm_runtime::RuntimeSpec;

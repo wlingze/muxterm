@@ -10,7 +10,7 @@
 use crate::protocol::layout::{LayoutNode, SplitDir, TabLayout};
 use crate::protocol::state::{BackendStatus, PaneInfo, State, StateChange, TabInfo};
 use crate::protocol::task::{Task, TaskOutcome};
-use crate::runtime::contract::{Runtime, RuntimeCapability};
+use crate::runtime::{Runtime, RuntimeCapability};
 use async_trait::async_trait;
 use muxterm_protocol::{PaneId, TabId};
 use std::sync::{Arc, Mutex};

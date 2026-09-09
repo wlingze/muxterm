@@ -15,7 +15,7 @@ use std::thread;
 
 use crate::projects::Project;
 use crate::protocol::candidate::{Candidate, CandidateRef, ExistingCandidateRef};
-use crate::runtime::provider::runtime_supports_channels;
+use crate::runtime::runtime_supports_channels;
 use crate::runtime::Runtime;
 use crate::transport::registry::ConnectionRegistry;
 use crate::transport::{ChannelKind, TargetConnection};
@@ -27,7 +27,7 @@ use crate::workspace::workspace::Workspace;
 use muxterm_protocol::WorkspaceId;
 
 pub use crate::protocol::candidate::ExistingCandidate;
-pub use crate::runtime::provider::{RuntimeInfo, RuntimeProvider};
+pub use crate::runtime::{RuntimeInfo, RuntimeProvider};
 pub use connect::Connect;
 #[allow(unused_imports)] // 给 FFI / 测试用的公开类型
 pub use inventory::{Inventory, InventorySnapshot, Reach};

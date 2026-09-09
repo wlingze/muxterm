@@ -9,7 +9,7 @@ use crate::catalog::transport::{TargetInfo, TransportProvider};
 use crate::projects::{Project, Worktree};
 use crate::protocol::candidate::{CandidateRef, ExistingCandidate, ExistingCandidateRef};
 use crate::runtime::mock::MockRuntime;
-use crate::runtime::provider::RuntimeProvider;
+use crate::runtime::RuntimeProvider;
 use crate::runtime::{Runtime, RuntimeCapability};
 use crate::transport::registry::ConnectionRegistry;
 use crate::transport::{ChannelKind, TargetConnection};
