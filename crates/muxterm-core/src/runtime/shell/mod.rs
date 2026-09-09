@@ -1351,7 +1351,7 @@ mod tests {
 
     #[tokio::test]
     async fn connection_provider_path_uses_target_byte_channel() {
-        let connection = crate::transport::connection::Connect::new("local", "");
+        let connection = crate::transport::Connect::new("local", "");
         let mut b = ShellRuntime::new_with_connection(connection, "sleep 60", "/");
         b.connect().await.unwrap();
         assert!(matches!(
