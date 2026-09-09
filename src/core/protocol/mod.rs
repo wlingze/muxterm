@@ -1,5 +1,6 @@
 //! Core protocol layer: model + terminal + ffi (C ABI).
 
+pub use muxterm_protocol::error::{self, ProtocolError};
 pub use muxterm_protocol::{candidate, layout, state, task};
 pub mod command;
 pub mod terminal;
@@ -33,16 +34,6 @@ impl Capability {
             can_display_message: true,
         }
     }
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum ProtocolError {
-    #[error("不支持的 Task: {0}")]
-    UnsupportedTask(String),
-    #[error("muxterm ID 不存在: {0}")]
-    IdNotFound(String),
-    #[error("Runtime 未连接")]
-    NotConnected,
 }
 
 #[cfg(test)]
