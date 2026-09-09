@@ -3,7 +3,7 @@
 use std::ffi::c_char;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-use crate::attention::engine::AttentionNotificationKind;
+use crate::activity::attention::engine::AttentionNotificationKind;
 
 use super::support::{cstr_opt, json_error, json_string, parse_workspace_id, MuxtermHandle};
 

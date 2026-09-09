@@ -13,7 +13,7 @@
 
 use std::collections::{HashSet, VecDeque};
 
-use crate::attention::signal::{AttentionSignal, AttentionSource};
+use crate::activity::attention::signal::{AttentionSignal, AttentionSource};
 use vte::ansi::{
     Attr, CharsetIndex, ClearMode, Color, CursorShape, Handler, KeyboardModes,
     KeyboardModesApplyBehavior, LineClearMode, ModifyOtherKeys, NamedColor, NamedPrivateMode,

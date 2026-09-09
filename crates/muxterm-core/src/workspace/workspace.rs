@@ -6,8 +6,8 @@
 
 use std::collections::HashMap;
 
-use crate::attention::signal::AttentionSignal;
-use crate::attention::state::PaneStatus;
+use crate::activity::attention::signal::AttentionSignal;
+use crate::activity::attention::state::PaneStatus;
 use crate::protocol::state::{PaneAgentInfo, PaneAgentStatus, State, StateChange};
 use crate::protocol::task::{Task, TaskOutcome};
 use crate::protocol::terminal::emulate::DEFAULT_SCROLLBACK_LINES;
@@ -424,7 +424,7 @@ impl Workspace {
     pub fn take_attention_signals(
         &mut self,
         pane: PaneId,
-    ) -> Vec<crate::attention::signal::AttentionSignal> {
+    ) -> Vec<crate::activity::attention::signal::AttentionSignal> {
         let mut signals = self
             .panes
             .get_mut(&pane)
@@ -806,7 +806,7 @@ mod tests {
         assert_eq!(
             w.take_attention_signals(PaneId(1)),
             vec![AttentionSignal::AttentionRequest {
-                source: crate::attention::signal::AttentionSource::Bel,
+                source: crate::activity::attention::signal::AttentionSource::Bel,
             }]
         );
     }

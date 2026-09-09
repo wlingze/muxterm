@@ -13,7 +13,7 @@ use std::sync::Mutex;
 #[cfg(test)]
 pub(crate) static PATH_ENV_LOCK: Mutex<()> = Mutex::new(());
 
-pub mod attention;
+pub mod activity;
 pub mod buffer_cap;
 pub mod catalog;
 pub mod config;

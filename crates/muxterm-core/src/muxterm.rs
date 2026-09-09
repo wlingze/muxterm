@@ -9,9 +9,9 @@ use std::collections::VecDeque;
 use std::ffi::{c_char, CString};
 use std::ptr;
 
-use crate::attention::clock::RealClock;
-use crate::attention::engine::AttentionEngine;
-use crate::attention::signal::AttentionSignal;
+use crate::activity::attention::clock::RealClock;
+use crate::activity::attention::engine::AttentionEngine;
+use crate::activity::attention::signal::AttentionSignal;
 use crate::catalog::{OpenRequest, ResolveIntent, ResolvedTarget};
 use crate::config::SettingsService;
 use crate::projects::ProjectsService;

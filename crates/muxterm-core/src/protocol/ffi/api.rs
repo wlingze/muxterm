@@ -8,9 +8,9 @@ use std::os::raw::c_char;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 
-use crate::attention::clock::RealClock;
-use crate::attention::engine::AttentionEngine;
-use crate::attention::signal::AttentionSignal;
+use crate::activity::attention::clock::RealClock;
+use crate::activity::attention::engine::AttentionEngine;
+use crate::activity::attention::signal::AttentionSignal;
 use crate::config::SettingsService;
 use crate::projects::{ProjectStore, ProjectsService};
 use crate::protocol::layout::{LayoutNode, SplitDir};

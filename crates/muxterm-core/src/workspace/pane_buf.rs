@@ -8,7 +8,7 @@
 //! Live GUI **只** `vte.feed` 原始字节；PaneBuf 只给搜索/提醒/peek，禁止
 //! dump `visible_ansi` 当显示。
 
-use crate::attention::signal::AttentionSignal;
+use crate::activity::attention::signal::AttentionSignal;
 use crate::buffer_cap::{append_capped, MAX_PANE_OUTPUT_BYTES};
 use crate::protocol::terminal::emulate::TerminalState;
 
