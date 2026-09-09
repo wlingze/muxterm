@@ -21,6 +21,7 @@ use support::linux_gtk::*;
 use muxterm::test_support::core::attention::engine::PaneAttention;
 use muxterm::test_support::core::attention::state::PaneStatus;
 use muxterm::test_support::core::workspace::id::WorkspaceId;
+use muxterm::test_support::platform::ffi_client::ClientCandidateRef;
 use muxterm::test_support::platform::linux::panel_model::{PanelTab, SearchRow};
 use muxterm::test_support::platform::linux::quickconnect::model::{
     QuickBadge, QuickConnect, QuickConnectEntry, TargetConfig, TargetRuntime, TargetTransport,
@@ -94,6 +95,15 @@ fn ssh_target(alias: &str) -> PanelItem {
         ),
         false,
     )
+}
+
+fn recent_key(name: &str) -> String {
+    QuickConnect::unique_id(&TargetConfig::new(
+        name,
+        TargetRuntime::Tmux,
+        TargetTransport::Local,
+        "~/x",
+    ))
 }
 
 fn entry_owns_window_focus(win: &gtk4::Window, entry: &gtk4::Entry) -> bool {
@@ -351,7 +361,7 @@ fn keyboard_navigation_scrolls_selection_and_keeps_search_focus() {
                 win.present();
                 gtk4::test_widget_wait_for_draw(&win);
 
-                let connected = Rc::new(RefCell::new(Vec::<String>::new()));
+                let connected = Rc::new(RefCell::new(Vec::<ClientCandidateRef>::new()));
                 let connected_cb = connected.clone();
                 show(
                     &win,
@@ -364,8 +374,8 @@ fn keyboard_navigation_scrolls_selection_and_keeps_search_focus() {
                         workspace_search_items: vec![],
                         agents: vec![],
                         attention: vec![],
-                        on_connect: Box::new(move |cfg| {
-                            connected_cb.borrow_mut().push(cfg.name);
+                        on_connect: Box::new(move |request| {
+                            connected_cb.borrow_mut().push(request.candidate);
                         }),
                         on_existing_connect: Box::new(|_| {}),
                         on_edit: Box::new(|_| {}),
@@ -508,7 +518,10 @@ fn keyboard_navigation_scrolls_selection_and_keeps_search_focus() {
                 entry.set_text("muxterm");
                 entry.emit_activate();
                 pump_main_loop(40);
-                assert_eq!(connected.borrow().as_slice(), &["muxterm".to_string()]);
+                assert!(matches!(
+                    connected.borrow().as_slice(),
+                    [ClientCandidateRef::Recent { key }] if key == &recent_key("muxterm")
+                ));
                 assert!(
                     find_by_name(&win, "muxterm-panel").is_none(),
                     "Enter 激活可见行后应关闭面板"
@@ -783,7 +796,7 @@ fn row_activate_ignores_pending_rebuild() {
             win.present();
             gtk4::test_widget_wait_for_draw(&win);
 
-            let connected = Rc::new(RefCell::new(Vec::<String>::new()));
+            let connected = Rc::new(RefCell::new(Vec::<ClientCandidateRef>::new()));
             let connected_cb = connected.clone();
             let new_project = Rc::new(Cell::new(0u32));
             let new_project_cb = new_project.clone();
@@ -803,8 +816,8 @@ fn row_activate_ignores_pending_rebuild() {
                     workspace_search_items: vec![],
                     agents: vec![],
                     attention: vec![],
-                    on_connect: Box::new(move |cfg| {
-                        connected_cb.borrow_mut().push(cfg.name);
+                    on_connect: Box::new(move |request| {
+                        connected_cb.borrow_mut().push(request.candidate);
                     }),
                     on_existing_connect: Box::new(|_| {}),
                     on_edit: Box::new(|_| {}),
@@ -853,9 +866,11 @@ fn row_activate_ignores_pending_rebuild() {
             muxterm_row.activate();
             pump_main_loop(40);
 
-            assert_eq!(
-                connected.borrow().as_slice(),
-                &["muxterm".to_string()],
+            assert!(
+                matches!(
+                    connected.borrow().as_slice(),
+                    [ClientCandidateRef::Recent { key }] if key == &recent_key("muxterm")
+                ),
                 "pending rebuild 时点击必须连接被点行，不能 flush 成第一行/空列表"
             );
             assert_eq!(

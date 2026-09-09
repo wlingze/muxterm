@@ -41,8 +41,8 @@ use crate::core::workspace::spec::WorkspaceSpec;
 use crate::platform::event_pump::EventPump;
 use crate::platform::ffi_client::{
     ClientActivitySnapshot, ClientAttentionPane, ClientCandidateRef, ClientEventKind,
-    ClientOpenIntent, ClientOpenRequest, ClientTarget, ClientTask, ClientWorkspaceAttention,
-    ClientWorkspaceEvent, FfiClient,
+    ClientOpenIntent, ClientOpenRequest, ClientOpenedWorkspace, ClientTarget, ClientTask,
+    ClientWorkspaceAttention, ClientWorkspaceEvent, FfiClient,
 };
 use crate::platform::i18n::{self, Key};
 use crate::platform::linux::attention_ui::{window_title, GioSink, NotificationSink};
@@ -4034,14 +4034,14 @@ fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelT
             attention,
             on_connect: {
                 let st = st.clone();
-                std::boxed::Box::new(move |cfg| {
-                    connect_target(&st, cfg);
+                std::boxed::Box::new(move |request| {
+                    connect_open_request(&st, request);
                 })
             },
             on_existing_connect: {
                 let st = st.clone();
                 std::boxed::Box::new(move |request| {
-                    connect_existing_request(&st, request);
+                    connect_open_request(&st, request);
                 })
             },
             on_edit: {
@@ -4900,12 +4900,14 @@ fn connect_target_with_intent(
     }
 }
 
-fn connect_existing_request(state: &Rc<RefCell<UiState>>, request: ClientOpenRequest) {
-    let socket = match &request.candidate {
+fn connect_open_request(state: &Rc<RefCell<UiState>>, request: ClientOpenRequest) {
+    let request_socket = match &request.candidate {
         ClientCandidateRef::Existing { identity } => identity.socket.clone(),
         _ => None,
     };
     let label = match &request.candidate {
+        ClientCandidateRef::Project { project_id } => format!("project {project_id}"),
+        ClientCandidateRef::Recent { key } => format!("recent {key}"),
         ClientCandidateRef::Existing { identity } => {
             format!("{} @ {}", identity.runtime_id, identity.target)
         }
@@ -4917,6 +4919,7 @@ fn connect_existing_request(state: &Rc<RefCell<UiState>>, request: ClientOpenReq
     };
     match result {
         Ok(opened) => {
+            let socket = request_socket.or_else(|| opened_workspace_socket(&opened));
             let mut s = state.borrow_mut();
             if let Some(id) = parse_workspace_id(&opened.id) {
                 s.workspace_sockets.insert(id, socket);
@@ -4943,6 +4946,16 @@ fn connect_existing_request(state: &Rc<RefCell<UiState>>, request: ClientOpenReq
                 .push(format!("{label}: connect failed: {detail}"));
         }
     }
+}
+
+fn opened_workspace_socket(opened: &ClientOpenedWorkspace) -> Option<String> {
+    opened
+        .resolved_target
+        .as_ref()
+        .and_then(|target| target.get("canonical"))
+        .and_then(|canonical| canonical.get("socket"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
 }
 
 fn client_target_from_config(config: &TargetConfig) -> ClientTarget {

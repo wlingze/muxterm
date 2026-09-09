@@ -19,7 +19,7 @@ use gtk4::{
 
 use crate::core::attention::engine::PaneAttention;
 use crate::core::attention::state::PaneStatus;
-use crate::platform::ffi_client::ClientOpenRequest;
+use crate::platform::ffi_client::{ClientCandidateRef, ClientOpenIntent, ClientOpenRequest};
 use crate::platform::i18n::{self, Key as TextKey};
 use crate::platform::linux::panel_model::{
     filter_attention_panel_rows, filter_workspace_rows, search_rows, AttentionPanelRow, PanelModel,
@@ -56,7 +56,7 @@ fn reveal_selected_row(scroller: &ScrolledWindow, list: &ListBox, row: &ListBoxR
 
 #[derive(Clone)]
 enum VisibleAction {
-    Connect(TargetConfig),
+    Connect(ClientOpenRequest),
     ExistingConnect(ClientOpenRequest),
     NewProject,
     Navigate(ExistingNav),
@@ -403,9 +403,33 @@ pub fn existing_items(
     items
 }
 
+fn target_open_request(entry: &QuickConnectEntry) -> ClientOpenRequest {
+    let (candidate, intent) = if let Some(project_id) = &entry.project_id {
+        (
+            ClientCandidateRef::Project {
+                project_id: project_id.clone(),
+            },
+            ClientOpenIntent::CreateIfMissing,
+        )
+    } else {
+        (
+            ClientCandidateRef::Recent {
+                key: QuickConnect::unique_id(&entry.config),
+            },
+            ClientOpenIntent::AttachOnly,
+        )
+    };
+    ClientOpenRequest {
+        candidate,
+        intent,
+        template: None,
+        activate: true,
+    }
+}
+
 fn visible_action_for_item(item: &PanelItem, nav: &ExistingNav) -> VisibleAction {
     match item {
-        PanelItem::Target(entry, _) => VisibleAction::Connect(entry.config.clone()),
+        PanelItem::Target(entry, _) => VisibleAction::Connect(target_open_request(entry)),
         PanelItem::NewProject => VisibleAction::NewProject,
         PanelItem::Folder { id, .. } => match *id {
             "existing-connections" => VisibleAction::Navigate(ExistingNav::Home),
@@ -439,7 +463,7 @@ pub struct PanelShowArgs {
     pub workspace_search_items: Vec<PanelItem>,
     pub agents: Vec<AgentSidebarItem>,
     pub attention: Vec<PaneAttention>,
-    pub on_connect: Box<dyn Fn(TargetConfig)>,
+    pub on_connect: Box<dyn Fn(ClientOpenRequest)>,
     /// Existing 行专用回调：接收 typed CandidateRef + attach-only 意图。
     pub on_existing_connect: Box<dyn Fn(ClientOpenRequest)>,
     pub on_edit: Box<dyn Fn(TargetConfig)>,
@@ -1676,6 +1700,34 @@ mod tests {
         assert!(matches!(
             &items[0],
             PanelItem::Target(entry, false) if entry.project_id.is_none()
+        ));
+    }
+
+    #[test]
+    fn target_rows_build_project_and_recent_open_requests() {
+        let project = QuickConnectEntry::new(cfg("project"), vec![QuickBadge::Project])
+            .with_project_id("project@local");
+        let VisibleAction::Connect(project_request) =
+            visible_action_for_item(&PanelItem::Target(project, false), &ExistingNav::Root)
+        else {
+            panic!("project target must produce a connect request");
+        };
+        assert_eq!(project_request.intent, ClientOpenIntent::CreateIfMissing);
+        assert!(matches!(
+            project_request.candidate,
+            ClientCandidateRef::Project { project_id } if project_id == "project@local"
+        ));
+
+        let recent = QuickConnectEntry::new(cfg("recent"), vec![QuickBadge::Recent]);
+        let VisibleAction::Connect(recent_request) =
+            visible_action_for_item(&PanelItem::Target(recent, false), &ExistingNav::Root)
+        else {
+            panic!("recent target must produce a connect request");
+        };
+        assert_eq!(recent_request.intent, ClientOpenIntent::AttachOnly);
+        assert!(matches!(
+            recent_request.candidate,
+            ClientCandidateRef::Recent { key } if key == "4:tmux|5:local|0:|6:recent|0:"
         ));
     }
 
