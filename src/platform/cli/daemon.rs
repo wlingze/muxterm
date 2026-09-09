@@ -69,8 +69,12 @@ impl DaemonState {
         })
     }
 
-    fn poll(&self) {
-        let _ = self.client.poll_workspace_events();
+    fn poll(&self) -> Vec<serde_json::Value> {
+        self.client
+            .poll_workspace_events()
+            .into_iter()
+            .map(|event| event.to_wire_json())
+            .collect()
     }
 
     fn active_tab_id(&self) -> Option<u32> {
@@ -240,7 +244,7 @@ pub fn run_daemon(socket_path: PathBuf, name: String, tmux_socket: Option<String
     info!(target: "muxterm", session = %name, "daemon 启动");
 
     let mut state = DaemonState::connect(&name, tmux_socket.as_deref())?;
-    state.poll();
+    let _ = state.poll();
 
     // 绑定 unix socket
     // 先删除可能残留的旧 socket 文件
@@ -349,10 +353,11 @@ fn handle_connection(
 
 /// 执行单个请求，返回 Response。
 fn execute_request(req: &Request, state: &mut DaemonState) -> Response {
-    state.poll();
+    let mut events = state.poll();
     if let Err(error) = state.execute(&req.command) {
         return Response::err(format!("执行失败: {error}"));
     }
+    events.extend(state.poll());
 
     let output = if is_query(&req.command) {
         match format_ffi_output(&state.client, &state.workspace_id, &req.command, req.format) {
@@ -362,7 +367,7 @@ fn execute_request(req: &Request, state: &mut DaemonState) -> Response {
     } else {
         String::new()
     };
-    Response::ok(output)
+    Response::ok_with_events(output, events)
 }
 
 fn is_query(command: &CliCommand) -> bool {
