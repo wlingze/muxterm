@@ -14,19 +14,8 @@ use gtk4::{
     RevealerTransitionType, ScrolledWindow, SelectionMode, ToggleButton, Widget,
 };
 
-use crate::core::attention::engine::known_agent_process_name;
-#[cfg(test)]
-use crate::core::attention::engine::{PaneAttention, WorkspaceAttention};
-#[cfg(test)]
-use crate::core::attention::state::PaneStatus;
-#[cfg(test)]
-use crate::core::workspace::pool::WorkspacePool;
-#[cfg(test)]
-use crate::core::workspace::workspace::Workspace;
 use crate::platform::ffi_client::{ClientActivitySnapshot, ClientAttentionPane, ClientWorkspace};
 use crate::platform::linux::view_store::ViewStore;
-#[cfg(test)]
-use muxterm_protocol::state::{PaneAgentInfo, PaneAgentStatus};
 use muxterm_protocol::WorkspaceId;
 
 /// A workspace row in the sidebar.
@@ -42,51 +31,6 @@ pub struct WorkspaceSidebarItem {
 }
 
 impl WorkspaceSidebarItem {
-    /// Build the row model from a Core workspace.
-    #[cfg(test)]
-    pub fn from_workspace(workspace: &Workspace, active_id: Option<&WorkspaceId>) -> Self {
-        let (runtime, transport) = workspace
-            .resolved_target()
-            .map(|resolved| {
-                (
-                    resolved.canonical.runtime.as_str().to_string(),
-                    resolved.canonical.transport.label(),
-                )
-            })
-            .unwrap_or_else(|| {
-                let id = workspace.id();
-                let transport = if id.transport == "ssh" {
-                    id.alias.clone().unwrap_or_else(|| "ssh".into())
-                } else {
-                    "local".into()
-                };
-                (id.runtime.clone(), transport)
-            });
-        Self {
-            id: workspace.id().clone(),
-            name: workspace.name().to_string(),
-            runtime,
-            transport,
-            active: active_id == Some(workspace.id()),
-            shortcut: None,
-        }
-    }
-
-    /// Build every row currently owned by the pool.
-    #[cfg(test)]
-    pub fn from_pool(pool: &WorkspacePool) -> Vec<Self> {
-        let active_id = pool.active_id();
-        pool.list()
-            .into_iter()
-            .enumerate()
-            .map(|(index, workspace)| {
-                let mut item = Self::from_workspace(workspace, active_id);
-                item.shortcut = (index < 5).then_some((index + 1) as u8);
-                item
-            })
-            .collect()
-    }
-
     /// Build sidebar rows from the frontend-owned workspace snapshot.
     pub fn from_views(store: &ViewStore) -> Vec<Self> {
         let mut workspaces: Vec<&ClientWorkspace> = store
@@ -132,70 +76,6 @@ pub struct AgentSidebarItem {
 }
 
 impl AgentSidebarItem {
-    #[cfg(test)]
-    pub fn from_pool(
-        pool: &WorkspacePool,
-        attention: &[WorkspaceAttention],
-    ) -> Vec<AgentSidebarItem> {
-        let attention_by_pane: HashMap<(String, u32), &PaneAttention> = attention
-            .iter()
-            .flat_map(|workspace| workspace.panes.iter())
-            .map(|pane| ((pane.workspace_id.clone(), pane.pane_id), pane))
-            .collect();
-        let mut items = Vec::new();
-        for workspace in pool.list() {
-            let workspace_key = workspace.id().replica_id();
-            let state = workspace.state();
-            for tab in state.tabs() {
-                for pane in state.panes(&tab.id) {
-                    let attention = attention_by_pane
-                        .get(&(workspace_key.clone(), pane.id.0))
-                        .copied();
-                    if let Some(agent) = workspace.pane_agent(pane.id) {
-                        items.push(AgentSidebarItem {
-                            workspace_id: workspace.id().clone(),
-                            pane_id: pane.id.0,
-                            title: agent_title(agent, &pane.title),
-                            detail: activity_detail(workspace, Some(agent)),
-                            indicator: structured_indicator(agent.status, attention),
-                        });
-                    } else if let Some(attention) = attention {
-                        let agent_name = attention.agent_name.as_deref().or_else(|| {
-                            attention
-                                .process_is_agent
-                                .then_some(attention.process_name.as_deref())
-                                .flatten()
-                                .and_then(known_agent_process_name)
-                        });
-                        let Some(agent_name) = agent_name else {
-                            continue;
-                        };
-                        items.push(AgentSidebarItem {
-                            workspace_id: workspace.id().clone(),
-                            pane_id: pane.id.0,
-                            title: agent_name.to_string(),
-                            detail: activity_detail(workspace, None),
-                            indicator: if attention.process_is_agent {
-                                attention_indicator(attention)
-                            } else {
-                                ActivityIndicator::None
-                            },
-                        });
-                    } else if let Some(agent_name) = known_agent_process_name(&pane.title) {
-                        items.push(AgentSidebarItem {
-                            workspace_id: workspace.id().clone(),
-                            pane_id: pane.id.0,
-                            title: agent_name.to_string(),
-                            detail: activity_detail(workspace, None),
-                            indicator: ActivityIndicator::None,
-                        });
-                    }
-                }
-            }
-        }
-        items
-    }
-
     /// Build agent rows from owned topology and Core's owned activity DTO.
     pub fn from_views(store: &ViewStore, activity: &ClientActivitySnapshot) -> Vec<Self> {
         let by_pane = activity_by_pane(activity);
@@ -213,16 +93,12 @@ impl AgentSidebarItem {
                     let Some(attention) = by_pane.get(&(activity_key.as_str(), pane.id)) else {
                         continue;
                     };
-                    let agent_name = attention
-                        .agent_name
-                        .as_deref()
-                        .or_else(|| {
-                            attention
-                                .process_is_agent
-                                .then_some(attention.process_name.as_deref())
-                                .flatten()
-                        })
-                        .or_else(|| known_agent_process_name(&pane.title));
+                    let agent_name = attention.agent_name.as_deref().or_else(|| {
+                        attention
+                            .process_is_agent
+                            .then_some(attention.process_name.as_deref())
+                            .flatten()
+                    });
                     let Some(agent_name) = agent_name else {
                         continue;
                     };
@@ -240,92 +116,6 @@ impl AgentSidebarItem {
     }
 }
 
-#[cfg(test)]
-fn agent_title(agent: &PaneAgentInfo, pane_title: &str) -> String {
-    [
-        agent.display_name.as_deref(),
-        agent.title.as_deref(),
-        agent.name.as_deref(),
-        agent.kind.as_deref(),
-        agent.terminal_title_stripped.as_deref(),
-        agent.terminal_title.as_deref(),
-        Some(pane_title),
-    ]
-    .into_iter()
-    .flatten()
-    .find(|value| !value.trim().is_empty())
-    .unwrap_or("agent")
-    .to_string()
-}
-
-#[cfg(test)]
-fn activity_detail(workspace: &Workspace, agent: Option<&PaneAgentInfo>) -> String {
-    let identity = command_detail(workspace);
-    let path = agent
-        .and_then(|agent| agent.foreground_cwd.as_deref().or(agent.cwd.as_deref()))
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| {
-            workspace
-                .resolved_target()
-                .map(|resolved| resolved.canonical.path.as_str())
-                .filter(|value| !value.trim().is_empty())
-        })
-        .or_else(|| {
-            (!workspace.id().path.trim().is_empty()).then_some(workspace.id().path.as_str())
-        });
-    let branch = agent.and_then(|agent| {
-        ["branch", "git_branch", "git.branch"]
-            .into_iter()
-            .find_map(|key| agent.state_labels.get(key))
-            .map(String::as_str)
-            .filter(|value| !value.trim().is_empty())
-    });
-    match (path, branch) {
-        (Some(path), Some(branch)) => format!("{identity} · {path} · {branch}"),
-        (Some(path), None) if path != workspace.name() => format!("{identity} · {path}"),
-        (_, Some(branch)) => format!("{identity} · {branch}"),
-        _ => identity,
-    }
-}
-
-#[cfg(test)]
-fn command_detail(workspace: &Workspace) -> String {
-    let metadata = WorkspaceSidebarItem::from_workspace(workspace, None);
-    format!(
-        "{}@{}@{}",
-        workspace.name(),
-        metadata.runtime,
-        metadata.transport
-    )
-}
-
-#[cfg(test)]
-fn structured_indicator(
-    status: PaneAgentStatus,
-    attention: Option<&PaneAttention>,
-) -> ActivityIndicator {
-    match status {
-        PaneAgentStatus::Working => ActivityIndicator::Running,
-        PaneAgentStatus::Blocked | PaneAgentStatus::Done
-            if attention.is_none_or(|pane| !pane.acknowledged) =>
-        {
-            ActivityIndicator::Done
-        }
-        _ => ActivityIndicator::None,
-    }
-}
-
-#[cfg(test)]
-fn attention_indicator(attention: &PaneAttention) -> ActivityIndicator {
-    match attention.status {
-        PaneStatus::Working => ActivityIndicator::Running,
-        PaneStatus::Blocked | PaneStatus::Done if !attention.acknowledged => {
-            ActivityIndicator::Done
-        }
-        _ => ActivityIndicator::None,
-    }
-}
-
 /// 跨全部 Workspace 汇总的一条正在运行或尚未阅读的非 agent 命令。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandSidebarItem {
@@ -337,58 +127,6 @@ pub struct CommandSidebarItem {
 }
 
 impl CommandSidebarItem {
-    #[cfg(test)]
-    pub fn from_pool(
-        pool: &WorkspacePool,
-        attention: &[WorkspaceAttention],
-    ) -> Vec<CommandSidebarItem> {
-        let attention_by_pane: HashMap<(String, u32), &PaneAttention> = attention
-            .iter()
-            .flat_map(|workspace| workspace.panes.iter())
-            .map(|pane| ((pane.workspace_id.clone(), pane.pane_id), pane))
-            .collect();
-        let mut items = Vec::new();
-        for workspace in pool.list() {
-            let workspace_key = workspace.id().replica_id();
-            let state = workspace.state();
-            for tab in state.tabs() {
-                for pane in state.panes(&tab.id) {
-                    let Some(attention) = attention_by_pane
-                        .get(&(workspace_key.clone(), pane.id.0))
-                        .copied()
-                    else {
-                        continue;
-                    };
-                    let active = (attention.status == PaneStatus::Working
-                        || (matches!(attention.status, PaneStatus::Blocked | PaneStatus::Done)
-                            && !attention.acknowledged))
-                        .then_some(attention);
-                    let Some(active) = active else {
-                        continue;
-                    };
-                    if active.process_is_agent || workspace.pane_agent(pane.id).is_some() {
-                        continue;
-                    }
-                    let Some(title) = active
-                        .process_name
-                        .as_deref()
-                        .filter(|value| !value.trim().is_empty())
-                    else {
-                        continue;
-                    };
-                    items.push(CommandSidebarItem {
-                        workspace_id: workspace.id().clone(),
-                        pane_id: pane.id.0,
-                        title: title.to_string(),
-                        detail: command_detail(workspace),
-                        indicator: attention_indicator(active),
-                    });
-                }
-            }
-        }
-        items
-    }
-
     /// Build command rows from the owned activity projection.  A command row
     /// must have Core's process name; pane titles are never used as a command
     /// fallback because they are presentation text, not activity identity.
@@ -1486,288 +1224,177 @@ mod tests {
         assert_eq!(sidebar_split_position(false, true, 0, 260, 64), 260);
     }
 
-    use crate::core::runtime::mock::MockRuntime;
-    use muxterm_protocol::state::StateChange;
-    use muxterm_protocol::PaneId;
-    use std::collections::BTreeMap;
-    use std::time::Instant;
+    use crate::platform::ffi_client::{
+        ClientActivitySnapshot, ClientAttentionPane, ClientPane, ClientTab, ClientWorkspace,
+        ClientWorkspaceAttention,
+    };
+    use crate::platform::linux::view_store::ViewStore;
 
-    fn workspace(name: &str) -> Workspace {
-        let id = WorkspaceId::new("local", None, name, "tmux", name);
-        Workspace::new(id, name.into(), Box::new(MockRuntime::with_single_pane()))
+    fn workspace_id(
+        transport: &str,
+        alias: Option<&str>,
+        session: &str,
+        runtime: &str,
+        path: &str,
+    ) -> WorkspaceId {
+        WorkspaceId::new(transport, alias, session, runtime, path)
     }
 
-    fn agent(status: PaneAgentStatus) -> PaneAgentInfo {
-        PaneAgentInfo {
-            terminal_id: None,
-            name: Some("codex".into()),
-            kind: Some("codex".into()),
-            title: Some("Review muxterm".into()),
-            terminal_title: None,
-            terminal_title_stripped: None,
-            display_name: Some("Codex".into()),
-            status,
-            screen_detection_skipped: false,
-            state_labels: BTreeMap::from([("branch".into(), "feature/sidebar".into())]),
-            tokens: BTreeMap::new(),
-            session: None,
-            focused: false,
-            launch_pending: false,
-            interactive_ready: true,
-            state_change_seq: 1,
-            cwd: Some("/work/muxterm".into()),
-            foreground_cwd: None,
-            revision: 1,
-        }
+    fn add_workspace(store: &mut ViewStore, id: &WorkspaceId, name: &str, active: bool) {
+        store.replace_topology(
+            ClientWorkspace {
+                id: id.as_str(),
+                name: name.into(),
+                runtime: id.runtime.clone(),
+                active,
+                resolved_target: None,
+            },
+            vec![ClientTab {
+                id: 1,
+                name: "main".into(),
+                is_active: true,
+            }],
+            vec![(
+                1,
+                vec![ClientPane {
+                    id: 1,
+                    cols: 80,
+                    rows: 24,
+                    is_active: true,
+                    title: "shell".into(),
+                }],
+            )],
+        );
     }
 
-    fn attention(
-        workspace_id: String,
-        status: PaneStatus,
+    fn activity(
+        id: &WorkspaceId,
+        status: &str,
         acknowledged: bool,
-    ) -> WorkspaceAttention {
-        WorkspaceAttention {
-            workspace_id: workspace_id.clone(),
-            blocked: usize::from(status == PaneStatus::Blocked),
-            done: usize::from(status == PaneStatus::Done),
-            working: usize::from(status == PaneStatus::Working),
-            panes: vec![PaneAttention {
-                workspace_id,
-                pane_id: 1,
-                status,
-                acknowledged,
-                last_line: String::new(),
-                seq: 1,
-                process_name: Some("codex".into()),
-                process_is_agent: true,
-                agent_name: Some("codex".into()),
-                shell_name: Some("zsh".into()),
-                mute_until: None,
-                last_regex_eval: Instant::now(),
+        process_name: Option<&str>,
+        process_is_agent: bool,
+        agent_name: Option<&str>,
+    ) -> ClientActivitySnapshot {
+        ClientActivitySnapshot {
+            blocked_count: 0,
+            workspaces: vec![ClientWorkspaceAttention {
+                workspace_id: id.replica_id(),
+                path: id.path.clone(),
+                blocked: usize::from(status == "blocked"),
+                done: usize::from(status == "done"),
+                working: usize::from(status == "working"),
+                panes: vec![ClientAttentionPane {
+                    workspace_id: id.replica_id(),
+                    pane_id: 1,
+                    status: status.into(),
+                    acknowledged,
+                    last_line: String::new(),
+                    seq: 1,
+                    process_name: process_name.map(str::to_owned),
+                    process_is_agent,
+                    agent_name: agent_name.map(str::to_owned),
+                    shell_name: Some("zsh".into()),
+                }],
             }],
         }
     }
 
     #[test]
-    fn item_marks_active_workspace() {
-        let ws = workspace("alpha");
-        let item = WorkspaceSidebarItem::from_workspace(&ws, Some(ws.id()));
-        assert!(item.active);
-        assert_eq!(item.name, "alpha");
-        assert_eq!(item.runtime, "tmux");
-        assert_eq!(item.transport, "local");
-    }
+    fn workspace_rows_use_owned_topology_and_preserve_shortcuts() {
+        let alpha = workspace_id("local", None, "alpha", "shell", "/work/alpha");
+        let beta = workspace_id("ssh", Some("archmini"), "default", "herdr", "/work/beta");
+        let mut store = ViewStore::default();
+        add_workspace(&mut store, &beta, "beta", false);
+        add_workspace(&mut store, &alpha, "alpha", true);
 
-    #[test]
-    fn item_marks_background_workspace() {
-        let ws = workspace("beta");
-        let item = WorkspaceSidebarItem::from_workspace(&ws, None);
-        assert!(!item.active);
-    }
-
-    #[test]
-    fn item_formats_runtime_at_ssh_transport_name() {
-        let id = WorkspaceId::new("ssh", Some("archmini"), "default", "herdr", "w2");
-        let ws = Workspace::new(
-            id,
-            "muxterm".into(),
-            Box::new(MockRuntime::with_single_pane()),
-        );
-        let item = WorkspaceSidebarItem::from_workspace(&ws, None);
-        assert_eq!(item.runtime, "herdr");
-        assert_eq!(item.transport, "archmini");
-    }
-
-    #[tokio::test]
-    async fn pool_items_keep_open_order_when_active_workspace_changes() {
-        let mut pool =
-            WorkspacePool::new(crate::core::workspace::pool::WorkspacePoolPolicy::new(8));
-        for name in ["alpha", "beta", "gamma", "delta", "epsilon", "zeta"] {
-            let workspace_id = WorkspaceId::new("local", None, name, "shell", name);
-            pool.open(workspace_id, name.into(), |_| {
-                Box::new(MockRuntime::with_single_pane())
-            })
-            .await
-            .unwrap();
-        }
-        let beta = WorkspaceId::new("local", None, "beta", "shell", "beta");
-        pool.activate(&beta);
-
-        let items = WorkspaceSidebarItem::from_pool(&pool);
-        let names: Vec<String> = items.iter().map(|item| item.name.clone()).collect();
+        let items = WorkspaceSidebarItem::from_views(&store);
         assert_eq!(
-            names,
-            ["alpha", "beta", "gamma", "delta", "epsilon", "zeta"]
+            items
+                .iter()
+                .map(|item| item.name.as_str())
+                .collect::<Vec<_>>(),
+            ["alpha", "beta"]
         );
-        assert_eq!(
-            items.iter().map(|item| item.shortcut).collect::<Vec<_>>(),
-            [Some(1), Some(2), Some(3), Some(4), Some(5), None],
-            "workspace shortcut numbers must follow stable opened_order"
-        );
+        assert!(items[0].active);
+        assert_eq!(items[0].shortcut, Some(1));
+        assert!(!items[1].active);
+        assert_eq!(items[1].runtime, "herdr");
+        assert_eq!(items[1].transport, "archmini");
+        assert_eq!(items[1].shortcut, Some(2));
     }
 
     #[test]
-    fn agents_merge_structured_runtime_and_generic_attention_state() {
-        let id = WorkspaceId::new("local", None, "muxterm", "herdr", "w2");
-        let mut runtime = MockRuntime::with_single_pane();
-        runtime.events_mut().push(StateChange::PaneAgentChanged {
-            pane: PaneId(1),
-            agent: Some(Box::new(agent(PaneAgentStatus::Working))),
-            initial: false,
-        });
-        let mut workspace = Workspace::new(id.clone(), "muxterm".into(), Box::new(runtime));
-        workspace.refresh();
-        let mut pool =
-            WorkspacePool::new(crate::core::workspace::pool::WorkspacePoolPolicy::new(8));
-        pool.insert_connected(workspace);
+    fn agent_rows_use_core_activity_identity_without_pane_title_guessing() {
+        let id = workspace_id("local", None, "muxterm", "herdr", "/work/muxterm");
+        let mut store = ViewStore::default();
+        add_workspace(&mut store, &id, "muxterm", true);
+        let snapshot = activity(&id, "working", false, Some("codex"), true, Some("Codex"));
 
-        let items = AgentSidebarItem::from_pool(
-            &pool,
-            &[attention(id.replica_id(), PaneStatus::Working, false)],
-        );
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].title, "Codex");
-        assert_eq!(
-            items[0].detail,
-            "muxterm@herdr@local · /work/muxterm · feature/sidebar"
-        );
-        assert_eq!(items[0].indicator, ActivityIndicator::Running);
-    }
-
-    #[test]
-    fn agents_include_grok_from_pane_title_when_runtime_has_no_agent_record() {
-        let id = WorkspaceId::new("local", None, "w2", "herdr", "w2");
-        let mut runtime = MockRuntime::with_single_pane();
-        runtime.panes_mut()[0].title = "grok".into();
-        let workspace = Workspace::new(id, "agents-ws".into(), Box::new(runtime));
-        let mut pool =
-            WorkspacePool::new(crate::core::workspace::pool::WorkspacePoolPolicy::new(8));
-        pool.insert_connected(workspace);
-        let items = AgentSidebarItem::from_pool(&pool, &[]);
-        assert_eq!(items.len(), 1, "pane title grok must appear under Agents");
-        assert_eq!(items[0].title, "grok");
-        assert!(
-            items[0].detail.contains("agents-ws"),
-            "agent row must show workspace identity: {}",
-            items[0].detail
-        );
-    }
-
-    #[test]
-    fn tmux_pi_attention_is_projected_into_agents() {
-        let workspace = workspace("agent-workspace");
-        let id = workspace.id().clone();
-        let mut pool =
-            WorkspacePool::new(crate::core::workspace::pool::WorkspacePoolPolicy::new(8));
-        pool.insert_connected(workspace);
-
-        let mut generic = attention(id.replica_id(), PaneStatus::Working, true);
-        generic.panes[0].process_name = Some("pi".into());
-        generic.panes[0].agent_name = Some("pi".into());
-        let items = AgentSidebarItem::from_pool(&pool, &[generic]);
-
+        let items = AgentSidebarItem::from_views(&store, &snapshot);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].workspace_id, id);
         assert_eq!(items[0].pane_id, 1);
-        assert_eq!(items[0].title, "pi");
+        assert_eq!(items[0].title, "Codex");
+        assert_eq!(items[0].detail, "muxterm@herdr@local · /work/muxterm");
         assert_eq!(items[0].indicator, ActivityIndicator::Running);
+
+        let no_activity = ClientActivitySnapshot::default();
+        assert!(AgentSidebarItem::from_views(&store, &no_activity).is_empty());
     }
 
     #[test]
-    fn commands_project_non_agent_lifecycle_and_return_to_shell_after_read() {
-        let workspace = workspace("command-workspace");
-        let id = workspace.id().clone();
-        let mut pool =
-            WorkspacePool::new(crate::core::workspace::pool::WorkspacePoolPolicy::new(8));
-        pool.insert_connected(workspace);
+    fn command_rows_follow_activity_lifecycle_and_ignore_agents() {
+        let id = workspace_id("local", None, "command-workspace", "tmux", "/work/command");
+        let mut store = ViewStore::default();
+        add_workspace(&mut store, &id, "command-workspace", true);
 
-        let shell_rows = CommandSidebarItem::from_pool(&pool, &[]);
-        assert!(
-            shell_rows.is_empty(),
-            "idle shells and terminal titles must not create command rows"
-        );
+        let idle = activity(&id, "idle", true, Some("zsh"), false, None);
+        assert!(CommandSidebarItem::from_views(&store, &idle).is_empty());
 
-        let mut running = attention(id.replica_id(), PaneStatus::Working, true);
-        running.panes[0].process_name = Some("cargo test".into());
-        running.panes[0].process_is_agent = false;
-        running.panes[0].agent_name = None;
-        let rows = CommandSidebarItem::from_pool(&pool, &[running.clone()]);
+        let running = activity(&id, "working", true, Some("cargo test"), false, None);
+        let rows = CommandSidebarItem::from_views(&store, &running);
+        assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].title, "cargo test");
-        assert_eq!(rows[0].detail, "command-workspace@tmux@local");
+        assert_eq!(
+            rows[0].detail,
+            "command-workspace@tmux@local · /work/command"
+        );
         assert_eq!(rows[0].indicator, ActivityIndicator::Running);
 
-        running.panes[0].status = PaneStatus::Done;
-        running.panes[0].acknowledged = false;
-        let rows = CommandSidebarItem::from_pool(&pool, &[running.clone()]);
-        assert_eq!(rows[0].title, "cargo test");
+        let mut done = running.clone();
+        done.workspaces[0].panes[0].status = "done".into();
+        done.workspaces[0].panes[0].acknowledged = false;
+        let rows = CommandSidebarItem::from_views(&store, &done);
         assert_eq!(rows[0].indicator, ActivityIndicator::Done);
 
-        running.panes[0].acknowledged = true;
-        let rows = CommandSidebarItem::from_pool(&pool, &[running]);
-        assert!(
-            rows.is_empty(),
-            "a read command that returned to an idle shell must disappear"
+        done.workspaces[0].panes[0].acknowledged = true;
+        assert!(CommandSidebarItem::from_views(&store, &done).is_empty());
+
+        let agent = activity(&id, "working", false, Some("codex"), true, Some("codex"));
+        assert!(CommandSidebarItem::from_views(&store, &agent).is_empty());
+        assert_eq!(
+            AgentSidebarItem::from_views(&store, &agent)[0].title,
+            "codex"
         );
     }
 
     #[test]
-    fn commands_classify_current_activity_separately_from_retained_agents() {
-        let workspace = workspace("agent-workspace");
-        let id = workspace.id().clone();
-        let mut pool =
-            WorkspacePool::new(crate::core::workspace::pool::WorkspacePoolPolicy::new(8));
-        pool.insert_connected(workspace);
-        let mut agent_attention = attention(id.replica_id(), PaneStatus::Idle, true);
-        agent_attention.panes[0].shell_name = None;
-
-        assert!(CommandSidebarItem::from_pool(&pool, &[agent_attention.clone()]).is_empty());
-
-        agent_attention.panes[0].status = PaneStatus::Working;
-        agent_attention.panes[0].process_name = Some("cargo".into());
-        agent_attention.panes[0].process_is_agent = false;
-        let commands = CommandSidebarItem::from_pool(&pool, &[agent_attention]);
-        assert_eq!(commands.len(), 1);
-        assert_eq!(commands[0].title, "cargo");
-        assert_eq!(commands[0].indicator, ActivityIndicator::Running);
-    }
-
-    #[test]
-    fn commands_prefer_command_over_remote_pane_title_and_show_project_transport() {
-        let id = WorkspaceId::new("ssh", Some("ryzen"), "default", "tmux", "/home/wlz/Devexx");
-        let mut runtime = MockRuntime::with_single_pane();
-        runtime.panes_mut()[0].title = "(ryzen) ~/Devexx · zsh".into();
-        let workspace = Workspace::new(id.clone(), "Devexx".into(), Box::new(runtime));
-        let mut pool =
-            WorkspacePool::new(crate::core::workspace::pool::WorkspacePoolPolicy::new(8));
-        pool.insert_connected(workspace);
-
-        let mut running = attention(id.replica_id(), PaneStatus::Working, true);
-        running.panes[0].process_name = Some("cargo test --workspace".into());
-        running.panes[0].process_is_agent = false;
-        running.panes[0].agent_name = None;
-
-        let commands = CommandSidebarItem::from_pool(&pool, &[running]);
-        assert_eq!(commands.len(), 1);
-        assert_eq!(commands[0].title, "cargo test --workspace");
-        assert_eq!(commands[0].detail, "Devexx@tmux@ryzen");
-        assert_ne!(commands[0].title, "(ryzen) ~/Devexx · zsh");
-    }
-
-    #[test]
-    fn blocked_and_done_agents_turn_clear_after_acknowledgement() {
-        let unread = attention("muxterm@local".into(), PaneStatus::Done, false);
-        let seen = attention("muxterm@local".into(), PaneStatus::Done, true);
-        assert_eq!(
-            structured_indicator(PaneAgentStatus::Done, Some(&unread.panes[0])),
-            ActivityIndicator::Done
+    fn command_rows_prefer_process_name_and_show_ssh_identity() {
+        let id = workspace_id("ssh", Some("ryzen"), "default", "tmux", "/home/wlz/Devexx");
+        let mut store = ViewStore::default();
+        add_workspace(&mut store, &id, "Devexx", true);
+        let snapshot = activity(
+            &id,
+            "working",
+            true,
+            Some("cargo test --workspace"),
+            false,
+            None,
         );
-        assert_eq!(
-            structured_indicator(PaneAgentStatus::Done, Some(&seen.panes[0])),
-            ActivityIndicator::None
-        );
-        assert_eq!(
-            structured_indicator(PaneAgentStatus::Blocked, None),
-            ActivityIndicator::Done
-        );
+
+        let rows = CommandSidebarItem::from_views(&store, &snapshot);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].title, "cargo test --workspace");
+        assert_eq!(rows[0].detail, "Devexx@tmux@ryzen · /home/wlz/Devexx");
     }
 }
