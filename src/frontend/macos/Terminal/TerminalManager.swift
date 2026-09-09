@@ -378,7 +378,7 @@ final class TerminalManager: TerminalInputHandler {
     /// 获取或创建指定 pane 的终端视图。
     ///
     /// 新建 Surface 保持空白，等 Runtime 的 `PaneSnapshot` / `PaneOutput`。
-    /// 禁止从 Index（`paneSurfaceSeedANSI` / `visible_ansi`）dump。
+    /// 禁止从 Index 的 ANSI dump 播种。
     func view(for paneId: UInt32) -> MuxTerminalView {
         if let existing = views[paneId] {
             return existing

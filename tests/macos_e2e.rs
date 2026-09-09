@@ -15,9 +15,8 @@ use muxterm::test_support::core::protocol::ffi::api::{
     muxterm_attention_on_became_visible, muxterm_attention_snapshot,
     muxterm_attention_take_notifications, muxterm_connect, muxterm_execute, muxterm_free,
     muxterm_get_layout, muxterm_get_pane_output, muxterm_new, muxterm_pane_command_marks_json,
-    muxterm_pane_history_max_offset, muxterm_pane_last_n_lines, muxterm_pane_scroll_ansi,
-    muxterm_pane_viewport, muxterm_poll_events, muxterm_resize_client, muxterm_search_all,
-    muxterm_set_pane_viewport,
+    muxterm_pane_history_max_offset, muxterm_pane_last_n_lines, muxterm_pane_viewport,
+    muxterm_poll_events, muxterm_resize_client, muxterm_search_all, muxterm_set_pane_viewport,
 };
 use muxterm::test_support::core::protocol::ffi::types::{
     CLayoutNode, CStateChange, CTask, BACKEND_STATUS_DISCONNECTED, BACKEND_STATUS_EXITED,
@@ -538,17 +537,6 @@ fn macos_ffi_attach_history_and_jump_latest() {
         max > 0
     });
     assert!(history_ready, "离屏 30 行必须能滚, max={max}");
-    let mut ansi = vec![0u8; 256 * 1024];
-    let n =
-        unsafe { muxterm_pane_scroll_ansi(h, 0, max as u32, 24, ansi.as_mut_ptr(), ansi.len()) };
-    assert!(n > 0, "滚到顶必须有历史 ANSI");
-    let top = String::from_utf8_lossy(&ansi[..n as usize]);
-    assert!(
-        top.contains(&offscreen),
-        "scroll_ansi(max) 必须含离屏 token {offscreen}。got={}",
-        top.chars().take(200).collect::<String>()
-    );
-
     // 滚到顶（offset 大值）→ viewport > 0；回底 → 0。
     assert_eq!(unsafe { muxterm_set_pane_viewport(h, 0, 1000) }, 0);
     assert!(

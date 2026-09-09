@@ -899,42 +899,6 @@ final class CoreBridge {
         return muxterm_attention_mute(handle, paneId, seconds)
     }
 
-    /// 读取某 pane 的滚动窗口 ANSI 字节（历史查看用）。
-    func paneScrollANSI(paneId: UInt32, offset: UInt32, rows: UInt32) -> Data {
-        guard let handle else { return Data() }
-        var buf = [UInt8](repeating: 0, count: 256 * 1024)
-        let n = buf.withUnsafeMutableBytes { raw in
-            muxterm_pane_scroll_ansi(
-                handle,
-                paneId,
-                offset,
-                rows,
-                raw.bindMemory(to: UInt8.self).baseAddress,
-                raw.count
-            )
-        }
-        guard n > 0 else { return Data() }
-        return Data(buf.prefix(Int(n)))
-    }
-
-    /// 新建 Surface 使用的一次性 ANSI seed；只在新建 SwiftTerm 时灌入，不能作为 live replay。
-    func paneSurfaceSeedANSI(paneId: UInt32) -> Data {
-        guard let handle else { return Data() }
-        let required = muxterm_pane_surface_seed_ansi(handle, paneId, nil, 0)
-        guard required > 0 else { return Data() }
-        var buf = [UInt8](repeating: 0, count: Int(required))
-        let copied = buf.withUnsafeMutableBytes { raw in
-            muxterm_pane_surface_seed_ansi(
-                handle,
-                paneId,
-                raw.bindMemory(to: UInt8.self).baseAddress,
-                raw.count
-            )
-        }
-        guard copied >= required else { return Data() }
-        return Data(buf)
-    }
-
     /// 读取某 pane 的 viewport 滚动偏移（0 = 底部/最新）。
     func paneViewport(paneId: UInt32) -> Int32 {
         guard let handle else { return -1 }

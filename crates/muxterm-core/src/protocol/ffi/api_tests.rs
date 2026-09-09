@@ -667,18 +667,6 @@ fn ffi_workspace_task_targets_background_workspace_without_activation() {
             0
         );
 
-        let mut history = [0u8; 64];
-        assert!(
-            muxterm_workspace_pane_scroll_ansi(
-                h,
-                first_id_text.as_ptr(),
-                pane_id,
-                0,
-                10,
-                history.as_mut_ptr(),
-                history.len()
-            ) >= 0
-        );
         assert_eq!(
             muxterm_workspace_pane_viewport(h, first_id_text.as_ptr(), pane_id),
             0
