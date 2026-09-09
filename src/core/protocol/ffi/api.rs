@@ -27,14 +27,15 @@ use crate::core::workspace::workspace::Workspace;
 
 use super::callbacks::FfiCallbacks;
 pub use super::functions::attention::{
-    muxterm_attention_acknowledge, muxterm_attention_mute, muxterm_attention_on_became_visible,
-    muxterm_attention_set_process_name, muxterm_attention_snapshot,
-    muxterm_attention_take_notifications, muxterm_workspace_attention_acknowledge,
-    muxterm_workspace_attention_mute, muxterm_workspace_attention_on_became_visible,
-    muxterm_workspace_attention_set_process_name,
+    muxterm_attention_acknowledge, muxterm_attention_configure_json, muxterm_attention_mute,
+    muxterm_attention_on_became_visible, muxterm_attention_set_process_name,
+    muxterm_attention_snapshot, muxterm_attention_take_notifications,
+    muxterm_workspace_attention_acknowledge, muxterm_workspace_attention_mute,
+    muxterm_workspace_attention_on_became_visible, muxterm_workspace_attention_set_process_name,
 };
 pub use super::functions::catalog::{
     muxterm_candidates_json, muxterm_open_json, muxterm_workspace_open_target_json,
+    muxterm_workspace_worktree_create_json,
 };
 pub use super::functions::config::{
     muxterm_config_begin_json, muxterm_config_cancel_json, muxterm_config_commit_json,
@@ -50,6 +51,7 @@ pub use super::functions::handle::{
 pub use super::functions::runtime::{
     muxterm_connect, muxterm_detach, muxterm_runtime_list_json, muxterm_shutdown,
     muxterm_status_subscription_active, muxterm_traffic_down, muxterm_traffic_up,
+    muxterm_workspace_herdr_probe_json,
 };
 pub use super::functions::search::muxterm_search_all;
 pub use super::functions::snapshot::{
@@ -61,7 +63,7 @@ pub use super::functions::snapshot::{
     muxterm_workspace_pane_latest_line_seq, muxterm_workspace_pane_scroll_ansi,
     muxterm_workspace_pane_surface_seed_ansi, muxterm_workspace_pane_viewport,
     muxterm_workspace_pane_viewport_for_seq, muxterm_workspace_pane_visible_ansi,
-    muxterm_workspace_set_pane_viewport,
+    muxterm_workspace_set_pane_viewport, muxterm_workspace_take_pane_reply,
 };
 pub use super::functions::support::MuxtermHandle;
 pub(crate) use super::functions::support::{

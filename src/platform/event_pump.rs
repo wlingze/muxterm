@@ -134,6 +134,7 @@ impl EventPump {
             name: workspace.name().to_string(),
             runtime: state.workspace_runtime().to_string(),
             active: pool.active_id() == Some(workspace_id),
+            resolved_target: None,
         };
         let view_tabs: Vec<ClientTab> = tabs
             .iter()

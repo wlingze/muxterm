@@ -12,8 +12,9 @@ use gtk4::gdk::Key;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{
-    Align, Box as GtkBox, Entry, EventControllerKey, GestureClick, Label, ListBox, ListBoxRow,
-    Orientation, Overlay, Popover, PositionType, ScrolledWindow, SelectionMode, Window,
+    Align, Box as GtkBox, Button, Entry, EventControllerKey, GestureClick, Label, ListBox,
+    ListBoxRow, MenuButton, Orientation, Overlay, Popover, PositionType, ScrolledWindow,
+    SelectionMode, Window,
 };
 
 use crate::core::attention::engine::PaneAttention;
@@ -67,6 +68,7 @@ enum VisibleAction {
 }
 
 type SearchCb = Box<dyn Fn(&str, SearchScope) -> Vec<SearchRow>>;
+type MuteCb = Box<dyn Fn(String, u32, Duration)>;
 
 thread_local! {
     static PANEL_DISMISS: RefCell<Option<Box<dyn Fn()>>> = const { RefCell::new(None) };
@@ -441,6 +443,8 @@ pub struct PanelShowArgs {
     /// 跳转回调：`(ws, pane, seq)`。seq 是搜索命中的 PaneBuf 行号（W17c），
     /// Attention 跳转没有搜索语义传 0。
     pub on_jump_pane: Box<dyn Fn(String, u32, u64)>,
+    /// 禁止提醒：`(ws, pane, duration)`，由 window 侧转发到 Core。
+    pub on_mute: MuteCb,
     /// Search tab：query → replica 命中行。
     pub search: SearchCb,
     /// 面板关闭回调（window 侧清 panel_open 状态）。
@@ -476,6 +480,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         on_edit,
         on_new_project,
         on_jump_pane,
+        on_mute,
         search,
         on_close,
         ssh_reach,
@@ -581,6 +586,41 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
     scope_bar.set_visible(false);
     panel.append(&scope_bar);
 
+    // Attention 操作：静音由 Core 保存，面板只负责选择 pane 与触发回调。
+    let attention_actions = GtkBox::builder()
+        .orientation(Orientation::Horizontal)
+        .spacing(8)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(8)
+        .margin_bottom(12)
+        .build();
+    let mute_button = MenuButton::new();
+    mute_button.set_widget_name("muxterm-attention-mute");
+    mute_button.set_label(&i18n::tr(TextKey::Mute1h));
+    mute_button.set_sensitive(false);
+    let mute_popover = Popover::new();
+    let mute_box = GtkBox::new(Orientation::Vertical, 0);
+    let mut mute_items = Vec::new();
+    for (id, label) in [
+        ("5m", "5m"),
+        ("10m", "10m"),
+        ("30m", "30m"),
+        ("1h", "1h"),
+        ("4h", "4h"),
+        ("24h", "24h"),
+    ] {
+        let item = Button::with_label(label);
+        item.set_widget_name(&format!("muxterm-attention-mute-{id}"));
+        mute_box.append(&item);
+        mute_items.push(item);
+    }
+    mute_popover.set_child(Some(&mute_box));
+    mute_button.set_popover(Some(&mute_popover));
+    attention_actions.append(&mute_button);
+    attention_actions.set_visible(false);
+    panel.append(&attention_actions);
+
     overlay.add_overlay(&backdrop);
     overlay.add_overlay(&panel);
 
@@ -613,6 +653,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         on_edit,
         on_new_project,
         on_jump_pane,
+        on_mute,
         search,
         on_close: std::boxed::Box::new(|| {}),
         ssh_reach: HashMap::new(),
@@ -731,6 +772,7 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         map
     };
 
+    let selected_attention = Rc::new(RefCell::new(None::<(String, u32)>));
     let visible_actions = Rc::new(RefCell::new(Vec::<VisibleAction>::new()));
     let rebuild = {
         let list = list.clone();
@@ -751,6 +793,9 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         let scope_workspace = scope_workspace.clone();
         let scope_all = scope_all.clone();
         let scope_bar = scope_bar.clone();
+        let attention_actions = attention_actions.clone();
+        let mute_button = mute_button.clone();
+        let selected_attention = selected_attention.clone();
         let existing = existing.clone();
         let visible_actions = visible_actions.clone();
         let update_completion = update_completion.clone();
@@ -785,6 +830,9 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
             tab_search.set_active(tab == PanelTab::Search);
             search_status.set_visible(tab == PanelTab::Search);
             scope_bar.set_visible(tab == PanelTab::Search);
+            attention_actions.set_visible(tab == PanelTab::Attention);
+            selected_attention.borrow_mut().take();
+            mute_button.set_sensitive(false);
             let scope = model.borrow().scope;
             scope_pane.set_active(scope == SearchScope::Pane);
             scope_workspace.set_active(scope == SearchScope::Workspace);
@@ -989,6 +1037,9 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                             seq: 0,
                         });
                         if i == 0 {
+                            *selected_attention.borrow_mut() =
+                                Some((row.workspace_id.clone(), row.pane_id));
+                            mute_button.set_sensitive(true);
                             list.select_row(Some(&row_widget));
                         }
                     }
@@ -1095,10 +1146,37 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
     // 所有键盘/程序化选中统一从这里保证可见。
     {
         let sw = sw.clone();
+        let selected_attention = selected_attention.clone();
+        let mute_button = mute_button.clone();
         list.connect_row_selected(move |list, row| {
             if let Some(row) = row {
                 reveal_selected_row(&sw, list, row);
             }
+            if let Some((workspace_id, pane_id)) = row.and_then(|row| {
+                let name = row.widget_name();
+                let rest = name.strip_prefix("muxterm-attention-")?;
+                let (workspace_id, pane_id) = rest.rsplit_once('-')?;
+                Some((workspace_id.to_string(), pane_id.parse::<u32>().ok()?))
+            }) {
+                *selected_attention.borrow_mut() = Some((workspace_id, pane_id));
+                mute_button.set_sensitive(true);
+            }
+        });
+    }
+
+    // 静音菜单项：选中的 pane 由 row-selected 维护，真正的状态写入由 window/Core 完成。
+    for (item, seconds) in mute_items
+        .into_iter()
+        .zip([300u64, 600, 1800, 3600, 14400, 86400])
+    {
+        let callbacks = callbacks.clone();
+        let selected_attention = selected_attention.clone();
+        let mute_popover = mute_popover.clone();
+        item.connect_clicked(move |_| {
+            if let Some((workspace_id, pane_id)) = selected_attention.borrow().clone() {
+                (callbacks.on_mute)(workspace_id, pane_id, Duration::from_secs(seconds));
+            }
+            mute_popover.popdown();
         });
     }
 

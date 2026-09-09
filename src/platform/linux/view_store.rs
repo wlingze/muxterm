@@ -30,15 +30,23 @@ pub struct WorkspaceView {
 #[derive(Debug, Default)]
 pub struct ViewStore {
     workspaces: HashMap<String, WorkspaceView>,
+    order: Vec<String>,
 }
 
 impl ViewStore {
     pub fn ensure_workspace(&mut self, workspace_id: &str) -> &mut WorkspaceView {
+        if !self.workspaces.contains_key(workspace_id) {
+            self.order.push(workspace_id.to_string());
+        }
         self.workspaces.entry(workspace_id.to_string()).or_default()
     }
 
     pub fn remove_workspace(&mut self, workspace_id: &str) -> Option<WorkspaceView> {
-        self.workspaces.remove(workspace_id)
+        let removed = self.workspaces.remove(workspace_id);
+        if removed.is_some() {
+            self.order.retain(|id| id != workspace_id);
+        }
+        removed
     }
 
     pub fn workspace(&self, workspace_id: &str) -> Option<&WorkspaceView> {
@@ -46,14 +54,16 @@ impl ViewStore {
     }
 
     pub fn workspace_ids(&self) -> impl Iterator<Item = &str> {
-        self.workspaces.keys().map(String::as_str)
+        self.order.iter().map(String::as_str)
     }
 
     /// Return all owned workspace views in their stable store order.
     pub fn workspaces(&self) -> impl Iterator<Item = (&str, &WorkspaceView)> {
-        self.workspaces
-            .iter()
-            .map(|(workspace_id, view)| (workspace_id.as_str(), view))
+        self.order.iter().filter_map(|workspace_id| {
+            self.workspaces
+                .get(workspace_id)
+                .map(|view| (workspace_id.as_str(), view))
+        })
     }
 
     /// Return the workspace marked active by the latest Core topology snapshot.
@@ -185,6 +195,7 @@ mod tests {
                 name: "one".into(),
                 runtime: "shell".into(),
                 active: true,
+                resolved_target: None,
             },
             vec![ClientTab {
                 id: 1,

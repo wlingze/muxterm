@@ -44,6 +44,8 @@ pub struct ClientWorkspace {
     pub runtime: String,
     #[serde(default)]
     pub active: bool,
+    #[serde(default)]
+    pub resolved_target: Option<serde_json::Value>,
 }
 
 /// An owned workspace event.  The workspace identity is copied before the C
@@ -257,6 +259,7 @@ pub struct ClientSearchHit {
 /// Owned attention/activity state for one pane.
 #[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
 pub struct ClientAttentionPane {
+    #[serde(default)]
     pub workspace_id: String,
     pub pane_id: u32,
     pub status: String,
@@ -294,12 +297,21 @@ pub struct ClientWorkspaceAttention {
 
 /// Owned activity snapshot.  The current Core implementation projects the
 /// attention aggregate; the frontend does not need to know that detail.
-#[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, serde::Deserialize, PartialEq, Eq)]
 pub struct ClientActivitySnapshot {
     #[serde(default)]
     pub blocked_count: usize,
     #[serde(default)]
     pub workspaces: Vec<ClientWorkspaceAttention>,
+}
+
+/// Owned Herdr stream diagnostics used by the Linux E2E watchdog.
+#[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
+pub struct ClientHerdrProbe {
+    pub stream_starts: u64,
+    pub control_takeover_starts: u64,
+    pub takeover_suppressed: bool,
+    pub actual_mode: String,
 }
 
 /// One owned activity notification.
@@ -317,7 +329,7 @@ pub struct ClientActivityNotification {
 }
 
 /// Owned activity notifications drained from Core.
-#[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, serde::Deserialize, PartialEq, Eq)]
 pub struct ClientActivityNotifications {
     #[serde(default)]
     pub notifications: Vec<ClientActivityNotification>,
@@ -492,6 +504,41 @@ impl FfiClient {
         } else {
             Err(anyhow::anyhow!("Core FFI connect failed with code {rc}"))
         }
+    }
+
+    /// Reconnect all Core-owned workspace runtimes through the single handle.
+    pub fn reconnect(&self) -> anyhow::Result<()> {
+        self.connect()
+    }
+
+    /// Configure the Core-owned attention engine before frontend polling starts.
+    pub fn configure_attention(
+        &self,
+        config: &crate::core::config::AttentionConfig,
+    ) -> anyhow::Result<()> {
+        let config = serde_json::to_string(config)?;
+        let config = cstring(&config);
+        let rc =
+            unsafe { ffi::muxterm_attention_configure_json(self.handle.as_ptr(), config.as_ptr()) };
+        if rc == 0 {
+            Ok(())
+        } else {
+            anyhow::bail!("Core attention configuration failed with code {rc}")
+        }
+    }
+
+    /// Read Core-owned Herdr stream diagnostics for one workspace pane.
+    pub fn herdr_probe(&self, workspace_id: &str, pane_id: u32) -> Option<ClientHerdrProbe> {
+        let workspace_id = cstring(workspace_id);
+        let value = Self::discovery_json(|| unsafe {
+            ffi::muxterm_workspace_herdr_probe_json(
+                self.handle.as_ptr(),
+                workspace_id.as_ptr(),
+                pane_id,
+            )
+        })
+        .ok()?;
+        serde_json::from_value(value.get("probe")?.clone()).ok()
     }
 
     /// Execute a C ABI task.  The task is borrowed only for the duration of
@@ -678,6 +725,33 @@ impl FfiClient {
                 self.handle.as_ptr(),
                 target.as_ptr(),
                 intent.as_ptr(),
+            )
+        })?;
+        Ok(serde_json::from_value(value)?)
+    }
+
+    /// Create and open a Runtime-native worktree through Core.
+    pub fn create_native_worktree(
+        &self,
+        source_workspace_id: &str,
+        branch: &str,
+        path: &str,
+        base: Option<&str>,
+        label: Option<&str>,
+    ) -> anyhow::Result<ClientOpenedWorkspace> {
+        let source_workspace_id = cstring(source_workspace_id);
+        let branch = cstring(branch);
+        let path = cstring(path);
+        let base = cstring_opt(base);
+        let label = cstring_opt(label);
+        let value = Self::discovery_json(|| unsafe {
+            ffi::muxterm_workspace_worktree_create_json(
+                self.handle.as_ptr(),
+                source_workspace_id.as_ptr(),
+                branch.as_ptr(),
+                path.as_ptr(),
+                base.as_ref().map_or(ptr::null(), |value| value.as_ptr()),
+                label.as_ref().map_or(ptr::null(), |value| value.as_ptr()),
             )
         })?;
         Ok(serde_json::from_value(value)?)
@@ -956,6 +1030,21 @@ impl FfiClient {
         buffer
     }
 
+    /// Take and immediately copy parser-generated replies for one pane.
+    pub fn take_workspace_pane_reply(&self, workspace_id: &str, pane_id: u32) -> Vec<u8> {
+        let workspace_id = cstring(workspace_id);
+        let mut len = 0usize;
+        let data = unsafe {
+            ffi::muxterm_workspace_take_pane_reply(
+                self.handle.as_ptr(),
+                workspace_id.as_ptr(),
+                pane_id,
+                &mut len,
+            )
+        };
+        copy_bytes(data, len)
+    }
+
     /// Read scrollback bytes from a specific workspace without activation.
     pub fn get_workspace_pane_scroll_ansi(
         &self,
@@ -1223,7 +1312,15 @@ impl FfiClient {
         let value = Self::discovery_json(|| unsafe {
             ffi::muxterm_attention_snapshot(self.handle.as_ptr())
         })?;
-        Ok(serde_json::from_value(value)?)
+        let mut snapshot: ClientActivitySnapshot = serde_json::from_value(value)?;
+        for workspace in &mut snapshot.workspaces {
+            for pane in &mut workspace.panes {
+                if pane.workspace_id.is_empty() {
+                    pane.workspace_id.clone_from(&workspace.workspace_id);
+                }
+            }
+        }
+        Ok(snapshot)
     }
 
     /// Drain owned activity notifications without exposing Core references.

@@ -8,6 +8,35 @@ use crate::core::attention::engine::AttentionNotificationKind;
 use super::super::api::{cstr_opt, json_error, json_string, MuxtermHandle};
 use super::support::parse_workspace_id;
 
+/// Configure the Core-owned attention engine for a live handle.
+///
+/// The frontend passes the already-resolved attention section it is using for
+/// this window.  This is intentionally a Core operation so runtime output is
+/// evaluated by the same engine that owns the workspace pool.
+///
+/// # Safety
+/// `h` is valid and `config_json` is a NUL-terminated UTF-8 JSON object.
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_attention_configure_json(
+    h: *mut MuxtermHandle,
+    config_json: *const c_char,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() {
+            return -1;
+        }
+        let Some(config_json) = cstr_opt(config_json) else {
+            return -1;
+        };
+        let Ok(config) = serde_json::from_str(&config_json) else {
+            return -1;
+        };
+        (&mut *h).attention.set_config(config);
+        0
+    }))
+    .unwrap_or(-1)
+}
+
 fn workspace_replica_id(handle: &MuxtermHandle, workspace_id: *const c_char) -> Option<String> {
     let workspace_id = cstr_opt(workspace_id)?;
     let workspace_id = parse_workspace_id(&workspace_id);
@@ -49,6 +78,7 @@ pub unsafe extern "C" fn muxterm_attention_snapshot(h: *mut MuxtermHandle) -> *m
                     "working": ws.working,
                     "panes": ws.panes.iter().map(|p| {
                         serde_json::json!({
+                            "workspace_id": p.workspace_id,
                             "pane_id": p.pane_id,
                             "status": format!("{:?}", p.status).to_lowercase(),
                             "acknowledged": p.acknowledged,

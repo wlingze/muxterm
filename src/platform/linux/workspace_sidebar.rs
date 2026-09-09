@@ -14,12 +14,20 @@ use gtk4::{
     RevealerTransitionType, ScrolledWindow, SelectionMode, ToggleButton, Widget,
 };
 
-use crate::core::attention::engine::{known_agent_process_name, PaneAttention, WorkspaceAttention};
+use crate::core::attention::engine::known_agent_process_name;
+#[cfg(test)]
+use crate::core::attention::engine::{PaneAttention, WorkspaceAttention};
+#[cfg(test)]
 use crate::core::attention::state::PaneStatus;
+#[cfg(test)]
 use crate::core::protocol::state::{PaneAgentInfo, PaneAgentStatus};
 use crate::core::workspace::id::WorkspaceId;
+#[cfg(test)]
 use crate::core::workspace::pool::WorkspacePool;
+#[cfg(test)]
 use crate::core::workspace::workspace::Workspace;
+use crate::platform::ffi_client::{ClientActivitySnapshot, ClientAttentionPane, ClientWorkspace};
+use crate::platform::linux::view_store::ViewStore;
 
 /// A workspace row in the sidebar.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,6 +43,7 @@ pub struct WorkspaceSidebarItem {
 
 impl WorkspaceSidebarItem {
     /// Build the row model from a Core workspace.
+    #[cfg(test)]
     pub fn from_workspace(workspace: &Workspace, active_id: Option<&WorkspaceId>) -> Self {
         let (runtime, transport) = workspace
             .resolved_target()
@@ -64,6 +73,7 @@ impl WorkspaceSidebarItem {
     }
 
     /// Build every row currently owned by the pool.
+    #[cfg(test)]
     pub fn from_pool(pool: &WorkspacePool) -> Vec<Self> {
         let active_id = pool.active_id();
         pool.list()
@@ -73,6 +83,31 @@ impl WorkspaceSidebarItem {
                 let mut item = Self::from_workspace(workspace, active_id);
                 item.shortcut = (index < 5).then_some((index + 1) as u8);
                 item
+            })
+            .collect()
+    }
+
+    /// Build sidebar rows from the frontend-owned workspace snapshot.
+    pub fn from_views(store: &ViewStore) -> Vec<Self> {
+        let mut workspaces: Vec<&ClientWorkspace> = store
+            .workspaces()
+            .filter_map(|(_, view)| view.workspace.as_ref())
+            .collect();
+        workspaces.sort_by(|left, right| left.id.cmp(&right.id));
+        let active_id = store.active_workspace_id();
+        workspaces
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, workspace)| {
+                let id = parse_workspace_id(&workspace.id)?;
+                Some(Self {
+                    id,
+                    name: workspace.name.clone(),
+                    runtime: workspace.runtime.clone(),
+                    transport: transport_label(&workspace.id),
+                    active: active_id == Some(workspace.id.as_str()),
+                    shortcut: (index < 5).then_some((index + 1) as u8),
+                })
             })
             .collect()
     }
@@ -97,6 +132,7 @@ pub struct AgentSidebarItem {
 }
 
 impl AgentSidebarItem {
+    #[cfg(test)]
     pub fn from_pool(
         pool: &WorkspacePool,
         attention: &[WorkspaceAttention],
@@ -159,8 +195,52 @@ impl AgentSidebarItem {
         }
         items
     }
+
+    /// Build agent rows from owned topology and Core's owned activity DTO.
+    pub fn from_views(store: &ViewStore, activity: &ClientActivitySnapshot) -> Vec<Self> {
+        let by_pane = activity_by_pane(activity);
+        let mut items = Vec::new();
+        for (workspace_key, view) in store.workspaces() {
+            let Some(workspace) = view.workspace.as_ref() else {
+                continue;
+            };
+            let Some(workspace_id) = parse_workspace_id(workspace_key) else {
+                continue;
+            };
+            let activity_key = workspace_id.replica_id();
+            for panes in view.panes.values() {
+                for pane in panes {
+                    let Some(attention) = by_pane.get(&(activity_key.as_str(), pane.id)) else {
+                        continue;
+                    };
+                    let agent_name = attention
+                        .agent_name
+                        .as_deref()
+                        .or_else(|| {
+                            attention
+                                .process_is_agent
+                                .then_some(attention.process_name.as_deref())
+                                .flatten()
+                        })
+                        .or_else(|| known_agent_process_name(&pane.title));
+                    let Some(agent_name) = agent_name else {
+                        continue;
+                    };
+                    items.push(Self {
+                        workspace_id: workspace_id.clone(),
+                        pane_id: pane.id,
+                        title: agent_name.to_string(),
+                        detail: client_activity_detail(workspace, attention),
+                        indicator: client_attention_indicator(attention),
+                    });
+                }
+            }
+        }
+        items
+    }
 }
 
+#[cfg(test)]
 fn agent_title(agent: &PaneAgentInfo, pane_title: &str) -> String {
     [
         agent.display_name.as_deref(),
@@ -178,6 +258,7 @@ fn agent_title(agent: &PaneAgentInfo, pane_title: &str) -> String {
     .to_string()
 }
 
+#[cfg(test)]
 fn activity_detail(workspace: &Workspace, agent: Option<&PaneAgentInfo>) -> String {
     let identity = command_detail(workspace);
     let path = agent
@@ -207,6 +288,7 @@ fn activity_detail(workspace: &Workspace, agent: Option<&PaneAgentInfo>) -> Stri
     }
 }
 
+#[cfg(test)]
 fn command_detail(workspace: &Workspace) -> String {
     let metadata = WorkspaceSidebarItem::from_workspace(workspace, None);
     format!(
@@ -217,6 +299,7 @@ fn command_detail(workspace: &Workspace) -> String {
     )
 }
 
+#[cfg(test)]
 fn structured_indicator(
     status: PaneAgentStatus,
     attention: Option<&PaneAttention>,
@@ -232,6 +315,7 @@ fn structured_indicator(
     }
 }
 
+#[cfg(test)]
 fn attention_indicator(attention: &PaneAttention) -> ActivityIndicator {
     match attention.status {
         PaneStatus::Working => ActivityIndicator::Running,
@@ -253,6 +337,7 @@ pub struct CommandSidebarItem {
 }
 
 impl CommandSidebarItem {
+    #[cfg(test)]
     pub fn from_pool(
         pool: &WorkspacePool,
         attention: &[WorkspaceAttention],
@@ -303,6 +388,128 @@ impl CommandSidebarItem {
         }
         items
     }
+
+    /// Build command rows from the owned activity projection.  A command row
+    /// must have Core's process name; pane titles are never used as a command
+    /// fallback because they are presentation text, not activity identity.
+    pub fn from_views(store: &ViewStore, activity: &ClientActivitySnapshot) -> Vec<Self> {
+        let by_pane = activity_by_pane(activity);
+        let mut items = Vec::new();
+        for (workspace_key, view) in store.workspaces() {
+            let Some(workspace) = view.workspace.as_ref() else {
+                continue;
+            };
+            let Some(workspace_id) = parse_workspace_id(workspace_key) else {
+                continue;
+            };
+            let activity_key = workspace_id.replica_id();
+            for panes in view.panes.values() {
+                for pane in panes {
+                    let Some(attention) = by_pane.get(&(activity_key.as_str(), pane.id)) else {
+                        continue;
+                    };
+                    let active = matches!(attention.status.as_str(), "working")
+                        || (matches!(attention.status.as_str(), "blocked" | "done")
+                            && !attention.acknowledged);
+                    if !active || attention.process_is_agent {
+                        continue;
+                    }
+                    let Some(title) = attention
+                        .process_name
+                        .as_deref()
+                        .filter(|value| !value.trim().is_empty())
+                    else {
+                        continue;
+                    };
+                    items.push(Self {
+                        workspace_id: workspace_id.clone(),
+                        pane_id: pane.id,
+                        title: title.to_string(),
+                        detail: client_activity_detail(workspace, attention),
+                        indicator: client_attention_indicator(attention),
+                    });
+                }
+            }
+        }
+        items
+    }
+}
+
+fn parse_workspace_id(value: &str) -> Option<WorkspaceId> {
+    let mut parts = value.splitn(5, '/');
+    let transport = parts.next()?;
+    let alias = parts.next()?;
+    let session = parts.next()?;
+    let runtime = parts.next()?;
+    let path = parts.next().unwrap_or_default();
+    if transport.is_empty() || runtime.is_empty() {
+        return None;
+    }
+    Some(WorkspaceId::new(
+        transport,
+        (!alias.is_empty()).then_some(alias),
+        session,
+        runtime,
+        path,
+    ))
+}
+
+fn transport_label(value: &str) -> String {
+    parse_workspace_id(value)
+        .map(|id| {
+            if id.transport == "ssh" {
+                id.alias.unwrap_or_else(|| "ssh".into())
+            } else {
+                "local".into()
+            }
+        })
+        .unwrap_or_else(|| "local".into())
+}
+
+fn activity_by_pane(
+    activity: &ClientActivitySnapshot,
+) -> HashMap<(&str, u32), &ClientAttentionPane> {
+    activity
+        .workspaces
+        .iter()
+        .flat_map(|workspace| {
+            workspace
+                .panes
+                .iter()
+                .map(move |pane| (workspace.workspace_id.as_str(), pane.pane_id, pane))
+        })
+        .map(|(workspace, pane, attention)| ((workspace, pane), attention))
+        .collect()
+}
+
+fn client_attention_indicator(attention: &ClientAttentionPane) -> ActivityIndicator {
+    match attention.status.as_str() {
+        "working" => ActivityIndicator::Running,
+        "blocked" | "done" if !attention.acknowledged => ActivityIndicator::Done,
+        _ => ActivityIndicator::None,
+    }
+}
+
+fn client_activity_detail(workspace: &ClientWorkspace, attention: &ClientAttentionPane) -> String {
+    let identity = parse_workspace_id(&workspace.id)
+        .map(|id| {
+            let transport = if id.transport == "ssh" {
+                id.alias.unwrap_or_else(|| "ssh".into())
+            } else {
+                "local".into()
+            };
+            format!("{}@{}@{}", workspace.name, workspace.runtime, transport)
+        })
+        .unwrap_or_else(|| workspace.name.clone());
+    let path = attention
+        .last_line
+        .trim()
+        .is_empty()
+        .then(|| parse_workspace_id(&workspace.id).map(|id| id.path))
+        .flatten()
+        .filter(|path| !path.trim().is_empty());
+    path.map(|path| format!("{identity} · {path}"))
+        .unwrap_or(identity)
 }
 
 type WorkspaceActivateCb = Rc<RefCell<Option<Box<dyn Fn(&WorkspaceId)>>>>;
