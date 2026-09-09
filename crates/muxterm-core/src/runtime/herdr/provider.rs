@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 
-use crate::protocol::candidate::ExistingCandidate as SessionCandidate;
+use crate::protocol::candidate::ExistingCandidate;
 use crate::runtime::herdr::runtime::HerdrRuntime;
 use crate::runtime::herdr::session::HerdrSession;
 use crate::runtime::provider::RuntimeProvider;
@@ -45,7 +45,7 @@ impl RuntimeProvider for HerdrDriver {
         &self,
         connect: &dyn TargetConnection,
         namespace: Option<&str>,
-    ) -> Result<Vec<SessionCandidate>> {
+    ) -> Result<Vec<ExistingCandidate>> {
         if connect.transport_id() == "ssh" {
             let entries = crate::discovery::existing::discover_ssh_herdr(
                 connect.target(),
@@ -57,7 +57,7 @@ impl RuntimeProvider for HerdrDriver {
                 .filter(|e| {
                     namespace.is_none_or(|ns| ns == e.herdr_session.as_deref().unwrap_or(""))
                 })
-                .map(|e| SessionCandidate {
+                .map(|e| ExistingCandidate {
                     runtime_id: "herdr".into(),
                     transport_id: connect.transport_id().into(),
                     target: connect.target().into(),
@@ -77,7 +77,7 @@ impl RuntimeProvider for HerdrDriver {
         Ok(entries
             .into_iter()
             .filter(|e| namespace.is_none_or(|ns| ns == e.herdr_session.as_deref().unwrap_or("")))
-            .map(|e| SessionCandidate {
+            .map(|e| ExistingCandidate {
                 runtime_id: "herdr".into(),
                 transport_id: "local".into(),
                 target: String::new(),

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 
-use crate::protocol::candidate::ExistingCandidate as SessionCandidate;
+use crate::protocol::candidate::ExistingCandidate;
 use crate::runtime::provider::RuntimeProvider;
 use crate::runtime::shell::ShellRuntime;
 use crate::runtime::{Runtime, RuntimeCapability};
@@ -31,7 +31,7 @@ impl RuntimeProvider for ShellDriver {
         &self,
         _connect: &dyn TargetConnection,
         _namespace: Option<&str>,
-    ) -> Result<Vec<SessionCandidate>> {
+    ) -> Result<Vec<ExistingCandidate>> {
         Ok(Vec::new())
     }
 

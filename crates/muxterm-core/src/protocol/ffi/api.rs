@@ -1231,7 +1231,7 @@ mod tests {
         let body = &rest[..end];
         let helper_start = src
             .find("fn session_candidate_json")
-            .expect("统一 SessionCandidate JSON helper 应存在");
+            .expect("统一 ExistingCandidate JSON helper 应存在");
         let helper_rest = &src[helper_start..];
         let helper_end = helper_rest
             .find("\n/// 抓取 status bar")

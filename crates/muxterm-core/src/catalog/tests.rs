@@ -7,9 +7,7 @@ use super::{Catalog, OpenRequest, Reach, ResolveIntent, ResolvedTarget};
 use crate::catalog::connect::Connect;
 use crate::catalog::transport::{TargetInfo, TransportProvider};
 use crate::projects::{Project, Worktree};
-use crate::protocol::candidate::{
-    CandidateRef, ExistingCandidate as SessionCandidate, ExistingCandidateRef,
-};
+use crate::protocol::candidate::{CandidateRef, ExistingCandidate, ExistingCandidateRef};
 use crate::runtime::mock::MockRuntime;
 use crate::runtime::provider::RuntimeProvider;
 use crate::runtime::{Runtime, RuntimeCapability};
@@ -25,7 +23,7 @@ struct MockDriver {
     name: &'static str,
     accepted: &'static [&'static str],
     support: &'static [RuntimeCapability],
-    listed: Vec<SessionCandidate>,
+    listed: Vec<ExistingCandidate>,
     list_err: bool,
     opened: Arc<AtomicUsize>,
 }
@@ -44,7 +42,7 @@ impl RuntimeProvider for MockDriver {
         &self,
         connect: &dyn TargetConnection,
         _namespace: Option<&str>,
-    ) -> anyhow::Result<Vec<SessionCandidate>> {
+    ) -> anyhow::Result<Vec<ExistingCandidate>> {
         if !self.accepted.contains(&connect.transport_id()) {
             return Ok(Vec::new());
         }
@@ -124,7 +122,7 @@ impl RuntimeProvider for UnixSocketOnlyDriver {
         &self,
         _connect: &dyn TargetConnection,
         _namespace: Option<&str>,
-    ) -> anyhow::Result<Vec<SessionCandidate>> {
+    ) -> anyhow::Result<Vec<ExistingCandidate>> {
         Ok(Vec::new())
     }
 
@@ -238,7 +236,7 @@ fn discover_sessions_fans_out_and_skips_driver_error() {
         name: "tmux",
         accepted: &["local"],
         support: &[RuntimeCapability::Discover],
-        listed: vec![SessionCandidate {
+        listed: vec![ExistingCandidate {
             runtime_id: "tmux".into(),
             transport_id: String::new(),
             target: String::new(),
@@ -530,7 +528,7 @@ fn discover_sessions_all_fans_out_local_and_ssh_targets() {
         name: "tmux",
         accepted: &["local", "ssh"],
         support: &[RuntimeCapability::Discover],
-        listed: vec![SessionCandidate {
+        listed: vec![ExistingCandidate {
             runtime_id: "tmux".into(),
             transport_id: String::new(),
             target: String::new(),
@@ -585,12 +583,12 @@ fn discover_sessions_all_must_fan_out_in_parallel() {
             &self,
             connect: &dyn TargetConnection,
             _namespace: Option<&str>,
-        ) -> anyhow::Result<Vec<SessionCandidate>> {
+        ) -> anyhow::Result<Vec<ExistingCandidate>> {
             let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
             self.max_active.fetch_max(active, Ordering::SeqCst);
             std::thread::sleep(std::time::Duration::from_millis(100));
             self.active.fetch_sub(1, Ordering::SeqCst);
-            Ok(vec![SessionCandidate {
+            Ok(vec![ExistingCandidate {
                 runtime_id: "slow".into(),
                 transport_id: connect.transport_id().into(),
                 target: connect.target().into(),
@@ -766,7 +764,7 @@ fn candidate_resolver_rehydrates_existing_identity_without_display_fields() {
         name: "tmux",
         accepted: &["local"],
         support: &[],
-        listed: vec![SessionCandidate {
+        listed: vec![ExistingCandidate {
             runtime_id: "tmux".into(),
             transport_id: "local".into(),
             target: String::new(),
@@ -961,7 +959,7 @@ async fn catalog_candidates_aggregates_four_kinds_and_marks_pool_membership() {
         ))
         .unwrap();
 
-    let existing = SessionCandidate {
+    let existing = ExistingCandidate {
         runtime_id: "tmux".into(),
         transport_id: "local".into(),
         target: String::new(),
