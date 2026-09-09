@@ -281,7 +281,7 @@ impl Catalog {
     ///
     /// 未知 runtime / 不接受的 transport → Err。禁止悄悄变成 Shell。
     pub fn new_runtime(&mut self, spec: &WorkspaceSpec) -> anyhow::Result<Box<dyn Runtime>> {
-        Ok(Self::build_runtime(
+        Ok(Self::open_runtime(
             &self.runtimes,
             &self.transports,
             &mut self.connections,
@@ -297,7 +297,7 @@ impl Catalog {
         connections: &mut ConnectionRegistry,
         spec: &WorkspaceSpec,
     ) -> anyhow::Result<Box<dyn Runtime>> {
-        Ok(Self::build_runtime(
+        Ok(Self::open_runtime(
             &self.runtimes,
             &self.transports,
             connections,
@@ -305,7 +305,7 @@ impl Catalog {
         )?)
     }
 
-    fn build_runtime(
+    fn open_runtime(
         runtimes: &[Box<dyn RuntimeProvider>],
         transports: &[Box<dyn TransportProvider>],
         connections: &mut ConnectionRegistry,
