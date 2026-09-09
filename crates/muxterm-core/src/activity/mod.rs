@@ -5,3 +5,26 @@
 
 pub mod attention;
 pub mod record;
+
+use crate::activity::attention::clock::RealClock;
+use crate::activity::attention::engine::AttentionEngine;
+use crate::config::AttentionConfig;
+use record::ActivityStore;
+
+/// Activity owner for one Muxterm product session.
+///
+/// The attention projection remains available to the legacy FFI query surface;
+/// new command and agent records share this owner and its revision watermark.
+pub struct ActivityState {
+    pub(crate) attention: AttentionEngine<RealClock>,
+    pub(crate) records: ActivityStore,
+}
+
+impl ActivityState {
+    pub(crate) fn new(config: AttentionConfig) -> Self {
+        Self {
+            attention: AttentionEngine::new(config, RealClock),
+            records: ActivityStore::default(),
+        }
+    }
+}

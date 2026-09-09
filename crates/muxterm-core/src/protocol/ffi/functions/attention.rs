@@ -30,7 +30,7 @@ pub unsafe extern "C" fn muxterm_attention_configure_json(
         let Ok(config) = serde_json::from_str(&config_json) else {
             return -1;
         };
-        (&mut *h).attention.set_config(config);
+        (&mut *h).activity.attention.set_config(config);
         0
     }))
     .unwrap_or(-1)
@@ -57,6 +57,7 @@ pub unsafe extern "C" fn muxterm_attention_snapshot(h: *mut MuxtermHandle) -> *m
         }
         let handle = &*h;
         let workspaces: Vec<serde_json::Value> = handle
+            .activity
             .attention
             .snapshot()
             .into_iter()
@@ -94,7 +95,7 @@ pub unsafe extern "C" fn muxterm_attention_snapshot(h: *mut MuxtermHandle) -> *m
             .collect();
         json_string(serde_json::json!({
             "ok": true,
-            "blocked_count": handle.attention.blocked_workspace_count(),
+            "blocked_count": handle.activity.attention.blocked_workspace_count(),
             "workspaces": workspaces,
         }))
     }))
@@ -114,7 +115,7 @@ pub unsafe extern "C" fn muxterm_attention_take_notifications(
             return json_error("handle 为空");
         }
         let handle = &mut *h;
-        let notifications = handle.attention.take_notifications();
+        let notifications = handle.activity.attention.take_notifications();
         let blocked = notifications
             .iter()
             .filter(|n| n.kind == AttentionNotificationKind::Blocked)
@@ -169,6 +170,7 @@ pub unsafe extern "C" fn muxterm_attention_on_became_visible(
             return -1;
         };
         handle
+            .activity
             .attention
             .on_became_visible(&ws_id.replica_id(), pane_id);
         0
@@ -190,7 +192,10 @@ pub unsafe extern "C" fn muxterm_attention_acknowledge(h: *mut MuxtermHandle, pa
         let Some(ws_id) = handle.pool().active_id() else {
             return -1;
         };
-        handle.attention.acknowledge(&ws_id.replica_id(), pane_id);
+        handle
+            .activity
+            .attention
+            .acknowledge(&ws_id.replica_id(), pane_id);
         0
     }))
     .unwrap_or(-1)
@@ -215,6 +220,7 @@ pub unsafe extern "C" fn muxterm_attention_set_process_name(
             return -1;
         };
         handle
+            .activity
             .attention
             .set_process_name(&ws_id.replica_id(), pane_id, cstr_opt(name));
         0
@@ -240,7 +246,7 @@ pub unsafe extern "C" fn muxterm_attention_mute(
         let Some(ws_id) = handle.pool().active_id() else {
             return -1;
         };
-        handle.attention.mute_for(
+        handle.activity.attention.mute_for(
             &ws_id.replica_id(),
             pane_id,
             std::time::Duration::from_secs(seconds),
@@ -269,7 +275,10 @@ pub unsafe extern "C" fn muxterm_workspace_attention_on_became_visible(
         let Some(workspace_id) = workspace_replica_id(handle, workspace_id) else {
             return -1;
         };
-        handle.attention.on_became_visible(&workspace_id, pane_id);
+        handle
+            .activity
+            .attention
+            .on_became_visible(&workspace_id, pane_id);
         0
     }))
     .unwrap_or(-1)
@@ -294,7 +303,10 @@ pub unsafe extern "C" fn muxterm_workspace_attention_acknowledge(
         let Some(workspace_id) = workspace_replica_id(handle, workspace_id) else {
             return -1;
         };
-        handle.attention.acknowledge(&workspace_id, pane_id);
+        handle
+            .activity
+            .attention
+            .acknowledge(&workspace_id, pane_id);
         0
     }))
     .unwrap_or(-1)
@@ -321,6 +333,7 @@ pub unsafe extern "C" fn muxterm_workspace_attention_set_process_name(
             return -1;
         };
         handle
+            .activity
             .attention
             .set_process_name(&workspace_id, pane_id, cstr_opt(name));
         0
@@ -348,7 +361,7 @@ pub unsafe extern "C" fn muxterm_workspace_attention_mute(
         let Some(workspace_id) = workspace_replica_id(handle, workspace_id) else {
             return -1;
         };
-        handle.attention.mute_for(
+        handle.activity.attention.mute_for(
             &workspace_id,
             pane_id,
             std::time::Duration::from_secs(seconds),
