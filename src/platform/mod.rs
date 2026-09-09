@@ -14,13 +14,11 @@ pub mod mouse;
 pub mod ssh_probe;
 pub mod url_opener;
 
-pub mod ffi_client;
+pub use crate::frontend::command_queue;
+pub use crate::frontend::ffi_client;
 
 #[cfg(any(feature = "gtk", feature = "tui"))]
 pub mod event_pump;
-
-#[cfg(any(feature = "gtk", feature = "tui"))]
-pub mod command_queue;
 
 #[cfg(target_os = "macos")]
 pub mod macos;
