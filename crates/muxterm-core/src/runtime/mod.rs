@@ -6,7 +6,6 @@
 //! tmux 的 `%pane` / `@window` 等真实 ID 只能在 `runtime/tmux` 内部。
 
 pub use muxterm_runtime::capability;
-pub mod daemon;
 pub mod herdr;
 pub mod mock;
 pub mod registry;

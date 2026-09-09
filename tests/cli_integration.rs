@@ -680,7 +680,7 @@ fn cli_tmux_backend_send_keys() {
 mod daemon_tests {
     use super::*;
     use muxterm::test_support::core::protocol::PaneId;
-    use muxterm::test_support::core::runtime::daemon_client::send_command;
+    use muxterm::test_support::core::runtime::shell::daemon_client::send_command;
     use muxterm::test_support::platform::cli::session::session_socket_path;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};

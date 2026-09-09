@@ -11,7 +11,7 @@ use crate::muxterm::Muxterm;
 use crate::projects::{ProjectStore, ProjectsService};
 use crate::protocol::task::Task;
 use crate::protocol::terminal::emulate::DEFAULT_SCROLLBACK_LINES;
-use crate::runtime::daemon::DaemonRuntime;
+use crate::runtime::shell::daemon_runtime::DaemonRuntime;
 use crate::transport::registry::ConnectionRegistry;
 use crate::workspace::pool::WorkspacePool;
 use crate::workspace::spec::WorkspaceSpec;
