@@ -27,4 +27,4 @@ pub mod macos;
 pub mod linux;
 
 #[cfg(feature = "tui")]
-pub mod tui;
+pub use crate::frontend::tui;

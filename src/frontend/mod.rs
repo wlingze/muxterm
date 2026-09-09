@@ -6,3 +6,6 @@
 pub mod cli;
 pub mod command_queue;
 pub mod ffi_client;
+
+#[cfg(feature = "tui")]
+pub mod tui;
