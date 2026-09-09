@@ -31,6 +31,9 @@ crate 拆分前用 `rg` 兜底；拆分后由编译器守边界。
 禁止 bridgeLock / backgroundPollQueue / WarmConnectionSlot / ForegroundAuthority（macOS 前端）
 ```
 
+本地和 CI 的结构门禁入口：`bash scripts/check-architecture.sh`。测试入口
+`scripts/test.sh run core|linux|macos` 会先自动执行同一检查。
+
 矩阵（隔离 socket / named Herdr session）：
 
 ```text
