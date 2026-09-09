@@ -271,7 +271,7 @@ fn mirror_mode_drops_parser_query_replies() {
 
 #[test]
 fn font_zoom_contract_unchanged() {
-    // 旧 preferences.toml 迁移已收归 Core（config_service::migrate_legacy_
-    // linux_preferences）；platform 只保留字体缩放纯逻辑。
+    // 旧 preferences.toml 迁移已收归 Core（config::migration::import_legacy_projects）；
+    // platform 只保留字体缩放纯逻辑。
     assert_eq!(FontSettings::zoomed(12.0, 1), 13.0);
 }

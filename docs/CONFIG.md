@@ -380,4 +380,4 @@ Linux/macOS 负责：原生窗口、原生字体选择器、平台字体枚举�
 - 不允许 Project 覆盖全局外观。WorkspaceTemplate 不是通用布局 DSL，只描述新建会话的 Tab/Pane。
 - 不引入产品层 Session 或虚拟 Window。
 - 不把 JetBrains Mono 安装到系统字体目录。
-- 不为了目录层次拆出没有独立所有权的 `config_edit` / `config_service` 平行模块；三处配置代码并入一个 `config/`。
+- 不为了目录层次拆出没有独立所有权的 `config_edit` 平行模块；配置代码统一归入一个 `config/`。

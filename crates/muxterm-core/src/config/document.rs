@@ -1,7 +1,7 @@
 //! Core-owned persisted configuration documents, schema and validation.
 //!
-//! This module owns the serialized shapes used by `config.toml`. The transaction
-//! implementation remains in `config_service` while callers migrate to this domain.
+//! This module owns the serialized shapes used by `config.toml` and the
+//! configuration transaction service that operates on them.
 
 use anyhow::{anyhow, Context, Result};
 use schemars::schema_for;

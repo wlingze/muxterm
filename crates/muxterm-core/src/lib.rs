@@ -17,7 +17,6 @@ pub mod attention;
 pub mod buffer_cap;
 pub mod catalog;
 pub mod config;
-pub mod config_service;
 pub mod discovery;
 pub mod executable;
 pub mod fault;
