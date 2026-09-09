@@ -5,14 +5,15 @@
 //! receive typed snapshots/layouts and never need to recognize either spelling.
 
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::Value;
 
+use super::channel::{shutdown, ChannelIo, SharedChannel};
 use super::session::{HerdrSession, LayoutRecord, SessionSnapshot};
 
 /// Parameterless protocol-19 subscriptions. Pane-scoped agent status is added
@@ -219,7 +220,7 @@ pub enum EventStreamEvent {
 
 /// One API-socket events.subscribe stream for a bound Herdr workspace.
 pub struct EventStream {
-    shutdown_stream: Option<UnixStream>,
+    shutdown_channel: Option<SharedChannel>,
     handle: Option<JoinHandle<()>>,
     /// Drop 时置位：reader 据此把「主动 shutdown 造成的 EOF/Error」静默
     /// 掉，不向 Runtime 误报订阅死亡（否则 restart 替换订阅会残留一个
@@ -234,15 +235,8 @@ impl EventStream {
         pane_ids: &[String],
         tx: Sender<EventStreamEvent>,
     ) -> Result<Self> {
-        let mut stream = UnixStream::connect(session.socket_path()).with_context(|| {
-            format!(
-                "连接 Herdr event socket 失败: {}",
-                session.socket_path().display()
-            )
-        })?;
-        stream
-            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-            .context("设置 Herdr event ack 超时失败")?;
+        let channel = session.open_socket_channel(session.socket_path())?;
+        let mut stream = ChannelIo::with_read_timeout(channel.clone(), Duration::from_secs(5));
 
         let mut subscriptions = GLOBAL_SUBSCRIPTIONS
             .iter()
@@ -264,7 +258,6 @@ impl EventStream {
             .context("写 Herdr events.subscribe 失败")?;
         stream.flush().ok();
 
-        let shutdown_stream = stream.try_clone().context("复制 Herdr event socket 失败")?;
         let mut reader = BufReader::new(stream);
         let mut ack = String::new();
         reader
@@ -278,10 +271,7 @@ impl EventStream {
         if ack.get("result").is_none() {
             bail!("Herdr events.subscribe ack 缺 result: {ack}");
         }
-        reader
-            .get_ref()
-            .set_read_timeout(None)
-            .context("清除 Herdr event 读超时失败")?;
+        reader.get_mut().clear_read_timeout();
 
         let workspace_id = workspace_id.to_string();
         let dropping = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -351,7 +341,7 @@ impl EventStream {
         });
 
         Ok(Self {
-            shutdown_stream: Some(shutdown_stream),
+            shutdown_channel: Some(channel),
             handle: Some(handle),
             dropping,
         })
@@ -364,8 +354,8 @@ impl Drop for EventStream {
         // 残留一个假的 Closed/Error，触发无限重建循环。
         self.dropping
             .store(true, std::sync::atomic::Ordering::Release);
-        if let Some(stream) = self.shutdown_stream.take() {
-            let _ = stream.shutdown(std::net::Shutdown::Both);
+        if let Some(channel) = self.shutdown_channel.take() {
+            let _ = shutdown(&channel);
         }
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();

@@ -1,8 +1,7 @@
 //! SSH Herdr attach 支持：把远端 herdr.sock Unix socket 转发到本机临时路径。
 //!
-//! 生产 attach 禁止 `herdr --remote`（那会在远端装/启 server）。这里用
-//! `ssh -nNT -L <local.sock>:<remote_socket_path> <alias>`，转发进程随
-//! HerdrRuntime Drop/shutdown 杀掉。
+//! 兼容测试/诊断路径保留；生产 Runtime provider 使用
+//! `TargetConnection::open_channel(UnixSocket)`，不再直接启动该 forward。
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
@@ -59,7 +58,6 @@ pub fn start_herdr_ssh_forward(
         .spawn()
         .with_context(|| format!("spawn ssh 转发失败（alias={alias}）"))?;
 
-    // 等本地 socket 出现（最多 5s）；失败则杀进程。
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
         if local_api.exists() && local_client.exists() {
