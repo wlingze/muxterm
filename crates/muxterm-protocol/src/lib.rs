@@ -8,6 +8,7 @@ use std::path::Path;
 use std::str::FromStr;
 
 pub mod candidate;
+pub mod input;
 pub mod layout;
 pub mod state;
 

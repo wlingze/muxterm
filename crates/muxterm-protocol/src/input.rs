@@ -1,4 +1,6 @@
 //! 输入编码：键盘事件 → 写入 pty 的字节序列。
+//!
+//! This module is shared by Core and frontend protocol clients.
 
 /// 方向键。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
