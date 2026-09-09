@@ -41,9 +41,7 @@ pub use super::functions::config::{
     muxterm_config_describe_json, muxterm_config_events_json, muxterm_config_patch_json,
     muxterm_config_reload_json, muxterm_config_validate_json,
 };
-pub(crate) use super::functions::events::state_change_to_c;
 pub use super::functions::events::{muxterm_poll_events, muxterm_poll_workspace_events};
-pub(crate) use super::functions::handle::configured_scrollback_lines;
 pub use super::functions::handle::{
     muxterm_catalog_new, muxterm_free, muxterm_free_string, muxterm_init_logging, muxterm_new,
     muxterm_new_connect, muxterm_new_connect_sized,
@@ -66,11 +64,6 @@ pub use super::functions::snapshot::{
     muxterm_workspace_set_pane_viewport, muxterm_workspace_take_pane_reply,
 };
 pub use super::functions::support::MuxtermHandle;
-pub(crate) use super::functions::support::{
-    cstr_opt, discovery_timeout, json_error, json_open_error, json_resolve_error, json_string,
-    resolve_c_io_pane,
-};
-pub(crate) use super::functions::task::{ctask_to_task, task_result_code};
 pub use super::functions::task::{
     muxterm_execute, muxterm_execute_json, muxterm_execute_workspace,
     muxterm_report_all_pane_colours, muxterm_report_pane_colours, muxterm_resize_client,
@@ -79,7 +72,6 @@ pub use super::functions::task::{
     muxterm_workspace_resize_pane_axis, muxterm_workspace_send_input,
     muxterm_workspace_send_input_quiet,
 };
-pub(crate) use super::functions::transport::session_candidate_json;
 pub use super::functions::transport::{
     muxterm_discover_sessions_json, muxterm_discover_ssh_hosts_json,
     muxterm_discover_ssh_tmux_panes_json, muxterm_discover_targets_json,
@@ -108,12 +100,14 @@ use super::types::{
     TASK_SPLIT_PANE, TASK_SWITCH_PANE, TASK_SWITCH_TAB, TASK_TOGGLE_PANE_FULLSCREEN,
 };
 
-pub(crate) use crate::muxterm::should_export_state_change;
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::muxterm::should_export_state_change;
     use crate::projects::Project;
+    use crate::protocol::ffi::functions::events::state_change_to_c;
+    use crate::protocol::ffi::functions::task::ctask_to_task;
+    use crate::protocol::ffi::functions::transport::session_candidate_json;
     use crate::protocol::ffi::muxterm_set_callbacks;
     use crate::protocol::ffi::types::DIR_HORIZONTAL;
     use crate::protocol::state::{
