@@ -271,7 +271,7 @@ fn three_tab_panel_full_flow() {
                 "过滤后应去掉其它命令: {labels:?}"
             );
 
-            // 4. 清空 query：状态点正确；不再创建小终端或动作条。
+            // 4. 清空 query：状态点正确；不创建小终端，Attention 提供静音动作。
             entry.set_text("");
             pump_main_loop(40);
             let pi_row = list.row_at_index(1).expect("pi agent row");
@@ -287,7 +287,9 @@ fn three_tab_panel_full_flow() {
             assert!(done_dot.has_css_class("done"));
             assert!(find_by_name(&win, "muxterm-attention-peek").is_none());
             assert!(find_by_name(&win, "muxterm-attention-jump").is_none());
-            assert!(find_by_name(&win, "muxterm-attention-mute").is_none());
+            let mute = find_by_name(&win, "muxterm-attention-mute").expect("静音动作应存在");
+            assert!(mute.is_visible(), "Attention tab 的静音动作应可见");
+            assert!(mute.is_sensitive(), "选中 Attention 行后静音动作应可用");
 
             // 5. 选择 + Enter 是 Attention 唯一动作。
             list.select_row(Some(&pi_row));
