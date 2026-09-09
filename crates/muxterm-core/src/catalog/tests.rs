@@ -14,7 +14,7 @@ use crate::transport::{ChannelKind, TargetConnection};
 use crate::workspace::pool::WorkspacePool;
 use crate::workspace::spec::WorkspaceSpec;
 use crate::workspace::template::{
-    PaneTemplate, TabTemplate, TemplateLayout, TemplateName, WorkspaceTemplate,
+    PaneTemplate, TabTemplate, TemplateLayout, TemplateName, TemplateRegistry, WorkspaceTemplate,
 };
 use muxterm_transport::provider::{TargetInfo, TransportProvider};
 use muxterm_transport::Connect;
@@ -154,10 +154,11 @@ fn mock_spec(runtime: &str, transport: &str, alias: Option<&str>, session: &str)
 async fn open_in_pool<'a>(
     catalog: &Catalog,
     connections: &mut ConnectionRegistry,
+    templates: &TemplateRegistry,
     pool: &'a mut WorkspacePool,
     spec: &WorkspaceSpec,
 ) -> anyhow::Result<&'a mut crate::workspace::workspace::Workspace> {
-    catalog.open_spec(connections, pool, spec).await
+    catalog.open_spec(connections, templates, pool, spec).await
 }
 
 #[test]
@@ -315,10 +316,12 @@ async fn two_opens_same_target_share_one_connect() {
         list_err: false,
         opened: Arc::new(AtomicUsize::new(0)),
     }));
+    let templates = TemplateRegistry::default();
     let mut pool = WorkspacePool::default();
     open_in_pool(
         &cat,
         &mut connections,
+        &templates,
         &mut pool,
         &mock_spec("tmux", "ssh", Some("ryzen"), "a"),
     )
@@ -327,6 +330,7 @@ async fn two_opens_same_target_share_one_connect() {
     open_in_pool(
         &cat,
         &mut connections,
+        &templates,
         &mut pool,
         &mock_spec("tmux", "ssh", Some("ryzen"), "b"),
     )
@@ -419,10 +423,12 @@ async fn open_uses_provider_not_spec_factory() {
         list_err: false,
         opened: Arc::clone(&opened),
     }));
+    let templates = TemplateRegistry::default();
     let mut pool = WorkspacePool::default();
     let ws = open_in_pool(
         &cat,
         &mut connections,
+        &templates,
         &mut pool,
         &mock_spec("mockrt", "local", None, "demo"),
     )
@@ -464,9 +470,11 @@ async fn open_resolved_uses_canonical_workspace_name() {
     };
     let mut pool = WorkspacePool::default();
     let mut connections = ConnectionRegistry::new();
+    let templates = TemplateRegistry::default();
     let ws = cat
         .open_resolved(
             &mut connections,
+            &templates,
             &mut pool,
             ResolvedTarget { canonical, spec },
         )
@@ -909,14 +917,14 @@ async fn catalog_applies_templates_only_to_create_specs() {
         list_err: false,
         opened: Arc::new(AtomicUsize::new(0)),
     }));
-    cat.register_template(single_pane_template()).unwrap();
+    let templates = TemplateRegistry::new(vec![single_pane_template()]).unwrap();
 
     let template_name = TemplateName::try_from("single").unwrap();
     let mut attach = mock_spec("mock", "local", None, "attach");
     attach.template = Some(template_name.clone());
     let attach_id = attach.id();
     let mut pool = WorkspacePool::default();
-    open_in_pool(&cat, &mut connections, &mut pool, &attach)
+    open_in_pool(&cat, &mut connections, &templates, &mut pool, &attach)
         .await
         .unwrap();
     assert!(
@@ -931,7 +939,7 @@ async fn catalog_applies_templates_only_to_create_specs() {
     create.create = true;
     create.template = Some(template_name);
     let create_id = create.id();
-    open_in_pool(&cat, &mut connections, &mut pool, &create)
+    open_in_pool(&cat, &mut connections, &templates, &mut pool, &create)
         .await
         .unwrap();
     let report = pool

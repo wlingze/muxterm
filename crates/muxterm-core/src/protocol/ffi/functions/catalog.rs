@@ -93,6 +93,7 @@ pub unsafe extern "C" fn muxterm_open_json(
             rt.block_on(Muxterm::open_resolved_parts(
                 &*catalog,
                 connections,
+                &handle.templates,
                 pool,
                 resolved,
             ))
@@ -181,6 +182,7 @@ pub unsafe extern "C" fn muxterm_workspace_open_target_json(
             rt.block_on(Muxterm::open_resolved_parts(
                 &*catalog,
                 connections,
+                &handle.templates,
                 pool,
                 resolved,
             ))
@@ -246,6 +248,7 @@ pub unsafe extern "C" fn muxterm_workspace_worktree_create_json(
             );
             rt.block_on(catalog.create_native_worktree_with_pool(
                 connections,
+                &handle.templates,
                 pool,
                 &source,
                 &spec,

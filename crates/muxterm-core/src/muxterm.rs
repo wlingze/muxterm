@@ -17,6 +17,7 @@ use crate::projects::ProjectsService;
 use crate::protocol::state::StateChange;
 use crate::workspace::pool::WorkspacePool;
 use crate::workspace::spec::WorkspaceSpec;
+use crate::workspace::template::TemplateRegistry;
 use crate::workspace::workspace::Workspace;
 
 use crate::protocol::ffi::callbacks::FfiCallbacks;
@@ -35,6 +36,8 @@ pub struct Muxterm {
     pub(crate) catalog: crate::catalog::Catalog,
     /// Reusable target connections owned by the product session.
     pub(crate) connections: ConnectionRegistry,
+    /// Create-time workspace templates projected from Config.
+    pub(crate) templates: TemplateRegistry,
     /// The single live WorkspacePool owned by the product session.
     ///
     /// The product root owns the live runtime instances and the reusable
@@ -84,7 +87,14 @@ impl Muxterm {
         &mut self,
         spec: &WorkspaceSpec,
     ) -> anyhow::Result<&mut Workspace> {
-        Self::open_spec_parts(&self.catalog, &mut self.connections, &mut self.pool, spec).await
+        Self::open_spec_parts(
+            &self.catalog,
+            &mut self.connections,
+            &self.templates,
+            &mut self.pool,
+            spec,
+        )
+        .await
     }
 
     /// Open using explicitly split owner fields. The FFI boundary uses this
@@ -93,34 +103,11 @@ impl Muxterm {
     pub(crate) async fn open_spec_parts<'a>(
         catalog: &'a crate::catalog::Catalog,
         connections: &'a mut ConnectionRegistry,
+        templates: &'a TemplateRegistry,
         pool: &'a mut WorkspacePool,
         spec: &WorkspaceSpec,
     ) -> anyhow::Result<&'a mut Workspace> {
-        let workspace_id = spec.id();
-        let should_apply_template = pool.get(&workspace_id).is_none() && spec.create;
-        let template = spec
-            .template
-            .as_ref()
-            .and_then(|name| catalog.template_registry().get(name))
-            .cloned();
-        let runtime = catalog.new_runtime(connections, spec)?;
-        let workspace = pool
-            .open_spec_with_runtime(spec, runtime)
-            .await
-            .map_err(|error| {
-                anyhow::Error::new(crate::catalog::ResolveError::RuntimeOpen {
-                    runtime_id: spec.runtime.clone(),
-                    transport_id: spec.transport.clone(),
-                    target: spec.alias.clone().unwrap_or_default(),
-                    message: format!("{error:#}"),
-                })
-            })?;
-        if should_apply_template {
-            if let Some(template) = template {
-                workspace.start_template(template)?;
-            }
-        }
-        Ok(workspace)
+        catalog.open_spec(connections, templates, pool, spec).await
     }
 
     /// Open a resolver result and retain its canonical descriptor in Core.
@@ -131,6 +118,7 @@ impl Muxterm {
         Self::open_resolved_parts(
             &self.catalog,
             &mut self.connections,
+            &self.templates,
             &mut self.pool,
             resolved,
         )
@@ -141,6 +129,7 @@ impl Muxterm {
     pub(crate) async fn open_resolved_parts<'a>(
         catalog: &'a crate::catalog::Catalog,
         connections: &'a mut ConnectionRegistry,
+        templates: &'a TemplateRegistry,
         pool: &'a mut WorkspacePool,
         resolved: ResolvedTarget,
     ) -> anyhow::Result<&'a mut Workspace> {
@@ -156,7 +145,7 @@ impl Muxterm {
         }
         let spec = resolved.spec.clone();
         let canonical = resolved.canonical.clone();
-        let workspace = Self::open_spec_parts(catalog, connections, pool, &spec).await?;
+        let workspace = Self::open_spec_parts(catalog, connections, templates, pool, &spec).await?;
         workspace.set_resolved_target(ResolvedTarget { canonical, spec });
         Ok(workspace)
     }
