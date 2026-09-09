@@ -208,6 +208,19 @@ fn default_activate() -> bool {
     true
 }
 
+/// Owned attention configuration sent through the public FFI JSON boundary.
+///
+/// This DTO intentionally does not expose the Core config type to frontend
+/// code. The frontend copies the user-facing fields at the call site, while
+/// Core remains responsible for validation and runtime behavior.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ClientAttentionConfig {
+    pub enabled: bool,
+    #[serde(default)]
+    pub blocked_regex: Vec<String>,
+    pub debounce_ms: u64,
+}
+
 /// Product-level event kinds exposed to frontends instead of raw ABI numbers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClientEventKind {
@@ -561,10 +574,7 @@ impl FfiClient {
     }
 
     /// Configure the Core-owned attention engine before frontend polling starts.
-    pub fn configure_attention(
-        &self,
-        config: &crate::core::config::AttentionConfig,
-    ) -> anyhow::Result<()> {
+    pub fn configure_attention(&self, config: &ClientAttentionConfig) -> anyhow::Result<()> {
         let config = serde_json::to_string(config)?;
         let config = cstring(&config);
         let rc =
@@ -1696,6 +1706,24 @@ fn task_to_ffi(task: ClientTask) -> CTask {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn attention_config_serializes_as_public_ffi_shape() {
+        let config = ClientAttentionConfig {
+            enabled: false,
+            blocked_regex: vec!["^needs-input$".into()],
+            debounce_ms: 250,
+        };
+
+        assert_eq!(
+            serde_json::to_value(config).expect("attention config serializes"),
+            serde_json::json!({
+                "enabled": false,
+                "blocked_regex": ["^needs-input$"],
+                "debounce_ms": 250,
+            })
+        );
+    }
 
     #[test]
     fn null_c_buffers_become_empty_owned_values() {

@@ -41,9 +41,9 @@ use crate::core::workspace::pool::WorkspaceCapacityCandidate;
 use crate::core::workspace::spec::WorkspaceSpec;
 use crate::platform::event_pump::EventPump;
 use crate::platform::ffi_client::{
-    ClientActivitySnapshot, ClientAttentionPane, ClientCandidateRef, ClientEventKind,
-    ClientOpenIntent, ClientOpenRequest, ClientOpenedWorkspace, ClientTarget, ClientTask,
-    ClientWorkspaceAttention, ClientWorkspaceEvent, FfiClient,
+    ClientActivitySnapshot, ClientAttentionConfig, ClientAttentionPane, ClientCandidateRef,
+    ClientEventKind, ClientOpenIntent, ClientOpenRequest, ClientOpenedWorkspace, ClientTarget,
+    ClientTask, ClientWorkspaceAttention, ClientWorkspaceEvent, FfiClient,
 };
 use crate::platform::i18n::{self, Key};
 use crate::platform::linux::attention_ui::{window_title, GioSink, NotificationSink};
@@ -574,7 +574,12 @@ impl AppWindow {
             FfiClient::new_connect("local", None, None, None, Some(""))
                 .expect("local runtime 必须可用")
         };
-        if let Err(error) = client.configure_attention(&cfg.attention) {
+        let attention_config = ClientAttentionConfig {
+            enabled: cfg.attention.enabled,
+            blocked_regex: cfg.attention.blocked_regex.clone(),
+            debounce_ms: cfg.attention.debounce_ms,
+        };
+        if let Err(error) = client.configure_attention(&attention_config) {
             tracing::warn!(
                 target = "muxterm::linux",
                 %error,
@@ -4263,7 +4268,12 @@ fn open_preferences(state: &Rc<RefCell<UiState>>, window: &Window) {
                         shortcuts,
                     );
                 s.keymap = KeyMap::from_bindings(&bindings);
-                if let Err(error) = s.event_pump.client().configure_attention(&cfg.attention) {
+                let attention_config = ClientAttentionConfig {
+                    enabled: cfg.attention.enabled,
+                    blocked_regex: cfg.attention.blocked_regex.clone(),
+                    debounce_ms: cfg.attention.debounce_ms,
+                };
+                if let Err(error) = s.event_pump.client().configure_attention(&attention_config) {
                     tracing::warn!(
                         target = "muxterm::linux",
                         %error,
