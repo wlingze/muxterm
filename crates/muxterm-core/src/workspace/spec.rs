@@ -200,6 +200,7 @@ impl WorkspaceSpec {
 mod tests {
     use super::*;
     use crate::catalog::Catalog;
+    use crate::muxterm::Muxterm;
     use crate::runtime::shell::ShellRuntime;
     use crate::runtime::tmux::backend::TmuxRuntime;
     use crate::runtime::tmux::client::ConnectMode;
@@ -207,9 +208,16 @@ mod tests {
 
     fn new_runtime(spec: &WorkspaceSpec) -> Box<dyn crate::runtime::Runtime> {
         let mut connections = ConnectionRegistry::new();
-        Catalog::with_builtins()
-            .new_runtime(&mut connections, spec)
-            .expect("built-in provider must construct the runtime")
+        let catalog = Catalog::with_builtins();
+        let runtime_registry = catalog.runtime_registry();
+        let transport_registry = catalog.transport_registry();
+        Muxterm::new_runtime_parts(
+            runtime_registry.as_ref(),
+            transport_registry.as_ref(),
+            &mut connections,
+            spec,
+        )
+        .expect("built-in provider must construct the runtime")
     }
 
     #[test]
@@ -319,9 +327,16 @@ mod tests {
             template: None,
         };
         let mut connections = ConnectionRegistry::new();
-        let err = Catalog::with_builtins()
-            .new_runtime(&mut connections, &spec)
-            .err();
+        let catalog = Catalog::with_builtins();
+        let runtime_registry = catalog.runtime_registry();
+        let transport_registry = catalog.transport_registry();
+        let err = Muxterm::new_runtime_parts(
+            runtime_registry.as_ref(),
+            transport_registry.as_ref(),
+            &mut connections,
+            &spec,
+        )
+        .err();
         assert!(
             err.as_ref()
                 .is_some_and(|error| error.to_string().contains("unknown runtime")),

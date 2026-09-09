@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use super::{Catalog, OpenRequest, Reach, ResolveIntent, ResolvedTarget};
+use crate::muxterm::Muxterm;
 use crate::projects::{Project, Worktree};
 use crate::protocol::candidate::{CandidateRef, ExistingCandidate, ExistingCandidateRef};
 use crate::runtime::mock::MockRuntime;
@@ -153,12 +154,37 @@ fn mock_spec(runtime: &str, transport: &str, alias: Option<&str>, session: &str)
 
 async fn open_in_pool<'a>(
     catalog: &Catalog,
-    connections: &mut ConnectionRegistry,
+    connections: &'a mut ConnectionRegistry,
     templates: &TemplateRegistry,
     pool: &'a mut WorkspacePool,
     spec: &WorkspaceSpec,
 ) -> anyhow::Result<&'a mut crate::workspace::workspace::Workspace> {
-    catalog.open_spec(connections, templates, pool, spec).await
+    let runtime_registry = catalog.runtime_registry();
+    let transport_registry = catalog.transport_registry();
+    Muxterm::open_spec_parts(
+        runtime_registry.as_ref(),
+        transport_registry.as_ref(),
+        connections,
+        templates,
+        pool,
+        spec,
+    )
+    .await
+}
+
+fn new_runtime(
+    catalog: &Catalog,
+    connections: &mut ConnectionRegistry,
+    spec: &WorkspaceSpec,
+) -> anyhow::Result<Box<dyn Runtime>> {
+    let runtime_registry = catalog.runtime_registry();
+    let transport_registry = catalog.transport_registry();
+    Muxterm::new_runtime_parts(
+        runtime_registry.as_ref(),
+        transport_registry.as_ref(),
+        connections,
+        spec,
+    )
 }
 
 #[test]
@@ -366,12 +392,14 @@ async fn external_connection_registry_reuses_target_across_runtime_builds() {
     }));
     let mut connections = ConnectionRegistry::new();
 
-    cat.new_runtime(
+    new_runtime(
+        &cat,
         &mut connections,
         &mock_spec("mockrt", "ssh", Some("ryzen"), "first"),
     )
     .unwrap();
-    cat.new_runtime(
+    new_runtime(
+        &cat,
         &mut connections,
         &mock_spec("mockrt", "ssh", Some("ryzen"), "second"),
     )
@@ -392,10 +420,13 @@ async fn open_rejects_unknown_runtime() {
         fail: false,
         targets: vec![],
     }));
-    let err = cat
-        .new_runtime(&mut connections, &mock_spec("unknown", "local", None, "x"))
-        .map(|_| ())
-        .expect_err("未知 runtime 必须 Err");
+    let err = new_runtime(
+        &cat,
+        &mut connections,
+        &mock_spec("unknown", "local", None, "x"),
+    )
+    .map(|_| ())
+    .expect_err("未知 runtime 必须 Err");
     assert!(
         err.to_string().contains("unknown runtime"),
         "禁止悄悄变成 shell: {err}"
@@ -471,15 +502,18 @@ async fn open_resolved_uses_canonical_workspace_name() {
     let mut pool = WorkspacePool::default();
     let mut connections = ConnectionRegistry::new();
     let templates = TemplateRegistry::default();
-    let ws = cat
-        .open_resolved(
-            &mut connections,
-            &templates,
-            &mut pool,
-            ResolvedTarget { canonical, spec },
-        )
-        .await
-        .unwrap();
+    let runtime_registry = cat.runtime_registry();
+    let transport_registry = cat.transport_registry();
+    let ws = Muxterm::open_resolved_parts(
+        runtime_registry.as_ref(),
+        transport_registry.as_ref(),
+        &mut connections,
+        &templates,
+        &mut pool,
+        ResolvedTarget { canonical, spec },
+    )
+    .await
+    .unwrap();
 
     assert_eq!(ws.name(), "muxterm");
 }
@@ -704,7 +738,8 @@ async fn incompatible_channel_requirements_are_rejected_without_fallback() {
     }));
     cat.register_runtime(Box::new(UnixSocketOnlyDriver));
 
-    let result = cat.new_runtime(
+    let result = new_runtime(
+        &cat,
         &mut connections,
         &mock_spec("unix-only", "exec-only", None, ""),
     );

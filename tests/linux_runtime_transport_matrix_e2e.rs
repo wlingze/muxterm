@@ -24,6 +24,7 @@ use gtk4::prelude::*;
 
 use muxterm::test_support::core::catalog::Catalog;
 use muxterm::test_support::core::config::Config;
+use muxterm::test_support::core::muxterm::Muxterm;
 use muxterm::test_support::core::protocol::task::TaskOutcome;
 use muxterm::test_support::core::quickconnect::model::{QuickConnect, TargetConfig};
 use muxterm::test_support::core::transport::registry::ConnectionRegistry;
@@ -725,7 +726,7 @@ fn prepare_existing_fixture(fixture: &MatrixFixture, runtime: &str, transport: &
     let catalog = Catalog::with_builtins();
     let mut connections = ConnectionRegistry::new();
     let mut pool = WorkspacePool::default();
-    let runtime_instance = catalog.new_runtime(&mut connections, &fixture.spec)?;
+    let runtime_instance = Muxterm::new_runtime(&catalog, &mut connections, &fixture.spec)?;
     let workspace = rt
         .block_on(pool.open_spec_with_runtime(&fixture.spec, runtime_instance))
         .with_context(|| format!("预置 {runtime} x {transport} Existing fixture"))?;

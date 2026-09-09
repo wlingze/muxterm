@@ -69,6 +69,25 @@ pub struct Muxterm {
 }
 
 impl Muxterm {
+    /// Construct a Runtime through the product composition root.
+    ///
+    /// Catalog provides only the registered provider view; this entry point
+    /// owns the provider lookup and connection-backed Runtime construction.
+    pub fn new_runtime(
+        catalog: &crate::catalog::Catalog,
+        connections: &mut ConnectionRegistry,
+        spec: &WorkspaceSpec,
+    ) -> anyhow::Result<Box<dyn Runtime>> {
+        let runtime_registry = catalog.runtime_registry();
+        let transport_registry = catalog.transport_registry();
+        Self::new_runtime_parts(
+            runtime_registry.as_ref(),
+            transport_registry.as_ref(),
+            connections,
+            spec,
+        )
+    }
+
     pub(crate) fn pool(&self) -> &WorkspacePool {
         &self.pool
     }
@@ -109,10 +128,10 @@ impl Muxterm {
     /// form so its Tokio runtime can be borrowed independently from Catalog
     /// and the live pool.
     pub(crate) async fn open_spec_parts<'a>(
-        runtime_registry: &'a RuntimeRegistry,
-        transport_registry: &'a TransportRegistry,
+        runtime_registry: &RuntimeRegistry,
+        transport_registry: &TransportRegistry,
         connections: &'a mut ConnectionRegistry,
-        templates: &'a TemplateRegistry,
+        templates: &TemplateRegistry,
         pool: &'a mut WorkspacePool,
         spec: &WorkspaceSpec,
     ) -> anyhow::Result<&'a mut Workspace> {
@@ -212,10 +231,10 @@ impl Muxterm {
 
     /// Open a resolved target using explicitly split owner fields.
     pub(crate) async fn open_resolved_parts<'a>(
-        runtime_registry: &'a RuntimeRegistry,
-        transport_registry: &'a TransportRegistry,
+        runtime_registry: &RuntimeRegistry,
+        transport_registry: &TransportRegistry,
         connections: &'a mut ConnectionRegistry,
-        templates: &'a TemplateRegistry,
+        templates: &TemplateRegistry,
         pool: &'a mut WorkspacePool,
         resolved: ResolvedTarget,
     ) -> anyhow::Result<&'a mut Workspace> {

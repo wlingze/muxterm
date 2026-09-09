@@ -15,15 +15,10 @@ use crate::projects::Project;
 use crate::protocol::candidate::{Candidate, CandidateRef, ExistingCandidateRef};
 use crate::runtime::registry::RuntimeRegistry;
 use crate::runtime::runtime_supports_channels;
-use crate::runtime::Runtime;
 use crate::transport::registry::ConnectionRegistry;
 use crate::transport::registry::TransportRegistry;
 use crate::transport::{ChannelKind, TargetConnection};
 use crate::workspace::pool::WorkspacePool;
-use crate::workspace::provenance::WorkspaceProvenance;
-use crate::workspace::spec::WorkspaceSpec;
-use crate::workspace::template::{TemplateName, TemplateRegistry};
-use crate::workspace::workspace::Workspace;
 use muxterm_protocol::WorkspaceId;
 
 pub use crate::protocol::candidate::ExistingCandidate;
@@ -145,21 +140,8 @@ impl Catalog {
         self.runtimes.get(id)
     }
 
-    /// Read-only provider lookup for the product composition root.
-    ///
-    /// Runtime construction belongs to `Muxterm`; Catalog only exposes the
-    /// registered provider view needed by that root during the migration.
-    pub(crate) fn runtime_provider(&self, id: &str) -> Option<&dyn RuntimeProvider> {
-        self.runtime(id)
-    }
-
     fn transport(&self, id: &str) -> Option<&dyn TransportProvider> {
         self.transports.get(id)
-    }
-
-    /// Read-only transport provider lookup for the product composition root.
-    pub(crate) fn transport_provider(&self, id: &str) -> Option<&dyn TransportProvider> {
-        self.transport(id)
     }
 
     /// 列出某个 TransportProvider 的 target（Local 单例 / SSH hosts）。
@@ -270,181 +252,6 @@ impl Catalog {
             }
         }
         names
-    }
-
-    /// 按 spec 通过 provider 构造尚未连接的 Runtime。
-    ///
-    /// 未知 runtime / 不接受的 transport → Err。禁止悄悄变成 Shell。
-    pub fn new_runtime(
-        &self,
-        connections: &mut ConnectionRegistry,
-        spec: &WorkspaceSpec,
-    ) -> anyhow::Result<Box<dyn Runtime>> {
-        Ok(Self::open_runtime(
-            self.runtimes.providers(),
-            self.transports.providers(),
-            connections,
-            spec,
-        )?)
-    }
-
-    fn open_runtime(
-        runtimes: &[Box<dyn RuntimeProvider>],
-        transports: &[Box<dyn TransportProvider>],
-        connections: &mut ConnectionRegistry,
-        spec: &WorkspaceSpec,
-    ) -> Result<Box<dyn Runtime>, resolver::ResolveError> {
-        let runtime_id = spec.runtime.as_str();
-        let transport_id = spec.transport.as_str();
-        let driver = runtimes
-            .iter()
-            .find(|driver| driver.id() == runtime_id)
-            .ok_or_else(|| resolver::ResolveError::UnknownRuntime {
-                id: runtime_id.to_string(),
-            })?;
-        let transport = transports
-            .iter()
-            .find(|transport| transport.id() == transport_id)
-            .ok_or_else(|| resolver::ResolveError::UnknownTransport {
-                id: transport_id.to_string(),
-            })?;
-        let requirements = driver.channel_requirements().to_vec();
-        let supported = transport.supported_channels().to_vec();
-        if !runtime_supports_channels(driver.as_ref(), &supported) {
-            return Err(resolver::ResolveError::IncompatibleChannels {
-                runtime_id: runtime_id.to_string(),
-                transport_id: transport_id.to_string(),
-                required: requirements,
-                supported,
-            });
-        }
-        let target = spec.alias.as_deref().unwrap_or("");
-        let connect = if let Some(existing) = connections.get(transport_id, target) {
-            existing
-        } else {
-            connections
-                .acquire(transport_id, target, || transport.connect(target))
-                .map_err(|error| resolver::ResolveError::TargetConnection {
-                    transport_id: transport_id.to_string(),
-                    target: target.to_string(),
-                    message: format!("{error:#}"),
-                })?
-        };
-        let runtime_spec = spec.runtime_spec();
-        let runtime = driver
-            .new_instance(Arc::clone(&connect), &runtime_spec)
-            .map_err(|error| resolver::ResolveError::RuntimeOpen {
-                runtime_id: runtime_id.to_string(),
-                transport_id: transport_id.to_string(),
-                target: target.to_string(),
-                message: format!("{error:#}"),
-            })?;
-        Ok(runtime)
-    }
-
-    /// Native worktree creation against an explicitly supplied live pool.
-    ///
-    /// The product composition root owns the live `WorkspacePool`; Catalog
-    /// keeps provider construction while inserting the new runtime into the
-    /// caller's pool.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn create_native_worktree_with_pool(
-        &self,
-        connections: &mut ConnectionRegistry,
-        templates: &TemplateRegistry,
-        pool: &mut WorkspacePool,
-        source: &WorkspaceId,
-        worktree: &crate::runtime::WorktreeCreateSpec,
-        provenance: Option<WorkspaceProvenance>,
-        template: Option<TemplateName>,
-    ) -> anyhow::Result<WorkspaceId> {
-        let mut spec = {
-            let workspace = pool
-                .get(source)
-                .ok_or_else(|| anyhow::anyhow!("workspace {source} 不在池里"))?;
-            if !workspace
-                .runtime()
-                .support()
-                .contains(&crate::runtime::RuntimeCapability::WorktreeCreate)
-            {
-                anyhow::bail!("runtime 不支持 native WorktreeCreate");
-            }
-            WorkspaceSpec::from_runtime_spec(workspace.runtime().create_worktree_spec(worktree)?)
-        };
-        spec.provenance = provenance.clone();
-        spec.template = template;
-        let workspace_id = spec.id();
-        let should_apply_template = pool.get(&workspace_id).is_none() && spec.create;
-        let template_record = spec
-            .template
-            .as_ref()
-            .and_then(|name| templates.get(name))
-            .cloned();
-        let runtime = self.new_runtime(connections, &spec)?;
-        let workspace = pool.open_spec_with_runtime(&spec, runtime).await?;
-        workspace.set_provenance(provenance);
-        if should_apply_template {
-            if let Some(template) = template_record {
-                workspace.start_template(template)?;
-            }
-        }
-        Ok(workspace_id)
-    }
-
-    /// Open a WorkspaceSpec into the caller-owned pool.
-    ///
-    /// Template application is intentionally limited to create specs; an
-    /// attach always follows the remote topology already present.
-    pub async fn open_spec<'a>(
-        &self,
-        connections: &mut ConnectionRegistry,
-        templates: &TemplateRegistry,
-        pool: &'a mut WorkspacePool,
-        spec: &WorkspaceSpec,
-    ) -> anyhow::Result<&'a mut Workspace> {
-        let workspace_id = spec.id();
-        let should_apply_template = pool.get(&workspace_id).is_none() && spec.create;
-        let template = spec
-            .template
-            .as_ref()
-            .and_then(|name| templates.get(name))
-            .cloned();
-        let runtime = self.new_runtime(connections, spec)?;
-        let workspace = pool
-            .open_spec_with_runtime(spec, runtime)
-            .await
-            .map_err(|error| runtime_open_error(spec, error))?;
-        if should_apply_template {
-            if let Some(template) = template {
-                workspace.start_template(template)?;
-            }
-        }
-        Ok(workspace)
-    }
-
-    /// Open a resolved target into the caller-owned WorkspacePool.
-    ///
-    /// Catalog resolves identities and constructs Runtime instances, but it
-    /// never owns live Workspace slots.
-    pub async fn open_resolved<'a>(
-        &self,
-        connections: &mut ConnectionRegistry,
-        templates: &TemplateRegistry,
-        pool: &'a mut WorkspacePool,
-        resolved: ResolvedTarget,
-    ) -> anyhow::Result<&'a mut Workspace> {
-        let id = resolved.workspace_id();
-        if let Some(existing) = pool.get(&id) {
-            if existing.resolved_target().map(|r| &r.spec) == Some(&resolved.spec) {
-                return Ok(pool.get_mut(&id).expect("刚查过必须存在"));
-            }
-            anyhow::bail!("identity key 撞到已打开 WorkspaceId {}（spec 不一致）", id);
-        }
-        let spec = resolved.spec.clone();
-        let canonical = resolved.canonical.clone();
-        let workspace = self.open_spec(connections, templates, pool, &spec).await?;
-        workspace.set_resolved_target(ResolvedTarget { canonical, spec });
-        Ok(workspace)
     }
 
     /// 唯一 TargetConfig→ResolvedTarget 解析入口（W6 §11.2）。
@@ -1021,15 +828,6 @@ fn target_config_from_existing(
     config.socket = candidate.socket.clone();
     config.workspace_id = candidate.workspace_id.clone();
     Ok(config)
-}
-
-fn runtime_open_error(spec: &WorkspaceSpec, error: anyhow::Error) -> anyhow::Error {
-    anyhow::Error::new(resolver::ResolveError::RuntimeOpen {
-        runtime_id: spec.runtime.clone(),
-        transport_id: spec.transport.clone(),
-        target: spec.alias.clone().unwrap_or_default(),
-        message: format!("{error:#}"),
-    })
 }
 
 /// 对一条 Connect 扇出所有接受该 transport 的 Driver。
