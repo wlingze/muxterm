@@ -1,0 +1,1020 @@
+//! Catalog 单测。内置 Driver 未登记时 `with_builtins_*` 为红；mock 路径应绿。
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+
+use super::{Catalog, OpenRequest, Reach, ResolveIntent, ResolvedTarget};
+use crate::catalog::connect::Connect;
+use crate::catalog::transport::{TargetInfo, TransportProvider};
+use crate::projects::{Project, Worktree};
+use crate::protocol::candidate::{
+    CandidateRef, ExistingCandidate as SessionCandidate, ExistingCandidateRef,
+};
+use crate::runtime::mock::MockRuntime;
+use crate::runtime::provider::RuntimeProvider;
+use crate::runtime::{Runtime, RuntimeCapability};
+use crate::transport::registry::ConnectionRegistry;
+use crate::transport::{ChannelKind, TargetConnection};
+use crate::workspace::spec::WorkspaceSpec;
+use crate::workspace::template::{
+    PaneTemplate, TabTemplate, TemplateLayout, TemplateName, WorkspaceTemplate,
+};
+
+struct MockDriver {
+    id: &'static str,
+    name: &'static str,
+    accepted: &'static [&'static str],
+    support: &'static [RuntimeCapability],
+    listed: Vec<SessionCandidate>,
+    list_err: bool,
+    opened: Arc<AtomicUsize>,
+}
+
+impl RuntimeProvider for MockDriver {
+    fn id(&self) -> &'static str {
+        self.id
+    }
+    fn name(&self) -> &'static str {
+        self.name
+    }
+    fn support(&self) -> &'static [RuntimeCapability] {
+        self.support
+    }
+    fn discover(
+        &self,
+        connect: &dyn TargetConnection,
+        _namespace: Option<&str>,
+    ) -> anyhow::Result<Vec<SessionCandidate>> {
+        if !self.accepted.contains(&connect.transport_id()) {
+            return Ok(Vec::new());
+        }
+        if self.list_err {
+            anyhow::bail!("mock list failed");
+        }
+        Ok(self
+            .listed
+            .iter()
+            .cloned()
+            .map(|mut row| {
+                row.transport_id = connect.transport_id().to_string();
+                row.target = connect.target().to_string();
+                row
+            })
+            .collect())
+    }
+    fn new_instance(
+        &self,
+        _connect: Arc<dyn TargetConnection>,
+        spec: &WorkspaceSpec,
+    ) -> anyhow::Result<Box<dyn Runtime>> {
+        self.opened.fetch_add(1, Ordering::SeqCst);
+        let mut rt = MockRuntime::with_single_pane();
+        rt.workspace_runtime = spec.runtime.clone();
+        Ok(Box::new(rt))
+    }
+}
+
+struct MockTransport {
+    id: &'static str,
+    name: &'static str,
+    connects: Arc<AtomicUsize>,
+    fail: bool,
+    targets: Vec<TargetInfo>,
+}
+
+impl TransportProvider for MockTransport {
+    fn id(&self) -> &'static str {
+        self.id
+    }
+    fn name(&self) -> &'static str {
+        self.name
+    }
+    fn list_targets(&self) -> anyhow::Result<Vec<TargetInfo>> {
+        Ok(self.targets.clone())
+    }
+    fn connect(&self, target: &str) -> anyhow::Result<Arc<dyn TargetConnection>> {
+        if self.fail {
+            anyhow::bail!("mock connect failed");
+        }
+        self.connects.fetch_add(1, Ordering::SeqCst);
+        Ok(Connect::new(self.id, target))
+    }
+}
+
+struct UnixSocketOnlyDriver;
+
+impl RuntimeProvider for UnixSocketOnlyDriver {
+    fn id(&self) -> &'static str {
+        "unix-only"
+    }
+
+    fn name(&self) -> &'static str {
+        "Unix only"
+    }
+
+    fn support(&self) -> &'static [RuntimeCapability] {
+        &[]
+    }
+
+    fn channel_requirements(&self) -> &'static [ChannelKind] {
+        &[ChannelKind::UnixSocket]
+    }
+
+    fn discover(
+        &self,
+        _connect: &dyn TargetConnection,
+        _namespace: Option<&str>,
+    ) -> anyhow::Result<Vec<SessionCandidate>> {
+        Ok(Vec::new())
+    }
+
+    fn new_instance(
+        &self,
+        _connect: Arc<dyn TargetConnection>,
+        _spec: &WorkspaceSpec,
+    ) -> anyhow::Result<Box<dyn Runtime>> {
+        Ok(Box::new(MockRuntime::with_single_pane()))
+    }
+}
+
+fn mock_spec(runtime: &str, transport: &str, alias: Option<&str>, session: &str) -> WorkspaceSpec {
+    WorkspaceSpec {
+        transport: transport.into(),
+        alias: alias.map(str::to_string),
+        session: session.into(),
+        runtime: runtime.into(),
+        path: String::new(),
+        socket: None,
+        create: false,
+        scrollback_lines: 10_000,
+        provenance: None,
+        template: None,
+    }
+}
+
+#[test]
+fn list_order_follows_registration() {
+    let mut cat = Catalog::new();
+    cat.register_runtime(Box::new(MockDriver {
+        id: "shell",
+        name: "Shell",
+        accepted: &["local"],
+        support: &[],
+        listed: vec![],
+        list_err: false,
+        opened: Arc::new(AtomicUsize::new(0)),
+    }));
+    cat.register_runtime(Box::new(MockDriver {
+        id: "tmux",
+        name: "tmux",
+        accepted: &["local"],
+        support: &[],
+        listed: vec![],
+        list_err: false,
+        opened: Arc::new(AtomicUsize::new(0)),
+    }));
+    let ids: Vec<_> = cat.runtime_list().into_iter().map(|r| r.id).collect();
+    assert_eq!(
+        ids,
+        ["shell", "tmux"],
+        "不要按名字重排，登记顺序就是列表顺序"
+    );
+}
+
+#[test]
+fn with_builtins_runtime_list_is_tmux_herdr_shell() {
+    let cat = Catalog::with_builtins();
+    let ids: Vec<_> = cat.runtime_list().into_iter().map(|r| r.id).collect();
+    assert_eq!(ids, ["tmux", "herdr", "shell"]);
+    assert!(!ids.iter().any(|id| id == "daemon"));
+}
+
+#[test]
+fn with_builtins_transport_list_is_local_ssh() {
+    let cat = Catalog::with_builtins();
+    let ids: Vec<_> = cat.transport_list().into_iter().map(|t| t.id).collect();
+    assert_eq!(ids, ["local", "ssh"]);
+}
+
+#[test]
+fn with_builtins_herdr_reports_worktree_caps() {
+    let cat = Catalog::with_builtins();
+    let herdr = cat
+        .runtime_list()
+        .into_iter()
+        .find(|r| r.id == "herdr")
+        .expect("with_builtins 必须登记 herdr");
+    assert!(
+        herdr.support.contains(&RuntimeCapability::WorktreeList),
+        "Herdr 卡必须带 WorktreeList: {:?}",
+        herdr.support
+    );
+    assert!(herdr.support.contains(&RuntimeCapability::WorktreeCreate));
+}
+
+#[test]
+fn with_builtins_shell_accepts_local_and_ssh() {
+    let cat = Catalog::with_builtins();
+    let shell = cat
+        .runtime_list()
+        .into_iter()
+        .find(|runtime| runtime.id == "shell")
+        .expect("with_builtins 必须登记 shell");
+    assert_eq!(shell.accepted_transports, ["local", "ssh"]);
+}
+
+#[test]
+fn discover_sessions_fans_out_and_skips_driver_error() {
+    let mut cat = Catalog::new();
+    cat.register_transport(Box::new(MockTransport {
+        id: "local",
+        name: "Local",
+        connects: Arc::new(AtomicUsize::new(0)),
+        fail: false,
+        targets: vec![TargetInfo::new("", "local")],
+    }));
+    cat.register_runtime(Box::new(MockDriver {
+        id: "tmux",
+        name: "tmux",
+        accepted: &["local"],
+        support: &[RuntimeCapability::Discover],
+        listed: vec![SessionCandidate {
+            runtime_id: "tmux".into(),
+            transport_id: String::new(),
+            target: String::new(),
+            namespace: None,
+            name: "mux".into(),
+            extra: String::new(),
+            ..Default::default()
+        }],
+        list_err: false,
+        opened: Arc::new(AtomicUsize::new(0)),
+    }));
+    cat.register_runtime(Box::new(MockDriver {
+        id: "herdr",
+        name: "Herdr",
+        accepted: &["local"],
+        support: &[RuntimeCapability::Discover],
+        listed: vec![],
+        list_err: true,
+        opened: Arc::new(AtomicUsize::new(0)),
+    }));
+    let rows = cat
+        .discover_sessions("local", "")
+        .expect("扇出不应因单个 Driver 失败");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].name, "mux");
+    assert_eq!(rows[0].runtime_id, "tmux");
+}
+
+#[test]
+fn connect_reuses_arc_for_same_target() {
+    let mut cat = Catalog::new();
+    let n = Arc::new(AtomicUsize::new(0));
+    cat.register_transport(Box::new(MockTransport {
+        id: "ssh",
+        name: "SSH",
+        connects: Arc::clone(&n),
+        fail: false,
+        targets: vec![TargetInfo::new("ryzen", "ryzen")],
+    }));
+    let a = cat.connect("ssh", "ryzen").unwrap();
+    let b = cat.connect("ssh", "ryzen").unwrap();
+    assert!(Arc::ptr_eq(&a, &b));
+    assert_eq!(n.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn two_opens_same_target_share_one_connect() {
+    let mut cat = Catalog::new();
+    let n = Arc::new(AtomicUsize::new(0));
+    cat.register_transport(Box::new(MockTransport {
+        id: "ssh",
+        name: "SSH",
+        connects: Arc::clone(&n),
+        fail: false,
+        targets: vec![],
+    }));
+    cat.register_runtime(Box::new(MockDriver {
+        id: "tmux",
+        name: "tmux",
+        accepted: &["local", "ssh"],
+        support: &[],
+        listed: vec![],
+        list_err: false,
+        opened: Arc::new(AtomicUsize::new(0)),
+    }));
+    cat.open(&mock_spec("tmux", "ssh", Some("ryzen"), "a"))
+        .await
+        .unwrap();
+    cat.open(&mock_spec("tmux", "ssh", Some("ryzen"), "b"))
+        .await
+        .unwrap();
+    assert_eq!(
+        n.load(Ordering::SeqCst),
+        1,
+        "同一 SSH target 只 connect 一次"
+    );
+    assert_eq!(cat.pool().len(), 2);
+}
+
+#[tokio::test]
+async fn external_connection_registry_reuses_target_across_runtime_builds() {
+    let mut cat = Catalog::new();
+    let connects = Arc::new(AtomicUsize::new(0));
+    cat.register_transport(Box::new(MockTransport {
+        id: "ssh",
+        name: "SSH",
+        connects: Arc::clone(&connects),
+        fail: false,
+        targets: vec![],
+    }));
+    cat.register_runtime(Box::new(MockDriver {
+        id: "mockrt",
+        name: "mock",
+        accepted: &["ssh"],
+        support: &[],
+        listed: vec![],
+        list_err: false,
+        opened: Arc::new(AtomicUsize::new(0)),
+    }));
+    let mut connections = ConnectionRegistry::new();
+
+    cat.new_runtime_with_connections(
+        &mut connections,
+        &mock_spec("mockrt", "ssh", Some("ryzen"), "first"),
+    )
+    .unwrap();
+    cat.new_runtime_with_connections(
+        &mut connections,
+        &mock_spec("mockrt", "ssh", Some("ryzen"), "second"),
+    )
+    .unwrap();
+
+    assert_eq!(connects.load(Ordering::SeqCst), 1);
+    assert_eq!(connections.len(), 1);
+}
+
+#[tokio::test]
+async fn open_rejects_unknown_runtime() {
+    let mut cat = Catalog::new();
+    cat.register_transport(Box::new(MockTransport {
+        id: "local",
+        name: "Local",
+        connects: Arc::new(AtomicUsize::new(0)),
+        fail: false,
+        targets: vec![],
+    }));
+    let err = cat
+        .open(&mock_spec("unknown", "local", None, "x"))
+        .await
+        .map(|_| ())
+        .expect_err("未知 runtime 必须 Err");
+    assert!(
+        err.to_string().contains("unknown runtime"),
+        "禁止悄悄变成 shell: {err}"
+    );
+}
+
+#[tokio::test]
+async fn open_uses_provider_not_spec_factory() {
+    let mut cat = Catalog::new();
+    let opened = Arc::new(AtomicUsize::new(0));
+    cat.register_transport(Box::new(MockTransport {
+        id: "local",
+        name: "Local",
+        connects: Arc::new(AtomicUsize::new(0)),
+        fail: false,
+        targets: vec![],
+    }));
+    cat.register_runtime(Box::new(MockDriver {
+        id: "mockrt",
+        name: "mock",
+        accepted: &["local"],
+        support: &[],
+        listed: vec![],
+        list_err: false,
+        opened: Arc::clone(&opened),
+    }));
+    let ws = cat
+        .open(&mock_spec("mockrt", "local", None, "demo"))
+        .await
+        .unwrap();
+    assert_eq!(ws.runtime().workspace_runtime(), "mockrt");
+    assert_eq!(opened.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn open_resolved_uses_canonical_workspace_name() {
+    let mut cat = Catalog::new();
+    cat.register_transport(Box::new(MockTransport {
+        id: "local",
+        name: "Local",
+        connects: Arc::new(AtomicUsize::new(0)),
+        fail: false,
+        targets: vec![],
+    }));
+    cat.register_runtime(Box::new(MockDriver {
+        id: "herdr",
+        name: "Herdr",
+        accepted: &["local"],
+        support: &[],
+        listed: vec![],
+        list_err: false,
+        opened: Arc::new(AtomicUsize::new(0)),
+    }));
+
+    let spec = WorkspaceSpec::herdr("default", "w2", "/tmp/herdr.sock");
+    let canonical = crate::quickconnect::model::TargetConfig {
+        name: "muxterm".into(),
+        runtime: crate::quickconnect::model::TargetRuntime::Herdr,
+        transport: crate::quickconnect::model::TargetTransport::Local,
+        path: "/home/example/muxterm".into(),
+        socket: Some("/tmp/herdr.sock".into()),
+        session: Some("default".into()),
+        workspace_id: Some("w2".into()),
+    };
+    let ws = cat
+        .open_resolved(ResolvedTarget { canonical, spec })
+        .await
+        .unwrap();
+
+    assert_eq!(ws.name(), "muxterm");
+}
+
+#[test]
+fn refresh_inventory_marks_unreachable_without_opening() {
+    let mut cat = Catalog::new();
+    cat.register_transport(Box::new(MockTransport {
+        id: "ssh",
+        name: "SSH",
+        connects: Arc::new(AtomicUsize::new(0)),
+        fail: true,
+        targets: vec![TargetInfo::new("dead", "dead")],
+    }));
+    cat.register_runtime(Box::new(MockDriver {
+        id: "tmux",
+        name: "tmux",
+        accepted: &["ssh"],
+        support: &[RuntimeCapability::Discover],
+        listed: vec![],
+        list_err: false,
+        opened: Arc::new(AtomicUsize::new(0)),
+    }));
+    cat.refresh_inventory().expect("探活失败不应 panic");
+    assert_eq!(
+        cat.inventory_snapshot().reach("ssh", "dead"),
+        Some(Reach::Err)
+    );
+    assert_eq!(cat.pool().len(), 0, "探活不得打开 Workspace");
+}
+
+#[test]
+fn pool_must_not_special_case_herdr_runtime_string() {
+    let src = include_str!("../workspace/pool.rs");
+    assert!(
+        !src.contains("if spec.runtime == \"herdr\""),
+        "open_spec 禁止按 runtime 字符串走 Herdr 旁路；共享连接走 Catalog.connects"
+    );
+}
+
+#[test]
+fn pool_must_not_hold_herdr_sessions_sidecar() {
+    let src = include_str!("../workspace/pool.rs");
+    assert!(
+        !src.contains("herdr_sessions"),
+        "WorkspacePool 不再持有 herdr_sessions；Connect 表在 Catalog"
+    );
+}
+
+/// C7：测试隔离远端 tmux 必须能通过 env 传给 TmuxDriver.list。
+#[test]
+fn tmux_driver_list_honors_test_remote_socket_env() {
+    let src = include_str!("../runtime/tmux/provider.rs");
+    assert!(
+        src.contains("MUXTERM_TEST_REMOTE_TMUX_SOCKET"),
+        "TmuxDriver::list SSH 分支必须读 MUXTERM_TEST_REMOTE_TMUX_SOCKET 传给 list_ssh_tmux_sessions，否则 Host local 测会打到用户默认 server"
+    );
+}
+
+/// C9：本地 list 也必须能指到隔离 `-L`，才能和 ssh-self 对同一 session 出双份。
+#[test]
+fn tmux_driver_list_honors_test_local_socket_env() {
+    let src = include_str!("../runtime/tmux/provider.rs");
+    assert!(
+        src.contains("MUXTERM_TEST_LOCAL_TMUX_SOCKET"),
+        "TmuxDriver::list 本地分支必须读 MUXTERM_TEST_LOCAL_TMUX_SOCKET 传给 list_local_tmux_sessions，否则 all 的 local 半边会打到用户默认 server"
+    );
+}
+
+/// C9：`all` 扇出 local 单例 + 每个 SSH target，同名 session 保留两行。
+#[test]
+fn discover_sessions_all_fans_out_local_and_ssh_targets() {
+    let mut cat = Catalog::new();
+    cat.register_transport(Box::new(MockTransport {
+        id: "local",
+        name: "Local",
+        connects: Arc::new(AtomicUsize::new(0)),
+        fail: false,
+        targets: vec![TargetInfo::new("", "local")],
+    }));
+    cat.register_transport(Box::new(MockTransport {
+        id: "ssh",
+        name: "SSH",
+        connects: Arc::new(AtomicUsize::new(0)),
+        fail: false,
+        targets: vec![TargetInfo::new("self", "self")],
+    }));
+    cat.register_runtime(Box::new(MockDriver {
+        id: "tmux",
+        name: "tmux",
+        accepted: &["local", "ssh"],
+        support: &[RuntimeCapability::Discover],
+        listed: vec![SessionCandidate {
+            runtime_id: "tmux".into(),
+            transport_id: String::new(),
+            target: String::new(),
+            namespace: None,
+            name: "mux-dup".into(),
+            extra: String::new(),
+            ..Default::default()
+        }],
+        list_err: false,
+        opened: Arc::new(AtomicUsize::new(0)),
+    }));
+    let rows = cat.discover_sessions("all", "").expect("all 不应 Err");
+    assert!(
+        rows.iter().any(|s| {
+            s.runtime_id == "tmux" && s.transport_id == "local" && s.name == "mux-dup"
+        }),
+        "all 必须含 local 行 mux-dup: {rows:?}"
+    );
+    assert!(
+        rows.iter().any(|s| {
+            s.runtime_id == "tmux"
+                && s.transport_id == "ssh"
+                && s.target == "self"
+                && s.name == "mux-dup"
+        }),
+        "all 必须含 ssh-self 行 mux-dup（双份，禁止去重）: {rows:?}"
+    );
+}
+
+/// C9：`all` 禁止串行等每个 SSH host；慢 host 不能把整表拖成超时之和。
+#[test]
+fn discover_sessions_all_must_fan_out_in_parallel() {
+    struct SlowListDriver {
+        active: Arc<AtomicUsize>,
+        max_active: Arc<AtomicUsize>,
+    }
+
+    impl RuntimeProvider for SlowListDriver {
+        fn id(&self) -> &'static str {
+            "slow"
+        }
+
+        fn name(&self) -> &'static str {
+            "slow"
+        }
+
+        fn support(&self) -> &'static [RuntimeCapability] {
+            &[RuntimeCapability::Discover]
+        }
+
+        fn discover(
+            &self,
+            connect: &dyn TargetConnection,
+            _namespace: Option<&str>,
+        ) -> anyhow::Result<Vec<SessionCandidate>> {
+            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_active.fetch_max(active, Ordering::SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            self.active.fetch_sub(1, Ordering::SeqCst);
+            Ok(vec![SessionCandidate {
+                runtime_id: "slow".into(),
+                transport_id: connect.transport_id().into(),
+                target: connect.target().into(),
+                namespace: None,
+                name: "candidate".into(),
+                extra: String::new(),
+                ..Default::default()
+            }])
+        }
+
+        fn new_instance(
+            &self,
+            _connect: Arc<dyn TargetConnection>,
+            _spec: &WorkspaceSpec,
+        ) -> anyhow::Result<Box<dyn Runtime>> {
+            Ok(Box::new(MockRuntime::with_single_pane()))
+        }
+    }
+
+    let active = Arc::new(AtomicUsize::new(0));
+    let max_active = Arc::new(AtomicUsize::new(0));
+    let mut cat = Catalog::new();
+    cat.register_transport(Box::new(MockTransport {
+        id: "local",
+        name: "Local",
+        connects: Arc::new(AtomicUsize::new(0)),
+        fail: false,
+        targets: vec![TargetInfo::new("", "local")],
+    }));
+    cat.register_transport(Box::new(MockTransport {
+        id: "ssh",
+        name: "SSH",
+        connects: Arc::new(AtomicUsize::new(0)),
+        fail: false,
+        targets: (0..4)
+            .map(|n| TargetInfo::new(format!("host-{n}"), format!("host-{n}")))
+            .collect(),
+    }));
+    cat.register_runtime(Box::new(SlowListDriver {
+        active,
+        max_active: max_active.clone(),
+    }));
+
+    let rows = cat.discover_sessions("all", "").expect("all 不应 Err");
+    assert_eq!(rows.len(), 5, "local + 4 SSH host 都必须返回: {rows:?}");
+    assert!(
+        max_active.load(Ordering::SeqCst) >= 2,
+        "必须观察到多个 connect 同时 list；源码里出现 thread/scope 不算行为证据"
+    );
+}
+
+#[tokio::test]
+async fn incompatible_channel_requirements_are_rejected_without_fallback() {
+    let mut cat = Catalog::new();
+    cat.register_transport(Box::new(MockTransport {
+        id: "exec-only",
+        name: "Exec only",
+        connects: Arc::new(AtomicUsize::new(0)),
+        fail: false,
+        targets: vec![TargetInfo::new("", "exec-only")],
+    }));
+    cat.register_runtime(Box::new(UnixSocketOnlyDriver));
+
+    let result = cat
+        .open(&mock_spec("unix-only", "exec-only", None, ""))
+        .await;
+    assert!(
+        result.is_err(),
+        "UnixSocket runtime must not silently fall back to Exec"
+    );
+    let error = result.err().unwrap();
+    assert!(error.to_string().contains("requires channels"));
+}
+
+#[test]
+fn candidate_resolver_maps_project_and_worktree_provenance() {
+    use crate::quickconnect::model::{TargetConfig, TargetRuntime, TargetTransport};
+    use crate::workspace::template::TemplateName;
+
+    let mut project = Project::new(
+        "project-a",
+        "Project A",
+        TargetConfig::new(
+            "ignored-display-name",
+            TargetRuntime::Shell,
+            TargetTransport::Local,
+            "/repo",
+        ),
+    );
+    project.template = Some(TemplateName::try_from("default").unwrap());
+    project
+        .add_worktree(Worktree::new(
+            "wt-a",
+            "/repo-wt",
+            "feature/a",
+            "/repo",
+            true,
+        ))
+        .unwrap();
+    let projects = vec![project];
+    let mut catalog = Catalog::new();
+
+    let project_request = OpenRequest {
+        candidate: CandidateRef::Project {
+            project_id: "project-a".into(),
+        },
+        intent: ResolveIntent::CreateIfMissing,
+        template: None,
+        activate: true,
+    };
+    let resolved_project = catalog
+        .resolve_open_request(&project_request, &projects)
+        .unwrap();
+    assert_eq!(
+        resolved_project
+            .spec
+            .provenance
+            .as_ref()
+            .and_then(|provenance| provenance.project_id.as_ref())
+            .map(ToString::to_string),
+        Some("project-a".into())
+    );
+    assert_eq!(
+        resolved_project
+            .spec
+            .template
+            .as_ref()
+            .map(ToString::to_string),
+        Some("default".into())
+    );
+    assert!(resolved_project.spec.create);
+
+    let worktree_request = OpenRequest {
+        candidate: CandidateRef::Worktree {
+            project_id: "project-a".into(),
+            worktree_id: "wt-a".into(),
+        },
+        intent: ResolveIntent::AttachOnly,
+        template: Some(TemplateName::try_from("override").unwrap()),
+        activate: true,
+    };
+    let resolved_worktree = catalog
+        .resolve_open_request(&worktree_request, &projects)
+        .unwrap();
+    let provenance = resolved_worktree.spec.provenance.as_ref().unwrap();
+    assert_eq!(
+        provenance.worktree_id.as_ref().map(ToString::to_string),
+        Some("wt-a".into())
+    );
+    assert_eq!(resolved_worktree.spec.path, "/repo-wt");
+    assert_eq!(
+        resolved_worktree
+            .spec
+            .template
+            .as_ref()
+            .map(ToString::to_string),
+        Some("override".into())
+    );
+}
+
+#[test]
+fn candidate_resolver_rehydrates_existing_identity_without_display_fields() {
+    let mut catalog = Catalog::new();
+    catalog.register_transport(Box::new(MockTransport {
+        id: "local",
+        name: "Local",
+        connects: Arc::new(AtomicUsize::new(0)),
+        fail: false,
+        targets: vec![],
+    }));
+    catalog.register_runtime(Box::new(MockDriver {
+        id: "tmux",
+        name: "tmux",
+        accepted: &["local"],
+        support: &[],
+        listed: vec![SessionCandidate {
+            runtime_id: "tmux".into(),
+            transport_id: "local".into(),
+            target: String::new(),
+            namespace: None,
+            name: "display-name".into(),
+            extra: "wire-detail".into(),
+            session: Some("demo".into()),
+            socket: Some("muxterm-test-candidate".into()),
+            workspace_id: None,
+        }],
+        list_err: false,
+        opened: Arc::new(AtomicUsize::new(0)),
+    }));
+
+    let request = OpenRequest {
+        candidate: CandidateRef::Existing {
+            identity: ExistingCandidateRef {
+                runtime_id: "tmux".into(),
+                transport_id: "local".into(),
+                target: String::new(),
+                session: Some("demo".into()),
+                socket: Some("muxterm-test-candidate".into()),
+                workspace_id: None,
+            },
+        },
+        intent: ResolveIntent::AttachOnly,
+        template: None,
+        activate: true,
+    };
+    let resolved = catalog.resolve_open_request(&request, &[]).unwrap();
+    assert_eq!(resolved.canonical.name, "display-name");
+    assert_eq!(resolved.spec.session, "demo");
+    assert_eq!(
+        resolved.spec.socket.as_deref(),
+        Some("muxterm-test-candidate")
+    );
+    assert!(!resolved.spec.create);
+
+    let all_view_request = OpenRequest {
+        candidate: CandidateRef::Existing {
+            identity: ExistingCandidateRef {
+                runtime_id: "tmux".into(),
+                transport_id: "local".into(),
+                target: "local".into(),
+                session: Some("demo".into()),
+                socket: Some("muxterm-test-candidate".into()),
+                workspace_id: None,
+            },
+        },
+        intent: ResolveIntent::AttachOnly,
+        template: None,
+        activate: true,
+    };
+    let resolved_all_view = catalog
+        .resolve_open_request(&all_view_request, &[])
+        .unwrap();
+    assert_eq!(resolved_all_view.canonical.name, "display-name");
+}
+
+fn single_pane_template() -> WorkspaceTemplate {
+    WorkspaceTemplate {
+        name: TemplateName::try_from("single").unwrap(),
+        tabs: vec![TabTemplate {
+            name: Some("templated".into()),
+            active: true,
+            layout: TemplateLayout::Pane(PaneTemplate {
+                command: None,
+                cwd: None,
+                env: Default::default(),
+                focus: false,
+            }),
+        }],
+    }
+}
+
+#[tokio::test]
+async fn catalog_applies_templates_only_to_create_specs() {
+    let mut cat = Catalog::new();
+    cat.register_transport(Box::new(MockTransport {
+        id: "local",
+        name: "Local",
+        connects: Arc::new(AtomicUsize::new(0)),
+        fail: false,
+        targets: vec![TargetInfo::new("", "local")],
+    }));
+    cat.register_runtime(Box::new(MockDriver {
+        id: "mock",
+        name: "Mock",
+        accepted: &["local"],
+        support: &[],
+        listed: vec![],
+        list_err: false,
+        opened: Arc::new(AtomicUsize::new(0)),
+    }));
+    cat.register_template(single_pane_template()).unwrap();
+
+    let template_name = TemplateName::try_from("single").unwrap();
+    let mut attach = mock_spec("mock", "local", None, "attach");
+    attach.template = Some(template_name.clone());
+    let attach_id = attach.id();
+    cat.open(&attach).await.unwrap();
+    assert!(
+        cat.pool()
+            .get(&attach_id)
+            .unwrap()
+            .template_apply_report()
+            .is_none(),
+        "attach must not apply a template"
+    );
+
+    let mut create = mock_spec("mock", "local", None, "create");
+    create.create = true;
+    create.template = Some(template_name);
+    let create_id = create.id();
+    cat.open(&create).await.unwrap();
+    let report = cat
+        .pool()
+        .get(&create_id)
+        .unwrap()
+        .template_apply_report()
+        .expect("create must finish the single-pane template");
+    assert!(report.completed);
+    assert_eq!(report.applied_tabs, 1);
+    assert_eq!(report.applied_panes, 1);
+}
+
+#[tokio::test]
+async fn candidate_resolver_rehydrates_recent_from_core_descriptor() {
+    use crate::quickconnect::model::{TargetConfig, TargetRuntime, TargetTransport};
+
+    let mut catalog = Catalog::new();
+    let spec = WorkspaceSpec::local_shell("/repo");
+    let workspace_id = spec.id();
+    catalog
+        .pool_mut()
+        .open(workspace_id.clone(), "recent".into(), |_| {
+            Box::new(MockRuntime::with_single_pane())
+        })
+        .await
+        .unwrap();
+    let canonical = TargetConfig::new(
+        "Recent Project",
+        TargetRuntime::Shell,
+        TargetTransport::Local,
+        "/repo",
+    );
+    let key = canonical.identity_key();
+    catalog
+        .pool_mut()
+        .get_mut(&workspace_id)
+        .unwrap()
+        .set_resolved_target(ResolvedTarget {
+            canonical,
+            spec: spec.clone(),
+        });
+
+    let request = OpenRequest {
+        candidate: CandidateRef::Recent { key },
+        intent: ResolveIntent::AttachOnly,
+        template: None,
+        activate: true,
+    };
+    let resolved = catalog.resolve_open_request(&request, &[]).unwrap();
+    assert_eq!(resolved.spec, spec);
+    assert_eq!(resolved.canonical.name, "Recent Project");
+}
+
+#[tokio::test]
+async fn catalog_candidates_aggregates_four_kinds_and_marks_pool_membership() {
+    use crate::quickconnect::model::{TargetConfig, TargetRuntime, TargetTransport};
+    use crate::workspace::provenance::WorkspaceProvenance;
+
+    let mut project = Project::new(
+        "project-a",
+        "Project A",
+        TargetConfig::new(
+            "project",
+            TargetRuntime::Tmux,
+            TargetTransport::Local,
+            "/repo",
+        ),
+    );
+    project.target.session = Some("demo".into());
+    project.target.socket = Some("muxterm-test-candidates".into());
+    project
+        .add_worktree(Worktree::new(
+            "wt-a",
+            "/repo-wt",
+            "feature/a",
+            "/repo",
+            true,
+        ))
+        .unwrap();
+
+    let existing = SessionCandidate {
+        runtime_id: "tmux".into(),
+        transport_id: "local".into(),
+        target: String::new(),
+        namespace: None,
+        name: "demo".into(),
+        extra: "wire-detail".into(),
+        session: Some("demo".into()),
+        socket: Some("muxterm-test-candidates".into()),
+        workspace_id: None,
+    };
+    let spec =
+        WorkspaceSpec::local_tmux(Some("demo".into()), Some("muxterm-test-candidates".into()));
+    let workspace_id = spec.id();
+    let mut catalog = Catalog::new();
+    catalog
+        .pool_mut()
+        .open(workspace_id.clone(), "demo".into(), |_| {
+            Box::new(MockRuntime::with_single_pane())
+        })
+        .await
+        .unwrap();
+    catalog
+        .pool_mut()
+        .get_mut(&workspace_id)
+        .unwrap()
+        .set_resolved_target(ResolvedTarget {
+            canonical: project.target.clone(),
+            spec,
+        });
+    catalog
+        .pool_mut()
+        .get_mut(&workspace_id)
+        .unwrap()
+        .set_provenance(Some(WorkspaceProvenance::project("project-a")));
+
+    let rows = catalog.candidates(&[project], &[existing], 1);
+    assert_eq!(rows.len(), 4);
+    assert_eq!(
+        rows.iter().map(|row| row.kind).collect::<Vec<_>>(),
+        vec![
+            crate::protocol::candidate::CandidateKind::Project,
+            crate::protocol::candidate::CandidateKind::Worktree,
+            crate::protocol::candidate::CandidateKind::Existing,
+            crate::protocol::candidate::CandidateKind::Recent,
+        ]
+    );
+    assert!(
+        rows[0].in_pool.is_some(),
+        "project provenance should be indexed"
+    );
+    assert!(
+        rows[2].in_pool.is_some(),
+        "existing identity should be indexed"
+    );
+    assert_eq!(rows[3].in_pool, Some(workspace_id));
+}
