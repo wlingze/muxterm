@@ -17,7 +17,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde_json::Value;
 
 use super::channel::{open_unix_socket, ChannelIo, SharedChannel};
-use crate::transport::{connection::Connect, TargetConnection};
+use crate::transport::{Connect, TargetConnection};
 
 /// 单次请求超时。
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);

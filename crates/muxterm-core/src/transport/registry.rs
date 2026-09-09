@@ -1,6 +1,6 @@
 //! Reusable target connections.
 
-use super::provider::TransportProvider;
+use super::TransportProvider;
 pub use muxterm_transport::ConnectionRegistry;
 
 /// Construct the built-in TransportProvider list in stable UI order.

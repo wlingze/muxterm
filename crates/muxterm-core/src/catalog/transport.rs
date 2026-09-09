@@ -1,3 +1,3 @@
-//! Compatibility entry point for the transport-owned provider contract.
+//! Catalog-facing view of the transport provider contract.
 
-pub use crate::transport::provider::{TargetInfo, Transport, TransportInfo, TransportProvider};
+pub use muxterm_transport::provider::{TargetInfo, Transport, TransportInfo, TransportProvider};

@@ -1,12 +1,11 @@
 //! Concrete transport implementations built on the shared transport contract.
 
-pub mod connection;
-pub mod local;
-pub use muxterm_transport::provider;
 pub mod registry;
-pub mod ssh;
+
+pub use muxterm_transport::provider::{TargetInfo, TransportInfo, TransportProvider};
+pub use muxterm_transport::{local, ssh};
 
 pub use muxterm_transport::{
-    ByteChannel, ChannelKind, ChannelRequest, CommandOutput, PtySize, TargetConnection,
+    ByteChannel, ChannelKind, ChannelRequest, CommandOutput, Connect, PtySize, TargetConnection,
     TrafficCounters, Transport, TransportError, TransportSignal,
 };
