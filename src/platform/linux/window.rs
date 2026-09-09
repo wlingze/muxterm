@@ -572,6 +572,25 @@ impl AppWindow {
         event_pump
             .sync_view_store(&mut view_store)
             .expect("Core workspace snapshot 必须可用");
+        let projects = match event_pump.client().config_describe() {
+            Ok(snapshot) => match serde_json::from_value(snapshot.values["projects"].clone()) {
+                Ok(projects) => projects,
+                Err(error) => {
+                    tracing::warn!(
+                        target = "muxterm::config",
+                        "从 Core FFI 快照读取 Project 失败: {error}"
+                    );
+                    Vec::new()
+                }
+            },
+            Err(error) => {
+                tracing::warn!(
+                    target = "muxterm::config",
+                    "通过 Core FFI 读取 Project 失败: {error}"
+                );
+                Vec::new()
+            }
+        };
         let startup_key = view_store
             .active_workspace_id()
             .or_else(|| view_store.workspace_ids().next())
@@ -750,8 +769,7 @@ impl AppWindow {
         layout_overlay.add_overlay(&jump_latest);
 
         let keymap = KeyMap::from_bindings(&keybindings);
-        let qc_store =
-            QuickConnectStore::new_unified(crate::core::config::Config::user_config_path());
+        let qc_store = QuickConnectStore::from_project_documents(&projects);
         let state = Rc::new(RefCell::new(UiState {
             event_pump,
             pixel_cache,
@@ -4344,6 +4362,15 @@ fn open_target_config(
             move |saved| {
                 let mut s = st.borrow_mut();
                 s.qc_store.upsert_project(&saved);
+                match serde_json::to_value(s.qc_store.project_documents()) {
+                    Ok(projects) => {
+                        persist_config(s.event_pump.client(), "projects", projects);
+                    }
+                    Err(error) => tracing::warn!(
+                        target = "muxterm::config",
+                        "序列化 Project 配置失败: {error}"
+                    ),
+                }
                 drop(s);
                 open_quick_connect(&st, &win);
             }
