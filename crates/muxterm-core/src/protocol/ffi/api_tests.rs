@@ -122,7 +122,10 @@ fn ffi_workspace_open_target_json_returns_structured_provider_error() {
     unsafe {
         // The compatibility target parser accepts this product runtime;
         // replace the built-in Catalog to exercise provider resolution.
-        (*h).catalog = crate::catalog::Catalog::new();
+        let catalog = crate::catalog::Catalog::new();
+        (*h).runtime_registry = catalog.runtime_registry();
+        (*h).transport_registry = catalog.transport_registry();
+        (*h).catalog = catalog;
         let response = muxterm_workspace_open_target_json(
             h,
             c"{\"name\":\"missing-runtime\",\"runtime\":\"shell\",\"transport\":\"local\",\"path\":\"/tmp\"}".as_ptr(),
@@ -153,7 +156,10 @@ fn ffi_candidates_json_aggregates_core_projects() {
     unsafe {
         // No providers means the discovery leg is empty and cannot touch
         // a real tmux/SSH endpoint in this unit test.
-        (*h).catalog = crate::catalog::Catalog::new();
+        let catalog = crate::catalog::Catalog::new();
+        (*h).runtime_registry = catalog.runtime_registry();
+        (*h).transport_registry = catalog.transport_registry();
+        (*h).catalog = catalog;
         (*h).projects = ProjectsService::in_memory();
         (*h).projects_mut()
             .create_project(Project::new(
@@ -469,7 +475,10 @@ fn ffi_workspace_task_targets_background_workspace_without_activation() {
     let h = muxterm_catalog_new();
     assert!(!h.is_null());
     unsafe {
-        (*h).catalog = crate::catalog::Catalog::new();
+        let catalog = crate::catalog::Catalog::new();
+        (*h).runtime_registry = catalog.runtime_registry();
+        (*h).transport_registry = catalog.transport_registry();
+        (*h).catalog = catalog;
         let first_id = WorkspaceId::new("local", None, "first", "shell", "/one");
         let second_id = WorkspaceId::new("local", None, "second", "shell", "/two");
         (*h).pool_mut().insert_connected(Workspace::new(

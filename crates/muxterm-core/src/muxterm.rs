@@ -8,13 +8,16 @@
 use std::collections::VecDeque;
 use std::ffi::{c_char, CString};
 use std::ptr;
+use std::sync::Arc;
 
 use crate::activity::attention::signal::AttentionSignal;
 use crate::activity::ActivityState;
-use crate::catalog::{OpenRequest, ResolveIntent, ResolvedTarget};
+use crate::catalog::{OpenRequest, ResolveError, ResolveIntent, ResolvedTarget};
 use crate::config::SettingsService;
 use crate::projects::ProjectsService;
 use crate::protocol::state::StateChange;
+use crate::runtime::registry::RuntimeRegistry;
+use crate::runtime::{runtime_supports_channels, Runtime};
 use crate::workspace::pool::WorkspacePool;
 use crate::workspace::spec::WorkspaceSpec;
 use crate::workspace::template::TemplateRegistry;
@@ -22,7 +25,7 @@ use crate::workspace::workspace::Workspace;
 
 use crate::protocol::ffi::callbacks::FfiCallbacks;
 use crate::protocol::ffi::types::CLayoutNode;
-use crate::transport::registry::ConnectionRegistry;
+use crate::transport::registry::{ConnectionRegistry, TransportRegistry};
 
 type PendingAttentionUpdate = (u32, Vec<AttentionSignal>, String, u64, Option<String>);
 
@@ -34,6 +37,10 @@ type PendingAttentionUpdate = (u32, Vec<AttentionSignal>, String, u64, Option<St
 pub struct Muxterm {
     /// Catalog: provider/discovery/resolution services.
     pub(crate) catalog: crate::catalog::Catalog,
+    /// Runtime provider registry owned by this product session.
+    pub(crate) runtime_registry: Arc<RuntimeRegistry>,
+    /// Transport provider registry owned by this product session.
+    pub(crate) transport_registry: Arc<TransportRegistry>,
     /// Reusable target connections owned by the product session.
     pub(crate) connections: ConnectionRegistry,
     /// Create-time workspace templates projected from Config.
@@ -88,7 +95,8 @@ impl Muxterm {
         spec: &WorkspaceSpec,
     ) -> anyhow::Result<&mut Workspace> {
         Self::open_spec_parts(
-            &self.catalog,
+            &self.runtime_registry,
+            &self.transport_registry,
             &mut self.connections,
             &self.templates,
             &mut self.pool,
@@ -101,13 +109,89 @@ impl Muxterm {
     /// form so its Tokio runtime can be borrowed independently from Catalog
     /// and the live pool.
     pub(crate) async fn open_spec_parts<'a>(
-        catalog: &'a crate::catalog::Catalog,
+        runtime_registry: &'a RuntimeRegistry,
+        transport_registry: &'a TransportRegistry,
         connections: &'a mut ConnectionRegistry,
         templates: &'a TemplateRegistry,
         pool: &'a mut WorkspacePool,
         spec: &WorkspaceSpec,
     ) -> anyhow::Result<&'a mut Workspace> {
-        catalog.open_spec(connections, templates, pool, spec).await
+        let workspace_id = spec.id();
+        let should_apply_template = pool.get(&workspace_id).is_none() && spec.create;
+        let template = spec
+            .template
+            .as_ref()
+            .and_then(|name| templates.get(name))
+            .cloned();
+        let runtime =
+            Self::new_runtime_parts(runtime_registry, transport_registry, connections, spec)?;
+        let workspace = pool
+            .open_spec_with_runtime(spec, runtime)
+            .await
+            .map_err(|error| runtime_open_error(spec, error))?;
+        if should_apply_template {
+            if let Some(template) = template {
+                workspace.start_template(template)?;
+            }
+        }
+        Ok(workspace)
+    }
+
+    /// Construct a Runtime from Catalog's provider view. The live Runtime is
+    /// owned by the product pool, while the reusable target connection stays
+    /// owned by this composition root.
+    fn new_runtime_parts(
+        runtime_registry: &RuntimeRegistry,
+        transport_registry: &TransportRegistry,
+        connections: &mut ConnectionRegistry,
+        spec: &WorkspaceSpec,
+    ) -> anyhow::Result<Box<dyn Runtime>> {
+        let runtime_id = spec.runtime.as_str();
+        let transport_id = spec.transport.as_str();
+        let provider =
+            runtime_registry
+                .get(runtime_id)
+                .ok_or_else(|| ResolveError::UnknownRuntime {
+                    id: runtime_id.to_string(),
+                })?;
+        let transport =
+            transport_registry
+                .get(transport_id)
+                .ok_or_else(|| ResolveError::UnknownTransport {
+                    id: transport_id.to_string(),
+                })?;
+        let required = provider.channel_requirements().to_vec();
+        let supported = transport.supported_channels().to_vec();
+        if !runtime_supports_channels(provider, &supported) {
+            return Err(ResolveError::IncompatibleChannels {
+                runtime_id: runtime_id.to_string(),
+                transport_id: transport_id.to_string(),
+                required,
+                supported,
+            }
+            .into());
+        }
+        let target = spec.alias.as_deref().unwrap_or("");
+        let connection = if let Some(existing) = connections.get(transport_id, target) {
+            existing
+        } else {
+            connections
+                .acquire(transport_id, target, || transport.connect(target))
+                .map_err(|error| ResolveError::TargetConnection {
+                    transport_id: transport_id.to_string(),
+                    target: target.to_string(),
+                    message: format!("{error:#}"),
+                })?
+        };
+        provider
+            .new_instance(Arc::clone(&connection), &spec.runtime_spec())
+            .map_err(|error| ResolveError::RuntimeOpen {
+                runtime_id: runtime_id.to_string(),
+                transport_id: transport_id.to_string(),
+                target: target.to_string(),
+                message: format!("{error:#}"),
+            })
+            .map_err(Into::into)
     }
 
     /// Open a resolver result and retain its canonical descriptor in Core.
@@ -116,7 +200,8 @@ impl Muxterm {
         resolved: ResolvedTarget,
     ) -> anyhow::Result<&mut Workspace> {
         Self::open_resolved_parts(
-            &self.catalog,
+            &self.runtime_registry,
+            &self.transport_registry,
             &mut self.connections,
             &self.templates,
             &mut self.pool,
@@ -127,7 +212,8 @@ impl Muxterm {
 
     /// Open a resolved target using explicitly split owner fields.
     pub(crate) async fn open_resolved_parts<'a>(
-        catalog: &'a crate::catalog::Catalog,
+        runtime_registry: &'a RuntimeRegistry,
+        transport_registry: &'a TransportRegistry,
         connections: &'a mut ConnectionRegistry,
         templates: &'a TemplateRegistry,
         pool: &'a mut WorkspacePool,
@@ -145,9 +231,66 @@ impl Muxterm {
         }
         let spec = resolved.spec.clone();
         let canonical = resolved.canonical.clone();
-        let workspace = Self::open_spec_parts(catalog, connections, templates, pool, &spec).await?;
+        let workspace = Self::open_spec_parts(
+            runtime_registry,
+            transport_registry,
+            connections,
+            templates,
+            pool,
+            &spec,
+        )
+        .await?;
         workspace.set_resolved_target(ResolvedTarget { canonical, spec });
         Ok(workspace)
+    }
+
+    /// Create a native Runtime worktree and open the resulting Workspace in
+    /// the product-owned pool. This keeps live-workspace orchestration on the
+    /// composition root's product path.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn create_native_worktree_with_pool(
+        runtime_registry: &RuntimeRegistry,
+        transport_registry: &TransportRegistry,
+        connections: &mut ConnectionRegistry,
+        templates: &TemplateRegistry,
+        pool: &mut WorkspacePool,
+        source: &muxterm_protocol::WorkspaceId,
+        worktree: &crate::runtime::WorktreeCreateSpec,
+        provenance: Option<crate::workspace::provenance::WorkspaceProvenance>,
+        template: Option<crate::workspace::template::TemplateName>,
+    ) -> anyhow::Result<muxterm_protocol::WorkspaceId> {
+        let mut spec = {
+            let workspace = pool
+                .get(source)
+                .ok_or_else(|| anyhow::anyhow!("workspace {source} 不在池里"))?;
+            if !workspace
+                .runtime()
+                .support()
+                .contains(&crate::runtime::RuntimeCapability::WorktreeCreate)
+            {
+                anyhow::bail!("runtime 不支持 native WorktreeCreate");
+            }
+            WorkspaceSpec::from_runtime_spec(workspace.runtime().create_worktree_spec(worktree)?)
+        };
+        spec.provenance = provenance.clone();
+        spec.template = template;
+        let workspace_id = spec.id();
+        let should_apply_template = pool.get(&workspace_id).is_none() && spec.create;
+        let template_record = spec
+            .template
+            .as_ref()
+            .and_then(|name| templates.get(name))
+            .cloned();
+        let runtime =
+            Self::new_runtime_parts(runtime_registry, transport_registry, connections, &spec)?;
+        let workspace = pool.open_spec_with_runtime(&spec, runtime).await?;
+        workspace.set_provenance(provenance);
+        if should_apply_template {
+            if let Some(template) = template_record {
+                workspace.start_template(template)?;
+            }
+        }
+        Ok(workspace_id)
     }
 
     /// Resolve a product open request using recent descriptors from the live
@@ -324,6 +467,15 @@ impl Muxterm {
             self.activity.attention.remove_pane(&ws_name, pane);
         }
     }
+}
+
+fn runtime_open_error(spec: &WorkspaceSpec, error: anyhow::Error) -> anyhow::Error {
+    anyhow::Error::new(ResolveError::RuntimeOpen {
+        runtime_id: spec.runtime.clone(),
+        transport_id: spec.transport.clone(),
+        target: spec.alias.clone().unwrap_or_default(),
+        message: format!("{error:#}"),
+    })
 }
 
 pub(crate) fn should_export_state_change(event: &StateChange) -> bool {
