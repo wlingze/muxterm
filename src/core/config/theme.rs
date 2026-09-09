@@ -2,6 +2,8 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::path::Path;
 
+pub use muxterm_protocol::Rgb;
+
 // ============================================================================
 // 主题
 // ============================================================================
@@ -14,16 +16,6 @@ pub struct Theme {
     pub foreground: Rgb,
     pub cursor: Rgb,
     pub colors: [Rgb; 16],
-}
-
-/// sRGB 颜色。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct Rgb(pub u8, pub u8, pub u8);
-
-impl Rgb {
-    pub fn to_u32(self) -> u32 {
-        ((self.0 as u32) << 16) | ((self.1 as u32) << 8) | (self.2 as u32)
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

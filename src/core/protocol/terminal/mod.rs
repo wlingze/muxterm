@@ -5,7 +5,7 @@
 //! - [`input`]：键盘事件 → pty 字节流
 
 pub mod emulate;
-pub mod input;
+pub use muxterm_protocol::input;
 pub mod process;
 pub mod scrollback;
 

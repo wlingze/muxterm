@@ -226,31 +226,6 @@ fn hex_value(byte: u8) -> Option<u32> {
 // ID 解析（类型定义在 crate::types）
 // ============================================================================
 
-impl PaneId {
-    /// 从 `@N` / `%N` / `N` 形式解析（tmux 3.3+ 的 `%output` / `%pane-mode-changed`
-    /// 用 `%N`；`@N` 是 window id，靠上下文区分）。
-    pub fn parse(s: &str) -> Result<Self, ProtocolError> {
-        let num_part = s
-            .strip_prefix('@')
-            .or_else(|| s.strip_prefix('%'))
-            .unwrap_or(s);
-        let n = u32::from_str(num_part)
-            .map_err(|_| ProtocolError::MalformedField(format!("pane id 非数字: {s}")))?;
-        Ok(PaneId(n))
-    }
-}
-
-impl TabId {
-    pub fn parse(s: &str) -> Result<Self, ProtocolError> {
-        let s = s
-            .strip_prefix('@')
-            .ok_or_else(|| ProtocolError::MalformedField(format!("window id 缺少 @ 前缀: {s}")))?;
-        let n = u32::from_str(s)
-            .map_err(|_| ProtocolError::MalformedField(format!("window id 非数字: {s}")))?;
-        Ok(TabId(n))
-    }
-}
-
 impl TmuxSessionId {
     pub fn parse(s: &str) -> Result<Self, ProtocolError> {
         let s = s
@@ -700,7 +675,7 @@ enum WindowKind {
 
 fn parse_window_id_only(rest: &str, kind: WindowKind) -> Result<Message, ProtocolError> {
     let rest = rest.trim();
-    let window = TabId::parse(rest)?;
+    let window = TabId::parse(rest).map_err(ProtocolError::MalformedField)?;
     Ok(match kind {
         WindowKind::NormalAdd => Message::WindowAdd { window },
         WindowKind::NormalClose => Message::WindowClose { window },
@@ -715,7 +690,7 @@ fn parse_window_renamed(rest: &str) -> Result<Message, ProtocolError> {
     let wid = it
         .next()
         .ok_or_else(|| ProtocolError::MalformedField("window-renamed 缺 id".into()))?;
-    let window = TabId::parse(wid)?;
+    let window = TabId::parse(wid).map_err(ProtocolError::MalformedField)?;
     let name = it.next().unwrap_or("").to_string();
     Ok(Message::WindowRenamed { window, name })
 }
@@ -747,7 +722,7 @@ fn parse_pane_mode_changed(rest: &str) -> Result<Message, ProtocolError> {
     let pid = it
         .next()
         .ok_or_else(|| ProtocolError::MalformedField("pane-mode-changed 缺 id".into()))?;
-    let pane = PaneId::parse(pid)?;
+    let pane = PaneId::parse(pid).map_err(ProtocolError::MalformedField)?;
     let mode = it.next().unwrap_or("").to_string();
     Ok(Message::PaneModeChanged { pane, mode })
 }
@@ -824,7 +799,7 @@ fn parse_unlinked_window_renamed(rest: &str) -> Result<Message, ProtocolError> {
     let wid = it
         .next()
         .ok_or_else(|| ProtocolError::MalformedField("unlinked-window-renamed 缺 id".into()))?;
-    let window = TabId::parse(wid)?;
+    let window = TabId::parse(wid).map_err(ProtocolError::MalformedField)?;
     let name = it.next().unwrap_or("").to_string();
     Ok(Message::UnlinkedWindowRenamed { window, name })
 }
@@ -925,7 +900,7 @@ fn parse_layout_change(rest: &str) -> Result<Message, ProtocolError> {
     let wid = parts
         .next()
         .ok_or_else(|| ProtocolError::MalformedField("layout-change 缺 window id".into()))?;
-    let window = TabId::parse(wid)?;
+    let window = TabId::parse(wid).map_err(ProtocolError::MalformedField)?;
     let layout_str = parts
         .next()
         .ok_or_else(|| ProtocolError::MalformedField("layout-change 缺 layout".into()))?;
@@ -959,7 +934,7 @@ fn parse_window_pane_changed(rest: &str) -> Result<Message, ProtocolError> {
     let wid = it
         .next()
         .ok_or_else(|| ProtocolError::MalformedField("window-pane-changed 缺 window id".into()))?;
-    let window = TabId::parse(wid)?;
+    let window = TabId::parse(wid).map_err(ProtocolError::MalformedField)?;
     let pid = it
         .next()
         .ok_or_else(|| ProtocolError::MalformedField("window-pane-changed 缺 pane id".into()))?;
@@ -977,7 +952,7 @@ fn parse_session_window_changed(rest: &str) -> Result<Message, ProtocolError> {
     let wid = it.next().ok_or_else(|| {
         ProtocolError::MalformedField("session-window-changed 缺 window id".into())
     })?;
-    let window = TabId::parse(wid.trim())?;
+    let window = TabId::parse(wid.trim()).map_err(ProtocolError::MalformedField)?;
     Ok(Message::SessionWindowChanged { session, window })
 }
 

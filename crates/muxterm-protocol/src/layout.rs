@@ -1,11 +1,11 @@
 //! 纯布局树：session / window / pane 嵌套分割模型。
 //!
 //! Terminal 层的纯数据结构，**无 I/O、无 GUI 依赖**。
-//! 由 [`crate::core::protocol::state`] 引用，由各 Runtime 构造/同步。
+//! 由 Core state layer 引用，由各 Runtime 构造/同步。
 //!
 //! 嵌套模型（非平铺）：每次分割只替换当前激活的叶子 pane，不重排其他 pane。
 //! 参考 `ARCHITECTURE.md` §2.4。
-use crate::core::types::PaneId;
+use crate::{PaneId, TabId};
 
 /// 分割方向。
 ///
@@ -167,7 +167,7 @@ pub struct RemoveRootError;
 /// （由 Runtime 从 tmux `window_layout` 或本地 vte4 尺寸同步）。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TabLayout {
-    pub tab: crate::core::types::TabId,
+    pub tab: TabId,
     pub tree: LayoutNode,
     /// 激活 pane。
     pub active: PaneId,
@@ -278,11 +278,11 @@ mod tests {
     fn window_layout_fields() {
         let t = LayoutNode::leaf(p(1));
         let wl = TabLayout {
-            tab: crate::core::types::TabId(1),
+            tab: TabId(1),
             tree: t,
             active: p(1),
         };
-        assert_eq!(wl.tab, crate::core::types::TabId(1));
+        assert_eq!(wl.tab, TabId(1));
         assert_eq!(wl.active, p(1));
         assert_eq!(wl.tree.leaves(), vec![p(1)]);
     }
