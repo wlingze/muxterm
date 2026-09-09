@@ -29,6 +29,7 @@ use crate::frontend::ffi_client::{
     ClientOpenedWorkspace, ClientRuntimeCapability, ClientTarget, ClientTask,
     ClientWorkspaceAttention, ClientWorkspaceEvent, FfiClient,
 };
+use crate::frontend::i18n::{self, Key};
 use crate::frontend::linux::attention_compat::CompatibilityActivity;
 use crate::frontend::linux::attention_ui::{window_title, GioSink, NotificationSink};
 use crate::frontend::linux::command_palette::{parse_palette_action, PaletteAction};
@@ -63,8 +64,7 @@ use crate::frontend::linux::view_store::ViewStore;
 use crate::frontend::linux::workspace_sidebar::{
     AgentSidebarItem, CommandSidebarItem, WorkspaceSidebar, WorkspaceSidebarItem,
 };
-use crate::platform::i18n::{self, Key};
-use crate::platform::ssh_probe::{classify_ssh_probe, ssh_probe_args, SshReach};
+use crate::frontend::ssh_probe::{classify_ssh_probe, ssh_probe_args, SshReach};
 #[cfg(test)]
 use muxterm_protocol::state::StateChange;
 use muxterm_protocol::task::TaskOutcome;
@@ -2344,8 +2344,8 @@ fn paste_pane(s: &UiState, state: &Rc<RefCell<UiState>>, pane_id: u32) {
         let Ok(Some(text)) = result else {
             return;
         };
-        let text = crate::platform::mirror::sanitize_paste(text.as_str(), bracketed);
-        let data = crate::platform::mirror::encode_clipboard_paste(&text, bracketed);
+        let text = crate::frontend::mirror::sanitize_paste(text.as_str(), bracketed);
+        let data = crate::frontend::mirror::encode_clipboard_paste(&text, bracketed);
         if data.is_empty() {
             return;
         }
@@ -2585,8 +2585,8 @@ fn refresh_connection_summary(s: &mut UiState) {
         (Some((pdown, pup)), Some(at)) => {
             let dt = now.duration_since(at);
             (
-                crate::platform::format::rate_bps(pdown, down, dt),
-                crate::platform::format::rate_bps(pup, up, dt),
+                crate::frontend::format::rate_bps(pdown, down, dt),
+                crate::frontend::format::rate_bps(pup, up, dt),
             )
         }
         _ => (0, 0),

@@ -21,9 +21,9 @@ use serde_json::Value;
 use crate::frontend::ffi_client::{
     ClientConfigSnapshot, ClientJsonPatchOperation, ClientRuntimeInfo, FfiClient,
 };
+use crate::frontend::i18n::{self, Key as TextKey};
 use crate::frontend::linux::quickconnect::model::ProjectDocument;
 use crate::frontend::linux::quickconnect::store::QuickConnectStore;
-use crate::platform::i18n::{self, Key as TextKey};
 
 /// FFI-backed configuration operations used by the GTK settings views.
 ///

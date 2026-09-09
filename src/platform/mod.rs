@@ -7,12 +7,12 @@
 //!   此模块提供从 Rust 侧 `muxterm gui` 定位并 `open` Muxterm.app 的启动器。
 
 pub use crate::frontend::cli;
-pub mod format;
-pub mod i18n;
-pub mod mirror;
-pub mod mouse;
-pub mod ssh_probe;
-pub mod url_opener;
+pub use crate::frontend::format;
+pub use crate::frontend::i18n;
+pub use crate::frontend::mirror;
+pub use crate::frontend::mouse;
+pub use crate::frontend::ssh_probe;
+pub use crate::frontend::url_opener;
 
 pub use crate::frontend::command_queue;
 pub use crate::frontend::ffi_client;

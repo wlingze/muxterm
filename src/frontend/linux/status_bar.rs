@@ -11,12 +11,12 @@ use gtk4::gdk;
 use gtk4::prelude::*;
 use gtk4::{Align, Box as GtkBox, Button, CssProvider, Label, Orientation, Popover};
 
+use crate::frontend::format::{format_bytes, format_rate};
 use crate::frontend::linux::lifecycle::tab_shortcut_label;
 use crate::frontend::linux::quickconnect::status_style::{
     StatusBarMode, StatusBarSnapshot, StatusBarStyleParser,
 };
 use crate::frontend::linux::theme::Theme;
-use crate::platform::format::{format_bytes, format_rate};
 
 /// status bar 高度（≤ 24px）。
 pub const STATUS_BAR_HEIGHT: u32 = 24;

@@ -16,6 +16,7 @@ use gtk4::{
 };
 
 use crate::frontend::ffi_client::{ClientRuntimeInfo, FfiClient, SshHostEntry};
+use crate::frontend::i18n::{self, Key};
 use crate::frontend::linux::quickconnect::directory::{
     DirectoryListingResponse, DirectorySuggestionController,
 };
@@ -24,8 +25,7 @@ use crate::frontend::linux::quickconnect::model::{
 };
 use crate::frontend::linux::quickconnect::options::TargetOptionSelection;
 use crate::frontend::linux::quickconnect::store::QuickConnectStore;
-use crate::platform::i18n::{self, Key};
-use crate::platform::ssh_probe::{
+use crate::frontend::ssh_probe::{
     classify_ssh_probe, ssh_dot_css_class, ssh_dot_widget_name, ssh_probe_args, SshReach,
 };
 
