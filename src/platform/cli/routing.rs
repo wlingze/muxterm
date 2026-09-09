@@ -389,7 +389,6 @@ fn cli_mode_daemon(
     format: OutputFormat,
     tmux_socket: Option<&str>,
 ) -> anyhow::Result<()> {
-    use crate::core::runtime::daemon_client::send_command;
     use crate::platform::cli::session::session_socket_path;
 
     let sock = session_socket_path(name);
@@ -414,15 +413,20 @@ fn cli_mode_daemon(
         );
     }
 
-    let resp = send_command(&sock, cmd, format)?;
-    if resp.ok {
-        if !resp.output.is_empty() {
-            println!("{}", resp.output);
-        }
-    } else {
-        eprintln!("错误: {}", resp.error);
-        std::process::exit(1);
+    let socket = sock.to_string_lossy().into_owned();
+    let session = FfiCliSession::connect("daemon", Some(&socket), Some(name))?;
+    session.wait(Duration::from_millis(500));
+    session.prepare_for_command(cmd);
+    session.execute_command(cmd)?;
+    if !matches!(cmd, CliCommand::CloseWorkspace { .. }) {
+        session.wait(command_settle_duration(cmd));
     }
+
+    let output = session.output(cmd, format)?;
+    if !output.is_empty() {
+        println!("{output}");
+    }
+    session.shutdown();
 
     Ok(())
 }
