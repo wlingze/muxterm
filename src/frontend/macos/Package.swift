@@ -2,7 +2,7 @@
 import Foundation
 import PackageDescription
 
-// 包根：src/platform/macos/（与 linux/、tui/ 同级）
+// 包根：src/frontend/macos/（与 linux/、tui/ 同级）
 let packageRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
 // Rust staticlib：通过 scripts/build-macos.sh 生成的 Vendor/libmuxterm.a 软链引用，
 // 指向实际的 cargo target 目录（仓库本地 ./target/<profile>），不依赖共享 ../muxterm-target。

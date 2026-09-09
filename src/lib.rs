@@ -39,6 +39,7 @@ pub mod ffi {
 }
 
 pub(crate) use muxterm_core as core;
+mod frontend;
 mod platform;
 
 /// Test-only compatibility exports for the existing integration contract suite.

@@ -1,5 +1,5 @@
 # XcodeGen 规格：为 XCUITest 提供可启动的 .app host。
-# 生成：cd src/platform/macos && xcodegen generate
+# 生成：cd src/frontend/macos && xcodegen generate
 # 测试：xcodebuild test -project Muxterm.xcodeproj -scheme MuxtermApp -destination 'platform=macOS'
 #
 # SwiftPM 无法单独声明 UI Testing bundle + host app，故用 xcodegen 补齐。

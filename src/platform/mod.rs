@@ -6,7 +6,7 @@
 //! - `macos`：SwiftUI 前端（Swift 代码，不在 Rust 编译范围）；
 //!   此模块提供从 Rust 侧 `muxterm gui` 定位并 `open` Muxterm.app 的启动器。
 
-pub mod cli;
+pub use crate::frontend::cli;
 pub mod format;
 pub mod i18n;
 pub mod mirror;
@@ -14,19 +14,17 @@ pub mod mouse;
 pub mod ssh_probe;
 pub mod url_opener;
 
-pub mod ffi_client;
+pub use crate::frontend::command_queue;
+pub use crate::frontend::ffi_client;
 
 #[cfg(any(feature = "gtk", feature = "tui"))]
 pub mod event_pump;
 
-#[cfg(any(feature = "gtk", feature = "tui"))]
-pub mod command_queue;
-
 #[cfg(target_os = "macos")]
-pub mod macos;
+pub use crate::frontend::macos;
 
 #[cfg(feature = "gtk")]
-pub mod linux;
+pub use crate::frontend::linux;
 
 #[cfg(feature = "tui")]
-pub mod tui;
+pub use crate::frontend::tui;
