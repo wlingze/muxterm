@@ -607,7 +607,7 @@ xvfb-run -a cargo test --features gtk --test linux_prefs_e2e -- --test-threads=1
 | 5b | 鼠标点 tab 切窗口 | ✅ attach session id（C7.0） | ✅ S13a；live S13b | ✅ dogfood-1326 + 1540（1540 已无「忽略其它 session」） |
 | 6 | 主题切换 + 重报色 | ✅ theme/font | ⚠️ 偏好持久化已覆盖；即时切换/颜色重报待补 | ⚠️ 部分 |
 | 7 | 状态栏模式切换 | ✅ set_mode | ❌ 待补 | ❌ 待补 |
-| 8 | 字体缩放 Ctrl+=/-/0 → config.toml | ✅ keymap/config_edit | ✅ linux_prefs_e2e S10 | — |
+| 8 | 字体缩放 Ctrl+=/-/0 → config.toml | ✅ keymap/config | ✅ linux_prefs_e2e S10 | — |
 | 9 | Pane 全屏 | ✅ layout 状态 | ✅ zoom e2e；本地布局切换待补 | ✅ e2e 真实 tmux |
 | 10 | Tab 门禁 + 事件策略 | ✅ tab_gate/event_policy | ❌ 待补 | ❌ 待补 |
 | 11 | resize→feed + 输出合并 | ✅ pane_view 25ms | ⚠️ replica 播种在，几何仍有损（C8） | ✅ core 单测有真实样本 |
@@ -623,7 +623,7 @@ xvfb-run -a cargo test --features gtk --test linux_prefs_e2e -- --test-threads=1
 | 20 | 三 tab 面板 | ✅ panel_model | ✅ linux_panel_e2e | — |
 | 21 | peek/一行答复 | ✅ panel 钩子 | ✅ linux_panel_e2e / linux_attention_e2e | ✅ attention e2e 真实 tmux |
 | 22 | 红点/标题 | ✅ attention_ui 字符串 | ✅ linux_attention_e2e | ✅ 注入 BEL + printf |
-| 23 | 配置页 widget_name | ✅ config_edit | ✅ linux_prefs_e2e | — |
+| 23 | 配置页 widget_name | ✅ config | ✅ linux_prefs_e2e | — |
 | 24 | pane-cmd 订阅 | ✅ protocol/backend | — | ✅ tmux_backend scenario5 |
 | 25 | URL 点击 | ✅ url_detect | ✅ linux_render_e2e S11 | — |
 | 26 | RenderPolicy 末帧 | ✅ render_policy | ✅ linux_render_e2e S3/S4 | ✅ live CUP 脚本 S9 |
