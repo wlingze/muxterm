@@ -5,9 +5,11 @@
 use gtk4::prelude::*;
 use gtk4::Application;
 
-use crate::core::config::Theme;
-use crate::core::config_service::ConfigDocument;
-use crate::platform::ffi_client::FfiClient;
+use crate::platform::ffi_client::{ClientConfig, FfiClient};
+use crate::platform::linux::keymap::default_keybindings;
+use crate::platform::linux::theme::fallback_theme;
+#[cfg(test)]
+use crate::platform::linux::theme::Rgb;
 
 pub const APP_ID: &str = "io.muxterm.Muxterm";
 
@@ -28,22 +30,26 @@ pub fn run(socket: Option<String>) -> anyhow::Result<()> {
     }
 
     app.connect_activate(move |a| {
-        let default_document = ConfigDocument::default();
-        let (mut cfg, shortcuts) = match FfiClient::new_catalog()
+        let default_config = ClientConfig::default();
+        let (mut cfg, keybindings, theme) = match FfiClient::new_catalog()
             .and_then(|client| client.config_describe())
             .and_then(|snapshot| {
-                serde_json::from_value::<ConfigDocument>(snapshot.values)
+                let theme = snapshot.resolved_theme.unwrap_or_else(fallback_theme);
+                let keybindings = snapshot.effective_keybindings;
+                serde_json::from_value::<ClientConfig>(snapshot.values)
+                    .map(|config| (config, keybindings, theme))
                     .map_err(anyhow::Error::from)
             }) {
-            Ok(document) => (document.config, document.shortcuts),
+            Ok(document) => document,
             Err(error) => {
                 tracing::warn!(
                     target = "muxterm::app",
                     "通过 Core FFI 加载配置失败，用现代默认值: {error}"
                 );
                 (
-                    default_document.config.clone(),
-                    default_document.shortcuts.clone(),
+                    default_config.clone(),
+                    default_keybindings(),
+                    fallback_theme(),
                 )
             }
         };
@@ -53,29 +59,10 @@ pub fn run(socket: Option<String>) -> anyhow::Result<()> {
                 cfg.tmux.socket = sock.to_string();
             }
         }
-        let requested_theme = if cfg.theme.name.eq_ignore_ascii_case("system") {
-            let resolved = Theme::resolve_name("system");
-            if resolved == "black" {
-                cfg.theme.dark.clone()
-            } else {
-                cfg.theme.light.clone()
-            }
-        } else {
-            cfg.theme.name.clone()
-        };
-        let theme = match Theme::load(&requested_theme) {
-            Ok(t) => t,
-            Err(e) => {
-                tracing::warn!(
-                    target = "muxterm::app",
-                    "加载主题 {} 失败，用内置 light: {e}",
-                    requested_theme
-                );
-                Theme::load("white").unwrap_or_else(|_| fallback_theme())
-            }
-        };
         let win = crate::platform::linux::window::AppWindow::new_with_effective_keybindings(
-            cfg, theme, &shortcuts,
+            cfg,
+            theme,
+            &keybindings,
         );
         a.add_window(&win.window);
         win.window.present();
@@ -90,11 +77,6 @@ pub fn run(socket: Option<String>) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn fallback_theme() -> crate::core::config::Theme {
-    let raw = crate::core::config::Theme::embedded("white").expect("embedded white");
-    crate::core::config::parse_theme_toml(raw).expect("embedded light 可解析")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -102,13 +84,7 @@ mod tests {
     #[test]
     fn fallback_theme_is_embedded_white_not_black() {
         let t = fallback_theme();
-        assert_eq!(
-            t.background,
-            crate::core::config::parse_hex("#ffffff").unwrap()
-        );
-        assert_ne!(
-            t.background,
-            crate::core::config::parse_hex("#0b0d10").unwrap()
-        );
+        assert_eq!(t.background, Rgb(0xff, 0xff, 0xff));
+        assert_ne!(t.background, Rgb(0x0b, 0x0d, 0x10));
     }
 }

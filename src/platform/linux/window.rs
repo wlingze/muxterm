@@ -22,29 +22,24 @@ use vte4::prelude::*;
 
 use anyhow::anyhow;
 
-use crate::core::attention::clock::RealClock;
-use crate::core::attention::engine::{AttentionEngine, PaneAttention};
-use crate::core::attention::signal::{AttentionSignal, AttentionSource};
-use crate::core::attention::state::PaneStatus;
-use crate::core::config::{Action, Config, KeyBinding, OnLastPaneExit, Theme};
 use crate::core::quickconnect::model::QuickConnect;
-use crate::core::runtime::RuntimeCapability;
-use crate::core::workspace::pool::WorkspaceCapacityCandidate;
 use crate::core::workspace::spec::WorkspaceSpec;
 use crate::platform::event_pump::EventPump;
 use crate::platform::ffi_client::{
-    ClientActivitySnapshot, ClientAttentionConfig, ClientAttentionPane, ClientCandidateRef,
-    ClientEventKind, ClientOpenIntent, ClientOpenRequest, ClientOpenedWorkspace, ClientTarget,
-    ClientTask, ClientWorkspaceAttention, ClientWorkspaceEvent, FfiClient,
+    ClientActivitySnapshot, ClientAttentionPane, ClientAttentionStatus, ClientCandidateRef,
+    ClientConfig, ClientEventKind, ClientKeyBinding, ClientOpenIntent, ClientOpenRequest,
+    ClientOpenedWorkspace, ClientRuntimeCapability, ClientTarget, ClientTask,
+    ClientWorkspaceAttention, ClientWorkspaceEvent, FfiClient,
 };
 use crate::platform::i18n::{self, Key};
+use crate::platform::linux::attention_compat::CompatibilityActivity;
 use crate::platform::linux::attention_ui::{window_title, GioSink, NotificationSink};
 use crate::platform::linux::command_palette::{parse_palette_action, PaletteAction};
 #[cfg(test)]
 use crate::platform::linux::event_batch::batch_order_plan;
-use crate::platform::linux::keymap::KeyMap;
+use crate::platform::linux::keymap::{default_keybindings, Action, KeyMap};
 use crate::platform::linux::layout_host::LayoutHost;
-use crate::platform::linux::lifecycle::{cycle_pane_id, should_close_window};
+use crate::platform::linux::lifecycle::{cycle_pane_id, should_close_window, OnLastPaneExit};
 use crate::platform::linux::pane_view::{PaneMenuAction, PaneView};
 use crate::platform::linux::panel_model::PanelTab;
 use crate::platform::linux::preferences_window::ConfigApi;
@@ -61,6 +56,9 @@ use crate::platform::linux::quickconnect_panel::{
 };
 use crate::platform::linux::scene_stack::SceneStack;
 use crate::platform::linux::status_bar::{ConnectionSummary, StatusBar};
+#[cfg(test)]
+use crate::platform::linux::theme::Rgb;
+use crate::platform::linux::theme::{fallback_theme, toggle_target, Theme};
 use crate::platform::linux::tmux_dialog::{self, TmuxAction};
 use crate::platform::linux::view_store::ViewStore;
 use crate::platform::linux::workspace_sidebar::{
@@ -80,6 +78,12 @@ pub struct AppWindow {
     pub window: Window,
     /// 保持 UI 状态与 Core 连接状态存活（轮询闭包只用 Weak，避免循环引用）。
     _state: Rc<RefCell<UiState>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WorkspaceCapacityCandidate {
+    id: WorkspaceId,
+    name: String,
 }
 
 struct UiState {
@@ -134,8 +138,8 @@ struct UiState {
     on_last_pane_exit: OnLastPaneExit,
     /// 事件分发里不能同步 `window.close()`（可能正握着 RefCell）。
     pending_close: bool,
-    /// 注意力引擎（信号 → 状态机 → blocked 工作区聚合）。
-    attention: AttentionEngine<RealClock>,
+    /// GTK 测试注入的兼容 activity 状态；生产 activity 始终来自 FFI。
+    compatibility_activity: CompatibilityActivity,
     /// 本轮进入 blocked 的 workspace 通知日志（测试钩子读取）。
     notification_log: Vec<String>,
     /// 通知出口（生产 GioSink fail-soft；测试可替换）。
@@ -286,14 +290,14 @@ impl UiState {
             .map(|workspace| workspace.runtime.as_str())
     }
 
-    fn active_supports(&self, capability: RuntimeCapability) -> bool {
+    fn active_supports(&self, capability: ClientRuntimeCapability) -> bool {
         let Some(workspace_id) = self.view_store.active_workspace_id() else {
             return false;
         };
         self.workspace_supports(workspace_id, capability)
     }
 
-    fn workspace_supports(&self, workspace_id: &str, capability: RuntimeCapability) -> bool {
+    fn workspace_supports(&self, workspace_id: &str, capability: ClientRuntimeCapability) -> bool {
         let Some(runtime) = self
             .view_store
             .workspace(workspace_id)
@@ -302,7 +306,6 @@ impl UiState {
         else {
             return false;
         };
-        let wanted = format!("{capability:?}");
         self.event_pump
             .client()
             .runtime_list()
@@ -310,7 +313,7 @@ impl UiState {
             .into_iter()
             .flatten()
             .find(|provider| provider.id == runtime)
-            .is_some_and(|provider| provider.support.iter().any(|item| item == &wanted))
+            .is_some_and(|provider| provider.supports(capability))
     }
 
     fn execute_active_task(&self, task: ClientTask) -> anyhow::Result<()> {
@@ -358,7 +361,7 @@ fn activity_snapshot(s: &UiState) -> ClientActivitySnapshot {
         .collect();
     let mut compatibility_workspace_ids = HashSet::new();
 
-    for workspace in s.attention.snapshot() {
+    for workspace in s.compatibility_activity.snapshot() {
         let mut has_compatibility_state = false;
         let target = snapshot
             .workspaces
@@ -381,7 +384,7 @@ fn activity_snapshot(s: &UiState) -> ClientActivitySnapshot {
                 .expect("刚插入的 activity workspace 必须存在")
         };
         for pane in workspace.panes {
-            let pane_has_compatibility_state = pane.status != PaneStatus::Unknown
+            let pane_has_compatibility_state = pane.status != "unknown"
                 || !pane.last_line.is_empty()
                 || pane.seq != 0
                 || pane.process_name.is_some()
@@ -392,7 +395,6 @@ fn activity_snapshot(s: &UiState) -> ClientActivitySnapshot {
                 continue;
             }
             has_compatibility_state = true;
-            let pane = client_attention_pane(&pane);
             if let Some(existing) = target
                 .panes
                 .iter_mut()
@@ -443,21 +445,6 @@ fn activity_snapshot(s: &UiState) -> ClientActivitySnapshot {
     snapshot
 }
 
-fn client_attention_pane(pane: &PaneAttention) -> ClientAttentionPane {
-    ClientAttentionPane {
-        workspace_id: pane.workspace_id.clone(),
-        pane_id: pane.pane_id,
-        status: format!("{:?}", pane.status).to_lowercase(),
-        acknowledged: pane.acknowledged,
-        last_line: pane.last_line.clone(),
-        seq: pane.seq,
-        process_name: pane.process_name.clone(),
-        process_is_agent: pane.process_is_agent,
-        agent_name: pane.agent_name.clone(),
-        shell_name: pane.shell_name.clone(),
-    }
-}
-
 fn panel_attention_rows(snapshot: &ClientActivitySnapshot) -> Vec<ClientAttentionPane> {
     snapshot
         .workspaces
@@ -465,6 +452,11 @@ fn panel_attention_rows(snapshot: &ClientActivitySnapshot) -> Vec<ClientAttentio
         .flat_map(|workspace| workspace.panes.iter())
         .cloned()
         .collect()
+}
+
+fn decode_client_config<T: serde::Serialize>(config: T) -> ClientConfig {
+    serde_json::from_value(serde_json::to_value(config).expect("frontend config must serialize"))
+        .unwrap_or_default()
 }
 
 impl AppWindow {
@@ -498,23 +490,30 @@ impl AppWindow {
         while glib::MainContext::default().iteration(false) {}
     }
 
-    pub fn new(cfg: Config, theme: Theme) -> Self {
-        Self::new_with_keybindings(cfg.clone(), theme, cfg.keybindings.clone())
-    }
-
-    /// Construct the window with shortcuts resolved from the Core shortcut
-    /// config (preset + primary key + overrides) instead of the legacy list.
-    pub fn new_with_effective_keybindings(
-        cfg: Config,
-        theme: Theme,
-        shortcuts: &crate::core::config_service::ShortcutConfig,
-    ) -> Self {
-        let keybindings =
-            crate::core::config_service::action_catalog::resolve_effective_keybindings(shortcuts);
+    pub fn new<T: serde::Serialize>(cfg: T, theme: Theme) -> Self {
+        let cfg = decode_client_config(cfg);
+        let keybindings = if cfg.keybindings.is_empty() {
+            default_keybindings()
+        } else {
+            cfg.keybindings.clone()
+        };
         Self::new_with_keybindings(cfg, theme, keybindings)
     }
 
-    fn new_with_keybindings(cfg: Config, theme: Theme, keybindings: Vec<KeyBinding>) -> Self {
+    /// Construct the window with effective bindings resolved by Core.
+    pub fn new_with_effective_keybindings(
+        cfg: ClientConfig,
+        theme: Theme,
+        keybindings: &[ClientKeyBinding],
+    ) -> Self {
+        Self::new_with_keybindings(cfg, theme, keybindings.to_vec())
+    }
+
+    fn new_with_keybindings(
+        cfg: ClientConfig,
+        theme: Theme,
+        keybindings: Vec<ClientKeyBinding>,
+    ) -> Self {
         let window = ApplicationWindow::builder()
             .title("muxterm")
             .default_width(960)
@@ -555,11 +554,7 @@ impl AppWindow {
             FfiClient::new_connect("local", None, None, None, Some(""))
                 .expect("local runtime 必须可用")
         };
-        let attention_config = ClientAttentionConfig {
-            enabled: cfg.attention.enabled,
-            blocked_regex: cfg.attention.blocked_regex.clone(),
-            debounce_ms: cfg.attention.debounce_ms,
-        };
+        let attention_config = cfg.attention.clone();
         if let Err(error) = client.configure_attention(&attention_config) {
             tracing::warn!(
                 target = "muxterm::linux",
@@ -611,7 +606,6 @@ impl AppWindow {
         root.add_css_class("muxterm-root");
 
         let theme_name = cfg.theme.name.clone().to_ascii_lowercase();
-        let theme = Theme::load(&theme_name).unwrap_or(theme);
         apply_chrome_css(&theme);
         let config_font_size = cfg.font.size;
         let font = FontSettings {
@@ -802,7 +796,7 @@ impl AppWindow {
             tab_gate: TabSwitchGate::new(Duration::from_millis(1500)),
             on_last_pane_exit: cfg.behavior.on_last_pane_exit,
             pending_close: false,
-            attention: AttentionEngine::new(cfg.attention.clone(), RealClock),
+            compatibility_activity: CompatibilityActivity::new(cfg.attention.clone()),
             notification_log: Vec::new(),
             notification_sink: std::boxed::Box::new(GioSink::new(None)),
             panel_open: None,
@@ -1254,7 +1248,7 @@ impl AppWindow {
         let pane = s.active_pane;
         let workspace_key = active_workspace_key(&s);
         let _ = s.event_pump.send_input(&workspace_key, pane, data);
-        s.attention.on_user_input(&ws, pane);
+        s.compatibility_activity.on_user_input(&ws, pane);
     }
 
     /// 测试用：向当前 VTE 发出生产 `commit` 信号。与 `test_send_input` 不同，
@@ -1293,7 +1287,7 @@ impl AppWindow {
     }
 
     /// 测试用：能力判断必须走 Runtime 契约，不能按 runtime 名字分支。
-    pub fn test_active_runtime_supports(&self, capability: RuntimeCapability) -> bool {
+    pub fn test_active_runtime_supports(&self, capability: ClientRuntimeCapability) -> bool {
         let s = self._state.borrow();
         s.active_supports(capability)
     }
@@ -1790,14 +1784,17 @@ impl AppWindow {
             .unwrap_or_default()
     }
 
-    /// 测试用：绕过 tmux 直接向 Surface/AttentionEngine 注入字节。
+    /// 测试用：绕过 tmux 直接向 Surface/前端 activity 兼容层注入字节。
     pub fn test_feed_replica(&self, pane_id: u32, bytes: &[u8]) {
         let mut s = self._state.borrow_mut();
         if let Some(view) = s.active_layout().pane(pane_id).cloned() {
             view.feed_output(bytes);
             view.flush_deferred_feed();
         }
-        apply_test_replica_attention(&mut s, pane_id, bytes);
+        let workspace = active_workspace_id(&s);
+        let visible = pane_id == s.active_pane;
+        s.compatibility_activity
+            .apply_output(&workspace, pane_id, bytes, visible);
         refresh_sidebar_if_open(&mut s);
     }
 
@@ -1821,22 +1818,12 @@ impl AppWindow {
         &self,
         pane: u32,
         process_name: &str,
-        status: crate::core::attention::state::PaneStatus,
+        status: ClientAttentionStatus,
     ) {
         let mut s = self._state.borrow_mut();
         let ws = active_workspace_id(&s);
-        s.attention
-            .set_agent_process_name(&ws, pane, Some(process_name.to_string()));
-        s.attention.apply(
-            &ws,
-            pane,
-            &[AttentionSignal::AuthoritativeStatus {
-                status,
-                initial: false,
-            }],
-            "",
-            1,
-        );
+        s.compatibility_activity
+            .set_agent_attention(&ws, pane, process_name, status);
         refresh_sidebar_if_open(&mut s);
     }
 
@@ -2288,11 +2275,21 @@ fn reset_font(s: &mut UiState) {
 }
 
 fn toggle_theme(s: &mut UiState) {
-    let next_name = Theme::toggle_target(&s.theme_name);
-    let Ok(theme) = Theme::load(next_name) else {
+    let next_name = toggle_target(&s.theme_name);
+    let Ok(snapshot) = s.event_pump.client().config_apply_path(
+        "theme.name",
+        serde_json::Value::String(next_name.to_string()),
+    ) else {
         tracing::error!(
             target = "muxterm::linux",
-            "加载主题 {next_name} 失败，保持当前主题"
+            "保存主题 {next_name} 失败，保持当前主题"
+        );
+        return;
+    };
+    let Some(theme) = snapshot.resolved_theme else {
+        tracing::error!(
+            target = "muxterm::linux",
+            "Core 没有返回主题 {next_name}，保持当前主题"
         );
         return;
     };
@@ -2303,11 +2300,6 @@ fn toggle_theme(s: &mut UiState) {
     }
     s.status.apply_theme(&theme);
     apply_chrome_css(&theme);
-    persist_config(
-        s.event_pump.client(),
-        "theme.name",
-        serde_json::Value::String(next_name.to_string()),
-    );
     report_all_pane_colours(s);
 }
 
@@ -2598,8 +2590,8 @@ fn refresh_connection_summary(s: &mut UiState) {
         (Some((pdown, pup)), Some(at)) => {
             let dt = now.duration_since(at);
             (
-                crate::core::format::rate_bps(pdown, down, dt),
-                crate::core::format::rate_bps(pup, up, dt),
+                crate::platform::format::rate_bps(pdown, down, dt),
+                crate::platform::format::rate_bps(pup, up, dt),
             )
         }
         _ => (0, 0),
@@ -2675,78 +2667,6 @@ fn attention_event_pane(event: &StateChange) -> Option<u32> {
     }
 }
 
-/// Recreate the two legacy direct-injection cases used by GTK tests without
-/// making them a second production event source. Real Runtime output is
-/// already applied by Core before the workspace event poll returns.
-fn apply_test_replica_attention(s: &mut UiState, pane: u32, bytes: &[u8]) {
-    let workspace = active_workspace_id(s);
-    let seq = s
-        .attention
-        .snapshot()
-        .into_iter()
-        .flat_map(|workspace| workspace.panes)
-        .map(|pane| pane.seq)
-        .max()
-        .unwrap_or(0)
-        .saturating_add(1);
-    let text = String::from_utf8_lossy(bytes);
-    let last_line = text
-        .split('\n')
-        .rev()
-        .map(|line| line.trim_matches(|ch: char| ch == '\r' || ch.is_control()))
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or_default()
-        .to_string();
-
-    let command_start = b"\x1b]133;B\x07";
-    let command_end = b"\x1b]133;C\x07";
-    if let (Some(start), Some(end)) = (
-        find_bytes(bytes, command_start).map(|index| index + command_start.len()),
-        find_bytes(bytes, command_end),
-    ) {
-        if start <= end {
-            let command = String::from_utf8_lossy(&bytes[start..end]);
-            if !command.trim().is_empty() {
-                s.attention
-                    .set_process_name(&workspace, pane, Some(command.trim().to_string()));
-            }
-        }
-    }
-
-    let has_osc133 = find_bytes(bytes, b"\x1b]133;").is_some();
-    let signal = if let Some(index) = find_bytes(bytes, b"\x1b]133;D") {
-        let exit_code = bytes[index + b"\x1b]133;D".len()..]
-            .strip_prefix(b";")
-            .and_then(|value| value.split(|byte| *byte == b'\x07').next())
-            .and_then(|value| std::str::from_utf8(value).ok())
-            .and_then(|value| value.parse::<u8>().ok());
-        Some(AttentionSignal::CommandDone { exit_code })
-    } else if !has_osc133 && bytes.contains(&0x07) {
-        Some(AttentionSignal::AttentionRequest {
-            source: AttentionSource::Bel,
-        })
-    } else {
-        None
-    };
-    if let Some(signal) = signal {
-        s.attention
-            .apply(&workspace, pane, &[signal], &last_line, seq);
-    }
-    if pane == s.active_pane {
-        s.attention.on_became_visible(&workspace, pane);
-    }
-}
-
-fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    (!needle.is_empty())
-        .then(|| {
-            haystack
-                .windows(needle.len())
-                .position(|window| window == needle)
-        })
-        .flatten()
-}
-
 fn mark_pending_close_if_session_ended(s: &mut UiState) {
     let workspace_id = active_workspace_key(s);
     let n_tabs = s
@@ -2779,12 +2699,9 @@ fn drain_attention_notifications(s: &mut UiState) {
     }
 
     // Compatibility-only direct injection used by the GTK tests. Runtime
-    // events are drained from Core above and never pass through this engine.
-    for ws in s.attention.take_new_blocked_notifications() {
-        record_attention_notification(s, &ws, "blocked");
-    }
-    for ws in s.attention.take_new_done_notifications() {
-        record_attention_notification(s, &ws, "done");
+    // events are drained from Core above and never pass through this adapter.
+    for notification in s.compatibility_activity.take_notifications() {
+        record_attention_notification(s, &notification.workspace_id, &notification.kind);
     }
 }
 
@@ -3018,7 +2935,7 @@ pub fn should_poll_status(
 fn sync_chrome_visibility(s: &UiState) {
     // 唯一 chrome：status bar 永远可见，没有第二条 tab 带。
     // worktree 创建入口只按 support() 露出（禁止 if runtime == "herdr"）。
-    let worktree = s.active_supports(RuntimeCapability::WorktreeList);
+    let worktree = s.active_supports(ClientRuntimeCapability::WorktreeList);
     s.status.set_worktree_visible(worktree);
 }
 
@@ -3306,7 +3223,7 @@ fn forward_parser_replies_for(s: &mut UiState, wid: &WorkspaceId, pane_id: u32) 
 fn forward_parser_replies_for_key(s: &mut UiState, workspace_id: &str, pane_id: u32) {
     // tmux/SSH mirror 的远端 Runtime 已经负责 query reply；把 GTK 无头
     // parser 的应答写回会把 OSC/DA 字节泄漏到用户 shell。
-    if s.workspace_supports(workspace_id, RuntimeCapability::SharedClientResize) {
+    if s.workspace_supports(workspace_id, ClientRuntimeCapability::SharedClientResize) {
         return;
     }
     let replies = s
@@ -3333,7 +3250,7 @@ fn forward_parser_replies_for_key(s: &mut UiState, workspace_id: &str, pane_id: 
 const CLIENT_SIZE_STABLE_HITS: u8 = 10;
 
 fn sync_window_size(s: &mut UiState) {
-    let shared_client_resize = s.active_supports(RuntimeCapability::SharedClientResize);
+    let shared_client_resize = s.active_supports(ClientRuntimeCapability::SharedClientResize);
     if !shared_client_resize {
         sync_visible_pane_sizes(s);
         return;
@@ -3881,7 +3798,7 @@ fn maybe_schedule_reconnect(state: &Rc<RefCell<UiState>>) {
         else {
             return;
         };
-        if !s.workspace_supports(&id.as_str(), RuntimeCapability::SharedClientResize) {
+        if !s.workspace_supports(&id.as_str(), ClientRuntimeCapability::SharedClientResize) {
             return;
         }
         s.reconnecting = true;
@@ -3899,7 +3816,7 @@ fn maybe_schedule_reconnect(state: &Rc<RefCell<UiState>>) {
             s.reconnect_retry_at = None;
             s.disconnect_overlay.set_visible(false);
             drop(s);
-            handle_reconnect_success(state, false);
+            handle_reconnect_success(state);
         }
         Err(error) => {
             s.reconnect_attempts = s.reconnect_attempts.saturating_add(1);
@@ -3920,37 +3837,11 @@ fn maybe_schedule_reconnect(state: &Rc<RefCell<UiState>>) {
 /// （新 Runtime 已插入且 Connected），旧重连结果必须丢弃——否则会换掉
 /// 更新的 Runtime，并丢失其尚未消费的 capture 事件（PaneBuf 空、搜索
 /// 不到断线前 token）。
-fn handle_reconnect_success(state: &Rc<RefCell<UiState>>, bell: bool) {
+fn handle_reconnect_success(state: &Rc<RefCell<UiState>>) {
     let mut s = state.borrow_mut();
     s.reconnect_attempts = 0;
     s.reconnect_retry_at = None;
     s.disconnect_overlay.set_visible(false);
-    if bell {
-        let ws = active_workspace_id(&s);
-        let pane = s.active_pane;
-        let workspace_id = active_workspace_key(&s);
-        let last_line = s
-            .event_pump
-            .client()
-            .workspace_pane_last_n_lines(&workspace_id, pane, 1)
-            .ok()
-            .and_then(|lines| lines.last().cloned())
-            .unwrap_or_default();
-        let seq = s
-            .event_pump
-            .client()
-            .workspace_pane_latest_line_seq(&workspace_id, pane)
-            .unwrap_or_default();
-        s.attention.apply(
-            &ws,
-            pane,
-            &[AttentionSignal::AttentionRequest {
-                source: AttentionSource::Bel,
-            }],
-            &last_line,
-            seq,
-        );
-    }
 }
 
 /// 打开当前 pane 内查找条（W18f：Ctrl+F 与 test_open_pane_find 共用）。
@@ -4078,6 +3969,13 @@ fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelT
                     };
                     if rc == 0 {
                         let mut s = st.borrow_mut();
+                        if let Some(workspace_id) = attention_workspace_id(&s, &ws) {
+                            s.compatibility_activity.mute_for(
+                                &workspace_id.as_str(),
+                                pane,
+                                seconds,
+                            );
+                        }
                         refresh_sidebar_if_open(&mut s);
                         refresh_attention_chrome(&s, &win);
                     } else {
@@ -4226,9 +4124,15 @@ fn attention_workspace_id(s: &UiState, ws: &str) -> Option<WorkspaceId> {
 
 /// 打开配置页：保存/热加载后重读 config.toml 并应用主题/字体/attention。
 fn open_preferences(state: &Rc<RefCell<UiState>>, window: &Window) {
-    let Some(path) = Config::user_config_path() else {
-        tracing::warn!(target = "muxterm::linux", "无用户配置目录，无法打开配置页");
-        return;
+    let path = match FfiClient::new_catalog().and_then(|client| client.config_describe()) {
+        Ok(snapshot) if !snapshot.path.trim().is_empty() => std::path::PathBuf::from(snapshot.path),
+        Ok(_) | Err(_) => {
+            tracing::warn!(
+                target = "muxterm::linux",
+                "Core 未返回配置路径，无法打开配置页"
+            );
+            return;
+        }
     };
     let st = state.clone();
     let hosts = FfiClient::discover_ssh_hosts().unwrap_or_default();
@@ -4273,11 +4177,10 @@ fn open_preferences(state: &Rc<RefCell<UiState>>, window: &Window) {
             let mut s = st.borrow_mut();
             // 保存后重新读取 Core FFI 快照，重建 keymap 并刷新运行期状态。
             if let Ok(snapshot) = snapshot {
-                let document = match serde_json::from_value::<
-                    crate::core::config_service::ConfigDocument,
-                >(snapshot.values)
-                {
-                    Ok(document) => document,
+                let resolved_theme = snapshot.resolved_theme.clone();
+                let effective_keybindings = snapshot.effective_keybindings.clone();
+                let cfg = match serde_json::from_value::<ClientConfig>(snapshot.values) {
+                    Ok(config) => config,
                     Err(error) => {
                         tracing::warn!(
                             target = "muxterm::config",
@@ -4286,18 +4189,8 @@ fn open_preferences(state: &Rc<RefCell<UiState>>, window: &Window) {
                         return;
                     }
                 };
-                let cfg = &document.config;
-                let shortcuts = &document.shortcuts;
-                let bindings =
-                    crate::core::config_service::action_catalog::resolve_effective_keybindings(
-                        shortcuts,
-                    );
-                s.keymap = KeyMap::from_bindings(&bindings);
-                let attention_config = ClientAttentionConfig {
-                    enabled: cfg.attention.enabled,
-                    blocked_regex: cfg.attention.blocked_regex.clone(),
-                    debounce_ms: cfg.attention.debounce_ms,
-                };
+                s.keymap = KeyMap::from_bindings(&effective_keybindings);
+                let attention_config = cfg.attention.clone();
                 if let Err(error) = s.event_pump.client().configure_attention(&attention_config) {
                     tracing::warn!(
                         target = "muxterm::linux",
@@ -4305,19 +4198,18 @@ fn open_preferences(state: &Rc<RefCell<UiState>>, window: &Window) {
                         "热加载 Core attention 配置失败"
                     );
                 }
-                s.attention.set_config(cfg.attention.clone());
+                s.compatibility_activity.set_config(attention_config);
                 s.config_font_size = cfg.font.size;
                 s.font.size = FontSettings::clamp_size(cfg.font.size);
                 s.font.family = cfg.font.family.clone();
                 s.theme_name = cfg.theme.name.to_ascii_lowercase();
-                if let Ok(t) = Theme::load(&s.theme_name) {
-                    s.theme = t.clone();
-                    apply_chrome_css(&t);
-                    for layout in s.pixel_cache.values_mut() {
-                        layout.apply_theme(&t);
-                    }
-                    s.status.apply_theme(&t);
+                let theme = resolved_theme.unwrap_or_else(fallback_theme);
+                s.theme = theme.clone();
+                apply_chrome_css(&theme);
+                for layout in s.pixel_cache.values_mut() {
+                    layout.apply_theme(&theme);
                 }
+                s.status.apply_theme(&theme);
                 s.status_mode = StatusBarMode::from_toml(Some(&cfg.statusbar.mode));
                 s.status.set_mode(s.status_mode);
                 maybe_refresh_status(&mut s, true);
@@ -4805,16 +4697,7 @@ fn activate_sidebar_activity(s: &mut UiState, id: &WorkspaceId, pane: u32) {
 }
 
 fn acknowledge_compatibility_attention(s: &mut UiState, workspace_id: &str, pane: u32) {
-    let has_attention = s.attention.snapshot().iter().any(|workspace| {
-        workspace.workspace_id == workspace_id
-            && workspace
-                .panes
-                .iter()
-                .any(|attention| attention.pane_id == pane)
-    });
-    if has_attention {
-        s.attention.acknowledge(workspace_id, pane);
-    }
+    s.compatibility_activity.acknowledge(workspace_id, pane);
 }
 
 fn refresh_sidebar_if_open(s: &mut UiState) {
@@ -5575,8 +5458,8 @@ mod tests {
 
     #[test]
     fn chrome_css_follows_light_and_dark_background() {
-        let light = Theme::load("light").unwrap();
-        let dark = Theme::load("dark").unwrap();
+        let light = test_theme("light", Rgb(0xef, 0xf1, 0xf5));
+        let dark = test_theme("dark", Rgb(0x1e, 0x1e, 0x2e));
         let light_css = chrome_css(&light);
         let dark_css = chrome_css(&dark);
         assert!(light_css.contains("#eff1f5"), "{light_css}");
@@ -5598,6 +5481,16 @@ mod tests {
         );
         assert!(light_css.contains("box-shadow: 0 18px 44px"), "{light_css}");
         assert_ne!(light_css, dark_css);
+    }
+
+    fn test_theme(name: &str, background: Rgb) -> Theme {
+        Theme {
+            name: name.into(),
+            background,
+            foreground: Rgb(0, 0, 0),
+            cursor: Rgb(0, 0, 0),
+            colors: [Rgb(0, 0, 0); 16],
+        }
     }
 
     /// W4：同一批 PaneAdded + LayoutChanged + PaneResized + PaneFrame +

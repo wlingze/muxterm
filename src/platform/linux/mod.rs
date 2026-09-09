@@ -1,6 +1,7 @@
 //! Linux 前端（GTK4 + vte4），经 FFI 调用核心。
 
 pub mod app;
+pub(crate) mod attention_compat;
 pub mod attention_ui;
 pub mod command_palette;
 #[cfg(test)]
@@ -12,6 +13,7 @@ pub mod keymap;
 pub mod layout_host;
 pub mod lifecycle;
 pub mod notebook;
+pub(crate) mod pane_input_state;
 pub mod pane_switcher;
 pub mod pane_view;
 pub mod panel_model;

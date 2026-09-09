@@ -15,6 +15,21 @@ pub mod app {
 
     pub use crate::core::fault::install_hook;
     pub use crate::core::logging::{init_logging, resolve_config, LoggingConfig};
+
+    /// Run a frontend callback behind the process-wide fault reporter.
+    pub fn fault_run<T>(where_: &str, f: impl FnOnce() -> T) -> Option<T> {
+        crate::core::fault::run(where_, f)
+    }
+
+    /// Return the most recent fault message for a frontend error dialog.
+    pub fn last_fault_message() -> Option<String> {
+        crate::core::fault::last_message()
+    }
+
+    /// Record a caught frontend fault before presenting its UI fallback.
+    pub fn report_fault(where_: &str, payload: Box<dyn std::any::Any + Send>) {
+        crate::core::fault::report(where_, payload)
+    }
 }
 
 /// Public C-ABI facade. Core implementation modules remain behind this boundary

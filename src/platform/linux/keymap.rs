@@ -5,7 +5,188 @@ use std::collections::HashMap;
 
 use gtk4::gdk;
 
-use crate::core::config::{Action, KeyBinding, ModSet, Modifiers};
+use crate::platform::ffi_client::ClientKeyBinding;
+
+pub type KeyBinding = ClientKeyBinding;
+
+/// GTK dispatches the stable action IDs returned by Core.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Action {
+    NewWindow,
+    NewTab,
+    NewPane,
+    NewPaneVertical,
+    SwitchTab1,
+    SwitchTab2,
+    SwitchTab3,
+    SwitchTab4,
+    SwitchTab5,
+    SwitchTab6,
+    SwitchTab7,
+    SwitchTab8,
+    SwitchTab9,
+    SwitchTabLast,
+    SwitchWorkspace1,
+    SwitchWorkspace2,
+    SwitchWorkspace3,
+    SwitchWorkspace4,
+    SwitchWorkspace5,
+    SwitchPanePrev,
+    SwitchPaneNext,
+    Search,
+    CommandPalette,
+    QuickConnect,
+    Quit,
+    IncreaseFontSize,
+    DecreaseFontSize,
+    ResetFontSize,
+    TogglePaneFullscreen,
+    Copy,
+    Paste,
+    Unknown,
+}
+
+impl Action {
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "new_window" => Self::NewWindow,
+            "new_tab" => Self::NewTab,
+            "new_pane" => Self::NewPane,
+            "new_pane_vertical" => Self::NewPaneVertical,
+            "switch_tab_1" => Self::SwitchTab1,
+            "switch_tab_2" => Self::SwitchTab2,
+            "switch_tab_3" => Self::SwitchTab3,
+            "switch_tab_4" => Self::SwitchTab4,
+            "switch_tab_5" => Self::SwitchTab5,
+            "switch_tab_6" => Self::SwitchTab6,
+            "switch_tab_7" => Self::SwitchTab7,
+            "switch_tab_8" => Self::SwitchTab8,
+            "switch_tab_9" => Self::SwitchTab9,
+            "switch_tab_last" => Self::SwitchTabLast,
+            "switch_workspace_1" => Self::SwitchWorkspace1,
+            "switch_workspace_2" => Self::SwitchWorkspace2,
+            "switch_workspace_3" => Self::SwitchWorkspace3,
+            "switch_workspace_4" => Self::SwitchWorkspace4,
+            "switch_workspace_5" => Self::SwitchWorkspace5,
+            "switch_pane_prev" => Self::SwitchPanePrev,
+            "switch_pane_next" => Self::SwitchPaneNext,
+            "search" => Self::Search,
+            "command_palette" => Self::CommandPalette,
+            "quick_connect" => Self::QuickConnect,
+            "quit" => Self::Quit,
+            "increase_font_size" => Self::IncreaseFontSize,
+            "decrease_font_size" => Self::DecreaseFontSize,
+            "reset_font_size" => Self::ResetFontSize,
+            "toggle_pane_fullscreen" => Self::TogglePaneFullscreen,
+            "copy" => Self::Copy,
+            "paste" => Self::Paste,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+/// GTK-independent modifier bits used by the local lookup table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct Modifiers(pub u8);
+
+impl Modifiers {
+    pub const NONE: Self = Self(0);
+    pub const CONTROL: Self = Self(0b0001);
+    pub const SHIFT: Self = Self(0b0010);
+    pub const ALT: Self = Self(0b0100);
+    pub const SUPER: Self = Self(0b1000);
+
+    pub fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    pub fn insert(&mut self, other: Self) {
+        self.0 |= other.0;
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+pub struct ModSet(Vec<String>);
+
+impl ModSet {
+    pub fn from_modifiers(mods: Modifiers) -> Self {
+        let mut values = Vec::new();
+        if mods.contains(Modifiers::CONTROL) {
+            values.push("control".into());
+        }
+        if mods.contains(Modifiers::SHIFT) {
+            values.push("shift".into());
+        }
+        if mods.contains(Modifiers::ALT) {
+            values.push("alt".into());
+        }
+        if mods.contains(Modifiers::SUPER) {
+            values.push("super".into());
+        }
+        values.sort();
+        Self(values)
+    }
+
+    pub fn from_binding(mods: &[String]) -> Self {
+        let mut values: Vec<String> = mods
+            .iter()
+            .map(|modifier| modifier.to_lowercase())
+            .collect();
+        values.sort();
+        values.dedup();
+        Self(values)
+    }
+}
+
+/// Legacy/default bindings used only by the compatibility constructor and unit tests.
+pub fn default_keybindings() -> Vec<KeyBinding> {
+    fn binding(key: &str, mods: &[&str], action: &str) -> KeyBinding {
+        KeyBinding {
+            key: key.into(),
+            mods: mods.iter().map(|modifier| (*modifier).into()).collect(),
+            action: action.into(),
+        }
+    }
+
+    vec![
+        binding("n", &["alt"], "new_window"),
+        binding("t", &["alt"], "new_tab"),
+        binding("s", &["alt"], "new_pane"),
+        binding("v", &["alt"], "new_pane_vertical"),
+        binding("d", &["alt"], "new_pane_vertical"),
+        binding("d", &["alt", "shift"], "new_pane"),
+        binding("1", &["alt"], "switch_tab_1"),
+        binding("2", &["alt"], "switch_tab_2"),
+        binding("3", &["alt"], "switch_tab_3"),
+        binding("4", &["alt"], "switch_tab_4"),
+        binding("5", &["alt"], "switch_tab_5"),
+        binding("6", &["alt"], "switch_tab_6"),
+        binding("7", &["alt"], "switch_tab_7"),
+        binding("8", &["alt"], "switch_tab_8"),
+        binding("9", &["alt"], "switch_tab_9"),
+        binding("0", &["alt"], "switch_tab_last"),
+        binding("1", &["control", "alt"], "switch_workspace_1"),
+        binding("2", &["control", "alt"], "switch_workspace_2"),
+        binding("3", &["control", "alt"], "switch_workspace_3"),
+        binding("4", &["control", "alt"], "switch_workspace_4"),
+        binding("5", &["control", "alt"], "switch_workspace_5"),
+        binding("[", &["alt"], "switch_pane_prev"),
+        binding("]", &["alt"], "switch_pane_next"),
+        binding("r", &["alt"], "search"),
+        binding("p", &["alt"], "quick_connect"),
+        binding("p", &["alt", "shift"], "command_palette"),
+        binding("q", &["alt"], "quick_connect"),
+        binding("q", &["control"], "quit"),
+        binding("plus", &["control"], "increase_font_size"),
+        binding("equal", &["control"], "increase_font_size"),
+        binding("minus", &["control"], "decrease_font_size"),
+        binding("0", &["control"], "reset_font_size"),
+        binding("return", &["control"], "toggle_pane_fullscreen"),
+        binding("c", &["control", "shift"], "copy"),
+        binding("v", &["control", "shift"], "paste"),
+    ]
+}
 
 /// 把 GDK `ModifierType` 转成平台无关 [`Modifiers`]。
 ///
@@ -120,7 +301,6 @@ pub fn restore_consumed_shift(keyval: gdk::Key, mods: gdk::ModifierType) -> gdk:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::config::{default_keybindings, Action, KeyBinding};
 
     #[test]
     fn from_bindings_ignores_unknown_action() {

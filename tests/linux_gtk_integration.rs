@@ -35,7 +35,7 @@ use gtk4::{Orientation, Widget};
 use muxterm::test_support::core::config::Config;
 use muxterm::test_support::core::quickconnect::model::TargetRuntime;
 use muxterm::test_support::platform::ffi_client::{ClientTab, FfiClient, SshHostEntry};
-use muxterm::test_support::platform::linux::keymap::KeyMap;
+use muxterm::test_support::platform::linux::keymap::{default_keybindings, Action, KeyMap};
 use muxterm::test_support::platform::linux::layout_host::LayoutHost;
 use muxterm::test_support::platform::linux::quickconnect::font::FontSettings;
 use muxterm::test_support::platform::linux::quickconnect::store::QuickConnectStore;
@@ -296,18 +296,18 @@ fn assert_pane_layout_widget() {
 ///
 /// 键位与 TUI 一致：Alt+S 水平、Alt+V 竖直（激活侧=右侧新 pane）、Alt+T 新 tab。
 fn assert_build_2tab3pane_via_keys() {
-    let km = KeyMap::from_bindings(&muxterm::test_support::core::config::default_keybindings());
+    let km = KeyMap::from_bindings(&default_keybindings());
     assert_eq!(
         km.lookup(gdk::Key::s, gdk::ModifierType::ALT_MASK),
-        Some(muxterm::test_support::core::config::Action::NewPane)
+        Some(Action::NewPane)
     );
     assert_eq!(
         km.lookup(gdk::Key::v, gdk::ModifierType::ALT_MASK),
-        Some(muxterm::test_support::core::config::Action::NewPaneVertical)
+        Some(Action::NewPaneVertical)
     );
     assert_eq!(
         km.lookup(gdk::Key::t, gdk::ModifierType::ALT_MASK),
-        Some(muxterm::test_support::core::config::Action::NewTab)
+        Some(Action::NewTab)
     );
 
     let app = AppWindow::new(Config::default(), load_theme());

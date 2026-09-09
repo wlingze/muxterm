@@ -7,10 +7,12 @@ use std::rc::Rc;
 use gtk4::prelude::*;
 use gtk4::{Orientation, Paned, Widget};
 
-use crate::core::config::Theme;
 use crate::platform::ffi_client::ClientLayout;
 use crate::platform::linux::pane_view::{PaneMenuAction, PaneView};
 use crate::platform::linux::quickconnect::font::FontSettings;
+#[cfg(test)]
+use crate::platform::linux::theme::Rgb;
+use crate::platform::linux::theme::Theme;
 
 use muxterm_protocol::layout::{LayoutNode, SplitDir};
 
@@ -567,7 +569,6 @@ fn layout_structure_signature(layout: &LayoutTree) -> String {
 mod tests {
     use super::*;
     use muxterm_protocol::PaneId;
-    use muxterm_protocol::Rgb;
 
     #[test]
     fn split_position_uses_ratio_not_one_pixel() {

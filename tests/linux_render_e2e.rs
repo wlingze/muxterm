@@ -13,17 +13,10 @@ use vte4::prelude::*;
 
 use muxterm::test_support::platform::linux::pane_view::PaneView;
 use muxterm::test_support::platform::linux::quickconnect::font::FontSettings;
+use muxterm::test_support::platform::linux::theme::Theme;
 
-fn theme() -> muxterm::test_support::core::config::Theme {
-    muxterm::test_support::core::config::Theme::load("light").unwrap_or_else(|_| {
-        muxterm::test_support::core::config::Theme {
-            name: "test".into(),
-            background: muxterm::test_support::core::config::Rgb(0x1e, 0x1e, 0x2e),
-            foreground: muxterm::test_support::core::config::Rgb(0xcd, 0xd6, 0xf4),
-            cursor: muxterm::test_support::core::config::Rgb(0xf5, 0xe0, 0xdc),
-            colors: [muxterm::test_support::core::config::Rgb(0, 0, 0); 16],
-        }
-    })
+fn theme() -> Theme {
+    load_theme()
 }
 
 /// S3→F5：首屏用 VTE 自身 scrollback 尾部，不重放 200 行历史。

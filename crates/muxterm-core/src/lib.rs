@@ -22,7 +22,6 @@ pub mod config_service;
 pub mod discovery;
 pub mod executable;
 pub mod fault;
-pub mod format;
 pub mod logging;
 #[cfg(feature = "ffi")]
 pub mod muxterm;

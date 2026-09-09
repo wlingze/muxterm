@@ -1,6 +1,7 @@
-//! 人类可读字节与速率（ls -h：1024，一位小数）。
+//! Frontend-facing human-readable byte and rate formatting.
 //!
-//! 状态栏 popover 用这个。禁止把累计字节标成 `B/s`。
+//! Status bars display counters owned by Core, but the presentation format is
+//! a frontend concern and must not make frontend modules import Core helpers.
 
 use std::time::Duration;
 

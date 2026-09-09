@@ -162,6 +162,175 @@ impl ClientError {
     }
 }
 
+/// Owned RGB value returned by a Core FFI DTO.
+#[derive(Debug, Clone, Copy, Default, serde::Deserialize, PartialEq, Eq)]
+pub struct ClientRgb(pub u8, pub u8, pub u8);
+
+impl ClientRgb {
+    pub fn to_u32(self) -> u32 {
+        ((self.0 as u32) << 16) | ((self.1 as u32) << 8) | self.2 as u32
+    }
+}
+
+/// Resolved theme owned by the frontend after crossing the FFI boundary.
+#[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
+pub struct ClientTheme {
+    pub name: String,
+    pub background: ClientRgb,
+    pub foreground: ClientRgb,
+    pub cursor: ClientRgb,
+    pub colors: [ClientRgb; 16],
+}
+
+/// One effective key binding returned by the Core shortcut resolver.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ClientKeyBinding {
+    pub key: String,
+    #[serde(default)]
+    pub mods: Vec<String>,
+    pub action: String,
+}
+
+/// Frontend-owned font settings decoded from the Core configuration snapshot.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct ClientFontConfig {
+    #[serde(default = "default_client_font_family")]
+    pub family: String,
+    #[serde(default = "default_client_font_size")]
+    pub size: f32,
+    #[serde(default)]
+    pub fallback: Vec<String>,
+}
+
+fn default_client_font_family() -> String {
+    "JetBrains Mono".into()
+}
+
+fn default_client_font_size() -> f32 {
+    13.0
+}
+
+impl Default for ClientFontConfig {
+    fn default() -> Self {
+        Self {
+            family: default_client_font_family(),
+            size: default_client_font_size(),
+            fallback: vec!["Noto Sans Mono".into(), "monospace".into()],
+        }
+    }
+}
+
+/// Frontend-owned theme selection settings, distinct from resolved colors.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ClientThemeConfig {
+    #[serde(default = "default_client_theme_name")]
+    pub name: String,
+    #[serde(default = "default_client_light_theme")]
+    pub light: String,
+    #[serde(default = "default_client_dark_theme")]
+    pub dark: String,
+}
+
+fn default_client_theme_name() -> String {
+    "system".into()
+}
+
+fn default_client_light_theme() -> String {
+    "white".into()
+}
+
+fn default_client_dark_theme() -> String {
+    "black".into()
+}
+
+impl Default for ClientThemeConfig {
+    fn default() -> Self {
+        Self {
+            name: default_client_theme_name(),
+            light: default_client_light_theme(),
+            dark: default_client_dark_theme(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ClientStatusbarConfig {
+    #[serde(default = "default_client_statusbar_mode")]
+    pub mode: String,
+}
+
+fn default_client_statusbar_mode() -> String {
+    "tmux".into()
+}
+
+impl Default for ClientStatusbarConfig {
+    fn default() -> Self {
+        Self {
+            mode: default_client_statusbar_mode(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ClientPoolConfig {
+    #[serde(default = "default_client_pool_max_slots")]
+    pub max_slots: u32,
+}
+
+fn default_client_pool_max_slots() -> u32 {
+    20
+}
+
+impl Default for ClientPoolConfig {
+    fn default() -> Self {
+        Self {
+            max_slots: default_client_pool_max_slots(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ClientTmuxConfig {
+    #[serde(default = "default_client_auto_mouse")]
+    pub auto_mouse: bool,
+    #[serde(default)]
+    pub default_session: String,
+    #[serde(default)]
+    pub socket: String,
+}
+
+fn default_client_auto_mouse() -> bool {
+    true
+}
+
+impl Default for ClientTmuxConfig {
+    fn default() -> Self {
+        Self {
+            auto_mouse: default_client_auto_mouse(),
+            default_session: String::new(),
+            socket: String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ClientScrollbackConfig {
+    #[serde(default = "default_client_scrollback_lines")]
+    pub lines: u32,
+}
+
+fn default_client_scrollback_lines() -> u32 {
+    10_000
+}
+
+impl Default for ClientScrollbackConfig {
+    fn default() -> Self {
+        Self {
+            lines: default_client_scrollback_lines(),
+        }
+    }
+}
+
 /// Owned configuration snapshot returned by the Core configuration ABI.
 #[derive(Debug, Clone, serde::Deserialize, PartialEq)]
 pub struct ClientConfigSnapshot {
@@ -174,6 +343,10 @@ pub struct ClientConfigSnapshot {
     pub schema: serde_json::Value,
     pub manifest: serde_json::Value,
     pub action_catalog: serde_json::Value,
+    #[serde(default)]
+    pub resolved_theme: Option<ClientTheme>,
+    #[serde(default)]
+    pub effective_keybindings: Vec<ClientKeyBinding>,
 }
 
 /// RFC 6902-style patch operation accepted by the Core configuration ABI.
@@ -287,6 +460,77 @@ pub struct ClientAttentionConfig {
     #[serde(default)]
     pub blocked_regex: Vec<String>,
     pub debounce_ms: u64,
+}
+
+impl Default for ClientAttentionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            blocked_regex: Vec::new(),
+            debounce_ms: 100,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ClientOnLastPaneExit {
+    #[default]
+    CloseWindow,
+    KeepEmpty,
+    NewShell,
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ClientOnProgramExitAbnormal {
+    #[default]
+    Notify,
+    Close,
+    Keep,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ClientBehaviorConfig {
+    #[serde(default)]
+    pub on_last_pane_exit: ClientOnLastPaneExit,
+    #[serde(default)]
+    pub on_program_exit_abnormal: ClientOnProgramExitAbnormal,
+}
+
+impl Default for ClientBehaviorConfig {
+    fn default() -> Self {
+        Self {
+            on_last_pane_exit: ClientOnLastPaneExit::CloseWindow,
+            on_program_exit_abnormal: ClientOnProgramExitAbnormal::Notify,
+        }
+    }
+}
+
+/// Frontend configuration DTO decoded from the Core settings snapshot.
+///
+/// This intentionally contains only fields consumed by the Linux shell. Extra
+/// Core-owned sections remain in the JSON snapshot and are ignored here.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct ClientConfig {
+    #[serde(default)]
+    pub font: ClientFontConfig,
+    #[serde(default)]
+    pub theme: ClientThemeConfig,
+    #[serde(default)]
+    pub statusbar: ClientStatusbarConfig,
+    #[serde(default)]
+    pub pool: ClientPoolConfig,
+    #[serde(default)]
+    pub tmux: ClientTmuxConfig,
+    #[serde(default)]
+    pub scrollback: ClientScrollbackConfig,
+    #[serde(default)]
+    pub attention: ClientAttentionConfig,
+    #[serde(default)]
+    pub behavior: ClientBehaviorConfig,
+    #[serde(default)]
+    pub keybindings: Vec<ClientKeyBinding>,
 }
 
 /// Product-level event kinds exposed to frontends instead of raw ABI numbers.
@@ -615,6 +859,44 @@ pub struct ClientRuntimeInfo {
     pub support: Vec<String>,
     #[serde(default)]
     pub accepted_transports: Vec<String>,
+}
+
+/// Runtime capabilities exposed to frontend code through the FFI catalog view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientRuntimeCapability {
+    PersistDetach,
+    Discover,
+    MultiTab,
+    SplitPane,
+    SharedClientResize,
+    WorktreeList,
+    WorktreeCreate,
+    WorktreeOpen,
+    WorktreeRemove,
+}
+
+impl ClientRuntimeCapability {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::PersistDetach => "PersistDetach",
+            Self::Discover => "Discover",
+            Self::MultiTab => "MultiTab",
+            Self::SplitPane => "SplitPane",
+            Self::SharedClientResize => "SharedClientResize",
+            Self::WorktreeList => "WorktreeList",
+            Self::WorktreeCreate => "WorktreeCreate",
+            Self::WorktreeOpen => "WorktreeOpen",
+            Self::WorktreeRemove => "WorktreeRemove",
+        }
+    }
+}
+
+impl ClientRuntimeInfo {
+    pub fn supports(&self, capability: ClientRuntimeCapability) -> bool {
+        self.support
+            .iter()
+            .any(|value| value == capability.as_str())
+    }
 }
 
 /// Existing workspace candidate returned by Core discovery.
@@ -2269,6 +2551,7 @@ mod tests {
 
     #[test]
     fn config_snapshot_and_draft_decode_as_owned_values() {
+        let colors = vec![serde_json::json!([0, 0, 0]); 16];
         let snapshot: ClientConfigSnapshot = serde_json::from_value(serde_json::json!({
             "path": "/tmp/config.toml",
             "revision": "rev-1",
@@ -2278,11 +2561,28 @@ mod tests {
             "schema": {"type": "object"},
             "manifest": {"schema_id": "muxterm.config.v1"},
             "action_catalog": {"actions": []},
+            "resolved_theme": {
+                "name": "white",
+                "background": [255, 255, 255],
+                "foreground": [31, 35, 40],
+                "cursor": [31, 35, 40],
+            "colors": colors,
+            },
+            "effective_keybindings": [{
+                "key": "n",
+                "mods": ["alt"],
+                "action": "new_window",
+            }],
         }))
         .expect("config snapshot decodes");
         assert_eq!(snapshot.path, "/tmp/config.toml");
         assert_eq!(snapshot.revision, "rev-1");
         assert_eq!(snapshot.values["font"]["size"], 13.0);
+        assert_eq!(
+            snapshot.resolved_theme.as_ref().unwrap().background,
+            ClientRgb(255, 255, 255)
+        );
+        assert_eq!(snapshot.effective_keybindings[0].action, "new_window");
 
         let draft: ClientConfigDraft = serde_json::from_value(serde_json::json!({
             "transaction": "tx-1",
@@ -2292,6 +2592,35 @@ mod tests {
         .expect("config draft decodes");
         assert_eq!(draft.transaction, "tx-1");
         assert!(draft.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn config_values_decode_to_frontend_config_dto() {
+        let config: ClientConfig = serde_json::from_value(serde_json::json!({
+            "font": {"family": "Iosevka", "size": 14.0, "fallback": ["monospace"]},
+            "theme": {"name": "black", "light": "white", "dark": "black"},
+            "statusbar": {"mode": "theme"},
+            "pool": {"max_slots": 7},
+            "tmux": {"auto_mouse": false, "default_session": "dev", "socket": "muxterm-test"},
+            "scrollback": {"lines": 500},
+            "attention": {"enabled": false, "blocked_regex": ["secret"], "debounce_ms": 250},
+            "behavior": {
+                "on_last_pane_exit": "keep_empty",
+                "on_program_exit_abnormal": "keep",
+            },
+        }))
+        .expect("config values decode");
+        assert_eq!(config.font.family, "Iosevka");
+        assert_eq!(config.tmux.socket, "muxterm-test");
+        assert_eq!(config.pool.max_slots, 7);
+        assert_eq!(
+            config.behavior.on_last_pane_exit,
+            ClientOnLastPaneExit::KeepEmpty
+        );
+        assert_eq!(
+            config.behavior.on_program_exit_abnormal,
+            ClientOnProgramExitAbnormal::Keep
+        );
     }
 
     #[test]

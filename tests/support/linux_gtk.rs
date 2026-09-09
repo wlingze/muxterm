@@ -14,7 +14,7 @@ use gtk4::glib::translate::IntoGlib;
 use gtk4::prelude::*;
 use gtk4::{EventControllerKey, Paned, ToggleButton, Widget};
 
-use muxterm::test_support::core::config::Theme;
+use muxterm::test_support::platform::linux::theme::{fallback_theme, Theme};
 
 /// 是否有可用的显示服务（X11 或 Wayland）。
 pub fn has_display() -> bool {
@@ -45,15 +45,9 @@ pub fn gtk_test_framework_smoke() {
     assert!(!types.is_empty(), "gtk_test_list_all_types 应非空");
 }
 
-/// 加载 light 主题；失败时退回测试用固定主题。
+/// 提供不依赖文件系统的浅色主题 DTO。
 pub fn load_theme() -> Theme {
-    Theme::load("light").unwrap_or_else(|_| Theme {
-        name: "test".into(),
-        background: muxterm::test_support::core::config::Rgb(0x1e, 0x1e, 0x2e),
-        foreground: muxterm::test_support::core::config::Rgb(0xcd, 0xd6, 0xf4),
-        cursor: muxterm::test_support::core::config::Rgb(0xf5, 0xe0, 0xdc),
-        colors: [muxterm::test_support::core::config::Rgb(0, 0, 0); 16],
-    })
+    fallback_theme()
 }
 
 /// 推进 GTK 主循环约 `ms` 毫秒（iteration + 5ms sleep）。
