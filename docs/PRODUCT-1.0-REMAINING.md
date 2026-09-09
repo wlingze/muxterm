@@ -78,6 +78,9 @@ Cmd-P → 工作区 tab；红点 / Cmd-R → 待处理 tab；搜索 tab 激活�
 | URL / 路径点击 | 点链接用系统打开 |
 | `Cmd-\`` | 在上一个工作区来回（面板默认落点也是上一工作区） |
 | `twork` 进产品 | `muxterm ~/proj` / `muxterm .` = attach-or-create；面板「新建」走同一条 |
+| Shells 格子 | 随手 local shell；tab 一台机器；`Cmd-N` 进来（§8.2） |
+| 提升 muxer | shell 里跑着的 tmux/herdr → 按钮 attach 成项目 Workspace（§8.3） |
+| Agents 视图 | 所有 agent 当一个可切的格子（投影，不是真 Workspace）（§8.1） |
 
 ### 第四波 — 远程连续性（本轮新加，进 1.0）
 
@@ -233,3 +236,85 @@ ryzen · muxterm  远端 :5173 在听
 四波都是现有 Workspace + SSH + 面板上的增量。B 做成闭环之后，对外那句才站得住：
 
 > 几十个在飞的工作区在这一个窗口里，我一眼知道哪个在等我；远程的图和端口也还在这扇窗里处理。
+
+---
+
+## 8. 日用痛点：三种 Workspace 用法（2026-09-09）
+
+都是 Workspace 的用法，不是新 Runtime。Core 仍然是 **一个 Workspace = 一个已 attach 的 Runtime**。GUI Window 只是体现。禁止在 Core 里造虚拟 Session / 假 Workspace 去塞别人的 pane。
+
+三条合在一起才是完整日用环：
+
+```text
+Shells（随手敲）  --提升-->  项目 Workspace（tmux/herdr）
+       ^                            |
+       |         切来切去            |
+       +-------- Agents 视图 <------+  （只看各项目里的 agent tab）
+```
+
+### 8.1 Agents 工作区：聚合所有 agent，像切普通 Workspace 一样切过去
+
+**痛点：** agent 散落在各个项目 Workspace 的 tab 里。侧栏 Agents 只能点跳，不能「进一个工作区把它们当 tab 用」。
+
+**能做，但必须是视图，不能是真 Workspace。** 不能把 ryzen 上的 Codex 和 local 上的 Grok 搬进同一个 tmux session。所谓「把 agent 所在的 tab 抽出来合成 magic workspace」，是 **同一套 Surface 的投影**：
+
+- 侧栏 / `Cmd+Ctrl` 数字键里有一个固定格子，名字就叫 `Agents`（或 `agents`），切过去的手感和普通 Workspace 一样。
+- 这个格子的 **Tab 列表 = 当前所有 agent pane**（每个 agent 一页），不是再开一套 PTY。
+- 只画当前 tab 的 Surface（跟点侧栏 Agents 行是同一个 pane）。切 tab = 焦点跳到那个 agent，不必把十个 agent 同时画出来。
+- 源 Workspace 里的 tab **还在**，没有搬走。在 Agents 视图里关 tab ≠ 杀 agent，只是离开这个视图。
+- 分屏 / 新 tab：不要在投影里造假拓扑。新 tab 应拒绝，或明确「在源工作区里 split」。
+- Tab 标题：`工作区 · 机器 · agent · Herdr title`（§19 / §20），两个 muxterm 才分得开。
+
+这是 B 的「进现场」加强版：列表是发现，**Agents 格子是干活**。排在第一波闭环之后、或与「键盘切 agent」一起做。不要做成 Core 里的第八个 Runtime。
+
+### 8.2 Shells：随手本地命令 + 一 tab 一台机器
+
+**痛点：** 现在打开全是项目 Workspace。默认 1 号往往没用，关掉；偶尔又想敲两句本地命令。别的终端 `Cmd-N` 就是一个新的 local window，Muxterm 没有对等操作。
+
+**产品形态：**
+
+- 一个特殊格子 **`Shells`**，永远可以出现在 Workspaces 列表里，有独立快捷键切过来（不要占用「默认项目 = 1 号」）。
+- **Tab 1 永远是本机 local shell。** 其余 tab 一台机器一个 shell（SSH 上的 ShellRuntime，不是自动 attach 那边的 tmux）。
+- `Cmd-N`：若当前已在 Shells，新开一个 **local** tab；若不在，先切到 Shells 再保证至少有一个 local tab 可用。项目 Workspace 里新建 tmux window 继续用 `Cmd-T`。
+- 不要启动时塞一个空的项目 Workspace 占 1 号。没有项目时，1 号可以就是 Shells。
+
+**结构怎么落（别违反一 Workspace 一 Runtime）：**
+
+- Core：本机 shell、`ssh ryzen` 上的 shell，各自是 **独立的 ShellRuntime Workspace**。
+- GUI：把这些 shell 工作区 **呈现成 Shells 的 tabs**（Window 体现一组，而不是 Core 里一个 Runtime 跨两台机器）。
+- 关 Shells 的 remote tab = 关掉那条远程 shell（ShellRuntime shutdown）。不要误 detach 用户的 tmux。
+
+### 8.3 从 Shell 里「提升」正在跑的 tmux / Herdr 变成项目 Workspace
+
+**痛点：** 以前在普通 shell 里 `cd` 再 `twork`，就有一个新工作区。希望在 Muxterm 的 local/SSH shell 里跑了 `tmux` / `herdr` 之后，不必 hook 命令名，用右键或按钮：把当前这个 muxer **提升** 成一个 Workspace 并 attach。任意 transport。
+
+**不要** hook `tmux`/`herdr` 命令（误伤、套娃、SSH 里更糟）。
+
+**要的是用户点一下：**
+
+1. 当前 pane 里挂着 tmux 客户端或 herdr 客户端（看前台进程 / pane 标题，不靠猜命令行历史）。
+2. **推出：** 对这个客户端 detach（tmux `detach-client` / herdr 对等），pane 回到普通 shell，muxer **继续在机器上跑**。
+3. 若需要，这个 tab 保持为刚恢复的 shell（或新开一个 shell tab）。不要把人留在「套在 tmux 里的 Muxterm pane」。
+4. Catalog **attach** 那个 session：transport 跟当前这个 shell 走（local 就是 local，SSH 就是 SSH）。新项目 Workspace 出现在列表里，窗切过去。
+5. 和 8.2 的 Shells 并列：Shells 里随手干，提升之后变成普通项目 Workspace，数字键来回切。
+
+这就是把 `twork` 收进产品的另一半：8.2 是「先有壳」，8.3 是「壳里长出了 muxer 再收编」。命令行 `muxterm ~/proj` 仍是外面那条路。
+
+失败要可见：认不出 muxer、detach 失败、对端没有 control 模式，都留在 shell 里并报一行原因，不要造空 Workspace。
+
+### 8.4 快捷键与列表（建议，落地时可改键但别改语义）
+
+| 动作 | 建议 |
+| --- | --- |
+| 切到 Shells | 专用键（如 `Cmd-N` 聚焦 Shells；已在其中则新 local tab） |
+| 切到 Agents 视图 | 固定格子，走同一套 Workspace 数字键（钉在列表里，可拖顺序） |
+| 项目 Workspace | 现有 `Cmd+Ctrl+1..9` / `0`，不要被 Shells 永远占死 1 号 |
+| 提升 muxer | pane 右键 / 标题栏按钮，不设全局误触快捷键 |
+
+### 8.5 和四波的关系
+
+- **8.1 Agents 视图**：B 的现场；第一波列表能跳之后再做「整格切进去」。
+- **8.2 Shells + Cmd-N**：第三波日用，替代无用的默认 1 号。
+- **8.3 提升**：第三波，和 `twork` 进产品是一对；依赖 8.2 先有能跑命令的 shell。
+
+不做：Core 里一个 Workspace 混多个 Runtime；把 agent pane 从源 session 剪走；自动 hook `tmux` 命令。
