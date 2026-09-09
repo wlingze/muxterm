@@ -13,7 +13,7 @@
 ## 0. 怎么用这份文档
 
 1. 新分支从重构后的 `main` 拉出。
-2. 按第 12 节顺序一条条做；每条可独立验证再提交。§16–21 是后续待做，重构后另开提交，不要和已落地的 1–11 混在一起。
+2. 按第 12 节顺序一条条做；每条可独立验证再提交。§16 起是后续待做（含 §23–25 前端聚合格子），重构后另开提交，不要和已落地的 1–11 混在一起。
 3. 对照 `feature/dogfood-0907` 只看「意图和测试」，不要整文件拷贝。
 4. 本机配置清理（`~/.config/muxterm` 里不用的文件）不要写进仓库。
 5. GUI 问能力继续用 `support()`，禁止 `if runtime == "herdr"`。
@@ -726,6 +726,9 @@ Working · Codex · Implement runtime events · Tab 2
 | 20.2 | Herdr session title | `agentName` 与 `title` 分列显示 |
 | 20.3 | tmux Codex title | `#{pane_title}` / OSC 0，不要刮 TUI 画面 |
 | 22 | 回底胶囊闪烁 | 迟滞 + 状态不变不重绘；和 §17 一起修 |
+| 23 | Shells / Agents 前端聚合 | GUI 投影格子，不是 Core Workspace |
+| 24 | Cmd-K 进 Shells | 靠近 Cmd-N；Cmd-N 留给以后新 Window |
+| 25 | 从 shell 提升 tmux/herdr | 难在认出 session；不 hook 命令 |
 
 ---
 
@@ -757,3 +760,93 @@ Working · Codex · Implement runtime events · Tab 2
 5. 未读计数可以节流，不要每个 `\n` 都改一遍胶囊文案。
 
 验收：贴着实时尾部时胶囊保持隐藏、不闪。上翻一屏后稳定显示。新输出只更新 `+N`，不要闪灭。Agent 会话列表里不应闪这颗按钮。
+
+---
+
+## 23. 待做：Shells / Agents 都是前端聚合格子
+
+**问题**
+
+- 现在打开全是项目 Workspace。默认 1 号常常没用，关掉；偶尔又想敲两句本地命令。别的终端能随手开一个 local，Muxterm 没有对等入口。
+- Agent 散落在各个项目的 tab 里。侧栏能点跳，不能「进一个格子，把它们当 tab 用」。
+
+**原则（重构后也不许破）**
+
+Core 仍是 **一个 Workspace = 一个已 attach 的 Runtime**。Window 只是体现。  
+**Shells 和 Agents 都不是新 Runtime，也不是把 pane 搬进一个假 Workspace。** 只是前端把已有格子聚合成两个看起来像 Workspace 的槽，切过去的手感和普通 Workspace 一样（侧栏一行、数字键、同一套激活）。
+
+```text
+Shells（聚合：本机 shell + 各机器 shell）
+Agents（聚合：各项目里的 agent pane / tab）
+普通项目 Workspace  ← 真 Runtime（tmux / herdr）
+```
+
+切来切去都在 Workspaces 列表里。
+
+### 23.1 Shells
+
+- 列表里一个固定槽，名字 `Shells`（或同等）。不要启动时塞一个空项目占 1 号。
+- **Tab 1 永远本机 local shell。** 其余 tab = 一台机器一个 **ShellRuntime**（SSH 上的普通 shell，不是自动 attach 那边的 tmux）。
+- 实现：每个机器一个真的 ShellRuntime Workspace；GUI 把它们画成这一个槽的 tabs。关 remote tab = shutdown 那条 shell，不要 detach 用户 tmux。
+- 已在 Shells 里再「新 local」= 再开一个本机 shell tab。
+
+### 23.2 Agents
+
+- 同样一个固定槽。Tab 列表 = 当前所有 agent pane（每个 agent 一页）。
+- Surface **借用源 Workspace 的同一个 pane**，不搬 PTY、不合成一个 tmux session。
+- 只画当前 tab。在 Agents 里关 tab ≠ 杀 agent，只离开这个视图。
+- 不要在投影里 split / new tab 造假拓扑。
+- 标题带 `工作区 · 机器 · agent · title`（§19 / §20），两个 muxterm 才分得开。
+
+验收：`Cmd-K` 进 Shells，Tab 1 能敲本地命令；侧栏能进 Agents，切 tab 等于跳到那个 agent 现场，源项目 Workspace 里的 tab 还在。
+
+---
+
+## 24. 待做：进 Shells 用 Cmd-K（不要用 Cmd-N）
+
+**期望**
+
+- **`Cmd-K`**：切到 Shells 聚合槽。已经在里面则保证 Tab 1（local）可用；需要新 local 时在 Shells 里加 tab。
+- **`Cmd-N` 先别占。** 以后可能有多 Window，「新 Window」会用离 N 近的键；K 和 N 够近，日用也顺。
+- 项目 Workspace 里新 tmux window 仍是 **`Cmd-T`**。
+- Muxterm **不要**把 Cmd-K 做成终端清屏（清屏仍是 pane 里 Ctrl-L）。当前 `KeyBindings` 没有 `k`，键是空的。
+
+Linux 对齐：同一个「进 Shells」动作，键位用配置里的绑定，不要写死成 Ctrl-K 清屏。
+
+验收：项目 Workspace 里按 Cmd-K 到 Shells/local；Cmd-T 仍在当前项目新 tab。
+
+---
+
+## 25. 待做：从 shell 提升里面的 tmux / herdr（难在认出是谁）
+
+**问题**
+
+以前在普通 shell 里 `cd` 再 `twork`，就多一个工作区。希望在 Shells 的 local 或某台机器的 shell 里已经跑了 `tmux` / `herdr` 之后，右键或按钮：**推出当前这个客户端，新建/回到普通 shell，再 attach 一个项目 Workspace**。Transport 跟当前这个 shell 走（local 就是 local，SSH 就是 SSH）。
+
+**不要** hook `tmux` / `herdr` 命令本身（套娃、误伤、SSH 更糟）。
+
+**要的行为**
+
+1. 用户点「作为 Workspace 打开」（pane 右键 / 标题栏，不要全局误触快捷键）。
+2. 认出当前 pane 前台是 tmux 客户端或 herdr 客户端。
+3. **推出：** detach 这个客户端，pane 回到普通 shell；对端 session **继续跑**。
+4. Catalog attach 那个 session，新项目 Workspace 进列表并切过去。
+5. 之后和 Shells / 普通 Workspace 用数字键来回切。
+
+**为什么比 23 难（重做时要单独估）**
+
+Shells 里的 pane 是 **ShellRuntime 的 PTY**。Muxterm 不是这个内层 tmux 的 `-CC` 客户端，看不到 `%session-changed`。必须从「这个 PTY 的孩子进程」反推 session 身份。
+
+| 情况 | 要拿到什么 | 难点 |
+| --- | --- | --- |
+| 本机，前台是 `tmux` | socket（`-L`）+ session 名 | 读 pane 前台 argv / `TMUX` 环境（`tmux display` 或 `/proc/<pid>/environ`）。默认 server 不要误 attach 成用户主 server 的错 session。 |
+| 本机，前台是 `herdr` | named session / socket | argv 或环境里的名字；禁止无名字的 `herdr server stop`。 |
+| SSH 上的 shell tab | 同上，但是 **远端** pid | 不能拿远端 pid 查本机 `/proc`。要经现有 SSH alias 问远端，或只解析标题/环境，失败就报错别造空 Workspace。 |
+| 只是普通 `vim` / `htop` | 无 | 按钮应不可用或点了说明「当前不是 tmux/herdr」。 |
+| 已经在 Muxterm 的 TmuxRuntime 里 | 无 | 不要对正在 -CC attach 的 pane 再「提升」一次。 |
+
+失败必须可见：认不出、detach 失败、对端没有可 attach 的 control 通道，都留在原 shell，不要开空格子。
+
+**不要在重构前的这棵树上实现。** 只记需求。新树有稳定的 ShellRuntime + Catalog attach 后再做；探测逻辑用 `support()`，禁止 `if runtime == "herdr"`。
+
+验收：Shells/local 里手动 `tmux new -s demo` 后点提升 → 原 pane 回到 shell，新 Workspace attach 到 `demo`；SSH 机器 tab 里同样走 SSH attach。普通进程点提升无事发生。
