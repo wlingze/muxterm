@@ -11,6 +11,7 @@ use crate::projects::{ProjectStore, ProjectsService};
 use crate::protocol::terminal::emulate::DEFAULT_SCROLLBACK_LINES;
 use crate::runtime::{DaemonRuntime, ShellRuntime, TmuxRuntime};
 use crate::workspace::id::WorkspaceId;
+use crate::workspace::template::WorkspaceTemplate;
 
 use super::super::api::{cstr_opt, MuxtermHandle};
 use super::super::callbacks::FfiCallbacks;
@@ -166,7 +167,15 @@ fn boxed_handle(
         .map(|c| c.attention)
         .unwrap_or_default();
     let settings = open_settings_service();
-    if let Err(error) = catalog.set_templates(settings.document().templates.clone()) {
+    let templates = settings
+        .document()
+        .templates
+        .iter()
+        .cloned()
+        .map(WorkspaceTemplate::try_from)
+        .collect::<anyhow::Result<Vec<_>>>()
+        .and_then(|templates| catalog.set_templates(templates));
+    if let Err(error) = templates {
         tracing::warn!(
             target = "muxterm::config",
             "WorkspaceTemplate 加载失败，使用空注册表: {error}"

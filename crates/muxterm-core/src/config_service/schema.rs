@@ -11,8 +11,7 @@ use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::config::{Config, KeyBinding};
-use crate::quickconnect::model::{TargetConfig, TargetRuntime, TargetTransport};
-use crate::workspace::template::WorkspaceTemplate;
+use crate::protocol::layout::SplitDir;
 
 pub const CONFIG_VERSION: u32 = 1;
 
@@ -26,7 +25,7 @@ pub struct ConfigDocument {
     #[serde(default)]
     pub projects: Vec<ProjectDocument>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub templates: Vec<WorkspaceTemplate>,
+    pub templates: Vec<TemplateDocument>,
     #[serde(default)]
     pub shortcuts: ShortcutConfig,
     #[serde(default)]
@@ -198,7 +197,9 @@ impl ConfigDocument {
     }
 
     fn validate_templates(&self) -> Result<()> {
-        crate::workspace::template::TemplateRegistry::new(self.templates.clone())?;
+        for template in &self.templates {
+            template.validate()?;
+        }
         Ok(())
     }
 
@@ -329,6 +330,102 @@ impl ConfigDocument {
     }
 }
 
+/// Persisted create-time workspace template record.
+///
+/// This is intentionally a configuration-owned shape. The workspace domain
+/// converts it into `WorkspaceTemplate` before applying it to a live runtime.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
+pub struct TemplateDocument {
+    pub name: String,
+    #[serde(default)]
+    pub tabs: Vec<TemplateTabDocument>,
+}
+
+impl TemplateDocument {
+    pub fn validate(&self) -> Result<()> {
+        if self.name.trim().is_empty() {
+            return Err(anyhow!("template name 不能为空"));
+        }
+        if self.tabs.is_empty() {
+            return Err(anyhow!("template {} 至少需要一个 tab", self.name));
+        }
+        let mut active_tabs = 0;
+        for tab in &self.tabs {
+            if tab.active {
+                active_tabs += 1;
+            }
+            tab.layout.validate()?;
+        }
+        if active_tabs > 1 {
+            return Err(anyhow!("template {} 最多只能有一个 active tab", self.name));
+        }
+        Ok(())
+    }
+}
+
+/// Persisted template tab record.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
+pub struct TemplateTabDocument {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub layout: TemplateLayoutDocument,
+    #[serde(default)]
+    pub active: bool,
+}
+
+/// Persisted recursive template layout record.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
+#[serde(tag = "kind")]
+pub enum TemplateLayoutDocument {
+    Pane(TemplatePaneDocument),
+    Split {
+        dir: SplitDir,
+        first: Box<TemplateLayoutDocument>,
+        second: Box<TemplateLayoutDocument>,
+    },
+}
+
+impl TemplateLayoutDocument {
+    fn validate(&self) -> Result<()> {
+        match self {
+            Self::Pane(pane) => pane.validate(),
+            Self::Split { first, second, .. } => {
+                first.validate()?;
+                second.validate()
+            }
+        }
+    }
+}
+
+/// Persisted process and focus defaults for one template pane.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
+pub struct TemplatePaneDocument {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    #[serde(default)]
+    pub focus: bool,
+}
+
+impl TemplatePaneDocument {
+    fn validate(&self) -> Result<()> {
+        if self
+            .command
+            .as_deref()
+            .is_some_and(|command| command.trim().is_empty())
+        {
+            return Err(anyhow!("template pane command 不能为空"));
+        }
+        if self.env.keys().any(|key| key.trim().is_empty()) {
+            return Err(anyhow!("template pane env key 不能为空"));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq)]
 pub struct ProjectDocument {
     pub id: String,
@@ -384,87 +481,6 @@ pub struct ProjectTransport {
     pub target: String,
     #[serde(default)]
     pub options: BTreeMap<String, Value>,
-}
-
-impl ProjectDocument {
-    /// Convert a QuickConnect target into the serializable Project contract.
-    pub fn from_target(config: &TargetConfig) -> Self {
-        let (transport_id, target) = match &config.transport {
-            TargetTransport::Local => ("local".to_string(), String::new()),
-            TargetTransport::Ssh { name } => ("ssh".to_string(), name.clone()),
-        };
-        Self {
-            id: format!("{}@{}", config.name, transport_id),
-            name: config.name.clone(),
-            path: config.path.clone(),
-            runtime: ProjectRuntime {
-                id: config.runtime.as_str().to_string(),
-                options: BTreeMap::new(),
-                session: config.session.clone(),
-                socket: config.socket.clone(),
-                workspace_id: config.workspace_id.clone(),
-            },
-            transport: ProjectTransport {
-                id: transport_id,
-                target,
-                options: BTreeMap::new(),
-            },
-            template: None,
-            worktrees: Vec::new(),
-            command: Vec::new(),
-            env: BTreeMap::new(),
-        }
-    }
-
-    /// Convert the portable Project contract back into a QuickConnect target.
-    pub fn to_target(&self) -> Result<TargetConfig> {
-        let runtime = TargetRuntime::from_str(&self.runtime.id)
-            .ok_or_else(|| anyhow!("不支持的 project runtime: {}", self.runtime.id))?;
-        let transport = match self.transport.id.to_ascii_lowercase().as_str() {
-            "local" => TargetTransport::Local,
-            "ssh" => {
-                let alias = if self.transport.target.trim().is_empty() {
-                    self.transport
-                        .options
-                        .get("name")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                } else {
-                    self.transport.target.as_str()
-                };
-                if alias.trim().is_empty() {
-                    return Err(anyhow!("project {} 的 SSH transport 缺少 target", self.id));
-                }
-                TargetTransport::Ssh {
-                    name: alias.to_string(),
-                }
-            }
-            other => return Err(anyhow!("不支持的 project transport: {other}")),
-        };
-        let mut target = TargetConfig::new(&self.name, runtime, transport, &self.path);
-        target.session = self.runtime.session.clone().or_else(|| {
-            self.runtime
-                .options
-                .get("session")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        });
-        target.socket = self.runtime.socket.clone().or_else(|| {
-            self.runtime
-                .options
-                .get("socket")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        });
-        target.workspace_id = self.runtime.workspace_id.clone().or_else(|| {
-            self.runtime
-                .options
-                .get("workspace_id")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        });
-        Ok(target)
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Default)]
@@ -654,4 +670,68 @@ fn check_keys(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pane(command: &str) -> TemplateLayoutDocument {
+        TemplateLayoutDocument::Pane(TemplatePaneDocument {
+            command: Some(command.into()),
+            cwd: None,
+            env: BTreeMap::new(),
+            focus: false,
+        })
+    }
+
+    fn template() -> TemplateDocument {
+        TemplateDocument {
+            name: "review".into(),
+            tabs: vec![TemplateTabDocument {
+                name: Some("main".into()),
+                layout: TemplateLayoutDocument::Split {
+                    dir: SplitDir::Horizontal,
+                    first: Box::new(pane("editor")),
+                    second: Box::new(pane("tests")),
+                },
+                active: true,
+            }],
+        }
+    }
+
+    #[test]
+    fn template_document_round_trips_as_config_data() {
+        let document = template();
+        let raw = toml::to_string(&document).expect("template document 应可序列化");
+        let restored: TemplateDocument =
+            toml::from_str(&raw).expect("template document 应可反序列化");
+
+        assert_eq!(restored, document);
+        restored.validate().expect("模板记录应通过配置校验");
+    }
+
+    #[test]
+    fn config_document_round_trips_template_records() {
+        let mut document = ConfigDocument::default();
+        document.templates.push(template());
+        let raw = document.to_toml().expect("配置文档应可序列化");
+        let restored = ConfigDocument::from_toml(&raw).expect("配置文档应可反序列化");
+
+        assert_eq!(restored.templates, document.templates);
+    }
+
+    #[test]
+    fn template_document_rejects_invalid_record_without_domain_registry() {
+        let mut document = template();
+        document.tabs[0].layout = TemplateLayoutDocument::Pane(TemplatePaneDocument {
+            command: Some("   ".into()),
+            cwd: None,
+            env: BTreeMap::new(),
+            focus: false,
+        });
+
+        let error = document.validate().expect_err("空 command 应被拒绝");
+        assert!(error.to_string().contains("command"));
+    }
 }

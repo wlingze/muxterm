@@ -5,6 +5,9 @@ use std::collections::BTreeMap;
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::config_service::{
+    TemplateDocument, TemplateLayoutDocument, TemplatePaneDocument, TemplateTabDocument,
+};
 use crate::protocol::layout::SplitDir;
 
 /// Stable name used by Project records and Workspace open specs.
@@ -78,6 +81,84 @@ impl WorkspaceTemplate {
 
     pub fn pane_count(&self) -> usize {
         self.tabs.iter().map(|tab| tab.layout.pane_count()).sum()
+    }
+
+    pub fn from_document(document: TemplateDocument) -> Result<Self> {
+        Self::try_from(document)
+    }
+
+    pub fn to_document(&self) -> TemplateDocument {
+        self.into()
+    }
+}
+
+impl TryFrom<TemplateDocument> for WorkspaceTemplate {
+    type Error = anyhow::Error;
+
+    fn try_from(document: TemplateDocument) -> Result<Self> {
+        document.validate()?;
+        let name = TemplateName::try_from(document.name)?;
+        let tabs = document
+            .tabs
+            .into_iter()
+            .map(|tab| {
+                Ok(TabTemplate {
+                    name: tab.name,
+                    layout: layout_from_document(tab.layout)?,
+                    active: tab.active,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self { name, tabs })
+    }
+}
+
+impl From<&WorkspaceTemplate> for TemplateDocument {
+    fn from(template: &WorkspaceTemplate) -> Self {
+        Self {
+            name: template.name.to_string(),
+            tabs: template
+                .tabs
+                .iter()
+                .map(|tab| TemplateTabDocument {
+                    name: tab.name.clone(),
+                    layout: layout_to_document(&tab.layout),
+                    active: tab.active,
+                })
+                .collect(),
+        }
+    }
+}
+
+fn layout_from_document(document: TemplateLayoutDocument) -> Result<TemplateLayout> {
+    Ok(match document {
+        TemplateLayoutDocument::Pane(pane) => TemplateLayout::Pane(PaneTemplate {
+            command: pane.command,
+            cwd: pane.cwd,
+            env: pane.env,
+            focus: pane.focus,
+        }),
+        TemplateLayoutDocument::Split { dir, first, second } => TemplateLayout::Split {
+            dir,
+            first: Box::new(layout_from_document(*first)?),
+            second: Box::new(layout_from_document(*second)?),
+        },
+    })
+}
+
+fn layout_to_document(layout: &TemplateLayout) -> TemplateLayoutDocument {
+    match layout {
+        TemplateLayout::Pane(pane) => TemplateLayoutDocument::Pane(TemplatePaneDocument {
+            command: pane.command.clone(),
+            cwd: pane.cwd.clone(),
+            env: pane.env.clone(),
+            focus: pane.focus,
+        }),
+        TemplateLayout::Split { dir, first, second } => TemplateLayoutDocument::Split {
+            dir: *dir,
+            first: Box::new(layout_to_document(first)),
+            second: Box::new(layout_to_document(second)),
+        },
     }
 }
 
@@ -224,6 +305,27 @@ mod tests {
         };
         template.validate().unwrap();
         assert_eq!(template.pane_count(), 3);
+    }
+
+    #[test]
+    fn config_document_round_trip_preserves_domain_template() {
+        let template = WorkspaceTemplate {
+            name: TemplateName::try_from("review").unwrap(),
+            tabs: vec![TabTemplate {
+                name: Some("main".into()),
+                layout: TemplateLayout::Split {
+                    dir: SplitDir::Horizontal,
+                    first: Box::new(pane("editor")),
+                    second: Box::new(pane("tests")),
+                },
+                active: true,
+            }],
+        };
+
+        let document = template.to_document();
+        let restored = WorkspaceTemplate::from_document(document).unwrap();
+
+        assert_eq!(restored, template);
     }
 
     #[test]
