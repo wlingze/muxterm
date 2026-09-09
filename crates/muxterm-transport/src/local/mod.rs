@@ -17,6 +17,7 @@ use crate::{Transport, TransportError, TransportSignal};
 /// Local PTY process transport.
 pub struct LocalProcessTransport {
     master: Option<Box<dyn portable_pty::MasterPty + Send>>,
+    writer: Option<Box<dyn Write + Send>>,
     child: Option<Box<dyn portable_pty::Child + Send + Sync>>,
     reader: Option<tokio::sync::mpsc::Receiver<Vec<u8>>>,
     stderr_buf: Arc<Mutex<Vec<u8>>>,
@@ -28,6 +29,7 @@ impl LocalProcessTransport {
     pub fn new() -> Self {
         Self {
             master: None,
+            writer: None,
             child: None,
             reader: None,
             stderr_buf: Arc::new(Mutex::new(Vec::new())),
@@ -63,6 +65,10 @@ impl LocalProcessTransport {
             anyhow::anyhow!(TransportError::Spawn(format!("spawn {program} 失败: {e}")))
         })?;
         drop(pair.slave);
+        let writer = pair
+            .master
+            .take_writer()
+            .map_err(|e| anyhow::anyhow!(TransportError::Spawn(format!("take writer: {e}"))))?;
 
         self.pid = Some(child.process_id().unwrap_or(0));
         let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
@@ -86,6 +92,7 @@ impl LocalProcessTransport {
         });
 
         self.master = Some(pair.master);
+        self.writer = Some(writer);
         self.child = Some(child);
         self.reader = Some(rx);
         Ok(())
@@ -140,15 +147,12 @@ impl Transport for LocalProcessTransport {
     }
 
     fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-        let Some(master) = self.master.as_mut() else {
+        let Some(writer) = self.writer.as_mut() else {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::NotConnected,
                 "transport not started",
             ));
         };
-        let mut writer = master
-            .take_writer()
-            .map_err(|e| std::io::Error::other(e.to_string()))?;
         writer.write_all(data)?;
         writer.flush()?;
         Ok(data.len())
@@ -210,6 +214,7 @@ impl Transport for LocalProcessTransport {
 
     fn shutdown(&mut self) -> Result<()> {
         self.master.take();
+        self.writer.take();
         if let Some(child) = self.child.as_mut() {
             for _ in 0..60 {
                 match child.try_wait() {

@@ -146,6 +146,7 @@ impl ProcessLauncher for SystemLauncher {
 pub struct SshProcessTransport {
     launcher: Box<dyn ProcessLauncher>,
     master: Option<Box<dyn portable_pty::MasterPty + Send>>,
+    writer: Option<Box<dyn Write + Send>>,
     child: Option<Box<dyn portable_pty::Child + Send + Sync>>,
     reader: Option<tokio::sync::mpsc::Receiver<Vec<u8>>>,
     stderr_buf: Arc<Mutex<Vec<u8>>>,
@@ -176,6 +177,7 @@ impl SshProcessTransport {
         Self {
             launcher,
             master: None,
+            writer: None,
             child: None,
             reader: None,
             stderr_buf: Arc::new(Mutex::new(Vec::new())),
@@ -256,6 +258,9 @@ impl SshProcessTransport {
     ///
     /// 调用后 transport 不再可写，但仍可读。
     pub fn take_pty_writer(&mut self) -> Result<Box<dyn std::io::Write + Send>> {
+        if let Some(writer) = self.writer.take() {
+            return Ok(writer);
+        }
         let master = self
             .master
             .as_mut()
@@ -282,7 +287,12 @@ impl Transport for SshProcessTransport {
             .launcher
             .launch(program, args, pty_size)
             .context("SSH transport spawn 失败")?;
+        let writer = launched
+            .master
+            .take_writer()
+            .map_err(|e| anyhow::anyhow!(TransportError::Spawn(format!("take writer: {e}"))))?;
 
+        self.writer = Some(writer);
         self.master = Some(launched.master);
         self.child = Some(launched.child);
         self.reader = Some(launched.reader);
@@ -320,15 +330,12 @@ impl Transport for SshProcessTransport {
     }
 
     fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-        let Some(master) = self.master.as_mut() else {
+        let Some(writer) = self.writer.as_mut() else {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::NotConnected,
                 "ssh transport not started",
             ));
         };
-        let mut writer = master
-            .take_writer()
-            .map_err(|e| std::io::Error::other(e.to_string()))?;
         tracing::debug!(
             target = "muxterm::ssh",
             len = data.len(),
@@ -391,6 +398,7 @@ impl Transport for SshProcessTransport {
 
     fn shutdown(&mut self) -> Result<()> {
         self.master.take();
+        self.writer.take();
         if let Some(child) = self.child.as_mut() {
             for _ in 0..60 {
                 match child.try_wait() {
@@ -704,7 +712,9 @@ mod tests {
         // 上行：write() 真实写入 pty master，应累加 up。
         let n = transport.write(b"abc").expect("write");
         assert_eq!(n, 3);
+        let n = transport.write(b"def").expect("second write");
+        assert_eq!(n, 3);
 
-        assert_eq!(traffic.snapshot(), (9, 3), "down=9 up=3");
+        assert_eq!(traffic.snapshot(), (9, 6), "down=9 up=6");
     }
 }
