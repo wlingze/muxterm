@@ -8,10 +8,11 @@ use gtk4::prelude::*;
 use gtk4::{Orientation, Paned, Widget};
 
 use crate::core::config::Theme;
-use crate::core::protocol::layout::{LayoutNode, SplitDir};
 use crate::platform::ffi_client::ClientLayout;
 use crate::platform::linux::pane_view::{PaneMenuAction, PaneView};
 use crate::platform::linux::quickconnect::font::FontSettings;
+
+use muxterm_protocol::layout::{LayoutNode, SplitDir};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum LayoutTree {
@@ -180,7 +181,7 @@ impl LayoutHost {
     where
         F: Fn(u32, &[u8]) + Clone + 'static,
     {
-        let layout = layout_tree_from_core(layout);
+        let layout = layout_tree_from_protocol(layout);
         self.apply_layout_tree(tab_id, &layout, on_input)
     }
 
@@ -405,7 +406,7 @@ impl LayoutHost {
     }
 }
 
-fn layout_tree_from_core(layout: &LayoutNode) -> LayoutTree {
+fn layout_tree_from_protocol(layout: &LayoutNode) -> LayoutTree {
     match layout {
         LayoutNode::Leaf(pane_id) => LayoutTree::Leaf(pane_id.0),
         LayoutNode::Split {
@@ -416,8 +417,8 @@ fn layout_tree_from_core(layout: &LayoutNode) -> LayoutTree {
         } => LayoutTree::Split {
             horizontal: matches!(dir, SplitDir::Horizontal),
             ratio: u32::from(*ratio),
-            first: Box::new(layout_tree_from_core(first)),
-            second: Box::new(layout_tree_from_core(second)),
+            first: Box::new(layout_tree_from_protocol(first)),
+            second: Box::new(layout_tree_from_protocol(second)),
         },
     }
 }
@@ -565,8 +566,8 @@ fn layout_structure_signature(layout: &LayoutTree) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::config::Rgb;
-    use crate::core::types::PaneId;
+    use muxterm_protocol::PaneId;
+    use muxterm_protocol::Rgb;
 
     #[test]
     fn split_position_uses_ratio_not_one_pixel() {
