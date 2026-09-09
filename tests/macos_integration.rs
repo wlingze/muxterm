@@ -6,7 +6,7 @@
 //! tab1 = 3 panes（水平 split + 右侧竖直 split），tab2 = 1 pane。
 //!
 //! **键盘驱动的端到端 UI 测试**见
-//! `src/platform/macos/MuxtermAppUITests/MuxtermAppUITests.swift`
+//! `src/frontend/macos/MuxtermAppUITests/MuxtermAppUITests.swift`
 //! （`testTwoTabThreePaneViaKeyboard` / Ctrl+D 用例），必须用 `app.typeKey`。
 //!
 //! ## CLI/TUI 复现笔记

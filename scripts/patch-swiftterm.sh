@@ -7,7 +7,7 @@
 # 5) live feed / linefeed / Auto Layout 抖动不得清选区
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-MACOS_DIR="$ROOT/src/platform/macos"
+MACOS_DIR="$ROOT/src/frontend/macos"
 CHECKOUT="$MACOS_DIR/.build/checkouts/SwiftTerm"
 APPLE="$CHECKOUT/Sources/SwiftTerm/Apple/AppleTerminalView.swift"
 MAC="$CHECKOUT/Sources/SwiftTerm/Mac/MacTerminalView.swift"
@@ -336,4 +336,3 @@ else:
     print("==> SwiftTerm keep-selection resizeSubviews patch already applied")
 mac.write_text(mac_text)
 PY
-

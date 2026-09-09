@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - 'src/platform/macos/**'
+      - 'src/frontend/macos/**'
       - 'src/core/**'
       - 'src/platform/cli/**'
       - 'src/platform/mod.rs'

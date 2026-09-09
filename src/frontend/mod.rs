@@ -12,3 +12,6 @@ pub mod tui;
 
 #[cfg(feature = "gtk")]
 pub mod linux;
+
+#[cfg(target_os = "macos")]
+pub mod macos;

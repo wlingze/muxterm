@@ -21,7 +21,7 @@ pub use crate::frontend::ffi_client;
 pub mod event_pump;
 
 #[cfg(target_os = "macos")]
-pub mod macos;
+pub use crate::frontend::macos;
 
 #[cfg(feature = "gtk")]
 pub use crate::frontend::linux;

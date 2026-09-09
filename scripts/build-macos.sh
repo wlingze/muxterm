@@ -28,7 +28,7 @@ else
   BUNDLE_IDENTIFIER="dev.muxterm.app.debug.$(git rev-parse --short HEAD 2>/dev/null || printf 'local')"
 fi
 BUNDLE_VERSION="$(git rev-parse --short HEAD 2>/dev/null || printf 'local')"
-MACOS_DIR="$ROOT/src/platform/macos"
+MACOS_DIR="$ROOT/src/frontend/macos"
 OUT_DIR="$(build_os_dir)"   # -> build/macos
 TARGET_DIR="$(cargo_target_dir)"
 mkdir -p "$OUT_DIR" "$TARGET_DIR"
