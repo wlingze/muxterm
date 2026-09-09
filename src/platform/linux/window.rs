@@ -22,7 +22,6 @@ use vte4::prelude::*;
 
 use anyhow::anyhow;
 
-use crate::core::workspace::spec::WorkspaceSpec;
 use crate::platform::event_pump::EventPump;
 use crate::platform::ffi_client::{
     ClientActivitySnapshot, ClientAttentionPane, ClientAttentionStatus, ClientCandidateRef,
@@ -1859,21 +1858,16 @@ impl AppWindow {
         connect_target(&self._state.clone(), config);
     }
 
-    /// 测试用：后台打开任意 `WorkspaceSpec`（SSH loopback 必须带远端 `-L`）。
+    /// 测试用：通过 FFI semantic target attach（SSH loopback 必须带远端 `-L`）。
     ///
     /// 等连接完成并激活后再返回：测试随后 `wait_ready` / 取 leaf 时看到的是
     /// 新工作区，而不是启动时的本地 shell（W18b 的 pane id 才不会串）。
-    pub fn test_open_spec(&self, spec: WorkspaceSpec) {
-        let id = spec.id();
-        let target = ClientTarget {
-            name: spec.name(),
-            runtime: spec.runtime.clone(),
-            transport: spec.transport.clone(),
-            target: spec.alias.clone(),
-            path: spec.path.clone(),
-            session: (!spec.session.is_empty()).then(|| spec.session.clone()),
-            socket: spec.socket.clone(),
-        };
+    pub fn test_open_target(
+        &self,
+        target: ClientTarget,
+        workspace_replica_id: String,
+        socket: Option<String>,
+    ) {
         let result = {
             let s = self._state.borrow();
             s.event_pump
@@ -1884,7 +1878,7 @@ impl AppWindow {
             Ok(opened) => {
                 let mut s = self._state.borrow_mut();
                 if let Some(opened_id) = parse_workspace_id(&opened.id) {
-                    s.workspace_sockets.insert(opened_id, spec.socket.clone());
+                    s.workspace_sockets.insert(opened_id, socket);
                 }
                 if sync_view_store(&mut s).is_ok() {
                     after_activate(&mut s);
@@ -1894,7 +1888,7 @@ impl AppWindow {
                 self._state
                     .borrow_mut()
                     .notification_log
-                    .push(format!("{}: connect failed: {error}", id.replica_id()));
+                    .push(format!("{workspace_replica_id}: connect failed: {error}"));
             }
         }
     }

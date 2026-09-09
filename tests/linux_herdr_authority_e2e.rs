@@ -21,7 +21,9 @@ use muxterm::test_support::core::workspace::spec::WorkspaceSpec;
 use muxterm::test_support::platform::linux::keymap::Action;
 use muxterm::test_support::platform::linux::window::AppWindow;
 use support::herdr_test_support::{herdr_available, IsolatedHerdr};
-use support::linux_gtk::{gtk_test_framework_smoke, load_theme, pump_main_loop, skip_no_display};
+use support::linux_gtk::{
+    gtk_test_framework_smoke, load_theme, pump_main_loop, skip_no_display, AppWindowTestExt,
+};
 use support::sshd_test_support::{loopback_sshd_available, LoopbackSshd};
 
 const TIMEOUT: Duration = Duration::from_secs(15);

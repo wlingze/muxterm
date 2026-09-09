@@ -14,7 +14,31 @@ use gtk4::glib::translate::IntoGlib;
 use gtk4::prelude::*;
 use gtk4::{EventControllerKey, Paned, ToggleButton, Widget};
 
+use muxterm::test_support::core::workspace::spec::WorkspaceSpec;
+use muxterm::test_support::platform::ffi_client::ClientTarget;
 use muxterm::test_support::platform::linux::theme::{fallback_theme, Theme};
+use muxterm::test_support::platform::linux::window::AppWindow;
+
+/// Test-only adapter from the legacy Core spec fixture to the frontend FFI DTO.
+pub trait AppWindowTestExt {
+    fn test_open_spec(&self, spec: WorkspaceSpec);
+}
+
+impl AppWindowTestExt for AppWindow {
+    fn test_open_spec(&self, spec: WorkspaceSpec) {
+        let workspace_replica_id = spec.id().replica_id();
+        let target = ClientTarget {
+            name: spec.name(),
+            runtime: spec.runtime.clone(),
+            transport: spec.transport.clone(),
+            target: spec.alias.clone(),
+            path: spec.path.clone(),
+            session: (!spec.session.is_empty()).then(|| spec.session.clone()),
+            socket: spec.socket.clone(),
+        };
+        self.test_open_target(target, workspace_replica_id, spec.socket);
+    }
+}
 
 /// 是否有可用的显示服务（X11 或 Wayland）。
 pub fn has_display() -> bool {
