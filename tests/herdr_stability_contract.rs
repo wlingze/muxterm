@@ -19,13 +19,13 @@ use anyhow::{ensure, Context, Result};
 
 use muxterm::test_support::core::catalog::Catalog;
 use muxterm::test_support::core::protocol::task::{Task, TaskOutcome};
+use muxterm::test_support::core::protocol::PaneId;
 use muxterm::test_support::core::runtime::herdr::observe::StreamMode;
 use muxterm::test_support::core::runtime::herdr::wire::{
     read_message, write_message, ClientKeybindings, ClientLaunchMode, ClientMessage,
     RenderEncoding, ServerMessage, HERDR_PROTOCOL_VERSION, MAX_FRAME_SIZE,
 };
 use muxterm::test_support::core::runtime::HerdrRuntime;
-use muxterm::test_support::core::types::PaneId;
 use muxterm::test_support::core::workspace::spec::WorkspaceSpec;
 use muxterm::test_support::core::workspace::workspace::Workspace;
 use support::herdr_test_support::{herdr_available, IsolatedHerdr};

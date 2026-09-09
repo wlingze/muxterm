@@ -4,8 +4,8 @@ use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::ptr;
 
-use crate::types::PaneId;
 use crate::workspace::workspace::Workspace;
+use muxterm_protocol::PaneId;
 use muxterm_protocol::WorkspaceId;
 
 /// The C handle is one composed product session, not a runtime instance.

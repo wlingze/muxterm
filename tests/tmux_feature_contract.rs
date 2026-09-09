@@ -7,9 +7,9 @@ mod support;
 use std::time::{Duration, Instant};
 
 use muxterm::test_support::core::activity::attention::signal::AttentionSignal;
+use muxterm::test_support::core::protocol::PaneId;
 use muxterm::test_support::core::protocol::WorkspaceId;
 use muxterm::test_support::core::runtime::TmuxRuntime;
-use muxterm::test_support::core::types::PaneId;
 use muxterm::test_support::core::workspace::workspace::Workspace;
 use support::feature_e2e_contract::*;
 use support::tmux_test_support::{tmux_available, wait_capture_contains};

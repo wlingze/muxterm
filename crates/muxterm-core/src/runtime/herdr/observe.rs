@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 
-use crate::types::PaneId;
+use muxterm_protocol::PaneId;
 
 use super::channel::{shutdown, ChannelIo, SharedChannel};
 use super::session::HerdrSession;

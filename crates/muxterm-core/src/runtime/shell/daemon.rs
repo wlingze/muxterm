@@ -126,8 +126,8 @@ mod tests {
     use crate::protocol::layout::SplitDir;
     use crate::protocol::task::Task;
     use crate::runtime::mock::MockRuntime;
-    use crate::types::PaneId;
     use crate::workspace::terminal_model::TerminalModel;
+    use muxterm_protocol::PaneId;
 
     fn make_model() -> TerminalModel {
         TerminalModel::new(Box::new(MockRuntime::with_single_pane()))

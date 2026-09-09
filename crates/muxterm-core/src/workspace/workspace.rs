@@ -12,13 +12,13 @@ use crate::protocol::state::{PaneAgentInfo, PaneAgentStatus, State, StateChange}
 use crate::protocol::task::{Task, TaskOutcome};
 use crate::protocol::terminal::emulate::DEFAULT_SCROLLBACK_LINES;
 use crate::runtime::Runtime;
-use crate::types::{PaneId, TabId};
 use crate::workspace::pane_buf::PaneBuf;
 use crate::workspace::provenance::WorkspaceProvenance;
 use crate::workspace::template::WorkspaceTemplate;
 use crate::workspace::template_apply::{TemplateApplication, TemplateApplyReport};
 use crate::workspace::terminal_model::TerminalModel;
 use muxterm_protocol::WorkspaceId;
+use muxterm_protocol::{PaneId, TabId};
 
 /// 一次搜索命中：工作区 + tab + pane + scrollback seq + 行文本。
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -6,8 +6,8 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use crate::config::parse_hex;
 use crate::protocol::layout::SplitDir;
 use crate::protocol::task::{Task, TaskOutcome};
-use crate::types::{PaneId, TabId};
 use crate::workspace::workspace::Workspace;
+use muxterm_protocol::{PaneId, TabId};
 
 use super::super::types::{
     CTask, DIR_HORIZONTAL, DIR_VERTICAL, TAB_MOVE_BEFORE, TASK_BREAK_PANE, TASK_CLOSE_PANE,

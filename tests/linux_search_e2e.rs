@@ -12,9 +12,9 @@ use std::rc::Rc;
 use gtk4::prelude::*;
 use support::linux_gtk::*;
 
+use muxterm::test_support::core::protocol::PaneId;
 use muxterm::test_support::core::protocol::WorkspaceId;
 use muxterm::test_support::core::runtime::mock::MockRuntime;
-use muxterm::test_support::core::types::PaneId;
 use muxterm::test_support::core::workspace::workspace::Workspace;
 use muxterm::test_support::platform::linux::panel_model::{PanelTab, SearchRow};
 use muxterm::test_support::platform::linux::quickconnect_panel::{show, PanelShowArgs};

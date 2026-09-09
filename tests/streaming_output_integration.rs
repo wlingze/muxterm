@@ -13,8 +13,8 @@
 use muxterm::test_support::core::protocol::state::{BackendStatus, State};
 use muxterm::test_support::core::protocol::task::Task;
 use muxterm::test_support::core::protocol::terminal::input::KeyEvent;
+use muxterm::test_support::core::protocol::PaneId;
 use muxterm::test_support::core::runtime::TmuxRuntime;
-use muxterm::test_support::core::types::PaneId;
 use muxterm::test_support::core::workspace::terminal_model::TerminalModel;
 use std::path::{Path, PathBuf};
 use std::process::Command;

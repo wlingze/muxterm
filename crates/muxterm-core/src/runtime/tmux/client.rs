@@ -20,8 +20,8 @@ use super::command::TmuxCommand;
 use super::protocol::{parse_line_bytes, Message, NotificationKind};
 use super::pty::{self, split_master, PtyChild, PtyReader, PtyWriter};
 use crate::buffer_cap::{trim_incomplete_line, MAX_INCOMPLETE_LINE_BYTES};
-use crate::types::PaneId;
 use anyhow::{anyhow, Context, Result};
+use muxterm_protocol::PaneId;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::io::{self, Write};
@@ -2784,7 +2784,7 @@ mod tests {
         assert!(events.iter().any(|event| matches!(
             event,
             TmuxEvent::Message(Message::Output {
-                pane: crate::types::PaneId(9),
+                pane: muxterm_protocol::PaneId(9),
                 content,
                 ..
             }) if content == b"\x94\x80"

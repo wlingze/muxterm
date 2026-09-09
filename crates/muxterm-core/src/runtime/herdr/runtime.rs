@@ -21,7 +21,7 @@ use crate::protocol::state::{
 use crate::protocol::task::{Task, TaskOutcome};
 use crate::protocol::terminal::input::KeyEvent;
 use crate::runtime::{Runtime, RuntimeCapability};
-use crate::types::{PaneId, TabId};
+use muxterm_protocol::{PaneId, TabId};
 
 use super::events::{EventStream, EventStreamEvent};
 use super::mutation::{MutationQueue, PendingMutation};

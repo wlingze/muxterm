@@ -3,8 +3,8 @@
 use std::ffi::c_char;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-use crate::types::PaneId;
 use crate::workspace::workspace::Workspace;
+use muxterm_protocol::PaneId;
 
 use super::support::{
     cstr_opt, json_error, json_string, parse_workspace_id, resolve_c_io_pane, MuxtermHandle,

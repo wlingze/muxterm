@@ -22,9 +22,9 @@ use crate::protocol::task::{Task, TaskOutcome};
 use crate::protocol::terminal::input::encode;
 use crate::runtime::shell::daemon_client::send_command;
 use crate::runtime::{Runtime, RuntimeCapability};
-use crate::types::{PaneId, TabId};
 use muxterm_protocol::command::CliCommand;
 use muxterm_protocol::daemon::{OutputFormat, TopologySnapshot};
+use muxterm_protocol::{PaneId, TabId};
 
 /// 通过 unix socket 连接本地 daemon 的 Runtime。
 pub struct DaemonRuntime {

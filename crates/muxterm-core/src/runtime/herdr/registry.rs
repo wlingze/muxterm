@@ -15,7 +15,7 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-use crate::types::PaneId;
+use muxterm_protocol::PaneId;
 
 use super::observe::{ObserveStream, StreamMode};
 

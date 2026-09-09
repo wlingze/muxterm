@@ -18,11 +18,11 @@ use crate::protocol::state::StateChange;
 use crate::protocol::task::{Task, TaskOutcome};
 use crate::protocol::terminal::emulate::DEFAULT_SCROLLBACK_LINES;
 use crate::runtime::{DaemonRuntime, ShellRuntime, TmuxRuntime};
-use crate::types::{PaneId, TabId};
 use crate::workspace::pool::{WorkspacePool, WorkspacePoolPolicy};
 use crate::workspace::terminal_model::TerminalModel;
 use crate::workspace::workspace::Workspace;
 use muxterm_protocol::WorkspaceId;
+use muxterm_protocol::{PaneId, TabId};
 
 use super::*;
 use crate::muxterm::should_export_state_change;

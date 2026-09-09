@@ -551,7 +551,7 @@ mod tests {
     use super::*;
     use crate::protocol::task::Task;
     use crate::runtime::mock::MockRuntime;
-    use crate::types::{PaneId, TabId};
+    use muxterm_protocol::{PaneId, TabId};
     use std::sync::{Arc, Mutex};
 
     fn id(name: &str, runtime: &str) -> WorkspaceId {

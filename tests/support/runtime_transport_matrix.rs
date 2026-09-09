@@ -13,8 +13,8 @@ use muxterm::test_support::core::protocol::layout::{LayoutNode, SplitDir};
 use muxterm::test_support::core::protocol::state::{BackendStatus, MutationResult, StateChange};
 use muxterm::test_support::core::protocol::task::{Task, TaskOutcome};
 use muxterm::test_support::core::protocol::terminal::emulate::TerminalState;
+use muxterm::test_support::core::protocol::{PaneId, TabId};
 use muxterm::test_support::core::runtime::RuntimeCapability;
-use muxterm::test_support::core::types::{PaneId, TabId};
 use muxterm::test_support::core::workspace::spec::WorkspaceSpec;
 use muxterm::test_support::core::workspace::workspace::Workspace;
 
