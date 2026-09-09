@@ -183,7 +183,7 @@ pub struct ResolvedTarget {
 
 impl ResolvedTarget {
     /// 稳定 WorkspaceId（由 spec 的五段身份字段构成）。
-    pub fn workspace_id(&self) -> crate::workspace::id::WorkspaceId {
+    pub fn workspace_id(&self) -> muxterm_protocol::WorkspaceId {
         self.spec.id()
     }
 

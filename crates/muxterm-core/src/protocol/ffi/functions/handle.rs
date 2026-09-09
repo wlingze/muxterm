@@ -10,8 +10,8 @@ use crate::logging::{init_logging, LoggingConfig};
 use crate::projects::{ProjectStore, ProjectsService};
 use crate::protocol::terminal::emulate::DEFAULT_SCROLLBACK_LINES;
 use crate::runtime::{DaemonRuntime, ShellRuntime, TmuxRuntime};
-use crate::workspace::id::WorkspaceId;
 use crate::workspace::template::WorkspaceTemplate;
+use muxterm_protocol::WorkspaceId;
 
 use super::super::callbacks::FfiCallbacks;
 use super::support::{cstr_opt, MuxtermHandle};

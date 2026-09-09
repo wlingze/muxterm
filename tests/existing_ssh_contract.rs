@@ -20,10 +20,10 @@ use muxterm::test_support::core::protocol::state::{
     PaneAgentSessionKind, PaneAgentStatus, StateChange,
 };
 use muxterm::test_support::core::protocol::task::Task;
+use muxterm::test_support::core::protocol::WorkspaceId;
 use muxterm::test_support::core::quickconnect::model::TargetRuntime;
 use muxterm::test_support::core::runtime::herdr::session::HerdrAgentStatus;
 use muxterm::test_support::core::runtime::HerdrRuntime;
-use muxterm::test_support::core::workspace::id::WorkspaceId;
 use muxterm::test_support::core::workspace::workspace::Workspace;
 use support::herdr_test_support::{herdr_available, IsolatedHerdr, TempAgentCommand};
 use support::sshd_test_support::{loopback_sshd_available, LoopbackSshd};

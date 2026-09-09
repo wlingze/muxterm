@@ -17,7 +17,7 @@ use gtk4::prelude::*;
 use gtk4::{gdk, glib};
 use support::linux_gtk::*;
 
-use muxterm::test_support::core::workspace::id::WorkspaceId;
+use muxterm::test_support::core::protocol::WorkspaceId;
 use muxterm::test_support::platform::ffi_client::{
     ClientAttentionPane, ClientAttentionStatus, ClientCandidateRef,
 };

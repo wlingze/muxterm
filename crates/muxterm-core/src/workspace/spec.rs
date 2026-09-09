@@ -5,9 +5,9 @@
 //! Runtime（W12 遗留，未统一）；spec 只携带 runtime / transport / name /
 //! socket / ssh / dir 等解析结果字段。
 
-use crate::workspace::id::WorkspaceId;
 use crate::workspace::provenance::WorkspaceProvenance;
 use crate::workspace::template::TemplateName;
+use muxterm_protocol::WorkspaceId;
 
 /// 打开一个工作区的产品规格（不含 tmux 词）。
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -9,8 +9,8 @@ use crate::protocol::candidate::CandidateRef;
 use crate::quickconnect::model::{TargetRuntime, TargetTransport};
 use crate::runtime::WorktreeCreateSpec;
 use crate::transport::ChannelRequest;
-use crate::workspace::id::WorkspaceId;
 use crate::workspace::template::TemplateName;
+use muxterm_protocol::WorkspaceId;
 
 use super::{git_worktree_add_argv, Project, ProjectId, ProjectStore, Worktree, WorktreeId};
 

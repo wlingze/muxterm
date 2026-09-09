@@ -19,10 +19,10 @@ use crate::protocol::task::{Task, TaskOutcome};
 use crate::protocol::terminal::emulate::DEFAULT_SCROLLBACK_LINES;
 use crate::runtime::{DaemonRuntime, ShellRuntime, TmuxRuntime};
 use crate::types::{PaneId, TabId};
-use crate::workspace::id::WorkspaceId;
 use crate::workspace::pool::{WorkspacePool, WorkspacePoolPolicy};
 use crate::workspace::terminal_model::TerminalModel;
 use crate::workspace::workspace::Workspace;
+use muxterm_protocol::WorkspaceId;
 
 use super::*;
 use crate::muxterm::should_export_state_change;
@@ -1183,7 +1183,7 @@ fn ffi_workspace_poll_keeps_workspace_identity() {
         assert_eq!(muxterm_connect(h), 0);
         // 第二个 workspace：直接经 pool 开一个 shell workspace。
         let handle = &mut *h;
-        let id2 = crate::workspace::id::WorkspaceId::new("local", None, "second", "shell", "");
+        let id2 = muxterm_protocol::WorkspaceId::new("local", None, "second", "shell", "");
         let open_result = {
             let (rt, pool) = (&handle.rt, &mut handle.pool);
             rt.block_on(pool.open(id2.clone(), "second".into(), |_| {

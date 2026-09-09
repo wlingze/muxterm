@@ -13,10 +13,10 @@
 mod support;
 
 use muxterm::test_support::core::catalog::ResolveIntent;
+use muxterm::test_support::core::protocol::WorkspaceId;
 use muxterm::test_support::core::quickconnect::model::{
     TargetConfig, TargetRuntime, TargetTransport,
 };
-use muxterm::test_support::core::workspace::id::WorkspaceId;
 use support::herdr_test_support::{herdr_available, IsolatedHerdr};
 use support::sshd_test_support::{loopback_sshd_available, LoopbackSshd};
 
