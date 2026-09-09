@@ -1,123 +1,15 @@
 //! 从 main.rs 抽取的共享逻辑，供 daemon 调用。
 //!
-//! `cli_command_to_task` 把 CliCommand 映射到 TerminalModel 的 Task，
-//! daemon 和 CLI 直接调用模式都需要它。
+//! Compatibility exports for the shell-runtime daemon command mapper.
 
+#[cfg(test)]
 use crate::core::protocol::layout::SplitDir;
+#[cfg(test)]
 use crate::core::protocol::task::Task;
+#[cfg(test)]
 use crate::platform::cli::CliCommand;
 
-/// 把 CliCommand 转成 TerminalModel 的 Task。
-///
-/// 查询命令（list-*, capture-pane, display-message）返回 None。
-pub fn cli_command_to_task(
-    cmd: &CliCommand,
-    state: &dyn crate::core::protocol::state::State,
-) -> Option<Task> {
-    use crate::core::protocol::task::Task;
-    use crate::core::protocol::terminal::input::KeyEvent;
-    use CliCommand::*;
-
-    match cmd {
-        Config { .. } => None,
-
-        // Workspace
-        NewWorkspace { .. } => None,
-        CloseWorkspace { .. } => Some(Task::Shutdown),
-        AttachWorkspace { .. } => None,
-        Detach { .. } => Some(Task::Detach),
-        RenameWorkspace { new_name } => Some(Task::RenameWorkspace {
-            name: new_name.clone(),
-        }),
-
-        // Tab
-        NewTab { name } => Some(Task::NewTab {
-            name: name.clone(),
-            command: None,
-            workdir: None,
-        }),
-        KillTab { target } => {
-            let tid = target.or_else(|| state.active_tab().map(|t| t.id))?;
-            Some(Task::CloseTab { target: tid })
-        }
-        SelectTab { target } => Some(Task::SwitchTab { target: *target }),
-        RenameTab { new_name } => {
-            let tid = state.active_tab()?.id;
-            Some(Task::RenameTab {
-                target: tid,
-                name: new_name.clone(),
-            })
-        }
-
-        // Pane
-        SplitPane {
-            horizontal, target, ..
-        } => {
-            let pid = target.or_else(|| state.active_pane().map(|p| p.id));
-            let dir = if *horizontal {
-                SplitDir::Horizontal
-            } else {
-                SplitDir::Vertical
-            };
-            Some(Task::SplitPane {
-                target: pid,
-                dir,
-                command: None,
-                workdir: None,
-            })
-        }
-        KillPane { target } => {
-            let pid = target.or_else(|| state.active_pane().map(|p| p.id))?;
-            Some(Task::ClosePane { target: pid })
-        }
-        SelectPane { target } => Some(Task::SwitchPane { target: *target }),
-        ResizePane {
-            target,
-            width,
-            height,
-        } => match (width, height) {
-            (Some(cols), Some(rows)) => Some(Task::ResizePane {
-                target: *target,
-                cols: *cols,
-                rows: *rows,
-            }),
-            (Some(size), None) => Some(Task::ResizePaneAxis {
-                target: *target,
-                dir: SplitDir::Horizontal,
-                size: *size,
-            }),
-            (None, Some(size)) => Some(Task::ResizePaneAxis {
-                target: *target,
-                dir: SplitDir::Vertical,
-                size: *size,
-            }),
-            (None, None) => None,
-        },
-        ResizeClient { width, height } => Some(Task::ResizeClient {
-            cols: *width,
-            rows: *height,
-        }),
-
-        // 输入输出
-        SendKeys { target, text } => {
-            let pid = target.or_else(|| state.active_pane().map(|p| p.id))?;
-            let keys = text.chars().map(KeyEvent::Char).collect();
-            Some(Task::SendKeys { target: pid, keys })
-        }
-        WriteRaw { target, data } => {
-            let pid = target.or_else(|| state.active_pane().map(|p| p.id))?;
-            Some(Task::WriteRaw {
-                target: pid,
-                data: data.clone(),
-            })
-        }
-        CapturePane { .. } => None,
-
-        // 查询命令
-        ListWorkspaces | ListTabs | ListPanes { .. } | ListLayout | DumpState => None,
-        DisplayMessage { .. } => None,
-    }
-}
+pub use crate::core::runtime::shell::daemon::cli_command_to_task;
 
 #[cfg(test)]
 mod tests {
