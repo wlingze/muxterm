@@ -5,7 +5,7 @@
 use crate::core::protocol::state::State;
 use crate::core::types::{PaneId, TabId};
 
-pub use crate::core::protocol::daemon::{OutputFormat, StateSnapshot};
+pub use crate::core::runtime::shell::daemon::{OutputFormat, StateSnapshot};
 
 /// 格式化查询结果输出。
 pub fn format_output(

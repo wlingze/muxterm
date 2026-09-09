@@ -9,7 +9,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 
 use crate::core::protocol::command::CliCommand;
-use crate::core::protocol::daemon::{OutputFormat, Request, Response};
+use crate::core::runtime::shell::daemon::{OutputFormat, Request, Response};
 
 /// 连接到 daemon socket，发送命令，返回响应。
 ///

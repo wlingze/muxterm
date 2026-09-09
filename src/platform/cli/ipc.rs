@@ -3,13 +3,13 @@
 //! 用 serde_json over unix socket 通信（每条消息一行 JSON，以 `\n` 分隔）。
 //! CliCommand 和 OutputFormat 直接 derive serde，用 tagged enum 序列化。
 
-pub use crate::core::protocol::daemon::{Request, Response};
+pub use crate::core::runtime::shell::daemon::{Request, Response};
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::core::protocol::command::CliCommand;
-    use crate::core::protocol::daemon::OutputFormat;
+    use crate::core::runtime::shell::daemon::OutputFormat;
     use crate::core::types::PaneId;
 
     #[test]

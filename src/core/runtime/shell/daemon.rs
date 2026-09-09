@@ -1,4 +1,9 @@
-//! Daemon IPC wire DTOs shared by the runtime and CLI adapter.
+//! Shell daemon IPC wire contract.
+//!
+//! The daemon is a shell-runtime execution form, so its request/response
+//! types live beside the shell runtime rather than under the CLI frontend.
+//! The snapshot fields remain temporarily compatible with the existing wire;
+//! the event-stream replacement is a later migration step.
 
 use crate::core::protocol::command::CliCommand;
 
@@ -19,7 +24,7 @@ impl OutputFormat {
     }
 }
 
-/// Complete state snapshot exchanged by the daemon wire.
+/// Complete state snapshot exchanged by the legacy daemon wire.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct StateSnapshot {
     pub workspace_name: String,
@@ -34,14 +39,14 @@ pub struct StateSnapshot {
     pub active_pane: Option<u32>,
 }
 
-/// Client → daemon request.
+/// Client → shell daemon request.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Request {
     pub command: CliCommand,
     pub format: OutputFormat,
 }
 
-/// Daemon → client response.
+/// Shell daemon → client response.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Response {
     pub ok: bool,

@@ -13,12 +13,12 @@ use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 
 use crate::core::protocol::command::CliCommand;
-use crate::core::protocol::daemon::{OutputFormat, StateSnapshot};
 use crate::core::protocol::layout::{SplitDir, TabLayout};
 use crate::core::protocol::state::{BackendStatus, PaneInfo, State, StateChange, TabInfo};
 use crate::core::protocol::task::{Task, TaskOutcome};
 use crate::core::protocol::terminal::input::encode;
 use crate::core::runtime::daemon_client::send_command;
+use crate::core::runtime::shell::daemon::{OutputFormat, StateSnapshot};
 use crate::core::runtime::{Runtime, RuntimeCapability};
 use crate::core::types::{PaneId, TabId};
 
