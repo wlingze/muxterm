@@ -19,6 +19,7 @@ use gtk4::{
 
 use crate::core::attention::engine::PaneAttention;
 use crate::core::attention::state::PaneStatus;
+use crate::platform::ffi_client::ClientOpenRequest;
 use crate::platform::i18n::{self, Key as TextKey};
 use crate::platform::linux::panel_model::{
     filter_attention_panel_rows, filter_workspace_rows, search_rows, AttentionPanelRow, PanelModel,
@@ -56,7 +57,7 @@ fn reveal_selected_row(scroller: &ScrolledWindow, list: &ListBox, row: &ListBoxR
 #[derive(Clone)]
 enum VisibleAction {
     Connect(TargetConfig),
-    ExistingConnect(TargetConfig),
+    ExistingConnect(ClientOpenRequest),
     NewProject,
     Navigate(ExistingNav),
     Jump {
@@ -416,7 +417,7 @@ fn visible_action_for_item(item: &PanelItem, nav: &ExistingNav) -> VisibleAction
             ExistingNav::Root => ExistingNav::Root,
         }),
         PanelItem::Existing(existing_entry) => {
-            VisibleAction::ExistingConnect(existing_entry_to_config(existing_entry))
+            VisibleAction::ExistingConnect(existing_entry.open_request())
         }
         PanelItem::Host { alias } => VisibleAction::Navigate(ExistingNav::SshHost {
             alias: alias.clone(),
@@ -436,8 +437,8 @@ pub struct PanelShowArgs {
     pub agents: Vec<AgentSidebarItem>,
     pub attention: Vec<PaneAttention>,
     pub on_connect: Box<dyn Fn(TargetConfig)>,
-    /// Existing 行专用回调：必须使用 attach-only 意图。
-    pub on_existing_connect: Box<dyn Fn(TargetConfig)>,
+    /// Existing 行专用回调：接收 typed CandidateRef + attach-only 意图。
+    pub on_existing_connect: Box<dyn Fn(ClientOpenRequest)>,
     pub on_edit: Box<dyn Fn(TargetConfig)>,
     pub on_new_project: Box<dyn Fn()>,
     /// 跳转回调：`(ws, pane, seq)`。seq 是搜索命中的 PaneBuf 行号（W17c），
@@ -1584,11 +1585,6 @@ fn reachability_dot(reach: SshReach) -> Label {
     dot
 }
 
-/// W20：ExistingEntry → TargetConfig（attach only；socket/session 带上）。
-fn existing_entry_to_config(entry: &ExistingEntry) -> TargetConfig {
-    entry.target_config()
-}
-
 fn badge_label(badge: QuickBadge) -> String {
     match badge {
         QuickBadge::Recent => i18n::tr(TextKey::Recent).to_uppercase(),
@@ -1828,8 +1824,8 @@ mod tests {
     }
 
     #[test]
-    fn existing_attach_config_preserves_target_identity() {
-        let tmux = existing_entry_to_config(&ExistingEntry {
+    fn existing_attach_request_preserves_typed_identity() {
+        let tmux = ExistingEntry {
             title: "matrix".into(),
             runtime: ExistingRuntime::Tmux,
             transport: ExistingTransport::Local,
@@ -1838,12 +1834,24 @@ mod tests {
             herdr_session: None,
             herdr_workspace_id: None,
             herdr_socket: None,
-        });
-        assert_eq!(tmux.session.as_deref(), Some("matrix"));
-        assert_eq!(tmux.socket.as_deref(), Some("muxterm-test-existing"));
-        assert_eq!(tmux.path, "~");
+        }
+        .open_request();
+        assert_eq!(
+            tmux.intent,
+            crate::platform::ffi_client::ClientOpenIntent::AttachOnly
+        );
+        let crate::platform::ffi_client::ClientCandidateRef::Existing { identity } = tmux.candidate
+        else {
+            panic!("tmux row must produce an Existing candidate reference");
+        };
+        assert_eq!(identity.runtime_id, "tmux");
+        assert_eq!(identity.transport_id, "local");
+        assert_eq!(identity.target, "local");
+        assert_eq!(identity.session.as_deref(), Some("matrix"));
+        assert_eq!(identity.socket.as_deref(), Some("muxterm-test-existing"));
+        assert!(identity.workspace_id.is_none());
 
-        let herdr = existing_entry_to_config(&ExistingEntry {
+        let herdr = ExistingEntry {
             title: "worktree".into(),
             runtime: ExistingRuntime::Herdr,
             transport: ExistingTransport::Local,
@@ -1852,11 +1860,19 @@ mod tests {
             herdr_session: Some("named".into()),
             herdr_workspace_id: Some("w223".into()),
             herdr_socket: Some("/tmp/herdr.sock".into()),
-        });
-        assert_eq!(herdr.workspace_id.as_deref(), Some("w223"));
-        assert_eq!(herdr.session.as_deref(), Some("named"));
-        assert_eq!(herdr.socket.as_deref(), Some("/tmp/herdr.sock"));
-        assert_eq!(herdr.path, "");
+        }
+        .open_request();
+        let crate::platform::ffi_client::ClientCandidateRef::Existing { identity } =
+            herdr.candidate
+        else {
+            panic!("Herdr row must produce an Existing candidate reference");
+        };
+        assert_eq!(identity.runtime_id, "herdr");
+        assert_eq!(identity.transport_id, "local");
+        assert_eq!(identity.target, "local");
+        assert_eq!(identity.workspace_id.as_deref(), Some("w223"));
+        assert_eq!(identity.session.as_deref(), Some("named"));
+        assert_eq!(identity.socket.as_deref(), Some("/tmp/herdr.sock"));
     }
 
     /// W20：filter 对 Folder/Existing/Back 生效，Back 始终保留。
