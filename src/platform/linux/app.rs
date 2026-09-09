@@ -5,8 +5,7 @@
 use gtk4::prelude::*;
 use gtk4::Application;
 
-use crate::core::config_service::ConfigDocument;
-use crate::platform::ffi_client::FfiClient;
+use crate::platform::ffi_client::{ClientConfig, FfiClient};
 use crate::platform::linux::keymap::default_keybindings;
 use crate::platform::linux::theme::fallback_theme;
 #[cfg(test)]
@@ -31,14 +30,14 @@ pub fn run(socket: Option<String>) -> anyhow::Result<()> {
     }
 
     app.connect_activate(move |a| {
-        let default_document = ConfigDocument::default();
+        let default_config = ClientConfig::default();
         let (mut cfg, keybindings, theme) = match FfiClient::new_catalog()
             .and_then(|client| client.config_describe())
             .and_then(|snapshot| {
                 let theme = snapshot.resolved_theme.unwrap_or_else(fallback_theme);
                 let keybindings = snapshot.effective_keybindings;
-                serde_json::from_value::<ConfigDocument>(snapshot.values)
-                    .map(|document| (document.config, keybindings, theme))
+                serde_json::from_value::<ClientConfig>(snapshot.values)
+                    .map(|config| (config, keybindings, theme))
                     .map_err(anyhow::Error::from)
             }) {
             Ok(document) => document,
@@ -48,7 +47,7 @@ pub fn run(socket: Option<String>) -> anyhow::Result<()> {
                     "通过 Core FFI 加载配置失败，用现代默认值: {error}"
                 );
                 (
-                    default_document.config.clone(),
+                    default_config.clone(),
                     default_keybindings(),
                     fallback_theme(),
                 )

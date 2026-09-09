@@ -26,7 +26,6 @@ use crate::core::attention::clock::RealClock;
 use crate::core::attention::engine::{AttentionEngine, PaneAttention};
 use crate::core::attention::signal::{AttentionSignal, AttentionSource};
 use crate::core::attention::state::PaneStatus;
-use crate::core::config::{Config, OnLastPaneExit};
 use crate::core::quickconnect::model::QuickConnect;
 use crate::core::runtime::RuntimeCapability;
 use crate::core::workspace::pool::WorkspaceCapacityCandidate;
@@ -34,17 +33,18 @@ use crate::core::workspace::spec::WorkspaceSpec;
 use crate::platform::event_pump::EventPump;
 use crate::platform::ffi_client::{
     ClientActivitySnapshot, ClientAttentionConfig, ClientAttentionPane, ClientCandidateRef,
-    ClientEventKind, ClientKeyBinding, ClientOpenIntent, ClientOpenRequest, ClientOpenedWorkspace,
-    ClientTarget, ClientTask, ClientWorkspaceAttention, ClientWorkspaceEvent, FfiClient,
+    ClientConfig, ClientEventKind, ClientKeyBinding, ClientOpenIntent, ClientOpenRequest,
+    ClientOpenedWorkspace, ClientTarget, ClientTask, ClientWorkspaceAttention,
+    ClientWorkspaceEvent, FfiClient,
 };
 use crate::platform::i18n::{self, Key};
 use crate::platform::linux::attention_ui::{window_title, GioSink, NotificationSink};
 use crate::platform::linux::command_palette::{parse_palette_action, PaletteAction};
 #[cfg(test)]
 use crate::platform::linux::event_batch::batch_order_plan;
-use crate::platform::linux::keymap::{Action, KeyMap};
+use crate::platform::linux::keymap::{default_keybindings, Action, KeyMap};
 use crate::platform::linux::layout_host::LayoutHost;
-use crate::platform::linux::lifecycle::{cycle_pane_id, should_close_window};
+use crate::platform::linux::lifecycle::{cycle_pane_id, should_close_window, OnLastPaneExit};
 use crate::platform::linux::pane_view::{PaneMenuAction, PaneView};
 use crate::platform::linux::panel_model::PanelTab;
 use crate::platform::linux::preferences_window::ConfigApi;
@@ -470,6 +470,19 @@ fn panel_attention_rows(snapshot: &ClientActivitySnapshot) -> Vec<ClientAttentio
         .collect()
 }
 
+fn decode_client_config<T: serde::Serialize>(config: T) -> ClientConfig {
+    serde_json::from_value(serde_json::to_value(config).expect("frontend config must serialize"))
+        .unwrap_or_default()
+}
+
+fn core_attention_config(config: &ClientAttentionConfig) -> crate::core::config::AttentionConfig {
+    crate::core::config::AttentionConfig {
+        enabled: config.enabled,
+        blocked_regex: config.blocked_regex.clone(),
+        debounce_ms: config.debounce_ms,
+    }
+}
+
 impl AppWindow {
     /// 有序关闭：停轮询 → 摘掉子树 → destroy 窗口，避免与 PaneView 持有的 VTE 交叉销毁。
     pub fn shutdown(self) {
@@ -501,29 +514,30 @@ impl AppWindow {
         while glib::MainContext::default().iteration(false) {}
     }
 
-    pub fn new(cfg: Config, theme: Theme) -> Self {
-        let keybindings = cfg
-            .keybindings
-            .iter()
-            .map(|binding| ClientKeyBinding {
-                key: binding.key.clone(),
-                mods: binding.mods.clone(),
-                action: binding.action.clone(),
-            })
-            .collect();
+    pub fn new<T: serde::Serialize>(cfg: T, theme: Theme) -> Self {
+        let cfg = decode_client_config(cfg);
+        let keybindings = if cfg.keybindings.is_empty() {
+            default_keybindings()
+        } else {
+            cfg.keybindings.clone()
+        };
         Self::new_with_keybindings(cfg, theme, keybindings)
     }
 
     /// Construct the window with effective bindings resolved by Core.
     pub fn new_with_effective_keybindings(
-        cfg: Config,
+        cfg: ClientConfig,
         theme: Theme,
         keybindings: &[ClientKeyBinding],
     ) -> Self {
         Self::new_with_keybindings(cfg, theme, keybindings.to_vec())
     }
 
-    fn new_with_keybindings(cfg: Config, theme: Theme, keybindings: Vec<ClientKeyBinding>) -> Self {
+    fn new_with_keybindings(
+        cfg: ClientConfig,
+        theme: Theme,
+        keybindings: Vec<ClientKeyBinding>,
+    ) -> Self {
         let window = ApplicationWindow::builder()
             .title("muxterm")
             .default_width(960)
@@ -564,11 +578,7 @@ impl AppWindow {
             FfiClient::new_connect("local", None, None, None, Some(""))
                 .expect("local runtime 必须可用")
         };
-        let attention_config = ClientAttentionConfig {
-            enabled: cfg.attention.enabled,
-            blocked_regex: cfg.attention.blocked_regex.clone(),
-            debounce_ms: cfg.attention.debounce_ms,
-        };
+        let attention_config = cfg.attention.clone();
         if let Err(error) = client.configure_attention(&attention_config) {
             tracing::warn!(
                 target = "muxterm::linux",
@@ -810,7 +820,7 @@ impl AppWindow {
             tab_gate: TabSwitchGate::new(Duration::from_millis(1500)),
             on_last_pane_exit: cfg.behavior.on_last_pane_exit,
             pending_close: false,
-            attention: AttentionEngine::new(cfg.attention.clone(), RealClock),
+            attention: AttentionEngine::new(core_attention_config(&cfg.attention), RealClock),
             notification_log: Vec::new(),
             notification_sink: std::boxed::Box::new(GioSink::new(None)),
             panel_open: None,
@@ -4239,9 +4249,15 @@ fn attention_workspace_id(s: &UiState, ws: &str) -> Option<WorkspaceId> {
 
 /// 打开配置页：保存/热加载后重读 config.toml 并应用主题/字体/attention。
 fn open_preferences(state: &Rc<RefCell<UiState>>, window: &Window) {
-    let Some(path) = Config::user_config_path() else {
-        tracing::warn!(target = "muxterm::linux", "无用户配置目录，无法打开配置页");
-        return;
+    let path = match FfiClient::new_catalog().and_then(|client| client.config_describe()) {
+        Ok(snapshot) if !snapshot.path.trim().is_empty() => std::path::PathBuf::from(snapshot.path),
+        Ok(_) | Err(_) => {
+            tracing::warn!(
+                target = "muxterm::linux",
+                "Core 未返回配置路径，无法打开配置页"
+            );
+            return;
+        }
     };
     let st = state.clone();
     let hosts = FfiClient::discover_ssh_hosts().unwrap_or_default();
@@ -4288,11 +4304,8 @@ fn open_preferences(state: &Rc<RefCell<UiState>>, window: &Window) {
             if let Ok(snapshot) = snapshot {
                 let resolved_theme = snapshot.resolved_theme.clone();
                 let effective_keybindings = snapshot.effective_keybindings.clone();
-                let document = match serde_json::from_value::<
-                    crate::core::config_service::ConfigDocument,
-                >(snapshot.values)
-                {
-                    Ok(document) => document,
+                let cfg = match serde_json::from_value::<ClientConfig>(snapshot.values) {
+                    Ok(config) => config,
                     Err(error) => {
                         tracing::warn!(
                             target = "muxterm::config",
@@ -4301,13 +4314,8 @@ fn open_preferences(state: &Rc<RefCell<UiState>>, window: &Window) {
                         return;
                     }
                 };
-                let cfg = &document.config;
                 s.keymap = KeyMap::from_bindings(&effective_keybindings);
-                let attention_config = ClientAttentionConfig {
-                    enabled: cfg.attention.enabled,
-                    blocked_regex: cfg.attention.blocked_regex.clone(),
-                    debounce_ms: cfg.attention.debounce_ms,
-                };
+                let attention_config = cfg.attention.clone();
                 if let Err(error) = s.event_pump.client().configure_attention(&attention_config) {
                     tracing::warn!(
                         target = "muxterm::linux",
@@ -4315,7 +4323,8 @@ fn open_preferences(state: &Rc<RefCell<UiState>>, window: &Window) {
                         "热加载 Core attention 配置失败"
                     );
                 }
-                s.attention.set_config(cfg.attention.clone());
+                s.attention
+                    .set_config(core_attention_config(&cfg.attention));
                 s.config_font_size = cfg.font.size;
                 s.font.size = FontSettings::clamp_size(cfg.font.size);
                 s.font.family = cfg.font.family.clone();
