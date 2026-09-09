@@ -20,7 +20,7 @@ use crate::protocol::state::{
 };
 use crate::protocol::task::{Task, TaskOutcome};
 use crate::protocol::terminal::input::encode;
-use crate::runtime::daemon_client::send_command;
+use crate::runtime::shell::daemon_client::send_command;
 use crate::runtime::{Runtime, RuntimeCapability};
 use crate::types::{PaneId, TabId};
 use muxterm_protocol::command::CliCommand;
