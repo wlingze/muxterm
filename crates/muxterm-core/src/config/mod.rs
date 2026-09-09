@@ -19,6 +19,7 @@
 //! 主题：`configs/themes/<name>.toml` 或 `~/.config/muxterm/themes/<name>.toml`，
 //! 定义 ANSI 16 色 + 背景/前景/光标。解析逻辑是纯函数，附单元测试。
 
+pub mod action_catalog;
 pub mod document;
 pub mod edit;
 
@@ -474,6 +475,8 @@ mod shortcut;
 mod theme;
 
 // 这些类型是 config 兼容 facade 的公开接口；不同前端只会消费其中一部分。
+#[allow(unused_imports)]
+pub use action_catalog::*;
 pub use document::*;
 #[allow(unused_imports)]
 pub use shortcut::{default_keybindings, Action, KeyBinding, ModSet, Modifiers};

@@ -3,8 +3,8 @@
 use std::ffi::c_char;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
+use crate::config::action_catalog::resolve_effective_keybindings;
 use crate::config::{Rgb, Theme};
-use crate::config_service::action_catalog::resolve_effective_keybindings;
 use crate::config_service::{ConfigEvent, JsonPatchOperation, SettingsService};
 
 use super::support::{cstr_opt, json_string, MuxtermHandle};

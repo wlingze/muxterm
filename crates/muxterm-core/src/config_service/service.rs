@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::config::action_catalog::action_catalog;
 use crate::config::ConfigDocument;
-use crate::config_service::action_catalog::action_catalog;
 use crate::config_service::migration::import_legacy_projects;
 use crate::config_service::storage::{
     atomic_write, preserve_toml_metadata, revision_for, ConfigRevision, ConfigSnapshot,
