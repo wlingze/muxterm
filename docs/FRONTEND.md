@@ -146,7 +146,8 @@ frontend **不直接读写文件**。读 = FFI 配置快照；写 = draft transa
 ## 5. 各前端落地
 
 目录：`src/frontend/{cli,tui,linux,macos,windows}` + `ffi_client.rs` + `app_shell.rs`。
-当前代码仍在 `src/platform/`，按 [`../TASKS.md`](../TASKS.md) 迁过来。
+共享 FFI 与各平台 frontend 已按 Phase 7 迁入 `src/frontend/`；EventPump、i18n 和少量
+兼容 glue 仍在 `src/platform/`，后续按 [`../TASKS.md`](../TASKS.md) 收敛，Phase 9 再做 Scene 重写。
 
 **linux（GTK4）：**
 

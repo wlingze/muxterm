@@ -39,8 +39,9 @@ src/
 Cargo workspace：`muxterm-protocol` / `muxterm-core` / `muxterm-runtime` /
 `muxterm-transport` / frontend。用编译器守依赖方向。拆分完成前模块边界按这张表画。
 
-当前仓库里 frontend 代码仍在 `src/platform/`，最终 Cargo workspace 拆分仍未完成；
-Runtime contract 已在 `src/core/runtime/`，`src/main.rs` 已不声明 Core modules。
+当前共享 FFI、CLI、TUI、Linux 和 macOS frontend 已迁入 `src/frontend/`；
+`src/platform/` 仍保留 EventPump、i18n、镜像/探测等兼容 glue，最终 Cargo workspace
+拆分仍未完成。Runtime contract 已在 `src/core/runtime/`，`src/main.rs` 已不声明 Core modules。
 按 [`../TASKS.md`](../TASKS.md) 继续收敛到上表。
 
 ## 不要
