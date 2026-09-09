@@ -4,7 +4,7 @@
 //! - `[font]` family / size
 //! - `[theme]` name
 //! - `[statusbar]` mode（tmux / theme）
-//! - `[pool]` max_slots（warm 连接上限）
+//! - `[pool]` max_slots（后台工作区软提醒阈值）
 //! - `[tmux]` auto_mouse / default_session
 //! - `[ssh]` host / port / user / key_path
 //! - `[scrollback]` lines
@@ -13,8 +13,8 @@
 //! - `[behavior]` 最后 pane 退出 / 异常退出策略
 //! - `[[keybindings]]` key/mods/action 数组
 //!
-//! QuickConnect 项目列表在同目录的 `quickconnect.toml`（见
-//! [`crate::quickconnect`]），不写进 `config.toml`。
+//! QuickConnect 的 Project 列表通过 [`crate::config::SettingsService`] 统一保存在
+//! `config.toml`；Recent 只存在运行时内存中。
 //!
 //! 主题：`configs/themes/<name>.toml` 或 `~/.config/muxterm/themes/<name>.toml`，
 //! 定义 ANSI 16 色 + 背景/前景/光标。解析逻辑是纯函数，附单元测试。
