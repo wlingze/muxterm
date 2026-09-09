@@ -20,7 +20,7 @@ use crate::protocol::state::{
 };
 use crate::protocol::task::{Task, TaskOutcome};
 use crate::protocol::terminal::input::KeyEvent;
-use crate::runtime::{Runtime, RuntimeCapability};
+use crate::runtime::{Runtime, RuntimeBatch, RuntimeCapability};
 use muxterm_protocol::{PaneId, TabId};
 
 use super::events::{EventStream, EventStreamEvent};
@@ -83,7 +83,7 @@ pub struct HerdrRuntime {
     status: BackendStatus,
     active_tab: Option<TabId>,
     active_pane: Option<PaneId>,
-    events: VecDeque<StateChange>,
+    events: VecDeque<RuntimeBatch>,
     herdr_tab_to_tab: HashMap<String, TabId>,
     herdr_pane_to_pane: HashMap<String, PaneId>,
     tab_to_herdr_tab: HashMap<TabId, String>,
@@ -165,6 +165,10 @@ impl HerdrRuntime {
             focus_pin: None,
             forward: None,
         }
+    }
+
+    fn push_event(&mut self, event: StateChange) {
+        self.events.push_back(RuntimeBatch::from(event));
     }
 
     /// Compatibility constructor for direct loopback/SSH tests. Provider
@@ -610,33 +614,36 @@ impl HerdrRuntime {
         if initial {
             // 事件：拓扑 + 激活 + agent bootstrap。
             for tab in &self.tabs {
-                self.events.push_back(StateChange::TabAdded { tab: tab.id });
+                self.events
+                    .push_back(RuntimeBatch::from(StateChange::TabAdded { tab: tab.id }));
             }
             for pane in &self.panes {
-                self.events.push_back(StateChange::PaneAdded {
-                    pane: pane.id,
-                    tab: pane.tab,
-                });
+                self.events
+                    .push_back(RuntimeBatch::from(StateChange::PaneAdded {
+                        pane: pane.id,
+                        tab: pane.tab,
+                    }));
             }
             for (tab, layout) in &self.layouts {
-                self.events.push_back(StateChange::LayoutChanged {
-                    tab: *tab,
-                    layout: layout.clone(),
-                });
+                self.events
+                    .push_back(RuntimeBatch::from(StateChange::LayoutChanged {
+                        tab: *tab,
+                        layout: layout.clone(),
+                    }));
             }
             for (pane, agent) in &self.agents {
-                self.events.push_back(StateChange::PaneAgentChanged {
-                    pane: *pane,
-                    agent: Some(Box::new(agent.clone())),
-                    initial: true,
-                });
+                self.events
+                    .push_back(RuntimeBatch::from(StateChange::PaneAgentChanged {
+                        pane: *pane,
+                        agent: Some(Box::new(agent.clone())),
+                        initial: true,
+                    }));
             }
             if let Some(tab) = self.active_tab {
-                self.events.push_back(StateChange::ActiveTabChanged { tab });
+                self.push_event(StateChange::ActiveTabChanged { tab });
             }
             if let Some((tab, pane)) = self.active_tab.zip(self.active_pane) {
-                self.events
-                    .push_back(StateChange::ActivePaneChanged { tab, pane });
+                self.push_event(StateChange::ActivePaneChanged { tab, pane });
             }
         }
         true
@@ -690,7 +697,7 @@ impl HerdrRuntime {
                     self.layouts.insert(tab, product_layout.clone());
                     self.resync_active_from_layout(tab, active, emit_event);
                     if emit_event {
-                        self.events.push_back(StateChange::LayoutChanged {
+                        self.push_event(StateChange::LayoutChanged {
                             tab,
                             layout: product_layout,
                         });
@@ -729,7 +736,7 @@ impl HerdrRuntime {
                 self.layouts.insert(tab, product_layout.clone());
                 self.resync_active_from_layout(tab, active, emit_event);
                 if emit_event {
-                    self.events.push_back(StateChange::LayoutChanged {
+                    self.push_event(StateChange::LayoutChanged {
                         tab,
                         layout: product_layout,
                     });
@@ -762,7 +769,7 @@ impl HerdrRuntime {
                     self.layouts.insert(tab, product_layout.clone());
                     self.resync_active_from_layout(tab, active, emit_event);
                     if emit_event {
-                        self.events.push_back(StateChange::LayoutChanged {
+                        self.push_event(StateChange::LayoutChanged {
                             tab,
                             layout: product_layout,
                         });
@@ -822,7 +829,7 @@ impl HerdrRuntime {
         self.layouts.insert(tab, product_layout.clone());
         self.resync_active_from_layout(tab, active, emit_event);
         if emit_event {
-            self.events.push_back(StateChange::LayoutChanged {
+            self.push_event(StateChange::LayoutChanged {
                 tab,
                 layout: product_layout,
             });
@@ -895,7 +902,7 @@ impl HerdrRuntime {
                 pane.active = Some(pane.id) == self.active_pane;
             }
             if emit_event && old != Some(effective) {
-                self.events.push_back(StateChange::ActivePaneChanged {
+                self.push_event(StateChange::ActivePaneChanged {
                     tab,
                     pane: effective,
                 });
@@ -935,8 +942,7 @@ impl HerdrRuntime {
                 self.outputs.insert(pane, bytes.clone());
                 // pane.read 只进 Index（搜索/attention）；Surface 由
                 // current-generation full frame 负责，禁止把无头快照当像素。
-                self.events
-                    .push_back(StateChange::PaneIndexSnapshot { pane, data: bytes });
+                self.push_event(StateChange::PaneIndexSnapshot { pane, data: bytes });
                 // attach 种子就位：该 generation 的首个 full 不得覆盖它。
                 if let Some(slot) = self.stream_slots.get_mut(&pane) {
                     slot.seed_pending = true;
@@ -1405,11 +1411,13 @@ impl HerdrRuntime {
                                 normalize_pane_size(width, height, Some((p.cols, p.rows)));
                             self.frame_sizes.insert(pane, (p.cols, p.rows));
                             if (p.cols, p.rows) != prev {
-                                self.events.push_back(StateChange::PaneResized {
-                                    pane,
-                                    cols: p.cols,
-                                    rows: p.rows,
-                                });
+                                self.events.push_back(RuntimeBatch::from(
+                                    StateChange::PaneResized {
+                                        pane,
+                                        cols: p.cols,
+                                        rows: p.rows,
+                                    },
+                                ));
                             }
                         }
                     }
@@ -1449,8 +1457,9 @@ impl HerdrRuntime {
                                             &data,
                                             MAX_PANE_OUTPUT_BYTES,
                                         );
-                                        self.events
-                                            .push_back(StateChange::PaneOutput { pane, data });
+                                        self.events.push_back(RuntimeBatch::from(
+                                            StateChange::PaneOutput { pane, data },
+                                        ));
                                     }
                                 }
                                 Err(_) => {
@@ -1475,10 +1484,14 @@ impl HerdrRuntime {
                             None
                         };
                         self.events
-                            .push_back(StateChange::PaneFrame { pane, data: bytes });
+                            .push_back(RuntimeBatch::from(StateChange::PaneFrame {
+                                pane,
+                                data: bytes,
+                            }));
                         if let Some(data) = index_snapshot {
-                            self.events
-                                .push_back(StateChange::PaneIndexSnapshot { pane, data });
+                            self.events.push_back(RuntimeBatch::from(
+                                StateChange::PaneIndexSnapshot { pane, data },
+                            ));
                         }
                     } else if slot.surface_baseline == SurfaceBaseline::AwaitingFull {
                         // full 前 diff：不画进 Surface，只进有界队列。
@@ -1505,7 +1518,10 @@ impl HerdrRuntime {
                             MAX_PANE_OUTPUT_BYTES,
                         );
                         self.events
-                            .push_back(StateChange::PaneOutput { pane, data: bytes });
+                            .push_back(RuntimeBatch::from(StateChange::PaneOutput {
+                                pane,
+                                data: bytes,
+                            }));
                     }
                 }
                 PaneStreamEvent::Closed {
@@ -1879,18 +1895,17 @@ impl HerdrRuntime {
             .any(|workspace| workspace.workspace_id == self.workspace_id)
         {
             for pane in old_agents.keys() {
-                self.events.push_back(StateChange::PaneAgentChanged {
+                self.push_event(StateChange::PaneAgentChanged {
                     pane: *pane,
                     agent: None,
                     initial: false,
                 });
             }
             for pane in old_panes.keys() {
-                self.events
-                    .push_back(StateChange::PaneClosed { pane: *pane });
+                self.push_event(StateChange::PaneClosed { pane: *pane });
             }
             for tab in old_tabs.keys() {
-                self.events.push_back(StateChange::TabClosed { tab: *tab });
+                self.push_event(StateChange::TabClosed { tab: *tab });
             }
             self.tabs.clear();
             self.panes.clear();
@@ -1925,7 +1940,7 @@ impl HerdrRuntime {
         let new_pane_ids = new_panes.keys().copied().collect::<HashSet<_>>();
 
         if old_name != self.workspace_name {
-            self.events.push_back(StateChange::WorkspaceRenamed {
+            self.push_event(StateChange::WorkspaceRenamed {
                 name: self.workspace_name.clone(),
             });
         }
@@ -1934,66 +1949,75 @@ impl HerdrRuntime {
             .keys()
             .filter(|pane| !new_panes.contains_key(pane))
         {
-            self.events
-                .push_back(StateChange::PaneClosed { pane: *pane });
+            self.push_event(StateChange::PaneClosed { pane: *pane });
         }
         for tab in old_tabs.keys().filter(|tab| !new_tabs.contains_key(tab)) {
-            self.events.push_back(StateChange::TabClosed { tab: *tab });
+            self.push_event(StateChange::TabClosed { tab: *tab });
         }
         for tab in self
             .tabs
             .iter()
             .filter(|tab| !old_tabs.contains_key(&tab.id))
         {
-            self.events.push_back(StateChange::TabAdded { tab: tab.id });
+            self.events
+                .push_back(RuntimeBatch::from(StateChange::TabAdded { tab: tab.id }));
         }
         for tab in &self.tabs {
             if let Some(old) = old_tabs.get(&tab.id) {
                 if old.name != tab.name {
-                    self.events.push_back(StateChange::TabRenamed {
-                        tab: tab.id,
-                        name: tab.name.clone(),
-                    });
+                    self.events
+                        .push_back(RuntimeBatch::from(StateChange::TabRenamed {
+                            tab: tab.id,
+                            name: tab.name.clone(),
+                        }));
                 }
             }
         }
         for pane in &self.panes {
             match old_panes.get(&pane.id) {
-                None => self.events.push_back(StateChange::PaneAdded {
-                    pane: pane.id,
-                    tab: pane.tab,
-                }),
-                Some(old) if old.tab != pane.tab => {
-                    self.events
-                        .push_back(StateChange::PaneClosed { pane: pane.id });
-                    self.events.push_back(StateChange::PaneAdded {
+                None => self
+                    .events
+                    .push_back(RuntimeBatch::from(StateChange::PaneAdded {
                         pane: pane.id,
                         tab: pane.tab,
-                    });
+                    })),
+                Some(old) if old.tab != pane.tab => {
+                    self.events
+                        .push_back(RuntimeBatch::from(StateChange::PaneClosed {
+                            pane: pane.id,
+                        }));
+                    self.events
+                        .push_back(RuntimeBatch::from(StateChange::PaneAdded {
+                            pane: pane.id,
+                            tab: pane.tab,
+                        }));
                 }
                 Some(old) => {
                     if old.title != pane.title {
-                        self.events.push_back(StateChange::PaneTitleChanged {
-                            pane: pane.id,
-                            title: pane.title.clone(),
-                        });
+                        self.events
+                            .push_back(RuntimeBatch::from(StateChange::PaneTitleChanged {
+                                pane: pane.id,
+                                title: pane.title.clone(),
+                            }));
                     }
                     if old.cols != pane.cols || old.rows != pane.rows {
-                        self.events.push_back(StateChange::PaneResized {
-                            pane: pane.id,
-                            cols: pane.cols,
-                            rows: pane.rows,
-                        });
+                        self.events
+                            .push_back(RuntimeBatch::from(StateChange::PaneResized {
+                                pane: pane.id,
+                                cols: pane.cols,
+                                rows: pane.rows,
+                            }));
                     }
                 }
             }
         }
         for (tab, layout) in &self.layouts {
             if old_layouts.get(tab) != Some(layout) {
-                self.events.push_back(StateChange::LayoutChanged {
-                    tab: *tab,
-                    layout: layout.clone(),
-                });
+                self.events
+                    .push_back(RuntimeBatch::from(StateChange::LayoutChanged {
+                        tab: *tab,
+                        layout: layout.clone(),
+                    }));
             }
         }
 
@@ -2017,7 +2041,7 @@ impl HerdrRuntime {
                         .get(&pane)
                         .map(|agent| agent.screen_detection_skipped),
                 );
-                self.events.push_back(StateChange::PaneAgentChanged {
+                self.push_event(StateChange::PaneAgentChanged {
                     pane,
                     agent: self.agents.get(&pane).cloned().map(Box::new),
                     initial,
@@ -2026,13 +2050,12 @@ impl HerdrRuntime {
         }
         if old_active_tab != self.active_tab {
             if let Some(tab) = self.active_tab {
-                self.events.push_back(StateChange::ActiveTabChanged { tab });
+                self.push_event(StateChange::ActiveTabChanged { tab });
             }
         }
         if old_active_pane != self.active_pane {
             if let Some((tab, pane)) = self.active_tab.zip(self.active_pane) {
-                self.events
-                    .push_back(StateChange::ActivePaneChanged { tab, pane });
+                self.push_event(StateChange::ActivePaneChanged { tab, pane });
             }
         }
 
@@ -2088,7 +2111,7 @@ impl HerdrRuntime {
                 cols: 80,
                 rows: 24,
             });
-            self.events.push_back(StateChange::PaneAdded { pane, tab });
+            self.push_event(StateChange::PaneAdded { pane, tab });
         }
         let mode = self.desired_mode_for(
             self.panes
@@ -2278,7 +2301,7 @@ impl HerdrRuntime {
                 }
             }
         }
-        self.events.push_back(StateChange::MutationSettled {
+        self.push_event(StateChange::MutationSettled {
             operation_id,
             kind,
             result,
@@ -2394,7 +2417,7 @@ impl HerdrRuntime {
             if !self.mutation_queue.queue.is_empty() {
                 let drained: Vec<PendingMutation> = self.mutation_queue.queue.drain(..).collect();
                 for pending in drained {
-                    self.events.push_back(StateChange::MutationSettled {
+                    self.push_event(StateChange::MutationSettled {
                         operation_id: pending.mutation_id,
                         kind: pending.kind,
                         result: MutationResult::Failed {
@@ -2809,8 +2832,7 @@ impl Runtime for HerdrRuntime {
             return Ok(());
         }
         self.status = BackendStatus::Connecting;
-        self.events
-            .push_back(StateChange::BackendStatusChanged(BackendStatus::Connecting));
+        self.push_event(StateChange::BackendStatusChanged(BackendStatus::Connecting));
 
         self.session
             .ping()
@@ -2842,8 +2864,7 @@ impl Runtime for HerdrRuntime {
             .context("Herdr events.subscribe 失败")?;
 
         self.status = BackendStatus::Connected;
-        self.events
-            .push_back(StateChange::BackendStatusChanged(BackendStatus::Connected));
+        self.push_event(StateChange::BackendStatusChanged(BackendStatus::Connected));
         Ok(())
     }
 
@@ -2927,7 +2948,7 @@ impl Runtime for HerdrRuntime {
                     pane.cols = cols;
                     pane.rows = rows;
                 }
-                self.events.push_back(StateChange::PaneResized {
+                self.push_event(StateChange::PaneResized {
                     pane: *target,
                     cols,
                     rows,
@@ -2967,10 +2988,9 @@ impl Runtime for HerdrRuntime {
                 self.snapshot_active.insert(tab, *target);
                 self.active_pane = Some(*target);
                 if tab_changed {
-                    self.events.push_back(StateChange::ActiveTabChanged { tab });
+                    self.push_event(StateChange::ActiveTabChanged { tab });
                 }
-                self.events
-                    .push_back(StateChange::ActivePaneChanged { tab, pane: *target });
+                self.push_event(StateChange::ActivePaneChanged { tab, pane: *target });
                 // 真实本地 focus edge：新 control intent（可 takeover 一次）。
                 self.promote_focus_to(*target);
                 Ok(TaskOutcome::Done)
@@ -3001,11 +3021,9 @@ impl Runtime for HerdrRuntime {
                         candidate.active = candidate.id == pane;
                     }
                     self.active_pane = Some(pane);
-                    self.events
-                        .push_back(StateChange::ActivePaneChanged { tab: *target, pane });
+                    self.push_event(StateChange::ActivePaneChanged { tab: *target, pane });
                 }
-                self.events
-                    .push_back(StateChange::ActiveTabChanged { tab: *target });
+                self.push_event(StateChange::ActiveTabChanged { tab: *target });
                 // tab 切换也是本地 focus edge：新 active pane 获得 control intent。
                 if let Some(pane) = self.active_pane {
                     self.promote_focus_to(pane);
@@ -3136,15 +3154,14 @@ impl Runtime for HerdrRuntime {
                 self.event_stream = None;
                 self.stop_all_streams();
                 self.status = BackendStatus::Disconnected;
-                self.events.push_back(StateChange::BackendStatusChanged(
+                self.push_event(StateChange::BackendStatusChanged(
                     BackendStatus::Disconnected,
                 ));
                 Ok(TaskOutcome::Done)
             }
             Task::Shutdown => {
                 self.status = BackendStatus::Exited;
-                self.events
-                    .push_back(StateChange::BackendStatusChanged(BackendStatus::Exited));
+                self.push_event(StateChange::BackendStatusChanged(BackendStatus::Exited));
                 Ok(TaskOutcome::Done)
             }
             _ => Ok(TaskOutcome::Rejected {
@@ -3153,7 +3170,7 @@ impl Runtime for HerdrRuntime {
         }
     }
 
-    fn take_events(&mut self) -> Vec<StateChange> {
+    fn drain_events(&mut self, out: &mut RuntimeBatch) {
         self.drain_event_stream();
         self.drain_stream();
         self.drain_start_results();
@@ -3162,7 +3179,15 @@ impl Runtime for HerdrRuntime {
         self.maybe_start_pending_retries(now);
         self.reconcile_stream_modes();
         self.tick_mutations(now);
-        self.events.drain(..).collect()
+        for batch in self.events.drain(..) {
+            out.append(batch);
+        }
+    }
+
+    fn take_events(&mut self) -> Vec<StateChange> {
+        let mut batch = RuntimeBatch::default();
+        self.drain_events(&mut batch);
+        batch.into_state_changes()
     }
 
     async fn shutdown(&mut self) -> muxterm_runtime::RuntimeResult<()> {
@@ -3172,7 +3197,7 @@ impl Runtime for HerdrRuntime {
         self.stop_all_streams();
         self.stop_forward();
         self.status = BackendStatus::Disconnected;
-        self.events.push_back(StateChange::BackendStatusChanged(
+        self.push_event(StateChange::BackendStatusChanged(
             BackendStatus::Disconnected,
         ));
         Ok(())
@@ -3216,6 +3241,14 @@ mod tests {
         WorkspaceRecord,
     };
     use crate::runtime::herdr::wire::{read_message, ClientMessage, MAX_FRAME_SIZE};
+
+    fn queued_state_changes(runtime: &HerdrRuntime) -> Vec<StateChange> {
+        let mut batch = RuntimeBatch::default();
+        for queued in &runtime.events {
+            batch.append(queued.clone());
+        }
+        batch.into_state_changes()
+    }
 
     #[test]
     fn pane_snapshot_request_restarts_generation_waiting_for_full_frame() {
@@ -3715,7 +3748,8 @@ mod tests {
 
         let mut saw_resized = false;
         let mut saw_frame_after = false;
-        for ev in &runtime.events {
+        let events = queued_state_changes(&runtime);
+        for ev in &events {
             match ev {
                 StateChange::PaneResized {
                     pane: p,
@@ -4485,8 +4519,8 @@ mod tests {
         runtime.drain_stream();
         assert_eq!(runtime.outputs.get(&pane).unwrap(), b"FULL_TWO_DIFF");
 
-        let output_events = runtime
-            .events
+        let queued_events = queued_state_changes(&runtime);
+        let output_events = queued_events
             .iter()
             .filter_map(|event| match event {
                 StateChange::PaneFrame { data, .. } => Some((true, data.as_slice())),
@@ -4556,8 +4590,8 @@ mod tests {
             "首个 full 不得覆盖 attach 的历史 Index 快照"
         );
         assert!(!runtime.stream_slots.get(&pane).unwrap().seed_pending);
-        let events = runtime
-            .events
+        let queued_events = queued_state_changes(&runtime);
+        let events = queued_events
             .iter()
             .filter_map(|event| match event {
                 StateChange::PaneFrame { pane: p, data } if *p == pane => {
@@ -4968,8 +5002,8 @@ mod tests {
         );
         runtime.seed_one_pane(pane, "w1:p1");
 
-        let surface_events = runtime
-            .events
+        let queued_events = queued_state_changes(&runtime);
+        let surface_events = queued_events
             .iter()
             .filter(|event| {
                 matches!(
@@ -4985,7 +5019,7 @@ mod tests {
             "pane.read 不得产生任何 Surface 事件（PaneFrame/PaneOutput/PaneSnapshot）"
         );
         assert!(
-            runtime.events.iter().any(|event| {
+            queued_events.iter().any(|event| {
                 matches!(
                     event,
                     StateChange::PaneIndexSnapshot { pane: p, .. } if *p == pane
