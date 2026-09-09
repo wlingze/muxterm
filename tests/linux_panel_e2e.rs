@@ -18,16 +18,18 @@ use gtk4::prelude::*;
 use gtk4::{gdk, glib};
 use support::linux_gtk::*;
 
-use muxterm::core::attention::engine::PaneAttention;
-use muxterm::core::attention::state::PaneStatus;
-use muxterm::core::workspace::id::WorkspaceId;
-use muxterm::platform::linux::panel_model::{PanelTab, SearchRow};
-use muxterm::platform::linux::quickconnect::model::{
+use muxterm::test_support::core::attention::engine::PaneAttention;
+use muxterm::test_support::core::attention::state::PaneStatus;
+use muxterm::test_support::core::workspace::id::WorkspaceId;
+use muxterm::test_support::platform::linux::panel_model::{PanelTab, SearchRow};
+use muxterm::test_support::platform::linux::quickconnect::model::{
     QuickBadge, QuickConnect, QuickConnectEntry, TargetConfig, TargetRuntime, TargetTransport,
 };
-use muxterm::platform::linux::quickconnect_panel::{show, PanelItem, PanelShowArgs};
-use muxterm::platform::linux::workspace_sidebar::{ActivityIndicator, AgentSidebarItem};
-use muxterm::platform::ssh_probe::SshReach;
+use muxterm::test_support::platform::linux::quickconnect_panel::{show, PanelItem, PanelShowArgs};
+use muxterm::test_support::platform::linux::workspace_sidebar::{
+    ActivityIndicator, AgentSidebarItem,
+};
+use muxterm::test_support::platform::ssh_probe::SshReach;
 
 fn attention(ws: &str, pane: u32, status: PaneStatus, line: &str) -> PaneAttention {
     PaneAttention {
@@ -180,6 +182,7 @@ fn three_tab_panel_full_flow() {
                     on_edit: Box::new(|_| {}),
                     on_new_project: Box::new(|| {}),
                     on_jump_pane: Box::new(move |ws, pane, _seq| j.borrow_mut().push((ws, pane))),
+                    on_mute: Box::new(|_, _, _| {}),
                     search: Box::new(|_, _| vec![]),
                     on_close: Box::new(|| {}),
                     ssh_reach: HashMap::from([
@@ -187,7 +190,7 @@ fn three_tab_panel_full_flow() {
                         ("dead".into(), SshReach::Err),
                     ]),
                     existing: std::rc::Rc::new(std::cell::RefCell::new(
-                        muxterm::platform::linux::quickconnect_panel::ExistingPanelState::default(),
+                        muxterm::test_support::platform::linux::quickconnect_panel::ExistingPanelState::default(),
                     )),
                     on_existing_nav: Box::new(|_| {}),
                 },
@@ -368,11 +371,12 @@ fn keyboard_navigation_scrolls_selection_and_keeps_search_focus() {
                         on_edit: Box::new(|_| {}),
                         on_new_project: Box::new(|| {}),
                         on_jump_pane: Box::new(|_, _, _| {}),
+                        on_mute: Box::new(|_, _, _| {}),
                         search: Box::new(|_, _| vec![]),
                         on_close: Box::new(|| {}),
                         ssh_reach: HashMap::new(),
                         existing: Rc::new(RefCell::new(
-                            muxterm::platform::linux::quickconnect_panel::ExistingPanelState::default(),
+                            muxterm::test_support::platform::linux::quickconnect_panel::ExistingPanelState::default(),
                         )),
                         on_existing_nav: Box::new(|_| {}),
                     },
@@ -552,6 +556,7 @@ fn rapid_typing_and_attention_navigation_stay_lightweight() {
                         on_edit: Box::new(|_| {}),
                         on_new_project: Box::new(|| {}),
                         on_jump_pane: Box::new(|_, _, _| {}),
+                        on_mute: Box::new(|_, _, _| {}),
                         search: Box::new(move |query, _| {
                             search_calls_cb.set(search_calls_cb.get() + 1);
                             if query.is_empty() {
@@ -569,7 +574,7 @@ fn rapid_typing_and_attention_navigation_stay_lightweight() {
                         on_close: Box::new(|| {}),
                         ssh_reach: HashMap::new(),
                         existing: Rc::new(RefCell::new(
-                            muxterm::platform::linux::quickconnect_panel::ExistingPanelState::default(),
+                            muxterm::test_support::platform::linux::quickconnect_panel::ExistingPanelState::default(),
                         )),
                         on_existing_nav: Box::new(|_| {}),
                     },
@@ -581,7 +586,7 @@ fn rapid_typing_and_attention_navigation_stay_lightweight() {
                     .downcast::<gtk4::Entry>()
                     .expect("Entry 类型");
                 let baseline_search = search_calls.get();
-                muxterm::platform::linux::quickconnect_panel::refresh_current();
+                muxterm::test_support::platform::linux::quickconnect_panel::refresh_current();
                 pump_main_loop(40);
                 assert_eq!(
                     search_calls.get(),
@@ -671,7 +676,7 @@ fn existing_connections_navigation() {
             gtk4::test_widget_wait_for_draw(&win);
 
             let existing = Rc::new(RefCell::new(
-                muxterm::platform::linux::quickconnect_panel::ExistingPanelState::default(),
+                muxterm::test_support::platform::linux::quickconnect_panel::ExistingPanelState::default(),
             ));
             let navs = Rc::new(RefCell::new(Vec::<String>::new()));
             let n = navs.clone();
@@ -695,6 +700,7 @@ fn existing_connections_navigation() {
                     on_edit: Box::new(|_| {}),
                     on_new_project: Box::new(|| {}),
                     on_jump_pane: Box::new(|_, _, _| {}),
+                    on_mute: Box::new(|_, _, _| {}),
                     search: Box::new(|_, _| vec![]),
                     on_close: Box::new(|| {}),
                     ssh_reach: HashMap::new(),
@@ -806,11 +812,12 @@ fn row_activate_ignores_pending_rebuild() {
                         new_project_cb.set(new_project_cb.get() + 1);
                     }),
                     on_jump_pane: Box::new(|_, _, _| {}),
+                    on_mute: Box::new(|_, _, _| {}),
                     search: Box::new(|_, _| vec![]),
                     on_close: Box::new(|| {}),
                     ssh_reach: HashMap::new(),
                     existing: Rc::new(RefCell::new(
-                        muxterm::platform::linux::quickconnect_panel::ExistingPanelState::default(),
+                        muxterm::test_support::platform::linux::quickconnect_panel::ExistingPanelState::default(),
                     )),
                     on_existing_nav: Box::new(|_| {}),
                 },

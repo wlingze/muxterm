@@ -6,9 +6,9 @@ mod support;
 
 use std::time::{Duration, Instant};
 
-use muxterm::core::protocol::state::StateChange;
-use muxterm::core::runtime::TmuxRuntime;
-use muxterm::core::workspace::terminal_model::TerminalModel;
+use muxterm::test_support::core::protocol::state::StateChange;
+use muxterm::test_support::core::runtime::TmuxRuntime;
+use muxterm::test_support::core::workspace::terminal_model::TerminalModel;
 use support::tmux_test_support::{
     create_session, kill_server, list_pane_ids, send_keys_line, tmux_available, unique_socket,
 };
@@ -94,7 +94,7 @@ fn stalled_attach_client_resumes_live_to_last_frame_without_recapture() {
         }
         saw_last_frame = model
             .state()
-            .pane_output(&muxterm::core::types::PaneId(pane))
+            .pane_output(&muxterm::test_support::core::types::PaneId(pane))
             .is_some_and(|bytes| {
                 bytes
                     .windows(b"FLOOD_DONE".len())
@@ -119,7 +119,7 @@ fn stalled_attach_client_resumes_live_to_last_frame_without_recapture() {
     );
     let tail = model
         .state()
-        .pane_output(&muxterm::core::types::PaneId(pane))
+        .pane_output(&muxterm::test_support::core::types::PaneId(pane))
         .map(|bytes| {
             String::from_utf8_lossy(&bytes[bytes.len().saturating_sub(240)..]).into_owned()
         })

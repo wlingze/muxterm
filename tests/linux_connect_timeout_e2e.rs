@@ -11,9 +11,11 @@ use std::time::{Duration, Instant};
 use gtk4::prelude::*;
 use support::linux_gtk::*;
 
-use muxterm::core::config::Config;
-use muxterm::platform::linux::quickconnect::model::{TargetConfig, TargetRuntime, TargetTransport};
-use muxterm::platform::linux::window::AppWindow;
+use muxterm::test_support::core::config::Config;
+use muxterm::test_support::platform::linux::quickconnect::model::{
+    TargetConfig, TargetRuntime, TargetTransport,
+};
+use muxterm::test_support::platform::linux::window::AppWindow;
 
 #[test]
 fn unreachable_ssh_does_not_block_gtk_thread() {

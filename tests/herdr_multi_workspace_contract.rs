@@ -8,10 +8,10 @@ mod support;
 use std::sync::Arc;
 use std::time::Instant;
 
-use muxterm::core::catalog::Catalog;
-use muxterm::core::runtime::HerdrRuntime;
-use muxterm::core::workspace::pool::{WorkspacePool, WorkspacePoolPolicy};
-use muxterm::core::workspace::spec::WorkspaceSpec;
+use muxterm::test_support::core::catalog::Catalog;
+use muxterm::test_support::core::runtime::HerdrRuntime;
+use muxterm::test_support::core::workspace::pool::{WorkspacePool, WorkspacePoolPolicy};
+use muxterm::test_support::core::workspace::spec::WorkspaceSpec;
 use support::herdr_test_support::{herdr_available, IsolatedHerdr};
 
 const HERDR_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);

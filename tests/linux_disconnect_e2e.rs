@@ -16,8 +16,8 @@ use support::tmux_test_support::{
     wait_capture_contains,
 };
 
-use muxterm::core::config::Config;
-use muxterm::platform::linux::window::AppWindow;
+use muxterm::test_support::core::config::Config;
+use muxterm::test_support::platform::linux::window::AppWindow;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 

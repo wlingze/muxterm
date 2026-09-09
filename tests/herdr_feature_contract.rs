@@ -6,15 +6,17 @@ mod support;
 use std::sync::Arc;
 use std::time::Instant;
 
-use muxterm::core::attention::signal::AttentionSignal;
-use muxterm::core::attention::state::PaneStatus;
-use muxterm::core::protocol::layout::{LayoutNode, SplitDir};
-use muxterm::core::protocol::state::{PaneAgentSessionKind, PaneAgentStatus, StateChange};
-use muxterm::core::protocol::task::Task;
-use muxterm::core::runtime::herdr::session::{HerdrAgentStatus, HerdrSession};
-use muxterm::core::runtime::HerdrRuntime;
-use muxterm::core::workspace::id::WorkspaceId;
-use muxterm::core::workspace::workspace::Workspace;
+use muxterm::test_support::core::attention::signal::AttentionSignal;
+use muxterm::test_support::core::attention::state::PaneStatus;
+use muxterm::test_support::core::protocol::layout::{LayoutNode, SplitDir};
+use muxterm::test_support::core::protocol::state::{
+    PaneAgentSessionKind, PaneAgentStatus, StateChange,
+};
+use muxterm::test_support::core::protocol::task::Task;
+use muxterm::test_support::core::runtime::herdr::session::{HerdrAgentStatus, HerdrSession};
+use muxterm::test_support::core::runtime::HerdrRuntime;
+use muxterm::test_support::core::workspace::id::WorkspaceId;
+use muxterm::test_support::core::workspace::workspace::Workspace;
 use support::herdr_test_support::{herdr_available, IsolatedHerdr, TempAgentCommand};
 
 /// 与 SSH 契约同量级（15s）。
@@ -312,7 +314,9 @@ fn herdr_runtime_split_pane_down_updates_vertical_layout() {
         })
         .expect("Herdr down SplitPane 应成功");
     let operation_id = match outcome {
-        muxterm::core::protocol::task::TaskOutcome::Accepted { operation_id } => operation_id,
+        muxterm::test_support::core::protocol::task::TaskOutcome::Accepted { operation_id } => {
+            operation_id
+        }
         other => panic!("SplitPane 必须 Accepted，实际 {other:?}"),
     };
 
@@ -330,7 +334,7 @@ fn herdr_runtime_split_pane_down_updates_vertical_layout() {
                 assert_eq!(settled_id, operation_id, "settlement operation 不匹配");
                 assert_eq!(
                     result,
-                    muxterm::core::protocol::state::MutationResult::Completed,
+                    muxterm::test_support::core::protocol::state::MutationResult::Completed,
                     "SplitPane 必须 Completed"
                 );
                 settled = true;

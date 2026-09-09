@@ -11,10 +11,10 @@
 
 mod support;
 
-use muxterm::core::runtime::tmux::client::{
+use muxterm::test_support::core::runtime::tmux::client::{
     ConnectMode, TmuxClient, TmuxClientConfig, TmuxClientHandle, TmuxEvent, TmuxEventReceiver,
 };
-use muxterm::core::runtime::tmux::protocol::Message;
+use muxterm::test_support::core::runtime::tmux::protocol::Message;
 use std::time::Duration;
 use support::sshd_test_support::*;
 use support::tmux_test_support::*;

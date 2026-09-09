@@ -8,6 +8,11 @@
 
 /// Stable application services used by the thin binary entry point.
 pub mod app {
+    /// Start the selected frontend from the single binary entry point.
+    pub fn run() -> anyhow::Result<()> {
+        crate::platform::cli::application::run()
+    }
+
     pub use crate::core::fault::install_hook;
     pub use crate::core::logging::{init_logging, resolve_config, LoggingConfig};
 }
@@ -19,5 +24,21 @@ pub mod ffi {
     pub use crate::core::protocol::ffi::*;
 }
 
-pub mod core;
-pub mod platform;
+mod core;
+mod platform;
+
+/// Test-only compatibility exports for the existing integration contract suite.
+///
+/// Product frontends use `ffi` and `app`; this namespace is intentionally
+/// separate so the private Core/frontend module trees are not part of the
+/// product API while the contract tests migrate to their owning crates.
+#[doc(hidden)]
+pub mod test_support {
+    pub mod core {
+        pub use crate::core::*;
+    }
+
+    pub mod platform {
+        pub use crate::platform::*;
+    }
+}

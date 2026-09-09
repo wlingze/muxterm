@@ -17,9 +17,9 @@ use support::tmux_test_support::{
     wait_capture_contains,
 };
 
-use muxterm::core::config::Config;
-use muxterm::core::workspace::spec::WorkspaceSpec;
-use muxterm::platform::linux::window::AppWindow;
+use muxterm::test_support::core::config::Config;
+use muxterm::test_support::core::workspace::spec::WorkspaceSpec;
+use muxterm::test_support::platform::linux::window::AppWindow;
 
 struct ExtraWs {
     socket: String,
@@ -235,7 +235,7 @@ fn linux_search_scope_pane_workspace_all_and_pane_find() {
         );
 
         if app.test_panel_open() {
-            muxterm::platform::linux::quickconnect_panel::close_current();
+            muxterm::test_support::platform::linux::quickconnect_panel::close_current();
             pump_main_loop(40);
         }
         app.test_open_pane_find();

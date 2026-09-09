@@ -14,9 +14,9 @@ use support::herdr_test_support::{herdr_available, IsolatedHerdr};
 use support::linux_gtk::*;
 use support::sshd_test_support::{loopback_sshd_available, LoopbackSshd};
 
-use muxterm::core::config::Config;
-use muxterm::core::workspace::spec::WorkspaceSpec;
-use muxterm::platform::linux::window::AppWindow;
+use muxterm::test_support::core::config::Config;
+use muxterm::test_support::core::workspace::spec::WorkspaceSpec;
+use muxterm::test_support::platform::linux::window::AppWindow;
 
 const INPUT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 

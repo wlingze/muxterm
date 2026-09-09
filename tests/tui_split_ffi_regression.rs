@@ -11,11 +11,11 @@ use std::process::Command;
 use std::ptr;
 use std::time::{Duration, Instant};
 
-use muxterm::core::protocol::ffi::api::{
+use muxterm::test_support::core::protocol::ffi::api::{
     muxterm_connect, muxterm_execute, muxterm_free, muxterm_get_layout, muxterm_get_pane_output,
     muxterm_get_panes, muxterm_get_tabs, muxterm_new, muxterm_poll_events,
 };
-use muxterm::core::protocol::ffi::types::{
+use muxterm::test_support::core::protocol::ffi::types::{
     CLayoutNode, CPane, CStateChange, CTab, CTask, DIR_HORIZONTAL, DIR_VERTICAL, TASK_SPLIT_PANE,
 };
 

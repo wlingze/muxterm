@@ -7,7 +7,9 @@ mod support;
 use std::ffi::{CStr, CString};
 use std::ptr;
 
-use muxterm::core::protocol::ffi::{muxterm_discover_tmux_sessions_json, muxterm_free_string};
+use muxterm::test_support::core::protocol::ffi::{
+    muxterm_discover_tmux_sessions_json, muxterm_free_string,
+};
 use support::tmux_test_support::{create_session, kill_server, unique_socket};
 
 #[test]

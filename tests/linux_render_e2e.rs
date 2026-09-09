@@ -11,16 +11,18 @@ use gtk4::prelude::*;
 use support::linux_gtk::*;
 use vte4::prelude::*;
 
-use muxterm::platform::linux::pane_view::PaneView;
-use muxterm::platform::linux::quickconnect::font::FontSettings;
+use muxterm::test_support::platform::linux::pane_view::PaneView;
+use muxterm::test_support::platform::linux::quickconnect::font::FontSettings;
 
-fn theme() -> muxterm::core::config::Theme {
-    muxterm::core::config::Theme::load("light").unwrap_or_else(|_| muxterm::core::config::Theme {
-        name: "test".into(),
-        background: muxterm::core::config::Rgb(0x1e, 0x1e, 0x2e),
-        foreground: muxterm::core::config::Rgb(0xcd, 0xd6, 0xf4),
-        cursor: muxterm::core::config::Rgb(0xf5, 0xe0, 0xdc),
-        colors: [muxterm::core::config::Rgb(0, 0, 0); 16],
+fn theme() -> muxterm::test_support::core::config::Theme {
+    muxterm::test_support::core::config::Theme::load("light").unwrap_or_else(|_| {
+        muxterm::test_support::core::config::Theme {
+            name: "test".into(),
+            background: muxterm::test_support::core::config::Rgb(0x1e, 0x1e, 0x2e),
+            foreground: muxterm::test_support::core::config::Rgb(0xcd, 0xd6, 0xf4),
+            cursor: muxterm::test_support::core::config::Rgb(0xf5, 0xe0, 0xdc),
+            colors: [muxterm::test_support::core::config::Rgb(0, 0, 0); 16],
+        }
     })
 }
 
@@ -80,7 +82,7 @@ fn first_paint_keeps_prompt_on_last_row(view: &PaneView) {
 
 /// S11：OSC 8 包着的 URL，Recording opener 收到一次（不真开浏览器）。
 fn url_click_records_https_uri(view: &PaneView) {
-    use muxterm::platform::url_opener::RecordingOpener;
+    use muxterm::test_support::platform::url_opener::RecordingOpener;
     use std::rc::Rc;
 
     let opener = Rc::new(RecordingOpener::new());

@@ -15,10 +15,10 @@ use std::time::{Duration, Instant};
 use anyhow::{ensure, Context, Result};
 use gtk4::prelude::*;
 
-use muxterm::core::config::{Action, Config};
-use muxterm::core::runtime::HerdrSession;
-use muxterm::core::workspace::spec::WorkspaceSpec;
-use muxterm::platform::linux::window::AppWindow;
+use muxterm::test_support::core::config::{Action, Config};
+use muxterm::test_support::core::runtime::HerdrSession;
+use muxterm::test_support::core::workspace::spec::WorkspaceSpec;
+use muxterm::test_support::platform::linux::window::AppWindow;
 use support::herdr_test_support::{herdr_available, IsolatedHerdr};
 use support::linux_gtk::{gtk_test_framework_smoke, load_theme, pump_main_loop, skip_no_display};
 use support::sshd_test_support::{loopback_sshd_available, LoopbackSshd};

@@ -35,7 +35,7 @@ fn run_mux(args: &[&str]) -> (String, String, i32) {
 
 #[test]
 fn target_parser_explicit_alias_is_ssh() {
-    use muxterm::platform::cli::tmux_cli::{parse_tmux_cli, Target, TmuxCliCommand};
+    use muxterm::test_support::platform::cli::tmux_cli::{parse_tmux_cli, Target, TmuxCliCommand};
     let cmd = parse_tmux_cli(&[
         "session".into(),
         "list".into(),
@@ -54,7 +54,7 @@ fn target_parser_explicit_alias_is_ssh() {
 
 #[test]
 fn target_parser_local_is_local() {
-    use muxterm::platform::cli::tmux_cli::{parse_tmux_cli, Target, TmuxCliCommand};
+    use muxterm::test_support::platform::cli::tmux_cli::{parse_tmux_cli, Target, TmuxCliCommand};
     let cmd = parse_tmux_cli(&[
         "session".into(),
         "list".into(),
@@ -73,7 +73,7 @@ fn target_parser_local_is_local() {
 
 #[test]
 fn target_parser_default_is_local() {
-    use muxterm::platform::cli::tmux_cli::{parse_tmux_cli, Target, TmuxCliCommand};
+    use muxterm::test_support::platform::cli::tmux_cli::{parse_tmux_cli, Target, TmuxCliCommand};
     let cmd = parse_tmux_cli(&["session".into(), "list".into()]).unwrap();
     match cmd {
         TmuxCliCommand::Session(s) => assert!(

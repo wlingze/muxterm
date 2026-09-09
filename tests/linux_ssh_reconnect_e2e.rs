@@ -13,9 +13,9 @@ use support::linux_gtk::*;
 use support::ssh_tmux_contract::{build_remote_one_pane, ssh_tmux_available, SSH_TIMEOUT};
 use support::tmux_test_support::tmux_available;
 
-use muxterm::core::config::Config;
-use muxterm::core::workspace::spec::WorkspaceSpec;
-use muxterm::platform::linux::window::AppWindow;
+use muxterm::test_support::core::config::Config;
+use muxterm::test_support::core::workspace::spec::WorkspaceSpec;
+use muxterm::test_support::platform::linux::window::AppWindow;
 
 fn overlay_visible(app: &AppWindow) -> bool {
     find_by_name(&app.test_window(), "muxterm-disconnect-overlay").is_some_and(|w| w.is_visible())

@@ -40,7 +40,7 @@ fn kill_server(socket: &str) {
 /// 不能把 "Enter" 拼成字面文本 "echo MARKEREnter"。
 #[test]
 fn send_keys_mixed_literal_and_special_produces_separate_commands() {
-    use muxterm::core::runtime::tmux::command::{send_keys, Key, PaneId};
+    use muxterm::test_support::core::runtime::tmux::command::{send_keys, Key, PaneId};
 
     let keys = vec![
         Key::Literal("echo MARKER".to_string()),
@@ -77,7 +77,7 @@ fn send_keys_mixed_literal_and_special_produces_separate_commands() {
 /// ── Test 1b: pure literal only produces single -l command ──
 #[test]
 fn send_keys_pure_literal_produces_single_l_command() {
-    use muxterm::core::runtime::tmux::command::{send_keys, Key, PaneId};
+    use muxterm::test_support::core::runtime::tmux::command::{send_keys, Key, PaneId};
 
     let keys = vec![Key::Literal("echo hello".to_string())];
     let cmd = send_keys(PaneId(0), &keys);
@@ -97,7 +97,7 @@ fn send_keys_pure_literal_produces_single_l_command() {
 /// ── Test 1c: pure special only produces single special-key command ──
 #[test]
 fn send_keys_pure_special_produces_single_special_command() {
-    use muxterm::core::runtime::tmux::command::{send_keys, Key, PaneId};
+    use muxterm::test_support::core::runtime::tmux::command::{send_keys, Key, PaneId};
 
     let keys = vec![Key::Special("Enter")];
     let cmd = send_keys(PaneId(0), &keys);
@@ -116,10 +116,10 @@ fn send_keys_pure_special_produces_single_special_command() {
 /// 通过 TmuxRuntime 发送 echo MARKER + Enter，用原生 tmux capture-pane 验证。
 #[test]
 fn backend_send_keys_text_plus_enter_native_capture_has_marker() {
-    use muxterm::core::protocol::task::Task;
-    use muxterm::core::protocol::terminal::input::KeyEvent;
-    use muxterm::core::runtime::TmuxRuntime;
-    use muxterm::core::workspace::terminal_model::TerminalModel;
+    use muxterm::test_support::core::protocol::task::Task;
+    use muxterm::test_support::core::protocol::terminal::input::KeyEvent;
+    use muxterm::test_support::core::runtime::TmuxRuntime;
+    use muxterm::test_support::core::workspace::terminal_model::TerminalModel;
 
     let socket = unique_socket("backend-sk");
     let session = format!("sk-test-{}", rand_suffix());

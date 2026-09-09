@@ -18,12 +18,12 @@ use support::herdr_test_support::{herdr_available, IsolatedHerdr};
 use support::linux_gtk::*;
 use support::tmux_test_support::{kill_server, list_pane_ids, tmux_available, unique_socket};
 
-use muxterm::core::config::Config;
-use muxterm::core::workspace::spec::WorkspaceSpec;
-use muxterm::platform::linux::pane_view::PaneView;
-use muxterm::platform::linux::quickconnect::font::FontSettings;
-use muxterm::platform::linux::window::AppWindow;
-use muxterm::platform::mirror::encode_clipboard_paste;
+use muxterm::test_support::core::config::Config;
+use muxterm::test_support::core::workspace::spec::WorkspaceSpec;
+use muxterm::test_support::platform::linux::pane_view::PaneView;
+use muxterm::test_support::platform::linux::quickconnect::font::FontSettings;
+use muxterm::test_support::platform::linux::window::AppWindow;
+use muxterm::test_support::platform::mirror::encode_clipboard_paste;
 
 fn mouse_tui_script() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/scripts/mouse_tui.py")

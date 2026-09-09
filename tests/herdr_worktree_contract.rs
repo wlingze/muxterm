@@ -4,11 +4,11 @@
 
 mod support;
 
-use muxterm::core::catalog::Catalog;
-use muxterm::core::runtime::WorktreeCreateSpec;
-use muxterm::core::types::TabId;
-use muxterm::core::workspace::pool::{WorkspacePool, WorkspacePoolPolicy};
-use muxterm::core::workspace::spec::WorkspaceSpec;
+use muxterm::test_support::core::catalog::Catalog;
+use muxterm::test_support::core::runtime::WorktreeCreateSpec;
+use muxterm::test_support::core::types::TabId;
+use muxterm::test_support::core::workspace::pool::{WorkspacePool, WorkspacePoolPolicy};
+use muxterm::test_support::core::workspace::spec::WorkspaceSpec;
 use support::herdr_test_support::{herdr_available, IsolatedHerdr, TempGitRepo};
 
 /// 同一测试里 list/create/open 全走一遍。

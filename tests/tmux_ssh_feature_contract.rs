@@ -7,10 +7,10 @@ mod support;
 
 use std::time::{Duration, Instant};
 
-use muxterm::core::runtime::TmuxRuntime;
-use muxterm::core::types::PaneId;
-use muxterm::core::workspace::id::WorkspaceId;
-use muxterm::core::workspace::workspace::Workspace;
+use muxterm::test_support::core::runtime::TmuxRuntime;
+use muxterm::test_support::core::types::PaneId;
+use muxterm::test_support::core::workspace::id::WorkspaceId;
+use muxterm::test_support::core::workspace::workspace::Workspace;
 use support::ssh_tmux_contract::{
     build_remote_offscreen_history, build_remote_one_pane, ssh_tmux_available, SSH_TIMEOUT,
 };
@@ -133,11 +133,11 @@ fn ssh_create_then_ffi_attach_reaches_workspace() {
     use std::ffi::{CStr, CString};
     use std::ptr;
 
-    use muxterm::core::protocol::ffi::api::{
+    use muxterm::test_support::core::protocol::ffi::api::{
         muxterm_create_tmux_session_json, muxterm_free, muxterm_free_string, muxterm_new_connect,
         muxterm_poll_events, muxterm_search_all,
     };
-    use muxterm::core::protocol::ffi::types::CStateChange;
+    use muxterm::test_support::core::protocol::ffi::types::CStateChange;
 
     assert!(
         sshd_available(),

@@ -12,9 +12,9 @@ use std::process::Command;
 
 use anyhow::{ensure, Context, Result};
 
-use muxterm::core::catalog::Catalog;
-use muxterm::core::protocol::task::{Task, TaskOutcome};
-use muxterm::core::workspace::spec::WorkspaceSpec;
+use muxterm::test_support::core::catalog::Catalog;
+use muxterm::test_support::core::protocol::task::{Task, TaskOutcome};
+use muxterm::test_support::core::workspace::spec::WorkspaceSpec;
 use support::herdr_test_support::herdr_available;
 use support::runtime_transport_matrix::{
     build_2tab3pane, verify_after_attach, verify_after_pool_switch, verify_fresh_workspace,
@@ -158,10 +158,9 @@ fn run_case(runtime_id: &str, transport_id: &str, sshd: &LoopbackSshd) -> Result
             .context("切回后 shell Workspace 不应从池中消失")?;
         ensure!(
             runtime_id == "shell"
-                && !workspace
-                    .runtime()
-                    .support()
-                    .contains(&muxterm::core::runtime::RuntimeCapability::PersistDetach),
+                && !workspace.runtime().support().contains(
+                    &muxterm::test_support::core::runtime::RuntimeCapability::PersistDetach
+                ),
             "没有 PersistDetach 的内置 Runtime 必须是 shell"
         );
         ensure!(

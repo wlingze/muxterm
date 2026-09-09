@@ -10,19 +10,21 @@ mod support;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use muxterm::core::attention::signal::AttentionSignal;
-use muxterm::core::attention::state::PaneStatus;
-use muxterm::core::catalog::Catalog;
-use muxterm::core::discovery::existing::{
+use muxterm::test_support::core::attention::signal::AttentionSignal;
+use muxterm::test_support::core::attention::state::PaneStatus;
+use muxterm::test_support::core::catalog::Catalog;
+use muxterm::test_support::core::discovery::existing::{
     discover_local_herdr, discover_ssh_herdr, discover_ssh_tmux,
 };
-use muxterm::core::protocol::state::{PaneAgentSessionKind, PaneAgentStatus, StateChange};
-use muxterm::core::protocol::task::Task;
-use muxterm::core::quickconnect::model::TargetRuntime;
-use muxterm::core::runtime::herdr::session::HerdrAgentStatus;
-use muxterm::core::runtime::HerdrRuntime;
-use muxterm::core::workspace::id::WorkspaceId;
-use muxterm::core::workspace::workspace::Workspace;
+use muxterm::test_support::core::protocol::state::{
+    PaneAgentSessionKind, PaneAgentStatus, StateChange,
+};
+use muxterm::test_support::core::protocol::task::Task;
+use muxterm::test_support::core::quickconnect::model::TargetRuntime;
+use muxterm::test_support::core::runtime::herdr::session::HerdrAgentStatus;
+use muxterm::test_support::core::runtime::HerdrRuntime;
+use muxterm::test_support::core::workspace::id::WorkspaceId;
+use muxterm::test_support::core::workspace::workspace::Workspace;
 use support::herdr_test_support::{herdr_available, IsolatedHerdr, TempAgentCommand};
 use support::sshd_test_support::{loopback_sshd_available, LoopbackSshd};
 use support::tmux_test_support::{create_session, kill_server, tmux_available, unique_socket};
@@ -167,14 +169,15 @@ fn ssh_herdr_forward_attach_contract() {
     let (ws, _tab, pane) =
         herdr.create_workspace(&agent_command.cwd().to_string_lossy(), "mux-fwd");
 
-    let (local_socket, forward) = muxterm::core::runtime::herdr::forward::start_herdr_ssh_forward(
-        &sshd.alias,
-        &herdr.socket_path().to_string_lossy(),
-        Some(&sshd.config_path.to_string_lossy()),
-    )
-    .expect("ssh socket 转发应就绪");
+    let (local_socket, forward) =
+        muxterm::test_support::core::runtime::herdr::forward::start_herdr_ssh_forward(
+            &sshd.alias,
+            &herdr.socket_path().to_string_lossy(),
+            Some(&sshd.config_path.to_string_lossy()),
+        )
+        .expect("ssh socket 转发应就绪");
 
-    let session = Arc::new(muxterm::core::runtime::HerdrSession::new(
+    let session = Arc::new(muxterm::test_support::core::runtime::HerdrSession::new(
         herdr.name(),
         &local_socket,
     ));

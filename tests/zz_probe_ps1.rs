@@ -1,9 +1,9 @@
 //! 临时 probe：模拟 CI 多行 prompt 环境，验证 detach/reattach 后 buffer。
 use std::time::{Duration, Instant};
 
-use muxterm::core::runtime::herdr::observe::{channel, ObserveStream, StreamMode};
-use muxterm::core::runtime::herdr::session::HerdrSession;
-use muxterm::core::types::PaneId;
+use muxterm::test_support::core::runtime::herdr::observe::{channel, ObserveStream, StreamMode};
+use muxterm::test_support::core::runtime::herdr::session::HerdrSession;
+use muxterm::test_support::core::types::PaneId;
 use support::herdr_test_support::IsolatedHerdr;
 
 mod support;

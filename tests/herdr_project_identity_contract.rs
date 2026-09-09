@@ -12,9 +12,11 @@
 
 mod support;
 
-use muxterm::core::catalog::ResolveIntent;
-use muxterm::core::quickconnect::model::{TargetConfig, TargetRuntime, TargetTransport};
-use muxterm::core::workspace::id::WorkspaceId;
+use muxterm::test_support::core::catalog::ResolveIntent;
+use muxterm::test_support::core::quickconnect::model::{
+    TargetConfig, TargetRuntime, TargetTransport,
+};
+use muxterm::test_support::core::workspace::id::WorkspaceId;
 use support::herdr_test_support::{herdr_available, IsolatedHerdr};
 use support::sshd_test_support::{loopback_sshd_available, LoopbackSshd};
 
@@ -40,15 +42,16 @@ fn local_project_reload_matches_existing_identity() {
     };
 
     // 内存态 store 足够验证 Project identity；持久化由 ConfigService 测试覆盖。
-    let mut store = muxterm::core::quickconnect::store::QuickConnectStore::in_memory();
+    let mut store =
+        muxterm::test_support::core::quickconnect::store::QuickConnectStore::in_memory();
     store.upsert_project(&existing);
     assert_eq!(store.projects.len(), 1);
     let project = store.projects[0].clone();
 
     // identity key / spec 身份字段 / WorkspaceId 一致。
     assert_eq!(existing.identity_key(), project.identity_key());
-    let spec_a = muxterm::core::catalog::config_to_spec(&existing);
-    let spec_b = muxterm::core::catalog::config_to_spec(&project);
+    let spec_a = muxterm::test_support::core::catalog::config_to_spec(&existing);
+    let spec_b = muxterm::test_support::core::catalog::config_to_spec(&project);
     assert_eq!(spec_a.id(), spec_b.id());
 
     // Catalog::resolve_target：AttachOnly 命中（不创建）。
@@ -56,7 +59,7 @@ fn local_project_reload_matches_existing_identity() {
         "HERDR_SOCKET_PATH",
         herdr.socket_path().to_string_lossy().to_string(),
     );
-    let mut catalog = muxterm::core::catalog::Catalog::with_builtins();
+    let mut catalog = muxterm::test_support::core::catalog::Catalog::with_builtins();
     let resolved = catalog
         .resolve_target(&existing, ResolveIntent::AttachOnly)
         .expect("AttachOnly 必须命中已存在 workspace");
@@ -87,7 +90,7 @@ fn local_attach_only_never_creates_and_create_requires_running_session() {
         session: Some("w6-never-started".into()),
         workspace_id: None,
     };
-    let mut catalog = muxterm::core::catalog::Catalog::with_builtins();
+    let mut catalog = muxterm::test_support::core::catalog::Catalog::with_builtins();
     let err = catalog
         .resolve_target(&missing, ResolveIntent::AttachOnly)
         .expect_err("AttachOnly 无匹配必须失败");
@@ -126,7 +129,7 @@ fn ssh_herdr_attach_only_never_creates() {
         session: Some("default".into()),
         workspace_id: Some("w1".into()),
     };
-    let mut catalog = muxterm::core::catalog::Catalog::with_builtins();
+    let mut catalog = muxterm::test_support::core::catalog::Catalog::with_builtins();
     let err = catalog
         .resolve_target(&ssh_target, ResolveIntent::AttachOnly)
         .expect_err("SSH 未命中必须失败（零创建命令）");
@@ -175,7 +178,7 @@ fn identity_key_is_identity_only() {
     assert_ne!(base.identity_key(), other_session.identity_key());
 
     // WorkspaceId 用 spec 五段；SSH 含 alias。
-    let spec = muxterm::core::catalog::config_to_spec(&base);
+    let spec = muxterm::test_support::core::catalog::config_to_spec(&base);
     let wid: WorkspaceId = spec.id();
     assert_eq!(wid.transport, "ssh");
     assert_eq!(wid.alias.as_deref(), Some("ryzen"));

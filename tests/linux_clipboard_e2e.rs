@@ -11,8 +11,8 @@ use gtk4::prelude::*;
 use gtk4::Widget;
 use vte4::prelude::*;
 
-use muxterm::platform::linux::pane_view::PaneView;
-use muxterm::platform::linux::quickconnect::font::FontSettings;
+use muxterm::test_support::platform::linux::pane_view::PaneView;
+use muxterm::test_support::platform::linux::quickconnect::font::FontSettings;
 
 use support::linux_gtk::*;
 

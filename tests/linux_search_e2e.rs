@@ -12,12 +12,12 @@ use std::rc::Rc;
 use gtk4::prelude::*;
 use support::linux_gtk::*;
 
-use muxterm::core::runtime::mock::MockRuntime;
-use muxterm::core::types::PaneId;
-use muxterm::core::workspace::id::WorkspaceId;
-use muxterm::core::workspace::workspace::Workspace;
-use muxterm::platform::linux::panel_model::{PanelTab, SearchRow};
-use muxterm::platform::linux::quickconnect_panel::{show, PanelShowArgs};
+use muxterm::test_support::core::runtime::mock::MockRuntime;
+use muxterm::test_support::core::types::PaneId;
+use muxterm::test_support::core::workspace::id::WorkspaceId;
+use muxterm::test_support::core::workspace::workspace::Workspace;
+use muxterm::test_support::platform::linux::panel_model::{PanelTab, SearchRow};
+use muxterm::test_support::platform::linux::quickconnect_panel::{show, PanelShowArgs};
 
 #[test]
 fn search_tab_finds_replica_hits_and_jumps() {
@@ -62,6 +62,7 @@ fn search_tab_finds_replica_hits_and_jumps() {
                 on_edit: Box::new(|_| {}),
                 on_new_project: Box::new(|| {}),
                 on_jump_pane: Box::new(move |ws, pane, _seq| j.borrow_mut().push((ws, pane))),
+                on_mute: Box::new(|_, _, _| {}),
                 search: Box::new(move |query, _scope| {
                     s.borrow()
                         .search_workspace(query)
@@ -72,7 +73,7 @@ fn search_tab_finds_replica_hits_and_jumps() {
                 on_close: Box::new(|| {}),
                 ssh_reach: std::collections::HashMap::new(),
                 existing: std::rc::Rc::new(std::cell::RefCell::new(
-                    muxterm::platform::linux::quickconnect_panel::ExistingPanelState::default(),
+                    muxterm::test_support::platform::linux::quickconnect_panel::ExistingPanelState::default(),
                 )),
                 on_existing_nav: Box::new(|_| {}),
             },
