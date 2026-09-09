@@ -309,8 +309,8 @@ pub fn freeform_filter(presets: &[QuickPickItem], query: &str) -> Vec<QuickPickI
         next.push(QuickPickItem {
             id: FREEFORM_ID.into(),
             label: qtrim.to_string(),
-            detail: Some(crate::platform::i18n::tr(
-                crate::platform::i18n::Key::FreeformUseTypedTarget,
+            detail: Some(crate::frontend::i18n::tr(
+                crate::frontend::i18n::Key::FreeformUseTypedTarget,
             )),
         });
     }
@@ -538,8 +538,8 @@ pub fn show_freeform<F>(
                         finish(Some(QuickPickItem {
                             id: FREEFORM_ID.into(),
                             label: t,
-                            detail: Some(crate::platform::i18n::tr(
-                                crate::platform::i18n::Key::FreeformUseTypedTarget,
+                            detail: Some(crate::frontend::i18n::tr(
+                                crate::frontend::i18n::Key::FreeformUseTypedTarget,
                             )),
                         }));
                     }

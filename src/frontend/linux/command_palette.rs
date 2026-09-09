@@ -99,14 +99,14 @@ pub fn core_commands_with(next_theme: &str, next_status_mode: &str) -> Vec<Palet
     for command in &mut commands {
         match command.id {
             "theme" => {
-                command.label = crate::platform::i18n::tr_args(
-                    crate::platform::i18n::Key::ThemeSwitchTo,
+                command.label = crate::frontend::i18n::tr_args(
+                    crate::frontend::i18n::Key::ThemeSwitchTo,
                     &[("theme", next_theme)],
                 );
             }
             "statusbar_mode" => {
-                command.label = crate::platform::i18n::tr_args(
-                    crate::platform::i18n::Key::StatusBarModeSwitchTo,
+                command.label = crate::frontend::i18n::tr_args(
+                    crate::frontend::i18n::Key::StatusBarModeSwitchTo,
                     &[("mode", next_status_mode)],
                 );
             }
@@ -120,174 +120,174 @@ fn core_command_list() -> Vec<PaletteCommand> {
     vec![
         PaletteCommand {
             id: "tmux_attach",
-            label: crate::platform::i18n::tr(crate::platform::i18n::Key::CmdTmuxAttach),
+            label: crate::frontend::i18n::tr(crate::frontend::i18n::Key::CmdTmuxAttach),
         },
         PaletteCommand {
             id: "tmux_new",
-            label: crate::platform::i18n::tr(crate::platform::i18n::Key::CmdTmuxNew),
+            label: crate::frontend::i18n::tr(crate::frontend::i18n::Key::CmdTmuxNew),
         },
         PaletteCommand {
             id: TMUX_DETACH_COMMAND,
-            label: crate::platform::i18n::tr(crate::platform::i18n::Key::CmdTmuxDetach),
+            label: crate::frontend::i18n::tr(crate::frontend::i18n::Key::CmdTmuxDetach),
         },
         PaletteCommand {
             id: "ssh_connect",
-            label: crate::platform::i18n::tr(crate::platform::i18n::Key::CmdSshConnect),
+            label: crate::frontend::i18n::tr(crate::frontend::i18n::Key::CmdSshConnect),
         },
         PaletteCommand {
             id: "ssh_disconnect",
-            label: crate::platform::i18n::tr(crate::platform::i18n::Key::CmdSshDisconnect),
+            label: crate::frontend::i18n::tr(crate::frontend::i18n::Key::CmdSshDisconnect),
         },
         PaletteCommand {
             id: "new_tab",
-            label: crate::platform::i18n::tr(crate::platform::i18n::Key::NewTab),
+            label: crate::frontend::i18n::tr(crate::frontend::i18n::Key::NewTab),
         },
         PaletteCommand {
             id: "new_pane",
-            label: crate::platform::i18n::tr(crate::platform::i18n::Key::CmdNewPane),
+            label: crate::frontend::i18n::tr(crate::frontend::i18n::Key::CmdNewPane),
         },
         PaletteCommand {
             id: "new_pane_vertical",
-            label: crate::platform::i18n::tr(crate::platform::i18n::Key::CmdNewPaneVertical),
+            label: crate::frontend::i18n::tr(crate::frontend::i18n::Key::CmdNewPaneVertical),
         },
         PaletteCommand {
             id: "close_pane",
-            label: crate::platform::i18n::tr(crate::platform::i18n::Key::ClosePane),
+            label: crate::frontend::i18n::tr(crate::frontend::i18n::Key::ClosePane),
         },
         PaletteCommand {
             id: "close_tab",
-            label: crate::platform::i18n::tr(crate::platform::i18n::Key::CloseTab),
+            label: crate::frontend::i18n::tr(crate::frontend::i18n::Key::CloseTab),
         },
         PaletteCommand {
             id: "close_window",
-            label: crate::platform::i18n::tr(crate::platform::i18n::Key::CloseWindow),
+            label: crate::frontend::i18n::tr(crate::frontend::i18n::Key::CloseWindow),
         },
         PaletteCommand {
             id: "switch_tab_1",
-            label: crate::platform::i18n::tr_args(
-                crate::platform::i18n::Key::CmdSwitchTab,
+            label: crate::frontend::i18n::tr_args(
+                crate::frontend::i18n::Key::CmdSwitchTab,
                 &[("number", "1")],
             ),
         },
         PaletteCommand {
             id: "switch_tab_2",
-            label: crate::platform::i18n::tr_args(
-                crate::platform::i18n::Key::CmdSwitchTab,
+            label: crate::frontend::i18n::tr_args(
+                crate::frontend::i18n::Key::CmdSwitchTab,
                 &[("number", "2")],
             ),
         },
         PaletteCommand {
             id: "switch_tab_3",
-            label: crate::platform::i18n::tr_args(
-                crate::platform::i18n::Key::CmdSwitchTab,
+            label: crate::frontend::i18n::tr_args(
+                crate::frontend::i18n::Key::CmdSwitchTab,
                 &[("number", "3")],
             ),
         },
         PaletteCommand {
             id: "switch_tab_4",
-            label: crate::platform::i18n::tr_args(
-                crate::platform::i18n::Key::CmdSwitchTab,
+            label: crate::frontend::i18n::tr_args(
+                crate::frontend::i18n::Key::CmdSwitchTab,
                 &[("number", "4")],
             ),
         },
         PaletteCommand {
             id: "switch_tab_5",
-            label: crate::platform::i18n::tr_args(
-                crate::platform::i18n::Key::CmdSwitchTab,
+            label: crate::frontend::i18n::tr_args(
+                crate::frontend::i18n::Key::CmdSwitchTab,
                 &[("number", "5")],
             ),
         },
         PaletteCommand {
             id: "switch_tab_6",
-            label: crate::platform::i18n::tr_args(
-                crate::platform::i18n::Key::CmdSwitchTab,
+            label: crate::frontend::i18n::tr_args(
+                crate::frontend::i18n::Key::CmdSwitchTab,
                 &[("number", "6")],
             ),
         },
         PaletteCommand {
             id: "switch_tab_7",
-            label: crate::platform::i18n::tr_args(
-                crate::platform::i18n::Key::CmdSwitchTab,
+            label: crate::frontend::i18n::tr_args(
+                crate::frontend::i18n::Key::CmdSwitchTab,
                 &[("number", "7")],
             ),
         },
         PaletteCommand {
             id: "switch_tab_8",
-            label: crate::platform::i18n::tr_args(
-                crate::platform::i18n::Key::CmdSwitchTab,
+            label: crate::frontend::i18n::tr_args(
+                crate::frontend::i18n::Key::CmdSwitchTab,
                 &[("number", "8")],
             ),
         },
         PaletteCommand {
             id: "switch_tab_9",
-            label: crate::platform::i18n::tr_args(
-                crate::platform::i18n::Key::CmdSwitchTab,
+            label: crate::frontend::i18n::tr_args(
+                crate::frontend::i18n::Key::CmdSwitchTab,
                 &[("number", "9")],
             ),
         },
         PaletteCommand {
             id: "switch_pane_prev",
-            label: crate::platform::i18n::tr(crate::platform::i18n::Key::CmdSwitchPanePrevious),
+            label: crate::frontend::i18n::tr(crate::frontend::i18n::Key::CmdSwitchPanePrevious),
         },
         PaletteCommand {
             id: "switch_pane_next",
-            label: crate::platform::i18n::tr(crate::platform::i18n::Key::CmdSwitchPaneNext),
+            label: crate::frontend::i18n::tr(crate::frontend::i18n::Key::CmdSwitchPaneNext),
         },
         PaletteCommand {
             id: "search_panes",
-            label: crate::platform::i18n::tr(crate::platform::i18n::Key::CmdSearchPanes),
+            label: crate::frontend::i18n::tr(crate::frontend::i18n::Key::CmdSearchPanes),
         },
         PaletteCommand {
             id: "rename_pane",
-            label: crate::platform::i18n::tr(crate::platform::i18n::Key::CmdRenamePane),
+            label: crate::frontend::i18n::tr(crate::frontend::i18n::Key::CmdRenamePane),
         },
         PaletteCommand {
             id: "reload_config",
-            label: crate::platform::i18n::tr(crate::platform::i18n::Key::CmdReloadConfig),
+            label: crate::frontend::i18n::tr(crate::frontend::i18n::Key::CmdReloadConfig),
         },
         PaletteCommand {
             id: "open_config",
-            label: crate::platform::i18n::tr(crate::platform::i18n::Key::CmdOpenConfig),
+            label: crate::frontend::i18n::tr(crate::frontend::i18n::Key::CmdOpenConfig),
         },
         PaletteCommand {
             id: "preferences",
-            label: crate::platform::i18n::tr(crate::platform::i18n::Key::CmdPreferences),
+            label: crate::frontend::i18n::tr(crate::frontend::i18n::Key::CmdPreferences),
         },
         PaletteCommand {
             id: "language",
-            label: crate::platform::i18n::tr(crate::platform::i18n::Key::Language),
+            label: crate::frontend::i18n::tr(crate::frontend::i18n::Key::Language),
         },
         PaletteCommand {
             id: "quick_connect",
-            label: crate::platform::i18n::tr(crate::platform::i18n::Key::CmdQuickConnect),
+            label: crate::frontend::i18n::tr(crate::frontend::i18n::Key::CmdQuickConnect),
         },
         PaletteCommand {
             id: "toggle_pane_fullscreen",
-            label: crate::platform::i18n::tr(crate::platform::i18n::Key::TogglePaneFullscreen),
+            label: crate::frontend::i18n::tr(crate::frontend::i18n::Key::TogglePaneFullscreen),
         },
         PaletteCommand {
             id: "increase_font_size",
-            label: crate::platform::i18n::tr(crate::platform::i18n::Key::MenuIncreaseFontSize),
+            label: crate::frontend::i18n::tr(crate::frontend::i18n::Key::MenuIncreaseFontSize),
         },
         PaletteCommand {
             id: "decrease_font_size",
-            label: crate::platform::i18n::tr(crate::platform::i18n::Key::MenuDecreaseFontSize),
+            label: crate::frontend::i18n::tr(crate::frontend::i18n::Key::MenuDecreaseFontSize),
         },
         PaletteCommand {
             id: "reset_font_size",
-            label: crate::platform::i18n::tr(crate::platform::i18n::Key::MenuResetFontSize),
+            label: crate::frontend::i18n::tr(crate::frontend::i18n::Key::MenuResetFontSize),
         },
         PaletteCommand {
             id: "theme",
-            label: crate::platform::i18n::tr(crate::platform::i18n::Key::ThemeSwitchTo),
+            label: crate::frontend::i18n::tr(crate::frontend::i18n::Key::ThemeSwitchTo),
         },
         PaletteCommand {
             id: "statusbar_mode",
-            label: crate::platform::i18n::tr(crate::platform::i18n::Key::StatusBarModeSwitchTo),
+            label: crate::frontend::i18n::tr(crate::frontend::i18n::Key::StatusBarModeSwitchTo),
         },
         PaletteCommand {
             id: "quit",
-            label: crate::platform::i18n::tr(crate::platform::i18n::Key::QuitMuxterm),
+            label: crate::frontend::i18n::tr(crate::frontend::i18n::Key::QuitMuxterm),
         },
     ]
 }
@@ -352,7 +352,7 @@ pub fn show_for_runtime<F>(
             .collect();
 
     let placeholder =
-        crate::platform::i18n::tr(crate::platform::i18n::Key::CommandPalettePlaceholder);
+        crate::frontend::i18n::tr(crate::frontend::i18n::Key::CommandPalettePlaceholder);
     quick_pick::show(parent, &placeholder, items, move |picked| {
         if let Some(item) = picked {
             on_run(&item.id);
@@ -363,41 +363,41 @@ pub fn show_for_runtime<F>(
 /// 弹出语言选择器。语言切换由调用方设置 core 的当前语言并刷新窗口。
 pub fn show_language<F>(parent: &impl IsA<Window>, on_run: F)
 where
-    F: Fn(crate::platform::i18n::Language) + 'static,
+    F: Fn(crate::frontend::i18n::Language) + 'static,
 {
-    let current = crate::platform::i18n::current_language();
-    let items: Vec<QuickPickItem> = crate::platform::i18n::Language::ALL
+    let current = crate::frontend::i18n::current_language();
+    let items: Vec<QuickPickItem> = crate::frontend::i18n::Language::ALL
         .into_iter()
         .map(|language| QuickPickItem {
             id: language.tag().into(),
             label: match language {
-                crate::platform::i18n::Language::System => crate::platform::i18n::tr_in(
+                crate::frontend::i18n::Language::System => crate::frontend::i18n::tr_in(
                     language,
-                    crate::platform::i18n::Key::LanguageSystem,
+                    crate::frontend::i18n::Key::LanguageSystem,
                 ),
-                crate::platform::i18n::Language::English => crate::platform::i18n::tr_in(
+                crate::frontend::i18n::Language::English => crate::frontend::i18n::tr_in(
                     language,
-                    crate::platform::i18n::Key::LanguageEnglish,
+                    crate::frontend::i18n::Key::LanguageEnglish,
                 ),
-                crate::platform::i18n::Language::SimplifiedChinese => crate::platform::i18n::tr_in(
+                crate::frontend::i18n::Language::SimplifiedChinese => crate::frontend::i18n::tr_in(
                     language,
-                    crate::platform::i18n::Key::LanguageSimplifiedChinese,
+                    crate::frontend::i18n::Key::LanguageSimplifiedChinese,
                 ),
             },
             detail: (current == language)
-                .then(|| crate::platform::i18n::tr(crate::platform::i18n::Key::LanguageCurrent)),
+                .then(|| crate::frontend::i18n::tr(crate::frontend::i18n::Key::LanguageCurrent)),
         })
         .collect();
     quick_pick::show(
         parent,
-        &crate::platform::i18n::tr(crate::platform::i18n::Key::Language),
+        &crate::frontend::i18n::tr(crate::frontend::i18n::Key::Language),
         items,
         move |picked| {
             if let Some(item) = picked {
                 let language = match item.id.as_str() {
-                    "system" => crate::platform::i18n::Language::System,
-                    "zh-CN" => crate::platform::i18n::Language::SimplifiedChinese,
-                    _ => crate::platform::i18n::Language::English,
+                    "system" => crate::frontend::i18n::Language::System,
+                    "zh-CN" => crate::frontend::i18n::Language::SimplifiedChinese,
+                    _ => crate::frontend::i18n::Language::English,
                 };
                 on_run(language);
             }

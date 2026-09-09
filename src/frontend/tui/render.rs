@@ -411,21 +411,21 @@ fn term_color_to_ratatui(c: vte::ansi::Color) -> Option<Color> {
 fn draw_status_bar(buf: &mut Buffer, area: Rect, snap: &FrameSnapshot, theme: &Theme) {
     let n_panes = snap.panes.len();
     let status_key = match snap.status.as_str() {
-        "connected" => crate::platform::i18n::Key::StatusConnected,
-        "connecting" => crate::platform::i18n::Key::StatusConnecting,
-        "disconnected" => crate::platform::i18n::Key::StatusDisconnected,
-        "error" => crate::platform::i18n::Key::StatusError,
-        "exited" => crate::platform::i18n::Key::StatusExited,
-        _ => crate::platform::i18n::Key::StatusUnknown,
+        "connected" => crate::frontend::i18n::Key::StatusConnected,
+        "connecting" => crate::frontend::i18n::Key::StatusConnecting,
+        "disconnected" => crate::frontend::i18n::Key::StatusDisconnected,
+        "error" => crate::frontend::i18n::Key::StatusError,
+        "exited" => crate::frontend::i18n::Key::StatusExited,
+        _ => crate::frontend::i18n::Key::StatusUnknown,
     };
-    let status = crate::platform::i18n::tr(status_key);
-    let panes = crate::platform::i18n::tr(crate::platform::i18n::Key::Panes);
-    let palette = crate::platform::i18n::tr(crate::platform::i18n::Key::HintPalette);
-    let new_tab = crate::platform::i18n::tr(crate::platform::i18n::Key::HintNewTab);
-    let split = crate::platform::i18n::tr(crate::platform::i18n::Key::HintSplit);
-    let vertical_split = crate::platform::i18n::tr(crate::platform::i18n::Key::HintVerticalSplit);
-    let pane = crate::platform::i18n::tr(crate::platform::i18n::Key::HintPane);
-    let quit = crate::platform::i18n::tr(crate::platform::i18n::Key::HintQuit);
+    let status = crate::frontend::i18n::tr(status_key);
+    let panes = crate::frontend::i18n::tr(crate::frontend::i18n::Key::Panes);
+    let palette = crate::frontend::i18n::tr(crate::frontend::i18n::Key::HintPalette);
+    let new_tab = crate::frontend::i18n::tr(crate::frontend::i18n::Key::HintNewTab);
+    let split = crate::frontend::i18n::tr(crate::frontend::i18n::Key::HintSplit);
+    let vertical_split = crate::frontend::i18n::tr(crate::frontend::i18n::Key::HintVerticalSplit);
+    let pane = crate::frontend::i18n::tr(crate::frontend::i18n::Key::HintPane);
+    let quit = crate::frontend::i18n::tr(crate::frontend::i18n::Key::HintQuit);
     let hint = format!(
         " Alt+P {palette} · Alt+T {new_tab} · Alt+S {split} · Alt+V {vertical_split} · Alt+[ ] {pane} · Ctrl-Q {quit} "
     );
@@ -708,8 +708,8 @@ mod tests {
     fn render_has_status_bar() {
         let buf = render(&snap_single_pane(), None, RenderOpts::default());
         let s = buf_to_string(&buf);
-        assert!(s.contains(&crate::platform::i18n::tr(
-            crate::platform::i18n::Key::StatusConnected
+        assert!(s.contains(&crate::frontend::i18n::tr(
+            crate::frontend::i18n::Key::StatusConnected
         )));
         assert!(s.contains("Ctrl-Q"));
         assert!(s.contains("Alt+S"));
@@ -743,8 +743,8 @@ mod tests {
         snap.status = "exited".into();
         let buf = render(&snap, None, RenderOpts::default());
         let s = buf_to_string(&buf);
-        assert!(s.contains(&crate::platform::i18n::tr(
-            crate::platform::i18n::Key::StatusExited
+        assert!(s.contains(&crate::frontend::i18n::tr(
+            crate::frontend::i18n::Key::StatusExited
         )));
     }
 

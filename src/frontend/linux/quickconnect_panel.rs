@@ -21,6 +21,7 @@ use crate::frontend::ffi_client::{
     ClientAttentionPane, ClientAttentionStatus, ClientCandidateRef, ClientOpenIntent,
     ClientOpenRequest,
 };
+use crate::frontend::i18n::{self, Key as TextKey};
 use crate::frontend::linux::panel_model::{
     filter_attention_panel_rows, filter_workspace_rows, search_rows, AttentionPanelRow, PanelModel,
     PanelTab, SearchRow, SearchScope,
@@ -34,8 +35,7 @@ use crate::frontend::linux::quickconnect::model::{
 };
 use crate::frontend::linux::quickconnect::store::QuickConnectStore;
 use crate::frontend::linux::workspace_sidebar::{ActivityIndicator, AgentSidebarItem};
-use crate::platform::i18n::{self, Key as TextKey};
-use crate::platform::ssh_probe::{ssh_dot_css_class, ssh_dot_widget_name, SshReach};
+use crate::frontend::ssh_probe::{ssh_dot_css_class, ssh_dot_widget_name, SshReach};
 
 const NEW_PROJECT_ID: &str = "__new_project__";
 const PANEL_ENTRY_HEIGHT: i32 = 36;
