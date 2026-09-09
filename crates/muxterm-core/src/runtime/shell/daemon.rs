@@ -12,9 +12,7 @@ use crate::protocol::task::Task;
 use crate::protocol::terminal::input::KeyEvent;
 
 pub use muxterm_protocol::command::CliCommand;
-pub use muxterm_protocol::daemon::{
-    OutputFormat, Request, Response, StateSnapshot, TopologySnapshot,
-};
+pub use muxterm_protocol::daemon::{OutputFormat, Request, Response, TopologySnapshot};
 
 /// Map a daemon wire command to a shell-runtime Task.
 ///
@@ -115,7 +113,7 @@ pub fn cli_command_to_task(cmd: &CliCommand, state: &dyn State) -> Option<Task> 
         }
         CapturePane { .. } => None,
 
-        ListWorkspaces | ListTabs | ListPanes { .. } | ListLayout | PollEvents | DumpState => None,
+        ListWorkspaces | ListTabs | ListPanes { .. } | ListLayout | PollEvents => None,
         DisplayMessage { .. } => None,
     }
 }

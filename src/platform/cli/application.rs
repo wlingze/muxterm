@@ -200,12 +200,6 @@ enum CliSubcommand {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// Dump a full state snapshot
-    #[command(disable_help_flag = true)]
-    DumpState {
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
     /// tmux structured CLI (session/tab/pane)
     #[command(disable_help_flag = true)]
     Tmux {
@@ -309,7 +303,6 @@ pub fn run() -> anyhow::Result<()> {
             CliSubcommand::CapturePane { args } => dispatch("capture-pane", args),
             CliSubcommand::ListLayout { args } => dispatch("list-layout", args),
             CliSubcommand::DisplayMessage { args } => dispatch("display-message", args),
-            CliSubcommand::DumpState { args } => dispatch("dump-state", args),
             CliSubcommand::Tmux { args } => dispatch("tmux", args),
             CliSubcommand::Config { args } => dispatch("config", args),
             CliSubcommand::Tui { socket, session } => {

@@ -9,7 +9,7 @@ use muxterm_protocol::layout::{LayoutNode, SplitDir};
 use muxterm_protocol::state::State;
 use muxterm_protocol::{PaneId, TabId};
 
-pub use muxterm_protocol::daemon::{OutputFormat, StateSnapshot};
+pub use muxterm_protocol::daemon::OutputFormat;
 
 /// 格式化查询结果输出。
 pub fn format_output(state: &dyn State, cmd: &super::CliCommand, format: OutputFormat) -> String {
@@ -24,7 +24,6 @@ pub fn format_output(state: &dyn State, cmd: &super::CliCommand, format: OutputF
             target,
             format: fmt_str,
         } => format_display(state, *target, fmt_str),
-        DumpState => format_dump_state(state),
         _ => String::new(), // 非 query 命令无输出
     }
 }
@@ -55,7 +54,6 @@ pub fn format_ffi_output(
             format_ffi_capture(&snapshot, target.map(|id| id.0), *lines)
         }
         DisplayMessage { target, format } => format_ffi_display(&snapshot, target.0, format),
-        DumpState => format_ffi_dump(&snapshot, client.status_code()),
         _ => String::new(),
     };
     Ok(output)
@@ -402,139 +400,6 @@ fn format_ffi_display(snapshot: &FfiWorkspaceSnapshot, pane_id: u32, format: &st
         .replace("#{pane_title}", &pane.title)
 }
 
-fn format_ffi_dump(snapshot: &FfiWorkspaceSnapshot, status: u32) -> String {
-    let tabs: Vec<serde_json::Value> = snapshot
-        .tabs
-        .iter()
-        .map(|tab| {
-            serde_json::json!({
-                "id": tab.id,
-                "name": tab.name,
-                "active": tab.is_active,
-            })
-        })
-        .collect();
-    let panes: Vec<serde_json::Value> = snapshot
-        .panes
-        .iter()
-        .flat_map(|(tab_id, panes)| panes.iter().map(move |pane| (*tab_id, pane)))
-        .map(|(tab_id, pane)| {
-            serde_json::json!({
-                "id": pane.id,
-                "tab": tab_id,
-                "active": pane.is_active,
-                "title": pane.title,
-                "cols": pane.cols,
-                "rows": pane.rows,
-            })
-        })
-        .collect();
-    let layouts: Vec<serde_json::Value> = snapshot
-        .layouts
-        .iter()
-        .filter_map(|(tab_id, layout)| {
-            let layout = layout.as_ref()?;
-            Some(serde_json::json!({
-                "tab": tab_id,
-                "tree": ffi_layout_node_to_snapshot_json(layout),
-                "active": ffi_active_pane(snapshot, *tab_id),
-            }))
-        })
-        .collect();
-    let outputs: Vec<serde_json::Value> = snapshot
-        .outputs
-        .iter()
-        .map(|(pane_id, bytes)| serde_json::json!([pane_id, String::from_utf8_lossy(bytes)]))
-        .collect();
-    serde_json::to_string(&serde_json::json!({
-        "workspace_name": snapshot.workspace.name,
-        "workspace_runtime": snapshot.workspace.runtime,
-        "tabs": tabs,
-        "panes": panes,
-        "layouts": layouts,
-        "outputs": outputs,
-        "status": ffi_status_name(status),
-        "active_tab": snapshot.tabs.iter().find(|tab| tab.is_active).map(|tab| tab.id),
-        "active_pane": snapshot
-            .tabs
-            .iter()
-            .find(|tab| tab.is_active)
-            .and_then(|tab| ffi_active_pane(snapshot, tab.id)),
-    }))
-    .unwrap_or_else(|_| "{}".into())
-}
-
-fn ffi_active_pane(snapshot: &FfiWorkspaceSnapshot, tab_id: u32) -> Option<u32> {
-    snapshot
-        .panes
-        .iter()
-        .find(|(id, _)| *id == tab_id)
-        .and_then(|(_, panes)| panes.iter().find(|pane| pane.is_active))
-        .map(|pane| pane.id)
-}
-
-fn ffi_layout_node_to_snapshot_json(layout: &ClientLayout) -> serde_json::Value {
-    match layout {
-        ClientLayout::Leaf { pane_id } => serde_json::json!({ "Leaf": pane_id }),
-        ClientLayout::Split {
-            horizontal,
-            ratio,
-            first,
-            second,
-        } => serde_json::json!({
-            "Split": {
-                "dir": if *horizontal { "Horizontal" } else { "Vertical" },
-                "ratio": ratio,
-                "first": ffi_layout_node_to_snapshot_json(first),
-                "second": ffi_layout_node_to_snapshot_json(second),
-            }
-        }),
-    }
-}
-
-fn ffi_status_name(status: u32) -> &'static str {
-    match status {
-        1 => "Connecting",
-        2 => "Connected",
-        3 => "Error",
-        4 => "Exited",
-        _ => "Disconnected",
-    }
-}
-
-fn format_dump_state(state: &dyn State) -> String {
-    let mut tabs = Vec::new();
-    let mut panes = Vec::new();
-    let mut layouts = Vec::new();
-    let mut outputs = Vec::new();
-
-    for t in state.tabs() {
-        tabs.push(t.clone());
-        if let Some(layout) = state.layout(&t.id) {
-            layouts.push(layout.clone());
-        }
-        for p in state.panes(&t.id) {
-            panes.push(p.clone());
-            if let Some(out) = state.pane_output(&p.id) {
-                outputs.push((p.id.0, String::from_utf8_lossy(out).into_owned()));
-            }
-        }
-    }
-
-    let snap = StateSnapshot {
-        workspace_name: state.workspace_name().to_string(),
-        workspace_runtime: state.workspace_runtime().to_string(),
-        tabs,
-        panes,
-        layouts,
-        outputs,
-        status: state.status(),
-        active_tab: state.active_tab().map(|t| t.id.0),
-        active_pane: state.active_pane().map(|p| p.id.0),
-    };
-    serde_json::to_string(&snap).unwrap_or_else(|_| "{}".into())
-}
-
 fn format_workspaces(state: &dyn State, format: OutputFormat) -> String {
     match format {
         OutputFormat::Json => {
@@ -792,13 +657,6 @@ mod tests {
         assert!(out.contains(r#""id":"t1""#));
     }
 
-    #[test]
-    fn format_dump_state_has_workspace() {
-        let b = mock_with_pane();
-        let out = format_output(&b, &CliCommand::DumpState, OutputFormat::Json);
-        assert!(out.contains(r#""workspace_name":"mock""#));
-    }
-
     fn ffi_snapshot_with_split() -> FfiWorkspaceSnapshot {
         FfiWorkspaceSnapshot {
             workspace: ClientWorkspace {
@@ -845,35 +703,6 @@ mod tests {
         }
     }
 
-    fn ffi_snapshot_with_single_pane() -> FfiWorkspaceSnapshot {
-        FfiWorkspaceSnapshot {
-            workspace: ClientWorkspace {
-                id: "local/tmux/mock".into(),
-                name: "mock".into(),
-                runtime: "tmux".into(),
-                active: true,
-                resolved_target: None,
-            },
-            tabs: vec![ClientTab {
-                id: 1,
-                name: "t1".into(),
-                is_active: true,
-            }],
-            panes: vec![(
-                1,
-                vec![ClientPane {
-                    id: 1,
-                    cols: 80,
-                    rows: 24,
-                    is_active: true,
-                    title: "bash".into(),
-                }],
-            )],
-            layouts: vec![(1, Some(ClientLayout::Leaf { pane_id: 1 }))],
-            outputs: vec![(1, Vec::new())],
-        }
-    }
-
     #[test]
     fn format_ffi_layout_uses_pane_activity() {
         let snapshot = ffi_snapshot_with_split();
@@ -881,31 +710,5 @@ mod tests {
         assert!(out.contains("@1 80x24\n"));
         assert!(out.contains("@2 80x24 [active]"));
         assert!(!out.contains("@1 80x24 [active]"));
-    }
-
-    #[test]
-    fn format_ffi_dump_preserves_state_snapshot_shape() {
-        let snapshot = ffi_snapshot_with_split();
-        let value: serde_json::Value =
-            serde_json::from_str(&format_ffi_dump(&snapshot, 2)).expect("valid dump JSON");
-        assert_eq!(value["status"], "Connected");
-        assert_eq!(value["active_tab"], 1);
-        assert_eq!(value["active_pane"], 2);
-        assert_eq!(value["panes"][0]["tab"], 1);
-        assert_eq!(value["panes"][0]["title"], "first");
-        assert_eq!(value["layouts"][0]["tree"]["Split"]["dir"], "Horizontal");
-        assert_eq!(value["layouts"][0]["active"], 2);
-        assert_eq!(value["outputs"][0], serde_json::json!([1, "first"]));
-    }
-
-    #[test]
-    fn format_ffi_dump_matches_legacy_snapshot_fields() {
-        let legacy = mock_with_pane();
-        let legacy: serde_json::Value =
-            serde_json::from_str(&format_dump_state(&legacy)).expect("valid legacy dump JSON");
-        let ffi: serde_json::Value =
-            serde_json::from_str(&format_ffi_dump(&ffi_snapshot_with_single_pane(), 2))
-                .expect("valid FFI dump JSON");
-        assert_eq!(ffi, legacy);
     }
 }

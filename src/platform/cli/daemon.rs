@@ -247,7 +247,6 @@ impl DaemonState {
             | ListTabs
             | ListPanes { .. }
             | ListLayout
-            | DumpState
             | DisplayMessage { .. } => return Ok(()),
         };
 
@@ -408,7 +407,6 @@ fn is_query(command: &CliCommand) -> bool {
             | CliCommand::ListLayout
             | CliCommand::CapturePane { .. }
             | CliCommand::DisplayMessage { .. }
-            | CliCommand::DumpState
     )
 }
 
