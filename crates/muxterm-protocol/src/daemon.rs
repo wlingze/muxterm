@@ -8,6 +8,27 @@ use crate::command::CliCommand;
 use crate::layout::TabLayout;
 use crate::state::{BackendStatus, PaneInfo, TabInfo};
 
+/// Return the default Unix socket path shared by the daemon host and clients.
+///
+/// The path is part of the daemon endpoint contract, while the socket I/O
+/// implementations remain in the runtime and CLI adapters.
+pub fn default_socket_path(name: &str) -> std::path::PathBuf {
+    let dir = std::env::var("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("/tmp"));
+    let safe: String = name
+        .chars()
+        .map(|ch| {
+            if ch.is_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    dir.join(format!("muxterm-{safe}.sock"))
+}
+
 /// Output format requested by a daemon client.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum OutputFormat {
