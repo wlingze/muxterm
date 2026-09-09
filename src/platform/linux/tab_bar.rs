@@ -6,7 +6,7 @@ use std::rc::Rc;
 use gtk4::prelude::*;
 use gtk4::{Box as GtkBox, Button, Orientation};
 
-use crate::core::attention::state::PaneStatus;
+use crate::platform::ffi_client::ClientAttentionStatus;
 use crate::platform::ffi_client::ClientTab;
 use crate::platform::linux::attention_ui::tab_prefix;
 use crate::platform::linux::lifecycle::tab_shortcut_label;
@@ -79,7 +79,7 @@ impl TabBar {
     }
 
     /// 给 tab 加注意力前缀（blocked `● ` / done `✓ `），并加 CSS 类。
-    pub fn set_attention(&self, tab_id: u32, status: Option<PaneStatus>) {
+    pub fn set_attention(&self, tab_id: u32, status: Option<ClientAttentionStatus>) {
         let prefix = tab_prefix(status);
         let buttons = self.buttons.borrow();
         for (id, btn) in buttons.iter() {
@@ -95,8 +95,8 @@ impl TabBar {
             btn.remove_css_class("tab-blocked");
             btn.remove_css_class("tab-done");
             match status {
-                Some(PaneStatus::Blocked) => btn.add_css_class("tab-blocked"),
-                Some(PaneStatus::Done) => btn.add_css_class("tab-done"),
+                Some(ClientAttentionStatus::Blocked) => btn.add_css_class("tab-blocked"),
+                Some(ClientAttentionStatus::Done) => btn.add_css_class("tab-done"),
                 _ => {}
             }
         }
