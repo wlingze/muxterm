@@ -10,9 +10,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use gtk4::prelude::*;
 use gtk4::Window;
 
-use crate::platform::ffi_client::{ExistingCandidate, FfiClient, SshHostEntry};
-use crate::platform::linux::pane_switcher;
-use crate::platform::linux::quick_pick::{self, QuickPickItem};
+use crate::frontend::ffi_client::{ExistingCandidate, FfiClient, SshHostEntry};
+use crate::frontend::linux::pane_switcher;
+use crate::frontend::linux::quick_pick::{self, QuickPickItem};
 
 /// 工作区集成动作结果。
 #[derive(Debug, Clone)]

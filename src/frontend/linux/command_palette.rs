@@ -1,12 +1,12 @@
 //! VSCode 风格命令面板（Linux Alt+Shift+P / macOS Cmd+Shift+P）。
 //!
 //! 顶部输入框模糊搜索 + 下方命令列表；↑↓ 选中，Enter 执行，Esc 关闭。
-//! 基于 [`crate::platform::linux::quick_pick`]。
+//! 基于 [`crate::frontend::linux::quick_pick`]。
 
 use gtk4::prelude::*;
 use gtk4::Window;
 
-use crate::platform::linux::quick_pick::{self, fuzzy_match, QuickPickItem};
+use crate::frontend::linux::quick_pick::{self, fuzzy_match, QuickPickItem};
 
 pub const TMUX_DETACH_COMMAND: &str = "tmux_detach";
 

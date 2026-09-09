@@ -9,7 +9,7 @@ use serde_json::Value;
 use std::path::PathBuf;
 
 use super::format::OutputFormat;
-use crate::platform::ffi_client::{ClientJsonPatchOperation, FfiClient};
+use crate::frontend::ffi_client::{ClientJsonPatchOperation, FfiClient};
 
 fn new_client() -> Result<FfiClient> {
     FfiClient::new_catalog().context("创建配置 FFI client 失败")

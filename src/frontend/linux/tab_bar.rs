@@ -6,10 +6,10 @@ use std::rc::Rc;
 use gtk4::prelude::*;
 use gtk4::{Box as GtkBox, Button, Orientation};
 
-use crate::platform::ffi_client::ClientAttentionStatus;
-use crate::platform::ffi_client::ClientTab;
-use crate::platform::linux::attention_ui::tab_prefix;
-use crate::platform::linux::lifecycle::tab_shortcut_label;
+use crate::frontend::ffi_client::ClientAttentionStatus;
+use crate::frontend::ffi_client::ClientTab;
+use crate::frontend::linux::attention_ui::tab_prefix;
+use crate::frontend::linux::lifecycle::tab_shortcut_label;
 
 type TabActivateCb = Box<dyn Fn(u32)>;
 

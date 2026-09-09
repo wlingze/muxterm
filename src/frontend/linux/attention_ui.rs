@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use gtk4::gio::prelude::ApplicationExt;
 
-use crate::platform::ffi_client::ClientAttentionStatus;
+use crate::frontend::ffi_client::ClientAttentionStatus;
 
 /// 状态栏红点文案：0 → None（隐藏），否则 `● N`。
 pub fn badge_label(n: usize) -> Option<String> {

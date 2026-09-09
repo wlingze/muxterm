@@ -5,9 +5,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::platform::ffi_client::{ClientAttentionPane, ClientAttentionStatus, ClientSearchHit};
-use crate::platform::linux::quickconnect_panel::{filter_panel_items, PanelItem};
-use crate::platform::linux::workspace_sidebar::{ActivityIndicator, AgentSidebarItem};
+use crate::frontend::ffi_client::{ClientAttentionPane, ClientAttentionStatus, ClientSearchHit};
+use crate::frontend::linux::quickconnect_panel::{filter_panel_items, PanelItem};
+use crate::frontend::linux::workspace_sidebar::{ActivityIndicator, AgentSidebarItem};
 
 /// 面板 tab。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -261,7 +261,7 @@ pub fn search_rows(query: &str, hits: Vec<SearchRow>) -> (Vec<SearchRow>, bool) 
 mod tests {
     use super::*;
 
-    use crate::platform::linux::workspace_sidebar::{ActivityIndicator, AgentSidebarItem};
+    use crate::frontend::linux::workspace_sidebar::{ActivityIndicator, AgentSidebarItem};
     use muxterm_protocol::WorkspaceId;
 
     fn attention(
@@ -387,11 +387,11 @@ mod tests {
     fn workspace_order_stable_when_status_changes() {
         let items = vec![
             PanelItem::Target(
-                crate::platform::linux::quickconnect::model::QuickConnectEntry::new(
-                    crate::platform::linux::quickconnect::model::TargetConfig::new(
+                crate::frontend::linux::quickconnect::model::QuickConnectEntry::new(
+                    crate::frontend::linux::quickconnect::model::TargetConfig::new(
                         "a",
-                        crate::platform::linux::quickconnect::model::TargetRuntime::Tmux,
-                        crate::platform::linux::quickconnect::model::TargetTransport::Local,
+                        crate::frontend::linux::quickconnect::model::TargetRuntime::Tmux,
+                        crate::frontend::linux::quickconnect::model::TargetTransport::Local,
                         "/tmp/a",
                     ),
                     vec![],

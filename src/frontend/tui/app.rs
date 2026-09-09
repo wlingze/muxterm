@@ -20,18 +20,18 @@ use crossterm::terminal::{
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
-use crate::platform::command_queue::{ClientCommand, CommandQueue};
-use crate::platform::event_pump::EventPump;
-use crate::platform::ffi_client::{ClientEventKind, ClientTask, FfiClient};
-use crate::platform::mirror::should_forward_parser_response;
-use crate::platform::tui::emulate::Cell;
-use crate::platform::tui::input::{encode, ArrowDir, KeyEvent as MuxKeyEvent};
-use crate::platform::tui::model::FrameSnapshot;
-use crate::platform::tui::palette::{
+use crate::frontend::command_queue::{ClientCommand, CommandQueue};
+use crate::frontend::ffi_client::{ClientEventKind, ClientTask, FfiClient};
+use crate::frontend::tui::emulate::Cell;
+use crate::frontend::tui::input::{encode, ArrowDir, KeyEvent as MuxKeyEvent};
+use crate::frontend::tui::model::FrameSnapshot;
+use crate::frontend::tui::palette::{
     ConnectAction, ConnectSource, PaletteState, WizardItem, WizardStep,
 };
-use crate::platform::tui::render::{render_frame, RenderOpts};
-use crate::platform::tui::terminal::TerminalManager;
+use crate::frontend::tui::render::{render_frame, RenderOpts};
+use crate::frontend::tui::terminal::TerminalManager;
+use crate::platform::event_pump::EventPump;
+use crate::platform::mirror::should_forward_parser_response;
 
 /// TUI 启动参数。
 pub struct TuiOpts {

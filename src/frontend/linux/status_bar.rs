@@ -11,12 +11,12 @@ use gtk4::gdk;
 use gtk4::prelude::*;
 use gtk4::{Align, Box as GtkBox, Button, CssProvider, Label, Orientation, Popover};
 
-use crate::platform::format::{format_bytes, format_rate};
-use crate::platform::linux::lifecycle::tab_shortcut_label;
-use crate::platform::linux::quickconnect::status_style::{
+use crate::frontend::linux::lifecycle::tab_shortcut_label;
+use crate::frontend::linux::quickconnect::status_style::{
     StatusBarMode, StatusBarSnapshot, StatusBarStyleParser,
 };
-use crate::platform::linux::theme::Theme;
+use crate::frontend::linux::theme::Theme;
+use crate::platform::format::{format_bytes, format_rate};
 
 /// status bar 高度（≤ 24px）。
 pub const STATUS_BAR_HEIGHT: u32 = 24;
@@ -539,7 +539,7 @@ impl Drop for StatusBar {
     }
 }
 
-fn bg_to_hex(c: crate::platform::linux::quickconnect::status_style::StatusBarColor) -> String {
+fn bg_to_hex(c: crate::frontend::linux::quickconnect::status_style::StatusBarColor) -> String {
     format!(
         "{:02x}{:02x}{:02x}",
         (c.red * 255.0).round() as u8,
@@ -548,13 +548,13 @@ fn bg_to_hex(c: crate::platform::linux::quickconnect::status_style::StatusBarCol
     )
 }
 
-fn fg_to_hex(c: crate::platform::linux::quickconnect::status_style::StatusBarColor) -> String {
+fn fg_to_hex(c: crate::frontend::linux::quickconnect::status_style::StatusBarColor) -> String {
     bg_to_hex(c)
 }
 
 /// 把带样式的片段渲染成 Pango markup。
 fn styled_markup(
-    segments: &[crate::platform::linux::quickconnect::status_style::StatusBarStyledSegment],
+    segments: &[crate::frontend::linux::quickconnect::status_style::StatusBarStyledSegment],
     plain_fg: Option<&str>,
 ) -> String {
     let mut out = String::new();
@@ -630,7 +630,7 @@ pub fn test_snapshot(enabled: bool) -> StatusBarSnapshot {
         window_style: "default".into(),
         window_current_style: "bg=blue".into(),
         windows: vec![
-            crate::platform::linux::quickconnect::status_style::StatusBarWindow {
+            crate::frontend::linux::quickconnect::status_style::StatusBarWindow {
                 window_id: 0,
                 index: 1,
                 name: "bash".into(),
@@ -638,7 +638,7 @@ pub fn test_snapshot(enabled: bool) -> StatusBarSnapshot {
                 current: true,
                 text: "1:bash".into(),
             },
-            crate::platform::linux::quickconnect::status_style::StatusBarWindow {
+            crate::frontend::linux::quickconnect::status_style::StatusBarWindow {
                 window_id: 1,
                 index: 2,
                 name: "vim".into(),
@@ -673,11 +673,11 @@ mod tests {
     #[test]
     fn styled_markup_escapes_and_applies_style() {
         let segments = vec![
-            crate::platform::linux::quickconnect::status_style::StatusBarStyledSegment {
+            crate::frontend::linux::quickconnect::status_style::StatusBarStyledSegment {
                 text: "<b>&".into(),
-                style: crate::platform::linux::quickconnect::status_style::StatusBarTextStyle {
+                style: crate::frontend::linux::quickconnect::status_style::StatusBarTextStyle {
                     fg: Some(
-                        crate::platform::linux::quickconnect::status_style::StatusBarColor {
+                        crate::frontend::linux::quickconnect::status_style::StatusBarColor {
                             red: 1.0,
                             green: 0.0,
                             blue: 0.0,
@@ -698,18 +698,18 @@ mod tests {
     #[test]
     fn theme_plain_fg_overrides_segment_colors() {
         let segments = vec![
-            crate::platform::linux::quickconnect::status_style::StatusBarStyledSegment {
+            crate::frontend::linux::quickconnect::status_style::StatusBarStyledSegment {
                 text: "x".into(),
-                style: crate::platform::linux::quickconnect::status_style::StatusBarTextStyle {
+                style: crate::frontend::linux::quickconnect::status_style::StatusBarTextStyle {
                     fg: Some(
-                        crate::platform::linux::quickconnect::status_style::StatusBarColor {
+                        crate::frontend::linux::quickconnect::status_style::StatusBarColor {
                             red: 1.0,
                             green: 0.0,
                             blue: 0.0,
                         },
                     ),
                     bg: Some(
-                        crate::platform::linux::quickconnect::status_style::StatusBarColor {
+                        crate::frontend::linux::quickconnect::status_style::StatusBarColor {
                             red: 0.0,
                             green: 0.0,
                             blue: 1.0,
@@ -730,7 +730,7 @@ mod tests {
     fn color_hex_conversion_rounds_to_bytes() {
         assert_eq!(
             bg_to_hex(
-                crate::platform::linux::quickconnect::status_style::StatusBarColor {
+                crate::frontend::linux::quickconnect::status_style::StatusBarColor {
                     red: 1.0,
                     green: 0.5,
                     blue: 0.0,
@@ -740,7 +740,7 @@ mod tests {
         );
         assert_eq!(
             fg_to_hex(
-                crate::platform::linux::quickconnect::status_style::StatusBarColor {
+                crate::frontend::linux::quickconnect::status_style::StatusBarColor {
                     red: 0.0,
                     green: 0.0,
                     blue: 1.0,

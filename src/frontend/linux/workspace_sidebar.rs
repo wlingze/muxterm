@@ -14,8 +14,8 @@ use gtk4::{
     RevealerTransitionType, ScrolledWindow, SelectionMode, ToggleButton, Widget,
 };
 
-use crate::platform::ffi_client::{ClientActivitySnapshot, ClientAttentionPane, ClientWorkspace};
-use crate::platform::linux::view_store::ViewStore;
+use crate::frontend::ffi_client::{ClientActivitySnapshot, ClientAttentionPane, ClientWorkspace};
+use crate::frontend::linux::view_store::ViewStore;
 use muxterm_protocol::WorkspaceId;
 
 /// A workspace row in the sidebar.
@@ -1224,11 +1224,11 @@ mod tests {
         assert_eq!(sidebar_split_position(false, true, 0, 260, 64), 260);
     }
 
-    use crate::platform::ffi_client::{
+    use crate::frontend::ffi_client::{
         ClientActivitySnapshot, ClientAttentionPane, ClientPane, ClientTab, ClientWorkspace,
         ClientWorkspaceAttention,
     };
-    use crate::platform::linux::view_store::ViewStore;
+    use crate::frontend::linux::view_store::ViewStore;
 
     fn workspace_id(
         transport: &str,

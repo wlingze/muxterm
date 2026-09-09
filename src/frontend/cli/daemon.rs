@@ -15,9 +15,9 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context, Result};
 use tracing::{info, warn};
 
-use crate::platform::cli::format_ffi_output;
-use crate::platform::cli::CliCommand;
-use crate::platform::ffi_client::{
+use crate::frontend::cli::format_ffi_output;
+use crate::frontend::cli::CliCommand;
+use crate::frontend::ffi_client::{
     ClientOpenIntent, ClientResizeAxis, ClientTarget, ClientTask, FfiClient,
 };
 use muxterm_protocol::daemon::{Request, Response};
@@ -353,7 +353,7 @@ fn handle_connection(
         // 检查是否是 KillSession
         if matches!(
             req.command,
-            crate::platform::cli::CliCommand::CloseWorkspace { .. }
+            crate::frontend::cli::CliCommand::CloseWorkspace { .. }
         ) {
             should_kill = true;
         }

@@ -5,11 +5,11 @@
 use gtk4::prelude::*;
 use gtk4::Application;
 
-use crate::platform::ffi_client::{ClientConfig, FfiClient};
-use crate::platform::linux::keymap::default_keybindings;
-use crate::platform::linux::theme::fallback_theme;
+use crate::frontend::ffi_client::{ClientConfig, FfiClient};
+use crate::frontend::linux::keymap::default_keybindings;
+use crate::frontend::linux::theme::fallback_theme;
 #[cfg(test)]
-use crate::platform::linux::theme::Rgb;
+use crate::frontend::linux::theme::Rgb;
 
 pub const APP_ID: &str = "io.muxterm.Muxterm";
 
@@ -22,7 +22,7 @@ pub fn run(socket: Option<String>) -> anyhow::Result<()> {
         .flags(gtk4::gio::ApplicationFlags::NON_UNIQUE)
         .build();
 
-    if let Err(error) = crate::platform::linux::font_registry::register_bundled_fonts() {
+    if let Err(error) = crate::frontend::linux::font_registry::register_bundled_fonts() {
         tracing::warn!(
             target = "muxterm::app",
             "bundled font registration failed: {error}"
@@ -59,7 +59,7 @@ pub fn run(socket: Option<String>) -> anyhow::Result<()> {
                 cfg.tmux.socket = sock.to_string();
             }
         }
-        let win = crate::platform::linux::window::AppWindow::new_with_effective_keybindings(
+        let win = crate::frontend::linux::window::AppWindow::new_with_effective_keybindings(
             cfg,
             theme,
             &keybindings,

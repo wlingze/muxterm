@@ -140,7 +140,7 @@ impl ProjectConnectFlow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::linux::quickconnect::model::{TargetRuntime, TargetTransport};
+    use crate::frontend::linux::quickconnect::model::{TargetRuntime, TargetTransport};
 
     fn cfg(name: &str, path: &str) -> TargetConfig {
         TargetConfig::new(name, TargetRuntime::Tmux, TargetTransport::Local, path)

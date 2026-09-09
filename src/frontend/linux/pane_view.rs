@@ -14,11 +14,11 @@ use gtk4::glib;
 use gtk4::prelude::*;
 use vte4::prelude::*;
 
-use crate::platform::linux::pane_input_state::PaneInputState;
-use crate::platform::linux::quickconnect::font::FontSettings;
-use crate::platform::linux::renderer::{TerminalRenderer, VteRenderer};
-use crate::platform::linux::scroll_policy::{wheel_action, WheelAction};
-use crate::platform::linux::theme::{Rgb, Theme};
+use crate::frontend::linux::pane_input_state::PaneInputState;
+use crate::frontend::linux::quickconnect::font::FontSettings;
+use crate::frontend::linux::renderer::{TerminalRenderer, VteRenderer};
+use crate::frontend::linux::scroll_policy::{wheel_action, WheelAction};
+use crate::frontend::linux::theme::{Rgb, Theme};
 use crate::platform::mirror::{
     should_forward_mixed_input, should_forward_parser_response, DISABLE_MOUSE_TRACKING,
 };
@@ -1174,7 +1174,7 @@ fn feed_input_state(inner: &PaneViewInner, data: &[u8]) {
     let mut state = inner.input_state.borrow_mut();
     // 输入模式 tracker 不应把解析异常带出 GTK 主循环；失败时丢弃镜像，
     // 下一帧输出会重新播种模式。
-    let fed = crate::platform::linux::fault_gtk::run("pane_view.feed_input_state", || {
+    let fed = crate::frontend::linux::fault_gtk::run("pane_view.feed_input_state", || {
         state.feed(data);
     });
     if fed.is_none() {
@@ -1282,7 +1282,7 @@ mod tests {
 
     #[test]
     fn grok_primary_mouse_wheel_is_sgr_not_history() {
-        use crate::platform::linux::scroll_policy::wheel_action;
+        use crate::frontend::linux::scroll_policy::wheel_action;
         let mut state = PaneInputState::default();
         state.feed(b"\x1b[?1003h\x1b[?1006h");
         let modes = state.modes();

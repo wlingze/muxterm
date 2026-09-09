@@ -15,16 +15,16 @@ use gtk4::{
     ToggleButton, Window,
 };
 
-use crate::platform::ffi_client::{ClientRuntimeInfo, FfiClient, SshHostEntry};
-use crate::platform::i18n::{self, Key};
-use crate::platform::linux::quickconnect::directory::{
+use crate::frontend::ffi_client::{ClientRuntimeInfo, FfiClient, SshHostEntry};
+use crate::frontend::linux::quickconnect::directory::{
     DirectoryListingResponse, DirectorySuggestionController,
 };
-use crate::platform::linux::quickconnect::model::{
+use crate::frontend::linux::quickconnect::model::{
     QuickConnect, TargetConfig, TargetRuntime, TargetTransport,
 };
-use crate::platform::linux::quickconnect::options::TargetOptionSelection;
-use crate::platform::linux::quickconnect::store::QuickConnectStore;
+use crate::frontend::linux::quickconnect::options::TargetOptionSelection;
+use crate::frontend::linux::quickconnect::store::QuickConnectStore;
+use crate::platform::i18n::{self, Key};
 use crate::platform::ssh_probe::{
     classify_ssh_probe, ssh_dot_css_class, ssh_dot_widget_name, ssh_probe_args, SshReach,
 };

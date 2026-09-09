@@ -23,10 +23,10 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, StatefulWidget, Widget};
 
-use crate::platform::tui::emulate::Cell as TermCell;
-use crate::platform::tui::model::{FrameSnapshot, TuiLayout, TuiTab};
-use crate::platform::tui::palette::PaletteState;
-use crate::platform::tui::theme::Theme;
+use crate::frontend::tui::emulate::Cell as TermCell;
+use crate::frontend::tui::model::{FrameSnapshot, TuiLayout, TuiTab};
+use crate::frontend::tui::palette::PaletteState;
+use crate::frontend::tui::theme::Theme;
 
 /// 渲染选项。
 #[derive(Debug, Clone, Copy)]
@@ -485,8 +485,8 @@ fn draw_palette(buf: &mut Buffer, palette: &PaletteState, theme: &Theme) {
     // 顶部信息行：来源 + 主机 + 当前目录
     let info_h = 1u16;
     let source_str = match palette.source {
-        crate::platform::tui::palette::ConnectSource::Local => "local",
-        crate::platform::tui::palette::ConnectSource::Ssh => "ssh",
+        crate::frontend::tui::palette::ConnectSource::Local => "local",
+        crate::frontend::tui::palette::ConnectSource::Ssh => "ssh",
     };
     let host_str = palette.host.as_deref().unwrap_or("");
     let dir_str = palette.dir.as_deref().unwrap_or("");
@@ -573,7 +573,7 @@ fn draw_palette(buf: &mut Buffer, palette: &PaletteState, theme: &Theme) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::tui::model::{FrameSnapshot, TuiLayout, TuiPane, TuiTab};
+    use crate::frontend::tui::model::{FrameSnapshot, TuiLayout, TuiPane, TuiTab};
     use std::collections::HashMap;
 
     fn snap_single_pane() -> FrameSnapshot {
@@ -770,9 +770,9 @@ mod tests {
         let mut p = PaletteState::new();
         p.advance(); // source->action (local)
         p.set_items(vec![
-            crate::platform::tui::palette::WizardItem::new_item(),
-            crate::platform::tui::palette::WizardItem::plain("dev", "dev"),
-            crate::platform::tui::palette::WizardItem::plain("prod", "prod"),
+            crate::frontend::tui::palette::WizardItem::new_item(),
+            crate::frontend::tui::palette::WizardItem::plain("dev", "dev"),
+            crate::frontend::tui::palette::WizardItem::plain("prod", "prod"),
         ]);
         let buf = render(
             &snap_single_pane(),
@@ -801,7 +801,7 @@ mod tests {
 
     #[test]
     fn colored_cells_reach_buffer() {
-        use crate::platform::tui::emulate::TerminalState;
+        use crate::frontend::tui::emulate::TerminalState;
 
         // 用 ANSI 红字喂进终端模拟器
         let mut ts = TerminalState::new(80, 24);
