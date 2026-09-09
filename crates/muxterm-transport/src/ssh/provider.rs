@@ -2,11 +2,9 @@
 
 use std::sync::Arc;
 
-use anyhow::Result;
-
 use crate::connection::Connect;
 use crate::provider::{TargetInfo, TransportProvider};
-use crate::{ChannelKind, TargetConnection};
+use crate::{ChannelKind, TargetConnection, TransportResult};
 
 /// SSH transport plugin.
 pub struct SshTransport;
@@ -24,7 +22,7 @@ impl TransportProvider for SshTransport {
         &[ChannelKind::Exec, ChannelKind::UnixSocket]
     }
 
-    fn list_targets(&self) -> Result<Vec<TargetInfo>> {
+    fn list_targets(&self) -> TransportResult<Vec<TargetInfo>> {
         Ok(crate::ssh::config::list_ssh_hosts(None)
             .unwrap_or_default()
             .into_iter()
@@ -32,7 +30,7 @@ impl TransportProvider for SshTransport {
             .collect())
     }
 
-    fn connect(&self, target: &str) -> Result<Arc<dyn TargetConnection>> {
+    fn connect(&self, target: &str) -> TransportResult<Arc<dyn TargetConnection>> {
         Ok(Connect::new("ssh", target))
     }
 }

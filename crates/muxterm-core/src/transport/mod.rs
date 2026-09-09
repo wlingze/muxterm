@@ -7,5 +7,5 @@ pub use muxterm_transport::{local, ssh};
 
 pub use muxterm_transport::{
     ByteChannel, ChannelKind, ChannelRequest, CommandOutput, Connect, PtySize, TargetConnection,
-    TrafficCounters, Transport, TransportError, TransportSignal,
+    TrafficCounters, Transport, TransportError, TransportResult, TransportSignal,
 };

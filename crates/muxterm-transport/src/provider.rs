@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use super::{ChannelKind, TargetConnection};
+use super::{ChannelKind, TargetConnection, TransportResult};
 
 /// Static information about a transport provider.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,9 +46,9 @@ pub trait TransportProvider: Send + Sync {
         &[ChannelKind::Exec]
     }
 
-    fn list_targets(&self) -> anyhow::Result<Vec<TargetInfo>>;
+    fn list_targets(&self) -> TransportResult<Vec<TargetInfo>>;
 
-    fn connect(&self, target: &str) -> anyhow::Result<Arc<dyn TargetConnection>>;
+    fn connect(&self, target: &str) -> TransportResult<Arc<dyn TargetConnection>>;
 
     fn info(&self) -> TransportInfo {
         TransportInfo::new(self.id(), self.name())

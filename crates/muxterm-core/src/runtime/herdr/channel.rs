@@ -40,7 +40,7 @@ pub fn shutdown(channel: &SharedChannel) -> Result<()> {
     let mut channel = channel
         .lock()
         .map_err(|_| anyhow::anyhow!("Herdr channel lock poisoned"))?;
-    channel.shutdown()
+    Ok(channel.shutdown()?)
 }
 
 /// Blocking `Read`/`Write` view of a non-blocking [`SharedChannel`].

@@ -11,7 +11,7 @@ use crate::runtime::mock::MockRuntime;
 use crate::runtime::RuntimeProvider;
 use crate::runtime::{Runtime, RuntimeCapability, RuntimeResult};
 use crate::transport::registry::ConnectionRegistry;
-use crate::transport::{ChannelKind, TargetConnection};
+use crate::transport::{ChannelKind, TargetConnection, TransportResult};
 use crate::workspace::pool::WorkspacePool;
 use crate::workspace::spec::WorkspaceSpec;
 use crate::workspace::template::{
@@ -89,12 +89,14 @@ impl TransportProvider for MockTransport {
     fn name(&self) -> &'static str {
         self.name
     }
-    fn list_targets(&self) -> anyhow::Result<Vec<TargetInfo>> {
+    fn list_targets(&self) -> TransportResult<Vec<TargetInfo>> {
         Ok(self.targets.clone())
     }
-    fn connect(&self, target: &str) -> anyhow::Result<Arc<dyn TargetConnection>> {
+    fn connect(&self, target: &str) -> TransportResult<Arc<dyn TargetConnection>> {
         if self.fail {
-            anyhow::bail!("mock connect failed");
+            return Err(crate::transport::TransportError::message(
+                "mock connect failed",
+            ));
         }
         self.connects.fetch_add(1, Ordering::SeqCst);
         Ok(Connect::new(self.id, target))

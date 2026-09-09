@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context, Result};
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 
-use crate::{Transport, TransportError, TransportSignal};
+use crate::{Transport, TransportError, TransportResult, TransportSignal};
 
 /// Local PTY process transport.
 pub struct LocalProcessTransport {
@@ -100,12 +100,17 @@ impl LocalProcessTransport {
 }
 
 impl Transport for LocalProcessTransport {
-    fn spawn_exec(&mut self, program: &str, args: &[&str], pty_size: crate::PtySize) -> Result<()> {
+    fn spawn_exec(
+        &mut self,
+        program: &str,
+        args: &[&str],
+        pty_size: crate::PtySize,
+    ) -> TransportResult<()> {
         let mut cmd = CommandBuilder::new(program);
         for arg in args {
             cmd.arg(arg);
         }
-        self.spawn_command(program, cmd, pty_size)
+        Ok(self.spawn_command(program, cmd, pty_size)?)
     }
 
     fn spawn_exec_with_options(
@@ -115,7 +120,7 @@ impl Transport for LocalProcessTransport {
         pty_size: crate::PtySize,
         cwd: Option<&Path>,
         env: &[(String, String)],
-    ) -> Result<()> {
+    ) -> TransportResult<()> {
         let mut cmd = CommandBuilder::new(program);
         for arg in args {
             cmd.arg(arg);
@@ -126,7 +131,7 @@ impl Transport for LocalProcessTransport {
         for (key, value) in env {
             cmd.env(key, value);
         }
-        self.spawn_command(program, cmd, pty_size)
+        Ok(self.spawn_command(program, cmd, pty_size)?)
     }
 
     fn read(&mut self) -> std::io::Result<Option<Vec<u8>>> {
@@ -158,9 +163,9 @@ impl Transport for LocalProcessTransport {
         Ok(data.len())
     }
 
-    fn resize(&mut self, cols: u16, rows: u16) -> Result<()> {
+    fn resize(&mut self, cols: u16, rows: u16) -> TransportResult<()> {
         let Some(master) = self.master.as_mut() else {
-            return Err(anyhow::anyhow!(TransportError::NotStarted));
+            return Err(TransportError::NotStarted);
         };
         master
             .resize(PtySize {
@@ -173,7 +178,7 @@ impl Transport for LocalProcessTransport {
         Ok(())
     }
 
-    fn kill(&mut self, signal: TransportSignal) -> Result<()> {
+    fn kill(&mut self, signal: TransportSignal) -> TransportResult<()> {
         let Some(child) = self.child.as_mut() else {
             return Ok(());
         };
@@ -212,7 +217,7 @@ impl Transport for LocalProcessTransport {
         }
     }
 
-    fn shutdown(&mut self) -> Result<()> {
+    fn shutdown(&mut self) -> TransportResult<()> {
         self.master.take();
         self.writer.take();
         if let Some(child) = self.child.as_mut() {

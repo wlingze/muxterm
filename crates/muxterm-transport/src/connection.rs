@@ -16,7 +16,9 @@ use std::time::{Duration, Instant};
 
 use crate::local::LocalProcessTransport;
 use crate::ssh::{build_ssh_command, SshProcessTransport};
-use crate::{ByteChannel, ChannelRequest, CommandOutput, TargetConnection, Transport};
+use crate::{
+    ByteChannel, ChannelRequest, CommandOutput, TargetConnection, Transport, TransportResult,
+};
 
 /// A reusable target connection for local or SSH target context.
 #[derive(Debug)]
@@ -52,19 +54,19 @@ impl TargetConnection for Connect {
         self.target()
     }
 
-    fn open_channel(&self, request: ChannelRequest) -> anyhow::Result<Box<dyn ByteChannel>> {
+    fn open_channel(&self, request: ChannelRequest) -> TransportResult<Box<dyn ByteChannel>> {
         match request {
             ChannelRequest::Exec {
                 argv,
                 cwd,
                 env,
                 pty,
-            } => self.open_exec_channel(argv, cwd, env, pty),
-            ChannelRequest::UnixSocket { path } => self.open_unix_socket_channel(path),
+            } => Ok(self.open_exec_channel(argv, cwd, env, pty)?),
+            ChannelRequest::UnixSocket { path } => Ok(self.open_unix_socket_channel(path)?),
         }
     }
 
-    fn exec_command(&self, request: ChannelRequest) -> anyhow::Result<CommandOutput> {
+    fn exec_command(&self, request: ChannelRequest) -> TransportResult<CommandOutput> {
         let ChannelRequest::Exec {
             argv,
             cwd,
@@ -72,19 +74,17 @@ impl TargetConnection for Connect {
             pty: _,
         } = request
         else {
-            return Err(anyhow::anyhow!(
-                "bounded commands cannot open a Unix socket"
-            ));
+            return Err(anyhow::anyhow!("bounded commands cannot open a Unix socket").into());
         };
         let Some(program) = argv.first() else {
-            return Err(anyhow::anyhow!("bounded command argv 不能为空"));
+            return Err(anyhow::anyhow!("bounded command argv 不能为空").into());
         };
 
         let mut command = if self.transport_id == "ssh" {
             if cwd.is_some() {
-                return Err(anyhow::anyhow!(
-                    "SSH bounded command must encode cwd in its argv"
-                ));
+                return Err(
+                    anyhow::anyhow!("SSH bounded command must encode cwd in its argv").into(),
+                );
             }
             let mut command = std::process::Command::new("ssh");
             command.arg(&self.target).arg("--").arg(program);
@@ -109,7 +109,7 @@ impl TargetConnection for Connect {
         })
     }
 
-    fn probe(&self) -> anyhow::Result<()> {
+    fn probe(&self) -> TransportResult<()> {
         Ok(())
     }
 }
@@ -215,11 +215,11 @@ impl ByteChannel for ProcessByteChannel {
         self.transport.write(data)
     }
 
-    fn resize(&mut self, cols: u16, rows: u16) -> anyhow::Result<()> {
+    fn resize(&mut self, cols: u16, rows: u16) -> TransportResult<()> {
         self.transport.resize(cols, rows)
     }
 
-    fn shutdown(&mut self) -> anyhow::Result<()> {
+    fn shutdown(&mut self) -> TransportResult<()> {
         self.transport.shutdown()
     }
 }
@@ -304,11 +304,11 @@ impl ByteChannel for UnixSocketByteChannel {
         self.stream.write(data)
     }
 
-    fn resize(&mut self, _cols: u16, _rows: u16) -> anyhow::Result<()> {
-        Err(anyhow::anyhow!("UnixSocket channels do not support resize"))
+    fn resize(&mut self, _cols: u16, _rows: u16) -> TransportResult<()> {
+        Err(anyhow::anyhow!("UnixSocket channels do not support resize").into())
     }
 
-    fn shutdown(&mut self) -> anyhow::Result<()> {
+    fn shutdown(&mut self) -> TransportResult<()> {
         let _ = self.stream.shutdown(Shutdown::Both);
         self.forward.take();
         Ok(())

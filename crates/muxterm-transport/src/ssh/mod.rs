@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context, Result};
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 
-use crate::{Transport, TransportError, TransportSignal};
+use crate::{Transport, TransportError, TransportResult, TransportSignal};
 
 /// 把字节块渲染成可读的 debug 字符串（可打印字符保留，控制字节转义）。
 /// 用于 debug 模式把 SSH 原始收发数据落盘，方便排查远端 tmux 渲染/输入问题。
@@ -272,7 +272,12 @@ impl SshProcessTransport {
 }
 
 impl Transport for SshProcessTransport {
-    fn spawn_exec(&mut self, program: &str, args: &[&str], pty_size: crate::PtySize) -> Result<()> {
+    fn spawn_exec(
+        &mut self,
+        program: &str,
+        args: &[&str],
+        pty_size: crate::PtySize,
+    ) -> TransportResult<()> {
         let args_owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
         self.last_program = Some(program.to_string());
         self.last_args = Some(args_owned.clone());
@@ -350,9 +355,9 @@ impl Transport for SshProcessTransport {
         Ok(data.len())
     }
 
-    fn resize(&mut self, cols: u16, rows: u16) -> Result<()> {
+    fn resize(&mut self, cols: u16, rows: u16) -> TransportResult<()> {
         let Some(master) = self.master.as_mut() else {
-            return Err(anyhow::anyhow!(TransportError::NotStarted));
+            return Err(TransportError::NotStarted);
         };
         master
             .resize(PtySize {
@@ -365,7 +370,7 @@ impl Transport for SshProcessTransport {
         Ok(())
     }
 
-    fn kill(&mut self, signal: TransportSignal) -> Result<()> {
+    fn kill(&mut self, signal: TransportSignal) -> TransportResult<()> {
         let Some(child) = self.child.as_mut() else {
             return Ok(());
         };
@@ -396,7 +401,7 @@ impl Transport for SshProcessTransport {
         }
     }
 
-    fn shutdown(&mut self) -> Result<()> {
+    fn shutdown(&mut self) -> TransportResult<()> {
         self.master.take();
         self.writer.take();
         if let Some(child) = self.child.as_mut() {

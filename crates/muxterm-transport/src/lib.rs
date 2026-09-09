@@ -61,25 +61,25 @@ impl ChannelRequest {
 pub trait ByteChannel: Send {
     fn read(&mut self) -> std::io::Result<Option<Vec<u8>>>;
     fn write(&mut self, data: &[u8]) -> std::io::Result<usize>;
-    fn resize(&mut self, cols: u16, rows: u16) -> anyhow::Result<()>;
-    fn shutdown(&mut self) -> anyhow::Result<()>;
+    fn resize(&mut self, cols: u16, rows: u16) -> TransportResult<()>;
+    fn shutdown(&mut self) -> TransportResult<()>;
 }
 
 /// Reusable target-level connection owned by the transport registry.
 pub trait TargetConnection: Send + Sync {
     fn transport_id(&self) -> &str;
     fn target(&self) -> &str;
-    fn open_channel(&self, request: ChannelRequest) -> anyhow::Result<Box<dyn ByteChannel>>;
+    fn open_channel(&self, request: ChannelRequest) -> TransportResult<Box<dyn ByteChannel>>;
     /// Execute a bounded, non-interactive command on this target.
     ///
     /// The default keeps existing test connections source-compatible; real
     /// providers may implement it when Core services need target-side work.
-    fn exec_command(&self, _request: ChannelRequest) -> anyhow::Result<CommandOutput> {
-        Err(anyhow::anyhow!(
-            "target connection does not support bounded commands"
+    fn exec_command(&self, _request: ChannelRequest) -> TransportResult<CommandOutput> {
+        Err(TransportError::message(
+            "target connection does not support bounded commands",
         ))
     }
-    fn probe(&self) -> anyhow::Result<()>;
+    fn probe(&self) -> TransportResult<()>;
 }
 
 pub use connection::Connect;
@@ -169,7 +169,24 @@ pub enum TransportError {
     Exited,
     #[error("Transport 未启动")]
     NotStarted,
+    #[error("Transport 操作失败: {0}")]
+    Message(String),
 }
+
+impl TransportError {
+    pub fn message(message: impl Into<String>) -> Self {
+        Self::Message(message.into())
+    }
+}
+
+impl From<anyhow::Error> for TransportError {
+    fn from(error: anyhow::Error) -> Self {
+        Self::message(format!("{error:#}"))
+    }
+}
+
+/// Result alias for the Transport library boundary.
+pub type TransportResult<T> = std::result::Result<T, TransportError>;
 
 /// Transport trait：在本地或远程执行一个长驻命令，提供双向字节流。
 ///
@@ -183,8 +200,12 @@ pub trait Transport: Send {
     ///
     /// `program` 在 local 为 shell/tmux 路径，在 ssh 为经 SSH 执行的命令。
     /// `pty_size` 初始字符格尺寸。
-    fn spawn_exec(&mut self, program: &str, args: &[&str], pty_size: PtySize)
-        -> anyhow::Result<()>;
+    fn spawn_exec(
+        &mut self,
+        program: &str,
+        args: &[&str],
+        pty_size: PtySize,
+    ) -> TransportResult<()>;
 
     /// Spawn a PTY process with target-side working directory and environment.
     ///
@@ -199,10 +220,10 @@ pub trait Transport: Send {
         pty_size: PtySize,
         cwd: Option<&Path>,
         env: &[(String, String)],
-    ) -> anyhow::Result<()> {
+    ) -> TransportResult<()> {
         if cwd.is_some() || !env.is_empty() {
-            return Err(anyhow::anyhow!(
-                "transport does not support process cwd/env options"
+            return Err(TransportError::message(
+                "transport does not support process cwd/env options",
             ));
         }
         self.spawn_exec(program, args, pty_size)
@@ -215,16 +236,16 @@ pub trait Transport: Send {
     fn write(&mut self, data: &[u8]) -> std::io::Result<usize>;
 
     /// 调整 PTY 字符格尺寸（SIGWINCH / pty resize）。
-    fn resize(&mut self, cols: u16, rows: u16) -> anyhow::Result<()>;
+    fn resize(&mut self, cols: u16, rows: u16) -> TransportResult<()>;
 
     /// 发送信号给子进程。
-    fn kill(&mut self, signal: TransportSignal) -> anyhow::Result<()>;
+    fn kill(&mut self, signal: TransportSignal) -> TransportResult<()>;
 
     /// 非阻塞探测是否已退出。Some(code) 表示已退出；None 表示仍运行。
     fn try_wait(&mut self) -> std::io::Result<Option<u32>>;
 
     /// 优雅关闭：关闭写端，等待退出，回收资源。
-    fn shutdown(&mut self) -> anyhow::Result<()>;
+    fn shutdown(&mut self) -> TransportResult<()>;
 
     /// stderr 累积（调试用；有界 64KB）。
     fn stderr(&self) -> Vec<u8>;
