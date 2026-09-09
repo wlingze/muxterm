@@ -724,3 +724,35 @@ Working · Codex · Implement runtime events · Tab 2
 | 20.1 | 键盘切 Agent / 面板 Ctrl+数字 | `Cmd+Option+1..9`；面板 `Ctrl+1..9` |
 | 20.2 | Herdr session title | `agentName` 与 `title` 分列显示 |
 | 20.3 | tmux Codex title | `#{pane_title}` / OSC 0，不要刮 TUI 画面 |
+| 22 | 回底胶囊闪烁 | 迟滞 + 状态不变不重绘；和 §17 一起修 |
+
+---
+
+## 22. 待做：回底按钮（↓ 最新）有时一直闪
+
+**问题**
+
+右下角「↓ 最新」胶囊有时会不停闪：出现、消失、再出现。人没点它，也没在来回滚。
+
+**和 §17 的关系**
+
+§17 是「往下一滚就到底」。闪烁常常是同一套阈值在打架：刚离开底部按钮出来，吸附又把它吸回去，按钮再藏起来；下一拍输出或滚轮又离开 0.999，按钮再出来。
+
+**现在怎么决定显示**
+
+- 显示条件大致是 core `viewport offset > 0`，或 SwiftTerm `scrollPosition < 0.999`。
+- 隐藏：`isAtLatest()` 用 `scrollPosition >= 0.999`。
+- 向下吸附：`>= 0.92` 就 `scrollToLatest()`（§9 / §17）。
+- 60Hz 刷 snapshot 时每次都调 `setJumpLatestVisible`，里面会改 title、背景色、`needsLayout = true`，即使可见性和文案没变。
+- 新输出时如果不在底部，未读行数 +N 会改标题（`↓ 最新` ↔ `↓ 最新 · +N`），宽度跟着跳。
+- 命令轨悬停会改胶囊的 trailing，位置也会动一下。
+
+**设计**
+
+1. **迟滞**：离开底部超过约 2 行才显示；只有真正贴尾（最后 1 行内）才隐藏。禁止 0.92 吸附和 0.999 显示共用一条线。
+2. **状态不变不重绘**：visible / unseen 没变就不要 `isHidden`、不要改 title、不要 `needsLayout`。
+3. **显示切换要去抖**：连续 150–300ms 都「该显示」才显示，都「该藏」才藏。不要每帧翻转。
+4. Agent TUI（Codex/Grok / alt screen）默认不显示这颗按钮（滚动交给 TUI，见 §17）。
+5. 未读计数可以节流，不要每个 `\n` 都改一遍胶囊文案。
+
+验收：贴着实时尾部时胶囊保持隐藏、不闪。上翻一屏后稳定显示。新输出只更新 `+N`，不要闪灭。Agent 会话列表里不应闪这颗按钮。
