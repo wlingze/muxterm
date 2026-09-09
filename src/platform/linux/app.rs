@@ -6,7 +6,8 @@ use gtk4::prelude::*;
 use gtk4::Application;
 
 use crate::core::config::Theme;
-use crate::core::config_service::{ConfigDocument, SettingsService};
+use crate::core::config_service::ConfigDocument;
+use crate::platform::ffi_client::FfiClient;
 
 pub const APP_ID: &str = "io.muxterm.Muxterm";
 
@@ -28,24 +29,17 @@ pub fn run(socket: Option<String>) -> anyhow::Result<()> {
 
     app.connect_activate(move |a| {
         let default_document = ConfigDocument::default();
-        let (mut cfg, shortcuts) = match SettingsService::default_user() {
-            Ok(mut service) => {
-                if let Err(error) = service.migrate_legacy_quickconnect() {
-                    tracing::warn!(target = "muxterm::app", "QuickConnect 迁移未完成: {error}");
-                }
-                if let Err(error) = service.migrate_legacy_linux_preferences() {
-                    tracing::warn!(
-                        target = "muxterm::app",
-                        "Linux preferences 迁移未完成: {error}"
-                    );
-                }
-                let document = service.document();
-                (document.config.clone(), document.shortcuts.clone())
-            }
+        let (mut cfg, shortcuts) = match FfiClient::new_catalog()
+            .and_then(|client| client.config_describe())
+            .and_then(|snapshot| {
+                serde_json::from_value::<ConfigDocument>(snapshot.values)
+                    .map_err(anyhow::Error::from)
+            }) {
+            Ok(document) => (document.config, document.shortcuts),
             Err(error) => {
                 tracing::warn!(
                     target = "muxterm::app",
-                    "加载配置失败，用现代默认值: {error}"
+                    "通过 Core FFI 加载配置失败，用现代默认值: {error}"
                 );
                 (
                     default_document.config.clone(),

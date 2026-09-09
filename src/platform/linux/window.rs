@@ -27,7 +27,6 @@ use crate::core::attention::engine::{AttentionEngine, PaneAttention};
 use crate::core::attention::signal::{AttentionSignal, AttentionSource};
 use crate::core::attention::state::PaneStatus;
 use crate::core::config::{Action, Config, KeyBinding, OnLastPaneExit, Theme};
-use crate::core::config_service::SettingsService;
 #[cfg(test)]
 use crate::core::protocol::state::StateChange;
 use crate::core::protocol::task::TaskOutcome;
@@ -55,6 +54,7 @@ use crate::platform::linux::layout_host::LayoutHost;
 use crate::platform::linux::lifecycle::{cycle_pane_id, should_close_window};
 use crate::platform::linux::pane_view::{PaneMenuAction, PaneView};
 use crate::platform::linux::panel_model::PanelTab;
+use crate::platform::linux::preferences_window::ConfigApi;
 use crate::platform::linux::quickconnect::event_policy::ClientSizePolicy;
 use crate::platform::linux::quickconnect::existing::{ExistingEntry, ExistingTransport};
 use crate::platform::linux::quickconnect::font::FontSettings;
@@ -572,6 +572,25 @@ impl AppWindow {
         event_pump
             .sync_view_store(&mut view_store)
             .expect("Core workspace snapshot 必须可用");
+        let projects = match event_pump.client().config_describe() {
+            Ok(snapshot) => match serde_json::from_value(snapshot.values["projects"].clone()) {
+                Ok(projects) => projects,
+                Err(error) => {
+                    tracing::warn!(
+                        target = "muxterm::config",
+                        "从 Core FFI 快照读取 Project 失败: {error}"
+                    );
+                    Vec::new()
+                }
+            },
+            Err(error) => {
+                tracing::warn!(
+                    target = "muxterm::config",
+                    "通过 Core FFI 读取 Project 失败: {error}"
+                );
+                Vec::new()
+            }
+        };
         let startup_key = view_store
             .active_workspace_id()
             .or_else(|| view_store.workspace_ids().next())
@@ -750,8 +769,7 @@ impl AppWindow {
         layout_overlay.add_overlay(&jump_latest);
 
         let keymap = KeyMap::from_bindings(&keybindings);
-        let qc_store =
-            QuickConnectStore::new_unified(crate::core::config::Config::user_config_path());
+        let qc_store = QuickConnectStore::from_project_documents(&projects);
         let state = Rc::new(RefCell::new(UiState {
             event_pump,
             pixel_cache,
@@ -1294,13 +1312,13 @@ impl AppWindow {
     /// 测试用：走生产 `adjust_font(+1)`（Ctrl+= 热路径）。
     pub fn test_increase_font(&self) {
         let mut s = self._state.borrow_mut();
-        adjust_font(&mut s, 1);
+        adjust_font(&mut s, &self._state, 1);
     }
 
     /// 测试用：走生产 `adjust_font(-1)`（Ctrl+- 热路径）。
     pub fn test_decrease_font(&self) {
         let mut s = self._state.borrow_mut();
-        adjust_font(&mut s, -1);
+        adjust_font(&mut s, &self._state, -1);
     }
 
     /// 测试用：当前 UiState 字号（缩放热路径断言）。
@@ -2029,8 +2047,8 @@ fn handle_action(s: &mut UiState, action: Action, window: &Window, state: &Rc<Re
             paste_active_pane(s, state);
             return;
         }
-        Action::IncreaseFontSize => adjust_font(s, 1),
-        Action::DecreaseFontSize => adjust_font(s, -1),
+        Action::IncreaseFontSize => adjust_font(s, state, 1),
+        Action::DecreaseFontSize => adjust_font(s, state, -1),
         Action::ResetFontSize => reset_font(s),
         Action::TogglePaneFullscreen => toggle_fullscreen(s),
     }
@@ -2111,11 +2129,11 @@ fn run_palette_command(state: &Rc<RefCell<UiState>>, window: &Window, parent: &W
         }
         PaletteAction::IncreaseFontSize => {
             let mut s = state.borrow_mut();
-            adjust_font(&mut s, 1);
+            adjust_font(&mut s, state, 1);
         }
         PaletteAction::DecreaseFontSize => {
             let mut s = state.borrow_mut();
-            adjust_font(&mut s, -1);
+            adjust_font(&mut s, state, -1);
         }
         PaletteAction::ResetFontSize => {
             let mut s = state.borrow_mut();
@@ -2203,42 +2221,17 @@ fn toggle_fullscreen(s: &mut UiState) {
     }
 }
 
-/// 通过 Core SettingsService 事务写回 config.toml（唯一事实源）。
+/// 通过统一 FFI client 的 Core 配置事务写回 config.toml（唯一事实源）。
 /// 平台禁止直接解析或写 TOML；失败只记日志，不覆盖用户文件。
-pub fn persist_config(dotted: &str, value: serde_json::Value) {
-    let Some(path) = Config::user_config_path() else {
-        return;
-    };
-    let mut service = match SettingsService::open(&path) {
-        Ok(service) => service,
-        Err(error) => {
-            tracing::warn!(target = "muxterm::config", "打开配置事务失败: {error}");
-            return;
-        }
-    };
-    let Ok(pointer) = crate::core::config_service::dotted_pointer(dotted) else {
-        return;
-    };
-    let transaction = service.begin();
-    if let Err(error) = service
-        .patch(
-            &transaction,
-            &[crate::core::config_service::JsonPatchOperation {
-                op: "replace".into(),
-                path: pointer,
-                value: Some(value),
-            }],
-        )
-        .and_then(|_| service.commit(&transaction).map(|_| ()))
-    {
+pub fn persist_config(client: &FfiClient, dotted: &str, value: serde_json::Value) {
+    if let Err(error) = client.config_apply_path(dotted, value) {
         tracing::warn!(target = "muxterm::config", "保存设置失败: {error}");
-        let _ = service.cancel(&transaction);
     }
 }
 
 /// C8：字号写盘防抖（300ms），避免 Ctrl+= 热路径同步写 config.toml。
 /// 用 generation 作废旧回调，不 remove 已触发的 SourceId（glib 会 panic）。
-fn schedule_font_persist(size: f32) {
+fn schedule_font_persist(state: &Rc<RefCell<UiState>>, size: f32) {
     use std::cell::Cell;
     thread_local! {
         static FONT_PERSIST_GEN: Cell<u64> = const { Cell::new(0) };
@@ -2246,17 +2239,30 @@ fn schedule_font_persist(size: f32) {
     FONT_PERSIST_GEN.with(|gen| {
         let my_gen = gen.get().wrapping_add(1);
         gen.set(my_gen);
+        let state = Rc::downgrade(state);
         glib::timeout_add_local(std::time::Duration::from_millis(300), move || {
             let current = FONT_PERSIST_GEN.with(|g| g.get());
             if current == my_gen {
-                persist_config("font.size", serde_json::Value::from(f64::from(size)));
+                if let Some(state) = state.upgrade() {
+                    match state.try_borrow() {
+                        Ok(s) => persist_config(
+                            s.event_pump.client(),
+                            "font.size",
+                            serde_json::Value::from(f64::from(size)),
+                        ),
+                        Err(error) => tracing::warn!(
+                            target = "muxterm::config",
+                            "字号防抖写盘时主窗口状态仍被占用: {error}"
+                        ),
+                    }
+                }
             }
             glib::ControlFlow::Break
         });
     });
 }
 
-fn adjust_font(s: &mut UiState, direction: i32) {
+fn adjust_font(s: &mut UiState, state: &Rc<RefCell<UiState>>, direction: i32) {
     let next = FontSettings::zoomed(s.font.size, direction);
     if (next - s.font.size).abs() < f32::EPSILON {
         return;
@@ -2265,7 +2271,7 @@ fn adjust_font(s: &mut UiState, direction: i32) {
     // C8：热路径只改当前前台 LayoutHost，立刻返回；后台 cache 在 activate
     // 时按尺寸差补。写盘防抖 300ms，不阻塞按键。
     s.active_layout_mut().set_font_size(next);
-    schedule_font_persist(next);
+    schedule_font_persist(state, next);
 }
 
 fn reset_font(s: &mut UiState) {
@@ -2275,6 +2281,7 @@ fn reset_font(s: &mut UiState) {
         layout.set_font(&font);
     }
     persist_config(
+        s.event_pump.client(),
         "font.size",
         serde_json::Value::from(f64::from(s.config_font_size)),
     );
@@ -2297,6 +2304,7 @@ fn toggle_theme(s: &mut UiState) {
     s.status.apply_theme(&theme);
     apply_chrome_css(&theme);
     persist_config(
+        s.event_pump.client(),
         "theme.name",
         serde_json::Value::String(next_name.to_string()),
     );
@@ -2311,6 +2319,7 @@ fn toggle_status_mode(s: &mut UiState) {
     s.status_mode = next;
     s.status.set_mode(next);
     persist_config(
+        s.event_pump.client(),
         "statusbar.mode",
         serde_json::Value::String(next.as_str().to_string()),
     );
@@ -4226,16 +4235,59 @@ fn open_preferences(state: &Rc<RefCell<UiState>>, window: &Window) {
     let st = state.clone();
     let hosts = FfiClient::discover_ssh_hosts().unwrap_or_default();
     let runtimes = FfiClient::discover_runtimes().unwrap_or_default();
-    let callback_path = path.clone();
+    let config_api = ConfigApi::from_callbacks(
+        {
+            let state = Rc::downgrade(state);
+            move || with_config_client(&state, FfiClient::config_describe)
+        },
+        {
+            let state = Rc::downgrade(state);
+            move |patch| with_config_client(&state, |client| client.config_apply(patch))
+        },
+        {
+            let state = Rc::downgrade(state);
+            move || {
+                with_config_client(&state, |client| {
+                    client.config_reload()?;
+                    client.config_describe()
+                })
+            }
+        },
+    );
+    let snapshot = match config_api.describe() {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            tracing::warn!(
+                target = "muxterm::config",
+                "打开设置页读取配置失败: {error}"
+            );
+            return;
+        }
+    };
+    let config_for_saved = config_api.clone();
     crate::platform::linux::preferences_window::show(
         window,
         path,
+        config_api,
+        snapshot,
         std::boxed::Box::new(move || {
+            let snapshot = config_for_saved.describe();
             let mut s = st.borrow_mut();
-            // 保存后重新打开 Core 事务中的文档，重建 keymap 并刷新可由
-            // SettingsService 验证过的运行期状态；platform 不直接读 config.toml。
-            if let Ok(service) = SettingsService::open(&callback_path) {
-                let document = service.document();
+            // 保存后重新读取 Core FFI 快照，重建 keymap 并刷新运行期状态。
+            if let Ok(snapshot) = snapshot {
+                let document = match serde_json::from_value::<
+                    crate::core::config_service::ConfigDocument,
+                >(snapshot.values)
+                {
+                    Ok(document) => document,
+                    Err(error) => {
+                        tracing::warn!(
+                            target = "muxterm::config",
+                            "配置快照解码失败，跳过热应用: {error}"
+                        );
+                        return;
+                    }
+                };
                 let cfg = &document.config;
                 let shortcuts = &document.shortcuts;
                 let bindings =
@@ -4277,6 +4329,17 @@ fn open_preferences(state: &Rc<RefCell<UiState>>, window: &Window) {
     );
 }
 
+fn with_config_client<T>(
+    state: &std::rc::Weak<RefCell<UiState>>,
+    operation: impl FnOnce(&FfiClient) -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    let state = state.upgrade().ok_or_else(|| anyhow!("主窗口状态已销毁"))?;
+    let state = state
+        .try_borrow()
+        .map_err(|error| anyhow!("主窗口状态正在更新: {error}"))?;
+    operation(state.event_pump.client())
+}
+
 fn open_target_config(
     state: &Rc<RefCell<UiState>>,
     window: &Window,
@@ -4299,6 +4362,15 @@ fn open_target_config(
             move |saved| {
                 let mut s = st.borrow_mut();
                 s.qc_store.upsert_project(&saved);
+                match serde_json::to_value(s.qc_store.project_documents()) {
+                    Ok(projects) => {
+                        persist_config(s.event_pump.client(), "projects", projects);
+                    }
+                    Err(error) => tracing::warn!(
+                        target = "muxterm::config",
+                        "序列化 Project 配置失败: {error}"
+                    ),
+                }
                 drop(s);
                 open_quick_connect(&st, &win);
             }

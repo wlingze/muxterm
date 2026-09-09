@@ -31,6 +31,39 @@ impl QuickConnectStore {
         Self::default()
     }
 
+    /// Build an in-memory editor store from the Core-owned project records.
+    ///
+    /// The GTK project editor can then update the list without opening the
+    /// configuration file itself; the caller persists the resulting records
+    /// through the public configuration transaction API.
+    pub fn from_project_documents(projects: &[crate::config_service::ProjectDocument]) -> Self {
+        let mut store = Self::in_memory();
+        for project in projects {
+            let Ok(target) = project.to_target() else {
+                continue;
+            };
+            store
+                .project_ids
+                .insert(QuickConnect::unique_id(&target), project.id.clone());
+            store.projects.push(target);
+        }
+        store
+    }
+
+    /// Convert the in-memory editor list back to Core-owned project records.
+    pub fn project_documents(&self) -> Vec<crate::config_service::ProjectDocument> {
+        self.projects
+            .iter()
+            .map(|config| {
+                let mut project = crate::config_service::ProjectDocument::from_target(config);
+                if let Some(project_id) = self.project_ids.get(&QuickConnect::unique_id(config)) {
+                    project.id.clone_from(project_id);
+                }
+                project
+            })
+            .collect()
+    }
+
     /// Create a store backed by Core's unified `config.toml` Project array.
     /// The legacy QuickConnect file is imported by SettingsService when present.
     pub fn new_unified(config_path: Option<PathBuf>) -> Self {
