@@ -3,6 +3,7 @@
 mod project;
 mod service;
 mod store;
+mod target;
 mod worktree;
 
 pub use project::Project;

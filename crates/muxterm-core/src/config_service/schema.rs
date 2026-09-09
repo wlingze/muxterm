@@ -11,7 +11,6 @@ use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::config::{Config, KeyBinding};
-use crate::quickconnect::model::{TargetConfig, TargetRuntime, TargetTransport};
 use crate::workspace::template::WorkspaceTemplate;
 
 pub const CONFIG_VERSION: u32 = 1;
@@ -384,87 +383,6 @@ pub struct ProjectTransport {
     pub target: String,
     #[serde(default)]
     pub options: BTreeMap<String, Value>,
-}
-
-impl ProjectDocument {
-    /// Convert a QuickConnect target into the serializable Project contract.
-    pub fn from_target(config: &TargetConfig) -> Self {
-        let (transport_id, target) = match &config.transport {
-            TargetTransport::Local => ("local".to_string(), String::new()),
-            TargetTransport::Ssh { name } => ("ssh".to_string(), name.clone()),
-        };
-        Self {
-            id: format!("{}@{}", config.name, transport_id),
-            name: config.name.clone(),
-            path: config.path.clone(),
-            runtime: ProjectRuntime {
-                id: config.runtime.as_str().to_string(),
-                options: BTreeMap::new(),
-                session: config.session.clone(),
-                socket: config.socket.clone(),
-                workspace_id: config.workspace_id.clone(),
-            },
-            transport: ProjectTransport {
-                id: transport_id,
-                target,
-                options: BTreeMap::new(),
-            },
-            template: None,
-            worktrees: Vec::new(),
-            command: Vec::new(),
-            env: BTreeMap::new(),
-        }
-    }
-
-    /// Convert the portable Project contract back into a QuickConnect target.
-    pub fn to_target(&self) -> Result<TargetConfig> {
-        let runtime = TargetRuntime::from_str(&self.runtime.id)
-            .ok_or_else(|| anyhow!("不支持的 project runtime: {}", self.runtime.id))?;
-        let transport = match self.transport.id.to_ascii_lowercase().as_str() {
-            "local" => TargetTransport::Local,
-            "ssh" => {
-                let alias = if self.transport.target.trim().is_empty() {
-                    self.transport
-                        .options
-                        .get("name")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                } else {
-                    self.transport.target.as_str()
-                };
-                if alias.trim().is_empty() {
-                    return Err(anyhow!("project {} 的 SSH transport 缺少 target", self.id));
-                }
-                TargetTransport::Ssh {
-                    name: alias.to_string(),
-                }
-            }
-            other => return Err(anyhow!("不支持的 project transport: {other}")),
-        };
-        let mut target = TargetConfig::new(&self.name, runtime, transport, &self.path);
-        target.session = self.runtime.session.clone().or_else(|| {
-            self.runtime
-                .options
-                .get("session")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        });
-        target.socket = self.runtime.socket.clone().or_else(|| {
-            self.runtime
-                .options
-                .get("socket")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        });
-        target.workspace_id = self.runtime.workspace_id.clone().or_else(|| {
-            self.runtime
-                .options
-                .get("workspace_id")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        });
-        Ok(target)
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Default)]
