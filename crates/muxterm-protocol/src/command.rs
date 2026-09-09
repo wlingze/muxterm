@@ -120,9 +120,6 @@ pub enum CliCommand {
     /// asks the daemon for the event stream without requesting a state dump.
     #[doc(hidden)]
     PollEvents,
-
-    /// 导出完整状态快照（旧 CLI/诊断查询；DaemonRuntime 使用 PollEvents）。
-    DumpState,
 }
 
 /// 解析 CLI 命令行参数（不含程序名）。
@@ -254,8 +251,6 @@ pub fn parse_cli_command(args: &[String]) -> Result<(CliCommand, Option<String>)
                 .ok_or_else(|| CliError::MissingArg("-t pane".into()))?,
             format: get_opt_arg(rest, "-F").unwrap_or_default(),
         },
-        "dump-state" => CliCommand::DumpState,
-
         other => return Err(CliError::UnknownCommand(other.to_string())),
     };
 
@@ -645,12 +640,5 @@ mod tests {
                 ref format
             } if format == "#{pane_current_command}"
         ));
-    }
-
-    /// dump-state 导出完整快照（TUI/daemon 同步用）。
-    #[test]
-    fn parse_dump_state() {
-        let (cmd, _) = parse_cli_command(&args("dump-state", &[])).unwrap();
-        assert!(matches!(cmd, CliCommand::DumpState));
     }
 }

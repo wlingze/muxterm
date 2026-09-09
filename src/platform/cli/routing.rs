@@ -156,7 +156,6 @@ impl FfiCliSession {
             CliCommand::SendKeys { .. }
                 | CliCommand::WriteRaw { .. }
                 | CliCommand::CapturePane { .. }
-                | CliCommand::DumpState
         ) {
             return;
         }
@@ -166,7 +165,6 @@ impl FfiCliSession {
             | CliCommand::CapturePane { target, .. } => {
                 target.map(|id| id.0).or_else(|| self.active_pane_id())
             }
-            CliCommand::DumpState => self.active_pane_id(),
             _ => None,
         };
         if let Some(pane_id) = pane_id {
@@ -228,8 +226,7 @@ impl FfiCliSession {
             | ListLayout
             | CapturePane { .. }
             | DisplayMessage { .. }
-            | PollEvents
-            | DumpState => Ok(()),
+            | PollEvents => Ok(()),
             CloseWorkspace { .. } => self.execute(ClientTask::Shutdown),
             Detach { .. } => self.execute(ClientTask::Detach),
             RenameWorkspace { new_name } => Self::check_code(

@@ -6,7 +6,7 @@
 
 use crate::command::CliCommand;
 use crate::layout::TabLayout;
-use crate::state::{BackendStatus, PaneInfo, TabInfo};
+use crate::state::{PaneInfo, TabInfo};
 
 /// Return the default Unix socket path shared by the daemon host and clients.
 ///
@@ -44,21 +44,6 @@ impl OutputFormat {
             _ => Self::Json,
         }
     }
-}
-
-/// Complete state snapshot exchanged by the legacy daemon query wire.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct StateSnapshot {
-    pub workspace_name: String,
-    pub workspace_runtime: String,
-    pub tabs: Vec<TabInfo>,
-    pub panes: Vec<PaneInfo>,
-    pub layouts: Vec<TabLayout>,
-    /// pane_id.0 → cumulative output (lossy UTF-8; contains ANSI).
-    pub outputs: Vec<(u32, String)>,
-    pub status: BackendStatus,
-    pub active_tab: Option<u32>,
-    pub active_pane: Option<u32>,
 }
 
 /// Control-lane baseline sent by the daemon when a client connects or when

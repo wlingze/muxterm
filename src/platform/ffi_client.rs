@@ -1396,7 +1396,7 @@ impl FfiClient {
     /// This deliberately queries only workspace metadata, tabs, panes, and
     /// layouts.  Pane output is never read here: render data must travel as
     /// incremental FFI events so the daemon client does not recreate the old
-    /// cumulative `DumpState` protocol.
+    /// cumulative snapshot protocol.
     pub fn workspace_topology_json(&self, workspace_id: &str) -> anyhow::Result<serde_json::Value> {
         let workspace = self
             .workspace_list()?
