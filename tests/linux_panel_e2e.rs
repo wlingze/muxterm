@@ -12,16 +12,15 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::process::Command;
 use std::rc::Rc;
-use std::time::Instant;
 
 use gtk4::prelude::*;
 use gtk4::{gdk, glib};
 use support::linux_gtk::*;
 
-use muxterm::test_support::core::attention::engine::PaneAttention;
-use muxterm::test_support::core::attention::state::PaneStatus;
 use muxterm::test_support::core::workspace::id::WorkspaceId;
-use muxterm::test_support::platform::ffi_client::ClientCandidateRef;
+use muxterm::test_support::platform::ffi_client::{
+    ClientAttentionPane, ClientAttentionStatus, ClientCandidateRef,
+};
 use muxterm::test_support::platform::linux::panel_model::{PanelTab, SearchRow};
 use muxterm::test_support::platform::linux::quickconnect::model::{
     QuickBadge, QuickConnect, QuickConnectEntry, TargetConfig, TargetRuntime, TargetTransport,
@@ -32,11 +31,16 @@ use muxterm::test_support::platform::linux::workspace_sidebar::{
 };
 use muxterm::test_support::platform::ssh_probe::SshReach;
 
-fn attention(ws: &str, pane: u32, status: PaneStatus, line: &str) -> PaneAttention {
-    PaneAttention {
+fn attention(
+    ws: &str,
+    pane: u32,
+    status: ClientAttentionStatus,
+    line: &str,
+) -> ClientAttentionPane {
+    ClientAttentionPane {
         workspace_id: ws.into(),
         pane_id: pane,
-        status,
+        status: format!("{status:?}").to_lowercase(),
         acknowledged: false,
         last_line: line.into(),
         seq: pane as u64,
@@ -44,12 +48,15 @@ fn attention(ws: &str, pane: u32, status: PaneStatus, line: &str) -> PaneAttenti
         process_is_agent: false,
         agent_name: None,
         shell_name: Some("zsh".into()),
-        mute_until: None,
-        last_regex_eval: Instant::now(),
     }
 }
 
-fn read_attention(ws: &str, pane: u32, status: PaneStatus, line: &str) -> PaneAttention {
+fn read_attention(
+    ws: &str,
+    pane: u32,
+    status: ClientAttentionStatus,
+    line: &str,
+) -> ClientAttentionPane {
     let mut attention = attention(ws, pane, status, line);
     attention.acknowledged = true;
     attention
@@ -183,9 +190,24 @@ fn three_tab_panel_full_flow() {
                         ),
                     ],
                     attention: vec![
-                        attention("legion@local", 1, PaneStatus::Working, "running"),
-                        read_attention("muxterm@local", 2, PaneStatus::Done, "build ok"),
-                        attention("plain@local", 3, PaneStatus::Blocked, "ask me"),
+                        attention(
+                            "legion@local",
+                            1,
+                            ClientAttentionStatus::Working,
+                            "running",
+                        ),
+                        read_attention(
+                            "muxterm@local",
+                            2,
+                            ClientAttentionStatus::Done,
+                            "build ok",
+                        ),
+                        attention(
+                            "plain@local",
+                            3,
+                            ClientAttentionStatus::Blocked,
+                            "ask me",
+                        ),
                     ],
                     on_connect: Box::new(|_| {}),
                     on_existing_connect: Box::new(|_| {}),
@@ -560,9 +582,9 @@ fn rapid_typing_and_attention_navigation_stay_lightweight() {
                         workspace_search_items: vec![],
                         agents: vec![],
                         attention: vec![
-                            attention("one", 1, PaneStatus::Blocked, "first"),
-                            attention("two", 2, PaneStatus::Blocked, "second"),
-                            attention("three", 3, PaneStatus::Done, "third"),
+                            attention("one", 1, ClientAttentionStatus::Blocked, "first"),
+                            attention("two", 2, ClientAttentionStatus::Blocked, "second"),
+                            attention("three", 3, ClientAttentionStatus::Done, "third"),
                         ],
                         on_connect: Box::new(|_| {}),
                         on_existing_connect: Box::new(|_| {}),

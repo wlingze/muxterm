@@ -17,9 +17,10 @@ use gtk4::{
     SelectionMode, Window,
 };
 
-use crate::core::attention::engine::PaneAttention;
-use crate::core::attention::state::PaneStatus;
-use crate::platform::ffi_client::{ClientCandidateRef, ClientOpenIntent, ClientOpenRequest};
+use crate::platform::ffi_client::{
+    ClientAttentionPane, ClientAttentionStatus, ClientCandidateRef, ClientOpenIntent,
+    ClientOpenRequest,
+};
 use crate::platform::i18n::{self, Key as TextKey};
 use crate::platform::linux::panel_model::{
     filter_attention_panel_rows, filter_workspace_rows, search_rows, AttentionPanelRow, PanelModel,
@@ -462,7 +463,7 @@ pub struct PanelShowArgs {
     /// 相同，兼容只关心紧凑列表的测试调用方。
     pub workspace_search_items: Vec<PanelItem>,
     pub agents: Vec<AgentSidebarItem>,
-    pub attention: Vec<PaneAttention>,
+    pub attention: Vec<ClientAttentionPane>,
     pub on_connect: Box<dyn Fn(ClientOpenRequest)>,
     /// Existing 行专用回调：接收 typed CandidateRef + attach-only 意图。
     pub on_existing_connect: Box<dyn Fn(ClientOpenRequest)>,
@@ -785,16 +786,18 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
 
     // 工作区级状态：blocked 优先于 done（从 attention 行推导）。
     let workspace_status = {
-        let mut map: std::collections::HashMap<String, PaneStatus> =
+        let mut map: std::collections::HashMap<String, ClientAttentionStatus> =
             std::collections::HashMap::new();
         for p in attention.iter() {
             let entry = map
                 .entry(p.workspace_id.clone())
-                .or_insert(PaneStatus::Idle);
-            if p.status == PaneStatus::Blocked {
-                *entry = PaneStatus::Blocked;
-            } else if *entry != PaneStatus::Blocked && p.status == PaneStatus::Done {
-                *entry = PaneStatus::Done;
+                .or_insert(ClientAttentionStatus::Idle);
+            if p.status_kind() == ClientAttentionStatus::Blocked {
+                *entry = ClientAttentionStatus::Blocked;
+            } else if *entry != ClientAttentionStatus::Blocked
+                && p.status_kind() == ClientAttentionStatus::Done
+            {
+                *entry = ClientAttentionStatus::Done;
             }
         }
         map
@@ -891,8 +894,8 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                                 let boxed = target_row(entry, *is_current, reach);
                                 if let Some(status) = row.status {
                                     let mark = Label::new(Some(match status {
-                                        PaneStatus::Blocked => "● ",
-                                        PaneStatus::Done => "✓ ",
+                                        ClientAttentionStatus::Blocked => "● ",
+                                        ClientAttentionStatus::Done => "✓ ",
                                         _ => "",
                                     }));
                                     mark.add_css_class("qc-status-mark");

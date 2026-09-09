@@ -5,8 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::core::attention::engine::PaneAttention;
-use crate::core::attention::state::PaneStatus;
+use crate::platform::ffi_client::{ClientAttentionPane, ClientAttentionStatus};
 use crate::platform::linux::quickconnect_panel::{filter_panel_items, PanelItem};
 use crate::platform::linux::workspace_sidebar::{ActivityIndicator, AgentSidebarItem};
 
@@ -60,13 +59,13 @@ impl PanelModel {
 pub struct WorkspaceRow {
     pub item: PanelItem,
     /// 工作区级状态：blocked 显示 `●`，done 显示 `✓`，否则无。
-    pub status: Option<PaneStatus>,
+    pub status: Option<ClientAttentionStatus>,
 }
 
 /// Tab2 行：注意力 pane。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttentionRow {
-    pub attention: PaneAttention,
+    pub attention: ClientAttentionPane,
 }
 
 /// Attention tab 的统一展示行：agent 常驻，其余行保留 Blocked/Done 语义。
@@ -106,7 +105,7 @@ impl From<crate::core::workspace::workspace::SearchHit> for SearchRow {
 pub fn filter_workspace_rows(
     items: &[PanelItem],
     query: &str,
-    status_of: impl Fn(&PanelItem) -> Option<PaneStatus>,
+    status_of: impl Fn(&PanelItem) -> Option<ClientAttentionStatus>,
 ) -> Vec<WorkspaceRow> {
     filter_panel_items(items, query)
         .into_iter()
@@ -119,14 +118,14 @@ pub fn filter_workspace_rows(
 
 /// Tab2 过滤：保留运行中的命令和未读 Blocked/Done；已读完成项不再出现。
 /// 未读 blocked/done 先于 running；同状态按 seq 新者优先。
-pub fn filter_attention_rows(panes: &[PaneAttention], query: &str) -> Vec<AttentionRow> {
+pub fn filter_attention_rows(panes: &[ClientAttentionPane], query: &str) -> Vec<AttentionRow> {
     let q = query.trim().to_lowercase();
     let mut rows: Vec<AttentionRow> = panes
         .iter()
-        .filter(|p| match p.status {
-            PaneStatus::Working => true,
-            PaneStatus::Blocked | PaneStatus::Done => !p.acknowledged,
-            PaneStatus::Unknown | PaneStatus::Idle => false,
+        .filter(|p| match p.status_kind() {
+            ClientAttentionStatus::Working => true,
+            ClientAttentionStatus::Blocked | ClientAttentionStatus::Done => !p.acknowledged,
+            ClientAttentionStatus::Unknown | ClientAttentionStatus::Idle => false,
         })
         .filter(|p| {
             q.is_empty()
@@ -143,13 +142,13 @@ pub fn filter_attention_rows(panes: &[PaneAttention], query: &str) -> Vec<Attent
         .collect();
     rows.sort_by(|a, b| {
         let rank = |status| match status {
-            PaneStatus::Blocked => 0,
-            PaneStatus::Done => 1,
-            PaneStatus::Working => 2,
-            PaneStatus::Unknown | PaneStatus::Idle => 3,
+            ClientAttentionStatus::Blocked => 0,
+            ClientAttentionStatus::Done => 1,
+            ClientAttentionStatus::Working => 2,
+            ClientAttentionStatus::Unknown | ClientAttentionStatus::Idle => 3,
         };
-        rank(a.attention.status)
-            .cmp(&rank(b.attention.status))
+        rank(a.attention.status_kind())
+            .cmp(&rank(b.attention.status_kind()))
             .then(b.attention.seq.cmp(&a.attention.seq))
     });
     rows
@@ -161,11 +160,11 @@ pub fn filter_attention_rows(panes: &[PaneAttention], query: &str) -> Vec<Attent
 /// 同一 pane 即使同时处于 Blocked/Done，也只展示一次 agent 行。
 pub fn filter_attention_panel_rows(
     agents: &[AgentSidebarItem],
-    panes: &[PaneAttention],
+    panes: &[ClientAttentionPane],
     query: &str,
 ) -> Vec<AttentionPanelRow> {
     let q = query.trim().to_lowercase();
-    let pane_by_key: HashMap<(String, u32), &PaneAttention> = panes
+    let pane_by_key: HashMap<(String, u32), &ClientAttentionPane> = panes
         .iter()
         .map(|pane| ((pane.workspace_id.clone(), pane.pane_id), pane))
         .collect();
@@ -222,16 +221,21 @@ pub fn filter_attention_panel_rows(
                 } else {
                     format!("{} · {}", attention.workspace_id, attention.last_line)
                 };
+                let indicator = match attention.status_kind() {
+                    ClientAttentionStatus::Working => ActivityIndicator::Running,
+                    ClientAttentionStatus::Blocked | ClientAttentionStatus::Done => {
+                        ActivityIndicator::Done
+                    }
+                    ClientAttentionStatus::Unknown | ClientAttentionStatus::Idle => {
+                        ActivityIndicator::None
+                    }
+                };
                 AttentionPanelRow {
                     workspace_id: attention.workspace_id,
                     pane_id: attention.pane_id,
                     title,
                     detail,
-                    indicator: match attention.status {
-                        PaneStatus::Working => ActivityIndicator::Running,
-                        PaneStatus::Blocked | PaneStatus::Done => ActivityIndicator::Done,
-                        PaneStatus::Unknown | PaneStatus::Idle => ActivityIndicator::None,
-                    },
+                    indicator,
                 }
             }),
     );
@@ -256,16 +260,20 @@ pub fn search_rows(query: &str, hits: Vec<SearchRow>) -> (Vec<SearchRow>, bool) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Instant;
 
     use crate::core::workspace::id::WorkspaceId;
     use crate::platform::linux::workspace_sidebar::{ActivityIndicator, AgentSidebarItem};
 
-    fn attention(ws: &str, pane: u32, status: PaneStatus, seq: u64) -> PaneAttention {
-        PaneAttention {
+    fn attention(
+        ws: &str,
+        pane: u32,
+        status: ClientAttentionStatus,
+        seq: u64,
+    ) -> ClientAttentionPane {
+        ClientAttentionPane {
             workspace_id: ws.into(),
             pane_id: pane,
-            status,
+            status: format!("{status:?}").to_lowercase(),
             acknowledged: false,
             last_line: format!("line-{pane}"),
             seq,
@@ -273,8 +281,6 @@ mod tests {
             process_is_agent: false,
             agent_name: None,
             shell_name: Some("zsh".into()),
-            mute_until: None,
-            last_regex_eval: Instant::now(),
         }
     }
 
@@ -301,14 +307,14 @@ mod tests {
 
     #[test]
     fn attention_keeps_running_and_unread_done_but_hides_read_items() {
-        let mut read = attention("ws-e", 5, PaneStatus::Done, 5);
+        let mut read = attention("ws-e", 5, ClientAttentionStatus::Done, 5);
         read.acknowledged = true;
         let rows = filter_attention_rows(
             &[
-                attention("ws-a", 1, PaneStatus::Done, 1),
-                attention("ws-b", 2, PaneStatus::Blocked, 2),
-                attention("ws-c", 3, PaneStatus::Working, 3),
-                attention("ws-d", 4, PaneStatus::Idle, 4),
+                attention("ws-a", 1, ClientAttentionStatus::Done, 1),
+                attention("ws-b", 2, ClientAttentionStatus::Blocked, 2),
+                attention("ws-c", 3, ClientAttentionStatus::Working, 3),
+                attention("ws-d", 4, ClientAttentionStatus::Idle, 4),
                 read,
             ],
             "",
@@ -323,8 +329,8 @@ mod tests {
     fn attention_query_filters_by_workspace_process_line() {
         let rows = filter_attention_rows(
             &[
-                attention("legion", 1, PaneStatus::Blocked, 1),
-                attention("other", 2, PaneStatus::Blocked, 2),
+                attention("legion", 1, ClientAttentionStatus::Blocked, 1),
+                attention("other", 2, ClientAttentionStatus::Blocked, 2),
             ],
             "legion",
         );
@@ -352,12 +358,12 @@ mod tests {
                 indicator: ActivityIndicator::None,
             },
         ];
-        let mut seen_agent = attention(&second_id.replica_id(), 9, PaneStatus::Done, 2);
+        let mut seen_agent = attention(&second_id.replica_id(), 9, ClientAttentionStatus::Done, 2);
         seen_agent.acknowledged = true;
         let panes = vec![
-            attention(&first_id.replica_id(), 7, PaneStatus::Working, 1),
+            attention(&first_id.replica_id(), 7, ClientAttentionStatus::Working, 1),
             seen_agent,
-            attention("plain@local", 11, PaneStatus::Blocked, 3),
+            attention("plain@local", 11, ClientAttentionStatus::Blocked, 3),
         ];
 
         let rows = filter_attention_panel_rows(&agents, &panes, "");
@@ -394,10 +400,10 @@ mod tests {
             ),
             PanelItem::NewProject,
         ];
-        let rows = filter_workspace_rows(&items, "", |_| Some(PaneStatus::Blocked));
+        let rows = filter_workspace_rows(&items, "", |_| Some(ClientAttentionStatus::Blocked));
         assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].status, Some(PaneStatus::Blocked));
-        assert_eq!(rows[1].status, Some(PaneStatus::Blocked));
+        assert_eq!(rows[0].status, Some(ClientAttentionStatus::Blocked));
+        assert_eq!(rows[1].status, Some(ClientAttentionStatus::Blocked));
         // 顺序固定：Target 仍在 NewProject 前。
         assert!(matches!(rows[0].item, PanelItem::Target(_, _)));
         assert!(matches!(rows[1].item, PanelItem::NewProject));

@@ -458,31 +458,12 @@ fn client_attention_pane(pane: &PaneAttention) -> ClientAttentionPane {
     }
 }
 
-fn panel_attention_rows(snapshot: &ClientActivitySnapshot) -> Vec<PaneAttention> {
+fn panel_attention_rows(snapshot: &ClientActivitySnapshot) -> Vec<ClientAttentionPane> {
     snapshot
         .workspaces
         .iter()
         .flat_map(|workspace| workspace.panes.iter())
-        .map(|pane| PaneAttention {
-            workspace_id: pane.workspace_id.clone(),
-            pane_id: pane.pane_id,
-            status: match pane.status.as_str() {
-                "idle" => PaneStatus::Idle,
-                "working" => PaneStatus::Working,
-                "blocked" => PaneStatus::Blocked,
-                "done" => PaneStatus::Done,
-                _ => PaneStatus::Unknown,
-            },
-            acknowledged: pane.acknowledged,
-            last_line: pane.last_line.clone(),
-            seq: pane.seq,
-            process_name: pane.process_name.clone(),
-            process_is_agent: pane.process_is_agent,
-            agent_name: pane.agent_name.clone(),
-            shell_name: pane.shell_name.clone(),
-            mute_until: None,
-            last_regex_eval: Instant::now(),
-        })
+        .cloned()
         .collect()
 }
 
