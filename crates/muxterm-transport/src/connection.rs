@@ -1,8 +1,18 @@
 //! Reusable target connection identity and bounded command adapter.
 
 use std::io;
-use std::path::Path;
+#[cfg(unix)]
+use std::io::{Read, Write};
+#[cfg(unix)]
+use std::net::Shutdown;
+#[cfg(unix)]
+use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
+#[cfg(unix)]
+use std::time::{Duration, Instant};
 
 use crate::local::LocalProcessTransport;
 use crate::ssh::{build_ssh_command, SshProcessTransport};
@@ -43,55 +53,14 @@ impl TargetConnection for Connect {
     }
 
     fn open_channel(&self, request: ChannelRequest) -> anyhow::Result<Box<dyn ByteChannel>> {
-        let ChannelRequest::Exec {
-            argv,
-            cwd,
-            env,
-            pty,
-        } = request
-        else {
-            return Err(anyhow::anyhow!(
-                "UnixSocket channels are not implemented by this connection adapter"
-            ));
-        };
-        let Some(program) = argv.first() else {
-            return Err(anyhow::anyhow!("Exec channel argv 不能为空"));
-        };
-        let args = argv[1..].iter().map(String::as_str).collect::<Vec<_>>();
-        let pty_size = pty.unwrap_or_default();
-
-        match self.transport_id.as_str() {
-            "local" => {
-                let mut transport = LocalProcessTransport::new();
-                transport.spawn_exec_with_options(
-                    program,
-                    &args,
-                    pty_size,
-                    cwd.as_deref(),
-                    &env,
-                )?;
-                Ok(Box::new(ProcessByteChannel {
-                    transport: Box::new(transport),
-                }))
-            }
-            "ssh" => {
-                if self.target.is_empty() {
-                    return Err(anyhow::anyhow!("SSH Exec channel 缺少 target alias"));
-                }
-                let remote_command = build_remote_exec_command(&argv, cwd.as_deref(), &env)?;
-                let ssh_config = std::env::var("MUXTERM_SSH_CONFIG_PATH").ok();
-                let (ssh_program, ssh_args) =
-                    build_ssh_command(&self.target, &remote_command, ssh_config.as_deref());
-                let ssh_arg_refs = ssh_args.iter().map(String::as_str).collect::<Vec<_>>();
-                let mut transport = SshProcessTransport::new();
-                transport.spawn_exec(&ssh_program, &ssh_arg_refs, pty_size)?;
-                Ok(Box::new(ProcessByteChannel {
-                    transport: Box::new(transport),
-                }))
-            }
-            transport => Err(anyhow::anyhow!(
-                "unsupported target transport '{transport}'"
-            )),
+        match request {
+            ChannelRequest::Exec {
+                argv,
+                cwd,
+                env,
+                pty,
+            } => self.open_exec_channel(argv, cwd, env, pty),
+            ChannelRequest::UnixSocket { path } => self.open_unix_socket_channel(path),
         }
     }
 
@@ -142,6 +111,93 @@ impl TargetConnection for Connect {
 
     fn probe(&self) -> anyhow::Result<()> {
         Ok(())
+    }
+}
+
+impl Connect {
+    fn open_exec_channel(
+        &self,
+        argv: Vec<String>,
+        cwd: Option<PathBuf>,
+        env: Vec<(String, String)>,
+        pty: Option<crate::PtySize>,
+    ) -> anyhow::Result<Box<dyn ByteChannel>> {
+        let Some(program) = argv.first() else {
+            return Err(anyhow::anyhow!("Exec channel argv 不能为空"));
+        };
+        let args = argv[1..].iter().map(String::as_str).collect::<Vec<_>>();
+        let pty_size = pty.unwrap_or_default();
+
+        match self.transport_id.as_str() {
+            "local" => {
+                let mut transport = LocalProcessTransport::new();
+                transport.spawn_exec_with_options(
+                    program,
+                    &args,
+                    pty_size,
+                    cwd.as_deref(),
+                    &env,
+                )?;
+                Ok(Box::new(ProcessByteChannel {
+                    transport: Box::new(transport),
+                }))
+            }
+            "ssh" => {
+                if self.target.is_empty() {
+                    return Err(anyhow::anyhow!("SSH Exec channel 缺少 target alias"));
+                }
+                let remote_command = build_remote_exec_command(&argv, cwd.as_deref(), &env)?;
+                let ssh_config = std::env::var("MUXTERM_SSH_CONFIG_PATH").ok();
+                let (ssh_program, ssh_args) =
+                    build_ssh_command(&self.target, &remote_command, ssh_config.as_deref());
+                let ssh_arg_refs = ssh_args.iter().map(String::as_str).collect::<Vec<_>>();
+                let mut transport = SshProcessTransport::new();
+                transport.spawn_exec(&ssh_program, &ssh_arg_refs, pty_size)?;
+                Ok(Box::new(ProcessByteChannel {
+                    transport: Box::new(transport),
+                }))
+            }
+            transport => Err(anyhow::anyhow!(
+                "unsupported target transport '{transport}'"
+            )),
+        }
+    }
+
+    fn open_unix_socket_channel(&self, path: PathBuf) -> anyhow::Result<Box<dyn ByteChannel>> {
+        #[cfg(not(unix))]
+        {
+            let _ = path;
+            return Err(anyhow::anyhow!(
+                "UnixSocket channels are not supported on this platform"
+            ));
+        }
+
+        #[cfg(unix)]
+        {
+            let (stream, forward) = match self.transport_id.as_str() {
+                "local" => (UnixStream::connect(&path)?, None),
+                "ssh" => {
+                    if self.target.is_empty() {
+                        return Err(anyhow::anyhow!("SSH UnixSocket channel 缺少 target alias"));
+                    }
+                    let forward = SshUnixSocketForward::start(&self.target, &path)?;
+                    let stream = UnixStream::connect(&forward.local_path).map_err(|error| {
+                        anyhow::anyhow!(
+                            "连接 SSH UnixSocket forwarding 失败（{}）：{error}",
+                            forward.local_path.display()
+                        )
+                    })?;
+                    (stream, Some(forward))
+                }
+                transport => {
+                    return Err(anyhow::anyhow!(
+                        "unsupported target transport '{transport}'"
+                    ));
+                }
+            };
+            stream.set_nonblocking(true)?;
+            Ok(Box::new(UnixSocketByteChannel { stream, forward }))
+        }
     }
 }
 
@@ -223,6 +279,121 @@ fn is_valid_env_key(key: &str) -> bool {
         && chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
 }
 
+#[cfg(unix)]
+struct UnixSocketByteChannel {
+    stream: UnixStream,
+    forward: Option<SshUnixSocketForward>,
+}
+
+#[cfg(unix)]
+impl ByteChannel for UnixSocketByteChannel {
+    fn read(&mut self) -> io::Result<Option<Vec<u8>>> {
+        let mut buffer = [0u8; 8192];
+        match self.stream.read(&mut buffer) {
+            Ok(0) => Ok(None),
+            Ok(size) => Ok(Some(buffer[..size].to_vec())),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        self.stream.write(data)
+    }
+
+    fn resize(&mut self, _cols: u16, _rows: u16) -> anyhow::Result<()> {
+        Err(anyhow::anyhow!("UnixSocket channels do not support resize"))
+    }
+
+    fn shutdown(&mut self) -> anyhow::Result<()> {
+        let _ = self.stream.shutdown(Shutdown::Both);
+        self.forward.take();
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+impl Drop for UnixSocketByteChannel {
+    fn drop(&mut self) {
+        let _ = self.shutdown();
+    }
+}
+
+#[cfg(unix)]
+struct SshUnixSocketForward {
+    child: Child,
+    local_path: PathBuf,
+}
+
+#[cfg(unix)]
+impl SshUnixSocketForward {
+    fn start(alias: &str, remote_path: &Path) -> anyhow::Result<Self> {
+        let remote_path = remote_path
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("SSH UnixSocket path 不是 UTF-8"))?;
+        let local_path = std::env::temp_dir().join(format!(
+            "muxterm-transport-fwd-{}-{}-{}.sock",
+            alias.replace(|character: char| !character.is_ascii_alphanumeric(), "-"),
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default()
+        ));
+        let _ = std::fs::remove_file(&local_path);
+
+        let mut command = Command::new("ssh");
+        command.args([
+            "-nNT",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ExitOnForwardFailure=yes",
+            "-o",
+            "ConnectTimeout=2",
+        ]);
+        if let Some(config) = std::env::var_os("MUXTERM_SSH_CONFIG_PATH") {
+            command.arg("-F").arg(config);
+        }
+        command
+            .arg("-L")
+            .arg(format!("{}:{}", local_path.display(), remote_path))
+            .arg(alias)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut child = command
+            .spawn()
+            .map_err(|error| anyhow::anyhow!("spawn SSH UnixSocket forwarding 失败: {error}"))?;
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if local_path.exists() {
+                return Ok(Self { child, local_path });
+            }
+            if let Ok(Some(_)) = child.try_wait() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_file(&local_path);
+        Err(anyhow::anyhow!(
+            "SSH UnixSocket forwarding 未就绪（alias={alias}, remote={remote_path})"
+        ))
+    }
+}
+
+#[cfg(unix)]
+impl Drop for SshUnixSocketForward {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let _ = std::fs::remove_file(&self.local_path);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,6 +412,54 @@ mod tests {
             path: "/tmp/muxterm-test.sock".into(),
         });
         assert!(result.is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_unix_socket_channel_forwards_bytes() {
+        use std::os::unix::net::UnixListener;
+
+        let path = std::env::temp_dir().join(format!(
+            "muxterm-transport-test-{}-{}.sock",
+            std::process::id(),
+            1
+        ));
+        let _ = std::fs::remove_file(&path);
+        let listener = UnixListener::bind(&path).expect("bind Unix socket");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept Unix socket");
+            stream
+                .write_all(b"socket-ready")
+                .expect("write Unix socket");
+        });
+
+        let connection = Connect::new("local", "");
+        let mut channel = connection
+            .open_channel(ChannelRequest::UnixSocket { path: path.clone() })
+            .expect("open local Unix socket channel");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut output = Vec::new();
+        while std::time::Instant::now() < deadline {
+            match channel.read().expect("read Unix socket channel") {
+                Some(data) => output.extend(data),
+                None => std::thread::sleep(std::time::Duration::from_millis(5)),
+            }
+            if output
+                .windows(b"socket-ready".len())
+                .any(|window| window == b"socket-ready")
+            {
+                break;
+            }
+        }
+        assert!(
+            output
+                .windows(b"socket-ready".len())
+                .any(|window| window == b"socket-ready"),
+            "Unix socket output did not arrive: {output:?}"
+        );
+        channel.shutdown().expect("shutdown Unix socket channel");
+        server.join().expect("join Unix socket server");
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
