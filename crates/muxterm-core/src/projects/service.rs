@@ -11,7 +11,7 @@ use crate::runtime::WorktreeCreateSpec;
 use crate::transport::registry::ConnectionRegistry;
 use crate::transport::ChannelRequest;
 use crate::workspace::pool::WorkspacePool;
-use crate::workspace::template::TemplateName;
+use crate::workspace::template::{TemplateName, TemplateRegistry};
 use muxterm_protocol::WorkspaceId;
 
 use super::{git_worktree_add_argv, Project, ProjectId, ProjectStore, Worktree, WorktreeId};
@@ -165,10 +165,12 @@ impl ProjectsService {
 
     /// Generic create followed by the normal Catalog open path. Completion is
     /// defined by the new Workspace entering the pool.
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_generic_worktree_and_open(
         &mut self,
         catalog: &Catalog,
         connections: &mut ConnectionRegistry,
+        templates: &TemplateRegistry,
         pool: &mut WorkspacePool,
         project_id: &ProjectId,
         spec: &WorktreeCreateSpec,
@@ -178,6 +180,7 @@ impl ProjectsService {
         self.open_worktree(
             catalog,
             connections,
+            templates,
             pool,
             project_id,
             &worktree_id,
@@ -189,10 +192,12 @@ impl ProjectsService {
 
     /// Native Runtime worktree strategy (currently Herdr): the Runtime owns
     /// the checkout creation, while Projects owns the resulting provenance.
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_native_worktree_and_open(
         &mut self,
         catalog: &Catalog,
         connections: &mut ConnectionRegistry,
+        templates: &TemplateRegistry,
         pool: &mut WorkspacePool,
         project_id: &ProjectId,
         spec: &WorktreeCreateSpec,
@@ -211,6 +216,7 @@ impl ProjectsService {
             .open_project(
                 catalog,
                 connections,
+                templates,
                 pool,
                 project_id,
                 ResolveIntent::AttachOnly,
@@ -222,6 +228,7 @@ impl ProjectsService {
         let workspace_id = catalog
             .create_native_worktree_with_pool(
                 connections,
+                templates,
                 pool,
                 &source,
                 spec,
@@ -244,10 +251,12 @@ impl ProjectsService {
 
     /// Select native vs generic strategy, then return only after the new
     /// Workspace has been inserted into the caller-owned product pool.
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_worktree(
         &mut self,
         catalog: &Catalog,
         connections: &mut ConnectionRegistry,
+        templates: &TemplateRegistry,
         pool: &mut WorkspacePool,
         project_id: &ProjectId,
         spec: &WorktreeCreateSpec,
@@ -262,6 +271,7 @@ impl ProjectsService {
             self.create_native_worktree_and_open(
                 catalog,
                 connections,
+                templates,
                 pool,
                 project_id,
                 spec,
@@ -272,6 +282,7 @@ impl ProjectsService {
             self.create_generic_worktree_and_open(
                 catalog,
                 connections,
+                templates,
                 pool,
                 project_id,
                 spec,
@@ -283,10 +294,12 @@ impl ProjectsService {
 
     /// Open a Project through the single Catalog resolver path and caller-owned
     /// product pool.
+    #[allow(clippy::too_many_arguments)]
     pub async fn open_project(
         &self,
         catalog: &Catalog,
         connections: &mut ConnectionRegistry,
+        templates: &TemplateRegistry,
         pool: &mut WorkspacePool,
         id: &ProjectId,
         intent: ResolveIntent,
@@ -305,7 +318,9 @@ impl ProjectsService {
         };
         let resolved = catalog.resolve_open_request(connections, &request, self.list_projects())?;
         let workspace_id = resolved.workspace_id();
-        catalog.open_resolved(connections, pool, resolved).await?;
+        catalog
+            .open_resolved(connections, templates, pool, resolved)
+            .await?;
         Ok(workspace_id)
     }
 
@@ -315,6 +330,7 @@ impl ProjectsService {
         &mut self,
         catalog: &Catalog,
         connections: &mut ConnectionRegistry,
+        templates: &TemplateRegistry,
         pool: &mut WorkspacePool,
         project_id: &ProjectId,
         worktree_id: &super::WorktreeId,
@@ -339,7 +355,9 @@ impl ProjectsService {
         };
         let resolved = catalog.resolve_open_request(connections, &request, self.list_projects())?;
         let workspace_id = resolved.workspace_id();
-        catalog.open_resolved(connections, pool, resolved).await?;
+        catalog
+            .open_resolved(connections, templates, pool, resolved)
+            .await?;
 
         if let Some(record) = self
             .store

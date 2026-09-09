@@ -12,7 +12,7 @@ use crate::protocol::terminal::emulate::DEFAULT_SCROLLBACK_LINES;
 use crate::runtime::{DaemonRuntime, ShellRuntime, TmuxRuntime};
 use crate::transport::registry::ConnectionRegistry;
 use crate::workspace::pool::WorkspacePool;
-use crate::workspace::template::WorkspaceTemplate;
+use crate::workspace::template::{TemplateRegistry, WorkspaceTemplate};
 use muxterm_protocol::WorkspaceId;
 
 use super::super::callbacks::FfiCallbacks;
@@ -164,7 +164,7 @@ fn new_ffi_runtime() -> Option<tokio::runtime::Runtime> {
 }
 
 fn boxed_handle(
-    mut catalog: crate::catalog::Catalog,
+    catalog: crate::catalog::Catalog,
     pool: WorkspacePool,
     rt: tokio::runtime::Runtime,
 ) -> *mut MuxtermHandle {
@@ -179,13 +179,17 @@ fn boxed_handle(
         .cloned()
         .map(WorkspaceTemplate::try_from)
         .collect::<anyhow::Result<Vec<_>>>()
-        .and_then(|templates| catalog.set_templates(templates));
-    if let Err(error) = templates {
-        tracing::warn!(
-            target = "muxterm::config",
-            "WorkspaceTemplate 加载失败，使用空注册表: {error}"
-        );
-    }
+        .and_then(TemplateRegistry::new);
+    let templates = match templates {
+        Ok(templates) => templates,
+        Err(error) => {
+            tracing::warn!(
+                target = "muxterm::config",
+                "WorkspaceTemplate 加载失败，使用空注册表: {error}"
+            );
+            TemplateRegistry::default()
+        }
+    };
     let projects = match ProjectStore::from_settings(&settings) {
         Ok(store) => ProjectsService::new(store),
         Err(error) => {
@@ -199,6 +203,7 @@ fn boxed_handle(
     Box::into_raw(Box::new(MuxtermHandle {
         catalog,
         connections: ConnectionRegistry::new(),
+        templates,
         pool,
         projects,
         rt,

@@ -20,7 +20,7 @@ use crate::transport::{ChannelKind, TargetConnection};
 use crate::workspace::pool::WorkspacePool;
 use crate::workspace::provenance::WorkspaceProvenance;
 use crate::workspace::spec::WorkspaceSpec;
-use crate::workspace::template::{TemplateName, TemplateRegistry, WorkspaceTemplate};
+use crate::workspace::template::{TemplateName, TemplateRegistry};
 use crate::workspace::workspace::Workspace;
 use muxterm_protocol::WorkspaceId;
 
@@ -43,7 +43,6 @@ pub struct Catalog {
     /// TransportProvider 表。顺序 = 注册顺序；`with_builtins` 按 local, ssh 登记。
     transports: Vec<Box<dyn TransportProvider>>,
     inventory: Inventory,
-    templates: TemplateRegistry,
 }
 
 impl Default for Catalog {
@@ -59,32 +58,7 @@ impl Catalog {
             runtimes: Vec::new(),
             transports: Vec::new(),
             inventory: Inventory::new(),
-            templates: TemplateRegistry::default(),
         }
-    }
-
-    /// Construct a production Catalog with an initial template registry.
-    pub fn with_builtins_and_templates(templates: Vec<WorkspaceTemplate>) -> anyhow::Result<Self> {
-        let mut catalog = Self::with_builtins();
-        catalog.set_templates(templates)?;
-        Ok(catalog)
-    }
-
-    pub fn template_registry(&self) -> &TemplateRegistry {
-        &self.templates
-    }
-
-    pub fn template_registry_mut(&mut self) -> &mut TemplateRegistry {
-        &mut self.templates
-    }
-
-    pub fn set_templates(&mut self, templates: Vec<WorkspaceTemplate>) -> anyhow::Result<()> {
-        self.templates = TemplateRegistry::new(templates)?;
-        Ok(())
-    }
-
-    pub fn register_template(&mut self, template: WorkspaceTemplate) -> anyhow::Result<()> {
-        self.templates.insert(template)
     }
 
     /// 生产入口：注册内置 Driver / TransportProvider。
@@ -347,9 +321,11 @@ impl Catalog {
     /// The product composition root owns the live `WorkspacePool`; Catalog
     /// keeps provider construction while inserting the new runtime into the
     /// caller's pool.
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_native_worktree_with_pool(
         &self,
         connections: &mut ConnectionRegistry,
+        templates: &TemplateRegistry,
         pool: &mut WorkspacePool,
         source: &WorkspaceId,
         worktree: &crate::runtime::WorktreeCreateSpec,
@@ -376,7 +352,7 @@ impl Catalog {
         let template_record = spec
             .template
             .as_ref()
-            .and_then(|name| self.templates.get(name))
+            .and_then(|name| templates.get(name))
             .cloned();
         let runtime = self.new_runtime(connections, &spec)?;
         let workspace = pool.open_spec_with_runtime(&spec, runtime).await?;
@@ -396,6 +372,7 @@ impl Catalog {
     pub async fn open_spec<'a>(
         &self,
         connections: &mut ConnectionRegistry,
+        templates: &TemplateRegistry,
         pool: &'a mut WorkspacePool,
         spec: &WorkspaceSpec,
     ) -> anyhow::Result<&'a mut Workspace> {
@@ -404,7 +381,7 @@ impl Catalog {
         let template = spec
             .template
             .as_ref()
-            .and_then(|name| self.templates.get(name))
+            .and_then(|name| templates.get(name))
             .cloned();
         let runtime = self.new_runtime(connections, spec)?;
         let workspace = pool
@@ -426,6 +403,7 @@ impl Catalog {
     pub async fn open_resolved<'a>(
         &self,
         connections: &mut ConnectionRegistry,
+        templates: &TemplateRegistry,
         pool: &'a mut WorkspacePool,
         resolved: ResolvedTarget,
     ) -> anyhow::Result<&'a mut Workspace> {
@@ -438,7 +416,7 @@ impl Catalog {
         }
         let spec = resolved.spec.clone();
         let canonical = resolved.canonical.clone();
-        let workspace = self.open_spec(connections, pool, &spec).await?;
+        let workspace = self.open_spec(connections, templates, pool, &spec).await?;
         workspace.set_resolved_target(ResolvedTarget { canonical, spec });
         Ok(workspace)
     }

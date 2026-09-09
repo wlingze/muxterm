@@ -142,7 +142,13 @@ pub unsafe extern "C" fn muxterm_workspace_open(
                 &mut handle.connections,
                 &mut handle.pool,
             );
-            rt.block_on(Muxterm::open_spec_parts(catalog, connections, pool, &spec))
+            rt.block_on(Muxterm::open_spec_parts(
+                catalog,
+                connections,
+                &handle.templates,
+                pool,
+                &spec,
+            ))
         };
         match result {
             Ok(_) => 0,
