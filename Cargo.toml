@@ -8,7 +8,7 @@ license = "MIT"
 # Reserved for the planned protocol/core/runtime/transport crate split.
 [workspace]
 resolver = "2"
-members = ["crates/muxterm-protocol"]
+members = ["crates/muxterm-protocol", "crates/muxterm-core"]
 
 [features]
 # 默认编译 GTK4 前端（archmini 等 GTK 机器用）。
@@ -18,7 +18,7 @@ gtk = ["dep:gtk4", "dep:vte4", "ffi"]
 # TUI 前端：纯 crossterm + ratatui，经 ffi 调用核心（CI / 无头，跨平台）。
 tui = ["dep:crossterm", "dep:ratatui", "ffi"]
 # C ABI 导出（不依赖任何 GUI）。
-ffi = []
+ffi = ["muxterm-core/ffi"]
 
 [lib]
 name = "muxterm"
@@ -46,6 +46,7 @@ async-channel = "2"
 async-trait = "0.1"
 async-ssh2-tokio = "0.13"
 muxterm-protocol = { path = "crates/muxterm-protocol" }
+muxterm-core = { path = "crates/muxterm-core" }
 
 # 可选：跨平台 TUI 前端
 crossterm = { version = "0.28", optional = true }

@@ -24,7 +24,7 @@ pub mod ffi {
     pub use crate::core::protocol::ffi::*;
 }
 
-mod core;
+pub(crate) use muxterm_core as core;
 mod platform;
 
 /// Test-only compatibility exports for the existing integration contract suite.
@@ -35,7 +35,7 @@ mod platform;
 #[doc(hidden)]
 pub mod test_support {
     pub mod core {
-        pub use crate::core::*;
+        pub use muxterm_core::*;
     }
 
     pub mod platform {

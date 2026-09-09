@@ -1610,7 +1610,7 @@ mod tests {
     fn agents_merge_structured_runtime_and_generic_attention_state() {
         let id = WorkspaceId::new("local", None, "muxterm", "herdr", "w2");
         let mut runtime = MockRuntime::with_single_pane();
-        runtime.events.push(StateChange::PaneAgentChanged {
+        runtime.events_mut().push(StateChange::PaneAgentChanged {
             pane: PaneId(1),
             agent: Some(Box::new(agent(PaneAgentStatus::Working))),
             initial: false,
@@ -1638,7 +1638,7 @@ mod tests {
     fn agents_include_grok_from_pane_title_when_runtime_has_no_agent_record() {
         let id = WorkspaceId::new("local", None, "w2", "herdr", "w2");
         let mut runtime = MockRuntime::with_single_pane();
-        runtime.panes[0].title = "grok".into();
+        runtime.panes_mut()[0].title = "grok".into();
         let workspace = Workspace::new(id, "agents-ws".into(), Box::new(runtime));
         let mut pool =
             WorkspacePool::new(crate::core::workspace::pool::WorkspacePoolPolicy::new(8));
@@ -1735,7 +1735,7 @@ mod tests {
     fn commands_prefer_command_over_remote_pane_title_and_show_project_transport() {
         let id = WorkspaceId::new("ssh", Some("ryzen"), "default", "tmux", "/home/wlz/Devexx");
         let mut runtime = MockRuntime::with_single_pane();
-        runtime.panes[0].title = "(ryzen) ~/Devexx · zsh".into();
+        runtime.panes_mut()[0].title = "(ryzen) ~/Devexx · zsh".into();
         let workspace = Workspace::new(id.clone(), "Devexx".into(), Box::new(runtime));
         let mut pool =
             WorkspacePool::new(crate::core::workspace::pool::WorkspacePoolPolicy::new(8));

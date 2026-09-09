@@ -1,0 +1,36 @@
+[package]
+name = "muxterm-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[features]
+default = []
+ffi = []
+
+[dependencies]
+anyhow = "1"
+async-channel = "2"
+async-ssh2-tokio = "0.13"
+async-trait = "0.1"
+bincode = { version = "2", features = ["serde"] }
+futures = "0.3"
+muxterm-protocol = { path = "../muxterm-protocol" }
+regex = "1"
+schemars = "1.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+toml = "0.8"
+toml_edit = "0.22"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+vte = { version = "0.13", default-features = false, features = ["ansi"] }
+
+[target."cfg(unix)".dependencies]
+libc = "0.2"
+portable-pty = "0.8"
+
+[dev-dependencies]
+pretty_assertions = "1"
