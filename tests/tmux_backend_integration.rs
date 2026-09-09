@@ -14,7 +14,7 @@ use muxterm::test_support::core::protocol::state::{BackendStatus, State, StateCh
 use muxterm::test_support::core::protocol::task::{Task, TaskOutcome};
 use muxterm::test_support::core::protocol::{PaneId, TabId};
 use muxterm::test_support::core::runtime::shell::daemon::cli_command_to_task;
-use muxterm::test_support::core::runtime::TmuxRuntime;
+use muxterm::test_support::core::runtime::tmux::backend::TmuxRuntime;
 use muxterm::test_support::core::workspace::terminal_model::TerminalModel;
 use muxterm::test_support::platform::cli::parse_cli_command;
 use std::process::Command;
@@ -2436,7 +2436,7 @@ fn bug5_cli_send_keys_via_tmux_socket() {
 
 #[test]
 fn bug5_edge_no_socket_uses_local_backend() {
-    use muxterm::test_support::core::runtime::ShellRuntime;
+    use muxterm::test_support::core::runtime::shell::ShellRuntime;
 
     let backend = ShellRuntime::new("sleep 60", "/");
     let mut model = TerminalModel::new(Box::new(backend));

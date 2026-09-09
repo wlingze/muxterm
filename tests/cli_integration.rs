@@ -11,7 +11,7 @@
 use muxterm::test_support::core::protocol::task::Task;
 use muxterm::test_support::core::protocol::{PaneId, TabId};
 use muxterm::test_support::core::runtime::shell::daemon::cli_command_to_task;
-use muxterm::test_support::core::runtime::ShellRuntime;
+use muxterm::test_support::core::runtime::shell::ShellRuntime;
 use muxterm::test_support::core::workspace::terminal_model::TerminalModel;
 use muxterm::test_support::platform::cli::{
     format_output, parse_cli_command, CliCommand, OutputFormat,
@@ -519,7 +519,7 @@ fn cli_parse_send_keys_with_text() {
 
 #[test]
 fn cli_tmux_backend_connect_and_list() {
-    use muxterm::test_support::core::runtime::TmuxRuntime;
+    use muxterm::test_support::core::runtime::tmux::backend::TmuxRuntime;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     let socket = format!(
@@ -563,7 +563,7 @@ fn cli_tmux_backend_connect_and_list() {
 
 #[test]
 fn cli_tmux_backend_new_window() {
-    use muxterm::test_support::core::runtime::TmuxRuntime;
+    use muxterm::test_support::core::runtime::tmux::backend::TmuxRuntime;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     let socket = format!(
@@ -621,7 +621,7 @@ fn cli_tmux_backend_new_window() {
 
 #[test]
 fn cli_tmux_backend_send_keys() {
-    use muxterm::test_support::core::runtime::TmuxRuntime;
+    use muxterm::test_support::core::runtime::tmux::backend::TmuxRuntime;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     let socket = format!(

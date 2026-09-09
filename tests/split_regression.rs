@@ -411,7 +411,7 @@ fn paneid_target_matches_real_tmux_pane_id() {
 fn backend_split_actually_creates_pane_in_tmux() {
     use muxterm::test_support::core::protocol::layout::SplitDir;
     use muxterm::test_support::core::protocol::task::Task;
-    use muxterm::test_support::core::runtime::TmuxRuntime;
+    use muxterm::test_support::core::runtime::tmux::backend::TmuxRuntime;
     use muxterm::test_support::core::workspace::terminal_model::TerminalModel;
 
     let socket = unique_socket("layer4");
@@ -519,7 +519,7 @@ fn backend_split_actually_creates_pane_in_tmux() {
 fn backend_split_new_tab_targets_its_pane_with_second_session_present() {
     use muxterm::test_support::core::protocol::layout::SplitDir;
     use muxterm::test_support::core::protocol::task::Task;
-    use muxterm::test_support::core::runtime::TmuxRuntime;
+    use muxterm::test_support::core::runtime::tmux::backend::TmuxRuntime;
     use muxterm::test_support::core::workspace::terminal_model::TerminalModel;
 
     let _ = tracing_subscriber::fmt()

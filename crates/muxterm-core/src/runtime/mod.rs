@@ -18,13 +18,6 @@ pub use muxterm_runtime::{
     WorktreeCreateSpec, WorktreeInfo,
 };
 
-// Re-export backend implementations. Their concrete types remain an internal
-// compatibility surface until RuntimeProvider registration owns construction.
-pub use daemon::DaemonRuntime;
-pub use herdr::{HerdrRuntime, HerdrSession};
-pub use shell::ShellRuntime;
-pub use tmux::backend::TmuxRuntime;
-
 #[cfg(test)]
 mod tests {
     use super::*;

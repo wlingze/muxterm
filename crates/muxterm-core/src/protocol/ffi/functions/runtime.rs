@@ -4,7 +4,7 @@ use std::ffi::c_char;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use crate::protocol::task::Task;
-use crate::runtime::HerdrRuntime;
+use crate::runtime::herdr::HerdrRuntime;
 use muxterm_protocol::PaneId;
 
 use super::support::{json_error, json_string, parse_workspace_id, MuxtermHandle};

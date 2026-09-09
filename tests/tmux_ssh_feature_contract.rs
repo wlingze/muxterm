@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use muxterm::test_support::core::protocol::PaneId;
 use muxterm::test_support::core::protocol::WorkspaceId;
-use muxterm::test_support::core::runtime::TmuxRuntime;
+use muxterm::test_support::core::runtime::tmux::backend::TmuxRuntime;
 use muxterm::test_support::core::workspace::workspace::Workspace;
 use support::ssh_tmux_contract::{
     build_remote_offscreen_history, build_remote_one_pane, ssh_tmux_available, SSH_TIMEOUT,
