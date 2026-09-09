@@ -16,6 +16,7 @@ async-trait = "0.1"
 bincode = { version = "2", features = ["serde"] }
 futures = "0.3"
 muxterm-protocol = { path = "../muxterm-protocol" }
+muxterm-transport = { path = "../muxterm-transport" }
 regex = "1"
 schemars = "1.2"
 serde = { version = "1", features = ["derive"] }

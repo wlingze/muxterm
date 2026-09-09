@@ -8,7 +8,11 @@ license = "MIT"
 # Reserved for the planned protocol/core/runtime/transport crate split.
 [workspace]
 resolver = "2"
-members = ["crates/muxterm-protocol", "crates/muxterm-core"]
+members = [
+    "crates/muxterm-protocol",
+    "crates/muxterm-transport",
+    "crates/muxterm-core",
+]
 
 [features]
 # 默认编译 GTK4 前端（archmini 等 GTK 机器用）。
