@@ -22,6 +22,7 @@ use crate::core::workspace::workspace::Workspace;
 
 use crate::core::protocol::ffi::callbacks::FfiCallbacks;
 use crate::core::protocol::ffi::types::CLayoutNode;
+use crate::core::transport::registry::ConnectionRegistry;
 
 type PendingAttentionUpdate = (u32, Vec<AttentionSignal>, String, u64, Option<String>);
 
@@ -33,6 +34,8 @@ type PendingAttentionUpdate = (u32, Vec<AttentionSignal>, String, u64, Option<St
 pub struct Muxterm {
     /// Catalog: provider/discovery/resolution services.
     pub(crate) catalog: crate::core::catalog::Catalog,
+    /// Reusable target connections owned by the product session.
+    pub(crate) connections: ConnectionRegistry,
     /// The single live WorkspacePool owned by the product session.
     ///
     /// Catalog keeps a compatibility pool only for standalone catalog tests and
@@ -83,14 +86,15 @@ impl Muxterm {
         &mut self,
         spec: &WorkspaceSpec,
     ) -> anyhow::Result<&mut Workspace> {
-        Self::open_spec_parts(&mut self.catalog, &mut self.pool, spec).await
+        Self::open_spec_parts(&self.catalog, &mut self.connections, &mut self.pool, spec).await
     }
 
     /// Open using explicitly split owner fields. The FFI boundary uses this
     /// form so its Tokio runtime can be borrowed independently from Catalog
     /// and the live pool.
     pub(crate) async fn open_spec_parts<'a>(
-        catalog: &'a mut crate::core::catalog::Catalog,
+        catalog: &'a crate::core::catalog::Catalog,
+        connections: &'a mut ConnectionRegistry,
         pool: &'a mut WorkspacePool,
         spec: &WorkspaceSpec,
     ) -> anyhow::Result<&'a mut Workspace> {
@@ -101,7 +105,7 @@ impl Muxterm {
             .as_ref()
             .and_then(|name| catalog.template_registry().get(name))
             .cloned();
-        let runtime = catalog.new_runtime(spec)?;
+        let runtime = catalog.new_runtime_with_connections(connections, spec)?;
         let workspace = pool.open_spec_with_runtime(spec, runtime).await?;
         if should_apply_template {
             if let Some(template) = template {
@@ -116,12 +120,19 @@ impl Muxterm {
         &mut self,
         resolved: ResolvedTarget,
     ) -> anyhow::Result<&mut Workspace> {
-        Self::open_resolved_parts(&mut self.catalog, &mut self.pool, resolved).await
+        Self::open_resolved_parts(
+            &self.catalog,
+            &mut self.connections,
+            &mut self.pool,
+            resolved,
+        )
+        .await
     }
 
     /// Open a resolved target using explicitly split owner fields.
     pub(crate) async fn open_resolved_parts<'a>(
-        catalog: &'a mut crate::core::catalog::Catalog,
+        catalog: &'a crate::core::catalog::Catalog,
+        connections: &'a mut ConnectionRegistry,
         pool: &'a mut WorkspacePool,
         resolved: ResolvedTarget,
     ) -> anyhow::Result<&'a mut Workspace> {
@@ -137,7 +148,7 @@ impl Muxterm {
         }
         let spec = resolved.spec.clone();
         let canonical = resolved.canonical.clone();
-        let workspace = Self::open_spec_parts(catalog, pool, &spec).await?;
+        let workspace = Self::open_spec_parts(catalog, connections, pool, &spec).await?;
         workspace.set_resolved_target(ResolvedTarget { canonical, spec });
         Ok(workspace)
     }

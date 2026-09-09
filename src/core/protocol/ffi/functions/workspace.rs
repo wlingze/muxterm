@@ -138,8 +138,13 @@ pub unsafe extern "C" fn muxterm_workspace_open(
             template: None,
         };
         let result = {
-            let (rt, catalog, pool) = (&handle.rt, &mut handle.catalog, &mut handle.pool);
-            rt.block_on(Muxterm::open_spec_parts(catalog, pool, &spec))
+            let (rt, catalog, connections, pool) = (
+                &handle.rt,
+                &handle.catalog,
+                &mut handle.connections,
+                &mut handle.pool,
+            );
+            rt.block_on(Muxterm::open_spec_parts(catalog, connections, pool, &spec))
         };
         match result {
             Ok(_) => 0,
