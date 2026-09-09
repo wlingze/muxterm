@@ -126,6 +126,36 @@ impl ClientError {
     }
 }
 
+/// Owned configuration snapshot returned by the Core configuration ABI.
+#[derive(Debug, Clone, serde::Deserialize, PartialEq)]
+pub struct ClientConfigSnapshot {
+    pub revision: String,
+    pub raw: serde_json::Value,
+    pub values: serde_json::Value,
+    pub defaults: serde_json::Value,
+    pub schema: serde_json::Value,
+    pub manifest: serde_json::Value,
+    pub action_catalog: serde_json::Value,
+}
+
+/// RFC 6902-style patch operation accepted by the Core configuration ABI.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct ClientJsonPatchOperation {
+    pub op: String,
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<serde_json::Value>,
+}
+
+/// Draft values returned after a configuration patch preview.
+#[derive(Debug, Clone, serde::Deserialize, PartialEq)]
+pub struct ClientConfigDraft {
+    pub transaction: String,
+    pub values: serde_json::Value,
+    #[serde(default)]
+    pub diagnostics: Vec<String>,
+}
+
 impl std::fmt::Display for ClientError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.message)
@@ -599,6 +629,64 @@ impl FfiClient {
     /// Reconnect all Core-owned workspace runtimes through the single handle.
     pub fn reconnect(&self) -> anyhow::Result<()> {
         self.connect()
+    }
+
+    /// Read the Core-owned configuration snapshot through the public FFI.
+    pub fn config_describe(&self) -> anyhow::Result<ClientConfigSnapshot> {
+        let value = Self::discovery_json(|| unsafe {
+            ffi::muxterm_config_describe_json(self.handle.as_ptr())
+        })?;
+        Ok(serde_json::from_value(value["data"].clone())?)
+    }
+
+    /// Start a Core-owned draft configuration transaction.
+    pub fn config_begin(&self) -> anyhow::Result<String> {
+        let value = Self::discovery_json(|| unsafe {
+            ffi::muxterm_config_begin_json(self.handle.as_ptr())
+        })?;
+        value["data"]["transaction"]
+            .as_str()
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| anyhow::anyhow!("Core config begin returned no transaction"))
+    }
+
+    /// Apply a JSON patch to a Core-owned draft and return its owned preview.
+    pub fn config_patch(
+        &self,
+        transaction: &str,
+        patch: &[ClientJsonPatchOperation],
+    ) -> anyhow::Result<ClientConfigDraft> {
+        let transaction = cstring(transaction);
+        let patch = cstring(&serde_json::to_string(patch)?);
+        let value = Self::discovery_json(|| unsafe {
+            ffi::muxterm_config_patch_json(
+                self.handle.as_ptr(),
+                transaction.as_ptr(),
+                patch.as_ptr(),
+            )
+        })?;
+        Ok(serde_json::from_value(value["data"].clone())?)
+    }
+
+    /// Commit a Core-owned draft configuration transaction.
+    pub fn config_commit(&self, transaction: &str) -> anyhow::Result<String> {
+        let transaction = cstring(transaction);
+        let value = Self::discovery_json(|| unsafe {
+            ffi::muxterm_config_commit_json(self.handle.as_ptr(), transaction.as_ptr())
+        })?;
+        value["data"]["revision"]
+            .as_str()
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| anyhow::anyhow!("Core config commit returned no revision"))
+    }
+
+    /// Cancel a Core-owned draft configuration transaction.
+    pub fn config_cancel(&self, transaction: &str) -> anyhow::Result<()> {
+        let transaction = cstring(transaction);
+        Self::discovery_json(|| unsafe {
+            ffi::muxterm_config_cancel_json(self.handle.as_ptr(), transaction.as_ptr())
+        })?;
+        Ok(())
     }
 
     /// Configure the Core-owned attention engine before frontend polling starts.
@@ -1751,6 +1839,49 @@ mod tests {
                 "debounce_ms": 250,
             })
         );
+    }
+
+    #[test]
+    fn config_patch_serializes_as_core_json_patch() {
+        let patch = vec![ClientJsonPatchOperation {
+            op: "replace".into(),
+            path: "/font/size".into(),
+            value: Some(serde_json::json!(14.0)),
+        }];
+
+        assert_eq!(
+            serde_json::to_value(patch).expect("config patch serializes"),
+            serde_json::json!([{
+                "op": "replace",
+                "path": "/font/size",
+                "value": 14.0,
+            }])
+        );
+    }
+
+    #[test]
+    fn config_snapshot_and_draft_decode_as_owned_values() {
+        let snapshot: ClientConfigSnapshot = serde_json::from_value(serde_json::json!({
+            "revision": "rev-1",
+            "raw": {"font": {"size": 13.0}},
+            "values": {"font": {"size": 13.0}},
+            "defaults": {"font": {"size": 12.0}},
+            "schema": {"type": "object"},
+            "manifest": {"schema_id": "muxterm.config.v1"},
+            "action_catalog": {"actions": []},
+        }))
+        .expect("config snapshot decodes");
+        assert_eq!(snapshot.revision, "rev-1");
+        assert_eq!(snapshot.values["font"]["size"], 13.0);
+
+        let draft: ClientConfigDraft = serde_json::from_value(serde_json::json!({
+            "transaction": "tx-1",
+            "values": {"font": {"size": 14.0}},
+            "diagnostics": [],
+        }))
+        .expect("config draft decodes");
+        assert_eq!(draft.transaction, "tx-1");
+        assert!(draft.diagnostics.is_empty());
     }
 
     #[test]
