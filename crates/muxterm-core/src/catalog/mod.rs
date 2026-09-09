@@ -447,59 +447,6 @@ impl Catalog {
         Ok(workspace)
     }
 
-    /// 打开一个 spec 并返回**自有** Workspace（不进本 Catalog 池）。
-    ///
-    /// GUI 后台线程需要：Catalog 只做身份解析 + Driver open（共享 Connect），
-    /// 结果 Workspace 由 platform 自己的池收编，避免第二份 pool 拷贝。
-    pub async fn open_owned(
-        &self,
-        connections: &mut ConnectionRegistry,
-        spec: &WorkspaceSpec,
-    ) -> anyhow::Result<Workspace> {
-        self.build_owned(connections, spec).await
-    }
-
-    /// Driver open + Workspace 构造（不进池）；descriptor 由调用方按需设置。
-    async fn build_owned(
-        &self,
-        connections: &mut ConnectionRegistry,
-        spec: &WorkspaceSpec,
-    ) -> anyhow::Result<Workspace> {
-        let runtime = self.new_runtime(connections, spec)?;
-        let id = spec.id();
-        let name = spec.name();
-        Ok(Workspace::new_with_scrollback(
-            id,
-            name,
-            runtime,
-            spec.scrollback_lines as usize,
-        ))
-    }
-
-    /// TargetConfig → owned Workspace（resolve 后 build_owned；GUI 后台线程用）。
-    pub async fn open_target_owned(
-        &self,
-        connections: &mut ConnectionRegistry,
-        config: &crate::quickconnect::model::TargetConfig,
-        intent: ResolveIntent,
-    ) -> anyhow::Result<Workspace> {
-        let resolved = self.resolve_target(connections, config, intent)?;
-        self.open_resolved_owned(connections, resolved).await
-    }
-
-    /// 打开已解析目标并返回 owned Workspace（不进池）。
-    pub async fn open_resolved_owned(
-        &self,
-        connections: &mut ConnectionRegistry,
-        resolved: ResolvedTarget,
-    ) -> anyhow::Result<Workspace> {
-        let spec = resolved.spec.clone();
-        let canonical = resolved.canonical.clone();
-        let mut workspace = self.build_owned(connections, &spec).await?;
-        workspace.set_resolved_target(ResolvedTarget { canonical, spec });
-        Ok(workspace)
-    }
-
     /// 唯一 TargetConfig→ResolvedTarget 解析入口（W6 §11.2）。
     ///
     /// Project/Recent/Existing 三路都走这里；platform 不得复制第二套。
