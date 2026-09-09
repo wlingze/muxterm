@@ -15,6 +15,10 @@ cd "$ROOT"
 THREADS="${MUXTERM_TEST_THREADS:-1}"
 TEST_ZDOTDIR=""
 
+run_architecture() {
+    bash "$ROOT/scripts/check-architecture.sh"
+}
+
 # tmux inherits the runner user's login shell.  Keep zsh parity with local
 # development while isolating startup files: runner images may carry a
 # .zshrc that runs compinit and emits an interactive security prompt into the
@@ -47,6 +51,7 @@ usage() {
 }
 
 run_core() {
+    run_architecture
     cargo fmt --all -- --check
     cargo clippy --no-default-features --features tui -- -D warnings
 
@@ -85,6 +90,7 @@ run_core() {
 }
 
 run_linux() {
+    run_architecture
     cargo clippy --features gtk -- -D warnings
     cargo check --features gtk
 
@@ -133,6 +139,7 @@ run_linux() {
 }
 
 run_macos() {
+    run_architecture
     # macOS 发布物包含跨平台 TUI；必须在 macOS target 上实际解析并编译
     # crossterm / ratatui，避免依赖误落入 Linux-only 表后直到发布才失败。
     cargo check --no-default-features --features tui
