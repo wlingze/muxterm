@@ -9,7 +9,7 @@
 //! - 所有方法返回 `Option` / `&` 引用，不 clone，便于高频渲染。
 use std::collections::BTreeMap;
 
-use crate::core::types::{PaneId, TabId};
+use crate::{PaneId, TabId};
 
 /// 工作区元信息（Runtime 侧可知的部分：名字与 runtime 种类）。
 /// `WorkspaceId` / transport 属于池层，由 WorkspacePool 持有。
@@ -201,7 +201,7 @@ pub enum StateChange {
     LayoutChanged {
         tab: TabId,
         /// 新布局树（完整快照，非增量）。
-        layout: crate::core::protocol::layout::TabLayout,
+        layout: crate::layout::TabLayout,
     },
     /// pane 被加入（split 的结果，或 tmux 新建 pane）。
     PaneAdded { pane: PaneId, tab: TabId },
@@ -315,7 +315,7 @@ pub trait State {
     fn tab(&self, tab: &TabId) -> Option<&TabInfo>;
 
     /// 某 tab 的布局树。
-    fn layout(&self, tab: &TabId) -> Option<&crate::core::protocol::layout::TabLayout>;
+    fn layout(&self, tab: &TabId) -> Option<&crate::layout::TabLayout>;
 
     /// 某 tab 下的所有 pane。
     fn panes(&self, tab: &TabId) -> Vec<&PaneInfo>;
@@ -339,7 +339,7 @@ pub trait State {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::protocol::layout::LayoutNode;
+    use crate::layout::LayoutNode;
 
     /// 一个最小可用的内存 State 实现，用于 trait 编译期检查 + 后续 mock。
     struct MemState {
@@ -347,7 +347,7 @@ mod tests {
         workspace_runtime: String,
         tabs: Vec<TabInfo>,
         panes: Vec<PaneInfo>,
-        layouts: Vec<crate::core::protocol::layout::TabLayout>,
+        layouts: Vec<crate::layout::TabLayout>,
         outputs: Vec<(PaneId, Vec<u8>)>,
         status: BackendStatus,
         active_tab: Option<TabId>,
@@ -375,7 +375,7 @@ mod tests {
         fn tab(&self, tab: &TabId) -> Option<&TabInfo> {
             self.tabs.iter().find(|t| &t.id == tab)
         }
-        fn layout(&self, tab: &TabId) -> Option<&crate::core::protocol::layout::TabLayout> {
+        fn layout(&self, tab: &TabId) -> Option<&crate::layout::TabLayout> {
             self.layouts.iter().find(|l| &l.tab == tab)
         }
         fn panes(&self, tab: &TabId) -> Vec<&PaneInfo> {
@@ -413,7 +413,7 @@ mod tests {
                 cols: 80,
                 rows: 24,
             }],
-            layouts: vec![crate::core::protocol::layout::TabLayout {
+            layouts: vec![crate::layout::TabLayout {
                 tab: TabId(1),
                 tree: LayoutNode::leaf(PaneId(1)),
                 active: PaneId(1),

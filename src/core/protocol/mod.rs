@@ -1,8 +1,7 @@
 //! Core protocol layer: model + terminal + ffi (C ABI).
 
-pub use muxterm_protocol::{candidate, layout};
+pub use muxterm_protocol::{candidate, layout, state};
 pub mod command;
-pub mod state;
 pub mod task;
 pub mod terminal;
 

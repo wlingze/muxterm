@@ -9,6 +9,7 @@ use std::str::FromStr;
 
 pub mod candidate;
 pub mod layout;
+pub mod state;
 
 /// Product-level pane identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
