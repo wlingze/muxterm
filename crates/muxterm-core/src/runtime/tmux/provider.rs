@@ -6,8 +6,8 @@ use std::time::Duration;
 use anyhow::Result;
 
 use crate::protocol::candidate::ExistingCandidate;
-use crate::runtime::provider::RuntimeProvider;
 use crate::runtime::tmux::backend::TmuxRuntime;
+use crate::runtime::RuntimeProvider;
 use crate::runtime::{Runtime, RuntimeCapability};
 use crate::transport::TargetConnection;
 use muxterm_runtime::RuntimeSpec;

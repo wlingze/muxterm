@@ -1,6 +1,6 @@
 //! Built-in RuntimeProvider registration.
 
-use super::provider::RuntimeProvider;
+use super::RuntimeProvider;
 
 /// Construct the built-in RuntimeProvider list in stable UI order.
 pub fn with_builtins() -> Vec<Box<dyn RuntimeProvider>> {
