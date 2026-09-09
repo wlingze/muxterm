@@ -4,32 +4,10 @@
 //! `runtime/{shell,tmux,herdr}`。旧的 generic model 路径暂时通过 re-export
 //! 保持兼容，迁移完成后将删除该兼容入口。
 
+pub use super::capability::RuntimeCapability;
 use crate::core::protocol::state::{BackendStatus, State, StateChange};
 use crate::core::protocol::task::{Task, TaskOutcome};
 use async_trait::async_trait;
-
-/// Runtime 能力位：一个实现返回它真正支持的子集。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum RuntimeCapability {
-    /// shutdown/关窗后远端还在，能再 attach。
-    PersistDetach,
-    /// 连接前能列出可 open 的候选。
-    Discover,
-    /// `NewTab` / `SwitchTab` 有意义。
-    MultiTab,
-    /// `SplitPane` 有意义。
-    SplitPane,
-    /// Runtime 的全部 pane 共享一个 client viewport。
-    SharedClientResize,
-    /// 能列出当前仓库的 checkout。
-    WorktreeList,
-    /// 能建 checkout 并打开成新 Workspace。
-    WorktreeCreate,
-    /// 能打开已有 checkout。
-    WorktreeOpen,
-    /// 能 `git worktree remove`（不删分支）。
-    WorktreeRemove,
-}
 
 /// 一个 git worktree（产品能力，不是第三棵树）。
 #[derive(Debug, Clone, PartialEq, Eq)]
