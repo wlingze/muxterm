@@ -793,6 +793,20 @@ impl FfiClient {
         unsafe { ffi::muxterm_execute_workspace(self.handle.as_ptr(), workspace_id.as_ptr(), &raw) }
     }
 
+    /// Create a tab with an optional frontend-provided name.
+    pub fn new_workspace_tab(&self, workspace_id: &str, name: Option<&str>) -> i32 {
+        let workspace_id = cstring(workspace_id);
+        let name = cstring_opt(name);
+        let raw = CTask {
+            type_: ffi::TASK_NEW_TAB,
+            target_pane: 0,
+            target_tab: 0,
+            dir: 0,
+            name: name.as_ref().map_or(ptr::null(), |value| value.as_ptr()),
+        };
+        unsafe { ffi::muxterm_execute_workspace(self.handle.as_ptr(), workspace_id.as_ptr(), &raw) }
+    }
+
     /// Write input to a pane in a specific workspace without activating it.
     pub fn send_workspace_input(&self, workspace_id: &str, pane_id: u32, data: &[u8]) -> i32 {
         if data.is_empty() {

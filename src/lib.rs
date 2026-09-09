@@ -19,7 +19,6 @@ pub mod app {
 
 /// Public C-ABI facade. Core implementation modules remain behind this boundary
 /// for frontend callers that use the FFI contract.
-#[cfg(feature = "ffi")]
 pub mod ffi {
     pub use crate::core::protocol::ffi::*;
 }

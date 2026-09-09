@@ -7,14 +7,11 @@ use std::time::{Duration, Instant};
 
 use anyhow::Context;
 
-use crate::core::protocol::task::Task;
-use crate::core::runtime::tmux::TmuxRuntime;
-use crate::core::types::{PaneId, TabId};
-use crate::core::workspace::terminal_model::TerminalModel;
 use crate::platform::cli::tmux_cli::{
     parse_tmux_cli, CliEnvelope, PaneCmd, SessionCmd, SplitDirection, TabCmd, Target,
     TmuxCliCommand,
 };
+use crate::platform::ffi_client::{ClientTask, FfiClient};
 
 /// tmux CLI 命令执行超时（硬限制）。
 const EXEC_TIMEOUT: Duration = Duration::from_secs(15);
@@ -27,6 +24,87 @@ const READY_POLL_DURATION: Duration = Duration::from_millis(800);
 /// pause/capture 的权威响应可能晚于第一条 live tail；过早返回会把 runtime
 /// 提前关闭，从而丢掉完整快照。
 const SNAPSHOT_MIN_WAIT: Duration = Duration::from_secs(1);
+
+/// A short-lived CLI client owns one Core FFI handle for the whole command.
+///
+/// The handle owns the Runtime and its Tokio runtime; the CLI only queries
+/// owned workspace DTOs and submits frontend tasks through `FfiClient`.
+struct FfiTmuxClient {
+    client: FfiClient,
+    workspace_id: String,
+}
+
+impl FfiTmuxClient {
+    fn connect(socket: Option<&str>, session_name: &str) -> anyhow::Result<Self> {
+        let exists = FfiClient::discover_tmux_sessions("local", None, socket)
+            .with_context(|| "tmux session discovery failed")?
+            .iter()
+            .any(|session| session.name == session_name);
+        if !exists {
+            FfiClient::create_workspace("tmux", None, socket, session_name, "")
+                .with_context(|| format!("create tmux session failed: {session_name}"))?;
+        }
+
+        let client = FfiClient::new_connect("tmux", socket, Some(session_name), None, None)
+            .with_context(|| format!("attach tmux session failed: {session_name}"))?;
+        let workspaces = client.workspace_list()?;
+        let workspace_id = workspaces
+            .iter()
+            .find(|workspace| workspace.active)
+            .or_else(|| workspaces.first())
+            .map(|workspace| workspace.id.clone())
+            .ok_or_else(|| anyhow::anyhow!("Core returned no tmux workspace"))?;
+        Ok(Self {
+            client,
+            workspace_id,
+        })
+    }
+
+    fn poll(&self) {
+        let _ = self.client.poll_workspace_events();
+    }
+
+    fn tabs(&self) -> Vec<crate::platform::ffi_client::ClientTab> {
+        self.client.get_workspace_tabs(&self.workspace_id)
+    }
+
+    fn panes(&self, tab_id: u32) -> Vec<crate::platform::ffi_client::ClientPane> {
+        self.client.get_workspace_panes(&self.workspace_id, tab_id)
+    }
+
+    fn active_tab(&self) -> Option<crate::platform::ffi_client::ClientTab> {
+        self.tabs().into_iter().find(|tab| tab.is_active)
+    }
+
+    fn pane_output(&self, pane_id: u32) -> Vec<u8> {
+        self.client
+            .get_workspace_pane_output(&self.workspace_id, pane_id)
+    }
+
+    fn execute(&self, task: ClientTask) -> anyhow::Result<()> {
+        let rc = self.client.execute_workspace_task(&self.workspace_id, task);
+        if rc == 0 {
+            Ok(())
+        } else {
+            anyhow::bail!("Core FFI task failed with code {rc}")
+        }
+    }
+
+    fn send_input(&self, pane_id: u32, data: &[u8]) -> anyhow::Result<()> {
+        let rc = self
+            .client
+            .send_workspace_input(&self.workspace_id, pane_id, data);
+        if rc == 0 {
+            Ok(())
+        } else {
+            anyhow::bail!("Core FFI input failed with code {rc}")
+        }
+    }
+
+    fn shutdown(&self) {
+        let _ = self.client.shutdown();
+    }
+}
 
 /// `muxterm tmux ...` 入口：解析 + 执行 + 输出 envelope。
 pub fn run_tmux_cli(args: &[String]) -> anyhow::Result<()> {
@@ -58,17 +136,7 @@ fn execute_tmux_cli(cmd: &TmuxCliCommand) -> anyhow::Result<serde_json::Value> {
     }
 }
 
-/// 检查指定名称的工作区候选是否存在（core discovery）。
-fn tmux_session_exists(socket: Option<&str>, name: &str) -> bool {
-    crate::core::discovery::list_local_tmux_sessions(socket)
-        .iter()
-        .any(|s| s.name == name)
-}
-
-/// 构造本地 tmux backend + TerminalModel，在 runtime 内执行 fn 并返回结果。
-///
-/// **关键**：runtime 必须在整个命令生命周期内存活，否则 sender task 被杀，
-/// 命令无法到达 tmux。
+/// 通过 FFI client 构造本地 tmux workspace，在 live handle 内执行 fn。
 fn with_local_tmux<F>(
     socket: Option<&str>,
     session_name: &str,
@@ -76,40 +144,28 @@ fn with_local_tmux<F>(
     f: F,
 ) -> anyhow::Result<serde_json::Value>
 where
-    F: FnOnce(&mut TerminalModel) -> anyhow::Result<serde_json::Value>,
+    F: FnOnce(&mut FfiTmuxClient) -> anyhow::Result<serde_json::Value>,
 {
-    let session_exists = tmux_session_exists(socket, session_name);
-    let runtime: Box<dyn crate::core::runtime::Runtime> = if session_exists {
-        Box::new(TmuxRuntime::new_with_attach(socket, session_name))
-    } else {
-        Box::new(TmuxRuntime::new_with_session_name(socket, session_name))
-    };
-    let mut model = TerminalModel::new(runtime);
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .worker_threads(2)
-        .build()?;
-    rt.block_on(model.connect()).context("tmux connect 失败")?;
-    let _ = model.poll_events();
-    wait_ready(&mut model, READY_POLL_DURATION);
+    let mut client = FfiTmuxClient::connect(socket, session_name)?;
+    wait_ready(&mut client, READY_POLL_DURATION);
 
     // 在 runtime 存活期间执行命令
-    let result = f(&mut model)?;
+    let result = f(&mut client);
 
     // 命令执行后，短暂等待事件回流（最多 500ms）
-    wait_events_brief(&mut model);
+    wait_events_brief(&mut client);
 
     // 优雅关闭
-    let _ = rt.block_on(model.shutdown());
-    Ok(result)
+    client.shutdown();
+    result
 }
 
 /// 轮询事件直到有 tab 或超时。
-fn wait_ready(model: &mut TerminalModel, duration: Duration) {
+fn wait_ready(client: &mut FfiTmuxClient, duration: Duration) {
     let deadline = Instant::now() + duration;
     while Instant::now() < deadline {
-        let _ = model.refresh();
-        if model.state().active_tab().is_some() {
+        client.poll();
+        if client.active_tab().is_some() {
             break;
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -120,22 +176,14 @@ fn wait_ready(model: &mut TerminalModel, duration: Duration) {
 ///
 /// live tail 可能先于 capture 响应到达。若在第一条变化输出后就返回，runtime
 /// 会被提前关闭，完整快照来不及替换 live tail。
-fn wait_cli_pane_capture(model: &mut TerminalModel, pane_id: PaneId, deadline: Instant) -> String {
+fn wait_cli_pane_capture(client: &mut FfiTmuxClient, pane_id: u32, deadline: Instant) -> String {
     let requested_at = Instant::now();
-    let mut previous = model
-        .state()
-        .pane_output(&pane_id)
-        .map(|output| output.to_vec())
-        .unwrap_or_default();
+    let mut previous = client.pane_output(pane_id);
     let mut previous_at = Instant::now();
 
     while Instant::now() < deadline {
-        let _ = model.refresh();
-        let current = model
-            .state()
-            .pane_output(&pane_id)
-            .map(|output| output.to_vec())
-            .unwrap_or_default();
+        client.poll();
+        let current = client.pane_output(pane_id);
         if current != previous {
             previous = current;
             previous_at = Instant::now();
@@ -224,11 +272,11 @@ fn truncate_capture_lines(text: String, lines: Option<usize>) -> String {
 ///
 /// 在 deadline 内持续 refresh+poll，当 pane 数 ≥ `min_panes` 时立即返回。
 /// 如果超时仍未达到，也返回（调用方通过后续查询断言结果）。
-fn wait_for_pane_count(model: &mut TerminalModel, min_panes: usize, deadline: Instant) {
+fn wait_for_pane_count(client: &mut FfiTmuxClient, min_panes: usize, deadline: Instant) {
     while Instant::now() < deadline {
-        let _ = model.refresh();
-        if let Some(tab) = model.state().active_tab() {
-            if model.state().panes(&tab.id).len() >= min_panes {
+        client.poll();
+        if let Some(tab) = client.active_tab() {
+            if client.panes(tab.id).len() >= min_panes {
                 return;
             }
         }
@@ -237,10 +285,10 @@ fn wait_for_pane_count(model: &mut TerminalModel, min_panes: usize, deadline: In
 }
 
 /// 等待 tab 数量变化。
-fn wait_for_tab_count(model: &mut TerminalModel, min_tabs: usize, deadline: Instant) {
+fn wait_for_tab_count(client: &mut FfiTmuxClient, min_tabs: usize, deadline: Instant) {
     while Instant::now() < deadline {
-        let _ = model.refresh();
-        if model.state().tabs().len() >= min_tabs {
+        client.poll();
+        if client.tabs().len() >= min_tabs {
             return;
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -248,10 +296,10 @@ fn wait_for_tab_count(model: &mut TerminalModel, min_tabs: usize, deadline: Inst
 }
 
 /// 等待事件回流（给 tmux 一小段处理时间，最多 500ms）。
-fn wait_events_brief(model: &mut TerminalModel) {
+fn wait_events_brief(client: &mut FfiTmuxClient) {
     let deadline = Instant::now() + Duration::from_millis(500);
     while Instant::now() < deadline {
-        let _ = model.refresh();
+        client.poll();
         std::thread::sleep(Duration::from_millis(50));
     }
 }
@@ -263,7 +311,7 @@ fn execute_session(cmd: &SessionCmd, deadline: Instant) -> anyhow::Result<serde_
             match target {
                 Target::Local => {
                     let sessions =
-                        crate::core::discovery::list_local_tmux_sessions(socket.as_deref());
+                        FfiClient::discover_tmux_sessions("local", None, socket.as_deref())?;
                     let arr: Vec<serde_json::Value> = sessions
                         .iter()
                         .map(|s| {
@@ -278,13 +326,8 @@ fn execute_session(cmd: &SessionCmd, deadline: Instant) -> anyhow::Result<serde_
                     Ok(serde_json::json!({"workspaces": arr}))
                 }
                 Target::Ssh { alias } => {
-                    let ssh_config = std::env::var("MUXTERM_SSH_CONFIG_PATH").ok();
-                    let sessions = crate::core::discovery::list_ssh_tmux_sessions(
-                        alias,
-                        ssh_config.as_deref(),
-                        socket.as_deref(),
-                        std::time::Duration::from_secs(10),
-                    )?;
+                    let sessions =
+                        FfiClient::discover_tmux_sessions("ssh", Some(alias), socket.as_deref())?;
                     let arr: Vec<serde_json::Value> = sessions
                         .iter()
                         .map(|s| {
@@ -308,11 +351,10 @@ fn execute_session(cmd: &SessionCmd, deadline: Instant) -> anyhow::Result<serde_
         } => {
             check_timeout(deadline)?;
             match target {
-                Target::Local => with_local_tmux(socket.as_deref(), name, deadline, |model| {
-                    wait_ready(model, READY_POLL_DURATION);
-                    let session_name = model.state().workspace_name().to_string();
+                Target::Local => with_local_tmux(socket.as_deref(), name, deadline, |client| {
+                    wait_ready(client, READY_POLL_DURATION);
                     Ok(serde_json::json!({
-                        "session": session_name,
+                        "session": name,
                         "created": true,
                     }))
                 }),
@@ -328,32 +370,33 @@ fn execute_session(cmd: &SessionCmd, deadline: Instant) -> anyhow::Result<serde_
         } => {
             check_timeout(deadline)?;
             match target {
-                Target::Local => with_local_tmux(socket.as_deref(), name, deadline, |model| {
-                    wait_ready(model, READY_POLL_DURATION);
+                Target::Local => with_local_tmux(socket.as_deref(), name, deadline, |client| {
+                    wait_ready(client, READY_POLL_DURATION);
                     // 无 GUI 的 CLI 不发送 ResizeClient；显式请求权威快照，
                     // 避免 attach 首屏被 UI 尺寸门闩无限推迟。
-                    let pane_id = model.state().active_pane().map(|pane| pane.id);
+                    let pane_id = client
+                        .active_tab()
+                        .and_then(|tab| {
+                            client.panes(tab.id).into_iter().find(|pane| pane.is_active)
+                        })
+                        .map(|pane| pane.id);
                     if let Some(pane_id) = pane_id {
-                        let _ = model.execute(Task::RequestPaneSnapshot { target: pane_id });
-                        let _ = wait_cli_pane_capture(model, pane_id, deadline);
+                        let _ = client.execute(ClientTask::RequestPaneSnapshot { pane_id });
+                        let _ = wait_cli_pane_capture(client, pane_id, deadline);
                     }
-                    let tabs = model.state().tabs().len() as u32;
-                    let panes: Vec<serde_json::Value> = model
-                        .state()
+                    let tabs = client.tabs().len() as u32;
+                    let panes: Vec<serde_json::Value> = client
                         .active_tab()
                         .map(|tab| {
-                            model
-                                .state()
-                                .panes(&tab.id)
+                            client
+                                .panes(tab.id)
                                 .iter()
                                 .map(|pane| {
-                                    let output = model
-                                        .state()
-                                        .pane_output(&pane.id)
-                                        .map(|bytes| String::from_utf8_lossy(bytes).to_string())
-                                        .unwrap_or_default();
+                                    let output =
+                                        String::from_utf8_lossy(&client.pane_output(pane.id))
+                                            .to_string();
                                     serde_json::json!({
-                                        "id": pane.id.0,
+                                        "id": pane.id,
                                         "output": output,
                                     })
                                 })
@@ -384,18 +427,17 @@ fn execute_tab(cmd: &TabCmd, deadline: Instant) -> anyhow::Result<serde_json::Va
         } => {
             check_timeout(deadline)?;
             match target {
-                Target::Local => with_local_tmux(socket.as_deref(), session, deadline, |model| {
-                    wait_ready(model, READY_POLL_DURATION);
-                    let _ = model.refresh();
-                    let tabs: Vec<serde_json::Value> = model
-                        .state()
+                Target::Local => with_local_tmux(socket.as_deref(), session, deadline, |client| {
+                    wait_ready(client, READY_POLL_DURATION);
+                    client.poll();
+                    let tabs: Vec<serde_json::Value> = client
                         .tabs()
                         .iter()
                         .map(|t| {
                             serde_json::json!({
-                                "id": t.id.0,
+                                "id": t.id,
                                 "name": t.name,
-                                "active": t.active,
+                                "active": t.is_active,
                             })
                         })
                         .collect();
@@ -414,32 +456,29 @@ fn execute_tab(cmd: &TabCmd, deadline: Instant) -> anyhow::Result<serde_json::Va
         } => {
             check_timeout(deadline)?;
             match target {
-                Target::Local => with_local_tmux(socket.as_deref(), session, deadline, |model| {
-                    wait_ready(model, READY_POLL_DURATION);
-                    let _ = model.refresh();
-                    model.execute(Task::NewTab {
-                        name: name.clone(),
-                        command: None,
-                        workdir: None,
-                    })?;
+                Target::Local => with_local_tmux(socket.as_deref(), session, deadline, |client| {
+                    wait_ready(client, READY_POLL_DURATION);
+                    client.poll();
+                    let rc = client
+                        .client
+                        .new_workspace_tab(&client.workspace_id, name.as_deref());
+                    if rc != 0 {
+                        anyhow::bail!("Core FFI new tab failed with code {rc}");
+                    }
                     // 等待 tab 数增加（确认 tmux 已处理 new-window，最多 2s）
-                    wait_for_tab_count(model, 2, Instant::now() + Duration::from_secs(2));
-                    let _ = model.refresh();
-                    let new_tab = {
-                        let state = model.state();
-                        state
-                            .tabs()
-                            .last()
-                            .copied()
-                            .map(|t| {
-                                serde_json::json!({
-                                    "id": t.id.0,
-                                    "name": t.name,
-                                    "active": t.active
-                                })
+                    wait_for_tab_count(client, 2, Instant::now() + Duration::from_secs(2));
+                    client.poll();
+                    let new_tab = client
+                        .tabs()
+                        .last()
+                        .map(|t| {
+                            serde_json::json!({
+                                "id": t.id,
+                                "name": t.name,
+                                "active": t.is_active
                             })
-                            .unwrap_or(serde_json::json!({}))
-                    };
+                        })
+                        .unwrap_or(serde_json::json!({}));
                     Ok(new_tab)
                 }),
                 Target::Ssh { alias } => Err(anyhow::anyhow!(
@@ -460,21 +499,18 @@ fn execute_pane(cmd: &PaneCmd, deadline: Instant) -> anyhow::Result<serde_json::
         } => {
             check_timeout(deadline)?;
             match target {
-                Target::Local => with_local_tmux(socket.as_deref(), session, deadline, |model| {
-                    wait_ready(model, READY_POLL_DURATION);
-                    let _ = model.refresh();
-                    let tab_id = tab
-                        .map(TabId)
-                        .or_else(|| model.state().active_tab().map(|t| t.id));
+                Target::Local => with_local_tmux(socket.as_deref(), session, deadline, |client| {
+                    wait_ready(client, READY_POLL_DURATION);
+                    client.poll();
+                    let tab_id = tab.or_else(|| client.active_tab().map(|t| t.id));
                     let panes: Vec<serde_json::Value> = if let Some(tid) = tab_id {
-                        model
-                            .state()
-                            .panes(&tid)
+                        client
+                            .panes(tid)
                             .iter()
                             .map(|p| {
                                 serde_json::json!({
-                                    "id": p.id.0,
-                                    "active": p.active,
+                                    "id": p.id,
+                                    "active": p.is_active,
                                     "cols": p.cols,
                                     "rows": p.rows,
                                     "title": p.title,
@@ -520,42 +556,29 @@ fn execute_pane(cmd: &PaneCmd, deadline: Instant) -> anyhow::Result<serde_json::
         } => {
             check_timeout(deadline)?;
             match target {
-                Target::Local => with_local_tmux(socket.as_deref(), session, deadline, |model| {
-                    wait_ready(model, READY_POLL_DURATION);
-                    let _ = model.refresh();
-                    let dir = match direction {
-                        SplitDirection::Horizontal => {
-                            crate::core::protocol::layout::SplitDir::Horizontal
-                        }
-                        SplitDirection::Vertical => {
-                            crate::core::protocol::layout::SplitDir::Vertical
-                        }
-                    };
+                Target::Local => with_local_tmux(socket.as_deref(), session, deadline, |client| {
+                    wait_ready(client, READY_POLL_DURATION);
+                    client.poll();
                     // 使用 CLI 传入的 pane ID（muxterm pane id = tmux %N 的 N）
-                    model.execute(Task::SplitPane {
-                        target: Some(PaneId(*pane)),
-                        dir,
-                        command: None,
-                        workdir: None,
+                    client.execute(ClientTask::SplitPane {
+                        pane_id: *pane,
+                        horizontal: matches!(direction, SplitDirection::Horizontal),
                     })?;
                     // 等待 pane 数增加（确认 tmux 已处理 split-window，最多 3s）
-                    wait_for_pane_count(model, 2, Instant::now() + Duration::from_secs(3));
-                    let _ = model.refresh();
-                    let new_pane = {
-                        let state = model.state();
-                        let tab_id = state.active_tab().map(|t| t.id);
-                        tab_id
-                            .and_then(|tid| state.panes(&tid).last().copied())
-                            .map(|p| {
-                                serde_json::json!({
-                                    "id": p.id.0,
-                                    "active": p.active,
-                                    "cols": p.cols,
-                                    "rows": p.rows,
-                                })
+                    wait_for_pane_count(client, 2, Instant::now() + Duration::from_secs(3));
+                    client.poll();
+                    let new_pane = client
+                        .active_tab()
+                        .and_then(|tab| client.panes(tab.id).last().cloned())
+                        .map(|p| {
+                            serde_json::json!({
+                                "id": p.id,
+                                "active": p.is_active,
+                                "cols": p.cols,
+                                "rows": p.rows,
                             })
-                            .unwrap_or(serde_json::json!({}))
-                    };
+                        })
+                        .unwrap_or(serde_json::json!({}));
                     Ok(new_pane)
                 }),
                 Target::Ssh { alias } => Err(anyhow::anyhow!(
@@ -572,21 +595,17 @@ fn execute_pane(cmd: &PaneCmd, deadline: Instant) -> anyhow::Result<serde_json::
         } => {
             check_timeout(deadline)?;
             match target {
-                Target::Local => with_local_tmux(socket.as_deref(), session, deadline, |model| {
-                    wait_ready(model, READY_POLL_DURATION);
-                    let _ = model.refresh();
-                    use crate::core::protocol::terminal::input::KeyEvent;
+                Target::Local => with_local_tmux(socket.as_deref(), session, deadline, |client| {
+                    wait_ready(client, READY_POLL_DURATION);
+                    client.poll();
                     // 发送文本 + Enter（让 shell 执行命令）
-                    let mut keys: Vec<KeyEvent> = text.chars().map(KeyEvent::Char).collect();
-                    keys.push(KeyEvent::Enter);
-                    model.execute(Task::SendKeys {
-                        target: PaneId(*pane),
-                        keys,
-                    })?;
+                    let mut bytes = text.as_bytes().to_vec();
+                    bytes.push(b'\r');
+                    client.send_input(*pane, &bytes)?;
                     // 等待 shell 执行并产生输出（最多 2s）
                     let send_deadline = Instant::now() + Duration::from_secs(2);
                     while Instant::now() < send_deadline {
-                        let _ = model.refresh();
+                        client.poll();
                         std::thread::sleep(Duration::from_millis(100));
                     }
                     Ok(serde_json::json!({"sent": true, "pane": pane}))
@@ -607,13 +626,12 @@ fn execute_pane(cmd: &PaneCmd, deadline: Instant) -> anyhow::Result<serde_json::
             match target {
                 Target::Local => {
                     // 走 core runtime 的 pane 输出（platform 不再拼 tmux）。
-                    with_local_tmux(socket.as_deref(), session, deadline, |model| {
-                        wait_ready(model, READY_POLL_DURATION);
-                        let pane_id = PaneId(*pane);
+                    with_local_tmux(socket.as_deref(), session, deadline, |client| {
+                        wait_ready(client, READY_POLL_DURATION);
                         // CLI 可以读取后台 tab 的 pane；显式请求权威 Surface，
                         // 不依赖 attach 时活动 tab 的首屏 seed。
-                        let _ = model.execute(Task::RequestPaneSnapshot { target: pane_id });
-                        let text = wait_cli_pane_capture(model, pane_id, deadline);
+                        let _ = client.execute(ClientTask::RequestPaneSnapshot { pane_id: *pane });
+                        let text = wait_cli_pane_capture(client, *pane, deadline);
                         let text = truncate_capture_lines(text, *lines);
                         Ok(serde_json::json!({
                             "pane": pane,
