@@ -16,8 +16,8 @@ use support::linux_gtk::*;
 use support::sshd_test_support::{loopback_sshd_available, LoopbackSshd};
 use support::tmux_test_support::{create_session, kill_server, tmux_available, unique_socket};
 
-use muxterm::core::config::Config;
-use muxterm::platform::linux::window::AppWindow;
+use muxterm::test_support::core::config::Config;
+use muxterm::test_support::platform::linux::window::AppWindow;
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const LOCAL_FIRST_TIMEOUT: Duration = Duration::from_secs(1);

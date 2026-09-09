@@ -11,8 +11,8 @@ use gtk4::prelude::*;
 use gtk4::{ListBox, ListBoxRow, Stack};
 use support::linux_gtk::*;
 
-use muxterm::core::config::parse_config_toml;
-use muxterm::platform::linux::preferences_window::show;
+use muxterm::test_support::core::config::parse_config_toml;
+use muxterm::test_support::platform::linux::preferences_window::show;
 
 /// S10：Ctrl+= 增大字号并写 config.toml（不新建 preferences.toml）。
 /// 纯逻辑测试，不需要 GTK 窗口（避免本机 xvfb/Mesa 多窗口崩溃）。
@@ -26,7 +26,10 @@ fn ctrl_equal_increases_font_and_writes_config_toml() {
     std::fs::write(&config_path, "[font]\nsize = 12.0\n").unwrap();
 
     // 与生产 adjust_font 相同的持久化路径。
-    muxterm::platform::linux::window::persist_config("font.size", serde_json::json!(13.0f64));
+    muxterm::test_support::platform::linux::window::persist_config(
+        "font.size",
+        serde_json::json!(13.0f64),
+    );
     let raw = std::fs::read_to_string(&config_path).unwrap();
     assert!(raw.contains("size = 13.0"), "config.toml 应写 13.0: {raw}");
     assert!(

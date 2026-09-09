@@ -10,10 +10,10 @@ use std::process::Command;
 use std::ptr;
 use std::time::{Duration, Instant};
 
-use muxterm::core::protocol::ffi::api::{
+use muxterm::test_support::core::protocol::ffi::api::{
     muxterm_free, muxterm_get_tabs, muxterm_new_connect, muxterm_poll_events,
 };
-use muxterm::core::protocol::ffi::types::{CStateChange, CTab};
+use muxterm::test_support::core::protocol::ffi::types::{CStateChange, CTab};
 
 fn unique_socket(label: &str) -> String {
     let nanos = std::time::SystemTime::now()

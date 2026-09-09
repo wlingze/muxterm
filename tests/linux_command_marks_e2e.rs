@@ -14,8 +14,8 @@ use support::feature_e2e_contract::{build_two_pane_cat, FEATURE_TIMEOUT};
 use support::linux_gtk::*;
 use support::tmux_test_support::{tmux_available, tmux_ok};
 
-use muxterm::core::config::Config;
-use muxterm::platform::linux::window::AppWindow;
+use muxterm::test_support::core::config::Config;
+use muxterm::test_support::platform::linux::window::AppWindow;
 
 fn send_rounds(socket: &str, pane: &str, suffix: &str) {
     let py = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/scripts/osc133_rounds.py");

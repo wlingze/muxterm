@@ -6,8 +6,8 @@ mod support;
 
 use gtk4::prelude::*;
 
-use muxterm::core::config::Config;
-use muxterm::platform::linux::window::AppWindow;
+use muxterm::test_support::core::config::Config;
+use muxterm::test_support::platform::linux::window::AppWindow;
 
 use support::linux_gtk::*;
 

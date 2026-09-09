@@ -7,8 +7,8 @@ mod support;
 
 use std::time::{Duration, Instant};
 
-use muxterm::core::runtime::TmuxRuntime;
-use muxterm::core::workspace::terminal_model::TerminalModel;
+use muxterm::test_support::core::runtime::TmuxRuntime;
+use muxterm::test_support::core::workspace::terminal_model::TerminalModel;
 use support::tmux_test_support::{respawn_cup_flood, tmux_available};
 use support::workspace_attach_contract::{
     assert_core_painted_topology, build_painted_2tab_3pane, count_pane_output_events,

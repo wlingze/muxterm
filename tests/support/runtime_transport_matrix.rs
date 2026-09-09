@@ -9,14 +9,14 @@ use std::time::{Duration, Instant};
 
 use anyhow::{ensure, Context, Result};
 
-use muxterm::core::protocol::layout::{LayoutNode, SplitDir};
-use muxterm::core::protocol::state::{BackendStatus, MutationResult, StateChange};
-use muxterm::core::protocol::task::{Task, TaskOutcome};
-use muxterm::core::protocol::terminal::emulate::TerminalState;
-use muxterm::core::runtime::RuntimeCapability;
-use muxterm::core::types::{PaneId, TabId};
-use muxterm::core::workspace::spec::WorkspaceSpec;
-use muxterm::core::workspace::workspace::Workspace;
+use muxterm::test_support::core::protocol::layout::{LayoutNode, SplitDir};
+use muxterm::test_support::core::protocol::state::{BackendStatus, MutationResult, StateChange};
+use muxterm::test_support::core::protocol::task::{Task, TaskOutcome};
+use muxterm::test_support::core::protocol::terminal::emulate::TerminalState;
+use muxterm::test_support::core::runtime::RuntimeCapability;
+use muxterm::test_support::core::types::{PaneId, TabId};
+use muxterm::test_support::core::workspace::spec::WorkspaceSpec;
+use muxterm::test_support::core::workspace::workspace::Workspace;
 
 use super::herdr_test_support::IsolatedHerdr;
 use super::sshd_test_support::LoopbackSshd;

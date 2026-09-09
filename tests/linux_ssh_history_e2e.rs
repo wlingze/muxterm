@@ -13,9 +13,9 @@ use support::linux_gtk::*;
 use support::ssh_tmux_contract::{build_remote_offscreen_history, ssh_tmux_available, SSH_TIMEOUT};
 use support::tmux_test_support::tmux_available;
 
-use muxterm::core::config::Config;
-use muxterm::core::workspace::spec::WorkspaceSpec;
-use muxterm::platform::linux::window::AppWindow;
+use muxterm::test_support::core::config::Config;
+use muxterm::test_support::core::workspace::spec::WorkspaceSpec;
+use muxterm::test_support::platform::linux::window::AppWindow;
 
 /// 滚出可见区的 token：搜索能命中，滚到顶 VTE 能看见，点回底回到尾标。
 #[test]

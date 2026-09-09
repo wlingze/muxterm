@@ -8,12 +8,14 @@
 
 #![cfg(feature = "tui")]
 
-use muxterm::core::protocol::task::Task;
-use muxterm::core::runtime::ShellRuntime;
-use muxterm::core::types::{PaneId, TabId};
-use muxterm::core::workspace::terminal_model::TerminalModel;
-use muxterm::platform::cli::entry::cli_command_to_task;
-use muxterm::platform::cli::{format_output, parse_cli_command, CliCommand, OutputFormat};
+use muxterm::test_support::core::protocol::task::Task;
+use muxterm::test_support::core::runtime::ShellRuntime;
+use muxterm::test_support::core::types::{PaneId, TabId};
+use muxterm::test_support::core::workspace::terminal_model::TerminalModel;
+use muxterm::test_support::platform::cli::entry::cli_command_to_task;
+use muxterm::test_support::platform::cli::{
+    format_output, parse_cli_command, CliCommand, OutputFormat,
+};
 
 fn make_model() -> TerminalModel {
     // cat：阻塞读 stdin、回显 stdout，适合结构测试 + WriteRaw/capture
@@ -141,7 +143,7 @@ fn cli_split_pane_and_list() {
         &mut model,
         Task::SplitPane {
             target: Some(pane),
-            dir: muxterm::core::protocol::layout::SplitDir::Horizontal,
+            dir: muxterm::test_support::core::protocol::layout::SplitDir::Horizontal,
             command: None,
             workdir: None,
         },
@@ -163,7 +165,7 @@ fn cli_split_pane_text_format() {
         &mut model,
         Task::SplitPane {
             target: Some(pane),
-            dir: muxterm::core::protocol::layout::SplitDir::Vertical,
+            dir: muxterm::test_support::core::protocol::layout::SplitDir::Vertical,
             command: None,
             workdir: None,
         },
@@ -185,7 +187,7 @@ fn cli_kill_pane() {
         &mut model,
         Task::SplitPane {
             target: Some(pane),
-            dir: muxterm::core::protocol::layout::SplitDir::Horizontal,
+            dir: muxterm::test_support::core::protocol::layout::SplitDir::Horizontal,
             command: None,
             workdir: None,
         },
@@ -204,7 +206,7 @@ fn cli_select_pane() {
         &mut model,
         Task::SplitPane {
             target: Some(pane1),
-            dir: muxterm::core::protocol::layout::SplitDir::Horizontal,
+            dir: muxterm::test_support::core::protocol::layout::SplitDir::Horizontal,
             command: None,
             workdir: None,
         },
@@ -290,8 +292,8 @@ fn cli_send_keys_and_capture() {
 
 #[test]
 fn cli_capture_pane_with_lines_limit() {
-    use muxterm::core::runtime::mock::MockRuntime;
-    use muxterm::core::workspace::terminal_model::TerminalModel;
+    use muxterm::test_support::core::runtime::mock::MockRuntime;
+    use muxterm::test_support::core::workspace::terminal_model::TerminalModel;
     let mut b = MockRuntime::with_single_pane();
     b.outputs[0].1 = b"alpha\nbeta\ngamma\ndelta\n".to_vec();
     let model = TerminalModel::new(Box::new(b));
@@ -333,7 +335,7 @@ fn cli_list_layout_after_split() {
         &mut model,
         Task::SplitPane {
             target: Some(pane),
-            dir: muxterm::core::protocol::layout::SplitDir::Horizontal,
+            dir: muxterm::test_support::core::protocol::layout::SplitDir::Horizontal,
             command: None,
             workdir: None,
         },
@@ -355,7 +357,7 @@ fn cli_nested_split_layout_tree() {
         &mut model,
         Task::SplitPane {
             target: Some(pane1),
-            dir: muxterm::core::protocol::layout::SplitDir::Horizontal,
+            dir: muxterm::test_support::core::protocol::layout::SplitDir::Horizontal,
             command: None,
             workdir: None,
         },
@@ -370,7 +372,7 @@ fn cli_nested_split_layout_tree() {
         &mut model,
         Task::SplitPane {
             target: Some(pane2),
-            dir: muxterm::core::protocol::layout::SplitDir::Vertical,
+            dir: muxterm::test_support::core::protocol::layout::SplitDir::Vertical,
             command: None,
             workdir: None,
         },
@@ -422,7 +424,7 @@ fn cli_nested_split_text_layout_shows_tree() {
         &mut model,
         Task::SplitPane {
             target: Some(pane1),
-            dir: muxterm::core::protocol::layout::SplitDir::Horizontal,
+            dir: muxterm::test_support::core::protocol::layout::SplitDir::Horizontal,
             command: None,
             workdir: None,
         },
@@ -434,7 +436,7 @@ fn cli_nested_split_text_layout_shows_tree() {
         &mut model,
         Task::SplitPane {
             target: Some(pane1),
-            dir: muxterm::core::protocol::layout::SplitDir::Vertical,
+            dir: muxterm::test_support::core::protocol::layout::SplitDir::Vertical,
             command: None,
             workdir: None,
         },
@@ -517,7 +519,7 @@ fn cli_parse_send_keys_with_text() {
 
 #[test]
 fn cli_tmux_backend_connect_and_list() {
-    use muxterm::core::runtime::TmuxRuntime;
+    use muxterm::test_support::core::runtime::TmuxRuntime;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     let socket = format!(
@@ -561,7 +563,7 @@ fn cli_tmux_backend_connect_and_list() {
 
 #[test]
 fn cli_tmux_backend_new_window() {
-    use muxterm::core::runtime::TmuxRuntime;
+    use muxterm::test_support::core::runtime::TmuxRuntime;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     let socket = format!(
@@ -619,7 +621,7 @@ fn cli_tmux_backend_new_window() {
 
 #[test]
 fn cli_tmux_backend_send_keys() {
-    use muxterm::core::runtime::TmuxRuntime;
+    use muxterm::test_support::core::runtime::TmuxRuntime;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     let socket = format!(
@@ -655,14 +657,12 @@ fn cli_tmux_backend_send_keys() {
     let outcome = model
         .execute(Task::SendKeys {
             target: pane,
-            keys: vec![muxterm::core::protocol::terminal::input::KeyEvent::Char(
-                'x',
-            )],
+            keys: vec![muxterm::test_support::core::protocol::terminal::input::KeyEvent::Char('x')],
         })
         .unwrap();
     assert!(matches!(
         outcome,
-        muxterm::core::protocol::task::TaskOutcome::Done
+        muxterm::test_support::core::protocol::task::TaskOutcome::Done
     ));
 
     let _ = rt.block_on(model.shutdown());
@@ -679,9 +679,9 @@ fn cli_tmux_backend_send_keys() {
 #[cfg(unix)]
 mod daemon_tests {
     use super::*;
-    use muxterm::core::types::PaneId;
-    use muxterm::platform::cli::client::send_command;
-    use muxterm::platform::cli::session::session_socket_path;
+    use muxterm::test_support::core::types::PaneId;
+    use muxterm::test_support::platform::cli::client::send_command;
+    use muxterm::test_support::platform::cli::session::session_socket_path;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 

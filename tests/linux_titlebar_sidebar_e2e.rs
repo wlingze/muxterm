@@ -10,10 +10,10 @@ use gtk4::gdk;
 use gtk4::prelude::*;
 use gtk4::{Paned, Revealer, ToggleButton, Widget};
 
-use muxterm::core::attention::state::PaneStatus;
-use muxterm::core::config::Config;
-use muxterm::core::workspace::spec::WorkspaceSpec;
-use muxterm::platform::linux::window::AppWindow;
+use muxterm::test_support::core::attention::state::PaneStatus;
+use muxterm::test_support::core::config::Config;
+use muxterm::test_support::core::workspace::spec::WorkspaceSpec;
+use muxterm::test_support::platform::linux::window::AppWindow;
 
 use support::linux_gtk::*;
 use support::tmux_test_support::{

@@ -11,7 +11,7 @@ use std::process::Command;
 use std::ptr;
 use std::time::{Duration, Instant};
 
-use muxterm::core::protocol::ffi::api::{
+use muxterm::test_support::core::protocol::ffi::api::{
     muxterm_attention_on_became_visible, muxterm_attention_snapshot,
     muxterm_attention_take_notifications, muxterm_connect, muxterm_execute, muxterm_free,
     muxterm_get_layout, muxterm_get_pane_output, muxterm_new, muxterm_pane_command_marks_json,
@@ -19,7 +19,7 @@ use muxterm::core::protocol::ffi::api::{
     muxterm_pane_viewport, muxterm_poll_events, muxterm_resize_client, muxterm_search_all,
     muxterm_set_pane_viewport,
 };
-use muxterm::core::protocol::ffi::types::{
+use muxterm::test_support::core::protocol::ffi::types::{
     CLayoutNode, CStateChange, CTask, BACKEND_STATUS_DISCONNECTED, BACKEND_STATUS_EXITED,
     DIR_HORIZONTAL, LAYOUT_LEAF, STATE_BACKEND_STATUS, TASK_SPLIT_PANE,
     TASK_TOGGLE_PANE_FULLSCREEN,
@@ -211,7 +211,7 @@ fn connect_attach(
     session: &str,
     cols: u16,
     rows: u16,
-) -> *mut muxterm::core::protocol::ffi::api::MuxtermHandle {
+) -> *mut muxterm::test_support::core::protocol::ffi::api::MuxtermHandle {
     let bt = CString::new("tmux").unwrap();
     let sock = CString::new(socket).unwrap();
     let sess = CString::new(session).unwrap();
@@ -227,7 +227,7 @@ fn connect_attach(
 }
 
 fn poll_until(
-    h: *mut muxterm::core::protocol::ffi::api::MuxtermHandle,
+    h: *mut muxterm::test_support::core::protocol::ffi::api::MuxtermHandle,
     timeout: Duration,
     mut pred: impl FnMut() -> bool,
 ) -> bool {
@@ -245,7 +245,10 @@ fn poll_until(
     pred()
 }
 
-fn pane_output(h: *mut muxterm::core::protocol::ffi::api::MuxtermHandle, pane: u32) -> String {
+fn pane_output(
+    h: *mut muxterm::test_support::core::protocol::ffi::api::MuxtermHandle,
+    pane: u32,
+) -> String {
     let mut buf = vec![0u8; 256 * 1024];
     let n = unsafe { muxterm_get_pane_output(h, pane, buf.as_mut_ptr(), buf.len()) };
     if n <= 0 {
@@ -255,7 +258,7 @@ fn pane_output(h: *mut muxterm::core::protocol::ffi::api::MuxtermHandle, pane: u
 }
 
 fn search_json(
-    h: *mut muxterm::core::protocol::ffi::api::MuxtermHandle,
+    h: *mut muxterm::test_support::core::protocol::ffi::api::MuxtermHandle,
     query: &str,
 ) -> serde_json::Value {
     let q = CString::new(query).unwrap();
@@ -263,30 +266,32 @@ fn search_json(
     assert!(!raw.is_null(), "search_all 返回 null");
     let json = unsafe {
         let s = CStr::from_ptr(raw).to_string_lossy().into_owned();
-        muxterm::core::protocol::ffi::api::muxterm_free_string(raw);
+        muxterm::test_support::core::protocol::ffi::api::muxterm_free_string(raw);
         serde_json::from_str(&s).unwrap()
     };
     json
 }
 
-fn attention_json(h: *mut muxterm::core::protocol::ffi::api::MuxtermHandle) -> serde_json::Value {
+fn attention_json(
+    h: *mut muxterm::test_support::core::protocol::ffi::api::MuxtermHandle,
+) -> serde_json::Value {
     let raw = unsafe { muxterm_attention_snapshot(h) };
     assert!(!raw.is_null(), "attention_snapshot 返回 null");
     unsafe {
         let s = CStr::from_ptr(raw).to_string_lossy().into_owned();
-        muxterm::core::protocol::ffi::api::muxterm_free_string(raw);
+        muxterm::test_support::core::protocol::ffi::api::muxterm_free_string(raw);
         serde_json::from_str(&s).unwrap()
     }
 }
 
 fn take_notifications(
-    h: *mut muxterm::core::protocol::ffi::api::MuxtermHandle,
+    h: *mut muxterm::test_support::core::protocol::ffi::api::MuxtermHandle,
 ) -> serde_json::Value {
     let raw = unsafe { muxterm_attention_take_notifications(h) };
     assert!(!raw.is_null(), "take_notifications 返回 null");
     unsafe {
         let s = CStr::from_ptr(raw).to_string_lossy().into_owned();
-        muxterm::core::protocol::ffi::api::muxterm_free_string(raw);
+        muxterm::test_support::core::protocol::ffi::api::muxterm_free_string(raw);
         serde_json::from_str(&s).unwrap()
     }
 }
@@ -384,7 +389,7 @@ fn macos_ffi_attach_search_attention_and_done() {
     let input = b"x";
     assert_eq!(
         unsafe {
-            muxterm::core::protocol::ffi::api::muxterm_send_input(
+            muxterm::test_support::core::protocol::ffi::api::muxterm_send_input(
                 h,
                 pane1_id,
                 input.as_ptr(),
@@ -562,7 +567,7 @@ fn macos_ffi_attach_history_and_jump_latest() {
     assert!(!raw.is_null());
     unsafe {
         let s = CStr::from_ptr(raw).to_string_lossy().into_owned();
-        muxterm::core::protocol::ffi::api::muxterm_free_string(raw);
+        muxterm::test_support::core::protocol::ffi::api::muxterm_free_string(raw);
         let json: serde_json::Value = serde_json::from_str(&s).unwrap();
         assert_eq!(json["ok"], true);
         assert!(json["lines"]
@@ -633,7 +638,7 @@ fn macos_ffi_command_marks_roundtrip() {
         }
         let text = CStr::from_ptr(raw).to_string_lossy().into_owned();
         last_marks = text.clone();
-        muxterm::core::protocol::ffi::api::muxterm_free_string(raw);
+        muxterm::test_support::core::protocol::ffi::api::muxterm_free_string(raw);
         let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
             return false;
         };

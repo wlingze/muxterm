@@ -14,10 +14,10 @@ use std::ffi::CString;
 use std::ptr;
 use std::time::{Duration, Instant};
 
-use muxterm::core::protocol::ffi::api::{
+use muxterm::test_support::core::protocol::ffi::api::{
     muxterm_free, muxterm_get_tabs, muxterm_new_connect, muxterm_poll_events,
 };
-use muxterm::core::protocol::ffi::types::{CStateChange, CTab};
+use muxterm::test_support::core::protocol::ffi::types::{CStateChange, CTab};
 
 /// 用 tmux-ssh 后端 attach 远端 session（muxterm_new_connect）。
 ///

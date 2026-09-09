@@ -13,8 +13,8 @@ use support::attach_history_contract::{build_offscreen_history, HISTORY_TIMEOUT}
 use support::linux_gtk::*;
 use support::tmux_test_support::{send_keys_line, tmux_available};
 
-use muxterm::core::config::Config;
-use muxterm::platform::linux::window::AppWindow;
+use muxterm::test_support::core::config::Config;
+use muxterm::test_support::platform::linux::window::AppWindow;
 
 /// 向上看历史时新来 5 行：按钮标签含 + 和数字。
 #[test]

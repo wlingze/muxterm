@@ -4,7 +4,7 @@
 
 mod support;
 
-use muxterm::core::runtime::herdr::session::HerdrSession;
+use muxterm::test_support::core::runtime::herdr::session::HerdrSession;
 use support::herdr_test_support::{herdr_available, IsolatedHerdr};
 
 /// 夹具先 create + paint，再 `HerdrSession::connect` snapshot：

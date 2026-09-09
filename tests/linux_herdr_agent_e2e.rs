@@ -16,12 +16,12 @@ use std::time::{Duration, Instant};
 use anyhow::{ensure, Context, Result};
 use gtk4::prelude::*;
 
-use muxterm::core::config::{Action, Config};
-use muxterm::core::protocol::task::TaskOutcome;
-use muxterm::core::runtime::herdr::session::{HerdrAgentStatus, HerdrSession};
-use muxterm::core::runtime::RuntimeCapability;
-use muxterm::core::workspace::spec::WorkspaceSpec;
-use muxterm::platform::linux::window::AppWindow;
+use muxterm::test_support::core::config::{Action, Config};
+use muxterm::test_support::core::protocol::task::TaskOutcome;
+use muxterm::test_support::core::runtime::herdr::session::{HerdrAgentStatus, HerdrSession};
+use muxterm::test_support::core::runtime::RuntimeCapability;
+use muxterm::test_support::core::workspace::spec::WorkspaceSpec;
+use muxterm::test_support::platform::linux::window::AppWindow;
 use support::herdr_test_support::{herdr_available, IsolatedHerdr, TempAgentCommand};
 use support::linux_gtk::{gtk_test_framework_smoke, load_theme, pump_main_loop, skip_no_display};
 use support::sshd_test_support::{loopback_sshd_available, LoopbackSshd};
@@ -134,8 +134,10 @@ fn wait_for_server_text(session: &HerdrSession, wire_pane: &str, text: &str) -> 
 /// 失败诊断：用独立 wire 连接重新 attach 到该 pane，验证 token 是否
 /// 在服务端 scrollback 里（区分「服务端真丢」vs「AppWindow 重放路径」）。
 fn wire_reattach_token_check(session: &HerdrSession, wire_pane: &str, token: &str) -> String {
-    use muxterm::core::runtime::herdr::observe::{channel, ObserveStream, StreamMode};
-    use muxterm::core::types::PaneId;
+    use muxterm::test_support::core::runtime::herdr::observe::{
+        channel, ObserveStream, StreamMode,
+    };
+    use muxterm::test_support::core::types::PaneId;
     let (tx, _rx) = channel();
     let wire_id = wire_pane
         .rsplit(|c: char| !c.is_ascii_digit())

@@ -2,9 +2,9 @@
 //! 只用隔离 session（muxterm-test-probe-env-<pid>），绝不碰用户会话。
 use std::time::{Duration, Instant};
 
-use muxterm::core::runtime::herdr::observe::{channel, ObserveStream, StreamMode};
-use muxterm::core::runtime::herdr::session::HerdrSession;
-use muxterm::core::types::PaneId;
+use muxterm::test_support::core::runtime::herdr::observe::{channel, ObserveStream, StreamMode};
+use muxterm::test_support::core::runtime::herdr::session::HerdrSession;
+use muxterm::test_support::core::types::PaneId;
 use support::herdr_test_support::IsolatedHerdr;
 
 mod support;

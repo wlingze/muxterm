@@ -22,12 +22,12 @@ use anyhow::{ensure, Context, Result};
 use gtk4::gdk;
 use gtk4::prelude::*;
 
-use muxterm::core::catalog::Catalog;
-use muxterm::core::config::{Action, Config};
-use muxterm::core::protocol::task::TaskOutcome;
-use muxterm::core::quickconnect::model::{QuickConnect, TargetConfig};
-use muxterm::core::runtime::RuntimeCapability;
-use muxterm::platform::linux::window::AppWindow;
+use muxterm::test_support::core::catalog::Catalog;
+use muxterm::test_support::core::config::{Action, Config};
+use muxterm::test_support::core::protocol::task::TaskOutcome;
+use muxterm::test_support::core::quickconnect::model::{QuickConnect, TargetConfig};
+use muxterm::test_support::core::runtime::RuntimeCapability;
+use muxterm::test_support::platform::linux::window::AppWindow;
 
 use support::herdr_test_support::herdr_available;
 use support::linux_gtk::{
@@ -744,7 +744,7 @@ fn seed_herdr_incident_baseline(fixture: &MatrixFixture) -> Result<()> {
         .socket
         .as_ref()
         .context("incident fixture 缺 Herdr socket")?;
-    let session = muxterm::core::runtime::herdr::session::HerdrSession::new(
+    let session = muxterm::test_support::core::runtime::herdr::session::HerdrSession::new(
         fixture.spec.session.clone(),
         socket,
     );
@@ -1511,7 +1511,7 @@ fn scenario_ctrl_l_stays_clear(
     // 不要读 recent/scrollback（Ctrl-L 只清屏，不清历史）。
     if runtime == "herdr" {
         if let Some(socket) = fixture.spec.socket.as_ref() {
-            let sess = muxterm::core::runtime::herdr::session::HerdrSession::new(
+            let sess = muxterm::test_support::core::runtime::herdr::session::HerdrSession::new(
                 fixture.spec.session.clone(),
                 socket,
             );
@@ -1719,7 +1719,10 @@ fn scenario_takeover_watchdog(
         .as_ref()
         .context("herdr spec 缺 socket")?;
     let session_name = fixture.spec.session.clone();
-    let sess = muxterm::core::runtime::herdr::session::HerdrSession::new(session_name, socket_path);
+    let sess = muxterm::test_support::core::runtime::herdr::session::HerdrSession::new(
+        session_name,
+        socket_path,
+    );
     // 找到 pane 的 herdr public id。
     let herdr_pane = sess
         .snapshot()
@@ -1748,7 +1751,7 @@ fn scenario_takeover_watchdog(
 
 /// 真实第二个 raw client：Hello → ControlTerminal{takeover}。
 fn raw_control_takeover(socket_path: &std::path::Path, target: &str) -> Result<bool> {
-    use muxterm::core::runtime::herdr::wire::{
+    use muxterm::test_support::core::runtime::herdr::wire::{
         read_message, write_message, ClientKeybindings, ClientLaunchMode, ClientMessage,
         RenderEncoding, ServerMessage, HERDR_PROTOCOL_VERSION, MAX_FRAME_SIZE,
     };
@@ -1822,7 +1825,7 @@ fn scenario_large_history(
         .socket
         .as_ref()
         .context("herdr spec 缺 socket")?;
-    let sess = muxterm::core::runtime::herdr::session::HerdrSession::new(
+    let sess = muxterm::test_support::core::runtime::herdr::session::HerdrSession::new(
         fixture.spec.session.clone(),
         socket_path,
     );
@@ -1913,13 +1916,13 @@ fn seed_project_store_if_needed(
     }
     let config = TargetConfig {
         name: format!("parity-{transport}"),
-        runtime: muxterm::core::quickconnect::model::TargetRuntime::Herdr,
+        runtime: muxterm::test_support::core::quickconnect::model::TargetRuntime::Herdr,
         transport: if transport == "ssh" {
-            muxterm::core::quickconnect::model::TargetTransport::Ssh {
+            muxterm::test_support::core::quickconnect::model::TargetTransport::Ssh {
                 name: fixture.spec.alias.clone().unwrap_or_default(),
             }
         } else {
-            muxterm::core::quickconnect::model::TargetTransport::Local
+            muxterm::test_support::core::quickconnect::model::TargetTransport::Local
         },
         path: "/tmp".into(),
         socket: fixture.spec.socket.clone(),
@@ -1932,10 +1935,12 @@ fn seed_project_store_if_needed(
     let config_dir = tmp_dir.join("muxterm");
     let _ = std::fs::create_dir_all(&config_dir);
     let restore = EnvRestore::set("XDG_CONFIG_HOME", &tmp_dir);
-    let store_path = muxterm::core::config::Config::user_config_path()
+    let store_path = muxterm::test_support::core::config::Config::user_config_path()
         .expect("临时 XDG_CONFIG_HOME 下必有 config 路径");
     let mut store =
-        muxterm::core::quickconnect::store::QuickConnectStore::new_unified(Some(store_path));
+        muxterm::test_support::core::quickconnect::store::QuickConnectStore::new_unified(Some(
+            store_path,
+        ));
     store.upsert_project(&config);
     Some(restore)
 }
@@ -1987,7 +1992,8 @@ fn scenario_project_existing_parity(
     );
 
     // 2) 内存态 identity：identity key、attach spec identity、id/workspace 相同。
-    let mut store = muxterm::core::quickconnect::store::QuickConnectStore::in_memory();
+    let mut store =
+        muxterm::test_support::core::quickconnect::store::QuickConnectStore::in_memory();
     store.upsert_project(&config);
     assert_eq!(store.projects.len(), 1);
     let saved = store.projects[0].clone();
@@ -2004,8 +2010,8 @@ fn scenario_project_existing_parity(
         saved.workspace_id == config.workspace_id && saved.socket == config.socket,
         "保存/重载后 path/socket/workspace_id 必须保留: saved={saved:?}"
     );
-    let spec_before = muxterm::core::catalog::config_to_spec(&config);
-    let spec_after = muxterm::core::catalog::config_to_spec(&saved);
+    let spec_before = muxterm::test_support::core::catalog::config_to_spec(&config);
+    let spec_after = muxterm::test_support::core::catalog::config_to_spec(&saved);
     ensure!(
         spec_before.id() == spec_after.id(),
         "attach spec identity 必须相同: before={:?}, after={:?}",
@@ -2014,7 +2020,7 @@ fn scenario_project_existing_parity(
     );
 
     // 3) 真实 Existing 行 click（面板 → 已有的连接 → 扁平 herdr 行）。
-    muxterm::platform::linux::quickconnect_panel::close_current();
+    muxterm::test_support::platform::linux::quickconnect_panel::close_current();
     pump_main_loop(40);
     app.test_open_panel(0);
     pump_main_loop(80);
@@ -2118,13 +2124,13 @@ fn find_row_by_prefix(list: &gtk4::ListBox, prefix: &str) -> Option<gtk4::ListBo
 fn project_target_config(fixture: &MatrixFixture, transport: &str) -> Result<TargetConfig> {
     Ok(TargetConfig {
         name: format!("parity-{transport}"),
-        runtime: muxterm::core::quickconnect::model::TargetRuntime::Herdr,
+        runtime: muxterm::test_support::core::quickconnect::model::TargetRuntime::Herdr,
         transport: if transport == "ssh" {
-            muxterm::core::quickconnect::model::TargetTransport::Ssh {
+            muxterm::test_support::core::quickconnect::model::TargetTransport::Ssh {
                 name: fixture.spec.alias.clone().unwrap_or_default(),
             }
         } else {
-            muxterm::core::quickconnect::model::TargetTransport::Local
+            muxterm::test_support::core::quickconnect::model::TargetTransport::Local
         },
         path: "/tmp".into(),
         socket: fixture.spec.socket.clone(),

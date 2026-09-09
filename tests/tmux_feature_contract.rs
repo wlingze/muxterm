@@ -6,11 +6,11 @@ mod support;
 
 use std::time::{Duration, Instant};
 
-use muxterm::core::attention::signal::AttentionSignal;
-use muxterm::core::runtime::TmuxRuntime;
-use muxterm::core::types::PaneId;
-use muxterm::core::workspace::id::WorkspaceId;
-use muxterm::core::workspace::workspace::Workspace;
+use muxterm::test_support::core::attention::signal::AttentionSignal;
+use muxterm::test_support::core::runtime::TmuxRuntime;
+use muxterm::test_support::core::types::PaneId;
+use muxterm::test_support::core::workspace::id::WorkspaceId;
+use muxterm::test_support::core::workspace::workspace::Workspace;
 use support::feature_e2e_contract::*;
 use support::tmux_test_support::{tmux_available, wait_capture_contains};
 

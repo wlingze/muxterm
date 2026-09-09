@@ -11,9 +11,9 @@ mod support;
 
 use std::time::{Duration, Instant};
 
-use muxterm::core::runtime::herdr::observe::{channel, ObserveStream, StreamMode};
-use muxterm::core::runtime::herdr::session::HerdrSession;
-use muxterm::core::types::PaneId;
+use muxterm::test_support::core::runtime::herdr::observe::{channel, ObserveStream, StreamMode};
+use muxterm::test_support::core::runtime::herdr::session::HerdrSession;
+use muxterm::test_support::core::types::PaneId;
 use support::herdr_test_support::{herdr_available, IsolatedHerdr};
 
 const TOKEN: &str = "KEEP_TOKEN_XYZ";

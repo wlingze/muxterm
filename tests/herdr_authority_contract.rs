@@ -13,14 +13,14 @@ use std::time::{Duration, Instant};
 
 use anyhow::{ensure, Context, Result};
 
-use muxterm::core::catalog::Catalog;
-use muxterm::core::protocol::layout::SplitDir;
-use muxterm::core::protocol::state::{MutationResult, StateChange};
-use muxterm::core::protocol::task::{Task, TaskOutcome};
-use muxterm::core::runtime::HerdrRuntime;
-use muxterm::core::types::{PaneId, TabId};
-use muxterm::core::workspace::spec::WorkspaceSpec;
-use muxterm::core::workspace::workspace::Workspace;
+use muxterm::test_support::core::catalog::Catalog;
+use muxterm::test_support::core::protocol::layout::SplitDir;
+use muxterm::test_support::core::protocol::state::{MutationResult, StateChange};
+use muxterm::test_support::core::protocol::task::{Task, TaskOutcome};
+use muxterm::test_support::core::runtime::HerdrRuntime;
+use muxterm::test_support::core::types::{PaneId, TabId};
+use muxterm::test_support::core::workspace::spec::WorkspaceSpec;
+use muxterm::test_support::core::workspace::workspace::Workspace;
 use support::herdr_test_support::{herdr_available, IsolatedHerdr};
 use support::sshd_test_support::{loopback_sshd_available, LoopbackSshd};
 

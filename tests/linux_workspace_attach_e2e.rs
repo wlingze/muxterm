@@ -16,8 +16,8 @@ use support::workspace_attach_contract::{
     MIN_PANE_PX,
 };
 
-use muxterm::core::config::{Config, Theme};
-use muxterm::platform::linux::window::AppWindow;
+use muxterm::test_support::core::config::{Config, Theme};
+use muxterm::test_support::platform::linux::window::AppWindow;
 
 fn theme() -> Theme {
     load_theme()

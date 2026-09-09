@@ -15,8 +15,8 @@ use gtk4::gdk;
 use gtk4::prelude::*;
 use support::linux_gtk::*;
 
-use muxterm::core::config::{Config, Theme};
-use muxterm::platform::linux::window::AppWindow;
+use muxterm::test_support::core::config::{Config, Theme};
+use muxterm::test_support::platform::linux::window::AppWindow;
 
 fn unique_socket(label: &str) -> String {
     let nanos = SystemTime::now()
@@ -93,10 +93,10 @@ fn attention_bel_paints_badge_and_panel() {
             cfg,
             Theme::load("light").unwrap_or_else(|_| Theme {
                 name: "test".into(),
-                background: muxterm::core::config::Rgb(0x1e, 0x1e, 0x2e),
-                foreground: muxterm::core::config::Rgb(0xcd, 0xd6, 0xf4),
-                cursor: muxterm::core::config::Rgb(0xf5, 0xe0, 0xdc),
-                colors: [muxterm::core::config::Rgb(0, 0, 0); 16],
+                background: muxterm::test_support::core::config::Rgb(0x1e, 0x1e, 0x2e),
+                foreground: muxterm::test_support::core::config::Rgb(0xcd, 0xd6, 0xf4),
+                cursor: muxterm::test_support::core::config::Rgb(0xf5, 0xe0, 0xdc),
+                colors: [muxterm::test_support::core::config::Rgb(0, 0, 0); 16],
             }),
         );
         app.window.present();

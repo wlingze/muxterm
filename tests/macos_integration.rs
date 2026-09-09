@@ -21,12 +21,12 @@ use std::process::Command;
 use std::ptr;
 use std::time::{Duration, Instant};
 
-use muxterm::core::protocol::ffi::api::{
+use muxterm::test_support::core::protocol::ffi::api::{
     muxterm_connect, muxterm_detach, muxterm_execute, muxterm_free, muxterm_get_layout,
     muxterm_get_panes, muxterm_get_tabs, muxterm_new, muxterm_poll_events, muxterm_resize_client,
     muxterm_resize_pane_axis, muxterm_shutdown,
 };
-use muxterm::core::protocol::ffi::types::{
+use muxterm::test_support::core::protocol::ffi::types::{
     CLayoutNode, CPane, CStateChange, CTab, CTask, DIR_HORIZONTAL, DIR_VERTICAL, LAYOUT_LEAF,
     LAYOUT_SPLIT_H, LAYOUT_SPLIT_V, STATE_PANE_HISTORY, TASK_NEW_TAB, TASK_SPLIT_PANE,
     TASK_SWITCH_TAB,
@@ -246,7 +246,7 @@ unsafe fn clone_layout_shape(node: &CLayoutNode) -> LayoutShape {
 }
 
 unsafe fn tab_layout_shape(
-    h: *mut muxterm::core::protocol::ffi::api::MuxtermHandle,
+    h: *mut muxterm::test_support::core::protocol::ffi::api::MuxtermHandle,
     tab_id: u32,
 ) -> (Vec<u32>, LayoutShape) {
     // FFI 约定 tab_id=0 表示 active tab；tmux 的第一个 window 也可能
@@ -297,7 +297,7 @@ fn collect_shape_leaves(shape: &LayoutShape, out: &mut Vec<u32>) {
 }
 
 unsafe fn wait_for_tab_count(
-    h: *mut muxterm::core::protocol::ffi::api::MuxtermHandle,
+    h: *mut muxterm::test_support::core::protocol::ffi::api::MuxtermHandle,
     expected: i32,
 ) {
     let mut ev = [CStateChange::default(); 128];
@@ -322,7 +322,10 @@ unsafe fn wait_for_tab_count(
     panic!("等待 tab 数量失败：expected={expected}, actual={actual}");
 }
 
-unsafe fn switch_tab(h: *mut muxterm::core::protocol::ffi::api::MuxtermHandle, tab_id: u32) {
+unsafe fn switch_tab(
+    h: *mut muxterm::test_support::core::protocol::ffi::api::MuxtermHandle,
+    tab_id: u32,
+) {
     let task = CTask {
         type_: TASK_SWITCH_TAB,
         target_pane: 0,
@@ -352,7 +355,7 @@ unsafe fn switch_tab(h: *mut muxterm::core::protocol::ffi::api::MuxtermHandle, t
 }
 
 unsafe fn tab_pane_count(
-    h: *mut muxterm::core::protocol::ffi::api::MuxtermHandle,
+    h: *mut muxterm::test_support::core::protocol::ffi::api::MuxtermHandle,
     tab_id: u32,
 ) -> i32 {
     let mut panes = [CPane {
@@ -365,7 +368,7 @@ unsafe fn tab_pane_count(
 }
 
 unsafe fn tab_layout_root(
-    h: *mut muxterm::core::protocol::ffi::api::MuxtermHandle,
+    h: *mut muxterm::test_support::core::protocol::ffi::api::MuxtermHandle,
     tab_id: u32,
 ) -> CLayoutNode {
     let mut root = CLayoutNode {

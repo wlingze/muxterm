@@ -9,9 +9,9 @@ mod support;
 use gtk4::prelude::*;
 use support::linux_gtk::*;
 
-use muxterm::core::config::Config;
-use muxterm::core::fault;
-use muxterm::platform::linux::window::AppWindow;
+use muxterm::test_support::core::config::Config;
+use muxterm::test_support::core::fault;
+use muxterm::test_support::platform::linux::window::AppWindow;
 
 /// 注入 fault 后：对话框存在、last_message 含 token、进程还能继续轮询。
 #[test]
@@ -22,7 +22,7 @@ fn linux_fault_dialog_shows_and_process_survives() {
     gtk4::test_synced(|| {
         gtk_test_framework_smoke();
         fault::clear_last_message();
-        muxterm::platform::linux::fault_gtk::reset_dialog_shown_for_test();
+        muxterm::test_support::platform::linux::fault_gtk::reset_dialog_shown_for_test();
 
         let cfg = Config::default();
         let app = AppWindow::new(cfg, load_theme());
