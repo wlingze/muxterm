@@ -570,7 +570,7 @@ final class TerminalManager: TerminalInputHandler {
         }
         ensureValidModelSize(view)
         if !swiftTermSeeded.contains(paneId) {
-            // 第一批 PTY 就是增量，不要去 Index 拉 visible_ansi。
+            // 第一批 PTY 就是增量，不要去 Index 拉 ANSI dump。
             swiftTermSeeded.insert(paneId)
             queueLiveOutput(paneId, data: data)
             setSurfaceReady(paneId, true)

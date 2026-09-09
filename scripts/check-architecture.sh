@@ -43,6 +43,10 @@ check_absent \
     '^[[:space:]]*mod (core|platform)[[:space:]]*;' \
     src/main.rs
 check_absent \
+    "core must not import the frontend platform compatibility module" \
+    'crate::platform' \
+    crates/muxterm-core/src
+check_absent \
     "frontend must not import Core internals directly" \
     'crate::(core|muxterm_core)' \
     src/frontend src/bin
@@ -50,6 +54,10 @@ check_absent \
     "legacy runtime mode/factory names" \
     'RuntimeMode|create_runtime|build_runtime' \
     crates/muxterm-core/src
+check_absent \
+    "legacy runtime and transport provider names" \
+    'RuntimeDriver|TargetTransportProvider|ByteTransport' \
+    crates/muxterm-core/src src/frontend
 check_absent \
     "legacy catalog builtin path" \
     'catalog/builtin' \
@@ -70,6 +78,10 @@ check_absent \
     "frontend must not expose the removed visible-grid FFI" \
     'muxterm_(workspace_)?pane_visible_ansi|paneVisibleANSI|get_workspace_pane_visible_ansi' \
     src crates/muxterm-core/src
+check_absent \
+    "frontend must not use Index ANSI dumps for Surface rendering" \
+    'visible_ansi|surface_seed_ansi|scroll_ansi|paneSurfaceSeedANSI' \
+    src/frontend
 check_absent \
     "ANSI dump FFI must not cross the public frontend boundary" \
     'muxterm_(workspace_)?pane_(scroll|surface_seed)_ansi' \
