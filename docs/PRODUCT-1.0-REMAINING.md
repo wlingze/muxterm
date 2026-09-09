@@ -180,7 +180,45 @@ ryzen · muxterm  远端 :5173 在听
 
 ---
 
-## 6. 距离判断
+## 6. 2026-09 对手位（Superlogical / Herdr）
+
+核对时间：2026-09-09T16:33:46+08:00（Asia/Shanghai）。
+
+三层不要打成一团：
+
+| 层 | 他们在做 | Muxterm |
+| --- | --- | --- |
+| **Runtime**（会话活在哪） | Herdr：agent 进程的家；Superlogical：下一代 mux，想替 tmux/SSH | 已经接 Herdr，tmux 继续用 |
+| **Client**（人从哪看） | Herdr 自带 TUI；Superlogical 预告 web + macOS/iOS 原生 | **这是 Muxterm 的座位** |
+| **编排** | Herdr 插件/agent 互调；Superlogical 远期人+AI 工作平台 | 明确不做 |
+
+**Herdr（2026-09-07/08）**
+
+- 0.9：本机 + SSH 机器进同一个 TUI（「Connecting the machines」）。
+- 次日：$6M seed（Bessemer 领投，YC / e2vc，Tobi Lütke、Dane Knecht 等）。
+- 公开叙事：runtime 仍 Apache-2.0；钱用来招人；下一步 Herdr Cloud。
+- 产品句：agent 活在后台 server 里，working/blocked/idle，关客户端工作不停。
+- 来源：herdr.dev 博客摘要、YC 公司页、GitHub `herdrdev/herdr`。X 上用户在说 0.9 多机、手机看卡住、agent 可编程控 tab。
+
+对 Muxterm：这是 **Runtime 变强**，不是来抢原生窗口。继续当一等 Runtime 用；不要去做第二个 Herdr TUI。他们做 Cloud/账号的时候，Muxterm 的「零账号客户端」才更值钱。
+
+**Superlogical（2026-09-02/08）**
+
+- Hashimoto 等，libghostty 上的 **server-side mux**：server 持 PTY，原始字节 tee 给客户端，不再 tmux 那种双重仿真。
+- 9-02：pre-alpha demo（关了再开计数还在、原生滚动、session）。
+- 9-08：远程持久 session、远端列目录；Hashimoto 称 **可以当 SSH 替代**（自己的服务器已不跑 sshd），也仍可用 Superlogical-over-SSH。
+- 官网仍是 waitlist；web + macOS/iOS、现场分享是规划，不是已交付客户端。
+- 来源：[superlogical.com](https://superlogical.com/)、[X @mitchellh 2097424868203758046](https://x.com/mitchellh/status/2097424868203758046)、YouTube pre-alpha（2026-09-02）。
+
+对 Muxterm：他们在换 **地下管道**（mux + 传输）。1.0 不要跟他们造 mux。观察点只有一个：协议开不开。开了就当 Transport/Runtime 接；不开就继续吃 SSH+tmux/Herdr。他们的 native 客户端还没上市，窗口座位现在是空的。
+
+**因此 1.0 的差异化只能写在 Client 层：**
+
+原生一扇窗 + 跨 tmux 与 Herdr 的注意力闭环 + 不搬家、零账号。管道谁强接谁。
+
+---
+
+## 7. 距离判断
 
 不是差一个新产品。差的是：
 
@@ -189,6 +227,8 @@ ryzen · muxterm  远端 :5173 在听
 3. 搜索要跳到坐标
 4. Cmd-W / 选词 / 链接 / 建区这些日用刺
 5. 远程截图和远程端口不必再开一个终端
+
+对手加速 **不改变** 下一刀：还是把 B 做成闭环。Herdr 融资和 Superlogical demo 证明「谁在等我 + 持久会话」是真市场；他们占 Runtime，Muxterm 占窗。跟他们造 mux / 再做一个 agent TUI，才是走远。
 
 四波都是现有 Workspace + SSH + 面板上的增量。B 做成闭环之后，对外那句才站得住：
 
