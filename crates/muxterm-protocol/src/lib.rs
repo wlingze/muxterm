@@ -7,6 +7,8 @@
 use std::path::Path;
 use std::str::FromStr;
 
+pub mod candidate;
+
 /// Product-level pane identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct PaneId(pub u32);

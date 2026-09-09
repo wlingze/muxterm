@@ -3,7 +3,7 @@
 //! A Candidate is a selectable list row. Its reference is the only identity
 //! carried back into Core; display text is deliberately not used for resolve.
 
-use crate::core::workspace::id::WorkspaceId;
+use crate::WorkspaceId;
 
 /// The four product-level sources shown by QuickConnect.
 #[derive(
