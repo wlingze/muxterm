@@ -41,7 +41,7 @@
 | `AppShell` | 窗口骨架：Sidebar + SceneStack + 主区槽位 + Overlay 挂载点 | 含业务状态 |
 | `Scene`（WorkspaceScene） | 一个已打开 Workspace 的完整视图树：TabBar + PaneGrid（每 pane 一个常驻 PaneSurface）+ 场景内状态。从 open 到 close 常驻 | 因不可见而销毁 / reset |
 | `SceneStack` | 持有全部 Scene，切换 = 换可见子树 | 切换时调用 Core |
-| `PaneSurface` | 每 pane **恰好一个**常驻 VT + renderer | reset 追帧；吃 `visible_ansi` |
+| `PaneSurface` | 每 pane **恰好一个**常驻 VT + renderer；新建时可接收一次 Surface seed | reset 追帧；把 Index 的 `visible_ansi` 当 live 输入 |
 | `ViewStore` | per-WorkspaceId 的 UI 只读快照：topology / activity map / per-pane render mailbox | 被 Core 线程直写（必须经主线程桥） |
 | `EventPump` | **唯一** FFI 事件消费者：drain Pool 批次 → 写 ViewStore | 存在第二个事件消费者 |
 | `CommandQueue` | UI → Core 的 Task 通道；合并同类命令；不等结果 | 同步阻塞等 Core |
