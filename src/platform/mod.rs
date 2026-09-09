@@ -24,7 +24,7 @@ pub mod event_pump;
 pub mod macos;
 
 #[cfg(feature = "gtk")]
-pub mod linux;
+pub use crate::frontend::linux;
 
 #[cfg(feature = "tui")]
 pub use crate::frontend::tui;

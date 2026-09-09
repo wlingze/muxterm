@@ -9,3 +9,6 @@ pub mod ffi_client;
 
 #[cfg(feature = "tui")]
 pub mod tui;
+
+#[cfg(feature = "gtk")]
+pub mod linux;
