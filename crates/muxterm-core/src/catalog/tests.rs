@@ -9,7 +9,7 @@ use crate::projects::{Project, Worktree};
 use crate::protocol::candidate::{CandidateRef, ExistingCandidate, ExistingCandidateRef};
 use crate::runtime::mock::MockRuntime;
 use crate::runtime::RuntimeProvider;
-use crate::runtime::{Runtime, RuntimeCapability};
+use crate::runtime::{Runtime, RuntimeCapability, RuntimeResult};
 use crate::transport::registry::ConnectionRegistry;
 use crate::transport::{ChannelKind, TargetConnection};
 use crate::workspace::pool::WorkspacePool;
@@ -44,12 +44,12 @@ impl RuntimeProvider for MockDriver {
         &self,
         connect: &dyn TargetConnection,
         _namespace: Option<&str>,
-    ) -> anyhow::Result<Vec<ExistingCandidate>> {
+    ) -> RuntimeResult<Vec<ExistingCandidate>> {
         if !self.accepted.contains(&connect.transport_id()) {
             return Ok(Vec::new());
         }
         if self.list_err {
-            anyhow::bail!("mock list failed");
+            return Err(crate::runtime::RuntimeError::message("mock list failed"));
         }
         Ok(self
             .listed
@@ -66,7 +66,7 @@ impl RuntimeProvider for MockDriver {
         &self,
         _connect: Arc<dyn TargetConnection>,
         spec: &muxterm_runtime::RuntimeSpec,
-    ) -> anyhow::Result<Box<dyn Runtime>> {
+    ) -> RuntimeResult<Box<dyn Runtime>> {
         self.opened.fetch_add(1, Ordering::SeqCst);
         let mut rt = MockRuntime::with_single_pane();
         rt.workspace_runtime = spec.runtime.clone();
@@ -124,7 +124,7 @@ impl RuntimeProvider for UnixSocketOnlyDriver {
         &self,
         _connect: &dyn TargetConnection,
         _namespace: Option<&str>,
-    ) -> anyhow::Result<Vec<ExistingCandidate>> {
+    ) -> RuntimeResult<Vec<ExistingCandidate>> {
         Ok(Vec::new())
     }
 
@@ -132,7 +132,7 @@ impl RuntimeProvider for UnixSocketOnlyDriver {
         &self,
         _connect: Arc<dyn TargetConnection>,
         _spec: &muxterm_runtime::RuntimeSpec,
-    ) -> anyhow::Result<Box<dyn Runtime>> {
+    ) -> RuntimeResult<Box<dyn Runtime>> {
         Ok(Box::new(MockRuntime::with_single_pane()))
     }
 }
@@ -665,7 +665,7 @@ fn discover_sessions_all_must_fan_out_in_parallel() {
             &self,
             connect: &dyn TargetConnection,
             _namespace: Option<&str>,
-        ) -> anyhow::Result<Vec<ExistingCandidate>> {
+        ) -> RuntimeResult<Vec<ExistingCandidate>> {
             let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
             self.max_active.fetch_max(active, Ordering::SeqCst);
             std::thread::sleep(std::time::Duration::from_millis(100));
@@ -685,7 +685,7 @@ fn discover_sessions_all_must_fan_out_in_parallel() {
             &self,
             _connect: Arc<dyn TargetConnection>,
             _spec: &muxterm_runtime::RuntimeSpec,
-        ) -> anyhow::Result<Box<dyn Runtime>> {
+        ) -> RuntimeResult<Box<dyn Runtime>> {
             Ok(Box::new(MockRuntime::with_single_pane()))
         }
     }

@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, Result};
+use anyhow::anyhow;
 
 use crate::protocol::candidate::ExistingCandidate;
 use crate::runtime::herdr::runtime::HerdrRuntime;
@@ -45,7 +45,7 @@ impl RuntimeProvider for HerdrDriver {
         &self,
         connect: &dyn TargetConnection,
         namespace: Option<&str>,
-    ) -> Result<Vec<ExistingCandidate>> {
+    ) -> muxterm_runtime::RuntimeResult<Vec<ExistingCandidate>> {
         if connect.transport_id() == "ssh" {
             let entries = crate::discovery::existing::discover_ssh_herdr(
                 connect.target(),
@@ -92,7 +92,10 @@ impl RuntimeProvider for HerdrDriver {
             .collect())
     }
 
-    fn namespaces(&self, connect: &dyn TargetConnection) -> Result<Vec<String>> {
+    fn namespaces(
+        &self,
+        connect: &dyn TargetConnection,
+    ) -> muxterm_runtime::RuntimeResult<Vec<String>> {
         if connect.transport_id() == "ssh" {
             return Ok(Vec::new());
         }
@@ -119,7 +122,7 @@ impl RuntimeProvider for HerdrDriver {
         &self,
         connect: Arc<dyn TargetConnection>,
         spec: &RuntimeSpec,
-    ) -> Result<Box<dyn Runtime>> {
+    ) -> muxterm_runtime::RuntimeResult<Box<dyn Runtime>> {
         let session_name = if spec.session.is_empty() {
             "default"
         } else {
@@ -131,7 +134,7 @@ impl RuntimeProvider for HerdrDriver {
                 let home = std::env::var("HOME").unwrap_or_default();
                 format!("{home}/.config/herdr/herdr.sock")
             }
-            None => return Err(anyhow!("SSH Herdr 缺远端 socket 路径")),
+            None => return Err(anyhow!("SSH Herdr 缺远端 socket 路径").into()),
         };
         let session = HerdrSession::shared_with_connection(connect, session_name, socket);
         Ok(Box::new(HerdrRuntime::new(session, &spec.path)))

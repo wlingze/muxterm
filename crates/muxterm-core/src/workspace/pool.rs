@@ -315,7 +315,7 @@ impl WorkspacePool {
         if !caps.contains(&RuntimeCapability::WorktreeList) {
             return Err(anyhow::anyhow!("runtime 不支持 WorktreeList"));
         }
-        slot.workspace.runtime().list_worktrees()
+        Ok(slot.workspace.runtime().list_worktrees()?)
     }
 
     /// 创建 worktree 并作为新工作区开进池里（需 `WorktreeCreate`）。

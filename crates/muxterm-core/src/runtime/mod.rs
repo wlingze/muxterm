@@ -13,8 +13,8 @@ pub mod shell;
 pub mod tmux;
 
 pub use muxterm_runtime::{
-    runtime_supports_channels, Runtime, RuntimeCapability, RuntimeInfo, RuntimeProvider,
-    WorktreeCreateSpec, WorktreeInfo,
+    runtime_supports_channels, Runtime, RuntimeCapability, RuntimeError, RuntimeInfo,
+    RuntimeProvider, RuntimeResult, WorktreeCreateSpec, WorktreeInfo,
 };
 
 #[cfg(test)]

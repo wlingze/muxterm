@@ -4,13 +4,12 @@
 //! implementations live in Core for now, but they depend on this contract
 //! instead of defining the trait inside the Core module tree.
 
-use anyhow::Result;
 use async_trait::async_trait;
 use muxterm_protocol::state::{BackendStatus, State, StateChange};
 use muxterm_protocol::task::{Task, TaskOutcome};
 use muxterm_protocol::WorkspaceId;
 
-use crate::RuntimeCapability;
+use crate::{RuntimeCapability, RuntimeError, RuntimeResult};
 
 /// Runtime-facing fields needed to construct or reopen one instance.
 ///
@@ -56,10 +55,10 @@ pub trait Runtime: State + Send {
     fn as_any(&self) -> &dyn std::any::Any;
 
     /// Establish the Runtime connection.
-    async fn connect(&mut self) -> Result<()>;
+    async fn connect(&mut self) -> RuntimeResult<()>;
 
     /// Execute one product task synchronously.
-    fn execute(&mut self, task: &Task) -> Result<TaskOutcome>;
+    fn execute(&mut self, task: &Task) -> RuntimeResult<TaskOutcome>;
 
     /// Non-blocking FIFO drain of pending state changes.
     fn take_events(&mut self) -> Vec<StateChange>;
@@ -75,18 +74,24 @@ pub trait Runtime: State + Send {
     }
 
     /// List checkouts through a Runtime-native worktree API.
-    fn list_worktrees(&self) -> Result<Vec<WorktreeInfo>> {
-        Err(anyhow::anyhow!("runtime 不支持 WorktreeList"))
+    fn list_worktrees(&self) -> RuntimeResult<Vec<WorktreeInfo>> {
+        Err(RuntimeError::Unsupported {
+            operation: "WorktreeList",
+        })
     }
 
     /// Create a checkout and return the Runtime-facing workspace spec.
-    fn create_worktree_spec(&self, _spec: &WorktreeCreateSpec) -> Result<RuntimeSpec> {
-        Err(anyhow::anyhow!("runtime 不支持 WorktreeCreate"))
+    fn create_worktree_spec(&self, _spec: &WorktreeCreateSpec) -> RuntimeResult<RuntimeSpec> {
+        Err(RuntimeError::Unsupported {
+            operation: "WorktreeCreate",
+        })
     }
 
     /// Open an existing checkout and return the Runtime-facing workspace spec.
-    fn open_worktree_spec(&self, _path: &str) -> Result<RuntimeSpec> {
-        Err(anyhow::anyhow!("runtime 不支持 WorktreeOpen"))
+    fn open_worktree_spec(&self, _path: &str) -> RuntimeResult<RuntimeSpec> {
+        Err(RuntimeError::Unsupported {
+            operation: "WorktreeOpen",
+        })
     }
 
     /// Whether the Runtime has an active status-bar subscription.
@@ -103,7 +108,7 @@ pub trait Runtime: State + Send {
     }
 
     /// Shut down the Runtime and release its resources.
-    async fn shutdown(&mut self) -> Result<()>;
+    async fn shutdown(&mut self) -> RuntimeResult<()>;
 }
 
 #[cfg(test)]

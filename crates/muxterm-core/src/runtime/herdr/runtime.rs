@@ -2804,7 +2804,7 @@ impl Runtime for HerdrRuntime {
         self.reconcile_stream_modes();
     }
 
-    async fn connect(&mut self) -> Result<()> {
+    async fn connect(&mut self) -> muxterm_runtime::RuntimeResult<()> {
         if self.status == BackendStatus::Connected {
             return Ok(());
         }
@@ -2823,13 +2823,15 @@ impl Runtime for HerdrRuntime {
             return Err(anyhow!(
                 "Herdr workspace {} 不在 session.snapshot 中",
                 self.workspace_id
-            ));
+            )
+            .into());
         }
         if self.panes.is_empty() {
             return Err(anyhow!(
                 "Herdr workspace {} 在 snapshot 里没有 pane",
                 self.workspace_id
-            ));
+            )
+            .into());
         }
         // 先建 slot，再读取 attach seed，最后才启动异步 stream；这样
         // seed_one_pane 能标记 seed_pending，首个 full 不会抹掉历史 Index。
@@ -2845,7 +2847,7 @@ impl Runtime for HerdrRuntime {
         Ok(())
     }
 
-    fn execute(&mut self, task: &Task) -> Result<TaskOutcome> {
+    fn execute(&mut self, task: &Task) -> muxterm_runtime::RuntimeResult<TaskOutcome> {
         if self.status != BackendStatus::Connected {
             return Ok(TaskOutcome::Rejected {
                 reason: "Herdr 未连接".into(),
@@ -2910,7 +2912,7 @@ impl Runtime for HerdrRuntime {
                         }
                     }
                     Err(err) => {
-                        return Err(anyhow!("Herdr pane control resize 失败: {err}"));
+                        return Err(anyhow!("Herdr pane control resize 失败: {err}").into());
                     }
                 }
                 let unchanged = self
@@ -3163,7 +3165,7 @@ impl Runtime for HerdrRuntime {
         self.events.drain(..).collect()
     }
 
-    async fn shutdown(&mut self) -> Result<()> {
+    async fn shutdown(&mut self) -> muxterm_runtime::RuntimeResult<()> {
         self.event_stream = None;
         self.event_tx = None;
         self.event_rx = None;
@@ -3175,19 +3177,22 @@ impl Runtime for HerdrRuntime {
         ));
         Ok(())
     }
-    fn list_worktrees(&self) -> Result<Vec<crate::runtime::WorktreeInfo>> {
-        self.worktrees()
+    fn list_worktrees(&self) -> muxterm_runtime::RuntimeResult<Vec<crate::runtime::WorktreeInfo>> {
+        Ok(self.worktrees()?)
     }
 
     fn create_worktree_spec(
         &self,
         spec: &crate::runtime::WorktreeCreateSpec,
-    ) -> Result<muxterm_runtime::RuntimeSpec> {
-        self.create_worktree(spec).map(|spec| spec.runtime_spec())
+    ) -> muxterm_runtime::RuntimeResult<muxterm_runtime::RuntimeSpec> {
+        Ok(self.create_worktree(spec)?.runtime_spec())
     }
 
-    fn open_worktree_spec(&self, path: &str) -> Result<muxterm_runtime::RuntimeSpec> {
-        self.open_worktree(path).map(|spec| spec.runtime_spec())
+    fn open_worktree_spec(
+        &self,
+        path: &str,
+    ) -> muxterm_runtime::RuntimeResult<muxterm_runtime::RuntimeSpec> {
+        Ok(self.open_worktree(path)?.runtime_spec())
     }
 }
 
