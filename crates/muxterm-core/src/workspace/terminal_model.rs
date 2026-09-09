@@ -16,7 +16,7 @@
 use crate::config::Rgb;
 use crate::protocol::state::{State, StateChange};
 use crate::protocol::task::{Task, TaskOutcome};
-use crate::runtime::Runtime;
+use crate::runtime::{Runtime, RuntimeBatch};
 use muxterm_protocol::PaneId;
 use std::collections::VecDeque;
 
@@ -99,8 +99,7 @@ impl TerminalModel {
         }
         let outcome = self.runtime.execute(&resolved)?;
         // 拉取 backend 产生的事件，入队
-        let events = self.runtime.take_events();
-        self.pending_events.extend(events);
+        self.enqueue_runtime_batch();
         Ok(outcome)
     }
 
@@ -196,14 +195,30 @@ impl TerminalModel {
     /// 否则 `execute()` 之外的 pty 产出（如敲完回车后 shell 的回显/命令输出）
     /// 会一直堆积在 backend 内部缓冲里，永远显示不出来。
     pub fn refresh(&mut self) -> Vec<StateChange> {
-        let runtime_events = self.runtime.take_events();
-        self.pending_events.extend(runtime_events);
+        self.enqueue_runtime_batch();
         self.poll_events()
+    }
+
+    /// Refresh and return the lane-separated batch after subscriber delivery.
+    pub fn refresh_batch(&mut self) -> RuntimeBatch {
+        self.enqueue_runtime_batch();
+        self.poll_batch()
     }
 
     /// 拉取 pending 事件但不触发回调（供前端自己处理事件分发）。
     pub fn take_events(&mut self) -> Vec<StateChange> {
         self.pending_events.drain(..).collect()
+    }
+
+    /// Take pending events without invoking callbacks, retaining lane
+    /// separation for Workspace and Pool migration callers.
+    pub fn take_batch(&mut self) -> RuntimeBatch {
+        RuntimeBatch::from_state_changes(self.pending_events.drain(..))
+    }
+
+    /// Poll pending events, invoke callbacks, and return the lane batch.
+    pub fn poll_batch(&mut self) -> RuntimeBatch {
+        RuntimeBatch::from_state_changes(self.poll_events())
     }
 
     /// 订阅状态变更。回调在 `poll_events` 时同步调用。
@@ -235,17 +250,21 @@ impl TerminalModel {
     /// 连接后端（spawn tmux / 启动本地 shell）。
     pub async fn connect(&mut self) -> anyhow::Result<()> {
         self.runtime.connect().await?;
-        let events = self.runtime.take_events();
-        self.pending_events.extend(events);
+        self.enqueue_runtime_batch();
         Ok(())
     }
 
     /// 关闭后端。
     pub async fn shutdown(&mut self) -> anyhow::Result<()> {
         self.runtime.shutdown().await?;
-        let events = self.runtime.take_events();
-        self.pending_events.extend(events);
+        self.enqueue_runtime_batch();
         Ok(())
+    }
+
+    fn enqueue_runtime_batch(&mut self) {
+        let mut batch = RuntimeBatch::default();
+        self.runtime.drain_events(&mut batch);
+        self.pending_events.extend(batch.into_state_changes());
     }
 
     /// 当前激活 pane id（便捷方法）。
