@@ -23,7 +23,7 @@ use muxterm::test_support::core::protocol::task::Task;
 use muxterm::test_support::core::protocol::WorkspaceId;
 use muxterm::test_support::core::quickconnect::model::TargetRuntime;
 use muxterm::test_support::core::runtime::herdr::session::HerdrAgentStatus;
-use muxterm::test_support::core::runtime::HerdrRuntime;
+use muxterm::test_support::core::runtime::herdr::HerdrRuntime;
 use muxterm::test_support::core::transport::registry::ConnectionRegistry;
 use muxterm::test_support::core::workspace::workspace::Workspace;
 use support::herdr_test_support::{herdr_available, IsolatedHerdr, TempAgentCommand};
@@ -178,10 +178,9 @@ fn ssh_herdr_forward_attach_contract() {
         )
         .expect("ssh socket 转发应就绪");
 
-    let session = Arc::new(muxterm::test_support::core::runtime::HerdrSession::new(
-        herdr.name(),
-        &local_socket,
-    ));
+    let session = Arc::new(
+        muxterm::test_support::core::runtime::herdr::HerdrSession::new(herdr.name(), &local_socket),
+    );
     session.ping().expect("转发后的 HerdrSession 应能 ping");
     let snap = session.snapshot().expect("转发后的 snapshot 应成功");
     assert!(

@@ -25,7 +25,7 @@ use muxterm::test_support::core::runtime::herdr::wire::{
     read_message, write_message, ClientKeybindings, ClientLaunchMode, ClientMessage,
     RenderEncoding, ServerMessage, HERDR_PROTOCOL_VERSION, MAX_FRAME_SIZE,
 };
-use muxterm::test_support::core::runtime::HerdrRuntime;
+use muxterm::test_support::core::runtime::herdr::HerdrRuntime;
 use muxterm::test_support::core::transport::registry::ConnectionRegistry;
 use muxterm::test_support::core::workspace::pool::WorkspacePool;
 use muxterm::test_support::core::workspace::spec::WorkspaceSpec;

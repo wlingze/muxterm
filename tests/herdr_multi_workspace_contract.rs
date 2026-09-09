@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use muxterm::test_support::core::catalog::Catalog;
-use muxterm::test_support::core::runtime::HerdrRuntime;
+use muxterm::test_support::core::runtime::herdr::HerdrRuntime;
 use muxterm::test_support::core::transport::registry::ConnectionRegistry;
 use muxterm::test_support::core::workspace::pool::{WorkspacePool, WorkspacePoolPolicy};
 use muxterm::test_support::core::workspace::spec::WorkspaceSpec;

@@ -18,7 +18,7 @@ use muxterm::test_support::core::protocol::layout::SplitDir;
 use muxterm::test_support::core::protocol::state::{MutationResult, StateChange};
 use muxterm::test_support::core::protocol::task::{Task, TaskOutcome};
 use muxterm::test_support::core::protocol::{PaneId, TabId};
-use muxterm::test_support::core::runtime::HerdrRuntime;
+use muxterm::test_support::core::runtime::herdr::HerdrRuntime;
 use muxterm::test_support::core::transport::registry::ConnectionRegistry;
 use muxterm::test_support::core::workspace::pool::WorkspacePool;
 use muxterm::test_support::core::workspace::spec::WorkspaceSpec;
