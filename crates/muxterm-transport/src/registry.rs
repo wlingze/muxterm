@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::TargetConnection;
+use crate::{TargetConnection, TransportResult};
 
 /// One reusable connection per `(transport_id, target)` identity.
 #[derive(Default)]
@@ -35,9 +35,9 @@ impl ConnectionRegistry {
         transport_id: &str,
         target: &str,
         connect: F,
-    ) -> anyhow::Result<Arc<dyn TargetConnection>>
+    ) -> TransportResult<Arc<dyn TargetConnection>>
     where
-        F: FnOnce() -> anyhow::Result<Arc<dyn TargetConnection>>,
+        F: FnOnce() -> TransportResult<Arc<dyn TargetConnection>>,
     {
         let key = (transport_id.to_string(), target.to_string());
         if let Some(existing) = self.connections.get(&key) {
@@ -77,15 +77,19 @@ mod tests {
             self.target
         }
 
-        fn open_channel(&self, _request: ChannelRequest) -> anyhow::Result<Box<dyn ByteChannel>> {
-            Err(anyhow::anyhow!("channel not used by registry test"))
+        fn open_channel(&self, _request: ChannelRequest) -> TransportResult<Box<dyn ByteChannel>> {
+            Err(crate::TransportError::message(
+                "channel not used by registry test",
+            ))
         }
 
-        fn exec_command(&self, _request: ChannelRequest) -> anyhow::Result<CommandOutput> {
-            Err(anyhow::anyhow!("command not used by registry test"))
+        fn exec_command(&self, _request: ChannelRequest) -> TransportResult<CommandOutput> {
+            Err(crate::TransportError::message(
+                "command not used by registry test",
+            ))
         }
 
-        fn probe(&self) -> anyhow::Result<()> {
+        fn probe(&self) -> TransportResult<()> {
             Ok(())
         }
     }

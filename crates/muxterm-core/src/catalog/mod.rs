@@ -149,7 +149,7 @@ impl Catalog {
         let t = self
             .transport(transport_id)
             .ok_or_else(|| anyhow::anyhow!("unknown transport '{transport_id}'"))?;
-        t.list_targets()
+        Ok(t.list_targets()?)
     }
 
     /// 取出或新建一条可复用管道。同一 `(transport, target)` 返回同一 `Arc`。
@@ -166,7 +166,7 @@ impl Catalog {
             .transport(transport_id)
             .ok_or_else(|| anyhow::anyhow!("unknown transport '{transport_id}'"))?;
         let connect = t.connect(target)?;
-        connections.acquire(transport_id, target, || Ok(connect.clone()))
+        Ok(connections.acquire(transport_id, target, || Ok(connect.clone()))?)
     }
 
     /// 扇出到接受该 transport 的 Driver。单个 Driver 失败则跳过，不让整表失败。
