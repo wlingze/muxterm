@@ -9,9 +9,8 @@ use std::collections::VecDeque;
 use std::ffi::{c_char, CString};
 use std::ptr;
 
-use crate::activity::attention::clock::RealClock;
-use crate::activity::attention::engine::AttentionEngine;
 use crate::activity::attention::signal::AttentionSignal;
+use crate::activity::ActivityState;
 use crate::catalog::{OpenRequest, ResolveIntent, ResolvedTarget};
 use crate::config::SettingsService;
 use crate::projects::ProjectsService;
@@ -48,7 +47,7 @@ pub struct Muxterm {
     pub(crate) rt: tokio::runtime::Runtime,
     pub(crate) callbacks: FfiCallbacks,
     /// Cross-workspace attention aggregation; Activity will own this later.
-    pub(crate) attention: AttentionEngine<RealClock>,
+    pub(crate) activity: ActivityState,
     /// Core-owned configuration service shared by adapters.
     pub(crate) settings: SettingsService,
     /// C buffers whose pointers remain valid until the next poll/query.
@@ -311,21 +310,27 @@ impl Muxterm {
         let ws_name = ws_id.replica_id();
         for (pane, name, is_agent) in pending_process_names {
             if is_agent {
-                self.attention.set_agent_process_name(&ws_name, pane, name);
+                self.activity
+                    .attention
+                    .set_agent_process_name(&ws_name, pane, name);
             } else {
-                self.attention.set_process_name(&ws_name, pane, name);
+                self.activity
+                    .attention
+                    .set_process_name(&ws_name, pane, name);
             }
         }
         for (pane, signals, last_line, seq, command) in pending {
             if let Some(command) = command {
-                self.attention
+                self.activity
+                    .attention
                     .set_process_name(&ws_name, pane, Some(command));
             }
-            self.attention
+            self.activity
+                .attention
                 .apply(&ws_name, pane, &signals, &last_line, seq);
         }
         for pane in removed_panes {
-            self.attention.remove_pane(&ws_name, pane);
+            self.activity.attention.remove_pane(&ws_name, pane);
         }
     }
 }

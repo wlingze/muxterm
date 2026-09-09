@@ -4,8 +4,7 @@ use std::ffi::{c_char, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 
-use crate::activity::attention::clock::RealClock;
-use crate::activity::attention::engine::AttentionEngine;
+use crate::activity::ActivityState;
 use crate::config::SettingsService;
 use crate::logging::{init_logging, LoggingConfig};
 use crate::projects::{ProjectStore, ProjectsService};
@@ -204,7 +203,7 @@ fn boxed_handle(
         projects,
         rt,
         callbacks: FfiCallbacks::default(),
-        attention: AttentionEngine::new(attention_config, RealClock),
+        activity: ActivityState::new(attention_config),
         settings,
         event_data: Vec::new(),
         event_names: Vec::new(),

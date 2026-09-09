@@ -204,6 +204,7 @@ pub unsafe extern "C" fn muxterm_workspace_send_input(
         };
         let handle = &mut *h;
         handle
+            .activity
             .attention
             .on_user_input(&workspace_id.replica_id(), pane.0);
         let Some(ws) = handle.pool_mut().get_mut(&workspace_id) else {
@@ -558,7 +559,10 @@ pub unsafe extern "C" fn muxterm_send_input(
         };
         let ws_id = handle.pool().active_id().cloned();
         if let Some(ws_id) = ws_id {
-            handle.attention.on_user_input(&ws_id.replica_id(), pane.0);
+            handle
+                .activity
+                .attention
+                .on_user_input(&ws_id.replica_id(), pane.0);
         }
         let Some(ws) = handle.active_workspace_mut() else {
             return -1;
