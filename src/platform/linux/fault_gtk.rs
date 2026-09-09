@@ -1,7 +1,7 @@
 //! GTK fault 兜底：glib trampoline 不能 unwind，进 C 之前先 catch_unwind。
 //!
 //! - [`run`]：包住 16ms poll / idle / connect_* 回调，Err 走
-//!   `core::fault::report` + 弹 `muxterm-fault-dialog`，进程继续。
+//!   `crate::app` fault facade + 弹 `muxterm-fault-dialog`，进程继续。
 //! - 同时最多一个对话框；OK 按钮 `muxterm-fault-dialog-ok`。
 
 use std::cell::Cell;
@@ -10,7 +10,7 @@ use std::rc::Rc;
 use gtk4::prelude::*;
 use gtk4::{Align, Box as GtkBox, Button, Label, Orientation, Window};
 
-use crate::core::fault;
+use crate::app;
 use crate::platform::i18n::{self, TextKey};
 
 /// 全局「已弹过对话框」标记（同时最多一个）。
@@ -18,7 +18,7 @@ static DIALOG_SHOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBo
 
 /// 包住一个会进 glib 回调的闭包：panic 被接住、报告、弹窗，返回 None。
 pub fn run<T>(label: &str, f: impl FnOnce() -> T) -> Option<T> {
-    fault::run(label, f).or_else(|| {
+    app::fault_run(label, f).or_else(|| {
         show_fault_dialog();
         None
     })
@@ -30,7 +30,7 @@ pub fn show_fault_dialog() {
     if DIALOG_SHOWN.swap(true, std::sync::atomic::Ordering::SeqCst) {
         return;
     }
-    let message = fault::last_message().unwrap_or_else(|| "unknown".to_string());
+    let message = app::last_fault_message().unwrap_or_else(|| "unknown".to_string());
     let first_line = message.lines().next().unwrap_or(&message).to_string();
     let dialog = Window::builder()
         .title(i18n::tr(TextKey::InternalError))
@@ -74,7 +74,7 @@ pub fn dialog_shown() -> bool {
 
 /// 测试用：手动注入一次 fault（走 report + 弹窗，不真的炸 emulate）。
 pub fn inject_fault(token: &str) {
-    fault::report("test.inject", Box::new(token.to_string()));
+    app::report_fault("test.inject", Box::new(token.to_string()));
     show_fault_dialog();
 }
 
