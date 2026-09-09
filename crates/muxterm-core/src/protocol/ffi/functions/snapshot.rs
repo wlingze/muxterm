@@ -99,36 +99,6 @@ pub unsafe extern "C" fn muxterm_pane_scroll_ansi(
     .unwrap_or(-1)
 }
 
-/// Read the current visible VT grid as ANSI bytes for initial seeding.
-///
-/// # Safety
-/// `h` and `buf` are valid; `buf` has at least `buf_len` bytes.
-#[no_mangle]
-pub unsafe extern "C" fn muxterm_pane_visible_ansi(
-    h: *mut MuxtermHandle,
-    pane_id: u32,
-    buf: *mut u8,
-    buf_len: usize,
-) -> i32 {
-    catch_unwind(AssertUnwindSafe(|| {
-        if h.is_null() || buf.is_null() {
-            return -1;
-        }
-        let handle = &*h;
-        let Some(ws) = handle.active_workspace() else {
-            return -1;
-        };
-        let Some(pane) = resolve_c_io_pane(pane_id, ws) else {
-            return -1;
-        };
-        let bytes = ws.pane_visible_ansi(pane);
-        let n = bytes.len().min(buf_len);
-        std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf, n);
-        n as i32
-    }))
-    .unwrap_or(-1)
-}
-
 /// Read a one-time Surface seed for a pane.
 ///
 /// A null or zero-length buffer queries the required length. The returned seed
@@ -378,35 +348,6 @@ pub unsafe extern "C" fn muxterm_workspace_pane_scroll_ansi(
             return -1;
         };
         let bytes = ws.pane_scroll_ansi(pane, offset, rows);
-        let n = bytes.len().min(buf_len);
-        std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf, n);
-        n as i32
-    }))
-    .unwrap_or(-1)
-}
-
-/// Read the current visible VT grid from a specific workspace.
-///
-/// # Safety
-/// `h`, `workspace_id`, and `buf` are valid; `workspace_id` is
-/// NUL-terminated and `buf` has at least `buf_len` bytes.
-#[no_mangle]
-pub unsafe extern "C" fn muxterm_workspace_pane_visible_ansi(
-    h: *mut MuxtermHandle,
-    workspace_id: *const c_char,
-    pane_id: u32,
-    buf: *mut u8,
-    buf_len: usize,
-) -> i32 {
-    catch_unwind(AssertUnwindSafe(|| {
-        if h.is_null() || workspace_id.is_null() || buf.is_null() {
-            return -1;
-        }
-        let handle = &*h;
-        let Some((ws, pane)) = workspace_pane(handle, workspace_id, pane_id) else {
-            return -1;
-        };
-        let bytes = ws.pane_visible_ansi(pane);
         let n = bytes.len().min(buf_len);
         std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf, n);
         n as i32

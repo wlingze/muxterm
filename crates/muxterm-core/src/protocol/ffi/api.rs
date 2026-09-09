@@ -55,12 +55,11 @@ pub use super::functions::search::muxterm_search_all;
 pub use super::functions::snapshot::{
     muxterm_pane_command_marks_json, muxterm_pane_history_max_offset, muxterm_pane_last_n_lines,
     muxterm_pane_latest_line_seq, muxterm_pane_scroll_ansi, muxterm_pane_surface_seed_ansi,
-    muxterm_pane_viewport, muxterm_pane_viewport_for_seq, muxterm_pane_visible_ansi,
-    muxterm_set_pane_viewport, muxterm_workspace_pane_command_marks_json,
-    muxterm_workspace_pane_history_max_offset, muxterm_workspace_pane_last_n_lines,
-    muxterm_workspace_pane_latest_line_seq, muxterm_workspace_pane_scroll_ansi,
-    muxterm_workspace_pane_surface_seed_ansi, muxterm_workspace_pane_viewport,
-    muxterm_workspace_pane_viewport_for_seq, muxterm_workspace_pane_visible_ansi,
+    muxterm_pane_viewport, muxterm_pane_viewport_for_seq, muxterm_set_pane_viewport,
+    muxterm_workspace_pane_command_marks_json, muxterm_workspace_pane_history_max_offset,
+    muxterm_workspace_pane_last_n_lines, muxterm_workspace_pane_latest_line_seq,
+    muxterm_workspace_pane_scroll_ansi, muxterm_workspace_pane_surface_seed_ansi,
+    muxterm_workspace_pane_viewport, muxterm_workspace_pane_viewport_for_seq,
     muxterm_workspace_set_pane_viewport, muxterm_workspace_take_pane_reply,
 };
 pub use super::functions::support::MuxtermHandle;

@@ -815,10 +815,10 @@ public enum PaneSnapshotPaintPolicy {
 }
 
 public enum PanePaintPolicy {
-    /// 优先用 PaneBuf 的可见网格 ANSI；没有再从原始字节抽末帧 / 末 N 行。
-    public static func firstPaint(visible: Data, raw: Data, rows: Int) -> Data {
-        if !visible.isEmpty {
-            return visible
+    /// 优先用 Core 提供的一次性 Surface seed；没有再从原始字节抽末帧 / 末 N 行。
+    public static func firstPaint(seed: Data, raw: Data, rows: Int) -> Data {
+        if !seed.isEmpty {
+            return seed
         }
         return lastScreen(raw, visibleRows: max(rows, 1))
     }
@@ -827,12 +827,12 @@ public enum PanePaintPolicy {
     /// 再 `RIS`+可见网格替换，否则正在刷的 GitHub 地址 / htop 画面会被擦掉。
     public static func paint(
         seeded: Bool,
-        visible: Data,
+        seed: Data,
         incoming: Data,
         rows: Int
     ) -> Data {
         if !seeded {
-            return firstPaint(visible: visible, raw: incoming, rows: rows)
+            return firstPaint(seed: seed, raw: incoming, rows: rows)
         }
         return live(incoming, visibleRows: max(rows, 1))
     }
