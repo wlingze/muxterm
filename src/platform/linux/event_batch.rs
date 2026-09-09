@@ -5,7 +5,7 @@
 //! Keeping this pure function outside `window.rs` makes the ordering reusable
 //! by the eventual FFI `EventPump` and independently testable.
 
-use crate::core::protocol::state::StateChange;
+use muxterm_protocol::state::StateChange;
 
 /// Return event indices in topology, baseline, and output order.
 pub(crate) fn batch_order_plan(events: &[StateChange]) -> (Vec<usize>, Vec<usize>, Vec<usize>) {
