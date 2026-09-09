@@ -75,7 +75,7 @@ let package = Package(
             // XCTest only（Swift Testing 在此包无 @Test，勿依赖其 0-test runner 输出）。
             // 跑：swift test --disable-swift-testing --filter FlatChromeTests
         ),
-        // C ABI 头文件模块（对应 CoreBridge/muxterm.h）
+        // C ABI 头文件模块（唯一来源：CoreBridge/include/muxterm.h）
         .target(
             name: "CMuxterm",
             path: "CoreBridge",
@@ -98,7 +98,6 @@ let package = Package(
                 "Vendor",
                 "CoreBridge/include",
                 "CoreBridge/shim.c",
-                "CoreBridge/muxterm.h",
                 "MuxtermAppUITests",
                 "Chrome",
                 "ChromeTests",
