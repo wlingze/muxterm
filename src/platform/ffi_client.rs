@@ -67,6 +67,32 @@ impl ClientWorkspaceEvent {
     }
 }
 
+fn client_layout_to_json(layout: &ClientLayout) -> serde_json::Value {
+    match layout {
+        ClientLayout::Leaf { pane_id } => serde_json::json!({ "Leaf": pane_id }),
+        ClientLayout::Split {
+            horizontal,
+            ratio,
+            first,
+            second,
+        } => serde_json::json!({
+            "Split": {
+                "dir": if *horizontal { "Horizontal" } else { "Vertical" },
+                "ratio": ratio,
+                "first": client_layout_to_json(first),
+                "second": client_layout_to_json(second),
+            }
+        }),
+    }
+}
+
+fn client_layout_first_pane(layout: &ClientLayout) -> u32 {
+    match layout {
+        ClientLayout::Leaf { pane_id } => *pane_id,
+        ClientLayout::Split { first, .. } => client_layout_first_pane(first),
+    }
+}
+
 /// Target data accepted by the semantic workspace-open ABI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientTarget {
@@ -1081,6 +1107,89 @@ impl FfiClient {
         let value =
             Self::discovery_json(|| unsafe { ffi::muxterm_workspace_list(self.handle.as_ptr()) })?;
         Ok(serde_json::from_value(value["workspaces"].clone())?)
+    }
+
+    /// Build a control-lane topology baseline for the daemon event stream.
+    ///
+    /// This deliberately queries only workspace metadata, tabs, panes, and
+    /// layouts.  Pane output is never read here: render data must travel as
+    /// incremental FFI events so the daemon client does not recreate the old
+    /// cumulative `DumpState` protocol.
+    pub fn workspace_topology_json(&self, workspace_id: &str) -> anyhow::Result<serde_json::Value> {
+        let workspace = self
+            .workspace_list()?
+            .into_iter()
+            .find(|item| item.id == workspace_id)
+            .ok_or_else(|| anyhow::anyhow!("Core workspace not found: {workspace_id}"))?;
+        let tabs = self.get_workspace_tabs(workspace_id);
+        let panes_by_tab: Vec<(u32, Vec<ClientPane>)> = tabs
+            .iter()
+            .map(|tab| (tab.id, self.get_workspace_panes(workspace_id, tab.id)))
+            .collect();
+        let layouts: Vec<serde_json::Value> = tabs
+            .iter()
+            .filter_map(|tab| {
+                let layout = self.get_workspace_layout(workspace_id, tab.id)?;
+                let active = panes_by_tab
+                    .iter()
+                    .find(|(tab_id, _)| *tab_id == tab.id)
+                    .and_then(|(_, panes)| panes.iter().find(|pane| pane.is_active))
+                    .map(|pane| pane.id)
+                    .unwrap_or_else(|| client_layout_first_pane(&layout));
+                Some(serde_json::json!({
+                    "tab": tab.id,
+                    "tree": client_layout_to_json(&layout),
+                    "active": active,
+                }))
+            })
+            .collect();
+        let tabs_json: Vec<serde_json::Value> = tabs
+            .iter()
+            .map(|tab| {
+                serde_json::json!({
+                    "id": tab.id,
+                    "name": tab.name,
+                    "active": tab.is_active,
+                })
+            })
+            .collect();
+        let panes_json: Vec<serde_json::Value> = panes_by_tab
+            .iter()
+            .flat_map(|(tab_id, panes)| {
+                panes.iter().map(move |pane| {
+                    serde_json::json!({
+                        "id": pane.id,
+                        "tab": tab_id,
+                        "active": pane.is_active,
+                        "title": pane.title,
+                        "cols": pane.cols,
+                        "rows": pane.rows,
+                    })
+                })
+            })
+            .collect();
+        let active_tab = tabs.iter().find(|tab| tab.is_active).map(|tab| tab.id);
+        let active_pane = active_tab.and_then(|tab_id| {
+            panes_by_tab
+                .iter()
+                .find(|(id, _)| *id == tab_id)
+                .and_then(|(_, panes)| panes.iter().find(|pane| pane.is_active))
+                .map(|pane| pane.id)
+        });
+
+        Ok(serde_json::json!({
+            "kind": "workspace_topology",
+            "workspace_id": workspace_id,
+            "snapshot": {
+                "workspace_name": workspace.name,
+                "workspace_runtime": workspace.runtime,
+                "tabs": tabs_json,
+                "panes": panes_json,
+                "layouts": layouts,
+                "active_tab": active_tab,
+                "active_pane": active_pane,
+            },
+        }))
     }
 
     /// Activate a Core-owned workspace by its stable product identity.

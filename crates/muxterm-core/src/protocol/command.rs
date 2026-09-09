@@ -116,7 +116,12 @@ pub enum CliCommand {
         format: String,
     },
 
-    /// 导出完整状态快照（TUI DaemonRuntime 同步用）。
+    /// Internal daemon IPC poll.  This is not exposed by the CLI parser; it
+    /// asks the daemon for the event stream without requesting a state dump.
+    #[doc(hidden)]
+    PollEvents,
+
+    /// 导出完整状态快照（旧 CLI/诊断查询；DaemonRuntime 使用 PollEvents）。
     DumpState,
 }
 

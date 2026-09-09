@@ -26,6 +26,7 @@ use crate::platform::ffi_client::{
 struct DaemonState {
     client: FfiClient,
     workspace_id: String,
+    pending_events: Vec<serde_json::Value>,
 }
 
 impl DaemonState {
@@ -47,6 +48,7 @@ impl DaemonState {
             return Ok(Self {
                 client,
                 workspace_id,
+                pending_events: Vec::new(),
             });
         }
 
@@ -66,15 +68,34 @@ impl DaemonState {
         Ok(Self {
             client,
             workspace_id: opened.id,
+            pending_events: Vec::new(),
         })
     }
 
-    fn poll(&self) -> Vec<serde_json::Value> {
-        self.client
+    fn poll(&self, force_topology: bool) -> anyhow::Result<Vec<serde_json::Value>> {
+        let raw_events: Vec<_> = self
+            .client
             .poll_workspace_events()
             .into_iter()
+            .filter(|event| event.workspace_id == self.workspace_id)
+            .collect();
+        let topology_changed =
+            force_topology || raw_events.iter().any(|event| event.event.is_topology());
+        let mut events: Vec<serde_json::Value> = raw_events
+            .into_iter()
             .map(|event| event.to_wire_json())
-            .collect()
+            .collect();
+        if topology_changed {
+            events.insert(0, self.client.workspace_topology_json(&self.workspace_id)?);
+        }
+        Ok(events)
+    }
+
+    fn drain_events(&mut self, force_topology: bool) -> anyhow::Result<Vec<serde_json::Value>> {
+        let fresh_events = self.poll(force_topology)?;
+        let mut events = std::mem::take(&mut self.pending_events);
+        events.extend(fresh_events);
+        Ok(events)
     }
 
     fn active_tab_id(&self) -> Option<u32> {
@@ -98,7 +119,9 @@ impl DaemonState {
         use CliCommand::*;
 
         let code = match command {
-            Config { .. } | NewWorkspace { .. } | AttachWorkspace { .. } => return Ok(()),
+            Config { .. } | NewWorkspace { .. } | AttachWorkspace { .. } | PollEvents => {
+                return Ok(())
+            }
             CloseWorkspace { .. } => self
                 .client
                 .execute_workspace_task(&self.workspace_id, ClientTask::Shutdown),
@@ -244,7 +267,7 @@ pub fn run_daemon(socket_path: PathBuf, name: String, tmux_socket: Option<String
     info!(target: "muxterm", session = %name, "daemon 启动");
 
     let mut state = DaemonState::connect(&name, tmux_socket.as_deref())?;
-    let _ = state.poll();
+    state.pending_events = state.poll(true)?;
 
     // 绑定 unix socket
     // 先删除可能残留的旧 socket 文件
@@ -353,11 +376,17 @@ fn handle_connection(
 
 /// 执行单个请求，返回 Response。
 fn execute_request(req: &Request, state: &mut DaemonState) -> Response {
-    let mut events = state.poll();
+    let mut events = match state.drain_events(false) {
+        Ok(events) => events,
+        Err(error) => return Response::err(format!("轮询 daemon 事件失败: {error}")),
+    };
     if let Err(error) = state.execute(&req.command) {
         return Response::err(format!("执行失败: {error}"));
     }
-    events.extend(state.poll());
+    match state.drain_events(false) {
+        Ok(after) => events.extend(after),
+        Err(error) => return Response::err(format!("轮询 daemon 事件失败: {error}")),
+    }
 
     let output = if is_query(&req.command) {
         match format_ffi_output(&state.client, &state.workspace_id, &req.command, req.format) {

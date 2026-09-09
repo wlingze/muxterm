@@ -7,7 +7,7 @@
 //! JSON event stream below.
 
 use crate::protocol::command::CliCommand;
-use crate::protocol::layout::SplitDir;
+use crate::protocol::layout::{SplitDir, TabLayout};
 use crate::protocol::state::State;
 use crate::protocol::task::Task;
 use crate::protocol::terminal::input::KeyEvent;
@@ -40,6 +40,21 @@ pub struct StateSnapshot {
     /// pane_id.0 → cumulative output (lossy UTF-8; contains ANSI).
     pub outputs: Vec<(u32, String)>,
     pub status: crate::protocol::state::BackendStatus,
+    pub active_tab: Option<u32>,
+    pub active_pane: Option<u32>,
+}
+
+/// Control-lane baseline sent by the daemon when a client connects or when
+/// topology changes.  It intentionally contains no cumulative pane output;
+/// render data stays in the event stream as `PaneOutput`/`PaneSnapshot`/
+/// `PaneFrame`/`PaneHistory` events.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TopologySnapshot {
+    pub workspace_name: String,
+    pub workspace_runtime: String,
+    pub tabs: Vec<crate::protocol::state::TabInfo>,
+    pub panes: Vec<crate::protocol::state::PaneInfo>,
+    pub layouts: Vec<TabLayout>,
     pub active_tab: Option<u32>,
     pub active_pane: Option<u32>,
 }
@@ -194,7 +209,7 @@ pub fn cli_command_to_task(cmd: &CliCommand, state: &dyn State) -> Option<Task> 
         }
         CapturePane { .. } => None,
 
-        ListWorkspaces | ListTabs | ListPanes { .. } | ListLayout | DumpState => None,
+        ListWorkspaces | ListTabs | ListPanes { .. } | ListLayout | PollEvents | DumpState => None,
         DisplayMessage { .. } => None,
     }
 }

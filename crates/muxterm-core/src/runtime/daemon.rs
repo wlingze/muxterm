@@ -1,9 +1,9 @@
 //! DaemonRuntime：TUI 作为 client 连接本地 daemon（unix socket IPC）。
 //!
 //! 生命周期：
-//! - `connect()`：检查 socket 存在，拉取 DumpState 建立初始快照
-//! - `execute(Task)`：映射为 CliCommand，经 IPC 发给 daemon，再同步快照和事件
-//! - `take_events()`：拉取 DumpState 维护查询缓存，消费 daemon semantic event wire
+//! - `connect()`：检查 socket 存在，消费 daemon 的初始拓扑/事件批次
+//! - `execute(Task)`：映射为 CliCommand，经 IPC 发给 daemon，再消费事件批次
+//! - `take_events()`：轮询 semantic event wire，不重建累计状态快照
 //! - `shutdown()`：仅断开 client（不 kill daemon，detach 语义）
 
 use std::collections::{HashMap, VecDeque};
@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 
+use crate::buffer_cap::{append_capped, MAX_PANE_OUTPUT_BYTES};
 use crate::protocol::command::CliCommand;
 use crate::protocol::layout::{SplitDir, TabLayout};
 use crate::protocol::state::{
@@ -21,7 +22,7 @@ use crate::protocol::state::{
 use crate::protocol::task::{Task, TaskOutcome};
 use crate::protocol::terminal::input::encode;
 use crate::runtime::daemon_client::send_command;
-use crate::runtime::shell::daemon::{OutputFormat, StateSnapshot};
+use crate::runtime::shell::daemon::{OutputFormat, TopologySnapshot};
 use crate::runtime::{Runtime, RuntimeCapability};
 use crate::types::{PaneId, TabId};
 
@@ -80,48 +81,80 @@ impl DaemonRuntime {
         }
     }
 
-    fn sync_from_daemon(&mut self) -> Result<()> {
+    fn poll_from_daemon(&mut self) -> Result<()> {
         let resp = send_command(
             &self.socket_path,
-            &CliCommand::DumpState,
+            &CliCommand::PollEvents,
             OutputFormat::Json,
         )
         .with_context(|| {
             format!(
-                "同步 daemon 状态失败（session={} socket={}）",
+                "轮询 daemon 事件失败（session={} socket={}）",
                 self.session_name,
                 self.socket_path.display()
             )
         })?;
         if !resp.ok {
-            bail!("daemon DumpState 失败: {}", resp.error);
+            bail!("daemon PollEvents 失败: {}", resp.error);
         }
-        let snap: StateSnapshot =
-            serde_json::from_str(&resp.output).context("反序列化 DumpState 失败")?;
-        self.replace_snapshot(snap);
         self.enqueue_wire_events(resp.events);
         Ok(())
     }
 
-    /// Replace the state query cache without synthesizing render events.
-    ///
-    /// The daemon response carries the authoritative `StateChange` values.
-    /// Keeping snapshot replacement separate prevents the client from
-    /// re-creating a second, lossy event protocol by diffing cumulative text.
-    fn replace_snapshot(&mut self, snap: StateSnapshot) {
-        self.session_name = snap.workspace_name;
-        self.workspace_runtime = snap.workspace_runtime;
-        self.tabs = snap.tabs;
-        self.panes = snap.panes;
-        self.layouts = snap.layouts.into_iter().map(|l| (l.tab, l)).collect();
-        self.outputs = snap
-            .outputs
-            .into_iter()
-            .map(|(id, s)| (PaneId(id), s.into_bytes()))
-            .collect();
-        self.status = snap.status;
-        self.active_tab = snap.active_tab.map(TabId);
-        self.active_pane = snap.active_pane.map(PaneId);
+    fn apply_topology_event(&mut self, value: &serde_json::Value) -> bool {
+        if value.get("kind").and_then(serde_json::Value::as_str) != Some("workspace_topology") {
+            return false;
+        }
+        let Some(snapshot) = value
+            .get("snapshot")
+            .cloned()
+            .and_then(|snapshot| serde_json::from_value::<TopologySnapshot>(snapshot).ok())
+        else {
+            return false;
+        };
+        self.session_name = snapshot.workspace_name;
+        self.workspace_runtime = snapshot.workspace_runtime;
+        self.tabs = snapshot.tabs;
+        self.panes = snapshot.panes;
+        self.layouts = snapshot.layouts.into_iter().map(|l| (l.tab, l)).collect();
+        self.active_tab = snapshot.active_tab.map(TabId);
+        self.active_pane = snapshot.active_pane.map(PaneId);
+        true
+    }
+
+    fn apply_render_cache(&mut self, value: &serde_json::Value) {
+        let Some(kind) = value.get("kind").and_then(serde_json::Value::as_str) else {
+            return;
+        };
+        if kind == "backend_status" {
+            if let Some(status) = wire_backend_status(value) {
+                self.status = status;
+            }
+            return;
+        }
+        let Some(pane) = wire_u32(value, "pane_id").map(PaneId) else {
+            return;
+        };
+        match kind {
+            "pane_output" | "pane_history" => {
+                if let Some(data) = wire_bytes(value) {
+                    append_capped(
+                        self.outputs.entry(pane).or_default(),
+                        &data,
+                        MAX_PANE_OUTPUT_BYTES,
+                    );
+                }
+            }
+            "pane_snapshot" => {
+                if let Some(data) = wire_bytes(value) {
+                    self.outputs.insert(pane, data);
+                }
+            }
+            "pane_closed" => {
+                self.outputs.remove(&pane);
+            }
+            _ => {}
+        }
     }
 
     /// Decode the semantic daemon event wire at the Core runtime boundary.
@@ -132,6 +165,10 @@ impl DaemonRuntime {
     /// newer FFI producer can still be consumed by an older daemon client.
     fn enqueue_wire_events(&mut self, events: impl IntoIterator<Item = serde_json::Value>) {
         for value in events {
+            if self.apply_topology_event(&value) {
+                continue;
+            }
+            self.apply_render_cache(&value);
             if let Some(event) = self.decode_wire_event(&value) {
                 self.events.push_back(event);
             } else {
@@ -268,9 +305,8 @@ impl DaemonRuntime {
         if !resp.ok {
             bail!("daemon 执行失败: {}", resp.error);
         }
-        let response_events = resp.events;
-        self.sync_from_daemon()?;
-        self.enqueue_wire_events(response_events);
+        self.enqueue_wire_events(resp.events);
+        self.poll_from_daemon()?;
         Ok(())
     }
 
@@ -486,7 +522,7 @@ impl Runtime for DaemonRuntime {
                 self.session_name
             );
         }
-        self.sync_from_daemon()?;
+        self.poll_from_daemon()?;
         self.status = BackendStatus::Connected;
         self.events
             .push_back(StateChange::BackendStatusChanged(BackendStatus::Connected));
@@ -513,9 +549,10 @@ impl Runtime for DaemonRuntime {
     }
 
     fn take_events(&mut self) -> Vec<StateChange> {
-        // 每次拉取前先同步 daemon（pty 输出等）
+        // 每次拉取前只消费事件流；拓扑 baseline 由 daemon 作为 control
+        // event 提供，render bytes 不通过累计状态查询回读。
         if self.status == BackendStatus::Connected {
-            let _ = self.sync_from_daemon();
+            let _ = self.poll_from_daemon();
         }
         self.events.drain(..).collect()
     }
@@ -558,31 +595,81 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_replacement_does_not_synthesize_render_events() {
+    fn topology_event_updates_state_without_reading_render_snapshot() {
         let mut runtime = DaemonRuntime::new("/tmp/muxterm-test-daemon.sock", "test");
-        runtime.events.push_back(StateChange::PaneOutput {
-            pane: PaneId(1),
-            data: b"already-wired".to_vec(),
-        });
-        let event_count = runtime.events.len();
-
-        runtime.replace_snapshot(StateSnapshot {
-            workspace_name: "test".into(),
+        let topology = TopologySnapshot {
+            workspace_name: "workspace".into(),
             workspace_runtime: "shell".into(),
-            tabs: vec![],
-            panes: vec![],
-            layouts: vec![],
-            outputs: vec![(1, "cumulative".into())],
-            status: BackendStatus::Connected,
-            active_tab: None,
-            active_pane: None,
-        });
+            tabs: vec![TabInfo {
+                id: TabId(1),
+                name: "main".into(),
+                active: true,
+            }],
+            panes: vec![PaneInfo {
+                id: PaneId(7),
+                tab: TabId(1),
+                active: true,
+                title: "bash".into(),
+                cols: 120,
+                rows: 40,
+            }],
+            layouts: vec![TabLayout {
+                tab: TabId(1),
+                tree: crate::protocol::layout::LayoutNode::Leaf(PaneId(7)),
+                active: PaneId(7),
+            }],
+            active_tab: Some(1),
+            active_pane: Some(7),
+        };
+        runtime.enqueue_wire_events([
+            serde_json::json!({
+                "kind": "workspace_topology",
+                "workspace_id": "ws",
+                "snapshot": serde_json::to_value(topology).unwrap(),
+            }),
+            serde_json::json!({
+                "kind": "pane_output",
+                "pane_id": 7,
+                "data": [99, 117, 109, 117, 108, 97, 116, 105, 118, 101]
+            }),
+        ]);
 
-        assert_eq!(runtime.events.len(), event_count);
+        assert_eq!(runtime.workspace_name(), "workspace");
+        assert_eq!(runtime.workspace_runtime(), "shell");
+        assert_eq!(runtime.tabs().len(), 1);
+        assert_eq!(runtime.panes(&TabId(1)).len(), 1);
         assert_eq!(
-            runtime.pane_output(&PaneId(1)),
+            runtime.pane_output(&PaneId(7)),
             Some(b"cumulative".as_slice())
         );
+        assert_eq!(runtime.events.len(), 1);
+        assert!(matches!(
+            runtime.events.front(),
+            Some(StateChange::PaneOutput {
+                pane: PaneId(7),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn pane_snapshot_replaces_only_event_derived_render_cache() {
+        let mut runtime = DaemonRuntime::new("/tmp/muxterm-test-daemon.sock", "test");
+        runtime.enqueue_wire_events([
+            serde_json::json!({
+                "kind": "pane_output",
+                "pane_id": 1,
+                "data": [111, 108, 100]
+            }),
+            serde_json::json!({
+                "kind": "pane_snapshot",
+                "pane_id": 1,
+                "data": [110, 101, 119]
+            }),
+        ]);
+
+        assert_eq!(runtime.pane_output(&PaneId(1)), Some(b"new".as_slice()));
+        assert_eq!(runtime.events.len(), 2);
     }
 
     #[test]
