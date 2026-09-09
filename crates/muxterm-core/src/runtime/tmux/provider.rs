@@ -19,6 +19,18 @@ impl TmuxDriver {
     fn ssh_config() -> Option<String> {
         std::env::var("MUXTERM_SSH_CONFIG_PATH").ok()
     }
+
+    /// Normalize the legacy ABI's overloaded SSH socket/alias arguments.
+    ///
+    /// New product callers provide `WorkspaceSpec.alias` and `socket`
+    /// separately; this helper exists only while the old C constructor is
+    /// being migrated to the provider path.
+    pub(crate) fn legacy_ssh_alias_and_tmux_socket(
+        socket: Option<&str>,
+        alias: Option<&str>,
+    ) -> Option<(String, Option<String>)> {
+        TmuxRuntime::ssh_alias_and_tmux_socket(socket, alias)
+    }
 }
 
 impl RuntimeProvider for TmuxDriver {
@@ -87,11 +99,12 @@ impl RuntimeProvider for TmuxDriver {
         connect: Arc<dyn TargetConnection>,
         spec: &RuntimeSpec,
     ) -> Result<Box<dyn Runtime>> {
-        let mut rt = TmuxRuntime::new_with_connection(
+        let mut rt = TmuxRuntime::new_with_connection_and_cwd(
             connect,
             spec.socket.as_deref(),
             (!spec.session.is_empty()).then_some(spec.session.as_str()),
             spec.create,
+            (!spec.path.is_empty()).then_some(spec.path.as_str()),
         );
         rt.set_scrollback_lines(spec.scrollback_lines);
         Ok(Box::new(rt))

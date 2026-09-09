@@ -813,10 +813,25 @@ impl TmuxRuntime {
         session: Option<&str>,
         create: bool,
     ) -> Self {
+        Self::new_with_connection_and_cwd(connection, socket, session, create, None)
+    }
+
+    /// Create a Runtime backed by a transport connection and an optional
+    /// initial working directory for a new tmux session.
+    pub fn new_with_connection_and_cwd(
+        connection: std::sync::Arc<dyn TargetConnection>,
+        socket: Option<&str>,
+        session: Option<&str>,
+        create: bool,
+        cwd: Option<&str>,
+    ) -> Self {
         let mut backend = match session.filter(|session| !session.is_empty()) {
             Some(session) if create => Self::new_with_session_name(socket, session),
             Some(session) => Self::new_with_attach(socket, session),
-            None => Self::new(socket),
+            None => cwd.filter(|cwd| !cwd.is_empty()).map_or_else(
+                || Self::new(socket),
+                |cwd| Self::new_with_cwd(socket, Some(cwd)),
+            ),
         };
         backend.target_connection = Some(connection);
         backend

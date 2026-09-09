@@ -1,8 +1,8 @@
 //! Runtime provider contract.
 //!
 //! Providers register runtime capabilities and construct opaque Runtime
-//! instances from a reusable target connection.  Catalog owns the registry
-//! and resolver; it does not own concrete runtime implementations.
+//! instances from a reusable target connection.  Muxterm owns the registry;
+//! Catalog exposes its read-only provider view and resolver.
 
 use std::sync::Arc;
 

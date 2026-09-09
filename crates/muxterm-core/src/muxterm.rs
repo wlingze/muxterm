@@ -140,7 +140,7 @@ impl Muxterm {
     /// Construct a Runtime from Catalog's provider view. The live Runtime is
     /// owned by the product pool, while the reusable target connection stays
     /// owned by this composition root.
-    fn new_runtime_parts(
+    pub(crate) fn new_runtime_parts(
         runtime_registry: &RuntimeRegistry,
         transport_registry: &TransportRegistry,
         connections: &mut ConnectionRegistry,

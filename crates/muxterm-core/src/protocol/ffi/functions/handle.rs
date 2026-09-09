@@ -7,13 +7,14 @@ use std::ptr;
 use crate::activity::ActivityState;
 use crate::config::SettingsService;
 use crate::logging::{init_logging, LoggingConfig};
+use crate::muxterm::Muxterm;
 use crate::projects::{ProjectStore, ProjectsService};
+use crate::protocol::task::Task;
 use crate::protocol::terminal::emulate::DEFAULT_SCROLLBACK_LINES;
 use crate::runtime::daemon::DaemonRuntime;
-use crate::runtime::shell::ShellRuntime;
-use crate::runtime::tmux::backend::TmuxRuntime;
 use crate::transport::registry::ConnectionRegistry;
 use crate::workspace::pool::WorkspacePool;
+use crate::workspace::spec::WorkspaceSpec;
 use crate::workspace::template::{TemplateRegistry, WorkspaceTemplate};
 use muxterm_protocol::WorkspaceId;
 
@@ -60,6 +61,7 @@ pub extern "C" fn muxterm_catalog_new() -> *mut MuxtermHandle {
             crate::catalog::Catalog::with_builtins(),
             WorkspacePool::default(),
             rt,
+            ConnectionRegistry::new(),
         )
     }))
     .unwrap_or(ptr::null_mut())
@@ -142,19 +144,44 @@ fn legacy_new_handle(
         return ptr::null_mut();
     };
     let catalog = crate::catalog::Catalog::with_builtins();
-
-    let (id, name, runtime, scrollback_lines) =
-        match legacy_runtime_spec(&kind, sock, sess, alias, start_dir, client_size) {
-            Some(spec) => spec,
-            None => return ptr::null_mut(),
-        };
+    let legacy = match legacy_runtime_spec(&kind, sock, sess, alias, start_dir, client_size) {
+        Some(spec) => spec,
+        None => return ptr::null_mut(),
+    };
+    let mut connections = ConnectionRegistry::new();
+    let runtime = match legacy.runtime {
+        LegacyRuntime::Provider(spec) => match Muxterm::new_runtime_parts(
+            catalog.runtime_registry().as_ref(),
+            catalog.transport_registry().as_ref(),
+            &mut connections,
+            &spec,
+        ) {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                tracing::warn!(
+                    target = "muxterm::ffi",
+                    "legacy provider open failed: {error:#}"
+                );
+                return ptr::null_mut();
+            }
+        },
+        LegacyRuntime::Daemon(runtime) => runtime,
+    };
     let mut pool = WorkspacePool::default();
-    let fut = pool.open_with_scrollback(id.clone(), name, scrollback_lines, move |_| Ok(runtime));
-    if rt.block_on(fut).is_err() {
+    let fut = pool.open_with_scrollback(
+        legacy.id.clone(),
+        legacy.name,
+        legacy.scrollback_lines,
+        move |_| Ok(runtime),
+    );
+    let Ok(workspace) = rt.block_on(fut) else {
         return ptr::null_mut();
+    };
+    if let Some((cols, rows)) = legacy.client_size {
+        let _ = workspace.execute(Task::ResizeClient { cols, rows });
     }
 
-    boxed_handle(catalog, pool, rt)
+    boxed_handle(catalog, pool, rt, connections)
 }
 
 fn new_ffi_runtime() -> Option<tokio::runtime::Runtime> {
@@ -169,6 +196,7 @@ fn boxed_handle(
     catalog: crate::catalog::Catalog,
     pool: WorkspacePool,
     rt: tokio::runtime::Runtime,
+    connections: ConnectionRegistry,
 ) -> *mut MuxtermHandle {
     let runtime_registry = catalog.runtime_registry();
     let transport_registry = catalog.transport_registry();
@@ -208,7 +236,7 @@ fn boxed_handle(
         catalog,
         runtime_registry,
         transport_registry,
-        connections: ConnectionRegistry::new(),
+        connections,
         templates,
         pool,
         projects,
@@ -225,7 +253,24 @@ fn boxed_handle(
     }))
 }
 
+enum LegacyRuntime {
+    Provider(Box<WorkspaceSpec>),
+    Daemon(Box<dyn crate::runtime::Runtime>),
+}
+
+struct LegacyRuntimeConfig {
+    id: WorkspaceId,
+    name: String,
+    runtime: LegacyRuntime,
+    scrollback_lines: usize,
+    client_size: Option<(u16, u16)>,
+}
+
 /// Legacy runtime specification used by deprecated constructors.
+///
+/// tmux and shell go through the same provider registry as product opens.
+/// The daemon variant remains a direct adapter because it is a host-side
+/// compatibility endpoint, not a selectable RuntimeProvider.
 fn legacy_runtime_spec(
     kind: &str,
     sock: Option<String>,
@@ -233,76 +278,98 @@ fn legacy_runtime_spec(
     alias: Option<String>,
     start_dir: Option<String>,
     client_size: Option<(u16, u16)>,
-) -> Option<(
-    WorkspaceId,
-    String,
-    std::boxed::Box<dyn crate::runtime::Runtime>,
-    usize,
-)> {
+) -> Option<LegacyRuntimeConfig> {
     let scrollback_lines = configured_scrollback_lines();
-    let runtime: std::boxed::Box<dyn crate::runtime::Runtime> = match kind {
-        "tmux" => {
-            let sock_ref = sock.as_deref();
-            let mut tmux = if let Some(name) = sess.as_deref() {
-                TmuxRuntime::new_with_attach(sock_ref, name)
-            } else if let Some(dir) = start_dir.as_deref() {
-                TmuxRuntime::new_with_cwd(sock_ref, Some(dir))
-            } else {
-                TmuxRuntime::new(sock_ref)
-            };
-            tmux.set_scrollback_lines(scrollback_lines as u32);
-            if let Some((cols, rows)) = client_size {
-                tmux.set_client_size(cols, rows);
-            }
-            std::boxed::Box::new(tmux)
-        }
-        "ssh" | "tmux-ssh" => {
-            let (alias_name, sock_owned) =
-                TmuxRuntime::ssh_alias_and_tmux_socket(sock.as_deref(), alias.as_deref())?;
-            let sock_ref = sock_owned.as_deref();
-            let mut tmux = if let Some(name) = sess.as_deref() {
-                TmuxRuntime::new_ssh_attach(&alias_name, sock_ref, name)
-            } else {
-                TmuxRuntime::new_ssh(&alias_name, sock_ref)
-            };
-            tmux.set_scrollback_lines(scrollback_lines as u32);
-            if let Some((cols, rows)) = client_size {
-                tmux.set_client_size(cols, rows);
-            }
-            std::boxed::Box::new(tmux)
-        }
-        "daemon" => {
-            let name = sess.clone().unwrap_or_else(|| "default".into());
-            let path = sock
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|| muxterm_protocol::daemon::default_socket_path(&name));
-            std::boxed::Box::new(DaemonRuntime::new(path, name))
-        }
-        _ => std::boxed::Box::new(ShellRuntime::new(
-            "$SHELL",
-            start_dir.as_deref().unwrap_or(""),
-        )),
-    };
-    let transport = if matches!(kind, "ssh" | "tmux-ssh") {
-        "ssh"
-    } else {
-        "local"
-    };
-    let runtime_kind = if matches!(kind, "daemon") {
-        "daemon"
-    } else if matches!(kind, "ssh" | "tmux-ssh") || kind == "tmux" {
-        "tmux"
-    } else {
-        "shell"
-    };
     let session = sess.unwrap_or_default();
-    let id = WorkspaceId::new(transport, alias.as_deref(), &session, runtime_kind, "");
-    let name = if session.is_empty() {
+    let legacy_name = if session.is_empty() {
         "muxterm".to_string()
     } else {
         session.clone()
     };
-    Some((id, name, runtime, scrollback_lines))
+
+    let (id, runtime) = match kind {
+        "tmux" => {
+            let spec = WorkspaceSpec {
+                transport: "local".into(),
+                alias: None,
+                session: session.clone(),
+                runtime: "tmux".into(),
+                path: start_dir.unwrap_or_default(),
+                socket: sock,
+                create: false,
+                scrollback_lines: scrollback_lines as u32,
+                provenance: None,
+                template: None,
+            };
+            (
+                WorkspaceId::new("local", alias.as_deref(), &session, "tmux", ""),
+                LegacyRuntime::Provider(Box::new(spec)),
+            )
+        }
+        "ssh" | "tmux-ssh" => {
+            let (alias_name, socket) =
+                crate::runtime::tmux::provider::TmuxDriver::legacy_ssh_alias_and_tmux_socket(
+                    sock.as_deref(),
+                    alias.as_deref(),
+                )?;
+            let spec = WorkspaceSpec {
+                transport: "ssh".into(),
+                alias: Some(alias_name),
+                session: session.clone(),
+                runtime: "tmux".into(),
+                path: String::new(),
+                socket,
+                create: false,
+                scrollback_lines: scrollback_lines as u32,
+                provenance: None,
+                template: None,
+            };
+            (
+                WorkspaceId::new("ssh", alias.as_deref(), &session, "tmux", ""),
+                LegacyRuntime::Provider(Box::new(spec)),
+            )
+        }
+        "daemon" => {
+            let daemon_name = if session.is_empty() {
+                "default".to_string()
+            } else {
+                session.clone()
+            };
+            let path = sock
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| muxterm_protocol::daemon::default_socket_path(&daemon_name));
+            (
+                WorkspaceId::new("local", alias.as_deref(), &session, "daemon", ""),
+                LegacyRuntime::Daemon(Box::new(DaemonRuntime::new(path, daemon_name))),
+            )
+        }
+        _ => {
+            let spec = WorkspaceSpec {
+                transport: "local".into(),
+                alias: None,
+                session: String::new(),
+                runtime: "shell".into(),
+                path: start_dir.unwrap_or_default(),
+                socket: None,
+                create: false,
+                scrollback_lines: scrollback_lines as u32,
+                provenance: None,
+                template: None,
+            };
+            (
+                WorkspaceId::new("local", alias.as_deref(), "", "shell", ""),
+                LegacyRuntime::Provider(Box::new(spec)),
+            )
+        }
+    };
+
+    Some(LegacyRuntimeConfig {
+        id,
+        name: legacy_name,
+        runtime,
+        scrollback_lines,
+        client_size,
+    })
 }
 
 /// Read the configured scrollback limit for compatibility constructors.
