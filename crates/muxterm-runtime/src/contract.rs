@@ -9,7 +9,7 @@ use muxterm_protocol::state::{BackendStatus, State, StateChange};
 use muxterm_protocol::task::{Task, TaskOutcome};
 use muxterm_protocol::WorkspaceId;
 
-use crate::{RuntimeCapability, RuntimeError, RuntimeResult};
+use crate::{RuntimeBatch, RuntimeCapability, RuntimeError, RuntimeResult};
 
 /// Runtime-facing fields needed to construct or reopen one instance.
 ///
@@ -62,6 +62,15 @@ pub trait Runtime: State + Send {
 
     /// Non-blocking FIFO drain of pending state changes.
     fn take_events(&mut self) -> Vec<StateChange>;
+
+    /// Non-blocking drain into the three product lanes.
+    ///
+    /// Implementations can override this while migrating their parser.  The
+    /// default keeps the compatibility queue working and classifies it once at
+    /// the Runtime boundary.
+    fn drain_events(&mut self, out: &mut RuntimeBatch) {
+        out.append(RuntimeBatch::from_state_changes(self.take_events()));
+    }
 
     /// Convenience alias for the state status.
     fn runtime_status(&self) -> BackendStatus {
