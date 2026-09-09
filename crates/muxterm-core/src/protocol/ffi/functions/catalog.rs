@@ -84,14 +84,16 @@ pub unsafe extern "C" fn muxterm_open_json(
         };
         let workspace_id = resolved.workspace_id();
         let result = {
-            let (rt, catalog, connections, pool) = (
+            let (rt, runtime_registry, transport_registry, connections, pool) = (
                 &handle.rt,
-                &mut handle.catalog,
+                &handle.runtime_registry,
+                &handle.transport_registry,
                 &mut handle.connections,
                 &mut handle.pool,
             );
             rt.block_on(Muxterm::open_resolved_parts(
-                &*catalog,
+                runtime_registry,
+                transport_registry,
                 connections,
                 &handle.templates,
                 pool,
@@ -169,9 +171,11 @@ pub unsafe extern "C" fn muxterm_workspace_open_target_json(
         };
         let handle = &mut *h;
         let result = {
-            let (rt, catalog, connections, pool) = (
+            let (rt, catalog, runtime_registry, transport_registry, connections, pool) = (
                 &handle.rt,
                 &mut handle.catalog,
+                &handle.runtime_registry,
+                &handle.transport_registry,
                 &mut handle.connections,
                 &mut handle.pool,
             );
@@ -180,7 +184,8 @@ pub unsafe extern "C" fn muxterm_workspace_open_target_json(
                 Err(error) => return json_resolve_error(&error),
             };
             rt.block_on(Muxterm::open_resolved_parts(
-                &*catalog,
+                runtime_registry,
+                transport_registry,
                 connections,
                 &handle.templates,
                 pool,
@@ -240,14 +245,16 @@ pub unsafe extern "C" fn muxterm_workspace_worktree_create_json(
         };
         let handle = &mut *h;
         let result = {
-            let (rt, catalog, connections, pool) = (
+            let (rt, runtime_registry, transport_registry, connections, pool) = (
                 &handle.rt,
-                &handle.catalog,
+                &handle.runtime_registry,
+                &handle.transport_registry,
                 &mut handle.connections,
                 &mut handle.pool,
             );
             rt.block_on(Muxterm::create_native_worktree_with_pool(
-                catalog,
+                runtime_registry,
+                transport_registry,
                 connections,
                 &handle.templates,
                 pool,

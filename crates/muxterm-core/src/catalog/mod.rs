@@ -13,9 +13,11 @@ use std::thread;
 
 use crate::projects::Project;
 use crate::protocol::candidate::{Candidate, CandidateRef, ExistingCandidateRef};
+use crate::runtime::registry::RuntimeRegistry;
 use crate::runtime::runtime_supports_channels;
 use crate::runtime::Runtime;
 use crate::transport::registry::ConnectionRegistry;
+use crate::transport::registry::TransportRegistry;
 use crate::transport::{ChannelKind, TargetConnection};
 use crate::workspace::pool::WorkspacePool;
 use crate::workspace::provenance::WorkspaceProvenance;
@@ -38,10 +40,9 @@ type DiscoveryJob = (String, Option<Arc<dyn TargetConnection>>, Vec<ChannelKind>
 
 /// 进程内一份 backend 总状态。
 pub struct Catalog {
-    /// Driver 表。顺序 = 注册顺序；`with_builtins` 按 tmux, herdr, shell 登记。
-    runtimes: Vec<Box<dyn RuntimeProvider>>,
-    /// TransportProvider 表。顺序 = 注册顺序；`with_builtins` 按 local, ssh 登记。
-    transports: Vec<Box<dyn TransportProvider>>,
+    /// Read-only views of registries owned by the product composition root.
+    runtimes: Arc<RuntimeRegistry>,
+    transports: Arc<TransportRegistry>,
     inventory: Inventory,
 }
 
@@ -55,8 +56,8 @@ impl Catalog {
     /// 空 Catalog（测试用）。不注册内置插件。
     pub fn new() -> Self {
         Self {
-            runtimes: Vec::new(),
-            transports: Vec::new(),
+            runtimes: Arc::new(RuntimeRegistry::new()),
+            transports: Arc::new(TransportRegistry::new()),
             inventory: Inventory::new(),
         }
     }
@@ -65,39 +66,52 @@ impl Catalog {
     ///
     /// 只注册，不 connect、不探用户默认 herdr.sock。
     pub fn with_builtins() -> Self {
-        let mut cat = Self::new();
-        for driver in crate::runtime::registry::with_builtins() {
-            cat.register_runtime(driver);
+        Self::from_registries(
+            Arc::new(RuntimeRegistry::with_builtins()),
+            Arc::new(TransportRegistry::with_builtins()),
+        )
+    }
+
+    /// Build a Catalog view over registries owned by the product root.
+    pub(crate) fn from_registries(
+        runtimes: Arc<RuntimeRegistry>,
+        transports: Arc<TransportRegistry>,
+    ) -> Self {
+        Self {
+            runtimes,
+            transports,
+            inventory: Inventory::new(),
         }
-        for transport in crate::transport::registry::with_builtins() {
-            cat.register_transport(transport);
-        }
-        cat
+    }
+
+    /// Clone the runtime registry handle for `Muxterm` ownership.
+    pub(crate) fn runtime_registry(&self) -> Arc<RuntimeRegistry> {
+        Arc::clone(&self.runtimes)
+    }
+
+    /// Clone the transport registry handle for `Muxterm` ownership.
+    pub(crate) fn transport_registry(&self) -> Arc<TransportRegistry> {
+        Arc::clone(&self.transports)
     }
 
     /// 注册一个 Runtime 插件。同 id 原地覆盖（保持位置）；新 id 追加到末尾。
     pub fn register_runtime(&mut self, driver: Box<dyn RuntimeProvider>) {
-        let id = driver.id();
-        if let Some(i) = self.runtimes.iter().position(|d| d.id() == id) {
-            self.runtimes[i] = driver;
-        } else {
-            self.runtimes.push(driver);
-        }
+        Arc::get_mut(&mut self.runtimes)
+            .expect("Catalog provider registries must be configured before sharing")
+            .register(driver);
     }
 
     /// 注册一个 TransportProvider 插件。同 id 原地覆盖；新 id 追加。
     pub fn register_transport(&mut self, transport: Box<dyn TransportProvider>) {
-        let id = transport.id();
-        if let Some(i) = self.transports.iter().position(|t| t.id() == id) {
-            self.transports[i] = transport;
-        } else {
-            self.transports.push(transport);
-        }
+        Arc::get_mut(&mut self.transports)
+            .expect("Catalog provider registries must be configured before sharing")
+            .register(transport);
     }
 
     /// 已注册 Driver 的静态信息（新建项目卡的数据源）。顺序 = 注册顺序。
     pub fn runtime_list(&self) -> Vec<RuntimeInfo> {
         self.runtimes
+            .providers()
             .iter()
             .map(|runtime| RuntimeInfo {
                 id: runtime.id().to_string(),
@@ -107,6 +121,7 @@ impl Catalog {
                 // clients; the relation itself is channel-based.
                 accepted_transports: self
                     .transports
+                    .providers()
                     .iter()
                     .filter(|transport| {
                         runtime_supports_channels(runtime.as_ref(), transport.supported_channels())
@@ -119,14 +134,15 @@ impl Catalog {
 
     /// 已注册 TransportProvider 的静态信息。顺序 = 注册顺序。
     pub fn transport_list(&self) -> Vec<TransportInfo> {
-        self.transports.iter().map(|t| t.info()).collect()
+        self.transports
+            .providers()
+            .iter()
+            .map(|t| t.info())
+            .collect()
     }
 
     fn runtime(&self, id: &str) -> Option<&dyn RuntimeProvider> {
-        self.runtimes
-            .iter()
-            .find(|d| d.id() == id)
-            .map(|d| d.as_ref())
+        self.runtimes.get(id)
     }
 
     /// Read-only provider lookup for the product composition root.
@@ -138,10 +154,7 @@ impl Catalog {
     }
 
     fn transport(&self, id: &str) -> Option<&dyn TransportProvider> {
-        self.transports
-            .iter()
-            .find(|t| t.id() == id)
-            .map(|t| t.as_ref())
+        self.transports.get(id)
     }
 
     /// Read-only transport provider lookup for the product composition root.
@@ -196,7 +209,7 @@ impl Catalog {
                 let connect = self.connect(connections, &tid, &tgt).ok();
                 jobs.push((tid, connect, supported_channels));
             }
-            let runtimes = &self.runtimes;
+            let runtimes = self.runtimes.providers();
             let mut out = Vec::new();
             for chunk in jobs.chunks(4) {
                 thread::scope(|scope| {
@@ -240,7 +253,7 @@ impl Catalog {
             Err(_) => return Ok(Vec::new()),
         };
         Ok(list_sessions_on_connect(
-            &self.runtimes,
+            self.runtimes.providers(),
             &supported_channels,
             connect.as_ref(),
         ))
@@ -268,8 +281,8 @@ impl Catalog {
         spec: &WorkspaceSpec,
     ) -> anyhow::Result<Box<dyn Runtime>> {
         Ok(Self::open_runtime(
-            &self.runtimes,
-            &self.transports,
+            self.runtimes.providers(),
+            self.transports.providers(),
             connections,
             spec,
         )?)
@@ -948,8 +961,12 @@ impl Catalog {
         &mut self,
         connections: &mut ConnectionRegistry,
     ) -> anyhow::Result<()> {
-        let transport_ids: Vec<String> =
-            self.transports.iter().map(|t| t.id().to_string()).collect();
+        let transport_ids: Vec<String> = self
+            .transports
+            .providers()
+            .iter()
+            .map(|t| t.id().to_string())
+            .collect();
         for transport_id in transport_ids {
             let supported_channels = self
                 .transport(&transport_id)
@@ -963,7 +980,7 @@ impl Catalog {
                 let reach = match self.connect(connections, &transport_id, &target.id) {
                     Ok(connect) => {
                         let mut ok = false;
-                        for driver in &self.runtimes {
+                        for driver in self.runtimes.providers() {
                             if !runtime_supports_channels(driver.as_ref(), &supported_channels) {
                                 continue;
                             }

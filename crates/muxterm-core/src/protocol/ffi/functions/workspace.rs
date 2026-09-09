@@ -136,14 +136,16 @@ pub unsafe extern "C" fn muxterm_workspace_open(
             template: None,
         };
         let result = {
-            let (rt, catalog, connections, pool) = (
+            let (rt, runtime_registry, transport_registry, connections, pool) = (
                 &handle.rt,
-                &handle.catalog,
+                &handle.runtime_registry,
+                &handle.transport_registry,
                 &mut handle.connections,
                 &mut handle.pool,
             );
             rt.block_on(Muxterm::open_spec_parts(
-                catalog,
+                runtime_registry,
+                transport_registry,
                 connections,
                 &handle.templates,
                 pool,

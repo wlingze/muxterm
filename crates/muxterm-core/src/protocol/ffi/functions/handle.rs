@@ -170,6 +170,8 @@ fn boxed_handle(
     pool: WorkspacePool,
     rt: tokio::runtime::Runtime,
 ) -> *mut MuxtermHandle {
+    let runtime_registry = catalog.runtime_registry();
+    let transport_registry = catalog.transport_registry();
     let attention_config = crate::config::Config::load()
         .map(|c| c.attention)
         .unwrap_or_default();
@@ -204,6 +206,8 @@ fn boxed_handle(
     };
     Box::into_raw(Box::new(MuxtermHandle {
         catalog,
+        runtime_registry,
+        transport_registry,
         connections: ConnectionRegistry::new(),
         templates,
         pool,
