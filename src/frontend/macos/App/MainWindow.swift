@@ -1762,9 +1762,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         overlay.frame = content.replyOverlayContainer.bounds
         overlay.layoutSubtreeIfNeeded()
         _ = overlay.syncSizeToPty(notifyResize: false)
-        let seed = bridge.paneSurfaceSeedANSI(paneId: targetPaneId)
         let raw = bridge.getPaneOutput(paneId: targetPaneId)
-        let data = PanePaintPolicy.firstPaint(seed: seed, raw: raw, rows: 24)
+        let data = PanePaintPolicy.lastScreen(raw, visibleRows: 24)
         if !data.isEmpty {
             overlay.feedOutput(data, isSnapshot: true)
         }

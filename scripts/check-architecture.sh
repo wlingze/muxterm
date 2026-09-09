@@ -45,7 +45,7 @@ check_absent \
 check_absent \
     "frontend must not import Core internals directly" \
     'crate::(core|muxterm_core)' \
-    src/platform src/bin
+    src/frontend src/bin
 check_absent \
     "legacy runtime mode/factory names" \
     'RuntimeMode|create_runtime|build_runtime' \
@@ -66,6 +66,10 @@ check_absent \
     "frontend must not expose the removed visible-grid FFI" \
     'muxterm_(workspace_)?pane_visible_ansi|paneVisibleANSI|get_workspace_pane_visible_ansi' \
     src crates/muxterm-core/src
+check_absent \
+    "ANSI dump FFI must not cross the public frontend boundary" \
+    'muxterm_(workspace_)?pane_(scroll|surface_seed)_ansi' \
+    src/frontend crates/muxterm-core/src tests
 
 if [[ "$failures" -ne 0 ]]; then
     echo "architecture: $failures check(s) failed" >&2

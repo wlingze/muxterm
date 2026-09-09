@@ -224,8 +224,8 @@ xcodebuild test -project Muxterm.xcodeproj -scheme MuxtermApp -destination 'plat
 FFI 新增导出（`muxterm.h`）：`muxterm_search_all` / `muxterm_attention_snapshot` /
 `muxterm_attention_take_notifications` / `muxterm_attention_on_became_visible` /
 `muxterm_attention_set_process_name` / `muxterm_attention_mute` /
-`muxterm_pane_scroll_ansi` / `muxterm_pane_viewport` / `muxterm_set_pane_viewport` /
-`muxterm_pane_last_n_lines`。
+`muxterm_pane_history_max_offset` / `muxterm_pane_viewport` /
+`muxterm_set_pane_viewport` / `muxterm_pane_last_n_lines`。
 
 ## 4. 开发流程（TDD 优先）
 
