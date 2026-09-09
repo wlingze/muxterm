@@ -261,8 +261,8 @@ pub fn search_rows(query: &str, hits: Vec<SearchRow>) -> (Vec<SearchRow>, bool) 
 mod tests {
     use super::*;
 
-    use crate::core::workspace::id::WorkspaceId;
     use crate::platform::linux::workspace_sidebar::{ActivityIndicator, AgentSidebarItem};
+    use muxterm_protocol::WorkspaceId;
 
     fn attention(
         ws: &str,
