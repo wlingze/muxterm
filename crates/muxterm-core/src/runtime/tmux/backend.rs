@@ -36,7 +36,7 @@ use crate::runtime::tmux::pane_process::{resolve_subscription_value, PANE_PROCES
 use crate::runtime::tmux::protocol::{
     parse_layout_tree, LayoutTree, Message, NotificationKind, TmuxSessionId,
 };
-use crate::runtime::{Runtime, RuntimeCapability};
+use crate::runtime::{Runtime, RuntimeBatch, RuntimeCapability};
 use crate::transport::TargetConnection;
 use muxterm_protocol::{PaneId, TabId};
 
@@ -4347,9 +4347,15 @@ impl Runtime for TmuxRuntime {
         Ok(outcome)
     }
 
-    fn take_events(&mut self) -> Vec<StateChange> {
+    fn drain_events(&mut self, out: &mut RuntimeBatch) {
         self.pump_events();
-        self.events.drain(..).collect()
+        out.append(RuntimeBatch::from_state_changes(self.events.drain(..)));
+    }
+
+    fn take_events(&mut self) -> Vec<StateChange> {
+        let mut batch = RuntimeBatch::default();
+        self.drain_events(&mut batch);
+        batch.into_state_changes()
     }
 
     async fn shutdown(&mut self) -> muxterm_runtime::RuntimeResult<()> {
