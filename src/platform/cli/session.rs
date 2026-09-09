@@ -19,8 +19,7 @@ fn socket_dir() -> PathBuf {
 ///
 /// `/tmp/muxterm-<name>.sock` 或 `$XDG_RUNTIME_DIR/muxterm-<name>.sock`
 pub fn session_socket_path(name: &str) -> PathBuf {
-    // W12：默认路径在 core（DaemonRuntime::default_socket_path），这里只做薄包装。
-    crate::core::runtime::DaemonRuntime::default_socket_path(name)
+    muxterm_protocol::daemon::default_socket_path(name)
 }
 
 /// 列出所有活跃 session 的 socket 路径。

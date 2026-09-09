@@ -255,7 +255,7 @@ fn legacy_runtime_spec(
             let name = sess.clone().unwrap_or_else(|| "default".into());
             let path = sock
                 .map(std::path::PathBuf::from)
-                .unwrap_or_else(|| DaemonRuntime::default_socket_path(&name));
+                .unwrap_or_else(|| muxterm_protocol::daemon::default_socket_path(&name));
             std::boxed::Box::new(DaemonRuntime::new(path, name))
         }
         _ => std::boxed::Box::new(ShellRuntime::new(
