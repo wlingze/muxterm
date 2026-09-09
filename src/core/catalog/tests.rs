@@ -13,6 +13,7 @@ use crate::core::protocol::candidate::{
 use crate::core::runtime::mock::MockRuntime;
 use crate::core::runtime::provider::RuntimeProvider;
 use crate::core::runtime::{Runtime, RuntimeCapability};
+use crate::core::transport::registry::ConnectionRegistry;
 use crate::core::transport::{ChannelKind, TargetConnection};
 use crate::core::workspace::spec::WorkspaceSpec;
 use crate::core::workspace::template::{
@@ -315,6 +316,43 @@ async fn two_opens_same_target_share_one_connect() {
         "同一 SSH target 只 connect 一次"
     );
     assert_eq!(cat.pool().len(), 2);
+}
+
+#[tokio::test]
+async fn external_connection_registry_reuses_target_across_runtime_builds() {
+    let mut cat = Catalog::new();
+    let connects = Arc::new(AtomicUsize::new(0));
+    cat.register_transport(Box::new(MockTransport {
+        id: "ssh",
+        name: "SSH",
+        connects: Arc::clone(&connects),
+        fail: false,
+        targets: vec![],
+    }));
+    cat.register_runtime(Box::new(MockDriver {
+        id: "mockrt",
+        name: "mock",
+        accepted: &["ssh"],
+        support: &[],
+        listed: vec![],
+        list_err: false,
+        opened: Arc::new(AtomicUsize::new(0)),
+    }));
+    let mut connections = ConnectionRegistry::new();
+
+    cat.new_runtime_with_connections(
+        &mut connections,
+        &mock_spec("mockrt", "ssh", Some("ryzen"), "first"),
+    )
+    .unwrap();
+    cat.new_runtime_with_connections(
+        &mut connections,
+        &mock_spec("mockrt", "ssh", Some("ryzen"), "second"),
+    )
+    .unwrap();
+
+    assert_eq!(connects.load(Ordering::SeqCst), 1);
+    assert_eq!(connections.len(), 1);
 }
 
 #[tokio::test]

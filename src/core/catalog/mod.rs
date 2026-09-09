@@ -282,21 +282,51 @@ impl Catalog {
     ///
     /// 未知 runtime / 不接受的 transport → Err。禁止悄悄变成 Shell。
     pub fn new_runtime(&mut self, spec: &WorkspaceSpec) -> anyhow::Result<Box<dyn Runtime>> {
+        Self::build_runtime(
+            &self.runtimes,
+            &self.transports,
+            &mut self.connections,
+            spec,
+        )
+    }
+
+    /// Construct a Runtime using a ConnectionRegistry owned by the product
+    /// composition root. Catalog keeps the old method above for standalone
+    /// resolver/tests, while live Muxterm opens use this path.
+    pub fn new_runtime_with_connections(
+        &self,
+        connections: &mut ConnectionRegistry,
+        spec: &WorkspaceSpec,
+    ) -> anyhow::Result<Box<dyn Runtime>> {
+        Self::build_runtime(&self.runtimes, &self.transports, connections, spec)
+    }
+
+    fn build_runtime(
+        runtimes: &[Box<dyn RuntimeProvider>],
+        transports: &[Box<dyn TransportProvider>],
+        connections: &mut ConnectionRegistry,
+        spec: &WorkspaceSpec,
+    ) -> anyhow::Result<Box<dyn Runtime>> {
         let runtime_id = spec.runtime.as_str();
         let transport_id = spec.transport.as_str();
         let requirements = {
-            let driver = self
-                .runtime(runtime_id)
+            let driver = runtimes
+                .iter()
+                .find(|driver| driver.id() == runtime_id)
                 .ok_or_else(|| anyhow::anyhow!("unknown runtime '{runtime_id}'"))?;
             driver.channel_requirements()
         };
         let compatible = {
-            let transport = self
-                .transport(transport_id)
+            let transport = transports
+                .iter()
+                .find(|transport| transport.id() == transport_id)
                 .ok_or_else(|| anyhow::anyhow!("unknown transport '{transport_id}'"))?;
             runtime_supports_channels(
-                self.runtime(runtime_id)
-                    .expect("刚查过的 RuntimeProvider 必须仍在"),
+                runtimes
+                    .iter()
+                    .find(|driver| driver.id() == runtime_id)
+                    .expect("刚查过的 RuntimeProvider 必须仍在")
+                    .as_ref(),
                 transport.supported_channels(),
             )
         };
@@ -306,9 +336,19 @@ impl Catalog {
             ));
         }
         let target = spec.alias.as_deref().unwrap_or("");
-        let connect = self.connect(transport_id, target)?;
-        let runtime = self
-            .runtime(runtime_id)
+        let connect = if let Some(existing) = connections.get(transport_id, target) {
+            existing
+        } else {
+            let transport = transports
+                .iter()
+                .find(|transport| transport.id() == transport_id)
+                .expect("刚查过的 TransportProvider 必须仍在");
+            let connected = transport.connect(target)?;
+            connections.acquire(transport_id, target, || Ok(connected.clone()))?
+        };
+        let runtime = runtimes
+            .iter()
+            .find(|driver| driver.id() == runtime_id)
             .expect("刚查过的 Driver 必须仍在")
             .new_instance(Arc::clone(&connect), spec)?;
         Ok(runtime)
@@ -955,6 +995,11 @@ impl Catalog {
     /// tests and legacy in-process callers can migrate independently.
     pub(crate) fn take_pool(&mut self) -> WorkspacePool {
         std::mem::take(&mut self.pool)
+    }
+
+    /// Move the compatibility connection registry into the product root.
+    pub(crate) fn take_connections(&mut self) -> ConnectionRegistry {
+        std::mem::take(&mut self.connections)
     }
 }
 

@@ -183,10 +183,13 @@ fn boxed_handle(
         }
     };
     // The FFI handle is the product composition root. Move the live pool out
-    // of Catalog so all runtimes have one Core owner in production.
+    // of Catalog so all runtimes and target connections have one Core owner
+    // in production.
     let pool = catalog.take_pool();
+    let connections = catalog.take_connections();
     Box::into_raw(Box::new(MuxtermHandle {
         catalog,
+        connections,
         pool,
         projects,
         rt,

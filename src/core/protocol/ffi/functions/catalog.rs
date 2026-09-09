@@ -79,8 +79,18 @@ pub unsafe extern "C" fn muxterm_open_json(
         };
         let workspace_id = resolved.workspace_id();
         let result = {
-            let (rt, catalog, pool) = (&handle.rt, &mut handle.catalog, &mut handle.pool);
-            rt.block_on(Muxterm::open_resolved_parts(catalog, pool, resolved))
+            let (rt, catalog, connections, pool) = (
+                &handle.rt,
+                &mut handle.catalog,
+                &mut handle.connections,
+                &mut handle.pool,
+            );
+            rt.block_on(Muxterm::open_resolved_parts(
+                &*catalog,
+                connections,
+                pool,
+                resolved,
+            ))
         };
         let (name, resolved_target) = match result {
             Ok(workspace) => (
@@ -153,12 +163,22 @@ pub unsafe extern "C" fn muxterm_workspace_open_target_json(
         };
         let handle = &mut *h;
         let result = {
-            let (rt, catalog, pool) = (&handle.rt, &mut handle.catalog, &mut handle.pool);
+            let (rt, catalog, connections, pool) = (
+                &handle.rt,
+                &mut handle.catalog,
+                &mut handle.connections,
+                &mut handle.pool,
+            );
             let resolved = match catalog.resolve_target(&config, intent) {
                 Ok(resolved) => resolved,
                 Err(error) => return json_error(error),
             };
-            rt.block_on(Muxterm::open_resolved_parts(catalog, pool, resolved))
+            rt.block_on(Muxterm::open_resolved_parts(
+                &*catalog,
+                connections,
+                pool,
+                resolved,
+            ))
         };
         match result {
             Ok(workspace) => json_string(serde_json::json!({
