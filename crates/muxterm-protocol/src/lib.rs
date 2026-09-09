@@ -8,9 +8,12 @@ use std::path::Path;
 use std::str::FromStr;
 
 pub mod candidate;
+pub mod color;
 pub mod input;
 pub mod layout;
 pub mod state;
+
+pub use color::Rgb;
 
 /// Product-level pane identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
