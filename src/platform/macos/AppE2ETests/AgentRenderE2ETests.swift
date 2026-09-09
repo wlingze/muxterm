@@ -204,7 +204,7 @@ final class AgentRenderE2ETests: XCTestCase {
         for i in 0..<200 {
             raw.append(contentsOf: Array("line-\(i)\r\n".utf8))
         }
-        let painted = PanePaintPolicy.firstPaint(visible: Data(), raw: raw, rows: 24)
+        let painted = PanePaintPolicy.firstPaint(seed: Data(), raw: raw, rows: 24)
         XCTAssertFalse(
             String(data: painted, encoding: .utf8)?.contains("line-0") ?? true,
             "策略层就必须丢掉最早行，不能把 200 行历史交给 SwiftTerm"

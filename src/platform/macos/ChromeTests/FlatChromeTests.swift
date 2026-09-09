@@ -700,7 +700,7 @@ final class PanePaintPolicyTests: XCTestCase {
             raw.append(contentsOf: Array("line-\(i)\r\n".utf8))
         }
         let visible = Data("\u{1b}[H\u{1b}[2JVISIBLE-TAIL".utf8)
-        let painted = PanePaintPolicy.firstPaint(visible: visible, raw: raw, rows: 24)
+        let painted = PanePaintPolicy.firstPaint(seed: visible, raw: raw, rows: 24)
         let text = String(data: painted, encoding: .utf8) ?? ""
         XCTAssertTrue(text.contains("VISIBLE-TAIL"))
         XCTAssertFalse(text.contains("line-0"), "不得重放 200 行历史。got=\(text.prefix(80))")
@@ -711,7 +711,7 @@ final class PanePaintPolicyTests: XCTestCase {
         for i in 0..<200 {
             raw.append(contentsOf: Array("line-\(i)\r\n".utf8))
         }
-        let painted = PanePaintPolicy.firstPaint(visible: Data(), raw: raw, rows: 24)
+        let painted = PanePaintPolicy.firstPaint(seed: Data(), raw: raw, rows: 24)
         let text = String(data: painted, encoding: .utf8) ?? ""
         XCTAssertTrue(text.contains("line-199"), "末屏应含最后一行。got=\(text.suffix(80))")
         XCTAssertFalse(text.contains("line-0"), "末屏不得含最早行（iTerm2 也不会重放）。got=\(text.prefix(80))")
@@ -760,7 +760,7 @@ final class PanePaintPolicyTests: XCTestCase {
         let visible = Data("\u{1b}[H\u{1b}[2JVISIBLE-TAIL".utf8)
         let painted = PanePaintPolicy.paint(
             seeded: true,
-            visible: visible,
+            seed: visible,
             incoming: raw,
             rows: 24
         )

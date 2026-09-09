@@ -1882,26 +1882,6 @@ impl FfiClient {
         buffer
     }
 
-    /// Read a workspace pane's visible grid for compatibility/diagnostics.
-    pub fn get_workspace_pane_visible_ansi(&self, workspace_id: &str, pane_id: u32) -> Vec<u8> {
-        let workspace_id = cstring(workspace_id);
-        let mut buffer = vec![0u8; PANE_OUTPUT_CAPACITY];
-        let count = unsafe {
-            ffi::muxterm_workspace_pane_visible_ansi(
-                self.handle.as_ptr(),
-                workspace_id.as_ptr(),
-                pane_id,
-                buffer.as_mut_ptr(),
-                buffer.len(),
-            )
-        };
-        if count <= 0 {
-            return Vec::new();
-        }
-        buffer.truncate((count as usize).min(buffer.len()));
-        buffer
-    }
-
     /// Read a one-time workspace pane Surface seed.
     pub fn get_workspace_pane_surface_seed_ansi(
         &self,

@@ -917,24 +917,7 @@ final class CoreBridge {
         return Data(buf.prefix(Int(n)))
     }
 
-    /// Index 可见网格 ANSI（搜索/peek）。**禁止**灌进 SwiftTerm。
-    func paneVisibleANSI(paneId: UInt32) -> Data {
-        guard let handle else { return Data() }
-        var buf = [UInt8](repeating: 0, count: 1024 * 1024)
-        let n = buf.withUnsafeMutableBytes { raw in
-            muxterm_pane_visible_ansi(
-                handle,
-                paneId,
-                raw.bindMemory(to: UInt8.self).baseAddress,
-                raw.count
-            )
-        }
-        guard n > 0 else { return Data() }
-        return Data(buf.prefix(Int(n)))
-    }
-
-    /// Index 用的一次性 ANSI 网格（搜索/peek）。**禁止**灌进 SwiftTerm。
-    /// 显示路径只吃 Runtime 的 `PaneSnapshot` / `PaneOutput`（SURFACE.md §7）。
+    /// 新建 Surface 使用的一次性 ANSI seed；只在新建 SwiftTerm 时灌入，不能作为 live replay。
     func paneSurfaceSeedANSI(paneId: UInt32) -> Data {
         guard let handle else { return Data() }
         let required = muxterm_pane_surface_seed_ansi(handle, paneId, nil, 0)
