@@ -13,9 +13,9 @@ use std::time::{Duration, Instant};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
+use muxterm::test_support::core::protocol::PaneId;
 use muxterm::test_support::core::runtime::herdr::observe::{channel, ObserveStream, StreamMode};
 use muxterm::test_support::core::runtime::herdr::session::HerdrSession;
-use muxterm::test_support::core::types::PaneId;
 use serde_json::Value;
 
 /// Remote runners can spend several seconds creating the repeated split/close

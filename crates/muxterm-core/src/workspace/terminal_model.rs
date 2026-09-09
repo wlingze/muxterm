@@ -17,7 +17,7 @@ use crate::config::Rgb;
 use crate::protocol::state::{State, StateChange};
 use crate::protocol::task::{Task, TaskOutcome};
 use crate::runtime::Runtime;
-use crate::types::PaneId;
+use muxterm_protocol::PaneId;
 use std::collections::VecDeque;
 
 /// 状态变更回调类型。
@@ -288,7 +288,7 @@ mod tests {
     use crate::protocol::state::BackendStatus;
     use crate::protocol::terminal::input::KeyEvent;
     use crate::runtime::mock::MockRuntime;
-    use crate::types::{PaneId, TabId};
+    use muxterm_protocol::{PaneId, TabId};
 
     use std::sync::{Arc, Mutex};
 

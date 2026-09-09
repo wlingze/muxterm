@@ -230,7 +230,7 @@ fn assert_tab_bar_renders() {
 fn assert_pane_layout_widget() {
     let mut host = LayoutHost::new(load_theme(), FontSettings::default(), true, 10_000);
     use muxterm::test_support::core::protocol::layout::{LayoutNode, SplitDir};
-    use muxterm::test_support::core::types::PaneId;
+    use muxterm::test_support::core::protocol::PaneId;
     let layout = LayoutNode::Split {
         dir: SplitDir::Horizontal,
         ratio: 500,

@@ -19,12 +19,12 @@ use crate::runtime::provider::runtime_supports_channels;
 use crate::runtime::Runtime;
 use crate::transport::registry::ConnectionRegistry;
 use crate::transport::{ChannelKind, TargetConnection};
-use crate::workspace::id::WorkspaceId;
 use crate::workspace::pool::WorkspacePool;
 use crate::workspace::provenance::WorkspaceProvenance;
 use crate::workspace::spec::WorkspaceSpec;
 use crate::workspace::template::{TemplateName, TemplateRegistry, WorkspaceTemplate};
 use crate::workspace::workspace::Workspace;
+use muxterm_protocol::WorkspaceId;
 
 pub use crate::protocol::candidate::ExistingCandidate;
 pub use crate::runtime::provider::{RuntimeInfo, RuntimeProvider};

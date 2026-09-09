@@ -40,7 +40,7 @@ use crate::transport::{
     ByteChannel, ChannelRequest, PtySize as TransportPtySize, TargetConnection, Transport,
     TransportSignal,
 };
-use crate::types::{PaneId, TabId};
+use muxterm_protocol::{PaneId, TabId};
 
 pub mod daemon;
 pub mod daemon_client;

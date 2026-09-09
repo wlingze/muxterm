@@ -3,7 +3,6 @@
 //! W1 先立住「一个 Workspace = 一个 Runtime+ 本工作区
 //! pane 文本副本」。WorkspacePool 在 W2 加入。
 
-pub mod id;
 pub mod pane_buf;
 pub mod pool;
 pub mod provenance;

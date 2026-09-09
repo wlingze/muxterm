@@ -94,7 +94,7 @@ fn stalled_attach_client_resumes_live_to_last_frame_without_recapture() {
         }
         saw_last_frame = model
             .state()
-            .pane_output(&muxterm::test_support::core::types::PaneId(pane))
+            .pane_output(&muxterm::test_support::core::protocol::PaneId(pane))
             .is_some_and(|bytes| {
                 bytes
                     .windows(b"FLOOD_DONE".len())
@@ -119,7 +119,7 @@ fn stalled_attach_client_resumes_live_to_last_frame_without_recapture() {
     );
     let tail = model
         .state()
-        .pane_output(&muxterm::test_support::core::types::PaneId(pane))
+        .pane_output(&muxterm::test_support::core::protocol::PaneId(pane))
         .map(|bytes| {
             String::from_utf8_lossy(&bytes[bytes.len().saturating_sub(240)..]).into_owned()
         })

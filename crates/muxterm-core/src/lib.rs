@@ -29,6 +29,5 @@ pub mod quickconnect;
 pub mod render_policy;
 pub mod runtime;
 pub mod transport;
-pub mod types;
 pub mod url_detect;
 pub mod workspace;

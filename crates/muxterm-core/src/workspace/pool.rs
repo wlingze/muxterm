@@ -11,8 +11,8 @@ use crate::protocol::state::StateChange;
 use crate::protocol::task::Task;
 use crate::protocol::terminal::emulate::DEFAULT_SCROLLBACK_LINES;
 use crate::runtime::{Runtime, RuntimeCapability, WorktreeCreateSpec, WorktreeInfo};
-use crate::workspace::id::WorkspaceId;
 use crate::workspace::workspace::Workspace;
+use muxterm_protocol::WorkspaceId;
 
 /// 池里一个工作区的生命周期。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -551,7 +551,7 @@ mod tests {
     use super::*;
     use crate::protocol::task::Task;
     use crate::runtime::mock::MockRuntime;
-    use crate::types::{PaneId, TabId};
+    use muxterm_protocol::{PaneId, TabId};
     use std::sync::{Arc, Mutex};
 
     fn id(name: &str, runtime: &str) -> WorkspaceId {

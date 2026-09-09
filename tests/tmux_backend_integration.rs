@@ -12,9 +12,9 @@
 use muxterm::test_support::core::protocol::layout::SplitDir;
 use muxterm::test_support::core::protocol::state::{BackendStatus, State, StateChange};
 use muxterm::test_support::core::protocol::task::{Task, TaskOutcome};
+use muxterm::test_support::core::protocol::{PaneId, TabId};
 use muxterm::test_support::core::runtime::shell::daemon::cli_command_to_task;
 use muxterm::test_support::core::runtime::TmuxRuntime;
-use muxterm::test_support::core::types::{PaneId, TabId};
 use muxterm::test_support::core::workspace::terminal_model::TerminalModel;
 use muxterm::test_support::platform::cli::parse_cli_command;
 use std::process::Command;

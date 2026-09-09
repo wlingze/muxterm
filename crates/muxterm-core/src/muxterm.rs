@@ -55,7 +55,7 @@ pub struct Muxterm {
     pub(crate) event_names: Vec<CString>,
     pub(crate) tab_names: Vec<CString>,
     pub(crate) layout_nodes: Vec<CLayoutNode>,
-    pub(crate) deferred_events: VecDeque<(crate::workspace::id::WorkspaceId, StateChange)>,
+    pub(crate) deferred_events: VecDeque<(muxterm_protocol::WorkspaceId, StateChange)>,
     pub(crate) workspace_ids: Vec<CString>,
 }
 
@@ -233,7 +233,7 @@ impl Muxterm {
 
     pub(crate) fn defer_event(
         &mut self,
-        workspace_id: crate::workspace::id::WorkspaceId,
+        workspace_id: muxterm_protocol::WorkspaceId,
         event: StateChange,
     ) {
         if should_export_state_change(&event) {
@@ -244,7 +244,7 @@ impl Muxterm {
     /// Apply runtime signals to the cross-workspace attention projection.
     pub(crate) fn apply_attention_for_events(
         &mut self,
-        ws_id: &crate::workspace::id::WorkspaceId,
+        ws_id: &muxterm_protocol::WorkspaceId,
         events: &[StateChange],
     ) {
         let mut pending: Vec<PendingAttentionUpdate> = Vec::new();

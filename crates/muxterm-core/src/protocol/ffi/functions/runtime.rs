@@ -5,7 +5,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use crate::protocol::task::Task;
 use crate::runtime::HerdrRuntime;
-use crate::types::PaneId;
+use muxterm_protocol::PaneId;
 
 use super::support::{json_error, json_string, parse_workspace_id, MuxtermHandle};
 use super::task::task_result_code;

@@ -12,12 +12,12 @@
 
 use super::protocol::ControlEscapeDecoder;
 use crate::config::Rgb;
-use crate::types::PaneId as ProtoPaneId;
+use muxterm_protocol::PaneId as ProtoPaneId;
 use std::fmt::Write;
 
-// 复用 `crate::types` 里的产品 ID；tmux session id 只在 runtime/tmux。
+// 复用 protocol crate 里的产品 ID；tmux session id 只在 runtime/tmux。
 pub use super::protocol::TmuxSessionId;
-pub use crate::types::{PaneId, TabId};
+pub use muxterm_protocol::{PaneId, TabId};
 
 /// 一个已构造好的 tmux 命令。
 ///

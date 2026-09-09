@@ -137,10 +137,10 @@ fn wait_for_server_text(session: &HerdrSession, wire_pane: &str, text: &str) -> 
 /// 失败诊断：用独立 wire 连接重新 attach 到该 pane，验证 token 是否
 /// 在服务端 scrollback 里（区分「服务端真丢」vs「AppWindow 重放路径」）。
 fn wire_reattach_token_check(session: &HerdrSession, wire_pane: &str, token: &str) -> String {
+    use muxterm::test_support::core::protocol::PaneId;
     use muxterm::test_support::core::runtime::herdr::observe::{
         channel, ObserveStream, StreamMode,
     };
-    use muxterm::test_support::core::types::PaneId;
     let (tx, _rx) = channel();
     let wire_id = wire_pane
         .rsplit(|c: char| !c.is_ascii_digit())

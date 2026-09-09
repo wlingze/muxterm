@@ -11,8 +11,8 @@ use crate::protocol::layout::{LayoutNode, SplitDir, TabLayout};
 use crate::protocol::state::{BackendStatus, PaneInfo, State, StateChange, TabInfo};
 use crate::protocol::task::{Task, TaskOutcome};
 use crate::runtime::contract::{Runtime, RuntimeCapability};
-use crate::types::{PaneId, TabId};
 use async_trait::async_trait;
+use muxterm_protocol::{PaneId, TabId};
 use std::sync::{Arc, Mutex};
 
 /// 最小可用的 mock backend，用于 trait 编译检查 + TerminalModel 单元测试。

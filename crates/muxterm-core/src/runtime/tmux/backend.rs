@@ -38,7 +38,7 @@ use crate::runtime::tmux::protocol::{
 };
 use crate::runtime::{Runtime, RuntimeCapability};
 use crate::transport::TargetConnection;
-use crate::types::{PaneId, TabId};
+use muxterm_protocol::{PaneId, TabId};
 
 /// 后台命令查询标记：记录发出去的命令，收到 %end 时处理响应行。
 #[derive(Debug, Clone)]
@@ -7927,7 +7927,7 @@ mod tests {
         let pane = PaneId(1);
         // 先放一个 ActiveTabChanged（切 tab 的确认事件）
         b.events.push_back(StateChange::ActiveTabChanged {
-            tab: crate::types::TabId(14),
+            tab: muxterm_protocol::TabId(14),
         });
         // 灌入远超上限的 PaneOutput
         let chunk = vec![b'x'; 64 * 1024];
@@ -8005,15 +8005,15 @@ mod tests {
 
         let mut b = TmuxRuntime::new(None);
         // 预置一个 window + 两个 pane 在同一 tab
-        let win = crate::types::TabId(0);
-        let tab = crate::types::TabId(0);
+        let win = muxterm_protocol::TabId(0);
+        let tab = muxterm_protocol::TabId(0);
         b.tabs.push(crate::protocol::state::TabInfo {
             id: tab,
             name: "t0".into(),
             active: true,
         });
         b.panes.push(crate::protocol::state::PaneInfo {
-            id: crate::types::PaneId(1),
+            id: muxterm_protocol::PaneId(1),
             tab,
             cols: 40,
             rows: 24,
@@ -8021,7 +8021,7 @@ mod tests {
             title: "p1".into(),
         });
         b.panes.push(crate::protocol::state::PaneInfo {
-            id: crate::types::PaneId(2),
+            id: muxterm_protocol::PaneId(2),
             tab,
             cols: 40,
             rows: 24,
@@ -8031,25 +8031,25 @@ mod tests {
 
         b.handle_message(Message::WindowPaneChanged {
             window: win,
-            pane: crate::types::PaneId(2),
+            pane: muxterm_protocol::PaneId(2),
         });
 
         // pane 2 应变为 active
         let p2 = b
             .panes
             .iter()
-            .find(|p| p.id == crate::types::PaneId(2))
+            .find(|p| p.id == muxterm_protocol::PaneId(2))
             .unwrap();
         assert!(p2.active, "window-pane-changed 后 pane2 应 active");
         let p1 = b
             .panes
             .iter()
-            .find(|p| p.id == crate::types::PaneId(1))
+            .find(|p| p.id == muxterm_protocol::PaneId(1))
             .unwrap();
         assert!(!p1.active, "pane1 应不再 active");
         // 应有 ActivePaneChanged 事件
         assert!(
-            b.events.iter().any(|e| matches!(e, StateChange::ActivePaneChanged { pane, .. } if *pane == crate::types::PaneId(2))),
+            b.events.iter().any(|e| matches!(e, StateChange::ActivePaneChanged { pane, .. } if *pane == muxterm_protocol::PaneId(2))),
             "应有 ActivePaneChanged(pane2)"
         );
     }
@@ -8062,8 +8062,8 @@ mod tests {
         use crate::runtime::tmux::protocol::Message;
 
         let mut b = TmuxRuntime::new(None);
-        let win = crate::types::TabId(2);
-        let tab = crate::types::TabId(2);
+        let win = muxterm_protocol::TabId(2);
+        let tab = muxterm_protocol::TabId(2);
         b.tabs.push(crate::protocol::state::TabInfo {
             id: tab,
             name: "t2".into(),
@@ -8071,14 +8071,15 @@ mod tests {
         });
         for id in [5u32, 6] {
             b.panes.push(crate::protocol::state::PaneInfo {
-                id: crate::types::PaneId(id),
+                id: muxterm_protocol::PaneId(id),
                 tab,
                 cols: 40,
                 rows: 24,
                 active: false,
                 title: format!("p{id}"),
             });
-            b.capture_grid.insert(crate::types::PaneId(id), (40, 24));
+            b.capture_grid
+                .insert(muxterm_protocol::PaneId(id), (40, 24));
         }
 
         b.handle_message(Message::WindowClose { window: win });
@@ -8104,7 +8105,7 @@ mod tests {
         assert!(
             [5u32, 6]
                 .into_iter()
-                .all(|id| !b.capture_grid.contains_key(&crate::types::PaneId(id))),
+                .all(|id| !b.capture_grid.contains_key(&muxterm_protocol::PaneId(id))),
             "window 关闭后 pane capture 网格也必须回收"
         );
     }
@@ -8161,7 +8162,7 @@ mod tests {
     fn late_window_close_after_authoritative_list_keeps_tab() {
         use crate::protocol::state::StateChange;
         use crate::runtime::tmux::protocol::{Message, TmuxSessionId};
-        use crate::types::TabId;
+        use muxterm_protocol::TabId;
 
         let mut b = TmuxRuntime::new(None);
         b.active_session = Some(TmuxSessionId(0));
@@ -8175,7 +8176,7 @@ mod tests {
             "@1,second,0,bbbb,80x24,0,0,1,0,1".into(),
         ]);
         b.panes.push(crate::protocol::state::PaneInfo {
-            id: crate::types::PaneId(7),
+            id: muxterm_protocol::PaneId(7),
             tab: TabId(1),
             cols: 40,
             rows: 24,
@@ -8190,7 +8191,7 @@ mod tests {
             "close 通知到达但权威查询未返回前不得删除 tab"
         );
         assert!(
-            b.panes.iter().any(|p| p.id == crate::types::PaneId(7)),
+            b.panes.iter().any(|p| p.id == muxterm_protocol::PaneId(7)),
             "close 挂起期间 pane 不得提前移除"
         );
         assert!(
@@ -8213,7 +8214,7 @@ mod tests {
             "权威确认后 tab 必须保留"
         );
         assert!(
-            b.panes.iter().any(|p| p.id == crate::types::PaneId(7)),
+            b.panes.iter().any(|p| p.id == muxterm_protocol::PaneId(7)),
             "权威确认后 pane 必须保留"
         );
         assert!(
@@ -8995,15 +8996,15 @@ mod tests {
         let mut b = TmuxRuntime::new(None);
         // 预置 pane 所在 tab/window
         b.panes.push(crate::protocol::state::PaneInfo {
-            id: crate::types::PaneId(3),
-            tab: crate::types::TabId(7),
+            id: muxterm_protocol::PaneId(3),
+            tab: muxterm_protocol::TabId(7),
             cols: 80,
             rows: 24,
             active: true,
             title: "p3".into(),
         });
         b.tabs.push(crate::protocol::state::TabInfo {
-            id: crate::types::TabId(7),
+            id: muxterm_protocol::TabId(7),
             name: "t7".into(),
             active: true,
         });
@@ -9015,7 +9016,7 @@ mod tests {
         // execute SplitPane（workdir=None）→ 一条原子 split 命令。
         let outcome = b
             .execute(&Task::SplitPane {
-                target: Some(crate::types::PaneId(3)),
+                target: Some(muxterm_protocol::PaneId(3)),
                 dir: SplitDir::Horizontal,
                 command: None,
                 workdir: None,
@@ -9046,7 +9047,7 @@ mod tests {
         // 预置两个 tab（对应两个 tmux window @0 @1）
         for (id, active) in [(0u32, true), (1, false)] {
             b.tabs.push(crate::protocol::state::TabInfo {
-                id: crate::types::TabId(id),
+                id: muxterm_protocol::TabId(id),
                 name: format!("t{id}"),
                 active,
             });
@@ -9054,25 +9055,25 @@ mod tests {
 
         b.handle_message(Message::SessionWindowChanged {
             session,
-            window: crate::types::TabId(1),
+            window: muxterm_protocol::TabId(1),
         });
 
         // tab1 应变为 active，tab0 不再 active
         let t1 = b
             .tabs
             .iter()
-            .find(|t| t.id == crate::types::TabId(1))
+            .find(|t| t.id == muxterm_protocol::TabId(1))
             .unwrap();
         assert!(t1.active, "session-window-changed 后 tab1 应 active");
         let t0 = b
             .tabs
             .iter()
-            .find(|t| t.id == crate::types::TabId(0))
+            .find(|t| t.id == muxterm_protocol::TabId(0))
             .unwrap();
         assert!(!t0.active, "tab0 应不再 active");
         // 应有 ActiveTabChanged 事件
         assert!(
-            b.events.iter().any(|e| matches!(e, StateChange::ActiveTabChanged { tab, .. } if *tab == crate::types::TabId(1))),
+            b.events.iter().any(|e| matches!(e, StateChange::ActiveTabChanged { tab, .. } if *tab == muxterm_protocol::TabId(1))),
             "应有 ActiveTabChanged(tab1)"
         );
     }
@@ -9090,14 +9091,14 @@ mod tests {
         b.workspace_name = "yaklang-workspace".into();
         b.active_session = Some(attached);
         b.tabs.push(crate::protocol::state::TabInfo {
-            id: crate::types::TabId(0),
+            id: muxterm_protocol::TabId(0),
             name: "Monitor".into(),
             active: true,
         });
 
         b.handle_message(Message::SessionWindowChanged {
             session: crate::runtime::tmux::protocol::TmuxSessionId(4),
-            window: crate::types::TabId(20),
+            window: muxterm_protocol::TabId(20),
         });
 
         assert!(b.tabs[0].active, "其它 session 的通知不应取消当前 tab");
@@ -9108,7 +9109,7 @@ mod tests {
             "不应为其它 session 发 ActiveTabChanged"
         );
         assert!(
-            !b.tabs.iter().any(|t| t.id == crate::types::TabId(20)),
+            !b.tabs.iter().any(|t| t.id == muxterm_protocol::TabId(20)),
             "不应把其它 session 的 window 收成 tab"
         );
     }
@@ -9158,38 +9159,38 @@ mod tests {
         b.active_session = Some(attached);
         b.workspace_name = "yaklang-workspace".into();
         b.tabs.push(crate::protocol::state::TabInfo {
-            id: crate::types::TabId(21),
+            id: muxterm_protocol::TabId(21),
             name: "code".into(),
             active: false,
         });
         b.tabs.push(crate::protocol::state::TabInfo {
-            id: crate::types::TabId(29),
+            id: muxterm_protocol::TabId(29),
             name: "other".into(),
             active: true,
         });
 
         b.handle_message(Message::SessionWindowChanged {
             session: attached,
-            window: crate::types::TabId(21),
+            window: muxterm_protocol::TabId(21),
         });
 
         let t21 = b
             .tabs
             .iter()
-            .find(|t| t.id == crate::types::TabId(21))
+            .find(|t| t.id == muxterm_protocol::TabId(21))
             .unwrap();
         assert!(t21.active, "attach session 为 $4 时 @21 应变为 active");
         let t29 = b
             .tabs
             .iter()
-            .find(|t| t.id == crate::types::TabId(29))
+            .find(|t| t.id == muxterm_protocol::TabId(29))
             .unwrap();
         assert!(!t29.active, "@29 应取消 active");
         assert!(
             b.events.iter().any(|e| matches!(
                 e,
                 StateChange::ActiveTabChanged { tab, .. }
-                    if *tab == crate::types::TabId(21)
+                    if *tab == muxterm_protocol::TabId(21)
             )),
             "应发 ActiveTabChanged(TabId(21))"
         );
@@ -9204,19 +9205,19 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         b.cmd_tx = Some(tx);
         b.tabs.push(crate::protocol::state::TabInfo {
-            id: crate::types::TabId(0),
+            id: muxterm_protocol::TabId(0),
             name: "Monitor".into(),
             active: true,
         });
         b.handle_message(Message::LayoutChange {
-            window: crate::types::TabId(20),
+            window: muxterm_protocol::TabId(20),
             layout: crate::runtime::tmux::protocol::LayoutChange::parse("abcd,80x24,0,0,1")
                 .unwrap(),
             visible_layout: None,
             flags: None,
         });
         assert!(rx.try_recv().is_err(), "外站 window 不应触发 list-panes");
-        assert!(!b.window_layouts.contains_key(&crate::types::TabId(20)));
+        assert!(!b.window_layouts.contains_key(&muxterm_protocol::TabId(20)));
     }
 
     /// 相同 layout 的 %layout-change（切 tab / 重复 -C）不得再 list-panes。
@@ -9228,13 +9229,13 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         b.cmd_tx = Some(tx);
         b.tabs.push(crate::protocol::state::TabInfo {
-            id: crate::types::TabId(5),
+            id: muxterm_protocol::TabId(5),
             name: "code".into(),
             active: true,
         });
         let raw = "abcd,80x24,0,0,1";
         b.handle_message(Message::LayoutChange {
-            window: crate::types::TabId(5),
+            window: muxterm_protocol::TabId(5),
             layout: crate::runtime::tmux::protocol::LayoutChange::parse(raw).unwrap(),
             visible_layout: None,
             flags: Some("*".into()),
@@ -9245,13 +9246,13 @@ mod tests {
             "首次 layout-change 应查询 pane: {first:?}"
         );
         b.handle_list_panes_response(
-            crate::types::TabId(5),
+            muxterm_protocol::TabId(5),
             vec!["0: [80x24] %1 (active)".into()],
         );
         let _ = drain_tmux_cmds(&mut rx);
 
         b.handle_message(Message::LayoutChange {
-            window: crate::types::TabId(5),
+            window: muxterm_protocol::TabId(5),
             layout: crate::runtime::tmux::protocol::LayoutChange::parse(raw).unwrap(),
             visible_layout: None,
             flags: Some("-".into()),
@@ -9279,7 +9280,7 @@ mod tests {
         b.active_session = Some(session);
         for (id, active) in [(0u32, true), (1, false), (2, false)] {
             b.tabs.push(crate::protocol::state::TabInfo {
-                id: crate::types::TabId(id),
+                id: muxterm_protocol::TabId(id),
                 name: format!("t{id}"),
                 active,
             });
@@ -9287,7 +9288,7 @@ mod tests {
 
         // 切到 tab2：命令发出 + 乐观事件
         let outcome = b.execute(&Task::SwitchTab {
-            target: crate::types::TabId(2),
+            target: muxterm_protocol::TabId(2),
         });
         assert!(matches!(outcome, Ok(TaskOutcome::Done)));
         let sent = rx.try_recv().expect("应发送 select-window");
@@ -9295,13 +9296,13 @@ mod tests {
         assert!(
             b.events
                 .iter()
-                .any(|e| matches!(e, StateChange::ActiveTabChanged { tab, .. } if *tab == crate::types::TabId(2))),
+                .any(|e| matches!(e, StateChange::ActiveTabChanged { tab, .. } if *tab == muxterm_protocol::TabId(2))),
             "乐观切换应立即产生 ActiveTabChanged(tab2)"
         );
         let t2 = b
             .tabs
             .iter()
-            .find(|t| t.id == crate::types::TabId(2))
+            .find(|t| t.id == muxterm_protocol::TabId(2))
             .unwrap();
         assert!(t2.active);
 
@@ -9309,7 +9310,7 @@ mod tests {
         let before = b.events.len();
         b.handle_message(Message::SessionWindowChanged {
             session,
-            window: crate::types::TabId(2),
+            window: muxterm_protocol::TabId(2),
         });
         let after = b.events.len();
         assert_eq!(after, before, "幂等通知不应重复产生 ActiveTabChanged");
@@ -9325,7 +9326,7 @@ mod tests {
         b.active_session = Some(session);
         for (id, active) in [(18u32, true), (47, false), (52, false)] {
             b.tabs.push(crate::protocol::state::TabInfo {
-                id: crate::types::TabId(id),
+                id: muxterm_protocol::TabId(id),
                 name: format!("t{id}"),
                 active,
             });
@@ -9333,31 +9334,31 @@ mod tests {
 
         assert!(matches!(
             b.execute(&Task::SwitchTab {
-                target: crate::types::TabId(47),
+                target: muxterm_protocol::TabId(47),
             }),
             Ok(TaskOutcome::Done)
         ));
         assert!(matches!(
             b.execute(&Task::SwitchTab {
-                target: crate::types::TabId(52),
+                target: muxterm_protocol::TabId(52),
             }),
             Ok(TaskOutcome::Done)
         ));
 
         b.handle_message(Message::SessionWindowChanged {
             session,
-            window: crate::types::TabId(47),
+            window: muxterm_protocol::TabId(47),
         });
         assert_eq!(
             b.active_tab().map(|tab| tab.id),
-            Some(crate::types::TabId(52)),
+            Some(muxterm_protocol::TabId(52)),
             "旧目标确认不能覆盖最新目标"
         );
         assert!(b.latest_switch_target.is_some());
 
         b.handle_message(Message::SessionWindowChanged {
             session,
-            window: crate::types::TabId(52),
+            window: muxterm_protocol::TabId(52),
         });
         assert!(b.latest_switch_target.is_none());
     }
@@ -9410,7 +9411,7 @@ mod tests {
 
         // 插入 %layout-change（带合法 layout 字符串）
         b.handle_message(Message::LayoutChange {
-            window: crate::types::TabId(0),
+            window: muxterm_protocol::TabId(0),
             layout: crate::runtime::tmux::protocol::LayoutChange::parse("80x24,0,0,0").unwrap(),
             visible_layout: None,
             flags: None,
