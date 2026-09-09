@@ -24,7 +24,6 @@ use async_trait::async_trait;
 use tokio::sync::mpsc;
 
 use crate::buffer_cap::{append_capped, MAX_PANE_OUTPUT_BYTES, MAX_STATE_EVENTS};
-use crate::config::Rgb;
 use crate::protocol::layout::{LayoutNode, SplitDir, TabLayout};
 use crate::protocol::state::{BackendStatus, PaneInfo, State, StateChange, TabInfo};
 use crate::protocol::task::{Task, TaskOutcome};
@@ -38,7 +37,7 @@ use crate::runtime::tmux::protocol::{
 };
 use crate::runtime::{Runtime, RuntimeBatch, RuntimeCapability};
 use crate::transport::TargetConnection;
-use muxterm_protocol::{PaneId, TabId};
+use muxterm_protocol::{PaneId, Rgb, TabId};
 
 /// 后台命令查询标记：记录发出去的命令，收到 %end 时处理响应行。
 #[derive(Debug, Clone)]
@@ -6269,8 +6268,8 @@ mod tests {
         b.setup_status_subscriptions();
         let _ = b.execute(&crate::protocol::task::Task::ReportPaneColours {
             target: pane,
-            fg: crate::config::Rgb(0, 0, 0),
-            bg: crate::config::Rgb(255, 255, 255),
+            fg: Rgb(0, 0, 0),
+            bg: Rgb(255, 255, 255),
         });
         let held = drain_tmux_cmds(&mut rx);
         assert!(
@@ -7657,8 +7656,8 @@ mod tests {
             for pane in panes {
                 let _ = b.execute(&crate::protocol::task::Task::ReportPaneColours {
                     target: pane,
-                    fg: crate::config::Rgb(0, 0, 0),
-                    bg: crate::config::Rgb(255, 255, 255),
+                    fg: Rgb(0, 0, 0),
+                    bg: Rgb(255, 255, 255),
                 });
             }
             let paint_deadline = Duration::from_millis(1000);

@@ -55,6 +55,10 @@ check_absent \
     'catalog/builtin' \
     crates/muxterm-core/src src
 check_absent \
+    "runtime and transport must not import the config domain" \
+    'crate::config' \
+    crates/muxterm-core/src/runtime crates/muxterm-core/src/transport
+check_absent \
     "frontend must use the shared ffi_client instead of ffi_bridge" \
     'ffi_bridge' \
     src crates/muxterm-core/src
