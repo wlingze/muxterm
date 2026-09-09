@@ -5,7 +5,7 @@
 //! Runtime 不关心 Transport 是 local 还是 SSH；Transport 不理解 shell/tmux 语义。
 //! tmux 的 `%pane` / `@window` 等真实 ID 只能在 `runtime/tmux` 内部。
 
-pub mod capability;
+pub use muxterm_runtime::capability;
 pub mod contract;
 pub mod daemon;
 pub mod daemon_client;
@@ -16,8 +16,8 @@ pub mod registry;
 pub mod shell;
 pub mod tmux;
 
-pub use capability::RuntimeCapability;
 pub use contract::{Runtime, WorktreeCreateSpec, WorktreeInfo};
+pub use muxterm_runtime::RuntimeCapability;
 pub use provider::RuntimeProvider;
 
 // Re-export backend implementations. Their concrete types remain an internal

@@ -12,7 +12,7 @@ use crate::runtime::herdr::session::HerdrSession;
 use crate::runtime::provider::RuntimeProvider;
 use crate::runtime::{Runtime, RuntimeCapability};
 use crate::transport::{ChannelKind, TargetConnection};
-use crate::workspace::spec::WorkspaceSpec;
+use muxterm_runtime::RuntimeSpec;
 
 /// herdr 插件（local / ssh）。
 pub struct HerdrDriver;
@@ -119,7 +119,7 @@ impl RuntimeProvider for HerdrDriver {
     fn new_instance(
         &self,
         connect: Arc<dyn TargetConnection>,
-        spec: &WorkspaceSpec,
+        spec: &RuntimeSpec,
     ) -> Result<Box<dyn Runtime>> {
         let session_name = if spec.session.is_empty() {
             "default"

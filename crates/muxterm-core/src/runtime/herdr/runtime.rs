@@ -3187,12 +3187,12 @@ impl Runtime for HerdrRuntime {
     fn create_worktree_spec(
         &self,
         spec: &crate::runtime::WorktreeCreateSpec,
-    ) -> Result<crate::workspace::spec::WorkspaceSpec> {
-        self.create_worktree(spec)
+    ) -> Result<muxterm_runtime::RuntimeSpec> {
+        self.create_worktree(spec).map(|spec| spec.runtime_spec())
     }
 
-    fn open_worktree_spec(&self, path: &str) -> Result<crate::workspace::spec::WorkspaceSpec> {
-        self.open_worktree(path)
+    fn open_worktree_spec(&self, path: &str) -> Result<muxterm_runtime::RuntimeSpec> {
+        self.open_worktree(path).map(|spec| spec.runtime_spec())
     }
 }
 

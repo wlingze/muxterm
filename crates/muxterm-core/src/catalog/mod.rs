@@ -346,11 +346,12 @@ impl Catalog {
             let connected = transport.connect(target)?;
             connections.acquire(transport_id, target, || Ok(connected.clone()))?
         };
+        let runtime_spec = spec.runtime_spec();
         let runtime = runtimes
             .iter()
             .find(|driver| driver.id() == runtime_id)
             .expect("刚查过的 Driver 必须仍在")
-            .new_instance(Arc::clone(&connect), spec)?;
+            .new_instance(Arc::clone(&connect), &runtime_spec)?;
         Ok(runtime)
     }
 
@@ -394,7 +395,7 @@ impl Catalog {
             {
                 anyhow::bail!("runtime 不支持 native WorktreeCreate");
             }
-            workspace.runtime().create_worktree_spec(worktree)?
+            WorkspaceSpec::from_runtime_spec(workspace.runtime().create_worktree_spec(worktree)?)
         };
         spec.provenance = provenance.clone();
         spec.template = template;
@@ -441,7 +442,7 @@ impl Catalog {
             {
                 anyhow::bail!("runtime 不支持 native WorktreeCreate");
             }
-            workspace.runtime().create_worktree_spec(worktree)?
+            WorkspaceSpec::from_runtime_spec(workspace.runtime().create_worktree_spec(worktree)?)
         };
         spec.provenance = provenance.clone();
         spec.template = template;

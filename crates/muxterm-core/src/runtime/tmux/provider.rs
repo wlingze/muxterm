@@ -10,7 +10,7 @@ use crate::runtime::provider::RuntimeProvider;
 use crate::runtime::tmux::backend::TmuxRuntime;
 use crate::runtime::{Runtime, RuntimeCapability};
 use crate::transport::TargetConnection;
-use crate::workspace::spec::WorkspaceSpec;
+use muxterm_runtime::RuntimeSpec;
 
 /// tmux 插件（local / ssh）。
 pub struct TmuxDriver;
@@ -85,7 +85,7 @@ impl RuntimeProvider for TmuxDriver {
     fn new_instance(
         &self,
         connect: Arc<dyn TargetConnection>,
-        spec: &WorkspaceSpec,
+        spec: &RuntimeSpec,
     ) -> Result<Box<dyn Runtime>> {
         let mut rt = if connect.transport_id() == "ssh" {
             if spec.session.is_empty() {
