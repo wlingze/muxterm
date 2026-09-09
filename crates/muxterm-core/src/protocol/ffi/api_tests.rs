@@ -341,6 +341,25 @@ fn ffi_agent_event_updates_attention_without_surface_output() {
         assert_eq!(pane["process_name"], "codex", "{text}");
         assert_eq!(pane["acknowledged"], false, "{text}");
 
+        let raw = muxterm_activity_snapshot_json(h);
+        let text = CStr::from_ptr(raw).to_string_lossy().into_owned();
+        muxterm_free_string(raw);
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["ok"], true, "{text}");
+        assert_eq!(value["records"][0]["kind"], "agent", "{text}");
+        assert_eq!(value["records"][0]["status"]["state"], "done", "{text}");
+
+        let raw = muxterm_activity_take_events_json(h);
+        let text = CStr::from_ptr(raw).to_string_lossy().into_owned();
+        muxterm_free_string(raw);
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["ok"], true, "{text}");
+        assert_eq!(value["events"].as_array().unwrap().len(), 1, "{text}");
+        assert_eq!(
+            value["events"][0]["event"]["Upsert"]["kind"], "agent",
+            "{text}"
+        );
+
         muxterm_free(h);
     }
 }

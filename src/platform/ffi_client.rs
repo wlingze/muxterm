@@ -2120,6 +2120,30 @@ impl FfiClient {
         Ok(serde_json::from_value(value)?)
     }
 
+    /// Read the revisioned Core Activity records after a workspace poll.
+    pub fn activity_records(&self) -> anyhow::Result<Vec<serde_json::Value>> {
+        let value = Self::discovery_json(|| unsafe {
+            ffi::muxterm_activity_snapshot_json(self.handle.as_ptr())
+        })?;
+        Ok(value
+            .get("records")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    /// Drain Core Activity lane events into owned JSON values.
+    pub fn take_activity_events(&self) -> anyhow::Result<Vec<serde_json::Value>> {
+        let value = Self::discovery_json(|| unsafe {
+            ffi::muxterm_activity_take_events_json(self.handle.as_ptr())
+        })?;
+        Ok(value
+            .get("events")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default())
+    }
+
     pub fn workspace_attention_on_became_visible(&self, workspace_id: &str, pane_id: u32) -> i32 {
         let workspace_id = cstring(workspace_id);
         unsafe {

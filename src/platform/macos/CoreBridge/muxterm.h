@@ -183,6 +183,8 @@ int muxterm_workspace_get_layout(struct MuxtermHandle* h, const char* workspace_
 // ── 搜索 / 注意力 / 历史（W14/W16 跨平台契约）──
 char* muxterm_search_all(struct MuxtermHandle* h, const char* query);
 char* muxterm_attention_snapshot(struct MuxtermHandle* h);
+char* muxterm_activity_snapshot_json(struct MuxtermHandle* h);
+char* muxterm_activity_take_events_json(struct MuxtermHandle* h);
 int muxterm_attention_configure_json(struct MuxtermHandle* h, const char* config_json);
 char* muxterm_attention_take_notifications(struct MuxtermHandle* h);
 int muxterm_attention_on_became_visible(struct MuxtermHandle* h, uint32_t pane_id);
