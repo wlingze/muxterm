@@ -246,7 +246,8 @@ pub unsafe extern "C" fn muxterm_workspace_worktree_create_json(
                 &mut handle.connections,
                 &mut handle.pool,
             );
-            rt.block_on(catalog.create_native_worktree_with_pool(
+            rt.block_on(Muxterm::create_native_worktree_with_pool(
+                catalog,
                 connections,
                 &handle.templates,
                 pool,

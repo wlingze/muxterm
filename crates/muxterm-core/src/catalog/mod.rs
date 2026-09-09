@@ -129,11 +129,24 @@ impl Catalog {
             .map(|d| d.as_ref())
     }
 
+    /// Read-only provider lookup for the product composition root.
+    ///
+    /// Runtime construction belongs to `Muxterm`; Catalog only exposes the
+    /// registered provider view needed by that root during the migration.
+    pub(crate) fn runtime_provider(&self, id: &str) -> Option<&dyn RuntimeProvider> {
+        self.runtime(id)
+    }
+
     fn transport(&self, id: &str) -> Option<&dyn TransportProvider> {
         self.transports
             .iter()
             .find(|t| t.id() == id)
             .map(|t| t.as_ref())
+    }
+
+    /// Read-only transport provider lookup for the product composition root.
+    pub(crate) fn transport_provider(&self, id: &str) -> Option<&dyn TransportProvider> {
+        self.transport(id)
     }
 
     /// 列出某个 TransportProvider 的 target（Local 单例 / SSH hosts）。
