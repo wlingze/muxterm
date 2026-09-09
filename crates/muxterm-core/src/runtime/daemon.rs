@@ -4,7 +4,7 @@
 //! - `connect()`：检查 socket 存在，消费 daemon 的初始拓扑/事件批次
 //! - `execute(Task)`：映射为 CliCommand，经 IPC 发给 daemon，再消费事件批次
 //! - `take_events()`：轮询 semantic event wire，不重建累计状态快照
-//! - `shutdown()`：仅断开 client（不 kill daemon，detach 语义）
+//! - `shutdown()`：释放 client；显式 `Task::Shutdown` 才终止 daemon 宿主
 
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
@@ -42,28 +42,6 @@ pub struct DaemonRuntime {
 }
 
 impl DaemonRuntime {
-    /// 默认 unix socket 路径（$XDG_RUNTIME_DIR 或 /tmp，与 platform CLI 一致）。
-    ///
-    /// W12：core 不再 `use crate::platform::cli` 推导 daemon socket 路径；
-    /// 默认路径挪到 Runtime 构造处，platform CLI 的 `session_socket_path`
-    /// 只是这层的薄包装。
-    pub fn default_socket_path(name: &str) -> PathBuf {
-        let dir = std::env::var("XDG_RUNTIME_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("/tmp"));
-        let safe: String = name
-            .chars()
-            .map(|c| {
-                if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' {
-                    c
-                } else {
-                    '-'
-                }
-            })
-            .collect();
-        dir.join(format!("muxterm-{safe}.sock"))
-    }
-
     /// 创建尚未 connect 的 backend。
     pub fn new(socket_path: impl Into<PathBuf>, session_name: impl Into<String>) -> Self {
         Self {
@@ -300,13 +278,18 @@ impl DaemonRuntime {
     }
 
     fn send_cli(&mut self, cmd: CliCommand) -> Result<()> {
+        let closes_daemon = matches!(&cmd, CliCommand::CloseWorkspace { .. });
         let resp = send_command(&self.socket_path, &cmd, OutputFormat::Json)
             .with_context(|| format!("发送命令到 daemon 失败: {cmd:?}"))?;
         if !resp.ok {
             bail!("daemon 执行失败: {}", resp.error);
         }
         self.enqueue_wire_events(resp.events);
-        self.poll_from_daemon()?;
+        if closes_daemon {
+            self.status = BackendStatus::Disconnected;
+        } else {
+            self.poll_from_daemon()?;
+        }
         Ok(())
     }
 
@@ -365,7 +348,8 @@ impl DaemonRuntime {
                 width: matches!(dir, SplitDir::Horizontal).then_some(*size),
                 height: matches!(dir, SplitDir::Vertical).then_some(*size),
             }),
-            Task::Detach | Task::Shutdown => None, // detach：不向 daemon 发 KillSession
+            Task::Detach => None, // detach：不向 daemon 发 KillSession
+            Task::Shutdown => Some(CliCommand::CloseWorkspace { target: None }),
             Task::NextPane
             | Task::PrevPane
             | Task::ResizePaneStep { .. }
@@ -530,7 +514,7 @@ impl Runtime for DaemonRuntime {
     }
 
     fn execute(&mut self, task: &Task) -> Result<TaskOutcome> {
-        if matches!(task, Task::Detach | Task::Shutdown) {
+        if matches!(task, Task::Detach) {
             // detach：不向 daemon 发 KillSession
             self.status = BackendStatus::Disconnected;
             self.events.push_back(StateChange::BackendStatusChanged(
@@ -545,6 +529,11 @@ impl Runtime for DaemonRuntime {
         };
         tracing::debug!(target = "muxterm::daemon", task = ?task, cli = ?cmd, "daemon execute");
         self.send_cli(cmd)?;
+        if matches!(task, Task::Shutdown) {
+            self.events.push_back(StateChange::BackendStatusChanged(
+                BackendStatus::Disconnected,
+            ));
+        }
         Ok(TaskOutcome::Done)
     }
 
@@ -585,8 +574,11 @@ mod tests {
     }
 
     #[test]
-    fn task_shutdown_maps_to_none() {
-        assert!(DaemonRuntime::task_to_cli(&Task::Shutdown).is_none());
+    fn task_shutdown_maps_to_close_workspace() {
+        assert!(matches!(
+            DaemonRuntime::task_to_cli(&Task::Shutdown),
+            Some(CliCommand::CloseWorkspace { target: None })
+        ));
     }
 
     #[test]
