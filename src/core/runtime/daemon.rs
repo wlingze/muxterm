@@ -95,17 +95,17 @@ impl DaemonRuntime {
         }
         let snap: StateSnapshot =
             serde_json::from_str(&resp.output).context("反序列化 DumpState 失败")?;
-        self.apply_snapshot(snap);
+        self.replace_snapshot(snap);
+        self.events.extend(resp.events);
         Ok(())
     }
 
-    fn apply_snapshot(&mut self, snap: StateSnapshot) {
-        let old_outputs = std::mem::take(&mut self.outputs);
-        let old_layouts = std::mem::take(&mut self.layouts);
-        let old_active_tab = self.active_tab;
-        let old_active_pane = self.active_pane;
-        let old_status = self.status;
-
+    /// Replace the state query cache without synthesizing render events.
+    ///
+    /// The daemon response carries the authoritative `StateChange` values.
+    /// Keeping snapshot replacement separate prevents the client from
+    /// re-creating a second, lossy event protocol by diffing cumulative text.
+    fn replace_snapshot(&mut self, snap: StateSnapshot) {
         self.session_name = snap.workspace_name;
         self.workspace_runtime = snap.workspace_runtime;
         self.tabs = snap.tabs;
@@ -119,57 +119,6 @@ impl DaemonRuntime {
         self.status = snap.status;
         self.active_tab = snap.active_tab.map(TabId);
         self.active_pane = snap.active_pane.map(PaneId);
-
-        // 输出增量 → PaneOutput
-        for (pid, new_out) in &self.outputs {
-            let old = old_outputs.get(pid).map(|v| v.as_slice()).unwrap_or(&[]);
-            if new_out.len() > old.len() && new_out.starts_with(old) {
-                let delta = new_out[old.len()..].to_vec();
-                if !delta.is_empty() {
-                    self.events.push_back(StateChange::PaneOutput {
-                        pane: *pid,
-                        data: delta,
-                    });
-                }
-            } else if new_out.as_slice() != old {
-                // 非前缀增长（重置等）：整段当作新输出
-                self.events.push_back(StateChange::PaneOutput {
-                    pane: *pid,
-                    data: new_out.clone(),
-                });
-            }
-        }
-
-        // 布局变化
-        for (tid, layout) in &self.layouts {
-            let changed = match old_layouts.get(tid) {
-                Some(old) => old != layout,
-                None => true,
-            };
-            if changed {
-                self.events.push_back(StateChange::LayoutChanged {
-                    tab: *tid,
-                    layout: layout.clone(),
-                });
-            }
-        }
-
-        if self.active_tab != old_active_tab {
-            if let Some(t) = self.active_tab {
-                self.events
-                    .push_back(StateChange::ActiveTabChanged { tab: t });
-            }
-        }
-        if self.active_pane != old_active_pane {
-            if let (Some(t), Some(p)) = (self.active_tab, self.active_pane) {
-                self.events
-                    .push_back(StateChange::ActivePaneChanged { tab: t, pane: p });
-            }
-        }
-        if self.status != old_status {
-            self.events
-                .push_back(StateChange::BackendStatusChanged(self.status));
-        }
     }
 
     fn send_cli(&mut self, cmd: CliCommand) -> Result<()> {
@@ -178,6 +127,7 @@ impl DaemonRuntime {
         if !resp.ok {
             bail!("daemon 执行失败: {}", resp.error);
         }
+        self.events.extend(resp.events);
         self.sync_from_daemon()?;
         Ok(())
     }
@@ -402,5 +352,33 @@ mod tests {
     #[test]
     fn task_detach_maps_to_none() {
         assert!(DaemonRuntime::task_to_cli(&Task::Detach).is_none());
+    }
+
+    #[test]
+    fn snapshot_replacement_does_not_synthesize_render_events() {
+        let mut runtime = DaemonRuntime::new("/tmp/muxterm-test-daemon.sock", "test");
+        runtime.events.push_back(StateChange::PaneOutput {
+            pane: PaneId(1),
+            data: b"already-wired".to_vec(),
+        });
+        let event_count = runtime.events.len();
+
+        runtime.replace_snapshot(StateSnapshot {
+            workspace_name: "test".into(),
+            workspace_runtime: "shell".into(),
+            tabs: vec![],
+            panes: vec![],
+            layouts: vec![],
+            outputs: vec![(1, "cumulative".into())],
+            status: BackendStatus::Connected,
+            active_tab: None,
+            active_pane: None,
+        });
+
+        assert_eq!(runtime.events.len(), event_count);
+        assert_eq!(
+            runtime.pane_output(&PaneId(1)),
+            Some(b"cumulative".as_slice())
+        );
     }
 }
