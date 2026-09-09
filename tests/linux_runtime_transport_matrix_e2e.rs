@@ -26,7 +26,7 @@ use muxterm::test_support::core::catalog::Catalog;
 use muxterm::test_support::core::config::Config;
 use muxterm::test_support::core::protocol::task::TaskOutcome;
 use muxterm::test_support::core::quickconnect::model::{QuickConnect, TargetConfig};
-use muxterm::test_support::core::runtime::RuntimeCapability;
+use muxterm::test_support::platform::ffi_client::ClientRuntimeCapability;
 use muxterm::test_support::platform::linux::keymap::Action;
 use muxterm::test_support::platform::linux::window::AppWindow;
 
@@ -573,7 +573,7 @@ fn verify_supported_reattach(
     snapshot: &GuiSnapshot,
     latest_visible_tokens: &[(u32, String)],
 ) -> Result<()> {
-    let persistent = app.test_active_runtime_supports(RuntimeCapability::PersistDetach);
+    let persistent = app.test_active_runtime_supports(ClientRuntimeCapability::PersistDetach);
     if !persistent {
         ensure!(
             runtime == "shell",

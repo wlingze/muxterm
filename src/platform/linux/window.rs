@@ -23,15 +23,13 @@ use vte4::prelude::*;
 use anyhow::anyhow;
 
 use crate::core::quickconnect::model::QuickConnect;
-use crate::core::runtime::RuntimeCapability;
-use crate::core::workspace::pool::WorkspaceCapacityCandidate;
 use crate::core::workspace::spec::WorkspaceSpec;
 use crate::platform::event_pump::EventPump;
 use crate::platform::ffi_client::{
     ClientActivitySnapshot, ClientAttentionPane, ClientAttentionStatus, ClientCandidateRef,
     ClientConfig, ClientEventKind, ClientKeyBinding, ClientOpenIntent, ClientOpenRequest,
-    ClientOpenedWorkspace, ClientTarget, ClientTask, ClientWorkspaceAttention,
-    ClientWorkspaceEvent, FfiClient,
+    ClientOpenedWorkspace, ClientRuntimeCapability, ClientTarget, ClientTask,
+    ClientWorkspaceAttention, ClientWorkspaceEvent, FfiClient,
 };
 use crate::platform::i18n::{self, Key};
 use crate::platform::linux::attention_compat::CompatibilityActivity;
@@ -80,6 +78,12 @@ pub struct AppWindow {
     pub window: Window,
     /// 保持 UI 状态与 Core 连接状态存活（轮询闭包只用 Weak，避免循环引用）。
     _state: Rc<RefCell<UiState>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WorkspaceCapacityCandidate {
+    id: WorkspaceId,
+    name: String,
 }
 
 struct UiState {
@@ -286,14 +290,14 @@ impl UiState {
             .map(|workspace| workspace.runtime.as_str())
     }
 
-    fn active_supports(&self, capability: RuntimeCapability) -> bool {
+    fn active_supports(&self, capability: ClientRuntimeCapability) -> bool {
         let Some(workspace_id) = self.view_store.active_workspace_id() else {
             return false;
         };
         self.workspace_supports(workspace_id, capability)
     }
 
-    fn workspace_supports(&self, workspace_id: &str, capability: RuntimeCapability) -> bool {
+    fn workspace_supports(&self, workspace_id: &str, capability: ClientRuntimeCapability) -> bool {
         let Some(runtime) = self
             .view_store
             .workspace(workspace_id)
@@ -302,7 +306,6 @@ impl UiState {
         else {
             return false;
         };
-        let wanted = format!("{capability:?}");
         self.event_pump
             .client()
             .runtime_list()
@@ -310,7 +313,7 @@ impl UiState {
             .into_iter()
             .flatten()
             .find(|provider| provider.id == runtime)
-            .is_some_and(|provider| provider.support.iter().any(|item| item == &wanted))
+            .is_some_and(|provider| provider.supports(capability))
     }
 
     fn execute_active_task(&self, task: ClientTask) -> anyhow::Result<()> {
@@ -1284,7 +1287,7 @@ impl AppWindow {
     }
 
     /// 测试用：能力判断必须走 Runtime 契约，不能按 runtime 名字分支。
-    pub fn test_active_runtime_supports(&self, capability: RuntimeCapability) -> bool {
+    pub fn test_active_runtime_supports(&self, capability: ClientRuntimeCapability) -> bool {
         let s = self._state.borrow();
         s.active_supports(capability)
     }
@@ -2932,7 +2935,7 @@ pub fn should_poll_status(
 fn sync_chrome_visibility(s: &UiState) {
     // 唯一 chrome：status bar 永远可见，没有第二条 tab 带。
     // worktree 创建入口只按 support() 露出（禁止 if runtime == "herdr"）。
-    let worktree = s.active_supports(RuntimeCapability::WorktreeList);
+    let worktree = s.active_supports(ClientRuntimeCapability::WorktreeList);
     s.status.set_worktree_visible(worktree);
 }
 
@@ -3220,7 +3223,7 @@ fn forward_parser_replies_for(s: &mut UiState, wid: &WorkspaceId, pane_id: u32) 
 fn forward_parser_replies_for_key(s: &mut UiState, workspace_id: &str, pane_id: u32) {
     // tmux/SSH mirror 的远端 Runtime 已经负责 query reply；把 GTK 无头
     // parser 的应答写回会把 OSC/DA 字节泄漏到用户 shell。
-    if s.workspace_supports(workspace_id, RuntimeCapability::SharedClientResize) {
+    if s.workspace_supports(workspace_id, ClientRuntimeCapability::SharedClientResize) {
         return;
     }
     let replies = s
@@ -3247,7 +3250,7 @@ fn forward_parser_replies_for_key(s: &mut UiState, workspace_id: &str, pane_id: 
 const CLIENT_SIZE_STABLE_HITS: u8 = 10;
 
 fn sync_window_size(s: &mut UiState) {
-    let shared_client_resize = s.active_supports(RuntimeCapability::SharedClientResize);
+    let shared_client_resize = s.active_supports(ClientRuntimeCapability::SharedClientResize);
     if !shared_client_resize {
         sync_visible_pane_sizes(s);
         return;
@@ -3795,7 +3798,7 @@ fn maybe_schedule_reconnect(state: &Rc<RefCell<UiState>>) {
         else {
             return;
         };
-        if !s.workspace_supports(&id.as_str(), RuntimeCapability::SharedClientResize) {
+        if !s.workspace_supports(&id.as_str(), ClientRuntimeCapability::SharedClientResize) {
             return;
         }
         s.reconnecting = true;

@@ -861,6 +861,44 @@ pub struct ClientRuntimeInfo {
     pub accepted_transports: Vec<String>,
 }
 
+/// Runtime capabilities exposed to frontend code through the FFI catalog view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientRuntimeCapability {
+    PersistDetach,
+    Discover,
+    MultiTab,
+    SplitPane,
+    SharedClientResize,
+    WorktreeList,
+    WorktreeCreate,
+    WorktreeOpen,
+    WorktreeRemove,
+}
+
+impl ClientRuntimeCapability {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::PersistDetach => "PersistDetach",
+            Self::Discover => "Discover",
+            Self::MultiTab => "MultiTab",
+            Self::SplitPane => "SplitPane",
+            Self::SharedClientResize => "SharedClientResize",
+            Self::WorktreeList => "WorktreeList",
+            Self::WorktreeCreate => "WorktreeCreate",
+            Self::WorktreeOpen => "WorktreeOpen",
+            Self::WorktreeRemove => "WorktreeRemove",
+        }
+    }
+}
+
+impl ClientRuntimeInfo {
+    pub fn supports(&self, capability: ClientRuntimeCapability) -> bool {
+        self.support
+            .iter()
+            .any(|value| value == capability.as_str())
+    }
+}
+
 /// Existing workspace candidate returned by Core discovery.
 ///
 /// The identity fields are intentionally owned here.  A frontend must not

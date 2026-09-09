@@ -19,8 +19,8 @@ use gtk4::prelude::*;
 use muxterm::test_support::core::config::Config;
 use muxterm::test_support::core::protocol::task::TaskOutcome;
 use muxterm::test_support::core::runtime::herdr::session::{HerdrAgentStatus, HerdrSession};
-use muxterm::test_support::core::runtime::RuntimeCapability;
 use muxterm::test_support::core::workspace::spec::WorkspaceSpec;
+use muxterm::test_support::platform::ffi_client::ClientRuntimeCapability;
 use muxterm::test_support::platform::linux::keymap::Action;
 use muxterm::test_support::platform::linux::window::AppWindow;
 use support::herdr_test_support::{herdr_available, IsolatedHerdr, TempAgentCommand};
@@ -1064,7 +1064,7 @@ fn herdr_agent_detach_reattach_preserves_content() {
             );
             ensure!(
                 ctx.app
-                    .test_active_runtime_supports(RuntimeCapability::PersistDetach),
+                    .test_active_runtime_supports(ClientRuntimeCapability::PersistDetach),
                 "Herdr 必须声明 PersistDetach"
             );
             ensure!(
