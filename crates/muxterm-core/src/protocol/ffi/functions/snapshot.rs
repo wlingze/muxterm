@@ -6,8 +6,9 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use crate::types::PaneId;
 use crate::workspace::workspace::Workspace;
 
-use super::super::api::{cstr_opt, json_error, json_string, resolve_c_io_pane, MuxtermHandle};
-use super::support::parse_workspace_id;
+use super::support::{
+    cstr_opt, json_error, json_string, parse_workspace_id, resolve_c_io_pane, MuxtermHandle,
+};
 
 fn workspace_pane(
     handle: &MuxtermHandle,

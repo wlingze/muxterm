@@ -5,8 +5,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use crate::attention::engine::AttentionNotificationKind;
 
-use super::super::api::{cstr_opt, json_error, json_string, MuxtermHandle};
-use super::support::parse_workspace_id;
+use super::support::{cstr_opt, json_error, json_string, parse_workspace_id, MuxtermHandle};
 
 /// Configure the Core-owned attention engine for a live handle.
 ///

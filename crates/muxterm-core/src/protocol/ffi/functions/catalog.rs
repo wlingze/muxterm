@@ -7,10 +7,10 @@ use crate::catalog::{OpenRequest, ResolveIntent};
 use crate::muxterm::Muxterm;
 use crate::protocol::candidate::CandidateRef;
 
-use super::super::api::{
-    cstr_opt, json_error, json_open_error, json_resolve_error, json_string, MuxtermHandle,
+use super::support::{
+    cstr_opt, json_error, json_open_error, json_resolve_error, json_string, parse_workspace_id,
+    MuxtermHandle,
 };
-use super::support::parse_workspace_id;
 
 /// List the unified Project/Worktree/Existing/Recent candidates.
 ///
@@ -159,7 +159,7 @@ pub unsafe extern "C" fn muxterm_workspace_open_target_json(
         let Some(config) = target_config_from_json(&value) else {
             return json_error("target JSON 缺必要字段（name/runtime/transport）");
         };
-        let intent = match super::super::api::cstr_opt(intent).as_deref() {
+        let intent = match cstr_opt(intent).as_deref() {
             Some("create_if_missing") => ResolveIntent::CreateIfMissing,
             _ => ResolveIntent::AttachOnly,
         };

@@ -7,8 +7,8 @@ use crate::protocol::task::Task;
 use crate::runtime::HerdrRuntime;
 use crate::types::PaneId;
 
-use super::super::api::{json_error, json_string, task_result_code, MuxtermHandle};
-use super::support::parse_workspace_id;
+use super::support::{json_error, json_string, parse_workspace_id, MuxtermHandle};
+use super::task::task_result_code;
 
 /// Return whether the active tmux backend has status-bar subscriptions enabled.
 ///

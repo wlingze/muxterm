@@ -3,7 +3,7 @@
 use std::ffi::c_char;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-use super::super::api::{cstr_opt, json_error, json_string, MuxtermHandle};
+use super::support::{cstr_opt, json_error, json_string, MuxtermHandle};
 
 /// Search pane text across all live workspaces.
 ///

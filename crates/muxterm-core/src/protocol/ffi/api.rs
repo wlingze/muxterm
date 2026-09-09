@@ -12,7 +12,6 @@ use crate::attention::clock::RealClock;
 use crate::attention::engine::AttentionEngine;
 use crate::attention::signal::AttentionSignal;
 use crate::config_service::SettingsService;
-use crate::logging::{init_logging, LoggingConfig};
 use crate::projects::{ProjectStore, ProjectsService};
 use crate::protocol::layout::{LayoutNode, SplitDir};
 use crate::protocol::state::StateChange;
@@ -42,11 +41,10 @@ pub use super::functions::config::{
     muxterm_config_describe_json, muxterm_config_events_json, muxterm_config_patch_json,
     muxterm_config_reload_json, muxterm_config_validate_json,
 };
-pub(crate) use super::functions::events::state_change_to_c;
 pub use super::functions::events::{muxterm_poll_events, muxterm_poll_workspace_events};
-pub(crate) use super::functions::handle::configured_scrollback_lines;
 pub use super::functions::handle::{
-    muxterm_catalog_new, muxterm_free, muxterm_new, muxterm_new_connect, muxterm_new_connect_sized,
+    muxterm_catalog_new, muxterm_free, muxterm_free_string, muxterm_init_logging, muxterm_new,
+    muxterm_new_connect, muxterm_new_connect_sized,
 };
 pub use super::functions::runtime::{
     muxterm_connect, muxterm_detach, muxterm_runtime_list_json, muxterm_shutdown,
@@ -66,11 +64,6 @@ pub use super::functions::snapshot::{
     muxterm_workspace_set_pane_viewport, muxterm_workspace_take_pane_reply,
 };
 pub use super::functions::support::MuxtermHandle;
-pub(crate) use super::functions::support::{
-    cstr_opt, discovery_timeout, json_error, json_open_error, json_resolve_error, json_string,
-    resolve_c_io_pane,
-};
-pub(crate) use super::functions::task::{ctask_to_task, task_result_code};
 pub use super::functions::task::{
     muxterm_execute, muxterm_execute_json, muxterm_execute_workspace,
     muxterm_report_all_pane_colours, muxterm_report_pane_colours, muxterm_resize_client,
@@ -79,7 +72,6 @@ pub use super::functions::task::{
     muxterm_workspace_resize_pane_axis, muxterm_workspace_send_input,
     muxterm_workspace_send_input_quiet,
 };
-pub(crate) use super::functions::transport::session_candidate_json;
 pub use super::functions::transport::{
     muxterm_discover_sessions_json, muxterm_discover_ssh_hosts_json,
     muxterm_discover_ssh_tmux_panes_json, muxterm_discover_targets_json,
@@ -108,41 +100,14 @@ use super::types::{
     TASK_SPLIT_PANE, TASK_SWITCH_PANE, TASK_SWITCH_TAB, TASK_TOGGLE_PANE_FULLSCREEN,
 };
 
-pub(crate) use crate::muxterm::should_export_state_change;
-
-/// 初始化核心日志（macOS .app 由 Swift 在创建 CoreBridge 前调用）。
-///
-/// `level` 取 `trace` / `debug` / `info` / `warn` / `error`；`log_file` 为
-/// `NULL` 时写 stderr。重复调用（AlreadyInitialized）视为成功，不会 panic。
-/// 返回 0=ok，-1=err。
-#[no_mangle]
-pub extern "C" fn muxterm_init_logging(log_file: *const c_char, level: *const c_char) -> i32 {
-    catch_unwind(AssertUnwindSafe(|| {
-        let level = cstr_opt(level).unwrap_or_else(|| "info".into());
-        let file = cstr_opt(log_file).map(std::path::PathBuf::from);
-        match init_logging(LoggingConfig { level, file }) {
-            Ok(()) => 0,
-            Err(_) => -1,
-        }
-    }))
-    .unwrap_or(-1)
-}
-
-/// 释放 discovery API 返回的 JSON 字符串。
-///
-/// # Safety
-/// `value` 必须是本库返回且尚未释放的指针。
-#[no_mangle]
-pub unsafe extern "C" fn muxterm_free_string(value: *mut c_char) {
-    if !value.is_null() {
-        drop(CString::from_raw(value));
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::muxterm::should_export_state_change;
     use crate::projects::Project;
+    use crate::protocol::ffi::functions::events::state_change_to_c;
+    use crate::protocol::ffi::functions::task::ctask_to_task;
+    use crate::protocol::ffi::functions::transport::session_candidate_json;
     use crate::protocol::ffi::muxterm_set_callbacks;
     use crate::protocol::ffi::types::DIR_HORIZONTAL;
     use crate::protocol::state::{

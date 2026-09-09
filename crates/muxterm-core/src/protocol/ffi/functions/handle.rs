@@ -1,20 +1,21 @@
 //! FFI handle construction and ownership C ABI functions.
 
-use std::ffi::c_char;
+use std::ffi::{c_char, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 
 use crate::attention::clock::RealClock;
 use crate::attention::engine::AttentionEngine;
 use crate::config_service::SettingsService;
+use crate::logging::{init_logging, LoggingConfig};
 use crate::projects::{ProjectStore, ProjectsService};
 use crate::protocol::terminal::emulate::DEFAULT_SCROLLBACK_LINES;
 use crate::runtime::{DaemonRuntime, ShellRuntime, TmuxRuntime};
 use crate::workspace::id::WorkspaceId;
 use crate::workspace::template::WorkspaceTemplate;
 
-use super::super::api::{cstr_opt, MuxtermHandle};
 use super::super::callbacks::FfiCallbacks;
+use super::support::{cstr_opt, MuxtermHandle};
 
 fn open_settings_service() -> SettingsService {
     match SettingsService::default_user() {
@@ -314,4 +315,33 @@ pub unsafe extern "C" fn muxterm_free(h: *mut MuxtermHandle) {
         let mut handle = Box::from_raw(h);
         handle.pool_mut().shutdown_all();
     }));
+}
+
+/// 初始化核心日志（macOS .app 由 Swift 在创建 CoreBridge 前调用）。
+///
+/// `level` 取 `trace` / `debug` / `info` / `warn` / `error`；`log_file` 为
+/// `NULL` 时写 stderr。重复调用（AlreadyInitialized）视为成功，不会 panic。
+/// 返回 0=ok，-1=err。
+#[no_mangle]
+pub extern "C" fn muxterm_init_logging(log_file: *const c_char, level: *const c_char) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        let level = cstr_opt(level).unwrap_or_else(|| "info".into());
+        let file = cstr_opt(log_file).map(std::path::PathBuf::from);
+        match init_logging(LoggingConfig { level, file }) {
+            Ok(()) => 0,
+            Err(_) => -1,
+        }
+    }))
+    .unwrap_or(-1)
+}
+
+/// 释放 discovery API 返回的 JSON 字符串。
+///
+/// # Safety
+/// `value` 必须是本库返回且尚未释放的指针。
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_free_string(value: *mut c_char) {
+    if !value.is_null() {
+        drop(CString::from_raw(value));
+    }
 }

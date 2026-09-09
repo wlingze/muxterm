@@ -3,7 +3,6 @@
 use crate::protocol::state::StateChange;
 use crate::workspace::id::WorkspaceId;
 
-use super::super::api::MuxtermHandle;
 use super::super::types::{
     CStateChange, CWorkspaceStateChange, BACKEND_STATUS_CONNECTED, BACKEND_STATUS_CONNECTING,
     BACKEND_STATUS_DISCONNECTED, BACKEND_STATUS_ERROR, BACKEND_STATUS_EXITED,
@@ -14,6 +13,7 @@ use super::super::types::{
     STATE_STATUS_SUBSCRIPTION, STATE_TAB_ADDED, STATE_TAB_CLOSED, STATE_TAB_ORDER_CHANGED,
     STATE_TAB_RENAMED, STATE_WORKSPACE_RENAMED,
 };
+use super::support::MuxtermHandle;
 
 pub(crate) fn state_change_to_c(handle: &mut MuxtermHandle, ev: &StateChange) -> CStateChange {
     let mut out = CStateChange::default();

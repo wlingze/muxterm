@@ -4,7 +4,7 @@ use std::ffi::c_char;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::time::Duration;
 
-use super::super::api::{cstr_opt, discovery_timeout, json_error, json_string, MuxtermHandle};
+use super::support::{cstr_opt, discovery_timeout, json_error, json_string, MuxtermHandle};
 
 /// Discover Host aliases from the user's SSH configuration.
 #[no_mangle]
