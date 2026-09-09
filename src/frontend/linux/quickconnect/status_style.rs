@@ -4,7 +4,7 @@
 //! 颜色名 / `colourN` / `#rgb` / `#rrggbb` / `rrggbb` 与 bold/reverse 属性，
 //! 以及 `#[...]` 内联指令（align/range/list 等布局指令忽略）。
 
-use crate::platform::linux::lifecycle::tab_shortcut_label;
+use crate::frontend::linux::lifecycle::tab_shortcut_label;
 use serde::Deserialize;
 
 /// status bar 模式。

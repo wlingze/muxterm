@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::platform::ffi_client::{ClientLayout, ClientPane, ClientTab, FfiClient};
+use crate::frontend::ffi_client::{ClientLayout, ClientPane, ClientTab, FfiClient};
 
 pub type TuiLayout = ClientLayout;
 pub type TuiPane = ClientPane;

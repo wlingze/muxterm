@@ -345,7 +345,7 @@ fn dispatch_cli(
         full.extend(["-s".to_string(), session.to_string()]);
     }
     full.extend_from_slice(args);
-    crate::platform::cli::routing::run_cli(&full)
+    crate::frontend::cli::routing::run_cli(&full)
 }
 
 fn log_socket(cli: &Cli) {
@@ -364,7 +364,7 @@ fn run_gui_inner(
 ) -> anyhow::Result<()> {
     #[cfg(target_os = "macos")]
     {
-        return crate::platform::macos::launch_app_bundle(
+        return crate::frontend::macos::launch_app_bundle(
             socket.as_deref(),
             session.as_deref(),
             debug,
@@ -374,7 +374,7 @@ fn run_gui_inner(
     #[cfg(feature = "gtk")]
     {
         tracing::info!(target = "muxterm", "muxterm 启动（GTK4 UI）");
-        crate::platform::linux::app::run(socket)
+        crate::frontend::linux::app::run(socket)
     }
     #[cfg(all(not(target_os = "macos"), not(feature = "gtk")))]
     {
@@ -389,10 +389,10 @@ fn run_tui_inner(socket: Option<String>, session: Option<String>) -> anyhow::Res
         tracing::info!(target = "muxterm", "muxterm 启动（TUI）");
         if let Some(ref name) = session {
             if socket.is_none() {
-                crate::platform::cli::routing::ensure_local_daemon(name)?;
+                crate::frontend::cli::routing::ensure_local_daemon(name)?;
             }
         }
-        crate::platform::tui::app::run(crate::platform::tui::app::TuiOpts { socket, session })
+        crate::frontend::tui::app::run(crate::frontend::tui::app::TuiOpts { socket, session })
     }
     #[cfg(not(feature = "tui"))]
     {

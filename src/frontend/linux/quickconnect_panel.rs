@@ -17,24 +17,24 @@ use gtk4::{
     SelectionMode, Window,
 };
 
-use crate::platform::ffi_client::{
+use crate::frontend::ffi_client::{
     ClientAttentionPane, ClientAttentionStatus, ClientCandidateRef, ClientOpenIntent,
     ClientOpenRequest,
 };
-use crate::platform::i18n::{self, Key as TextKey};
-use crate::platform::linux::panel_model::{
+use crate::frontend::linux::panel_model::{
     filter_attention_panel_rows, filter_workspace_rows, search_rows, AttentionPanelRow, PanelModel,
     PanelTab, SearchRow, SearchScope,
 };
-use crate::platform::linux::quick_pick;
-use crate::platform::linux::quickconnect::existing::{
+use crate::frontend::linux::quick_pick;
+use crate::frontend::linux::quickconnect::existing::{
     ExistingEntry, ExistingRuntime, ExistingTransport,
 };
-use crate::platform::linux::quickconnect::model::{
+use crate::frontend::linux::quickconnect::model::{
     QuickBadge, QuickConnect, QuickConnectEntry, TargetConfig, TargetTransport, WorkspaceQuery,
 };
-use crate::platform::linux::quickconnect::store::QuickConnectStore;
-use crate::platform::linux::workspace_sidebar::{ActivityIndicator, AgentSidebarItem};
+use crate::frontend::linux::quickconnect::store::QuickConnectStore;
+use crate::frontend::linux::workspace_sidebar::{ActivityIndicator, AgentSidebarItem};
+use crate::platform::i18n::{self, Key as TextKey};
 use crate::platform::ssh_probe::{ssh_dot_css_class, ssh_dot_widget_name, SshReach};
 
 const NEW_PROJECT_ID: &str = "__new_project__";
@@ -1623,13 +1623,13 @@ fn badge_label(badge: QuickBadge) -> String {
 }
 
 fn ensure_overlay(parent: &Window) -> Overlay {
-    crate::platform::linux::quick_pick::ensure_overlay(parent)
+    crate::frontend::linux::quick_pick::ensure_overlay(parent)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::linux::quickconnect::model::{TargetRuntime, TargetTransport};
+    use crate::frontend::linux::quickconnect::model::{TargetRuntime, TargetTransport};
 
     fn cfg(name: &str) -> TargetConfig {
         TargetConfig::new(name, TargetRuntime::Tmux, TargetTransport::Local, "~/x")
@@ -1917,9 +1917,9 @@ mod tests {
         .open_request();
         assert_eq!(
             tmux.intent,
-            crate::platform::ffi_client::ClientOpenIntent::AttachOnly
+            crate::frontend::ffi_client::ClientOpenIntent::AttachOnly
         );
-        let crate::platform::ffi_client::ClientCandidateRef::Existing { identity } = tmux.candidate
+        let crate::frontend::ffi_client::ClientCandidateRef::Existing { identity } = tmux.candidate
         else {
             panic!("tmux row must produce an Existing candidate reference");
         };
@@ -1941,7 +1941,7 @@ mod tests {
             herdr_socket: Some("/tmp/herdr.sock".into()),
         }
         .open_request();
-        let crate::platform::ffi_client::ClientCandidateRef::Existing { identity } =
+        let crate::frontend::ffi_client::ClientCandidateRef::Existing { identity } =
             herdr.candidate
         else {
             panic!("Herdr row must produce an Existing candidate reference");

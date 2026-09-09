@@ -6,7 +6,7 @@ use gtk4::prelude::*;
 use vte4::prelude::*;
 use vte4::Terminal;
 
-use crate::platform::linux::theme::{Rgb, Theme};
+use crate::frontend::linux::theme::{Rgb, Theme};
 
 /// 终端渲染 trait（平台无关接口，便于日后换 GPU 实现）。
 pub trait TerminalRenderer {
@@ -104,7 +104,7 @@ impl VteRenderer {
     }
 
     /// 应用字体（family + size，size 以 pt 为单位）。
-    pub fn apply_font(&self, font: &crate::platform::linux::quickconnect::font::FontSettings) {
+    pub fn apply_font(&self, font: &crate::frontend::linux::quickconnect::font::FontSettings) {
         use gtk4::pango;
         let mut desc = pango::FontDescription::new();
         if !font.family.is_empty() {

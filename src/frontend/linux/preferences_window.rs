@@ -18,12 +18,12 @@ use gtk4::{
 };
 use serde_json::Value;
 
-use crate::platform::ffi_client::{
+use crate::frontend::ffi_client::{
     ClientConfigSnapshot, ClientJsonPatchOperation, ClientRuntimeInfo, FfiClient,
 };
+use crate::frontend::linux::quickconnect::model::ProjectDocument;
+use crate::frontend::linux::quickconnect::store::QuickConnectStore;
 use crate::platform::i18n::{self, Key as TextKey};
-use crate::platform::linux::quickconnect::model::ProjectDocument;
-use crate::platform::linux::quickconnect::store::QuickConnectStore;
 
 /// FFI-backed configuration operations used by the GTK settings views.
 ///
@@ -428,7 +428,7 @@ pub fn show(
     on_saved: Box<dyn Fn() + 'static>,
     project_editor: Option<(
         Vec<ClientRuntimeInfo>,
-        Vec<crate::platform::ffi_client::SshHostEntry>,
+        Vec<crate::frontend::ffi_client::SshHostEntry>,
     )>,
 ) -> Window {
     install_preferences_css();
@@ -974,7 +974,7 @@ fn show_project_manager(
     config_path: PathBuf,
     config: ConfigApi,
     runtimes: Vec<ClientRuntimeInfo>,
-    hosts: Vec<crate::platform::ffi_client::SshHostEntry>,
+    hosts: Vec<crate::frontend::ffi_client::SshHostEntry>,
     on_changed: Rc<Box<dyn Fn() + 'static>>,
 ) {
     install_preferences_css();
@@ -1102,7 +1102,7 @@ fn show_project_manager(
                     let store_inner = store.clone();
                     let config = config_api_for_edit.clone();
                     let on_changed = on_changed.clone();
-                    crate::platform::linux::target_config_window::show(
+                    crate::frontend::linux::target_config_window::show(
                         &win,
                         Some(target),
                         store.borrow().clone(),
@@ -1198,7 +1198,7 @@ fn show_project_manager(
             let config_for_save = config.clone();
             let refresh = refresh.clone();
             let on_changed = on_changed.clone();
-            crate::platform::linux::target_config_window::show(
+            crate::frontend::linux::target_config_window::show(
                 &win,
                 None,
                 store.borrow().clone(),

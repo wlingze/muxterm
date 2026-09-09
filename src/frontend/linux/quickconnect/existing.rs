@@ -4,7 +4,7 @@
 //! keeps only the display and attach identity it needs; it never stores the
 //! Core discovery entry or Core runtime/transport enums.
 
-use crate::platform::ffi_client::{
+use crate::frontend::ffi_client::{
     ClientCandidateRef, ClientExistingCandidateRef, ClientOpenIntent, ClientOpenRequest,
     ExistingCandidate,
 };

@@ -22,48 +22,48 @@ use vte4::prelude::*;
 
 use anyhow::anyhow;
 
-use crate::platform::event_pump::EventPump;
-use crate::platform::ffi_client::{
+use crate::frontend::ffi_client::{
     ClientActivitySnapshot, ClientAttentionPane, ClientAttentionStatus, ClientCandidateRef,
     ClientConfig, ClientEventKind, ClientKeyBinding, ClientOpenIntent, ClientOpenRequest,
     ClientOpenedWorkspace, ClientRuntimeCapability, ClientTarget, ClientTask,
     ClientWorkspaceAttention, ClientWorkspaceEvent, FfiClient,
 };
-use crate::platform::i18n::{self, Key};
-use crate::platform::linux::attention_compat::CompatibilityActivity;
-use crate::platform::linux::attention_ui::{window_title, GioSink, NotificationSink};
-use crate::platform::linux::command_palette::{parse_palette_action, PaletteAction};
+use crate::frontend::linux::attention_compat::CompatibilityActivity;
+use crate::frontend::linux::attention_ui::{window_title, GioSink, NotificationSink};
+use crate::frontend::linux::command_palette::{parse_palette_action, PaletteAction};
 #[cfg(test)]
-use crate::platform::linux::event_batch::batch_order_plan;
-use crate::platform::linux::keymap::{default_keybindings, Action, KeyMap};
-use crate::platform::linux::layout_host::LayoutHost;
-use crate::platform::linux::lifecycle::{cycle_pane_id, should_close_window, OnLastPaneExit};
-use crate::platform::linux::pane_view::{PaneMenuAction, PaneView};
-use crate::platform::linux::panel_model::PanelTab;
-use crate::platform::linux::preferences_window::ConfigApi;
-use crate::platform::linux::quickconnect::event_policy::ClientSizePolicy;
-use crate::platform::linux::quickconnect::existing::{ExistingEntry, ExistingTransport};
-use crate::platform::linux::quickconnect::font::FontSettings;
-use crate::platform::linux::quickconnect::model::{
+use crate::frontend::linux::event_batch::batch_order_plan;
+use crate::frontend::linux::keymap::{default_keybindings, Action, KeyMap};
+use crate::frontend::linux::layout_host::LayoutHost;
+use crate::frontend::linux::lifecycle::{cycle_pane_id, should_close_window, OnLastPaneExit};
+use crate::frontend::linux::pane_view::{PaneMenuAction, PaneView};
+use crate::frontend::linux::panel_model::PanelTab;
+use crate::frontend::linux::preferences_window::ConfigApi;
+use crate::frontend::linux::quickconnect::event_policy::ClientSizePolicy;
+use crate::frontend::linux::quickconnect::existing::{ExistingEntry, ExistingTransport};
+use crate::frontend::linux::quickconnect::font::FontSettings;
+use crate::frontend::linux::quickconnect::model::{
     QuickConnect, TargetConfig, TargetRuntime, TargetTransport,
 };
-use crate::platform::linux::quickconnect::project_flow::ProjectConnectIntent;
-use crate::platform::linux::quickconnect::status_style::{StatusBarMode, StatusBarSnapshot};
-use crate::platform::linux::quickconnect::store::QuickConnectStore;
-use crate::platform::linux::quickconnect::tab_gate::TabSwitchGate;
-use crate::platform::linux::quickconnect_panel::{
+use crate::frontend::linux::quickconnect::project_flow::ProjectConnectIntent;
+use crate::frontend::linux::quickconnect::status_style::{StatusBarMode, StatusBarSnapshot};
+use crate::frontend::linux::quickconnect::store::QuickConnectStore;
+use crate::frontend::linux::quickconnect::tab_gate::TabSwitchGate;
+use crate::frontend::linux::quickconnect_panel::{
     build_root_items, build_search_items, ExistingNav, ExistingPanelState, PanelItem,
 };
-use crate::platform::linux::scene_stack::SceneStack;
-use crate::platform::linux::status_bar::{ConnectionSummary, StatusBar};
+use crate::frontend::linux::scene_stack::SceneStack;
+use crate::frontend::linux::status_bar::{ConnectionSummary, StatusBar};
 #[cfg(test)]
-use crate::platform::linux::theme::Rgb;
-use crate::platform::linux::theme::{fallback_theme, toggle_target, Theme};
-use crate::platform::linux::tmux_dialog::{self, TmuxAction};
-use crate::platform::linux::view_store::ViewStore;
-use crate::platform::linux::workspace_sidebar::{
+use crate::frontend::linux::theme::Rgb;
+use crate::frontend::linux::theme::{fallback_theme, toggle_target, Theme};
+use crate::frontend::linux::tmux_dialog::{self, TmuxAction};
+use crate::frontend::linux::view_store::ViewStore;
+use crate::frontend::linux::workspace_sidebar::{
     AgentSidebarItem, CommandSidebarItem, WorkspaceSidebar, WorkspaceSidebarItem,
 };
+use crate::platform::event_pump::EventPump;
+use crate::platform::i18n::{self, Key};
 use crate::platform::ssh_probe::{classify_ssh_probe, ssh_probe_args, SshReach};
 #[cfg(test)]
 use muxterm_protocol::state::StateChange;
@@ -462,7 +462,7 @@ fn decode_client_config<T: serde::Serialize>(config: T) -> ClientConfig {
 impl AppWindow {
     /// 有序关闭：停轮询 → 摘掉子树 → destroy 窗口，避免与 PaneView 持有的 VTE 交叉销毁。
     pub fn shutdown(self) {
-        crate::platform::linux::quickconnect_panel::clear_panel_hooks();
+        crate::frontend::linux::quickconnect_panel::clear_panel_hooks();
         {
             let mut s = self._state.borrow_mut();
             if let Some(id) = s.poll_source.take() {
@@ -1153,7 +1153,7 @@ impl AppWindow {
             let id = glib::timeout_add_local(Duration::from_millis(16), move || {
                 // W19e：glib trampoline 不能 unwind；panic 先在这里接住，
                 // 报告 + 弹窗后继续轮询（Break 会让轮询停掉 = 假死）。
-                let outcome = crate::platform::linux::fault_gtk::run("linux.poll", || {
+                let outcome = crate::frontend::linux::fault_gtk::run("linux.poll", || {
                     if win_weak.upgrade().is_none() {
                         return glib::ControlFlow::Break;
                     }
@@ -1415,10 +1415,10 @@ impl AppWindow {
         let Some(layout) = view.layouts.get(&active_tab) else {
             return Vec::new();
         };
-        fn leaves(layout: &crate::platform::ffi_client::ClientLayout, out: &mut Vec<u32>) {
+        fn leaves(layout: &crate::frontend::ffi_client::ClientLayout, out: &mut Vec<u32>) {
             match layout {
-                crate::platform::ffi_client::ClientLayout::Leaf { pane_id } => out.push(*pane_id),
-                crate::platform::ffi_client::ClientLayout::Split { first, second, .. } => {
+                crate::frontend::ffi_client::ClientLayout::Leaf { pane_id } => out.push(*pane_id),
+                crate::frontend::ffi_client::ClientLayout::Split { first, second, .. } => {
                     leaves(first, out);
                     leaves(second, out);
                 }
@@ -1664,7 +1664,7 @@ impl AppWindow {
 
     /// W19e 测试钩子：注入一次 fault（report + 弹窗），进程必须继续。
     pub fn test_inject_fault(&self, token: &str) {
-        crate::platform::linux::fault_gtk::inject_fault(token);
+        crate::frontend::linux::fault_gtk::inject_fault(token);
     }
 
     /// 测试用：主窗口本身（供 widget 树断言）。
@@ -2052,7 +2052,7 @@ fn open_command_palette(s: &UiState, window: &Window, state: &Rc<RefCell<UiState
         StatusBarMode::Tmux => StatusBarMode::Theme.as_str(),
         StatusBarMode::Theme => StatusBarMode::Tmux.as_str(),
     };
-    crate::platform::linux::command_palette::show_for_runtime(
+    crate::frontend::linux::command_palette::show_for_runtime(
         &parent,
         uses_tmux,
         next_theme,
@@ -2072,7 +2072,7 @@ fn run_palette_command(state: &Rc<RefCell<UiState>>, window: &Window, parent: &W
         PaletteAction::Language => {
             let language_parent = parent.clone();
             let callback_state = state.clone();
-            crate::platform::linux::command_palette::show_language(&language_parent, move |_| {
+            crate::frontend::linux::command_palette::show_language(&language_parent, move |_| {
                 let mut s = callback_state.borrow_mut();
                 maybe_refresh_status(&mut s, true);
             });
@@ -2633,7 +2633,7 @@ fn resident_pane_view(
     s: &UiState,
     wid: &WorkspaceId,
     pane: u32,
-) -> Option<std::rc::Rc<crate::platform::linux::pane_view::PaneView>> {
+) -> Option<std::rc::Rc<crate::frontend::linux::pane_view::PaneView>> {
     s.pixel_cache
         .get(wid)
         .and_then(|layout| layout.pane(pane).cloned())
@@ -2843,7 +2843,7 @@ fn local_status_snapshot(npanes: usize, tabs: &[(u32, String, bool)]) -> StatusB
     let connected = i18n::tr(Key::StatusConnected);
     let panes = i18n::tr(Key::Panes);
     let close_hint = i18n::tr(Key::WindowCloseHint);
-    let mut snap = crate::platform::linux::quickconnect::status_style::snapshot_from_tabs(
+    let mut snap = crate::frontend::linux::quickconnect::status_style::snapshot_from_tabs(
         "local", npanes, tabs,
     );
     snap.left = format!("{connected} | {npanes} {panes}");
@@ -2875,7 +2875,7 @@ fn maybe_refresh_status(s: &mut UiState, force: bool) {
         .map(|tab| (tab.id, tab.name.clone(), tab.is_active))
         .collect();
     let mut snap = if s.uses_tmux() {
-        crate::platform::linux::quickconnect::status_style::snapshot_from_tabs(
+        crate::frontend::linux::quickconnect::status_style::snapshot_from_tabs(
             &session, npanes, &rows,
         )
     } else {
@@ -3458,7 +3458,7 @@ fn drain_ssh_probes(state: &Rc<RefCell<UiState>>) {
 }
 
 fn existing_entries(
-    candidates: Vec<crate::platform::ffi_client::ExistingCandidate>,
+    candidates: Vec<crate::frontend::ffi_client::ExistingCandidate>,
 ) -> Vec<ExistingEntry> {
     candidates
         .into_iter()
@@ -3649,7 +3649,7 @@ fn drain_local_existing(state: &Rc<RefCell<UiState>>) {
                 let mut ex = s.existing.borrow_mut();
                 ex.ssh_aliases = aliases;
                 drop(ex);
-                crate::platform::linux::quickconnect_panel::refresh_current();
+                crate::frontend::linux::quickconnect_panel::refresh_current();
             }
             Some(ExistingProbeMsg::Rows(entries)) => {
                 let n = entries.len();
@@ -3662,12 +3662,12 @@ fn drain_local_existing(state: &Rc<RefCell<UiState>>) {
                     n,
                     "existing probe: ui rows applied"
                 );
-                crate::platform::linux::quickconnect_panel::refresh_current();
+                crate::frontend::linux::quickconnect_panel::refresh_current();
             }
             Some(ExistingProbeMsg::Done) => {
                 state.borrow().existing.borrow_mut().probe_inflight = false;
                 tracing::debug!(target = "muxterm::linux", "existing probe: ui done");
-                crate::platform::linux::quickconnect_panel::refresh_current();
+                crate::frontend::linux::quickconnect_panel::refresh_current();
             }
             None => {}
         }
@@ -3767,7 +3767,7 @@ fn drain_existing_ssh(state: &Rc<RefCell<UiState>>) {
                 ex.hosts = hosts;
                 ex.remote = remote;
             }
-            crate::platform::linux::quickconnect_panel::refresh_current();
+            crate::frontend::linux::quickconnect_panel::refresh_current();
         }
     }
 }
@@ -3905,9 +3905,9 @@ fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelT
     if !window.is_visible() {
         window.present();
     }
-    crate::platform::linux::quickconnect_panel::show(
+    crate::frontend::linux::quickconnect_panel::show(
         &win,
-        crate::platform::linux::quickconnect_panel::PanelShowArgs {
+        crate::frontend::linux::quickconnect_panel::PanelShowArgs {
             initial_tab,
             workspaces,
             workspace_search_items,
@@ -3997,15 +3997,15 @@ fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelT
                         .unwrap_or_default()
                         .into_iter()
                         .filter(|hit| match scope {
-                            crate::platform::linux::panel_model::SearchScope::Pane => {
+                            crate::frontend::linux::panel_model::SearchScope::Pane => {
                                 hit.workspace_id == workspace_id && hit.pane_id == s.active_pane
                             }
-                            crate::platform::linux::panel_model::SearchScope::Workspace => {
+                            crate::frontend::linux::panel_model::SearchScope::Workspace => {
                                 hit.workspace_id == workspace_id
                             }
-                            crate::platform::linux::panel_model::SearchScope::All => true,
+                            crate::frontend::linux::panel_model::SearchScope::All => true,
                         })
-                        .map(crate::platform::linux::panel_model::SearchRow::from)
+                        .map(crate::frontend::linux::panel_model::SearchRow::from)
                         .collect();
                     hits
                 })
@@ -4083,7 +4083,7 @@ fn jump_to_attention_pane(state: &Rc<RefCell<UiState>>, ws: &str, pane: u32, seq
     }
     // 跳转完成后面板关闭（W15b；独立面板测试不经过这里，面板保持打开）。
     drop(s);
-    crate::platform::linux::quickconnect_panel::close_current();
+    crate::frontend::linux::quickconnect_panel::close_current();
 }
 
 /// 目标工作区不是当前前台时切连接；相同则不动（避免无谓的 layout 重建）。
@@ -4162,7 +4162,7 @@ fn open_preferences(state: &Rc<RefCell<UiState>>, window: &Window) {
         }
     };
     let config_for_saved = config_api.clone();
-    crate::platform::linux::preferences_window::show(
+    crate::frontend::linux::preferences_window::show(
         window,
         path,
         config_api,
@@ -4235,7 +4235,7 @@ fn open_target_config(
     let runtimes = FfiClient::discover_runtimes().unwrap_or_default();
     let st = state.clone();
     let win = window.clone();
-    crate::platform::linux::target_config_window::show(
+    crate::frontend::linux::target_config_window::show(
         window,
         editing,
         store,
@@ -4714,14 +4714,14 @@ fn sidebar_workspaces(s: &UiState) -> Vec<WorkspaceSidebarItem> {
 
 fn sidebar_agents(
     s: &UiState,
-    activity: &crate::platform::ffi_client::ClientActivitySnapshot,
+    activity: &crate::frontend::ffi_client::ClientActivitySnapshot,
 ) -> Vec<AgentSidebarItem> {
     AgentSidebarItem::from_views(&s.view_store, activity)
 }
 
 fn sidebar_commands(
     s: &UiState,
-    activity: &crate::platform::ffi_client::ClientActivitySnapshot,
+    activity: &crate::frontend::ffi_client::ClientActivitySnapshot,
 ) -> Vec<CommandSidebarItem> {
     CommandSidebarItem::from_views(&s.view_store, activity)
 }
@@ -4918,7 +4918,7 @@ fn recent_target_configs(
     workspace_sockets: &HashMap<WorkspaceId, Option<String>>,
     limit: usize,
 ) -> Vec<TargetConfig> {
-    let mut workspaces: Vec<&crate::platform::ffi_client::ClientWorkspace> = view_store
+    let mut workspaces: Vec<&crate::frontend::ffi_client::ClientWorkspace> = view_store
         .workspaces()
         .filter_map(|(_, view)| view.workspace.as_ref())
         .collect();
@@ -4942,7 +4942,7 @@ fn recent_target_configs(
 /// 读 `resolved_target().canonical`（Catalog 打开时保存）；无 descriptor 时
 /// 从 WorkspaceId 推导（测试 mock/CLI 直开路径）。
 fn workspace_to_target_config(
-    workspace: &crate::platform::ffi_client::ClientWorkspace,
+    workspace: &crate::frontend::ffi_client::ClientWorkspace,
     tmux_socket: Option<&str>,
 ) -> TargetConfig {
     if let Some(canonical) = workspace
@@ -5083,7 +5083,7 @@ fn open_ssh_connect(state: &Rc<RefCell<UiState>>, parent: &Window) {
     let items = tmux_dialog::connect_pick_items(&hosts);
     let st = state.clone();
     let win = parent.clone();
-    crate::platform::linux::quick_pick::show(
+    crate::frontend::linux::quick_pick::show(
         parent,
         &i18n::tr(Key::ChooseSshHost),
         items,
@@ -5108,7 +5108,7 @@ fn open_connect_sessions(state: &Rc<RefCell<UiState>>, parent: &Window, connect:
     let st = state.clone();
     let win = parent.clone();
     let connect_for_attach = connect.clone();
-    crate::platform::linux::quick_pick::show(
+    crate::frontend::linux::quick_pick::show(
         parent,
         &i18n::tr(Key::ChooseWorkspace),
         items,
@@ -5119,7 +5119,7 @@ fn open_connect_sessions(state: &Rc<RefCell<UiState>>, parent: &Window, connect:
             if tmux_dialog::is_create_session_id(&item.id) {
                 let connect = connect_for_attach.clone();
                 let st = st.clone();
-                crate::platform::linux::pane_switcher::show_rename(&win, "muxterm", move |name| {
+                crate::frontend::linux::pane_switcher::show_rename(&win, "muxterm", move |name| {
                     let dir = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
                     let transport = if connect == "local" { "local" } else { "ssh" };
                     let target = if connect == "local" {
