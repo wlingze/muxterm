@@ -3,7 +3,7 @@
 > 用途：重构落地后，**不要 rebase 这条分支**。以本文为需求，在新树上按条重做。
 > 来源：Grok 会话 `01a07ac0-4e2c-79f1-9848-946a024a2fa6`（续 Codex `01a07aaf-e33e-7ae3-85ef-0e4d31101758`）。
 > 参考实现：`feature/dogfood-0907` @ `96c5076`（相对当时 `main` `fbd66f2`，11 个提交）。
-> 整理：2026-09-09（Asia/Shanghai）。
+> 整理：2026-09-09（Asia/Shanghai）。§16 起为同日补记的待做（尚未实现）。
 
 本文记的是**使用中碰到的问题和你想要的行为**，不是 git 考古。旧路径只作对照；新树上文件搬家后，按行为验收。
 
@@ -12,7 +12,7 @@
 ## 0. 怎么用这份文档
 
 1. 新分支从重构后的 `main` 拉出。
-2. 按第 12 节顺序一条条做；每条可独立验证再提交。
+2. 按第 12 节顺序一条条做；每条可独立验证再提交。§16–21 是后续待做，重构后另开提交，不要和已落地的 1–11 混在一起。
 3. 对照 `feature/dogfood-0907` 只看「意图和测试」，不要整文件拷贝。
 4. 本机配置清理（`~/.config/muxterm` 里不用的文件）不要写进仓库。
 5. GUI 问能力继续用 `support()`，禁止 `if runtime == "herdr"`。
@@ -497,3 +497,206 @@ Attention 整行绿或橙，和侧栏不像。
 - IMK mach port 警告没修。
 - §13 抢锁只做了诊断，没有代码改动。
 - 本机删除的 `~/.config/muxterm` 废文件不要在重做时再碰别人的机器。
+- §16 起是 2026-09-09 补记的待做：只记录和设计，这轮不改代码。
+
+---
+
+## 16. 待做：Cmd-W 关 pane，Settings 开着时关 Settings
+
+**问题**
+
+Cmd-W 现在不像关 pane。Settings 开着时按 Cmd-W，期望关掉设置窗，实际会动到主会话/窗口。
+
+**期望**
+
+- 主窗口：Cmd-W = 关**当前 pane**，一个个关。
+- Settings（以及其它覆盖层）是 key window 时：Cmd-W = 只关这个窗，不动 tmux/Herdr 会话。
+- 关光一个 tab 里的 pane 之后，再 Cmd-W 才轮到下一个 tab / 最后才碰到窗口。不要一按就把整个 Muxterm 窗口拆掉。
+
+**现在为什么不对**
+
+- `KeyBindings` 里 `Cmd+W` → `.closeWindow`。
+- File 菜单「关闭窗口」绑了 `keyEquivalent: "w"`，`target` 写死 `MainWindowController.closeActiveWindow`。
+- 「关闭 Pane」菜单项的快捷键是空的。
+- `closeActivePane()` 已经存在，也注释了「唯一 pane 时关 pane 会触发后端关 window」。
+- 主窗口 `routeMonitoredKeyEvent` 对「事件不在主窗口」会放行，但菜单项仍有显式 target，Settings 是 key 时 Cmd-W 还是打到主窗口关会话。
+
+**设计（重做时按这个做）**
+
+关闭分层，从上到下只做一层：
+
+1. Settings / 独立面板是 key window → `performClose` 那个窗。菜单项不要写死主窗口 target，让 AppKit 把 Cmd-W 送给 key window。
+2. UnifiedPanel / Command Palette 可见 → dismiss 面板。
+3. 否则 `closeActivePane()`。
+4. 真正关 Muxterm 窗口用菜单「关闭窗口」，建议 `Cmd+Shift+W`，不要占 Cmd-W。
+
+验收：Settings 开着 Cmd-W 只关设置；多 pane 时每次少一个 pane；最后一个 pane 的行为跟现在的 `close_pane` 契约走，不要先 `closeSessionWindow`。
+
+---
+
+## 17. 待做：Grok / Codex 列表里往下一滚就到底
+
+**问题**
+
+Grok、Codex 这类列表：往上翻历史没问题，往下稍微一滚就跳到最后（实时尾 / 输入行），没法在列表里慢慢往回看。
+
+**原因（高度可疑，待手测确认）**
+
+§9 回底吸附：macOS `JumpLatestCaption.shouldSnapToLatest` 用的是 **整段 scrollback 比例** `scrollPosition >= 0.92`。一万行历史的最后 8% 还有八百行。对话列表通常就堆在缓冲区底部，人只往上翻了几十行，比例仍 ≥ 0.92，任何一次向下滚轮都会 `scrollToLatest()`。
+
+alternate screen 路径已经跳过这段吸附。若 Grok/Codex **没用** alt screen、走的是普通 scrollback，就会中招。
+
+Linux 用的是剩余像素 `page/6`（大约几行），比 0.92 比例克制，但 agent TUI 仍可能嫌近。
+
+**设计**
+
+- 吸附改成「还剩几行」而不是「高度百分比」。建议只剩 1～2 行、并且这一下是在向下滚，才吸到尾。
+- Agent TUI（attention `processIsAgent` / structured agent / alt screen）默认不吸附，把滚动交给 TUI 自己。
+- 回底胶囊还在：人要回尾就点胶囊或快捷键，不要靠「往下滚一下」。
+- 不要为了修这个把「上滚 scroll-lock、新输出不把人拽回去」拆掉。
+
+验收：在 Codex/Grok 会话列表里往上翻一屏，再往下滚若干格，视口应跟着走，不得跳到输入行。只有已经贴着最后一两行时向下滚，才允许回尾。
+
+---
+
+## 18. 待做：双击后拖选用 word（空白分词）
+
+**问题 / 期望**
+
+双击选中之后再拖，应该按 **word** 扩选：空白切开的整词，不要在 `/`、`-` 上断开。这样才好用，也接近 iTerm / Ghostty。
+
+**和 §9 的关系**
+
+`6a83061` 已经按这个口径写了 `tokenSpan` / `dragByTokens`，双击后的 `mouseDragged` 会吸到空白整词。重做时必须保留。
+
+若手感仍不对，优先查：
+
+- `wordDragPivot` 只在渐进双击成功时设置，普通双击或 tmux 鼠标模式可能没走进这条路径；
+- `super.mouseDragged` 仍按字符切，后写的 word 吸附被下一拍覆盖；
+- 跨行拖选没有按 word 对齐。
+
+验收：`feature/dogfood-0907*` 双击 `0907` 再拖到 `feature`，选区是整段 `feature/dogfood-0907*`，不会停在 `/` 或 `-`。
+
+---
+
+## 19. 待做：Agents / Attention 分不清 local 和 ryzen
+
+**问题**
+
+两个都叫 `muxterm` 的工作区，一个 local、一个 ryzen。Agents 和 Attention 里没有 local / ryzen 这类标记，列表一长就分不出点哪条。
+
+**期望**
+
+Agents、Attention 和 Workspace 行同一套身份：能看见 **哪台机器**。`local` 也要标，不要只在 SSH 时才出现。
+
+**现在**
+
+- Workspace 行已经有 `transport`（`local` / ssh alias 如 `ryzen`）。
+- Agents 标题只用 `workspace.name`。
+- Attention 标题也是工作区名；§11 之后第二行是 `Working · Codex · Tab 2`，没有 transport。
+
+**设计**
+
+两行都带机器，不要把 transport 藏进 tooltip：
+
+```text
+[色块]  muxterm · ryzen
+        Working · Codex · Tab 2
+
+[色块]  muxterm · local
+        Working · Codex · Tab 2
+```
+
+- 标题：`{workspaceName} · {transport}`。`transport` 用侧栏同一套：SSH 用 alias（`ryzen`），本地用 `local`。
+- Agents / Commands / Attention 三处同一规则。
+- 搜索过滤要能搜到 `ryzen` / `local`。
+
+验收：同时打开 local muxterm 和 ryzen muxterm，Agents 与 Cmd-R 里两条不能只靠「muxterm」撞名。
+
+---
+
+## 20. 待做：键盘切 Agent，以及 Herdr title
+
+### 20.1 快捷键：现在只能鼠标点 Agent
+
+**问题**
+
+Agent 多了以后，习惯上想像切 Workspace / Tab 那样用键盘切，现在只能鼠标。
+
+现有数字键（要保持）：
+
+| 键 | 作用 |
+| --- | --- |
+| `Cmd+1..9` | 当前 Workspace 的 Tab |
+| `Cmd+Ctrl+1..9` / `0` | 侧栏打开顺序的 Workspace |
+| `Cmd+[` / `]` | 当前 Tab 里的 pane |
+
+**期望（原话）**
+
+- 参考 `Cmd+Ctrl+1..4` 切 Workspace、`Cmd+1..3` 切 Tab。
+- Agent 也要有一套 `Cmd-xxx-1234`。
+- 或者 **Ctrl 切快速面板里当前可见的那一列**（Attention / Quick Connect / Search）。
+
+**设计（建议，重做时按此落地）**
+
+三层，互不抢键：
+
+1. **全局切 Agent**：`Cmd+Option+1..9` / `Cmd+Option+0`  
+   对象是侧栏 **Agents 列表的固定顺序**（现在的展示序：未读完成优先，然后 running）。`0` 永远是列表最后一条。  
+   动作 = 现在点 Agents 行：跨 Workspace 也要跳（`activateSidebarTarget` / `routePanelJump`）。  
+   `Cmd+Option+↑/↓` 仍是命令刻度跳转，不要占用。
+
+2. **面板内数字**：UnifiedPanel（Cmd-R Attention、Cmd-P Quick Connect、搜索）是 key 且焦点不在输入框、或带 `Ctrl` 时，`Ctrl+1..9` / `Ctrl+0` 激活**当前列表第 n 行**。  
+   终端有焦点时 Ctrl+数字不要抢，避免和程序自己的 Ctrl 冲突；只在面板 key 时生效。  
+   这就是「Ctrl 切快速面板里的东西」。
+
+3. **不要**用 `Cmd+Shift+1..9`（和系统/Tab 容易混），也不要动 `Cmd+Ctrl`（Workspace）。
+
+Agent 没有独立编号时，侧栏 Agents 行可以像 Workspace 那样显示 1–9 / 0。面板行同样可以在左侧显示数字。
+
+验收：两个 Workspace 里各有 Codex，`Cmd+Option+1` 跳到 Agents 第一行对应 pane；打开 Attention 后 `Ctrl+2` 跳第二行。
+
+### 20.2 Agent 能不能拿到 title？Herdr 有没有？
+
+**结论：Herdr 已经有 title，产品层没用好。**
+
+Herdr pane/agent 记录上已有：
+
+- `display_agent` / `display_name`：给人看的 agent 名（如 `Codex`、`Pi reviewer`）
+- `title`：任务/会话标题（契约测试里是 `"Implement runtime events"`）
+- `terminal_title` / `terminal_title_stripped`：终端标题
+- `agent` / `kind`：内部名
+
+Linux `agent_title()` 和 macOS `agentName` 都是 **第一个非空**：displayName → name/kind → title。有 `display_name` 时，Herdr 的任务 title 被丢掉，列表里全是「Codex」，几个会话分不开。
+
+tmux 没有 Herdr 这种结构化 title 时，只能退到进程名 / pane title，不强行编造。
+
+**设计**
+
+拆成两个字段，不要互相覆盖：
+
+- `agentName`：`display_name` / kind / 进程名 → `Codex`
+- `sessionTitle`：Herdr `title`（空则省略）
+
+第二行：
+
+```text
+Working · Codex · Implement runtime events · Tab 2
+```
+
+没有 Herdr title 时仍是 `Working · Codex · Tab 2`。Attention 同样。标题太长就尾部截断，hover / accessibility 给全文。
+
+验收：Herdr 契约里 `title = "Implement runtime events"` 的 pane，Agents 和 Attention 必须能看到这段文字，不能只剩 Codex。
+
+---
+
+## 21. 待做对照（尚未实现，不要从旧分支抄成「已完成」）
+
+| 节 | 主题 | 重做落点 |
+| --- | --- | --- |
+| 16 | Cmd-W 关 pane / 关 Settings | 菜单 target、KeyBindings、覆盖层 |
+| 17 | 列表向下滚不该整页回尾 | 吸附改成剩余行数；agent TUI 关闭吸附 |
+| 18 | 双击后按 word 拖选 | 保留并验证 `dragByTokens` |
+| 19 | Agents/Attention 标 local/ryzen | 标题带 transport |
+| 20.1 | 键盘切 Agent / 面板 Ctrl+数字 | `Cmd+Option+1..9`；面板 `Ctrl+1..9` |
+| 20.2 | Herdr session title | `agentName` 与 `title` 分列显示 |
