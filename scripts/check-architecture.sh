@@ -63,6 +63,10 @@ check_absent \
     'catalog/builtin' \
     crates/muxterm-core/src src
 check_absent \
+    "legacy parallel config module names" \
+    'config_service|config_edit' \
+    crates/muxterm-core/src src/frontend
+check_absent \
     "runtime and transport must not import the config domain" \
     'crate::config' \
     crates/muxterm-core/src/runtime crates/muxterm-core/src/transport
