@@ -129,6 +129,8 @@ impl ClientError {
 /// Owned configuration snapshot returned by the Core configuration ABI.
 #[derive(Debug, Clone, serde::Deserialize, PartialEq)]
 pub struct ClientConfigSnapshot {
+    #[serde(default)]
+    pub path: String,
     pub revision: String,
     pub raw: serde_json::Value,
     pub values: serde_json::Value,
@@ -654,6 +656,20 @@ impl FfiClient {
             ffi::muxterm_config_describe_json(self.handle.as_ptr())
         })?;
         Ok(serde_json::from_value(value["data"].clone())?)
+    }
+
+    /// Validate the default configuration or one explicit file through Core.
+    pub fn config_validate(
+        &self,
+        path: Option<&std::path::Path>,
+    ) -> anyhow::Result<serde_json::Value> {
+        let path = path.map(|value| cstring(value.to_string_lossy().as_ref()));
+        let value = Self::discovery_json(|| {
+            ffi::muxterm_config_validate_json(
+                path.as_ref().map_or(ptr::null(), |value| value.as_ptr()),
+            )
+        })?;
+        Ok(value["data"].clone())
     }
 
     /// Start a Core-owned draft configuration transaction.
@@ -2035,6 +2051,7 @@ mod tests {
     #[test]
     fn config_snapshot_and_draft_decode_as_owned_values() {
         let snapshot: ClientConfigSnapshot = serde_json::from_value(serde_json::json!({
+            "path": "/tmp/config.toml",
             "revision": "rev-1",
             "raw": {"font": {"size": 13.0}},
             "values": {"font": {"size": 13.0}},
@@ -2044,6 +2061,7 @@ mod tests {
             "action_catalog": {"actions": []},
         }))
         .expect("config snapshot decodes");
+        assert_eq!(snapshot.path, "/tmp/config.toml");
         assert_eq!(snapshot.revision, "rev-1");
         assert_eq!(snapshot.values["font"]["size"], 13.0);
 

@@ -3,7 +3,7 @@
 use std::ffi::c_char;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-use crate::config_service::{ConfigEvent, JsonPatchOperation};
+use crate::config_service::{ConfigEvent, JsonPatchOperation, SettingsService};
 
 use super::super::api::{cstr_opt, json_string, MuxtermHandle};
 
@@ -31,13 +31,47 @@ pub unsafe extern "C" fn muxterm_config_describe_json(h: *mut MuxtermHandle) -> 
             return config_json_error("handle 为空");
         }
         let snapshot = (&*h).settings.snapshot();
+        let mut data = serde_json::to_value(snapshot).unwrap_or_else(|_| serde_json::json!({}));
+        if let Some(data) = data.as_object_mut() {
+            data.insert(
+                "path".into(),
+                serde_json::json!((&*h).settings.path().to_string_lossy()),
+            );
+        }
         json_string(serde_json::json!({
             "ok": true,
-            "data": snapshot,
+            "data": data,
             "warnings": [],
         }))
     }))
     .unwrap_or_else(|_| config_json_error("config describe panic"))
+}
+
+/// Validate the default configuration or one explicit file without opening a
+/// product handle.
+#[no_mangle]
+pub extern "C" fn muxterm_config_validate_json(path: *const c_char) -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| {
+        let service = match cstr_opt(path) {
+            Some(path) => SettingsService::open(path),
+            None => SettingsService::default_user(),
+        };
+        match service {
+            Ok(service) => match service.document().validate() {
+                Ok(()) => json_string(serde_json::json!({
+                    "ok": true,
+                    "data": {
+                        "valid": true,
+                        "path": service.path().to_string_lossy(),
+                    },
+                    "warnings": [],
+                })),
+                Err(error) => config_json_error(error),
+            },
+            Err(error) => config_json_error(error),
+        }
+    }))
+    .unwrap_or_else(|_| config_json_error("config validate panic"))
 }
 
 /// Begin a Core-owned draft transaction.

@@ -40,7 +40,7 @@ pub use super::functions::catalog::{
 pub use super::functions::config::{
     muxterm_config_begin_json, muxterm_config_cancel_json, muxterm_config_commit_json,
     muxterm_config_describe_json, muxterm_config_events_json, muxterm_config_patch_json,
-    muxterm_config_reload_json,
+    muxterm_config_reload_json, muxterm_config_validate_json,
 };
 pub(crate) use super::functions::events::state_change_to_c;
 pub use super::functions::events::{muxterm_poll_events, muxterm_poll_workspace_events};
@@ -1409,9 +1409,22 @@ mod tests {
             muxterm_free_string(raw);
             let envelope: serde_json::Value = serde_json::from_str(&describe).unwrap();
             assert_eq!(envelope["ok"], true);
+            assert!(envelope["data"]["path"].is_string());
             assert!(envelope["data"]["schema"].is_object());
             assert!(envelope["data"]["manifest"].is_object());
             assert!(envelope["data"]["action_catalog"].is_array());
+
+            let path = std::env::temp_dir().join(format!(
+                "muxterm-ffi-config-validate-missing-{}",
+                std::process::id()
+            ));
+            let path = CString::new(path.to_string_lossy().as_ref()).unwrap();
+            let raw = muxterm_config_validate_json(path.as_ptr());
+            let validate = CStr::from_ptr(raw).to_string_lossy().into_owned();
+            muxterm_free_string(raw);
+            let validate: serde_json::Value = serde_json::from_str(&validate).unwrap();
+            assert_eq!(validate["ok"], true);
+            assert_eq!(validate["data"]["valid"], true);
 
             let raw = muxterm_config_begin_json(h);
             let begin = CStr::from_ptr(raw).to_string_lossy().into_owned();
