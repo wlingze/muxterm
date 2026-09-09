@@ -4,6 +4,9 @@
 
 use crate::core::protocol::state::State;
 use crate::core::types::{PaneId, TabId};
+use crate::platform::ffi_client::{
+    ClientLayout, ClientPane, ClientTab, ClientWorkspace, FfiClient,
+};
 
 pub use crate::core::runtime::shell::daemon::{OutputFormat, StateSnapshot};
 
@@ -26,6 +29,479 @@ pub fn format_output(
         } => format_display(state, *target, fmt_str),
         DumpState => format_dump_state(state),
         _ => String::new(), // 非 query 命令无输出
+    }
+}
+
+/// Format a query from the owned FFI DTO surface.
+///
+/// This is the CLI counterpart to [`format_output`].  The legacy formatter is
+/// retained for the shell daemon until its IPC snapshot is migrated; ordinary
+/// CLI routing must not borrow `State` or a concrete Runtime.
+pub fn format_ffi_output(
+    client: &FfiClient,
+    workspace_id: &str,
+    cmd: &super::command::CliCommand,
+    format: OutputFormat,
+) -> anyhow::Result<String> {
+    use super::command::CliCommand::*;
+
+    if matches!(cmd, ListWorkspaces) {
+        return format_ffi_workspaces(client, format);
+    }
+
+    let snapshot = ffi_workspace_snapshot(client, workspace_id)?;
+    let output = match cmd {
+        ListTabs => format_ffi_tabs(&snapshot, format),
+        ListPanes { tab } => format_ffi_panes(&snapshot, tab.map(|id| id.0), format),
+        ListLayout => format_ffi_layout(&snapshot, format),
+        CapturePane { target, lines } => {
+            format_ffi_capture(&snapshot, target.map(|id| id.0), *lines)
+        }
+        DisplayMessage { target, format } => format_ffi_display(&snapshot, target.0, format),
+        DumpState => format_ffi_dump(&snapshot, client.status_code()),
+        _ => String::new(),
+    };
+    Ok(output)
+}
+
+struct FfiWorkspaceSnapshot {
+    workspace: ClientWorkspace,
+    tabs: Vec<ClientTab>,
+    panes: Vec<(u32, Vec<ClientPane>)>,
+    layouts: Vec<(u32, Option<ClientLayout>)>,
+    outputs: Vec<(u32, Vec<u8>)>,
+}
+
+fn ffi_workspace_snapshot(
+    client: &FfiClient,
+    workspace_id: &str,
+) -> anyhow::Result<FfiWorkspaceSnapshot> {
+    let workspace = client
+        .workspace_list()?
+        .into_iter()
+        .find(|item| item.id == workspace_id)
+        .ok_or_else(|| anyhow::anyhow!("Core workspace not found: {workspace_id}"))?;
+    let tabs = client.get_workspace_tabs(workspace_id);
+    let panes: Vec<(u32, Vec<ClientPane>)> = tabs
+        .iter()
+        .map(|tab| (tab.id, client.get_workspace_panes(workspace_id, tab.id)))
+        .collect();
+    let layouts = tabs
+        .iter()
+        .map(|tab| (tab.id, client.get_workspace_layout(workspace_id, tab.id)))
+        .collect();
+    let outputs = panes
+        .iter()
+        .flat_map(|(_, panes)| panes.iter().map(|pane| pane.id))
+        .map(|pane_id| {
+            (
+                pane_id,
+                client.get_workspace_pane_output(workspace_id, pane_id),
+            )
+        })
+        .collect();
+    Ok(FfiWorkspaceSnapshot {
+        workspace,
+        tabs,
+        panes,
+        layouts,
+        outputs,
+    })
+}
+
+fn format_ffi_workspaces(client: &FfiClient, format: OutputFormat) -> anyhow::Result<String> {
+    let workspaces = client.workspace_list()?;
+    match format {
+        OutputFormat::Json => Ok(serde_json::to_string(
+            &workspaces
+                .iter()
+                .map(|workspace| {
+                    serde_json::json!({
+                        "id": workspace.id,
+                        "name": workspace.name,
+                        "runtime": workspace.runtime,
+                        "transport": "local",
+                        "in_pool": true,
+                    })
+                })
+                .collect::<Vec<_>>(),
+        )?),
+        OutputFormat::Text => Ok(workspaces
+            .iter()
+            .map(|workspace| {
+                format!(
+                    "{} ({}): {}",
+                    workspace.name,
+                    workspace.runtime,
+                    if workspace.active { "attached" } else { "open" }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")),
+    }
+}
+
+fn format_ffi_tabs(snapshot: &FfiWorkspaceSnapshot, format: OutputFormat) -> String {
+    match format {
+        OutputFormat::Json => serde_json::to_string(
+            &snapshot
+                .tabs
+                .iter()
+                .map(|tab| {
+                    serde_json::json!({
+                        "id": format!("t{}", tab.id),
+                        "name": tab.name,
+                        "panes": snapshot
+                            .panes
+                            .iter()
+                            .find(|(id, _)| *id == tab.id)
+                            .map_or(0, |(_, panes)| panes.len()),
+                        "active": tab.is_active,
+                    })
+                })
+                .collect::<Vec<_>>(),
+        )
+        .unwrap_or_else(|_| "[]".into()),
+        OutputFormat::Text => snapshot
+            .tabs
+            .iter()
+            .map(|tab| {
+                let panes = snapshot
+                    .panes
+                    .iter()
+                    .find(|(id, _)| *id == tab.id)
+                    .map_or(0, |(_, panes)| panes.len());
+                format!(
+                    "t{}: {}{} ({} panes)",
+                    tab.id,
+                    tab.name,
+                    if tab.is_active { "*" } else { " " },
+                    panes
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    }
+}
+
+fn format_ffi_panes(
+    snapshot: &FfiWorkspaceSnapshot,
+    tab_id: Option<u32>,
+    format: OutputFormat,
+) -> String {
+    let tab_id = tab_id.or_else(|| {
+        snapshot
+            .tabs
+            .iter()
+            .find(|tab| tab.is_active)
+            .map(|tab| tab.id)
+    });
+    let panes = tab_id
+        .and_then(|id| snapshot.panes.iter().find(|(tab, _)| *tab == id))
+        .map(|(_, panes)| panes.as_slice())
+        .unwrap_or(&[]);
+    match format {
+        OutputFormat::Json => serde_json::to_string(
+            &panes
+                .iter()
+                .map(|pane| {
+                    serde_json::json!({
+                        "id": format!("@{}", pane.id),
+                        "active": pane.is_active,
+                        "size": {"w": pane.cols, "h": pane.rows},
+                    })
+                })
+                .collect::<Vec<_>>(),
+        )
+        .unwrap_or_else(|_| "[]".into()),
+        OutputFormat::Text => panes
+            .iter()
+            .map(|pane| {
+                format!(
+                    "@{}{} {}x{}",
+                    pane.id,
+                    if pane.is_active { "*" } else { " " },
+                    pane.cols,
+                    pane.rows
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    }
+}
+
+fn format_ffi_layout(snapshot: &FfiWorkspaceSnapshot, format: OutputFormat) -> String {
+    match format {
+        OutputFormat::Json => serde_json::to_string(
+            &snapshot
+                .tabs
+                .iter()
+                .map(|tab| {
+                    let tree = snapshot
+                        .layouts
+                        .iter()
+                        .find(|(id, _)| *id == tab.id)
+                        .and_then(|(_, layout)| layout.as_ref())
+                        .map(ffi_layout_node_to_json)
+                        .unwrap_or_else(|| serde_json::Value::Null.to_string());
+                    serde_json::json!({
+                        "id": format!("t{}", tab.id),
+                        "name": tab.name,
+                        "active": tab.is_active,
+                        "tree": serde_json::from_str::<serde_json::Value>(&tree)
+                            .unwrap_or(serde_json::Value::Null),
+                    })
+                })
+                .collect::<Vec<_>>(),
+        )
+        .unwrap_or_else(|_| "[]".into()),
+        OutputFormat::Text => {
+            if snapshot.tabs.is_empty() {
+                return "(no tab)".into();
+            }
+            let mut output = format!(
+                "workspace {}: {}\n",
+                snapshot.workspace.runtime, snapshot.workspace.name
+            );
+            for (index, tab) in snapshot.tabs.iter().enumerate() {
+                let prefix = if index + 1 == snapshot.tabs.len() {
+                    "└─"
+                } else {
+                    "├─"
+                };
+                let active = if tab.is_active { " [active]" } else { "" };
+                output.push_str(&format!(
+                    "{} tab t{}: {}{}\n",
+                    prefix, tab.id, tab.name, active
+                ));
+                if let Some(Some(layout)) = snapshot
+                    .layouts
+                    .iter()
+                    .find(|(id, _)| *id == tab.id)
+                    .map(|(_, layout)| layout.as_ref())
+                {
+                    for (leaf_index, pane_id) in ffi_layout_leaves(layout).iter().enumerate() {
+                        let leaf_prefix = if index + 1 == snapshot.tabs.len() {
+                            "   "
+                        } else {
+                            "│  "
+                        };
+                        let last = if leaf_index + 1 == ffi_layout_leaves(layout).len() {
+                            "└─"
+                        } else {
+                            "├─"
+                        };
+                        let size = snapshot
+                            .panes
+                            .iter()
+                            .flat_map(|(_, panes)| panes.iter())
+                            .find(|pane| pane.id == *pane_id)
+                            .map(|pane| format!("{}x{}", pane.cols, pane.rows))
+                            .unwrap_or_default();
+                        let active_mark = if ffi_pane_is_active(snapshot, tab.id, *pane_id) {
+                            " [active]"
+                        } else {
+                            ""
+                        };
+                        output.push_str(&format!(
+                            "{}   {} @{} {}{}\n",
+                            leaf_prefix, last, pane_id, size, active_mark
+                        ));
+                    }
+                }
+            }
+            output.trim_end().into()
+        }
+    }
+}
+
+fn ffi_layout_node_to_json(layout: &ClientLayout) -> String {
+    match layout {
+        ClientLayout::Leaf { pane_id } => format!("\"@{pane_id}\""),
+        ClientLayout::Split {
+            horizontal,
+            ratio,
+            first,
+            second,
+        } => format!(
+            "{{\"type\":\"split\",\"dir\":\"{}\",\"ratio\":{},\"first\":{},\"second\":{}}}",
+            if *horizontal {
+                "horizontal"
+            } else {
+                "vertical"
+            },
+            ratio,
+            ffi_layout_node_to_json(first),
+            ffi_layout_node_to_json(second)
+        ),
+    }
+}
+
+fn ffi_layout_leaves(layout: &ClientLayout) -> Vec<u32> {
+    match layout {
+        ClientLayout::Leaf { pane_id } => vec![*pane_id],
+        ClientLayout::Split { first, second, .. } => {
+            let mut leaves = ffi_layout_leaves(first);
+            leaves.extend(ffi_layout_leaves(second));
+            leaves
+        }
+    }
+}
+
+fn ffi_pane_is_active(snapshot: &FfiWorkspaceSnapshot, tab_id: u32, pane_id: u32) -> bool {
+    snapshot
+        .panes
+        .iter()
+        .find(|(id, _)| *id == tab_id)
+        .and_then(|(_, panes)| panes.iter().find(|pane| pane.id == pane_id))
+        .is_some_and(|pane| pane.is_active)
+}
+
+fn format_ffi_capture(
+    snapshot: &FfiWorkspaceSnapshot,
+    pane_id: Option<u32>,
+    lines: Option<usize>,
+) -> String {
+    let pane_id = pane_id.or_else(|| {
+        snapshot
+            .tabs
+            .iter()
+            .find(|tab| tab.is_active)
+            .and_then(|tab| {
+                snapshot
+                    .panes
+                    .iter()
+                    .find(|(id, _)| *id == tab.id)
+                    .and_then(|(_, panes)| panes.iter().find(|pane| pane.is_active))
+                    .map(|pane| pane.id)
+            })
+    });
+    let text = pane_id
+        .and_then(|id| snapshot.outputs.iter().find(|(pane, _)| *pane == id))
+        .map(|(_, bytes)| String::from_utf8_lossy(bytes).into_owned())
+        .unwrap_or_default();
+    let Some(lines) = lines else {
+        return text;
+    };
+    let all_lines: Vec<&str> = text.lines().collect();
+    let start = all_lines.len().saturating_sub(lines);
+    all_lines[start..].join("\n")
+}
+
+fn format_ffi_display(snapshot: &FfiWorkspaceSnapshot, pane_id: u32, format: &str) -> String {
+    let pane = snapshot
+        .panes
+        .iter()
+        .flat_map(|(_, panes)| panes.iter())
+        .find(|pane| pane.id == pane_id);
+    let Some(pane) = pane else {
+        return String::new();
+    };
+    format
+        .replace("#{pane_id}", &format!("@{}", pane.id))
+        .replace("#{pane_active}", &pane.is_active.to_string())
+        .replace("#{pane_width}", &pane.cols.to_string())
+        .replace("#{pane_height}", &pane.rows.to_string())
+        .replace("#{pane_title}", &pane.title)
+}
+
+fn format_ffi_dump(snapshot: &FfiWorkspaceSnapshot, status: u32) -> String {
+    let tabs: Vec<serde_json::Value> = snapshot
+        .tabs
+        .iter()
+        .map(|tab| {
+            serde_json::json!({
+                "id": tab.id,
+                "name": tab.name,
+                "active": tab.is_active,
+            })
+        })
+        .collect();
+    let panes: Vec<serde_json::Value> = snapshot
+        .panes
+        .iter()
+        .flat_map(|(tab_id, panes)| panes.iter().map(move |pane| (*tab_id, pane)))
+        .map(|(tab_id, pane)| {
+            serde_json::json!({
+                "id": pane.id,
+                "tab": tab_id,
+                "active": pane.is_active,
+                "title": pane.title,
+                "cols": pane.cols,
+                "rows": pane.rows,
+            })
+        })
+        .collect();
+    let layouts: Vec<serde_json::Value> = snapshot
+        .layouts
+        .iter()
+        .filter_map(|(tab_id, layout)| {
+            let layout = layout.as_ref()?;
+            Some(serde_json::json!({
+                "tab": tab_id,
+                "tree": ffi_layout_node_to_snapshot_json(layout),
+                "active": ffi_active_pane(snapshot, *tab_id),
+            }))
+        })
+        .collect();
+    let outputs: Vec<serde_json::Value> = snapshot
+        .outputs
+        .iter()
+        .map(|(pane_id, bytes)| serde_json::json!([pane_id, String::from_utf8_lossy(bytes)]))
+        .collect();
+    serde_json::to_string(&serde_json::json!({
+        "workspace_name": snapshot.workspace.name,
+        "workspace_runtime": snapshot.workspace.runtime,
+        "tabs": tabs,
+        "panes": panes,
+        "layouts": layouts,
+        "outputs": outputs,
+        "status": ffi_status_name(status),
+        "active_tab": snapshot.tabs.iter().find(|tab| tab.is_active).map(|tab| tab.id),
+        "active_pane": snapshot
+            .tabs
+            .iter()
+            .find(|tab| tab.is_active)
+            .and_then(|tab| ffi_active_pane(snapshot, tab.id)),
+    }))
+    .unwrap_or_else(|_| "{}".into())
+}
+
+fn ffi_active_pane(snapshot: &FfiWorkspaceSnapshot, tab_id: u32) -> Option<u32> {
+    snapshot
+        .panes
+        .iter()
+        .find(|(id, _)| *id == tab_id)
+        .and_then(|(_, panes)| panes.iter().find(|pane| pane.is_active))
+        .map(|pane| pane.id)
+}
+
+fn ffi_layout_node_to_snapshot_json(layout: &ClientLayout) -> serde_json::Value {
+    match layout {
+        ClientLayout::Leaf { pane_id } => serde_json::json!({ "Leaf": pane_id }),
+        ClientLayout::Split {
+            horizontal,
+            ratio,
+            first,
+            second,
+        } => serde_json::json!({
+            "Split": {
+                "dir": if *horizontal { "Horizontal" } else { "Vertical" },
+                "ratio": ratio,
+                "first": ffi_layout_node_to_snapshot_json(first),
+                "second": ffi_layout_node_to_snapshot_json(second),
+            }
+        }),
+    }
+}
+
+fn ffi_status_name(status: u32) -> &'static str {
+    match status {
+        1 => "Connecting",
+        2 => "Connected",
+        3 => "Error",
+        4 => "Exited",
+        _ => "Disconnected",
     }
 }
 
@@ -325,5 +801,115 @@ mod tests {
         let b = mock_with_pane();
         let out = format_output(&b, &CliCommand::DumpState, OutputFormat::Json);
         assert!(out.contains(r#""workspace_name":"mock""#));
+    }
+
+    fn ffi_snapshot_with_split() -> FfiWorkspaceSnapshot {
+        FfiWorkspaceSnapshot {
+            workspace: ClientWorkspace {
+                id: "local/shell/cli".into(),
+                name: "cli".into(),
+                runtime: "shell".into(),
+                active: true,
+                resolved_target: None,
+            },
+            tabs: vec![ClientTab {
+                id: 1,
+                name: "shell".into(),
+                is_active: true,
+            }],
+            panes: vec![(
+                1,
+                vec![
+                    ClientPane {
+                        id: 1,
+                        cols: 80,
+                        rows: 24,
+                        is_active: false,
+                        title: "first".into(),
+                    },
+                    ClientPane {
+                        id: 2,
+                        cols: 80,
+                        rows: 24,
+                        is_active: true,
+                        title: "second".into(),
+                    },
+                ],
+            )],
+            layouts: vec![(
+                1,
+                Some(ClientLayout::Split {
+                    horizontal: true,
+                    ratio: 500,
+                    first: Box::new(ClientLayout::Leaf { pane_id: 1 }),
+                    second: Box::new(ClientLayout::Leaf { pane_id: 2 }),
+                }),
+            )],
+            outputs: vec![(1, b"first".to_vec()), (2, b"second".to_vec())],
+        }
+    }
+
+    fn ffi_snapshot_with_single_pane() -> FfiWorkspaceSnapshot {
+        FfiWorkspaceSnapshot {
+            workspace: ClientWorkspace {
+                id: "local/tmux/mock".into(),
+                name: "mock".into(),
+                runtime: "tmux".into(),
+                active: true,
+                resolved_target: None,
+            },
+            tabs: vec![ClientTab {
+                id: 1,
+                name: "t1".into(),
+                is_active: true,
+            }],
+            panes: vec![(
+                1,
+                vec![ClientPane {
+                    id: 1,
+                    cols: 80,
+                    rows: 24,
+                    is_active: true,
+                    title: "bash".into(),
+                }],
+            )],
+            layouts: vec![(1, Some(ClientLayout::Leaf { pane_id: 1 }))],
+            outputs: vec![(1, Vec::new())],
+        }
+    }
+
+    #[test]
+    fn format_ffi_layout_uses_pane_activity() {
+        let snapshot = ffi_snapshot_with_split();
+        let out = format_ffi_layout(&snapshot, OutputFormat::Text);
+        assert!(out.contains("@1 80x24\n"));
+        assert!(out.contains("@2 80x24 [active]"));
+        assert!(!out.contains("@1 80x24 [active]"));
+    }
+
+    #[test]
+    fn format_ffi_dump_preserves_state_snapshot_shape() {
+        let snapshot = ffi_snapshot_with_split();
+        let value: serde_json::Value =
+            serde_json::from_str(&format_ffi_dump(&snapshot, 2)).expect("valid dump JSON");
+        assert_eq!(value["status"], "Connected");
+        assert_eq!(value["active_tab"], 1);
+        assert_eq!(value["active_pane"], 2);
+        assert_eq!(value["panes"][0]["tab"], 1);
+        assert_eq!(value["panes"][0]["title"], "first");
+        assert_eq!(value["layouts"][0]["tree"]["Split"]["dir"], "Horizontal");
+        assert_eq!(value["layouts"][0]["active"], 2);
+        assert_eq!(value["outputs"][0], serde_json::json!([1, "first"]));
+    }
+
+    #[test]
+    fn format_ffi_dump_matches_legacy_snapshot_fields() {
+        let legacy = mock_with_pane();
+        let legacy: serde_json::Value =
+            serde_json::from_str(&format_dump_state(&legacy)).expect("valid legacy dump JSON");
+        let ffi: serde_json::Value =
+            serde_json::from_str(&format_ffi_dump(&ffi_snapshot_with_single_pane(), 2))
+                .expect("valid FFI dump JSON");
+        assert_eq!(ffi, legacy);
     }
 }

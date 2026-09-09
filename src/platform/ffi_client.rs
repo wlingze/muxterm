@@ -550,6 +550,13 @@ pub enum ClientTask {
     Shutdown,
 }
 
+/// Axis used by the Core pane-resize FFI operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientResizeAxis {
+    Horizontal,
+    Vertical,
+}
+
 /// Safe ownership boundary for one Core FFI handle.
 pub struct FfiClient {
     handle: NonNull<ffi::MuxtermHandle>,
@@ -807,6 +814,34 @@ impl FfiClient {
         unsafe { ffi::muxterm_execute_workspace(self.handle.as_ptr(), workspace_id.as_ptr(), &raw) }
     }
 
+    /// Rename a Core-owned workspace without exposing a C task DTO to callers.
+    pub fn rename_workspace(&self, workspace_id: &str, name: &str) -> i32 {
+        let workspace_id = cstring(workspace_id);
+        let name = cstring(name);
+        let raw = CTask {
+            type_: ffi::TASK_RENAME_WORKSPACE,
+            target_pane: 0,
+            target_tab: 0,
+            dir: 0,
+            name: name.as_ptr(),
+        };
+        unsafe { ffi::muxterm_execute_workspace(self.handle.as_ptr(), workspace_id.as_ptr(), &raw) }
+    }
+
+    /// Rename a tab in a Core-owned workspace without exposing a C task DTO.
+    pub fn rename_workspace_tab(&self, workspace_id: &str, tab_id: u32, name: &str) -> i32 {
+        let workspace_id = cstring(workspace_id);
+        let name = cstring(name);
+        let raw = CTask {
+            type_: ffi::TASK_RENAME_TAB,
+            target_pane: 0,
+            target_tab: tab_id,
+            dir: 0,
+            name: name.as_ptr(),
+        };
+        unsafe { ffi::muxterm_execute_workspace(self.handle.as_ptr(), workspace_id.as_ptr(), &raw) }
+    }
+
     /// Write input to a pane in a specific workspace without activating it.
     pub fn send_workspace_input(&self, workspace_id: &str, pane_id: u32, data: &[u8]) -> i32 {
         if data.is_empty() {
@@ -876,10 +911,14 @@ impl FfiClient {
         &self,
         workspace_id: &str,
         pane_id: u32,
-        axis: u32,
+        axis: ClientResizeAxis,
         size: u16,
     ) -> i32 {
         let workspace_id = cstring(workspace_id);
+        let axis = match axis {
+            ClientResizeAxis::Horizontal => ffi::DIR_HORIZONTAL,
+            ClientResizeAxis::Vertical => ffi::DIR_VERTICAL,
+        };
         unsafe {
             ffi::muxterm_workspace_resize_pane_axis(
                 self.handle.as_ptr(),
