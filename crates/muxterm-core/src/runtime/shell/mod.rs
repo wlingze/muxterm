@@ -898,7 +898,7 @@ impl Runtime for ShellRuntime {
         &[RuntimeCapability::MultiTab, RuntimeCapability::SplitPane]
     }
 
-    async fn connect(&mut self) -> Result<()> {
+    async fn connect(&mut self) -> muxterm_runtime::RuntimeResult<()> {
         if self.status == BackendStatus::Connected {
             return Ok(());
         }
@@ -931,12 +931,12 @@ impl Runtime for ShellRuntime {
                 self.status = BackendStatus::Error;
                 self.events
                     .push_back(StateChange::BackendStatusChanged(BackendStatus::Error));
-                Err(e)
+                Err(e.into())
             }
         }
     }
 
-    fn execute(&mut self, task: &Task) -> Result<TaskOutcome> {
+    fn execute(&mut self, task: &Task) -> muxterm_runtime::RuntimeResult<TaskOutcome> {
         let outcome = match task {
             Task::SplitPane {
                 target,
@@ -1292,7 +1292,7 @@ impl Runtime for ShellRuntime {
         self.events.drain(..).collect()
     }
 
-    async fn shutdown(&mut self) -> Result<()> {
+    async fn shutdown(&mut self) -> muxterm_runtime::RuntimeResult<()> {
         self.execute(&Task::Shutdown)?;
         Ok(())
     }

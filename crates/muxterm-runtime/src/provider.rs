@@ -9,7 +9,7 @@ use std::sync::Arc;
 use muxterm_protocol::candidate::ExistingCandidate;
 use muxterm_transport::{ChannelKind, TargetConnection};
 
-use crate::{Runtime, RuntimeCapability, RuntimeSpec};
+use crate::{Runtime, RuntimeCapability, RuntimeResult, RuntimeSpec};
 
 /// Static provider information used by Catalog and frontend-facing lists.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,7 +33,7 @@ pub trait RuntimeProvider: Send + Sync {
     }
 
     /// Optional named namespace discovery (Herdr sessions, for example).
-    fn namespaces(&self, connection: &dyn TargetConnection) -> anyhow::Result<Vec<String>> {
+    fn namespaces(&self, connection: &dyn TargetConnection) -> RuntimeResult<Vec<String>> {
         let _ = connection;
         Ok(Vec::new())
     }
@@ -43,14 +43,14 @@ pub trait RuntimeProvider: Send + Sync {
         &self,
         connection: &dyn TargetConnection,
         namespace: Option<&str>,
-    ) -> anyhow::Result<Vec<ExistingCandidate>>;
+    ) -> RuntimeResult<Vec<ExistingCandidate>>;
 
     /// Construct an unconnected Runtime instance.
     fn new_instance(
         &self,
         connection: Arc<dyn TargetConnection>,
         spec: &RuntimeSpec,
-    ) -> anyhow::Result<Box<dyn Runtime>>;
+    ) -> RuntimeResult<Box<dyn Runtime>>;
 }
 
 /// Whether a transport can provide every channel required by a Runtime.
@@ -87,7 +87,7 @@ mod tests {
             &self,
             _connection: &dyn TargetConnection,
             _namespace: Option<&str>,
-        ) -> anyhow::Result<Vec<ExistingCandidate>> {
+        ) -> RuntimeResult<Vec<ExistingCandidate>> {
             Ok(Vec::new())
         }
 
@@ -95,7 +95,7 @@ mod tests {
             &self,
             _connection: Arc<dyn TargetConnection>,
             _spec: &RuntimeSpec,
-        ) -> anyhow::Result<Box<dyn Runtime>> {
+        ) -> RuntimeResult<Box<dyn Runtime>> {
             unreachable!("contract-only test provider")
         }
     }

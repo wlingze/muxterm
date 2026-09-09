@@ -19,7 +19,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::Context;
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
@@ -3732,7 +3732,7 @@ impl Runtime for TmuxRuntime {
             .map(|t| t.snapshot())
             .unwrap_or((0, 0))
     }
-    async fn connect(&mut self) -> Result<()> {
+    async fn connect(&mut self) -> muxterm_runtime::RuntimeResult<()> {
         if self.status == BackendStatus::Connected {
             return Ok(());
         }
@@ -3819,11 +3819,12 @@ impl Runtime for TmuxRuntime {
             self.status = BackendStatus::Error;
             self.events
                 .push_back(StateChange::BackendStatusChanged(BackendStatus::Error));
-            anyhow::bail!(
+            return Err(anyhow::anyhow!(
                 "tmux 启动后未收到 session 事件 (mode={}, socket={})",
                 if is_attach { "attach" } else { "new-session" },
                 self.isolated_socket_name().unwrap_or("default"),
-            );
+            )
+            .into());
         }
 
         // attach 的 control client 可能已经先按默认 80x24 建立；在任何
@@ -3915,7 +3916,7 @@ impl Runtime for TmuxRuntime {
         Ok(())
     }
 
-    fn execute(&mut self, task: &Task) -> Result<TaskOutcome> {
+    fn execute(&mut self, task: &Task) -> muxterm_runtime::RuntimeResult<TaskOutcome> {
         if self.cmd_tx.is_none() || self.status != BackendStatus::Connected {
             return Ok(TaskOutcome::Rejected {
                 reason: "tmux 未连接".into(),
@@ -4351,7 +4352,7 @@ impl Runtime for TmuxRuntime {
         self.events.drain(..).collect()
     }
 
-    async fn shutdown(&mut self) -> Result<()> {
+    async fn shutdown(&mut self) -> muxterm_runtime::RuntimeResult<()> {
         // 已经由显式 Task::Detach 关闭 channel 时，不再重复发送命令。
         if self.cmd_tx.is_some() {
             self.execute(&Task::Shutdown)?;

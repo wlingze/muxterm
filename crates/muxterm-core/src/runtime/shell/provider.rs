@@ -2,8 +2,6 @@
 
 use std::sync::Arc;
 
-use anyhow::Result;
-
 use crate::protocol::candidate::ExistingCandidate;
 use crate::runtime::shell::ShellRuntime;
 use crate::runtime::RuntimeProvider;
@@ -31,7 +29,7 @@ impl RuntimeProvider for ShellDriver {
         &self,
         _connect: &dyn TargetConnection,
         _namespace: Option<&str>,
-    ) -> Result<Vec<ExistingCandidate>> {
+    ) -> muxterm_runtime::RuntimeResult<Vec<ExistingCandidate>> {
         Ok(Vec::new())
     }
 
@@ -39,7 +37,7 @@ impl RuntimeProvider for ShellDriver {
         &self,
         connect: Arc<dyn TargetConnection>,
         spec: &RuntimeSpec,
-    ) -> Result<Box<dyn Runtime>> {
+    ) -> muxterm_runtime::RuntimeResult<Box<dyn Runtime>> {
         Ok(Box::new(ShellRuntime::new_with_connection(
             connect, "$SHELL", &spec.path,
         )))
