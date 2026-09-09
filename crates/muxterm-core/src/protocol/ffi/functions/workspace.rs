@@ -5,17 +5,17 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 
 use crate::muxterm::Muxterm;
-use crate::protocol::ffi::api::{
-    configured_scrollback_lines, cstr_opt, discovery_timeout, json_error, json_string,
-    resolve_c_io_pane, MuxtermHandle,
-};
 use crate::protocol::layout::{LayoutNode, SplitDir};
 use crate::types::TabId;
 use crate::workspace::spec::WorkspaceSpec;
 
 use super::super::types::{CLayoutNode, CPane, CTab, LAYOUT_LEAF, LAYOUT_SPLIT_H, LAYOUT_SPLIT_V};
 use super::catalog::resolved_target_json;
-use super::support::parse_workspace_id;
+use super::handle::configured_scrollback_lines;
+use super::support::{
+    cstr_opt, discovery_timeout, json_error, json_string, parse_workspace_id, resolve_c_io_pane,
+    MuxtermHandle,
+};
 
 /// Create a detached tmux session through the Core discovery service.
 #[no_mangle]

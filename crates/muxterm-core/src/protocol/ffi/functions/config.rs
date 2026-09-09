@@ -7,7 +7,7 @@ use crate::config::{Rgb, Theme};
 use crate::config_service::action_catalog::resolve_effective_keybindings;
 use crate::config_service::{ConfigEvent, JsonPatchOperation, SettingsService};
 
-use super::super::api::{cstr_opt, json_string, MuxtermHandle};
+use super::support::{cstr_opt, json_string, MuxtermHandle};
 
 fn config_json_error(error: impl std::fmt::Display) -> *mut c_char {
     json_string(serde_json::json!({

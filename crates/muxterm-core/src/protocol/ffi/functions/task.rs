@@ -9,14 +9,15 @@ use crate::protocol::task::{Task, TaskOutcome};
 use crate::types::{PaneId, TabId};
 use crate::workspace::workspace::Workspace;
 
-use super::super::api::{cstr_opt, json_error, json_string, resolve_c_io_pane, MuxtermHandle};
 use super::super::types::{
     CTask, DIR_HORIZONTAL, DIR_VERTICAL, TAB_MOVE_BEFORE, TASK_BREAK_PANE, TASK_CLOSE_PANE,
     TASK_CLOSE_TAB, TASK_DETACH, TASK_MOVE_TAB, TASK_NEW_TAB, TASK_NEXT_PANE, TASK_PREV_PANE,
     TASK_REFRESH_TABS, TASK_RENAME_TAB, TASK_RENAME_WORKSPACE, TASK_REQUEST_PANE_SNAPSHOT,
     TASK_SHUTDOWN, TASK_SPLIT_PANE, TASK_SWITCH_PANE, TASK_SWITCH_TAB, TASK_TOGGLE_PANE_FULLSCREEN,
 };
-use super::support::parse_workspace_id;
+use super::support::{
+    cstr_opt, json_error, json_string, parse_workspace_id, resolve_c_io_pane, MuxtermHandle,
+};
 
 pub(crate) fn task_result_code(result: anyhow::Result<TaskOutcome>) -> i32 {
     match result {
