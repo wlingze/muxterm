@@ -729,6 +729,7 @@ Working · Codex · Implement runtime events · Tab 2
 | 23 | Shells / Agents 前端聚合 | GUI 投影格子，不是 Core Workspace |
 | 24 | Cmd-K 进 Shells | 靠近 Cmd-N；Cmd-N 留给以后新 Window |
 | 25 | 从 shell 提升 tmux/herdr | 难在认出 session；不 hook 命令 |
+| 26 | 三条聚合格子怎么排；其它还没单列的日用 | 判断，不是新功能清单 |
 
 ---
 
@@ -850,3 +851,43 @@ Shells 里的 pane 是 **ShellRuntime 的 PTY**。Muxterm 不是这个内层 tmu
 **不要在重构前的这棵树上实现。** 只记需求。新树有稳定的 ShellRuntime + Catalog attach 后再做；探测逻辑用 `support()`，禁止 `if runtime == "herdr"`。
 
 验收：Shells/local 里手动 `tmux new -s demo` 后点提升 → 原 pane 回到 shell，新 Workspace attach 到 `demo`；SSH 机器 tab 里同样走 SSH attach。普通进程点提升无事发生。
+
+---
+
+## 26. 这三条怎么样；还缺哪几口（2026-09-09）
+
+### 判断
+
+三条都对，而且都是 **Client 聚合**，没有和 Herdr/Superlogical 抢 Runtime。不要做成 Core 新层。
+
+| 条 | 值不值 | 难度 | 何时 |
+| --- | --- | --- | --- |
+| **Shells + Cmd-K** | 最高。就是现在关掉的那个废 1 号，和别的终端 Cmd-N 的洞。没有它，Muxterm 不像一台终端。 | 中。多台机器 = 多个 ShellRuntime，GUI 合成 tabs。 | 第三波日用里 **先做**。 |
+| **Agents 聚合槽** | 高。B 的列表是发现；这个槽是进去干活。agent 一多，点侧栏会烦。 | 中偏高。Surface 借用、焦点/resize、和源 Workspace 同时开着。只画当前 tab，别一屏拼十个。 | B 列表能跳之后。 |
+| **提升 muxer** | 方向对，是 `twork` 的里面那半。 | **最高。** 难在从 Shell PTY 反推内层 session（尤其 SSH）。认错会 attach 到别人的 tmux。 | **后做。** 先有 Shells；过渡期在 shell 里 detach 再 QuickConnect / `muxterm ~/proj` 也能过。 |
+
+`Cmd-K` 进 Shells、`Cmd-N` 留给以后的 Window，这个分工对。
+
+### 还没单独成节、但日用里会碰到的
+
+下面这些 **不要现在开做**，避免和重构抢树。只是别忘了，1.0 收口时按痛再排：
+
+1. **上一个工作区**（愿景里的 `Cmd-\`` / 面板默认落在上一格）。你整天在项目之间跳，比再做一个聚合槽更常按。
+2. **合盖 / 断线重连要无聊**（愿景 §2.15.2）。SSH 日用里这条比新功能更像「会不会切回 iTerm」。
+3. **点通知 / Attention 必须落到那个 pane**（B 闭环的一部分，不是新表面）。
+4. **远程 OSC 52 → 本机剪贴板**（agent 在远端复制，本机要能贴）。和图片投递方向相反，都是剪贴板桥。
+5. **Cmd-N 新 Window**（你已经留键）。现在一扇窗够用；真要第二扇时再做「Window 只是体现」。
+6. **工作区按仓库分组**（愿景 §2.15.8）。列表过长再做，现在不要。
+
+**不要**再加：手机、账号、自己做 mux、hook `tmux` 命令、Core 里假 Workspace。
+
+### 和四波怎么叠
+
+```text
+B 闭环（peek / 答一句 / 机器标记）
+  → Agents 聚合槽（进去干活）
+Shells + Cmd-K
+  →（可选，难）提升 muxer
+地标 / 搜索跳坐标 / 图 / 端口 / Cmd-W / 选词
+合盖重连、上一工作区：穿插，哪口先痛先做
+```
