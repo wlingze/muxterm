@@ -4,7 +4,10 @@
 //! keeps only the display and attach identity it needs; it never stores the
 //! Core discovery entry or Core runtime/transport enums.
 
-use crate::platform::ffi_client::ExistingCandidate;
+use crate::platform::ffi_client::{
+    ClientCandidateRef, ClientExistingCandidateRef, ClientOpenIntent, ClientOpenRequest,
+    ExistingCandidate,
+};
 
 use super::model::{TargetConfig, TargetRuntime, TargetTransport};
 
@@ -132,7 +135,44 @@ impl ExistingEntry {
         format!("{} @ {}", self.runtime.as_str(), self.transport.label())
     }
 
-    /// Convert a frontend row to the existing attach configuration model.
+    /// Convert the row's typed identity into the product-level attach request.
+    ///
+    /// Existing rows must go through Catalog resolution. In particular, the
+    /// display title is not used as a session/workspace lookup key.
+    pub fn open_request(&self) -> ClientOpenRequest {
+        let (transport_id, target) = match &self.transport {
+            ExistingTransport::Local => ("local", "local".to_string()),
+            ExistingTransport::Ssh { name } => ("ssh", name.clone()),
+        };
+        let (session, socket, workspace_id) = match self.runtime {
+            ExistingRuntime::Shell => (None, None, None),
+            ExistingRuntime::Tmux => (self.tmux_session.clone(), self.tmux_socket.clone(), None),
+            ExistingRuntime::Herdr => (
+                self.herdr_session.clone(),
+                self.herdr_socket.clone(),
+                self.herdr_workspace_id.clone(),
+            ),
+        };
+
+        ClientOpenRequest {
+            candidate: ClientCandidateRef::Existing {
+                identity: ClientExistingCandidateRef {
+                    runtime_id: self.runtime.as_str().to_string(),
+                    transport_id: transport_id.to_string(),
+                    target,
+                    session,
+                    socket,
+                    workspace_id,
+                },
+            },
+            intent: ClientOpenIntent::AttachOnly,
+            template: None,
+            activate: true,
+        }
+    }
+
+    /// Convert a frontend row to the legacy target configuration model used
+    /// only by the current list search/deduplication compatibility path.
     pub fn target_config(&self) -> TargetConfig {
         let runtime = match self.runtime {
             ExistingRuntime::Shell => TargetRuntime::Shell,
@@ -201,6 +241,22 @@ mod tests {
             Some("/remote/.config/herdr/sessions/agents/herdr.sock")
         );
         assert_eq!(config.workspace_id.as_deref(), Some("w7"));
+
+        let request = entry.open_request();
+        assert_eq!(request.intent, ClientOpenIntent::AttachOnly);
+        assert!(request.activate);
+        let ClientCandidateRef::Existing { identity } = request.candidate else {
+            panic!("existing row must produce an Existing candidate reference");
+        };
+        assert_eq!(identity.runtime_id, "herdr");
+        assert_eq!(identity.transport_id, "ssh");
+        assert_eq!(identity.target, "buildbox");
+        assert_eq!(identity.session.as_deref(), Some("agents"));
+        assert_eq!(
+            identity.socket.as_deref(),
+            Some("/remote/.config/herdr/sessions/agents/herdr.sock")
+        );
+        assert_eq!(identity.workspace_id.as_deref(), Some("w7"));
     }
 
     #[test]

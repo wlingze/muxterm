@@ -40,8 +40,9 @@ use crate::core::workspace::pool::WorkspaceCapacityCandidate;
 use crate::core::workspace::spec::WorkspaceSpec;
 use crate::platform::event_pump::EventPump;
 use crate::platform::ffi_client::{
-    ClientActivitySnapshot, ClientAttentionPane, ClientEventKind, ClientOpenIntent, ClientTarget,
-    ClientTask, ClientWorkspaceAttention, ClientWorkspaceEvent, FfiClient,
+    ClientActivitySnapshot, ClientAttentionPane, ClientCandidateRef, ClientEventKind,
+    ClientOpenIntent, ClientOpenRequest, ClientTarget, ClientTask, ClientWorkspaceAttention,
+    ClientWorkspaceEvent, FfiClient,
 };
 use crate::platform::i18n::{self, Key};
 use crate::platform::linux::attention_ui::{window_title, GioSink, NotificationSink};
@@ -4039,8 +4040,8 @@ fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelT
             },
             on_existing_connect: {
                 let st = st.clone();
-                std::boxed::Box::new(move |cfg| {
-                    connect_target_with_intent(&st, cfg, ProjectConnectIntent::AttachOnly);
+                std::boxed::Box::new(move |request| {
+                    connect_existing_request(&st, request);
                 })
             },
             on_edit: {
@@ -4895,6 +4896,51 @@ fn connect_target_with_intent(
                 .borrow_mut()
                 .notification_log
                 .push(format!("{}: connect failed: {detail}", config.name));
+        }
+    }
+}
+
+fn connect_existing_request(state: &Rc<RefCell<UiState>>, request: ClientOpenRequest) {
+    let socket = match &request.candidate {
+        ClientCandidateRef::Existing { identity } => identity.socket.clone(),
+        _ => None,
+    };
+    let label = match &request.candidate {
+        ClientCandidateRef::Existing { identity } => {
+            format!("{} @ {}", identity.runtime_id, identity.target)
+        }
+        _ => "existing connection".to_string(),
+    };
+    let result = {
+        let s = state.borrow();
+        s.event_pump.client().open(&request)
+    };
+    match result {
+        Ok(opened) => {
+            let mut s = state.borrow_mut();
+            if let Some(id) = parse_workspace_id(&opened.id) {
+                s.workspace_sockets.insert(id, socket);
+            }
+            if let Err(error) = sync_view_store(&mut s) {
+                tracing::warn!(
+                    target = "muxterm::linux",
+                    %error,
+                    "workspace snapshot refresh failed after existing attach"
+                );
+                return;
+            }
+            after_activate(&mut s);
+        }
+        Err(error) => {
+            let detail = error.to_string();
+            tracing::error!(
+                target = "muxterm::linux",
+                "existing attach failed: {detail}"
+            );
+            state
+                .borrow_mut()
+                .notification_log
+                .push(format!("{label}: connect failed: {detail}"));
         }
     }
 }
