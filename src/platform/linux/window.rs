@@ -26,7 +26,7 @@ use crate::core::attention::clock::RealClock;
 use crate::core::attention::engine::{AttentionEngine, PaneAttention};
 use crate::core::attention::signal::{AttentionSignal, AttentionSource};
 use crate::core::attention::state::PaneStatus;
-use crate::core::config::{Action, Config, KeyBinding, OnLastPaneExit, Theme};
+use crate::core::config::{Action, Config, KeyBinding, OnLastPaneExit};
 use crate::core::quickconnect::model::QuickConnect;
 use crate::core::runtime::RuntimeCapability;
 use crate::core::workspace::pool::WorkspaceCapacityCandidate;
@@ -61,6 +61,9 @@ use crate::platform::linux::quickconnect_panel::{
 };
 use crate::platform::linux::scene_stack::SceneStack;
 use crate::platform::linux::status_bar::{ConnectionSummary, StatusBar};
+#[cfg(test)]
+use crate::platform::linux::theme::Rgb;
+use crate::platform::linux::theme::{fallback_theme, toggle_target, Theme};
 use crate::platform::linux::tmux_dialog::{self, TmuxAction};
 use crate::platform::linux::view_store::ViewStore;
 use crate::platform::linux::workspace_sidebar::{
@@ -611,7 +614,6 @@ impl AppWindow {
         root.add_css_class("muxterm-root");
 
         let theme_name = cfg.theme.name.clone().to_ascii_lowercase();
-        let theme = Theme::load(&theme_name).unwrap_or(theme);
         apply_chrome_css(&theme);
         let config_font_size = cfg.font.size;
         let font = FontSettings {
@@ -2288,11 +2290,21 @@ fn reset_font(s: &mut UiState) {
 }
 
 fn toggle_theme(s: &mut UiState) {
-    let next_name = Theme::toggle_target(&s.theme_name);
-    let Ok(theme) = Theme::load(next_name) else {
+    let next_name = toggle_target(&s.theme_name);
+    let Ok(snapshot) = s.event_pump.client().config_apply_path(
+        "theme.name",
+        serde_json::Value::String(next_name.to_string()),
+    ) else {
         tracing::error!(
             target = "muxterm::linux",
-            "加载主题 {next_name} 失败，保持当前主题"
+            "保存主题 {next_name} 失败，保持当前主题"
+        );
+        return;
+    };
+    let Some(theme) = snapshot.resolved_theme else {
+        tracing::error!(
+            target = "muxterm::linux",
+            "Core 没有返回主题 {next_name}，保持当前主题"
         );
         return;
     };
@@ -2303,11 +2315,6 @@ fn toggle_theme(s: &mut UiState) {
     }
     s.status.apply_theme(&theme);
     apply_chrome_css(&theme);
-    persist_config(
-        s.event_pump.client(),
-        "theme.name",
-        serde_json::Value::String(next_name.to_string()),
-    );
     report_all_pane_colours(s);
 }
 
@@ -4273,6 +4280,7 @@ fn open_preferences(state: &Rc<RefCell<UiState>>, window: &Window) {
             let mut s = st.borrow_mut();
             // 保存后重新读取 Core FFI 快照，重建 keymap 并刷新运行期状态。
             if let Ok(snapshot) = snapshot {
+                let resolved_theme = snapshot.resolved_theme.clone();
                 let document = match serde_json::from_value::<
                     crate::core::config_service::ConfigDocument,
                 >(snapshot.values)
@@ -4310,14 +4318,13 @@ fn open_preferences(state: &Rc<RefCell<UiState>>, window: &Window) {
                 s.font.size = FontSettings::clamp_size(cfg.font.size);
                 s.font.family = cfg.font.family.clone();
                 s.theme_name = cfg.theme.name.to_ascii_lowercase();
-                if let Ok(t) = Theme::load(&s.theme_name) {
-                    s.theme = t.clone();
-                    apply_chrome_css(&t);
-                    for layout in s.pixel_cache.values_mut() {
-                        layout.apply_theme(&t);
-                    }
-                    s.status.apply_theme(&t);
+                let theme = resolved_theme.unwrap_or_else(fallback_theme);
+                s.theme = theme.clone();
+                apply_chrome_css(&theme);
+                for layout in s.pixel_cache.values_mut() {
+                    layout.apply_theme(&theme);
                 }
+                s.status.apply_theme(&theme);
                 s.status_mode = StatusBarMode::from_toml(Some(&cfg.statusbar.mode));
                 s.status.set_mode(s.status_mode);
                 maybe_refresh_status(&mut s, true);
@@ -5575,8 +5582,8 @@ mod tests {
 
     #[test]
     fn chrome_css_follows_light_and_dark_background() {
-        let light = Theme::load("light").unwrap();
-        let dark = Theme::load("dark").unwrap();
+        let light = test_theme("light", Rgb(0xef, 0xf1, 0xf5));
+        let dark = test_theme("dark", Rgb(0x1e, 0x1e, 0x2e));
         let light_css = chrome_css(&light);
         let dark_css = chrome_css(&dark);
         assert!(light_css.contains("#eff1f5"), "{light_css}");
@@ -5598,6 +5605,16 @@ mod tests {
         );
         assert!(light_css.contains("box-shadow: 0 18px 44px"), "{light_css}");
         assert_ne!(light_css, dark_css);
+    }
+
+    fn test_theme(name: &str, background: Rgb) -> Theme {
+        Theme {
+            name: name.into(),
+            background,
+            foreground: Rgb(0, 0, 0),
+            cursor: Rgb(0, 0, 0),
+            colors: [Rgb(0, 0, 0); 16],
+        }
     }
 
     /// W4：同一批 PaneAdded + LayoutChanged + PaneResized + PaneFrame +

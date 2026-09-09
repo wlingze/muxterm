@@ -15,7 +15,7 @@ use gtk4::gdk;
 use gtk4::prelude::*;
 use support::linux_gtk::*;
 
-use muxterm::test_support::core::config::{Config, Theme};
+use muxterm::test_support::core::config::Config;
 use muxterm::test_support::platform::linux::window::AppWindow;
 
 fn unique_socket(label: &str) -> String {
@@ -89,16 +89,7 @@ fn attention_bel_paints_badge_and_panel() {
             cfg.tmux.default_session = "att".into();
         }
 
-        let app = AppWindow::new(
-            cfg,
-            Theme::load("light").unwrap_or_else(|_| Theme {
-                name: "test".into(),
-                background: muxterm::test_support::core::config::Rgb(0x1e, 0x1e, 0x2e),
-                foreground: muxterm::test_support::core::config::Rgb(0xcd, 0xd6, 0xf4),
-                cursor: muxterm::test_support::core::config::Rgb(0xf5, 0xe0, 0xdc),
-                colors: [muxterm::test_support::core::config::Rgb(0, 0, 0); 16],
-            }),
-        );
+        let app = AppWindow::new(cfg, load_theme());
         app.window.present();
         gtk4::test_widget_wait_for_draw(&app.window);
         pump_main_loop(150);

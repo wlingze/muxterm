@@ -3,6 +3,7 @@
 use std::ffi::c_char;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
+use crate::config::{Rgb, Theme};
 use crate::config_service::{ConfigEvent, JsonPatchOperation, SettingsService};
 
 use super::super::api::{cstr_opt, json_string, MuxtermHandle};
@@ -19,6 +20,33 @@ fn config_json_error(error: impl std::fmt::Display) -> *mut c_char {
     }))
 }
 
+fn rgb_json(color: Rgb) -> serde_json::Value {
+    serde_json::json!([color.0, color.1, color.2])
+}
+
+fn resolved_theme_json(values: &serde_json::Value) -> Option<serde_json::Value> {
+    let theme = values.get("theme")?.as_object()?;
+    let configured = theme.get("name")?.as_str()?.trim();
+    let name = if configured.eq_ignore_ascii_case("system") {
+        let resolved = Theme::resolve_name("system");
+        if resolved == "black" {
+            theme.get("dark")?.as_str()?.trim()
+        } else {
+            theme.get("light")?.as_str()?.trim()
+        }
+    } else {
+        configured
+    };
+    let theme = Theme::load(name).ok()?;
+    Some(serde_json::json!({
+        "name": name,
+        "background": rgb_json(theme.background),
+        "foreground": rgb_json(theme.foreground),
+        "cursor": rgb_json(theme.cursor),
+        "colors": theme.colors.iter().copied().map(rgb_json).collect::<Vec<_>>(),
+    }))
+}
+
 /// Return the resolved configuration, defaults, JSON Schema and UI Manifest.
 /// The returned string is released with `muxterm_free_string`.
 ///
@@ -32,11 +60,15 @@ pub unsafe extern "C" fn muxterm_config_describe_json(h: *mut MuxtermHandle) -> 
         }
         let snapshot = (&*h).settings.snapshot();
         let mut data = serde_json::to_value(snapshot).unwrap_or_else(|_| serde_json::json!({}));
+        let resolved_theme =
+            resolved_theme_json(data.get("values").unwrap_or(&serde_json::Value::Null))
+                .unwrap_or(serde_json::Value::Null);
         if let Some(data) = data.as_object_mut() {
             data.insert(
                 "path".into(),
                 serde_json::json!((&*h).settings.path().to_string_lossy()),
             );
+            data.insert("resolved_theme".into(), resolved_theme);
         }
         json_string(serde_json::json!({
             "ok": true,

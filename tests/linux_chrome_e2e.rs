@@ -13,20 +13,14 @@ use std::rc::Rc;
 use gtk4::prelude::*;
 use support::linux_gtk::*;
 
-use muxterm::test_support::core::config::Theme;
 use muxterm::test_support::platform::linux::quickconnect::status_style::{
     StatusBarMode, StatusBarSnapshot, StatusBarWindow,
 };
 use muxterm::test_support::platform::linux::status_bar::StatusBar;
+use muxterm::test_support::platform::linux::theme::Theme;
 
 fn theme() -> Theme {
-    Theme::load("light").unwrap_or_else(|_| Theme {
-        name: "test".into(),
-        background: muxterm::test_support::core::config::Rgb(0x1e, 0x1e, 0x2e),
-        foreground: muxterm::test_support::core::config::Rgb(0xcd, 0xd6, 0xf4),
-        cursor: muxterm::test_support::core::config::Rgb(0xf5, 0xe0, 0xdc),
-        colors: [muxterm::test_support::core::config::Rgb(0, 0, 0); 16],
-    })
+    load_theme()
 }
 
 fn snapshot(left: &str, right: &str, windows: Vec<StatusBarWindow>) -> StatusBarSnapshot {

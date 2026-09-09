@@ -14,11 +14,11 @@ use gtk4::glib;
 use gtk4::prelude::*;
 use vte4::prelude::*;
 
-use crate::core::config::Theme;
 use crate::platform::linux::pane_input_state::PaneInputState;
 use crate::platform::linux::quickconnect::font::FontSettings;
 use crate::platform::linux::renderer::{TerminalRenderer, VteRenderer};
 use crate::platform::linux::scroll_policy::{wheel_action, WheelAction};
+use crate::platform::linux::theme::{Rgb, Theme};
 use crate::platform::mirror::{
     should_forward_mixed_input, should_forward_parser_response, DISABLE_MOUSE_TRACKING,
 };
@@ -26,7 +26,6 @@ use crate::platform::mouse::{
     gtk_button_to_sgr, pointer_cell as pixel_to_cell, sgr_report, SGR_HOVER, SGR_MOTION,
 };
 use crate::platform::url_opener::UrlOpener;
-use muxterm_protocol::Rgb;
 
 /// 同一 pane 输出合并后刷新的窗口（毫秒）。
 pub const FEED_COALESCE_MS: u64 = 25;

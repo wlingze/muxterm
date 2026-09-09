@@ -1,9 +1,50 @@
 //! 主题 → ANSI 样式映射。
 //!
-//! 把 vte4 解析出的 SGR 参数映射成具体 RGB 颜色 + 样式位，复用 `config::Theme`
-//! 的 ANSI 16 色与背景/前景。这部分是纯函数，便于单元测试。
+//! 把 vte4 解析出的 SGR 参数映射成具体 RGB 颜色 + 样式位。
+//!
+//! 主题 DTO 由统一 `ffi_client` 从 Core 拥有的配置服务取得；这里的代码只
+//! 负责 GTK 显示层的纯颜色映射，不读取配置文件或主题资源。
 
-use crate::core::config::{Rgb, Theme};
+pub use crate::platform::ffi_client::{ClientRgb as Rgb, ClientTheme as Theme};
+
+/// Core 配置不可用时使用的安全浅色回退主题。
+pub fn fallback_theme() -> Theme {
+    Theme {
+        name: "white".into(),
+        background: Rgb(0xff, 0xff, 0xff),
+        foreground: Rgb(0x1f, 0x23, 0x28),
+        cursor: Rgb(0x1f, 0x23, 0x28),
+        colors: [
+            Rgb(0x24, 0x29, 0x2f),
+            Rgb(0xcf, 0x22, 0x2e),
+            Rgb(0x11, 0x63, 0x29),
+            Rgb(0x7d, 0x4e, 0x00),
+            Rgb(0x09, 0x69, 0xda),
+            Rgb(0x82, 0x50, 0xdf),
+            Rgb(0x0a, 0x6b, 0x6b),
+            Rgb(0x6e, 0x77, 0x81),
+            Rgb(0x57, 0x60, 0x6a),
+            Rgb(0xa4, 0x0e, 0x26),
+            Rgb(0x1a, 0x7f, 0x37),
+            Rgb(0x9a, 0x67, 0x00),
+            Rgb(0x21, 0x8b, 0xff),
+            Rgb(0xa4, 0x75, 0xf9),
+            Rgb(0x31, 0x92, 0xaa),
+            Rgb(0x8c, 0x95, 0x9f),
+        ],
+    }
+}
+
+/// 主题切换只表达产品层的稳定名称，不解析主题文件。
+pub fn toggle_target(current: &str) -> &'static str {
+    match current.trim().to_ascii_lowercase().as_str() {
+        "black" => "white",
+        "white" => "black",
+        "dark" => "light",
+        "light" => "dark",
+        _ => "dark",
+    }
+}
 
 /// 终端字符样式（前景/背景/粗体/下划线等）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -373,26 +414,38 @@ mod tests {
         assert_eq!(bg, t.colors[1]);
     }
 
-    /// 对应：light/dark 主题文件可加载。
+    /// 对应：Core 返回的 light/dark DTO 可直接用于渲染。
     #[test]
-    fn test_theme_load_light_and_dark() {
-        let dark = Theme::load("dark").expect("dark");
-        let light = Theme::load("light").expect("light");
-        assert_eq!(dark.name, "Dark");
-        assert_eq!(light.name, "Light");
+    fn test_theme_dto_light_and_dark() {
+        let dark = Theme {
+            name: "dark".into(),
+            background: Rgb(0x1e, 0x1e, 0x2e),
+            foreground: Rgb(0xcd, 0xd6, 0xf4),
+            cursor: Rgb(0xf5, 0xe0, 0xdc),
+            colors: [Rgb(0, 0, 0); 16],
+        };
+        let light = Theme {
+            name: "light".into(),
+            background: Rgb(0xef, 0xf1, 0xf5),
+            foreground: Rgb(0x4c, 0x4f, 0x69),
+            cursor: Rgb(0xdc, 0x8a, 0x78),
+            colors: [Rgb(255, 255, 255); 16],
+        };
+        assert_eq!(dark.name, "dark");
+        assert_eq!(light.name, "light");
         assert_ne!(dark.background, light.background);
     }
 
-    /// 对应：无效主题名回退失败（调用方再选默认）。
+    /// 对应：切换名称由前端表达，主题解析仍由 Core 完成。
     #[test]
-    fn test_theme_load_invalid_name_errors() {
-        assert!(Theme::load("not-a-real-theme-xyz").is_err());
+    fn test_theme_toggle_unknown_name_uses_dark_side() {
+        assert_eq!(toggle_target("not-a-real-theme-xyz"), "dark");
     }
 
     #[test]
     fn default_fg_on_truecolor_light_box_stays_contrasty() {
         // 2219/2144：Codex 浅色主题输入框 `48;2;216;216;216` + `39` 默认前景。
-        let t = Theme::load("light").expect("light");
+        let t = theme();
         let boxed = apply_sgr(&[48, 2, 216, 216, 216], base(&t), &t);
         let s = apply_sgr(&[39], boxed, &t);
         assert_eq!(s.fg, t.foreground, "39m 必须是主题前景而不是盒子灰");

@@ -162,6 +162,26 @@ impl ClientError {
     }
 }
 
+/// Owned RGB value returned by a Core FFI DTO.
+#[derive(Debug, Clone, Copy, Default, serde::Deserialize, PartialEq, Eq)]
+pub struct ClientRgb(pub u8, pub u8, pub u8);
+
+impl ClientRgb {
+    pub fn to_u32(self) -> u32 {
+        ((self.0 as u32) << 16) | ((self.1 as u32) << 8) | self.2 as u32
+    }
+}
+
+/// Resolved theme owned by the frontend after crossing the FFI boundary.
+#[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
+pub struct ClientTheme {
+    pub name: String,
+    pub background: ClientRgb,
+    pub foreground: ClientRgb,
+    pub cursor: ClientRgb,
+    pub colors: [ClientRgb; 16],
+}
+
 /// Owned configuration snapshot returned by the Core configuration ABI.
 #[derive(Debug, Clone, serde::Deserialize, PartialEq)]
 pub struct ClientConfigSnapshot {
@@ -174,6 +194,8 @@ pub struct ClientConfigSnapshot {
     pub schema: serde_json::Value,
     pub manifest: serde_json::Value,
     pub action_catalog: serde_json::Value,
+    #[serde(default)]
+    pub resolved_theme: Option<ClientTheme>,
 }
 
 /// RFC 6902-style patch operation accepted by the Core configuration ABI.
@@ -2269,6 +2291,7 @@ mod tests {
 
     #[test]
     fn config_snapshot_and_draft_decode_as_owned_values() {
+        let colors = vec![serde_json::json!([0, 0, 0]); 16];
         let snapshot: ClientConfigSnapshot = serde_json::from_value(serde_json::json!({
             "path": "/tmp/config.toml",
             "revision": "rev-1",
@@ -2278,11 +2301,22 @@ mod tests {
             "schema": {"type": "object"},
             "manifest": {"schema_id": "muxterm.config.v1"},
             "action_catalog": {"actions": []},
+            "resolved_theme": {
+                "name": "white",
+                "background": [255, 255, 255],
+                "foreground": [31, 35, 40],
+                "cursor": [31, 35, 40],
+                "colors": colors,
+            },
         }))
         .expect("config snapshot decodes");
         assert_eq!(snapshot.path, "/tmp/config.toml");
         assert_eq!(snapshot.revision, "rev-1");
         assert_eq!(snapshot.values["font"]["size"], 13.0);
+        assert_eq!(
+            snapshot.resolved_theme.as_ref().unwrap().background,
+            ClientRgb(255, 255, 255)
+        );
 
         let draft: ClientConfigDraft = serde_json::from_value(serde_json::json!({
             "transaction": "tx-1",
