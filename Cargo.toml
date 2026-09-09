@@ -8,6 +8,7 @@ license = "MIT"
 # Reserved for the planned protocol/core/runtime/transport crate split.
 [workspace]
 resolver = "2"
+members = ["crates/muxterm-protocol"]
 
 [features]
 # 默认编译 GTK4 前端（archmini 等 GTK 机器用）。
@@ -44,6 +45,7 @@ clap = { version = "4", features = ["derive"] }
 async-channel = "2"
 async-trait = "0.1"
 async-ssh2-tokio = "0.13"
+muxterm-protocol = { path = "crates/muxterm-protocol" }
 
 # 可选：跨平台 TUI 前端
 crossterm = { version = "0.28", optional = true }
