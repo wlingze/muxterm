@@ -6,6 +6,7 @@
 //! Runtime 不关心 Transport 是 local 还是 SSH；Transport 不理解 shell/tmux 语义。
 
 pub mod connection;
+pub mod local;
 pub mod provider;
 pub mod registry;
 
