@@ -4105,13 +4105,7 @@ fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelT
                             }
                             crate::platform::linux::panel_model::SearchScope::All => true,
                         })
-                        .map(|hit| crate::platform::linux::panel_model::SearchRow {
-                            workspace_id: hit.workspace_id,
-                            tab_id: hit.tab_id,
-                            pane_id: hit.pane_id,
-                            seq: hit.seq,
-                            line: hit.line,
-                        })
+                        .map(crate::platform::linux::panel_model::SearchRow::from)
                         .collect();
                     hits
                 })

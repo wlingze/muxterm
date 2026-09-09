@@ -5,7 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::platform::ffi_client::{ClientAttentionPane, ClientAttentionStatus};
+use crate::platform::ffi_client::{ClientAttentionPane, ClientAttentionStatus, ClientSearchHit};
 use crate::platform::linux::quickconnect_panel::{filter_panel_items, PanelItem};
 use crate::platform::linux::workspace_sidebar::{ActivityIndicator, AgentSidebarItem};
 
@@ -88,12 +88,12 @@ pub struct SearchRow {
     pub line: String,
 }
 
-impl From<crate::core::workspace::workspace::SearchHit> for SearchRow {
-    fn from(hit: crate::core::workspace::workspace::SearchHit) -> Self {
+impl From<ClientSearchHit> for SearchRow {
+    fn from(hit: ClientSearchHit) -> Self {
         Self {
             workspace_id: hit.workspace_id,
-            tab_id: hit.tab_id.0,
-            pane_id: hit.pane_id.0,
+            tab_id: hit.tab_id,
+            pane_id: hit.pane_id,
             seq: hit.seq,
             line: hit.line,
         }

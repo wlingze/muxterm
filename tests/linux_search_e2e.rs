@@ -67,7 +67,13 @@ fn search_tab_finds_replica_hits_and_jumps() {
                     s.borrow()
                         .search_workspace(query)
                         .into_iter()
-                        .map(SearchRow::from)
+                        .map(|hit| SearchRow {
+                            workspace_id: hit.workspace_id,
+                            tab_id: hit.tab_id.0,
+                            pane_id: hit.pane_id.0,
+                            seq: hit.seq,
+                            line: hit.line,
+                        })
                         .collect()
                 }),
                 on_close: Box::new(|| {}),
