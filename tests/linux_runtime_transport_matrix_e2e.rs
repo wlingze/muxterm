@@ -33,7 +33,7 @@ use muxterm::test_support::platform::linux::window::AppWindow;
 use support::herdr_test_support::herdr_available;
 use support::linux_gtk::{
     find_by_name, gtk_test_framework_smoke, load_theme, pump_main_loop, simulate_key_press,
-    skip_no_display, window_key_controller,
+    skip_no_display, window_key_controller, AppWindowTestExt,
 };
 use support::runtime_transport_matrix::{build_2tab3pane, MatrixFixture};
 use support::sshd_test_support::{loopback_sshd_available, LoopbackSshd};
