@@ -9,4 +9,5 @@ anyhow = "1"
 libc = "0.2"
 portable-pty = "0.8"
 tokio = { version = "1", features = ["sync"] }
+tracing = "0.1"
 thiserror = "1"

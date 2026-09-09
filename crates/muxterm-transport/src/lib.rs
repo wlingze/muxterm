@@ -9,6 +9,7 @@ pub mod connection;
 pub mod local;
 pub mod provider;
 pub mod registry;
+pub mod ssh;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
