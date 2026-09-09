@@ -3,6 +3,7 @@
 pub mod app;
 pub mod attention_ui;
 pub mod command_palette;
+#[cfg(test)]
 pub(crate) mod event_batch;
 pub mod fault_gtk;
 pub mod font_registry;

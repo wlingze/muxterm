@@ -28,6 +28,7 @@ use crate::core::attention::signal::{AttentionSignal, AttentionSource};
 use crate::core::attention::state::PaneStatus;
 use crate::core::config::{Action, Config, KeyBinding, OnLastPaneExit, Theme};
 use crate::core::config_service::SettingsService;
+#[cfg(test)]
 use crate::core::protocol::state::StateChange;
 use crate::core::protocol::task::TaskOutcome;
 use crate::core::quickconnect::model::QuickConnect;
@@ -2669,6 +2670,7 @@ impl UiBatchEffects {
     }
 }
 
+#[cfg(test)]
 fn attention_event_pane(event: &StateChange) -> Option<u32> {
     match event {
         StateChange::PaneOutput { pane, .. }
