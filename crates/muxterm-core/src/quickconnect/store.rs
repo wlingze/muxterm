@@ -6,6 +6,7 @@
 //!   `[[projects]]`。本模块不解析或序列化 TOML；增删改通过
 //!   `SettingsService` 事务写 Core 文档。
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use super::model::{QuickConnect, TargetConfig};
@@ -17,6 +18,8 @@ pub struct QuickConnectStore {
     pub projects: Vec<TargetConfig>,
     /// 统一 config.toml 路径（`new_unified` 设置）；None 表示纯内存。
     config_path: Option<PathBuf>,
+    /// Project identity is kept separately from the portable target config.
+    project_ids: HashMap<String, String>,
 }
 
 /// 最近连接记录条数上限。
@@ -46,12 +49,15 @@ impl QuickConnectStore {
                         "QuickConnect 迁移未完成: {error}"
                     );
                 }
-                store.projects = service
-                    .document()
-                    .projects
-                    .iter()
-                    .filter_map(|project| project.to_target().ok())
-                    .collect();
+                for project in &service.document().projects {
+                    let Ok(target) = project.to_target() else {
+                        continue;
+                    };
+                    store
+                        .project_ids
+                        .insert(QuickConnect::unique_id(&target), project.id.clone());
+                    store.projects.push(target);
+                }
             }
             Err(error) => tracing::warn!(
                 target = "muxterm::config",
@@ -85,9 +91,22 @@ impl QuickConnectStore {
         self.recents = new_recents.to_vec();
     }
 
+    /// Return the persisted Core project id for a target config.
+    pub fn project_id_for(&self, config: &TargetConfig) -> Option<String> {
+        self.project_ids
+            .get(&QuickConnect::unique_id(config))
+            .cloned()
+    }
+
     /// 新增或更新一个 project（按 attach identity 匹配）。返回是否新增。
     pub fn upsert_project(&mut self, config: &TargetConfig) -> bool {
         let id = QuickConnect::unique_id(config);
+        let project_id = self
+            .project_ids
+            .get(&id)
+            .cloned()
+            .unwrap_or_else(|| crate::config_service::ProjectDocument::from_target(config).id);
+        self.project_ids.insert(id.clone(), project_id);
         let added = if let Some(idx) = self
             .projects
             .iter()
@@ -107,6 +126,7 @@ impl QuickConnectStore {
     pub fn remove_project(&mut self, config: &TargetConfig) {
         let id = QuickConnect::unique_id(config);
         self.projects.retain(|p| QuickConnect::unique_id(p) != id);
+        self.project_ids.remove(&id);
         self.persist();
     }
 
@@ -123,7 +143,14 @@ impl QuickConnectStore {
         let value = serde_json::Value::Array(
             self.projects
                 .iter()
-                .map(crate::config_service::ProjectDocument::from_target)
+                .map(|config| {
+                    let mut project = crate::config_service::ProjectDocument::from_target(config);
+                    if let Some(project_id) = self.project_ids.get(&QuickConnect::unique_id(config))
+                    {
+                        project.id.clone_from(project_id);
+                    }
+                    project
+                })
                 .filter_map(|project| serde_json::to_value(project).ok())
                 .collect(),
         );
@@ -179,6 +206,23 @@ mod tests {
         ));
         assert_eq!(store.recents.len(), MAX_RECENT);
         assert_eq!(store.recents[0].name, "p24");
+    }
+
+    #[test]
+    fn upsert_project_retains_stable_project_id() {
+        let mut store = QuickConnectStore::in_memory();
+        let config = cfg(
+            "muxterm",
+            TargetRuntime::Tmux,
+            TargetTransport::Local,
+            "~/muxterm",
+        );
+
+        assert!(store.upsert_project(&config));
+        assert_eq!(
+            store.project_id_for(&config).as_deref(),
+            Some("muxterm@local")
+        );
     }
 
     #[test]

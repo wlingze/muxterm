@@ -471,11 +471,23 @@ impl QuickBadge {
 pub struct QuickConnectEntry {
     pub config: TargetConfig,
     pub badges: Vec<QuickBadge>,
+    /// Core project identity when this row represents a project-only entry.
+    /// Recent rows intentionally leave this empty and use their recent key.
+    pub project_id: Option<String>,
 }
 
 impl QuickConnectEntry {
     pub fn new(config: TargetConfig, badges: Vec<QuickBadge>) -> Self {
-        QuickConnectEntry { config, badges }
+        QuickConnectEntry {
+            config,
+            badges,
+            project_id: None,
+        }
+    }
+
+    pub fn with_project_id(mut self, project_id: impl Into<String>) -> Self {
+        self.project_id = Some(project_id.into());
+        self
     }
 }
 
