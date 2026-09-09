@@ -14,6 +14,7 @@ use anyhow::{ensure, Context, Result};
 
 use muxterm::test_support::core::catalog::Catalog;
 use muxterm::test_support::core::protocol::task::{Task, TaskOutcome};
+use muxterm::test_support::core::transport::registry::ConnectionRegistry;
 use muxterm::test_support::core::workspace::pool::WorkspacePool;
 use muxterm::test_support::core::workspace::spec::WorkspaceSpec;
 use support::herdr_test_support::herdr_available;
@@ -63,10 +64,11 @@ fn run_case(runtime_id: &str, transport_id: &str, sshd: &LoopbackSshd) -> Result
         .build()
         .context("创建 Tokio runtime")?;
 
-    let mut catalog = Catalog::with_builtins();
+    let catalog = Catalog::with_builtins();
+    let mut connections = ConnectionRegistry::new();
     let mut pool = WorkspacePool::default();
     let snapshot = {
-        let runtime = catalog.new_runtime(&spec)?;
+        let runtime = catalog.new_runtime(&mut connections, &spec)?;
         let workspace = rt
             .block_on(pool.open_spec_with_runtime(&spec, runtime))
             .with_context(|| format!("打开 {runtime_id} x {transport_id}"))?;
@@ -88,7 +90,7 @@ fn run_case(runtime_id: &str, transport_id: &str, sshd: &LoopbackSshd) -> Result
     };
 
     let alternate_token = {
-        let runtime = catalog.new_runtime(&alternate_spec)?;
+        let runtime = catalog.new_runtime(&mut connections, &alternate_spec)?;
         let alternate = rt
             .block_on(pool.open_spec_with_runtime(&alternate_spec, runtime))
             .with_context(|| format!("创建第二个 {runtime_id} x {transport_id} Workspace"))?;
@@ -140,9 +142,10 @@ fn run_case(runtime_id: &str, transport_id: &str, sshd: &LoopbackSshd) -> Result
         // 真正丢掉旧 Runtime，再从相同 spec 新建实例 attach；不能依赖旧本地状态。
         drop(catalog);
         drop(pool);
-        let mut attached_catalog = Catalog::with_builtins();
+        let attached_catalog = Catalog::with_builtins();
+        let mut attached_connections = ConnectionRegistry::new();
         let mut attached_pool = WorkspacePool::default();
-        let attached_runtime = attached_catalog.new_runtime(&spec)?;
+        let attached_runtime = attached_catalog.new_runtime(&mut attached_connections, &spec)?;
         let attached = rt
             .block_on(attached_pool.open_spec_with_runtime(&spec, attached_runtime))
             .with_context(|| {

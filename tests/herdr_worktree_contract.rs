@@ -7,6 +7,7 @@ mod support;
 use muxterm::test_support::core::catalog::Catalog;
 use muxterm::test_support::core::protocol::TabId;
 use muxterm::test_support::core::runtime::WorktreeCreateSpec;
+use muxterm::test_support::core::transport::registry::ConnectionRegistry;
 use muxterm::test_support::core::workspace::pool::{WorkspacePool, WorkspacePoolPolicy};
 use muxterm::test_support::core::workspace::spec::WorkspaceSpec;
 use support::herdr_test_support::{herdr_available, IsolatedHerdr, TempGitRepo};
@@ -32,7 +33,9 @@ fn herdr_worktree_contract() {
     let socket = herdr.socket_path().to_string_lossy().to_string();
     let spec = WorkspaceSpec::herdr(herdr.name(), ws.clone(), socket.clone());
     let id = spec.id();
-    rt.block_on(pool.open_spec(&spec, |spec| Catalog::with_builtins().new_runtime(spec)))
+    let catalog = Catalog::with_builtins();
+    let mut connections = ConnectionRegistry::new();
+    rt.block_on(pool.open_spec(&spec, |spec| catalog.new_runtime(&mut connections, spec)))
         .expect("open 主 checkout 失败");
 
     // 1. list：至少一行主 checkout；path 是 temp repo；open_workspace 对得上当前格。
@@ -50,8 +53,10 @@ fn herdr_worktree_contract() {
     let (tmp_ws, _tt, _tp) = herdr.create_workspace("/tmp", "mux-wt-tmp");
     let tmp_spec = WorkspaceSpec::herdr(herdr.name(), tmp_ws.clone(), socket.clone());
     let tmp_id = tmp_spec.id();
-    rt.block_on(pool.open_spec(&tmp_spec, |spec| Catalog::with_builtins().new_runtime(spec)))
-        .expect("open /tmp 工作区失败");
+    rt.block_on(pool.open_spec(&tmp_spec, |spec| {
+        catalog.new_runtime(&mut connections, spec)
+    }))
+    .expect("open /tmp 工作区失败");
     if let Ok(list) = rt.block_on(pool.list_worktrees(&tmp_id)) {
         assert!(list.is_empty(), "/tmp 非 git 目录 list 应为空");
     }
@@ -67,7 +72,7 @@ fn herdr_worktree_contract() {
     };
     let new_id = rt
         .block_on(pool.create_worktree(&id, &create_spec, |spec| {
-            Catalog::with_builtins().new_runtime(spec)
+            catalog.new_runtime(&mut connections, spec)
         }))
         .expect("worktree.create 应成功");
     repo.track_worktree(&wt_path);
@@ -121,7 +126,7 @@ fn herdr_worktree_contract() {
     // 3. open：对已存在 path 再 open，返回已有 WorkspaceId，不复制一格。
     let opened_id = rt
         .block_on(pool.open_worktree(&id, &wt_path.to_string_lossy(), |spec| {
-            Catalog::with_builtins().new_runtime(spec)
+            catalog.new_runtime(&mut connections, spec)
         }))
         .expect("worktree.open 应成功");
     assert_eq!(opened_id, new_id, "open 已存在 checkout 返回同一格");

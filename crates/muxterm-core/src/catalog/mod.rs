@@ -2,8 +2,8 @@
 //!
 //! 契约：`docs/CATALOG.md`。施工：`docs/CATALOG-PLAN.md`。
 //!
-//! `trait Runtime` 只表示已经 attach 的格子。列出候选、拿管道、探活
-//! 都在 Catalog：provider 视图、ConnectionRegistry、Inventory、resolver。
+//! `trait Runtime` 只表示已经 attach 的格子。Catalog 保留 provider 视图、
+//! Inventory 和 resolver；可复用连接由组合根通过显式 registry 提供。
 
 pub mod inventory;
 pub mod resolver;
@@ -42,7 +42,6 @@ pub struct Catalog {
     runtimes: Vec<Box<dyn RuntimeProvider>>,
     /// TransportProvider 表。顺序 = 注册顺序；`with_builtins` 按 local, ssh 登记。
     transports: Vec<Box<dyn TransportProvider>>,
-    connections: ConnectionRegistry,
     inventory: Inventory,
     templates: TemplateRegistry,
 }
@@ -59,7 +58,6 @@ impl Catalog {
         Self {
             runtimes: Vec::new(),
             transports: Vec::new(),
-            connections: ConnectionRegistry::new(),
             inventory: Inventory::new(),
             templates: TemplateRegistry::default(),
         }
@@ -174,19 +172,19 @@ impl Catalog {
 
     /// 取出或新建一条可复用管道。同一 `(transport, target)` 返回同一 `Arc`。
     pub fn connect(
-        &mut self,
+        &self,
+        connections: &mut ConnectionRegistry,
         transport_id: &str,
         target: &str,
     ) -> anyhow::Result<Arc<dyn TargetConnection>> {
-        if let Some(existing) = self.connections.get(transport_id, target) {
+        if let Some(existing) = connections.get(transport_id, target) {
             return Ok(existing);
         }
         let t = self
             .transport(transport_id)
             .ok_or_else(|| anyhow::anyhow!("unknown transport '{transport_id}'"))?;
         let connect = t.connect(target)?;
-        self.connections
-            .acquire(transport_id, target, || Ok(connect.clone()))
+        connections.acquire(transport_id, target, || Ok(connect.clone()))
     }
 
     /// 扇出到接受该 transport 的 Driver。单个 Driver 失败则跳过，不让整表失败。
@@ -195,7 +193,8 @@ impl Catalog {
     /// 拼接成一张表（同一 session 经 local 和 ssh-self 出现两行，禁止去重）。
     /// SSH host 最多 4 路并发，慢/死 host 不能把整表拖成串行超时之和。
     pub fn discover_sessions(
-        &mut self,
+        &self,
+        connections: &mut ConnectionRegistry,
         transport_id: &str,
         target: &str,
     ) -> anyhow::Result<Vec<ExistingCandidate>> {
@@ -207,7 +206,7 @@ impl Catalog {
                     .transport(&tid)
                     .map(|transport| transport.supported_channels().to_vec())
                     .unwrap_or_default();
-                let connect = self.connect(&tid, &tgt).ok();
+                let connect = self.connect(connections, &tid, &tgt).ok();
                 jobs.push((tid, connect, supported_channels));
             }
             let runtimes = &self.runtimes;
@@ -249,7 +248,7 @@ impl Catalog {
             .transport(transport_id)
             .map(|transport| transport.supported_channels().to_vec())
             .unwrap_or_default();
-        let connect = match self.connect(transport_id, target) {
+        let connect = match self.connect(connections, transport_id, target) {
             Ok(c) => c,
             Err(_) => return Ok(Vec::new()),
         };
@@ -276,19 +275,7 @@ impl Catalog {
     /// 按 spec 通过 provider 构造尚未连接的 Runtime。
     ///
     /// 未知 runtime / 不接受的 transport → Err。禁止悄悄变成 Shell。
-    pub fn new_runtime(&mut self, spec: &WorkspaceSpec) -> anyhow::Result<Box<dyn Runtime>> {
-        Ok(Self::open_runtime(
-            &self.runtimes,
-            &self.transports,
-            &mut self.connections,
-            spec,
-        )?)
-    }
-
-    /// Construct a Runtime using a ConnectionRegistry owned by the product
-    /// composition root. Catalog keeps the old method above for standalone
-    /// resolver/tests, while live Muxterm opens use this path.
-    pub fn new_runtime_with_connections(
+    pub fn new_runtime(
         &self,
         connections: &mut ConnectionRegistry,
         spec: &WorkspaceSpec,
@@ -361,7 +348,8 @@ impl Catalog {
     /// keeps provider construction while inserting the new runtime into the
     /// caller's pool.
     pub async fn create_native_worktree_with_pool(
-        &mut self,
+        &self,
+        connections: &mut ConnectionRegistry,
         pool: &mut WorkspacePool,
         source: &WorkspaceId,
         worktree: &crate::runtime::WorktreeCreateSpec,
@@ -390,7 +378,7 @@ impl Catalog {
             .as_ref()
             .and_then(|name| self.templates.get(name))
             .cloned();
-        let runtime = self.new_runtime(&spec)?;
+        let runtime = self.new_runtime(connections, &spec)?;
         let workspace = pool.open_spec_with_runtime(&spec, runtime).await?;
         workspace.set_provenance(provenance);
         if should_apply_template {
@@ -406,7 +394,8 @@ impl Catalog {
     /// Template application is intentionally limited to create specs; an
     /// attach always follows the remote topology already present.
     pub async fn open_spec<'a>(
-        &mut self,
+        &self,
+        connections: &mut ConnectionRegistry,
         pool: &'a mut WorkspacePool,
         spec: &WorkspaceSpec,
     ) -> anyhow::Result<&'a mut Workspace> {
@@ -417,7 +406,7 @@ impl Catalog {
             .as_ref()
             .and_then(|name| self.templates.get(name))
             .cloned();
-        let runtime = self.new_runtime(spec)?;
+        let runtime = self.new_runtime(connections, spec)?;
         let workspace = pool
             .open_spec_with_runtime(spec, runtime)
             .await
@@ -435,7 +424,8 @@ impl Catalog {
     /// Catalog resolves identities and constructs Runtime instances, but it
     /// never owns live Workspace slots.
     pub async fn open_resolved<'a>(
-        &mut self,
+        &self,
+        connections: &mut ConnectionRegistry,
         pool: &'a mut WorkspacePool,
         resolved: ResolvedTarget,
     ) -> anyhow::Result<&'a mut Workspace> {
@@ -448,7 +438,7 @@ impl Catalog {
         }
         let spec = resolved.spec.clone();
         let canonical = resolved.canonical.clone();
-        let workspace = self.open_spec(pool, &spec).await?;
+        let workspace = self.open_spec(connections, pool, &spec).await?;
         workspace.set_resolved_target(ResolvedTarget { canonical, spec });
         Ok(workspace)
     }
@@ -457,13 +447,21 @@ impl Catalog {
     ///
     /// GUI 后台线程需要：Catalog 只做身份解析 + Driver open（共享 Connect），
     /// 结果 Workspace 由 platform 自己的池收编，避免第二份 pool 拷贝。
-    pub async fn open_owned(&mut self, spec: &WorkspaceSpec) -> anyhow::Result<Workspace> {
-        self.build_owned(spec).await
+    pub async fn open_owned(
+        &self,
+        connections: &mut ConnectionRegistry,
+        spec: &WorkspaceSpec,
+    ) -> anyhow::Result<Workspace> {
+        self.build_owned(connections, spec).await
     }
 
     /// Driver open + Workspace 构造（不进池）；descriptor 由调用方按需设置。
-    async fn build_owned(&mut self, spec: &WorkspaceSpec) -> anyhow::Result<Workspace> {
-        let runtime = self.new_runtime(spec)?;
+    async fn build_owned(
+        &self,
+        connections: &mut ConnectionRegistry,
+        spec: &WorkspaceSpec,
+    ) -> anyhow::Result<Workspace> {
+        let runtime = self.new_runtime(connections, spec)?;
         let id = spec.id();
         let name = spec.name();
         Ok(Workspace::new_with_scrollback(
@@ -476,22 +474,24 @@ impl Catalog {
 
     /// TargetConfig → owned Workspace（resolve 后 build_owned；GUI 后台线程用）。
     pub async fn open_target_owned(
-        &mut self,
+        &self,
+        connections: &mut ConnectionRegistry,
         config: &crate::quickconnect::model::TargetConfig,
         intent: ResolveIntent,
     ) -> anyhow::Result<Workspace> {
-        let resolved = self.resolve_target(config, intent)?;
-        self.open_resolved_owned(resolved).await
+        let resolved = self.resolve_target(connections, config, intent)?;
+        self.open_resolved_owned(connections, resolved).await
     }
 
     /// 打开已解析目标并返回 owned Workspace（不进池）。
     pub async fn open_resolved_owned(
-        &mut self,
+        &self,
+        connections: &mut ConnectionRegistry,
         resolved: ResolvedTarget,
     ) -> anyhow::Result<Workspace> {
         let spec = resolved.spec.clone();
         let canonical = resolved.canonical.clone();
-        let mut workspace = self.build_owned(&spec).await?;
+        let mut workspace = self.build_owned(connections, &spec).await?;
         workspace.set_resolved_target(ResolvedTarget { canonical, spec });
         Ok(workspace)
     }
@@ -501,7 +501,8 @@ impl Catalog {
     /// Project/Recent/Existing 三路都走这里；platform 不得复制第二套。
     /// 只做身份解析（含 Herdr workspace 存在性检查），不建 Runtime。
     pub fn resolve_target(
-        &mut self,
+        &self,
+        connections: &mut ConnectionRegistry,
         config: &crate::quickconnect::model::TargetConfig,
         intent: ResolveIntent,
     ) -> Result<ResolvedTarget, resolver::ResolveError> {
@@ -530,13 +531,13 @@ impl Catalog {
                         id: "herdr".to_string(),
                     });
                 }
-                let connect = self.connect(transport, target).map_err(|error| {
-                    resolver::ResolveError::TargetConnection {
+                let connect = self
+                    .connect(connections, transport, target)
+                    .map_err(|error| resolver::ResolveError::TargetConnection {
                         transport_id: transport.to_string(),
                         target: target.to_string(),
                         message: format!("{error:#}"),
-                    }
-                })?;
+                    })?;
                 let driver = self
                     .runtime("herdr")
                     .expect("刚检查过的 Herdr RuntimeProvider 必须仍在");
@@ -641,11 +642,12 @@ impl Catalog {
     /// Project records are supplied by the Projects domain; Catalog still owns
     /// all runtime/discovery resolution and is the only producer of a spec.
     pub fn resolve_open_request(
-        &mut self,
+        &self,
+        connections: &mut ConnectionRegistry,
         request: &OpenRequest,
         projects: &[Project],
     ) -> Result<ResolvedTarget, resolver::ResolveError> {
-        self.resolve_open_request_with_recent(request, projects, &[])
+        self.resolve_open_request_with_recent(connections, request, projects, &[])
     }
 
     /// Resolve an open request while the live pool is owned by Muxterm.
@@ -654,7 +656,8 @@ impl Catalog {
     /// it receives the recent descriptors as an owned snapshot instead of
     /// borrowing a pool that belongs to the composition root.
     pub(crate) fn resolve_open_request_with_recent(
-        &mut self,
+        &self,
+        connections: &mut ConnectionRegistry,
         request: &OpenRequest,
         projects: &[Project],
         recent: &[ResolvedTarget],
@@ -667,7 +670,8 @@ impl Catalog {
                     .ok_or_else(|| resolver::ResolveError::ProjectNotFound {
                         id: project_id.clone(),
                     })?;
-                let mut resolved = self.resolve_target(&project.target, request.intent)?;
+                let mut resolved =
+                    self.resolve_target(connections, &project.target, request.intent)?;
                 resolved.spec.provenance = Some(project.provenance());
                 resolved.spec.template = request
                     .template
@@ -707,7 +711,7 @@ impl Catalog {
                     target.session = Some(worktree.id.to_string());
                 }
 
-                let mut resolved = self.resolve_target(&target, request.intent)?;
+                let mut resolved = self.resolve_target(connections, &target, request.intent)?;
                 if request.intent == ResolveIntent::CreateIfMissing {
                     resolved.spec.create = true;
                 }
@@ -719,7 +723,7 @@ impl Catalog {
                 Ok(resolved)
             }
             CandidateRef::Existing { identity } => {
-                let mut resolved = self.resolve_existing_candidate(identity)?;
+                let mut resolved = self.resolve_existing_candidate(connections, identity)?;
                 resolved.spec.template = request.template.clone();
                 // An Existing row is an attach identity even if a caller
                 // accidentally supplies CreateIfMissing.
@@ -868,7 +872,8 @@ impl Catalog {
     }
 
     fn resolve_existing_candidate(
-        &mut self,
+        &self,
+        connections: &mut ConnectionRegistry,
         identity: &ExistingCandidateRef,
     ) -> Result<ResolvedTarget, resolver::ResolveError> {
         let connect_target = existing_connect_target(identity);
@@ -883,7 +888,7 @@ impl Catalog {
             });
         }
         let connect = self
-            .connect(&identity.transport_id, connect_target)
+            .connect(connections, &identity.transport_id, connect_target)
             .map_err(|error| resolver::ResolveError::TargetConnection {
                 transport_id: identity.transport_id.clone(),
                 target: connect_target.to_string(),
@@ -948,7 +953,10 @@ impl Catalog {
     /// 对每个 TransportProvider 的 target：connect 失败 → Reach::Err；成功 →
     /// 各接受该 transport 的 Driver.list（短命令）成功 → Reach::Ok。
     /// 只写 Inventory，不打开 Workspace。
-    pub fn refresh_inventory(&mut self) -> anyhow::Result<()> {
+    pub fn refresh_inventory(
+        &mut self,
+        connections: &mut ConnectionRegistry,
+    ) -> anyhow::Result<()> {
         let transport_ids: Vec<String> =
             self.transports.iter().map(|t| t.id().to_string()).collect();
         for transport_id in transport_ids {
@@ -961,7 +969,7 @@ impl Catalog {
                 None => continue,
             };
             for target in targets {
-                let reach = match self.connect(&transport_id, &target.id) {
+                let reach = match self.connect(connections, &transport_id, &target.id) {
                     Ok(connect) => {
                         let mut ok = false;
                         for driver in &self.runtimes {
@@ -993,11 +1001,6 @@ impl Catalog {
 
     pub fn inventory_mut(&mut self) -> &mut Inventory {
         &mut self.inventory
-    }
-
-    /// Move the compatibility connection registry into the product root.
-    pub(crate) fn take_connections(&mut self) -> ConnectionRegistry {
-        std::mem::take(&mut self.connections)
     }
 }
 

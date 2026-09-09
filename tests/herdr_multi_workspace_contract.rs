@@ -10,6 +10,7 @@ use std::time::Instant;
 
 use muxterm::test_support::core::catalog::Catalog;
 use muxterm::test_support::core::runtime::HerdrRuntime;
+use muxterm::test_support::core::transport::registry::ConnectionRegistry;
 use muxterm::test_support::core::workspace::pool::{WorkspacePool, WorkspacePoolPolicy};
 use muxterm::test_support::core::workspace::spec::WorkspaceSpec;
 use support::herdr_test_support::{herdr_available, IsolatedHerdr};
@@ -50,9 +51,11 @@ fn herdr_multi_workspace_contract() {
         .worker_threads(2)
         .build()
         .expect("tokio");
-    rt.block_on(pool.open_spec(&spec_a, |spec| Catalog::with_builtins().new_runtime(spec)))
+    let catalog = Catalog::with_builtins();
+    let mut connections = ConnectionRegistry::new();
+    rt.block_on(pool.open_spec(&spec_a, |spec| catalog.new_runtime(&mut connections, spec)))
         .expect("open A 失败");
-    rt.block_on(pool.open_spec(&spec_b, |spec| Catalog::with_builtins().new_runtime(spec)))
+    rt.block_on(pool.open_spec(&spec_b, |spec| catalog.new_runtime(&mut connections, spec)))
         .expect("open B 失败");
 
     // 内部必须共享同一条 HerdrSession（同一 socket）。

@@ -30,7 +30,10 @@ pub unsafe extern "C" fn muxterm_candidates_json(
             return json_error("handle 为空");
         }
         let handle = &mut *h;
-        let existing = match handle.catalog.discover_sessions("all", "") {
+        let existing = match handle
+            .catalog
+            .discover_sessions(&mut handle.connections, "all", "")
+        {
             Ok(rows) => rows,
             Err(error) => return json_error(error),
         };
@@ -171,7 +174,7 @@ pub unsafe extern "C" fn muxterm_workspace_open_target_json(
                 &mut handle.connections,
                 &mut handle.pool,
             );
-            let resolved = match catalog.resolve_target(&config, intent) {
+            let resolved = match catalog.resolve_target(connections, &config, intent) {
                 Ok(resolved) => resolved,
                 Err(error) => return json_resolve_error(&error),
             };
@@ -235,8 +238,20 @@ pub unsafe extern "C" fn muxterm_workspace_worktree_create_json(
         };
         let handle = &mut *h;
         let result = {
-            let (rt, catalog, pool) = (&handle.rt, &mut handle.catalog, &mut handle.pool);
-            rt.block_on(catalog.create_native_worktree_with_pool(pool, &source, &spec, None, None))
+            let (rt, catalog, connections, pool) = (
+                &handle.rt,
+                &handle.catalog,
+                &mut handle.connections,
+                &mut handle.pool,
+            );
+            rt.block_on(catalog.create_native_worktree_with_pool(
+                connections,
+                pool,
+                &source,
+                &spec,
+                None,
+                None,
+            ))
         };
         match result {
             Ok(workspace_id) => {

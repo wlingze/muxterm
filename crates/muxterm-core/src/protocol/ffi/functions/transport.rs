@@ -4,6 +4,8 @@ use std::ffi::c_char;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::time::Duration;
 
+use crate::transport::registry::ConnectionRegistry;
+
 use super::support::{cstr_opt, discovery_timeout, json_error, json_string, MuxtermHandle};
 
 /// Discover Host aliases from the user's SSH configuration.
@@ -184,7 +186,11 @@ pub unsafe extern "C" fn muxterm_discover_sessions_json(
         let transport = cstr_opt(transport).unwrap_or_else(|| "local".into());
         let target = cstr_opt(target).unwrap_or_default();
         // transport=all fans out across every configured connection target.
-        match (*h).catalog.discover_sessions(&transport, &target) {
+        let handle = &mut *h;
+        match handle
+            .catalog
+            .discover_sessions(&mut handle.connections, &transport, &target)
+        {
             Ok(rows) => json_string(serde_json::json!({
                 "ok": true,
                 "workspaces": rows.iter().map(session_candidate_json).collect::<Vec<_>>(),
@@ -216,8 +222,9 @@ pub extern "C" fn muxterm_discover_workspaces_json(
         let _socket = cstr_opt(socket);
         let _config_path = cstr_opt(config_path);
         let _timeout_ms = timeout_ms;
-        let mut catalog = crate::catalog::Catalog::with_builtins();
-        match catalog.discover_sessions(&transport, &target) {
+        let catalog = crate::catalog::Catalog::with_builtins();
+        let mut connections = ConnectionRegistry::new();
+        match catalog.discover_sessions(&mut connections, &transport, &target) {
             Ok(rows) => json_string(serde_json::json!({
                 "ok": true,
                 "workspaces": rows.iter().map(session_candidate_json).collect::<Vec<_>>(),

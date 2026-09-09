@@ -10,6 +10,7 @@ use crate::logging::{init_logging, LoggingConfig};
 use crate::projects::{ProjectStore, ProjectsService};
 use crate::protocol::terminal::emulate::DEFAULT_SCROLLBACK_LINES;
 use crate::runtime::{DaemonRuntime, ShellRuntime, TmuxRuntime};
+use crate::transport::registry::ConnectionRegistry;
 use crate::workspace::pool::WorkspacePool;
 use crate::workspace::template::WorkspaceTemplate;
 use muxterm_protocol::WorkspaceId;
@@ -195,10 +196,9 @@ fn boxed_handle(
             ProjectsService::in_memory()
         }
     };
-    let connections = catalog.take_connections();
     Box::into_raw(Box::new(MuxtermHandle {
         catalog,
-        connections,
+        connections: ConnectionRegistry::new(),
         pool,
         projects,
         rt,

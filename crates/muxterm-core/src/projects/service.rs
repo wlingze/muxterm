@@ -8,6 +8,7 @@ use crate::executable::expand_config_value;
 use crate::protocol::candidate::CandidateRef;
 use crate::quickconnect::model::{TargetRuntime, TargetTransport};
 use crate::runtime::WorktreeCreateSpec;
+use crate::transport::registry::ConnectionRegistry;
 use crate::transport::ChannelRequest;
 use crate::workspace::pool::WorkspacePool;
 use crate::workspace::template::TemplateName;
@@ -15,8 +16,8 @@ use muxterm_protocol::WorkspaceId;
 
 use super::{git_worktree_add_argv, Project, ProjectId, ProjectStore, Worktree, WorktreeId};
 
-/// Projects facade. It owns records, while Catalog owns connection/provider
-/// services and the caller owns live Workspace instances in a pool.
+/// Projects facade. It owns records, while Muxterm owns reusable connections
+/// and live Workspace instances in a pool.
 #[derive(Debug, Clone, Default)]
 pub struct ProjectsService {
     store: ProjectStore,
@@ -95,7 +96,8 @@ impl ProjectsService {
     /// to this strategy.
     pub fn create_generic_worktree(
         &mut self,
-        catalog: &mut Catalog,
+        catalog: &Catalog,
+        connections: &mut ConnectionRegistry,
         project_id: &ProjectId,
         spec: &WorktreeCreateSpec,
     ) -> Result<WorktreeId> {
@@ -111,7 +113,7 @@ impl ProjectsService {
             TargetTransport::Local => ("local", ""),
             TargetTransport::Ssh { name } => ("ssh", name.as_str()),
         };
-        let connection = catalog.connect(transport_id, target)?;
+        let connection = catalog.connect(connections, transport_id, target)?;
         let local = matches!(project.target.transport, TargetTransport::Local);
         let repo_root = if local {
             expand_config_value(&project.target.path)
@@ -165,15 +167,17 @@ impl ProjectsService {
     /// defined by the new Workspace entering the pool.
     pub async fn create_generic_worktree_and_open(
         &mut self,
-        catalog: &mut Catalog,
+        catalog: &Catalog,
+        connections: &mut ConnectionRegistry,
         pool: &mut WorkspacePool,
         project_id: &ProjectId,
         spec: &WorktreeCreateSpec,
         template_override: Option<TemplateName>,
     ) -> Result<WorkspaceId> {
-        let worktree_id = self.create_generic_worktree(catalog, project_id, spec)?;
+        let worktree_id = self.create_generic_worktree(catalog, connections, project_id, spec)?;
         self.open_worktree(
             catalog,
+            connections,
             pool,
             project_id,
             &worktree_id,
@@ -187,7 +191,8 @@ impl ProjectsService {
     /// the checkout creation, while Projects owns the resulting provenance.
     pub async fn create_native_worktree_and_open(
         &mut self,
-        catalog: &mut Catalog,
+        catalog: &Catalog,
+        connections: &mut ConnectionRegistry,
         pool: &mut WorkspacePool,
         project_id: &ProjectId,
         spec: &WorktreeCreateSpec,
@@ -203,12 +208,20 @@ impl ProjectsService {
             ));
         }
         let source = self
-            .open_project(catalog, pool, project_id, ResolveIntent::AttachOnly, None)
+            .open_project(
+                catalog,
+                connections,
+                pool,
+                project_id,
+                ResolveIntent::AttachOnly,
+                None,
+            )
             .await?;
         let worktree_id = allocate_worktree_id(&project, spec);
         let template = template_override.or(project.template.clone());
         let workspace_id = catalog
             .create_native_worktree_with_pool(
+                connections,
                 pool,
                 &source,
                 spec,
@@ -230,10 +243,11 @@ impl ProjectsService {
     }
 
     /// Select native vs generic strategy, then return only after the new
-    /// Workspace has been inserted into Catalog's pool.
+    /// Workspace has been inserted into the caller-owned product pool.
     pub async fn create_worktree(
         &mut self,
-        catalog: &mut Catalog,
+        catalog: &Catalog,
+        connections: &mut ConnectionRegistry,
         pool: &mut WorkspacePool,
         project_id: &ProjectId,
         spec: &WorktreeCreateSpec,
@@ -245,11 +259,19 @@ impl ProjectsService {
             .target
             .runtime;
         if runtime == TargetRuntime::Herdr {
-            self.create_native_worktree_and_open(catalog, pool, project_id, spec, template_override)
-                .await
+            self.create_native_worktree_and_open(
+                catalog,
+                connections,
+                pool,
+                project_id,
+                spec,
+                template_override,
+            )
+            .await
         } else {
             self.create_generic_worktree_and_open(
                 catalog,
+                connections,
                 pool,
                 project_id,
                 spec,
@@ -259,10 +281,12 @@ impl ProjectsService {
         }
     }
 
-    /// Open a Project through the single Catalog resolver path.
+    /// Open a Project through the single Catalog resolver path and caller-owned
+    /// product pool.
     pub async fn open_project(
         &self,
-        catalog: &mut Catalog,
+        catalog: &Catalog,
+        connections: &mut ConnectionRegistry,
         pool: &mut WorkspacePool,
         id: &ProjectId,
         intent: ResolveIntent,
@@ -279,16 +303,18 @@ impl ProjectsService {
             template: template_override,
             activate: true,
         };
-        let resolved = catalog.resolve_open_request(&request, self.list_projects())?;
+        let resolved = catalog.resolve_open_request(connections, &request, self.list_projects())?;
         let workspace_id = resolved.workspace_id();
-        catalog.open_resolved(pool, resolved).await?;
+        catalog.open_resolved(connections, pool, resolved).await?;
         Ok(workspace_id)
     }
 
     /// Open a registered Worktree through the same Catalog path as a Project.
+    #[allow(clippy::too_many_arguments)]
     pub async fn open_worktree(
         &mut self,
-        catalog: &mut Catalog,
+        catalog: &Catalog,
+        connections: &mut ConnectionRegistry,
         pool: &mut WorkspacePool,
         project_id: &ProjectId,
         worktree_id: &super::WorktreeId,
@@ -311,9 +337,9 @@ impl ProjectsService {
             template: template_override,
             activate: true,
         };
-        let resolved = catalog.resolve_open_request(&request, self.list_projects())?;
+        let resolved = catalog.resolve_open_request(connections, &request, self.list_projects())?;
         let workspace_id = resolved.workspace_id();
-        catalog.open_resolved(pool, resolved).await?;
+        catalog.open_resolved(connections, pool, resolved).await?;
 
         if let Some(record) = self
             .store
