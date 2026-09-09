@@ -87,19 +87,12 @@ impl RuntimeProvider for TmuxDriver {
         connect: Arc<dyn TargetConnection>,
         spec: &RuntimeSpec,
     ) -> Result<Box<dyn Runtime>> {
-        let mut rt = if connect.transport_id() == "ssh" {
-            if spec.session.is_empty() {
-                TmuxRuntime::new_ssh(connect.target(), spec.socket.as_deref())
-            } else {
-                TmuxRuntime::new_ssh_attach(connect.target(), spec.socket.as_deref(), &spec.session)
-            }
-        } else if spec.session.is_empty() {
-            TmuxRuntime::new(spec.socket.as_deref())
-        } else if spec.create {
-            TmuxRuntime::new_with_session_name(spec.socket.as_deref(), &spec.session)
-        } else {
-            TmuxRuntime::new_with_attach(spec.socket.as_deref(), &spec.session)
-        };
+        let mut rt = TmuxRuntime::new_with_connection(
+            connect,
+            spec.socket.as_deref(),
+            (!spec.session.is_empty()).then_some(spec.session.as_str()),
+            spec.create,
+        );
         rt.set_scrollback_lines(spec.scrollback_lines);
         Ok(Box::new(rt))
     }
