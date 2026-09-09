@@ -8,6 +8,7 @@ use std::path::Path;
 use std::str::FromStr;
 
 pub mod candidate;
+pub mod layout;
 
 /// Product-level pane identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
