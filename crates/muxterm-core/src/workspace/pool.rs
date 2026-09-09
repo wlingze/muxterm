@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use crate::protocol::state::StateChange;
 use crate::protocol::task::Task;
 use crate::protocol::terminal::emulate::DEFAULT_SCROLLBACK_LINES;
-use crate::runtime::{Runtime, RuntimeCapability, WorktreeCreateSpec, WorktreeInfo};
+use crate::runtime::{Runtime, RuntimeBatch, RuntimeCapability, WorktreeCreateSpec, WorktreeInfo};
 use crate::workspace::workspace::Workspace;
 use muxterm_protocol::WorkspaceId;
 
@@ -408,6 +408,14 @@ impl WorkspacePool {
 
     /// 拉取全部后台工作区的事件，并喂进各自 PaneBuf。
     pub fn poll_background(&mut self) -> Vec<(WorkspaceId, Vec<StateChange>)> {
+        self.poll_background_batches()
+            .into_iter()
+            .map(|(id, batch)| (id, batch.into_state_changes()))
+            .collect()
+    }
+
+    /// 拉取全部后台工作区的三路事件 batch。
+    pub fn poll_background_batches(&mut self) -> Vec<(WorkspaceId, RuntimeBatch)> {
         let keys: Vec<WorkspaceId> = self
             .slots
             .iter()
@@ -417,9 +425,9 @@ impl WorkspacePool {
         let mut out = Vec::new();
         for key in keys {
             if let Some(slot) = self.slots.get_mut(&key) {
-                let events = slot.workspace.refresh();
-                if !events.is_empty() {
-                    out.push((key, events));
+                let batch = slot.workspace.refresh_batch();
+                if !batch.is_empty() {
+                    out.push((key, batch));
                 }
             }
         }
