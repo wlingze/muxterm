@@ -4,10 +4,10 @@
 //! poll。这样后续 GTK 的主线程桥可以把同一批带身份事件写入 `ViewStore`，
 //! 而不会再出现多个 frontend 路径分别读取同一个 Core handle。
 
-use crate::platform::ffi_client::{ClientWorkspaceEvent, FfiClient};
+use crate::frontend::ffi_client::{ClientWorkspaceEvent, FfiClient};
 
 #[cfg(feature = "gtk")]
-use crate::platform::linux::view_store::ViewStore;
+use crate::frontend::linux::view_store::ViewStore;
 
 /// Owns the FFI client while providing the single workspace-event poll path.
 pub struct EventPump {
@@ -110,7 +110,7 @@ impl EventPump {
     fn replace_workspace(
         &self,
         store: &mut ViewStore,
-        workspace: crate::platform::ffi_client::ClientWorkspace,
+        workspace: crate::frontend::ffi_client::ClientWorkspace,
     ) {
         let workspace_id = workspace.id.clone();
         let tabs = self.client.get_workspace_tabs(&workspace.id);
@@ -139,8 +139,8 @@ impl EventPump {
 #[cfg(all(test, feature = "gtk"))]
 mod tests {
     use super::EventPump;
-    use crate::platform::ffi_client::{ClientEvent, ClientWorkspaceEvent, FfiClient};
-    use crate::platform::linux::view_store::ViewStore;
+    use crate::frontend::ffi_client::{ClientEvent, ClientWorkspaceEvent, FfiClient};
+    use crate::frontend::linux::view_store::ViewStore;
 
     #[test]
     fn catalog_pump_can_seed_and_poll_an_empty_view_store() {

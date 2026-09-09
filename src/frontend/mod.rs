@@ -7,6 +7,9 @@ pub mod cli;
 pub mod command_queue;
 pub mod ffi_client;
 
+#[cfg(any(feature = "gtk", feature = "tui"))]
+pub mod event_pump;
+
 #[cfg(feature = "tui")]
 pub mod tui;
 

@@ -22,6 +22,7 @@ use vte4::prelude::*;
 
 use anyhow::anyhow;
 
+use crate::frontend::event_pump::EventPump;
 use crate::frontend::ffi_client::{
     ClientActivitySnapshot, ClientAttentionPane, ClientAttentionStatus, ClientCandidateRef,
     ClientConfig, ClientEventKind, ClientKeyBinding, ClientOpenIntent, ClientOpenRequest,
@@ -62,7 +63,6 @@ use crate::frontend::linux::view_store::ViewStore;
 use crate::frontend::linux::workspace_sidebar::{
     AgentSidebarItem, CommandSidebarItem, WorkspaceSidebar, WorkspaceSidebarItem,
 };
-use crate::platform::event_pump::EventPump;
 use crate::platform::i18n::{self, Key};
 use crate::platform::ssh_probe::{classify_ssh_probe, ssh_probe_args, SshReach};
 #[cfg(test)]

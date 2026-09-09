@@ -18,7 +18,7 @@ pub use crate::frontend::command_queue;
 pub use crate::frontend::ffi_client;
 
 #[cfg(any(feature = "gtk", feature = "tui"))]
-pub mod event_pump;
+pub use crate::frontend::event_pump;
 
 #[cfg(target_os = "macos")]
 pub use crate::frontend::macos;
