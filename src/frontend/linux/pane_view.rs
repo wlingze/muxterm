@@ -698,7 +698,7 @@ impl PaneView {
     }
 
     /// attach 快照播种：不 reset、不 dump，直接把 capture-pane 原始字节
-    /// 喂进 VTE（1820.log 白屏修复；live 路径禁止 visible_ansi → reset）。
+    /// 喂进 VTE（1820.log 白屏修复；live 路径禁止 Index ANSI dump → reset）。
     pub fn seed_raw(&self, data: &[u8], cols: u16, rows: u16) {
         let (alloc_cols, alloc_rows) = self.allocated_grid_size();
         tracing::info!(
