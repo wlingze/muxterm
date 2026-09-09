@@ -5,6 +5,7 @@
 //! 扩展规则：新增 Transport 不修改 Runtime、不修改 Core Protocol。
 //! Runtime 不关心 Transport 是 local 还是 SSH；Transport 不理解 shell/tmux 语义。
 
+pub mod connection;
 pub mod provider;
 pub mod registry;
 
@@ -79,6 +80,7 @@ pub trait TargetConnection: Send + Sync {
     fn probe(&self) -> anyhow::Result<()>;
 }
 
+pub use connection::Connect;
 pub use registry::ConnectionRegistry;
 
 /// PTY 字符格尺寸。
