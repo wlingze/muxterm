@@ -12,6 +12,9 @@ pub mod callbacks;
 pub mod functions;
 pub mod types;
 
+#[cfg(test)]
+mod api_tests;
+
 pub use api::*;
 pub use callbacks::*;
 pub use types::*;
