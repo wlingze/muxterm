@@ -5,6 +5,7 @@ use anyhow::{anyhow, Result};
 use crate::catalog::OpenRequest;
 use crate::catalog::{Catalog, ResolveIntent};
 use crate::executable::expand_config_value;
+use crate::muxterm::Muxterm;
 use crate::protocol::candidate::CandidateRef;
 use crate::quickconnect::model::{TargetRuntime, TargetTransport};
 use crate::runtime::WorktreeCreateSpec;
@@ -225,17 +226,20 @@ impl ProjectsService {
             .await?;
         let worktree_id = allocate_worktree_id(&project, spec);
         let template = template_override.or(project.template.clone());
-        let workspace_id = catalog
-            .create_native_worktree_with_pool(
-                connections,
-                templates,
-                pool,
-                &source,
-                spec,
-                Some(project.worktree_provenance(&worktree_id)),
-                template,
-            )
-            .await?;
+        let runtime_registry = catalog.runtime_registry();
+        let transport_registry = catalog.transport_registry();
+        let workspace_id = Muxterm::create_native_worktree_with_pool(
+            runtime_registry.as_ref(),
+            transport_registry.as_ref(),
+            connections,
+            templates,
+            pool,
+            &source,
+            spec,
+            Some(project.worktree_provenance(&worktree_id)),
+            template,
+        )
+        .await?;
 
         let mut updated = project;
         updated.add_worktree(Worktree::new(
@@ -318,9 +322,17 @@ impl ProjectsService {
         };
         let resolved = catalog.resolve_open_request(connections, &request, self.list_projects())?;
         let workspace_id = resolved.workspace_id();
-        catalog
-            .open_resolved(connections, templates, pool, resolved)
-            .await?;
+        let runtime_registry = catalog.runtime_registry();
+        let transport_registry = catalog.transport_registry();
+        Muxterm::open_resolved_parts(
+            runtime_registry.as_ref(),
+            transport_registry.as_ref(),
+            connections,
+            templates,
+            pool,
+            resolved,
+        )
+        .await?;
         Ok(workspace_id)
     }
 
@@ -355,9 +367,17 @@ impl ProjectsService {
         };
         let resolved = catalog.resolve_open_request(connections, &request, self.list_projects())?;
         let workspace_id = resolved.workspace_id();
-        catalog
-            .open_resolved(connections, templates, pool, resolved)
-            .await?;
+        let runtime_registry = catalog.runtime_registry();
+        let transport_registry = catalog.transport_registry();
+        Muxterm::open_resolved_parts(
+            runtime_registry.as_ref(),
+            transport_registry.as_ref(),
+            connections,
+            templates,
+            pool,
+            resolved,
+        )
+        .await?;
 
         if let Some(record) = self
             .store

@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use anyhow::{ensure, Context, Result};
 
 use muxterm::test_support::core::catalog::Catalog;
+use muxterm::test_support::core::muxterm::Muxterm;
 use muxterm::test_support::core::protocol::layout::SplitDir;
 use muxterm::test_support::core::protocol::state::{MutationResult, StateChange};
 use muxterm::test_support::core::protocol::task::{Task, TaskOutcome};
@@ -369,7 +370,7 @@ fn run_case(rt: &tokio::runtime::Runtime, sshd: &LoopbackSshd, transport: &str) 
     let catalog = Catalog::with_builtins();
     let mut connections = ConnectionRegistry::new();
     let mut pool = WorkspacePool::default();
-    let runtime = catalog.new_runtime(&mut connections, &spec)?;
+    let runtime = Muxterm::new_runtime(&catalog, &mut connections, &spec)?;
     let workspace = rt.block_on(pool.open_spec_with_runtime(&spec, runtime))?;
     wait_until(workspace, "初始 Herdr tab/pane", |ws| {
         ws.state().tabs().len() == 1 && ws.state().active_pane().is_some()

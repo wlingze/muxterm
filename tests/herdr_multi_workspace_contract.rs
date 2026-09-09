@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use muxterm::test_support::core::catalog::Catalog;
+use muxterm::test_support::core::muxterm::Muxterm;
 use muxterm::test_support::core::runtime::herdr::HerdrRuntime;
 use muxterm::test_support::core::transport::registry::ConnectionRegistry;
 use muxterm::test_support::core::workspace::pool::{WorkspacePool, WorkspacePoolPolicy};
@@ -53,10 +54,14 @@ fn herdr_multi_workspace_contract() {
         .expect("tokio");
     let catalog = Catalog::with_builtins();
     let mut connections = ConnectionRegistry::new();
-    rt.block_on(pool.open_spec(&spec_a, |spec| catalog.new_runtime(&mut connections, spec)))
-        .expect("open A 失败");
-    rt.block_on(pool.open_spec(&spec_b, |spec| catalog.new_runtime(&mut connections, spec)))
-        .expect("open B 失败");
+    rt.block_on(pool.open_spec(&spec_a, |spec| {
+        Muxterm::new_runtime(&catalog, &mut connections, spec)
+    }))
+    .expect("open A 失败");
+    rt.block_on(pool.open_spec(&spec_b, |spec| {
+        Muxterm::new_runtime(&catalog, &mut connections, spec)
+    }))
+    .expect("open B 失败");
 
     // 内部必须共享同一条 HerdrSession（同一 socket）。
     let sa = pool

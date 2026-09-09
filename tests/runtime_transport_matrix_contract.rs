@@ -13,6 +13,7 @@ use std::process::Command;
 use anyhow::{ensure, Context, Result};
 
 use muxterm::test_support::core::catalog::Catalog;
+use muxterm::test_support::core::muxterm::Muxterm;
 use muxterm::test_support::core::protocol::task::{Task, TaskOutcome};
 use muxterm::test_support::core::transport::registry::ConnectionRegistry;
 use muxterm::test_support::core::workspace::pool::WorkspacePool;
@@ -68,7 +69,7 @@ fn run_case(runtime_id: &str, transport_id: &str, sshd: &LoopbackSshd) -> Result
     let mut connections = ConnectionRegistry::new();
     let mut pool = WorkspacePool::default();
     let snapshot = {
-        let runtime = catalog.new_runtime(&mut connections, &spec)?;
+        let runtime = Muxterm::new_runtime(&catalog, &mut connections, &spec)?;
         let workspace = rt
             .block_on(pool.open_spec_with_runtime(&spec, runtime))
             .with_context(|| format!("打开 {runtime_id} x {transport_id}"))?;
@@ -90,7 +91,7 @@ fn run_case(runtime_id: &str, transport_id: &str, sshd: &LoopbackSshd) -> Result
     };
 
     let alternate_token = {
-        let runtime = catalog.new_runtime(&mut connections, &alternate_spec)?;
+        let runtime = Muxterm::new_runtime(&catalog, &mut connections, &alternate_spec)?;
         let alternate = rt
             .block_on(pool.open_spec_with_runtime(&alternate_spec, runtime))
             .with_context(|| format!("创建第二个 {runtime_id} x {transport_id} Workspace"))?;
@@ -145,7 +146,8 @@ fn run_case(runtime_id: &str, transport_id: &str, sshd: &LoopbackSshd) -> Result
         let attached_catalog = Catalog::with_builtins();
         let mut attached_connections = ConnectionRegistry::new();
         let mut attached_pool = WorkspacePool::default();
-        let attached_runtime = attached_catalog.new_runtime(&mut attached_connections, &spec)?;
+        let attached_runtime =
+            Muxterm::new_runtime(&attached_catalog, &mut attached_connections, &spec)?;
         let attached = rt
             .block_on(attached_pool.open_spec_with_runtime(&spec, attached_runtime))
             .with_context(|| {

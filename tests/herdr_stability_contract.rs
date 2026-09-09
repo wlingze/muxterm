@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 use anyhow::{ensure, Context, Result};
 
 use muxterm::test_support::core::catalog::Catalog;
+use muxterm::test_support::core::muxterm::Muxterm;
 use muxterm::test_support::core::protocol::task::{Task, TaskOutcome};
 use muxterm::test_support::core::protocol::PaneId;
 use muxterm::test_support::core::runtime::herdr::observe::StreamMode;
@@ -201,7 +202,7 @@ fn run_stability_case(
     let catalog = Catalog::with_builtins();
     let mut connections = ConnectionRegistry::new();
     let mut pool = WorkspacePool::default();
-    let runtime = catalog.new_runtime(&mut connections, &spec)?;
+    let runtime = Muxterm::new_runtime(&catalog, &mut connections, &spec)?;
     let workspace = rt.block_on(pool.open_spec_with_runtime(&spec, runtime))?;
     wait_until(workspace, "初始 Herdr tab/pane", |ws| {
         ws.state().tabs().len() == 4 && ws.state().active_pane().is_some()
