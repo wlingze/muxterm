@@ -221,10 +221,13 @@ fn build_items_with_recent_limit(
     let mut items: Vec<PanelItem> =
         QuickConnect::entries(&store.recents, &store.projects, recent_limit)
             .into_iter()
-            .map(|entry| {
+            .map(|mut entry| {
                 let is_current = current_id
                     .as_ref()
                     .is_some_and(|id| QuickConnect::unique_id(&entry.config) == *id);
+                if !entry.badges.contains(&QuickBadge::Recent) {
+                    entry.project_id = store.project_id_for(&entry.config);
+                }
                 PanelItem::Target(entry, is_current)
             })
             .collect();
@@ -1653,6 +1656,27 @@ mod tests {
         assert_eq!(items.len(), 2, "重复目标只出现一次 + New Project");
         assert!(matches!(&items[0], PanelItem::Target(entry, false) if entry.config == dup));
         assert!(matches!(items[1], PanelItem::NewProject));
+    }
+
+    #[test]
+    fn build_items_keeps_project_identity_for_project_only_rows() {
+        let mut store = QuickConnectStore::in_memory();
+        let project = cfg("project");
+        store.upsert_project(&project);
+
+        let items = build_items(&store, None);
+        assert!(matches!(
+            &items[0],
+            PanelItem::Target(entry, false)
+                if entry.project_id.as_deref() == Some("project@local")
+        ));
+
+        store.record_recent(&project);
+        let items = build_items(&store, None);
+        assert!(matches!(
+            &items[0],
+            PanelItem::Target(entry, false) if entry.project_id.is_none()
+        ));
     }
 
     /// W20b：根列表第 0 项是「已有的连接」Folder，末项 New Project。
