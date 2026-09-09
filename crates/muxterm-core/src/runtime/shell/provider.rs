@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 
 use crate::protocol::candidate::ExistingCandidate as SessionCandidate;
 use crate::runtime::provider::RuntimeProvider;
@@ -11,7 +11,7 @@ use crate::runtime::{Runtime, RuntimeCapability};
 use crate::transport::TargetConnection;
 use muxterm_runtime::RuntimeSpec;
 
-/// shell 插件：transport 差异在 Runtime 构造时归一化。
+/// shell 插件：transport 差异由 TargetConnection 在 Runtime 内归一化。
 pub struct ShellDriver;
 
 impl RuntimeProvider for ShellDriver {
@@ -40,20 +40,8 @@ impl RuntimeProvider for ShellDriver {
         connect: Arc<dyn TargetConnection>,
         spec: &RuntimeSpec,
     ) -> Result<Box<dyn Runtime>> {
-        match spec.transport.as_str() {
-            "local" => Ok(Box::new(ShellRuntime::new("$SHELL", &spec.path))),
-            "ssh" => {
-                let alias = spec
-                    .alias
-                    .as_deref()
-                    .filter(|alias| !alias.is_empty())
-                    .unwrap_or_else(|| connect.target());
-                if alias.is_empty() {
-                    return Err(anyhow!("SSH shell 缺少 alias"));
-                }
-                Ok(Box::new(ShellRuntime::new_ssh(alias, "$SHELL", &spec.path)))
-            }
-            transport => Err(anyhow!("shell 不接受 {transport} transport")),
-        }
+        Ok(Box::new(ShellRuntime::new_with_connection(
+            connect, "$SHELL", &spec.path,
+        )))
     }
 }

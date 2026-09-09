@@ -18,6 +18,7 @@
 
 use std::collections::{HashSet, VecDeque};
 use std::io::{Read, Write};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
@@ -35,7 +36,10 @@ use crate::protocol::task::{Task, TaskOutcome};
 use crate::protocol::terminal::input::encode;
 use crate::runtime::{Runtime, RuntimeCapability};
 use crate::transport::ssh::{build_ssh_command, SshProcessTransport};
-use crate::transport::{PtySize as TransportPtySize, Transport, TransportSignal};
+use crate::transport::{
+    ByteChannel, ChannelRequest, PtySize as TransportPtySize, TargetConnection, Transport,
+    TransportSignal,
+};
 use crate::types::{PaneId, TabId};
 
 pub mod daemon;
@@ -66,6 +70,9 @@ enum PaneProcess {
     },
     Ssh {
         transport: SshProcessTransport,
+    },
+    Channel {
+        channel: Arc<Mutex<Box<dyn ByteChannel>>>,
     },
 }
 
@@ -106,6 +113,8 @@ pub struct ShellRuntime {
     /// 配置：默认启动命令 + 工作目录。
     default_command: String,
     default_workdir: String,
+    /// Runtime-owned target connection used by the provider path.
+    target_connection: Option<Arc<dyn TargetConnection>>,
     /// None = 本地 PTY；Some(alias) = 每个 pane 经 SSH transport 启动远端 shell。
     ssh_alias: Option<String>,
 
@@ -134,6 +143,7 @@ impl ShellRuntime {
         Self {
             default_command: default_command.into(),
             default_workdir: default_workdir.into(),
+            target_connection: None,
             ssh_alias: None,
             workspace_name: "local".into(),
             tabs: vec![],
@@ -158,6 +168,25 @@ impl ShellRuntime {
         let mut runtime = Self::new(default_command, default_workdir);
         runtime.workspace_name = alias.clone();
         runtime.ssh_alias = Some(alias);
+        runtime
+    }
+
+    /// Create a Runtime whose panes are opened through a reusable target connection.
+    pub fn new_with_connection(
+        connection: Arc<dyn TargetConnection>,
+        default_command: impl Into<String>,
+        default_workdir: impl Into<String>,
+    ) -> Self {
+        let workspace_name = if connection.target().is_empty() {
+            "local".to_string()
+        } else {
+            connection.target().to_string()
+        };
+        let mut runtime = Self::new(default_command, default_workdir);
+        runtime.workspace_name = workspace_name;
+        runtime.ssh_alias =
+            (!connection.target().is_empty()).then(|| connection.target().to_string());
+        runtime.target_connection = Some(connection);
         runtime
     }
 
@@ -412,6 +441,10 @@ impl ShellRuntime {
             .map(expand_config_value)
             .unwrap_or_else(|| expand_config_value(&self.default_workdir));
 
+        if let Some(connection) = self.target_connection.clone() {
+            return self.spawn_channel_pane(connection, tab, &argv, &workdir, cols, rows, active);
+        }
+
         if let Some(alias) = self.ssh_alias.clone() {
             let use_remote_default_shell =
                 command.is_none() && self.default_command.trim() == "$SHELL";
@@ -511,6 +544,84 @@ impl ShellRuntime {
             pid,
         };
         self.panes.push(pane);
+        Ok(pane_id)
+    }
+
+    /// Open one shell pane through the transport-owned ByteChannel contract.
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_channel_pane(
+        &mut self,
+        connection: Arc<dyn TargetConnection>,
+        tab: TabId,
+        argv: &[String],
+        workdir: &str,
+        cols: u16,
+        rows: u16,
+        active: bool,
+    ) -> Result<PaneId> {
+        let channel = connection
+            .open_channel(ChannelRequest::Exec {
+                argv: argv.to_vec(),
+                cwd: (!workdir.is_empty()).then(|| PathBuf::from(workdir)),
+                env: Vec::new(),
+                pty: Some(TransportPtySize::new(cols, rows)),
+            })
+            .with_context(|| {
+                format!(
+                    "open shell Exec channel 失败（transport={}, target={}）",
+                    connection.transport_id(),
+                    connection.target()
+                )
+            })?;
+        let channel = Arc::new(Mutex::new(channel));
+        let pane_id = self.alloc_pane_id();
+        let tx = self.pty_tx.clone().expect("channel 已建立");
+        let pane_for_reader = pane_id;
+        let reader_channel = Arc::clone(&channel);
+        std::thread::Builder::new()
+            .name("muxterm-target-channel-read".into())
+            .spawn(move || {
+                loop {
+                    let result = reader_channel
+                        .lock()
+                        .map_err(|_| std::io::Error::other("channel lock poisoned"))
+                        .and_then(|mut channel| channel.read());
+                    match result {
+                        Ok(Some(data)) => {
+                            if tx
+                                .blocking_send(PtyMsg::Output {
+                                    pane: pane_for_reader,
+                                    data,
+                                })
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                        Ok(None) => std::thread::sleep(std::time::Duration::from_millis(10)),
+                        Err(_) => break,
+                    }
+                }
+                let _ = tx.blocking_send(PtyMsg::Exit {
+                    pane: pane_for_reader,
+                });
+            })
+            .context("spawn target channel read thread")?;
+
+        self.panes.push(LocalPane {
+            info: PaneInfo {
+                id: pane_id,
+                tab,
+                active,
+                title: program_basename(&argv[0]),
+                cols,
+                rows,
+            },
+            process: PaneProcess::Channel { channel },
+            output: Vec::new(),
+            writer: None,
+            pid: 0,
+        });
         Ok(pane_id)
     }
 
@@ -644,6 +755,11 @@ impl ShellRuntime {
             PaneProcess::Ssh { transport } => {
                 let _ = transport.kill(TransportSignal::Hangup);
             }
+            PaneProcess::Channel { channel } => {
+                if let Ok(mut channel) = channel.lock() {
+                    let _ = channel.shutdown();
+                }
+            }
         }
         Some(p)
     }
@@ -653,6 +769,27 @@ impl ShellRuntime {
         let Some(p) = self.panes.iter_mut().find(|p| p.info.id == pane) else {
             return false;
         };
+        if let PaneProcess::Channel { channel } = &p.process {
+            let channel = Arc::clone(channel);
+            let data = data.to_vec();
+            let result = std::thread::spawn(move || {
+                let mut channel = channel.lock().unwrap();
+                let mut written = 0;
+                while written < data.len() {
+                    let size = channel.write(&data[written..])?;
+                    if size == 0 {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::WriteZero,
+                            "target channel write returned zero",
+                        ));
+                    }
+                    written += size;
+                }
+                Ok::<(), std::io::Error>(())
+            })
+            .join();
+            return matches!(result, Ok(Ok(())));
+        }
         let Some(writer) = p.writer.clone() else {
             return false;
         };
@@ -681,6 +818,10 @@ impl ShellRuntime {
                 })
                 .is_ok(),
             PaneProcess::Ssh { transport } => transport.resize(cols, rows).is_ok(),
+            PaneProcess::Channel { channel } => channel
+                .lock()
+                .map(|mut channel| channel.resize(cols, rows).is_ok())
+                .unwrap_or(false),
         };
         if !resized {
             return false;
@@ -1214,6 +1355,18 @@ mod tests {
         assert!(events
             .iter()
             .any(|e| matches!(e, StateChange::PaneAdded { .. })));
+    }
+
+    #[tokio::test]
+    async fn connection_provider_path_uses_target_byte_channel() {
+        let connection = crate::transport::connection::Connect::new("local", "");
+        let mut b = ShellRuntime::new_with_connection(connection, "sleep 60", "/");
+        b.connect().await.unwrap();
+        assert!(matches!(
+            b.panes.first().map(|pane| &pane.process),
+            Some(PaneProcess::Channel { .. })
+        ));
+        b.shutdown().await.unwrap();
     }
 
     #[tokio::test]
