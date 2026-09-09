@@ -7,6 +7,7 @@
 //!   此模块提供从 Rust 侧 `muxterm gui` 定位并 `open` Muxterm.app 的启动器。
 
 pub mod cli;
+pub mod format;
 pub mod i18n;
 pub mod mirror;
 pub mod mouse;

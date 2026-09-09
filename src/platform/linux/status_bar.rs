@@ -4,7 +4,6 @@
 //! 左/中/右同步 tmux status；最右三个按钮是 Muxterm chrome，永远可见。
 //! tab 按钮只在 tab 集合/当前 tab 变化时重建（SSH 16ms 轮询不得拆按钮）。
 
-use crate::core::format::{format_bytes, format_rate};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -13,6 +12,7 @@ use gtk4::prelude::*;
 use gtk4::{Align, Box as GtkBox, Button, CssProvider, Label, Orientation, Popover};
 
 use crate::core::config::Theme;
+use crate::platform::format::{format_bytes, format_rate};
 use crate::platform::linux::lifecycle::tab_shortcut_label;
 use crate::platform::linux::quickconnect::status_style::{
     StatusBarMode, StatusBarSnapshot, StatusBarStyleParser,

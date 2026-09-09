@@ -2598,8 +2598,8 @@ fn refresh_connection_summary(s: &mut UiState) {
         (Some((pdown, pup)), Some(at)) => {
             let dt = now.duration_since(at);
             (
-                crate::core::format::rate_bps(pdown, down, dt),
-                crate::core::format::rate_bps(pup, up, dt),
+                crate::platform::format::rate_bps(pdown, down, dt),
+                crate::platform::format::rate_bps(pup, up, dt),
             )
         }
         _ => (0, 0),
