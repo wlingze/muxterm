@@ -81,7 +81,8 @@ pub use super::functions::task::{
 };
 pub(crate) use super::functions::transport::session_candidate_json;
 pub use super::functions::transport::{
-    muxterm_discover_sessions_json, muxterm_discover_ssh_hosts_json, muxterm_discover_targets_json,
+    muxterm_discover_sessions_json, muxterm_discover_ssh_hosts_json,
+    muxterm_discover_ssh_tmux_panes_json, muxterm_discover_targets_json,
     muxterm_discover_tmux_sessions_json, muxterm_discover_workspaces_json, muxterm_list_dir_json,
     muxterm_status_snapshot_json, muxterm_transport_list_json,
 };
@@ -1245,6 +1246,44 @@ mod tests {
             body.contains("all"),
             "discover_sessions_json 必须把 transport=all 交给 Catalog: {body}"
         );
+    }
+
+    #[test]
+    fn ffi_discover_ssh_tmux_panes_json_exposes_owned_pane_rows() {
+        let src = include_str!("functions/transport.rs");
+        let start = src
+            .find("pub extern \"C\" fn muxterm_discover_ssh_tmux_panes_json")
+            .expect("SSH tmux pane discovery endpoint 应存在");
+        let body = &src[start..];
+        assert!(
+            body.contains("list_ssh_tmux_panes"),
+            "endpoint 必须复用 Core discovery 实现: {body}"
+        );
+        for field in ["id", "active", "cols", "rows", "title"] {
+            assert!(
+                body.contains(&format!("\"{field}\"")),
+                "pane JSON 必须保留字段 {field}: {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn ffi_discover_ssh_tmux_panes_json_rejects_missing_alias() {
+        let raw = muxterm_discover_ssh_tmux_panes_json(
+            ptr::null(),
+            ptr::null(),
+            ptr::null(),
+            ptr::null(),
+            1000,
+        );
+        assert!(!raw.is_null());
+        let value = unsafe {
+            let text = CStr::from_ptr(raw).to_string_lossy().into_owned();
+            muxterm_free_string(raw);
+            serde_json::from_str::<serde_json::Value>(&text).unwrap()
+        };
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["error"], "SSH pane discovery requires a host alias");
     }
 
     /// W4：两个 Workspace、各有 PaneId(1) 时，workspace-aware poll 必须

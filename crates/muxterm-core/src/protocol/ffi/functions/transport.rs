@@ -275,6 +275,48 @@ pub extern "C" fn muxterm_discover_tmux_sessions_json(
     .unwrap_or_else(|_| json_error("tmux session discovery panic"))
 }
 
+/// List panes in one SSH tmux session.
+#[no_mangle]
+pub extern "C" fn muxterm_discover_ssh_tmux_panes_json(
+    target: *const c_char,
+    socket: *const c_char,
+    session: *const c_char,
+    config_path: *const c_char,
+    timeout_ms: u32,
+) -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| {
+        let Some(target) = cstr_opt(target).filter(|value| !value.trim().is_empty()) else {
+            return json_error("SSH pane discovery requires a host alias");
+        };
+        let Some(session) = cstr_opt(session).filter(|value| !value.trim().is_empty()) else {
+            return json_error("SSH pane discovery requires a session");
+        };
+        let socket = cstr_opt(socket);
+        let config_path = cstr_opt(config_path);
+        let timeout = discovery_timeout(timeout_ms);
+        match crate::discovery::list_ssh_tmux_panes(
+            &target,
+            config_path.as_deref(),
+            socket.as_deref(),
+            &session,
+            timeout,
+        ) {
+            Ok(panes) => json_string(serde_json::json!({
+                "ok": true,
+                "panes": panes.iter().map(|(id, active, cols, rows, title)| serde_json::json!({
+                    "id": id,
+                    "active": active,
+                    "cols": cols,
+                    "rows": rows,
+                    "title": title,
+                })).collect::<Vec<_>>(),
+            })),
+            Err(error) => json_error(error),
+        }
+    }))
+    .unwrap_or_else(|_| json_error("SSH tmux pane discovery panic"))
+}
+
 pub(crate) fn session_candidate_json(
     candidate: &crate::protocol::candidate::ExistingCandidate,
 ) -> serde_json::Value {

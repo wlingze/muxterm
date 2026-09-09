@@ -524,6 +524,16 @@ pub struct TmuxSessionEntry {
     pub created: u64,
 }
 
+/// An owned tmux pane row returned by SSH transport discovery.
+#[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
+pub struct ClientTmuxPane {
+    pub id: u32,
+    pub active: bool,
+    pub cols: u16,
+    pub rows: u16,
+    pub title: String,
+}
+
 /// Filesystem entry returned by Core discovery.
 #[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
 pub struct FsEntry {
@@ -1764,6 +1774,31 @@ impl FfiClient {
         Ok(serde_json::from_value(value["sessions"].clone())?)
     }
 
+    /// Discover pane snapshots in one SSH tmux session through the public FFI.
+    pub fn discover_ssh_tmux_panes(
+        target: &str,
+        socket: Option<&str>,
+        session: &str,
+    ) -> anyhow::Result<Vec<ClientTmuxPane>> {
+        let target = cstring(target);
+        let socket = cstring_opt(socket);
+        let session = cstring(session);
+        let config_path = std::env::var("MUXTERM_SSH_CONFIG_PATH").ok();
+        let config_path = cstring_opt(config_path.as_deref());
+        let value = Self::discovery_json(|| {
+            ffi::muxterm_discover_ssh_tmux_panes_json(
+                target.as_ptr(),
+                socket.as_ref().map_or(ptr::null(), |value| value.as_ptr()),
+                session.as_ptr(),
+                config_path
+                    .as_ref()
+                    .map_or(ptr::null(), |value| value.as_ptr()),
+                DISCOVERY_TIMEOUT_MS,
+            )
+        })?;
+        Ok(serde_json::from_value(value["panes"].clone())?)
+    }
+
     pub fn create_workspace(
         runtime_type: &str,
         target: Option<&str>,
@@ -2340,5 +2375,23 @@ mod tests {
         assert_eq!(error.stage, None);
         assert_eq!(error.message, "legacy failure");
         assert!(error.details.is_empty());
+    }
+
+    #[test]
+    fn client_tmux_pane_decodes_owned_snapshot() {
+        let pane: ClientTmuxPane = serde_json::from_value(serde_json::json!({
+            "id": 7,
+            "active": true,
+            "cols": 120,
+            "rows": 40,
+            "title": "build shell",
+        }))
+        .expect("SSH pane discovery DTO should decode");
+
+        assert_eq!(pane.id, 7);
+        assert!(pane.active);
+        assert_eq!(pane.cols, 120);
+        assert_eq!(pane.rows, 40);
+        assert_eq!(pane.title, "build shell");
     }
 }

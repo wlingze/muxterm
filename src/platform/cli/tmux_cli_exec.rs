@@ -523,23 +523,17 @@ fn execute_pane(cmd: &PaneCmd, deadline: Instant) -> anyhow::Result<serde_json::
                     Ok(serde_json::json!({"panes": panes}))
                 }),
                 Target::Ssh { alias } => {
-                    let ssh_config = std::env::var("MUXTERM_SSH_CONFIG_PATH").ok();
-                    let panes = crate::core::discovery::list_ssh_tmux_panes(
-                        alias,
-                        ssh_config.as_deref(),
-                        socket.as_deref(),
-                        session,
-                        std::time::Duration::from_secs(10),
-                    )?;
+                    let panes =
+                        FfiClient::discover_ssh_tmux_panes(alias, socket.as_deref(), session)?;
                     let arr: Vec<serde_json::Value> = panes
                         .iter()
-                        .map(|(id, active, cols, rows, title)| {
+                        .map(|pane| {
                             serde_json::json!({
-                                "id": id,
-                                "active": active,
-                                "cols": cols,
-                                "rows": rows,
-                                "title": title,
+                                "id": pane.id,
+                                "active": pane.active,
+                                "cols": pane.cols,
+                                "rows": pane.rows,
+                                "title": pane.title,
                             })
                         })
                         .collect();
