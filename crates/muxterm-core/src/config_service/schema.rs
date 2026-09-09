@@ -11,7 +11,7 @@ use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::config::{Config, KeyBinding};
-use crate::workspace::template::WorkspaceTemplate;
+use crate::protocol::layout::SplitDir;
 
 pub const CONFIG_VERSION: u32 = 1;
 
@@ -25,7 +25,7 @@ pub struct ConfigDocument {
     #[serde(default)]
     pub projects: Vec<ProjectDocument>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub templates: Vec<WorkspaceTemplate>,
+    pub templates: Vec<TemplateDocument>,
     #[serde(default)]
     pub shortcuts: ShortcutConfig,
     #[serde(default)]
@@ -197,7 +197,9 @@ impl ConfigDocument {
     }
 
     fn validate_templates(&self) -> Result<()> {
-        crate::workspace::template::TemplateRegistry::new(self.templates.clone())?;
+        for template in &self.templates {
+            template.validate()?;
+        }
         Ok(())
     }
 
@@ -325,6 +327,102 @@ impl ConfigDocument {
                 ]}
             ]
         })
+    }
+}
+
+/// Persisted create-time workspace template record.
+///
+/// This is intentionally a configuration-owned shape. The workspace domain
+/// converts it into `WorkspaceTemplate` before applying it to a live runtime.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
+pub struct TemplateDocument {
+    pub name: String,
+    #[serde(default)]
+    pub tabs: Vec<TemplateTabDocument>,
+}
+
+impl TemplateDocument {
+    pub fn validate(&self) -> Result<()> {
+        if self.name.trim().is_empty() {
+            return Err(anyhow!("template name 不能为空"));
+        }
+        if self.tabs.is_empty() {
+            return Err(anyhow!("template {} 至少需要一个 tab", self.name));
+        }
+        let mut active_tabs = 0;
+        for tab in &self.tabs {
+            if tab.active {
+                active_tabs += 1;
+            }
+            tab.layout.validate()?;
+        }
+        if active_tabs > 1 {
+            return Err(anyhow!("template {} 最多只能有一个 active tab", self.name));
+        }
+        Ok(())
+    }
+}
+
+/// Persisted template tab record.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
+pub struct TemplateTabDocument {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub layout: TemplateLayoutDocument,
+    #[serde(default)]
+    pub active: bool,
+}
+
+/// Persisted recursive template layout record.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
+#[serde(tag = "kind")]
+pub enum TemplateLayoutDocument {
+    Pane(TemplatePaneDocument),
+    Split {
+        dir: SplitDir,
+        first: Box<TemplateLayoutDocument>,
+        second: Box<TemplateLayoutDocument>,
+    },
+}
+
+impl TemplateLayoutDocument {
+    fn validate(&self) -> Result<()> {
+        match self {
+            Self::Pane(pane) => pane.validate(),
+            Self::Split { first, second, .. } => {
+                first.validate()?;
+                second.validate()
+            }
+        }
+    }
+}
+
+/// Persisted process and focus defaults for one template pane.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
+pub struct TemplatePaneDocument {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    #[serde(default)]
+    pub focus: bool,
+}
+
+impl TemplatePaneDocument {
+    fn validate(&self) -> Result<()> {
+        if self
+            .command
+            .as_deref()
+            .is_some_and(|command| command.trim().is_empty())
+        {
+            return Err(anyhow!("template pane command 不能为空"));
+        }
+        if self.env.keys().any(|key| key.trim().is_empty()) {
+            return Err(anyhow!("template pane env key 不能为空"));
+        }
+        Ok(())
     }
 }
 
@@ -572,4 +670,68 @@ fn check_keys(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pane(command: &str) -> TemplateLayoutDocument {
+        TemplateLayoutDocument::Pane(TemplatePaneDocument {
+            command: Some(command.into()),
+            cwd: None,
+            env: BTreeMap::new(),
+            focus: false,
+        })
+    }
+
+    fn template() -> TemplateDocument {
+        TemplateDocument {
+            name: "review".into(),
+            tabs: vec![TemplateTabDocument {
+                name: Some("main".into()),
+                layout: TemplateLayoutDocument::Split {
+                    dir: SplitDir::Horizontal,
+                    first: Box::new(pane("editor")),
+                    second: Box::new(pane("tests")),
+                },
+                active: true,
+            }],
+        }
+    }
+
+    #[test]
+    fn template_document_round_trips_as_config_data() {
+        let document = template();
+        let raw = toml::to_string(&document).expect("template document 应可序列化");
+        let restored: TemplateDocument =
+            toml::from_str(&raw).expect("template document 应可反序列化");
+
+        assert_eq!(restored, document);
+        restored.validate().expect("模板记录应通过配置校验");
+    }
+
+    #[test]
+    fn config_document_round_trips_template_records() {
+        let mut document = ConfigDocument::default();
+        document.templates.push(template());
+        let raw = document.to_toml().expect("配置文档应可序列化");
+        let restored = ConfigDocument::from_toml(&raw).expect("配置文档应可反序列化");
+
+        assert_eq!(restored.templates, document.templates);
+    }
+
+    #[test]
+    fn template_document_rejects_invalid_record_without_domain_registry() {
+        let mut document = template();
+        document.tabs[0].layout = TemplateLayoutDocument::Pane(TemplatePaneDocument {
+            command: Some("   ".into()),
+            cwd: None,
+            env: BTreeMap::new(),
+            focus: false,
+        });
+
+        let error = document.validate().expect_err("空 command 应被拒绝");
+        assert!(error.to_string().contains("command"));
+    }
 }
