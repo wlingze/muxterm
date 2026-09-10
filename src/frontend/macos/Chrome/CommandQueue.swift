@@ -34,10 +34,64 @@ public struct QueuedMuxTask: Equatable, Sendable {
     }
 }
 
+/// Core input or resize operation waiting for the event-pump boundary.
+public enum QueuedMuxOperation: Equatable, Sendable {
+    case task(QueuedMuxTask)
+    case input(paneID: UInt32, data: Data, quiet: Bool)
+    case resize(QueuedMuxResize)
+
+    private var coalescingKey: CoalescingKey? {
+        switch self {
+        case .task(let task) where task.coalescing == .switchTab:
+            return .switchTab
+        case .resize(let resize):
+            return .resize(resize.coalescingKey)
+        case .task, .input:
+            return nil
+        }
+    }
+
+    fileprivate func canCoalesce(with other: QueuedMuxOperation) -> Bool {
+        guard let key = coalescingKey else { return false }
+        return key == other.coalescingKey
+    }
+
+    private enum CoalescingKey: Equatable {
+        case switchTab
+        case resize(QueuedMuxResize.CoalescingKey)
+    }
+}
+
+/// Resize operations use separate keys because a full pane resize, a divider
+/// resize, and a client resize are different Core calls even when they share a
+/// pane or workspace.
+public enum QueuedMuxResize: Equatable, Sendable {
+    case pane(paneID: UInt32, cols: UInt16, rows: UInt16)
+    case paneAxis(paneID: UInt32, horizontal: Bool, size: UInt16)
+    case client(cols: UInt16, rows: UInt16)
+
+    fileprivate var coalescingKey: CoalescingKey {
+        switch self {
+        case .pane(let paneID, _, _):
+            return .pane(paneID)
+        case .paneAxis(let paneID, let horizontal, _):
+            return .paneAxis(paneID, horizontal: horizontal)
+        case .client:
+            return .client
+        }
+    }
+
+    fileprivate enum CoalescingKey: Equatable {
+        case pane(UInt32)
+        case paneAxis(UInt32, horizontal: Bool)
+        case client
+    }
+}
+
 /// One UI-to-Core task waiting for the next main-thread event-pump flush.
 public struct QueuedMuxCommand: Equatable, Sendable {
     public let workspaceID: String?
-    public let task: QueuedMuxTask
+    public let operation: QueuedMuxOperation
     public let failureMessage: String
 
     public init(
@@ -46,8 +100,44 @@ public struct QueuedMuxCommand: Equatable, Sendable {
         failureMessage: String
     ) {
         self.workspaceID = workspaceID
-        self.task = task
+        self.operation = .task(task)
         self.failureMessage = failureMessage
+    }
+
+    public init(
+        workspaceID: String?,
+        operation: QueuedMuxOperation,
+        failureMessage: String
+    ) {
+        self.workspaceID = workspaceID
+        self.operation = operation
+        self.failureMessage = failureMessage
+    }
+
+    public static func input(
+        workspaceID: String?,
+        paneID: UInt32,
+        data: Data,
+        quiet: Bool = false,
+        failureMessage: String
+    ) -> QueuedMuxCommand {
+        QueuedMuxCommand(
+            workspaceID: workspaceID,
+            operation: .input(paneID: paneID, data: data, quiet: quiet),
+            failureMessage: failureMessage
+        )
+    }
+
+    public static func resize(
+        workspaceID: String?,
+        _ resize: QueuedMuxResize,
+        failureMessage: String
+    ) -> QueuedMuxCommand {
+        QueuedMuxCommand(
+            workspaceID: workspaceID,
+            operation: .resize(resize),
+            failureMessage: failureMessage
+        )
     }
 }
 
@@ -69,8 +159,7 @@ public struct MacCommandQueue: Sendable {
     public mutating func enqueue(_ command: QueuedMuxCommand) {
         if let previous = pending.last,
            previous.workspaceID == command.workspaceID,
-           previous.task.coalescing == .switchTab,
-           command.task.coalescing == .switchTab
+           previous.operation.canCoalesce(with: command.operation)
         {
             pending[pending.count - 1] = command
             return
