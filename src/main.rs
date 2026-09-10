@@ -1,3 +1,3 @@
 fn main() -> anyhow::Result<()> {
-    muxterm::app::run()
+    muxterm_frontend::cli::application::run()
 }

@@ -6,32 +6,6 @@
 #![allow(clippy::needless_pass_by_value)]
 //! Muxterm library root.
 
-/// Stable application services used by the thin binary entry point.
-pub mod app {
-    /// Start the selected frontend from the single binary entry point.
-    pub fn run() -> anyhow::Result<()> {
-        muxterm_frontend::cli::application::run()
-    }
-
-    pub use muxterm_core::fault::install_hook;
-    pub use muxterm_core::logging::{init_logging, resolve_config, LoggingConfig};
-
-    /// Run a frontend callback behind the process-wide fault reporter.
-    pub fn fault_run<T>(where_: &str, f: impl FnOnce() -> T) -> Option<T> {
-        muxterm_core::fault::run(where_, f)
-    }
-
-    /// Return the most recent fault message for a frontend error dialog.
-    pub fn last_fault_message() -> Option<String> {
-        muxterm_core::fault::last_message()
-    }
-
-    /// Record a caught frontend fault before presenting its UI fallback.
-    pub fn report_fault(where_: &str, payload: Box<dyn std::any::Any + Send>) {
-        muxterm_core::fault::report(where_, payload)
-    }
-}
-
 /// Public C-ABI facade. Core implementation modules remain behind this boundary
 /// for frontend callers that use the FFI contract.
 pub mod ffi {
