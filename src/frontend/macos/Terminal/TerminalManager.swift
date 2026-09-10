@@ -14,11 +14,11 @@ final class TerminalManager: TerminalInputHandler {
     private var expectedPaneSizes: [UInt32: (cols: Int, rows: Int)] = [:]
     private var fontFamily: String
     private var fontSize: CGFloat
-    /// 后台 Workspace 仍然消费 Core 事件，但不创建不可见的 AppKit/SwiftTerm
+    /// 隐藏 Workspace 仍然消费 Core 事件，但不创建不可见的 AppKit/SwiftTerm
     /// view。已有 view 继续 feed PTY。
     private var viewCreationEnabled = true
     /// Workspace 切换的缓存绘制阶段禁止触碰远端 bridge。远端查询/写入
-    /// 由后台 authority refresh 在锁内完成，主线程只处理本地 Surface。
+    /// 在串行 EventPump 边界恢复，切换栈只处理本地 Surface。
     private var bridgeQueriesEnabled = true
     /// 已经完成过 Runtime seed 或首批 live PTY 的 pane。
     private var swiftTermSeeded = Set<UInt32>()
@@ -60,8 +60,8 @@ final class TerminalManager: TerminalInputHandler {
     private var seedingPanes = Set<UInt32>()
     /// 后台 Workspace 关掉 viewCreation 时仍把快照留着，第一次建 Surface 立刻种。
     private var pendingSnapshots: [UInt32: Data] = [:]
-    /// 后台 Workspace 关掉 viewCreation 时保留最新完整 frame；它必须在
-    /// foreground 后替换当前屏幕，不能降级成普通 output 追加。
+    /// 隐藏 Workspace 关掉 viewCreation 时保留最新完整 frame；它必须在
+    /// scene 可见后替换当前屏幕，不能降级成普通 output 追加。
     private var pendingFrames: [UInt32: Data] = [:]
     /// 快照之后、建 view 之前到达的 live 字节。有上限，避免后台 TUI 把内存撑爆。
     private var pendingBackgroundOutput: [UInt32: Data] = [:]
@@ -234,7 +234,7 @@ final class TerminalManager: TerminalInputHandler {
         }
     }
 
-    /// 暂停/恢复切 Workspace 期间的 bridge 查询。切换到 warm Workspace
+    /// 暂停/恢复切 Workspace 期间的 bridge 查询。切换到缓存 Scene
     /// 时先复用本地 Surface；恢复后由下一轮正常 flush/geometry 任务补齐
     /// history capacity、viewport 和 tmux client resize。
     func setBridgeQueriesEnabled(_ enabled: Bool) {
@@ -297,7 +297,7 @@ final class TerminalManager: TerminalInputHandler {
         lastClientSize = size
     }
 
-    /// 判断 pane 是否已经有可复用的 Surface。后台 Workspace 只喂已有 view。
+    /// 判断 pane 是否已经有可复用的 Surface。隐藏 Workspace 只喂已有 view。
     func hasView(for paneId: UInt32) -> Bool {
         views[paneId] != nil
     }
@@ -832,7 +832,7 @@ final class TerminalManager: TerminalInputHandler {
 
     /// 本轮 poll 事件处理完毕。
     func endEventBatch() {
-        // 保留显式边界入口，供前台与 warm slot 使用；当前无需批次状态。
+        // 保留显式边界入口，供 EventPump 标记批次边界；当前无需批次状态。
     }
 
     /// 移除已关闭 pane 的视图（只在 STATE_PANE_CLOSED 时调用；

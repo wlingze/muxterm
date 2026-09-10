@@ -160,7 +160,7 @@ public struct StructuredAgentRegistry: Sendable {
     }
 }
 
-/// One warm Workspace shown by the main-window sidebar.
+/// One open Workspace shown by the main-window sidebar.
 public struct WorkspaceSidebarItem: Sendable, Equatable {
     public let workspaceId: String
     public let name: String
@@ -369,7 +369,7 @@ public enum WorkspaceSidebarProjection {
         }
     }
 
-    /// Project ordinary commands across warm workspaces.
+    /// Project ordinary commands across open workspaces.
     ///
     /// Agents (structured or known by process name) stay in Agents; commands are
     /// visible only while Running or while Blocked/Done remains unread.

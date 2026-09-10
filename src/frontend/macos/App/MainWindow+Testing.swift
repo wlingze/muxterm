@@ -451,14 +451,6 @@ extension MainWindowController {
         switchToWorkspaceAtFixedIndex(oneBased)
     }
 
-    func testPerformWhenForegroundReady(_ action: @escaping () -> Void) {
-        performWhenForegroundReady(action)
-    }
-
-    func testForegroundActivationPending() -> Bool {
-        foregroundActivationIsPending
-    }
-
     func testWindowClosing() -> Bool {
         isClosing
     }

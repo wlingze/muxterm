@@ -32,19 +32,12 @@ final class WorkspaceScene: SceneProtocol {
     var enqueueCoreCommand: ((QueuedMuxCommand) -> Bool)?
     let terminalManager: TerminalManager
     let viewStore: WorkspaceViewStore
-    private let stateLock = NSLock()
+    /// SceneStack and the workspace EventPump are both main-thread owned.
+    /// Keep this state synchronous so scene activation never waits on a lock.
     private var visibilityValue: SceneVisibility = .hidden
     var visibility: SceneVisibility {
-        get {
-            stateLock.lock()
-            defer { stateLock.unlock() }
-            return visibilityValue
-        }
-        set {
-            stateLock.lock()
-            visibilityValue = newValue
-            stateLock.unlock()
-        }
+        get { visibilityValue }
+        set { visibilityValue = newValue }
     }
     var lastUsedAt: UInt64
     /// 第一次进入 SceneStack 的顺序。固定 Cmd+Ctrl+N 编号使用它，
@@ -53,73 +46,53 @@ final class WorkspaceScene: SceneProtocol {
 
     /// EventPump 最近一次提交的快照（只读 ViewStore）。
     var lastSnapshot: FrameSnapshot {
-        stateLock.lock()
-        defer { stateLock.unlock() }
         return viewStore.snapshot
     }
 
     /// EventPump 写入的最新拓扑；场景切换时直接使用，不重新读取 Core。
     func cacheSnapshot(_ snapshot: FrameSnapshot) {
-        stateLock.lock()
         viewStore.snapshot = snapshot
-        stateLock.unlock()
     }
 
     /// EventPump 提交的注意力快照；主线程侧栏只读 ViewStore。
     var cachedAttentionSnapshot: AttentionSnapshot? {
-        stateLock.lock()
-        defer { stateLock.unlock() }
         return viewStore.attentionSnapshot
     }
 
     /// 写入当前 scene 的值类型注意力快照。
     func cacheAttentionSnapshot(_ snapshot: AttentionSnapshot) {
-        stateLock.lock()
         viewStore.attentionSnapshot = snapshot
         if let workspaceID = snapshot.workspaces.first?.workspaceId {
             viewStore.workspaceReplicaID = workspaceID
         }
-        stateLock.unlock()
     }
 
     /// Core 返回的稳定 Workspace 身份。
     var cachedWorkspaceReplicaID: String? {
-        stateLock.lock()
-        defer { stateLock.unlock() }
         return viewStore.workspaceReplicaID
     }
 
     func cacheWorkspaceReplicaID(_ workspaceID: String) {
         guard !workspaceID.isEmpty else { return }
-        stateLock.lock()
         viewStore.workspaceReplicaID = workspaceID
-        stateLock.unlock()
     }
 
     /// Core 的结构化 agent 快照副本。
     var cachedStructuredAgents: [StructuredPaneAgent] {
-        stateLock.lock()
-        defer { stateLock.unlock() }
         return viewStore.structuredAgents
     }
 
     func cacheStructuredAgents(_ agents: [StructuredPaneAgent]) {
-        stateLock.lock()
         viewStore.structuredAgents = agents
-        stateLock.unlock()
     }
 
     /// Cached Tab numbers are a value snapshot so sidebar refreshes do not
     /// touch the remote bridge on every poll.
     var cachedTabNumbersByPane: [UInt32: Int]? {
-        stateLock.lock()
-        defer { stateLock.unlock() }
         return viewStore.tabNumbersByPane
     }
 
     var cachedTabIdsByPane: [UInt32: UInt32]? {
-        stateLock.lock()
-        defer { stateLock.unlock() }
         return viewStore.tabIdsByPane
     }
 
@@ -127,25 +100,19 @@ final class WorkspaceScene: SceneProtocol {
         tabIdsByPane: [UInt32: UInt32],
         tabNumbersByPane: [UInt32: Int]
     ) {
-        stateLock.lock()
         viewStore.tabIdsByPane = tabIdsByPane
         viewStore.tabNumbersByPane = tabNumbersByPane
-        stateLock.unlock()
     }
 
     func invalidateTabNumbers() {
-        stateLock.lock()
         viewStore.tabIdsByPane = nil
         viewStore.tabNumbersByPane = nil
         viewStore.topologyRefreshRequested = true
-        stateLock.unlock()
     }
 
     /// 主线程消费后台已经取走的通知；通知的 FFI 查询不再发生在 UI 切换路径。
     func takePendingAttentionNotifications() -> [AttentionNotification] {
         dispatchPrecondition(condition: .onQueue(.main))
-        stateLock.lock()
-        defer { stateLock.unlock() }
         let result = viewStore.pendingAttentionNotifications
         viewStore.pendingAttentionNotifications.removeAll()
         return result
@@ -217,7 +184,6 @@ final class WorkspaceScene: SceneProtocol {
             }
         }
 
-        stateLock.lock()
         if !surface.isEmpty {
             for event in surface {
                 enqueueSurfaceEvent(event)
@@ -229,13 +195,10 @@ final class WorkspaceScene: SceneProtocol {
             viewStore.tabIdsByPane = topology.tabIdsByPane
             viewStore.tabNumbersByPane = topology.tabNumbersByPane
         }
-        stateLock.unlock()
     }
 
     /// 是否还有需要 hop 回主线程的 Surface 工作。
     var hasPendingSurfaceWork: Bool {
-        stateLock.lock()
-        defer { stateLock.unlock() }
         return !viewStore.pendingSurfaceEvents.isEmpty || !viewStore.pendingSurfaceOverflowPanes.isEmpty
     }
 
@@ -351,14 +314,12 @@ final class WorkspaceScene: SceneProtocol {
         timeBudget: TimeInterval = SurfaceEventBatchPolicy.timeBudget
     ) -> Bool {
         dispatchPrecondition(condition: .onQueue(.main))
-        stateLock.lock()
         let overflowPanes = viewStore.pendingSurfaceOverflowPanes
         viewStore.pendingSurfaceOverflowPanes.removeAll()
         let fromHidden = viewStore.pendingDrainedWhileHidden
         viewStore.pendingDrainedWhileHidden = false
         let alive = visibilityValue != .closed
         let nowVisible = visibilityValue == .visible
-        stateLock.unlock()
         guard alive else { return false }
 
         if fromHidden {
@@ -383,12 +344,10 @@ final class WorkspaceScene: SceneProtocol {
             {
                 break
             }
-            stateLock.lock()
             let next = viewStore.pendingSurfaceEvents.first
             if next != nil {
                 viewStore.pendingSurfaceEvents.removeFirst()
             }
-            stateLock.unlock()
             guard let next else { break }
             events.append(next)
         }
@@ -414,9 +373,7 @@ final class WorkspaceScene: SceneProtocol {
             terminalManager.setViewCreationEnabled(true)
         }
 
-        stateLock.lock()
         let hasPending = !viewStore.pendingSurfaceEvents.isEmpty || !viewStore.pendingSurfaceOverflowPanes.isEmpty
-        stateLock.unlock()
         return hasPending
     }
 
@@ -428,13 +385,12 @@ final class WorkspaceScene: SceneProtocol {
 
     /// 关闭场景：通知 Core 销毁对应 Workspace；共享 handle 由窗口统一回收。
     func evict(reason: SceneEvictionReason) {
-        stateLock.lock()
+        dispatchPrecondition(condition: .onQueue(.main))
         visibilityValue = .closed
         viewStore.pendingSurfaceEvents.removeAll()
         viewStore.pendingSurfaceOverflowPanes.removeAll()
         viewStore.pendingDrainedWhileHidden = false
         viewStore.pendingAttentionNotifications.removeAll()
-        stateLock.unlock()
 
         if let workspaceID {
             _ = bridge.closeWorkspace(workspaceID: workspaceID)
@@ -443,13 +399,12 @@ final class WorkspaceScene: SceneProtocol {
 
     /// 窗口/应用关闭：清理 scene 状态；共享 handle 由窗口统一回收。
     func shutdown() {
-        stateLock.lock()
+        dispatchPrecondition(condition: .onQueue(.main))
         visibilityValue = .closed
         viewStore.pendingSurfaceEvents.removeAll()
         viewStore.pendingSurfaceOverflowPanes.removeAll()
         viewStore.pendingDrainedWhileHidden = false
         viewStore.pendingAttentionNotifications.removeAll()
-        stateLock.unlock()
 
     }
 }

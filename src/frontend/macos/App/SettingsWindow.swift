@@ -98,7 +98,7 @@ private func settingsFieldDescription(path: String) -> String {
     case "/tmux/auto_mouse": return "Forward mouse interactions to attached tmux workspaces."
     case "/tmux/default_session": return "Workspace to attach on launch; leave empty to start locally."
     case "/tmux/socket": return "Optional named tmux socket. Empty uses the default server."
-    case "/pool/max_slots": return "Show a reminder when this many warm workspaces are open."
+    case "/pool/max_slots": return "Show a reminder when this many open workspaces are retained."
     case "/scrollback/lines": return "History kept for each newly created pane."
     case "/pane/default_command": return "Command started for a new local pane."
     case "/pane/workdir": return "Directory used when a new local pane starts."

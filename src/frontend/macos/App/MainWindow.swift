@@ -134,10 +134,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 已向 tmux 上报过颜色的 workspace/pane（`refresh-client -r` 只需每个
     /// pane 一次；外观变化时清空重报）。
     private var reportedColourPanes = Set<ColourPaneKey>()
-    /// 后台 tab 的 Surface 树按 runloop 一拍一棵预热，避免 attach 时一次建完卡死。
-    private var tabWarmupScheduled = false
-    /// Timer 只置位请求；真正的 geometry 查询由下一拍 EventPump 执行。
-    private var tabWarmupRequested = false
     /// 最近一次 status bar 快照（用于周期刷新与位置/样式渲染）。
     private var statusBarSnapshot: StatusBarSnapshot?
     /// statusbar 需要刷新（tab 增删/激活才置位；layout-change/pane 事件不触发，
@@ -177,7 +173,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private var pendingPaneOutputCompletions: [UInt64: (Data) -> Void] = [:]
     /// Core work needed after a cached scene switch.  It is deliberately
     /// resumed by `pollOnce()`, never from the click/activation stack.
-    private var pendingActivationCoreWork: WorkspaceScene?
+    private var deferredBridgeWorkScene: WorkspaceScene?
     /// 后台 poll 只把 Surface 事件交回主线程；主线程按小批次追赶，避免
     /// 一个高流量远端 pane 把切换、输入和窗口事件挤出 run loop。
     private var surfaceCatchUpScenes: [WorkspaceScene] = []
@@ -328,7 +324,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         workspaceSidebar.onAgentActivate = { [weak self] workspaceId, tabId, paneId in
             guard let self, self.activateWorkspaceIfAvailable(workspaceId) else { return }
-            self.performWhenForegroundReady { [weak self] in
+            self.performIfWindowOpen { [weak self] in
                 guard let self else { return }
                 _ = self.enqueueCoreAttention(
                     workspaceID: self.activeSceneWorkspaceID,
@@ -339,7 +335,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         workspaceSidebar.onCommandActivate = { [weak self] workspaceId, tabId, paneId in
             guard let self, self.activateWorkspaceIfAvailable(workspaceId) else { return }
-            self.performWhenForegroundReady { [weak self] in
+            self.performIfWindowOpen { [weak self] in
                 guard let self else { return }
                 _ = self.enqueueCoreAttention(
                     workspaceID: self.activeSceneWorkspaceID,
@@ -361,7 +357,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             },
             sendInput: { [weak self] paneId, data in
                 guard let self else { return }
-                self.performWhenForegroundReady {
+                self.performIfWindowOpen {
                     _ = self.enqueueCoreInput(paneId: paneId, data: data)
                 }
             },
@@ -423,7 +419,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         unifiedPanel.onPreview = { [weak self] workspaceId, paneId in
             guard let self, self.activateWorkspaceIfAvailable(workspaceId) else { return }
-            self.performWhenForegroundReady { [weak self] in
+            self.performIfWindowOpen { [weak self] in
                 self?.toggleReplyOverlay(paneId: paneId)
             }
         }
@@ -469,7 +465,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         content.statusBar.allowsTabReordering = terminalManager.usesClientResize
         content.paneLayout.onActivatePane = { [weak self] paneId in
             guard let self else { return }
-            self.performWhenForegroundReady { [weak self] in
+            self.performIfWindowOpen { [weak self] in
                 guard let self else { return }
                 self.focusPaneTerminal(paneId)
                 _ = self.enqueueCoreTask(
@@ -481,11 +477,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 )
             }
         }
-        content.paneLayout.onSurfaceBecameReady = { [weak self] paneId, ready in
+        content.paneLayout.onSurfaceBecameReady = { [weak self] paneId, _ in
             guard let self else { return }
-            if ready {
-                self.scheduleTabTreeWarmup()
-            }
             let active = self.lastSnapshot.panes.first(where: \.isActive)?.id
                 ?? self.lastSnapshot.panes.first?.id
             guard TerminalInputFocusPolicy.shouldRetryWhenSurfaceReady(
@@ -579,7 +572,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     deinit {
         pollTimer?.invalidate()
         trafficMonitorTimer?.invalidate()
-        pendingActivationCoreWork = nil
+        deferredBridgeWorkScene = nil
         surfaceCatchUpWorkItem?.cancel()
         surfaceCatchUpWorkItem = nil
         surfaceCatchUpScenes.removeAll()
@@ -1129,9 +1122,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         return fallbackReplicaID(for: target)
     }
 
-    /// UI 命令在同一主线程事件泵上顺序进入 Core；场景切换本身不需要等待
-    /// 任何后台 FFI，也不再保留待重放动作。
-    func performWhenForegroundReady(_ action: @escaping () -> Void) {
+    /// UI 命令在同一主线程事件泵上顺序进入 Core；场景切换本身只执行本地
+    /// Scene 操作，不需要等待任何后台 FFI。
+    func performIfWindowOpen(_ action: @escaping () -> Void) {
         guard !isClosing else { return }
         action()
     }
@@ -1620,10 +1613,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    var foregroundActivationIsPending: Bool {
-        false
-    }
-
     func workspaceSidebarScenes() -> [WorkspaceScene] {
         sceneStack.scenes.values
             .filter { $0.visibility != .closed }
@@ -1961,7 +1950,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             // Workspace 且目标 slot 尚未 ready 才排队等下一轮 poll。
             if cachedWorkspacePaneIDs().contains(paneId) {
                 pendingPanelJump = nil
-                performWhenForegroundReady { [weak self] in
+                performIfWindowOpen { [weak self] in
                     self?.jumpToPane(tabId: tabId, paneId: paneId, seq: seq, query: query)
                 }
                 return
@@ -1976,7 +1965,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             return
         }
         pendingPanelJump = nil
-        performWhenForegroundReady { [weak self] in
+        performIfWindowOpen { [weak self] in
             self?.jumpToPane(tabId: tabId, paneId: paneId, seq: seq, query: query)
         }
     }
@@ -1989,7 +1978,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             return
         }
         pendingPanelJump = nil
-        performWhenForegroundReady { [weak self] in
+        performIfWindowOpen { [weak self] in
             self?.jumpToPane(
                 tabId: jump.tabId,
                 paneId: jump.paneId,
@@ -2000,7 +1989,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func acknowledgeWorkspacePane(workspaceId: String, paneId: UInt32) {
-        performWhenForegroundReady { [weak self] in
+        performIfWindowOpen { [weak self] in
             guard let self else { return }
             guard let scene = self.sceneStack.scenes.values.first(where: {
                 self.workspaceReplicaID(for: $0) == workspaceId
@@ -2018,7 +2007,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         paneId: UInt32,
         seconds: UInt64
     ) {
-        performWhenForegroundReady { [weak self] in
+        performIfWindowOpen { [weak self] in
             guard let self else { return }
             guard let scene = self.sceneStack.scenes.values.first(where: {
                 self.workspaceReplicaID(for: $0) == workspaceId
@@ -2048,7 +2037,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             )
         )
         // select-pane 的状态事件可能被 Surface catch-up 推迟；先乐观
-        // 更新快照和焦点，与 nextPane 同语义。权威 snapshot 下一轮校准。
+        // 更新快照和焦点，与 nextPane 同语义。Core snapshot 在下一轮事件泵对齐。
         lastSnapshot.activePane = paneId
         lastSnapshot.panes = lastSnapshot.panes.map { pane in
             Pane(
@@ -2513,7 +2502,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// descriptor-aware Runtime 建连；Catalog resolver 返回的 canonical target
-    /// 用于 warm key 与 Recent，不能从 WorkspaceId 五段字符串反推。
+    /// 用于 canonical scene key 与 Recent，不能从 WorkspaceId 五段字符串反推。
     private func connectCatalogTarget(
         config: TargetConfig,
         intent: CoreTargetOpenIntent,
@@ -2744,7 +2733,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         terminalManager.setBridgeQueriesEnabled(false)
         content.paneLayout.resumeGeometrySync()
         focusActiveTerminal()
-        pendingActivationCoreWork = slot
+        deferredBridgeWorkScene = slot
         statusBarNeedsRefresh = true
         // 切连接后立即更新 SSH 状态 + 流量监控显示。
         updateTrafficMonitor()
@@ -2922,7 +2911,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         terminalManager.updatePaneSizes(panes)
         terminalManager.flushSeedsNow(paneIds: Set(panes.map(\.id)))
         focusVisibleTab(lastSnapshot)
-        scheduleTabTreeWarmup()
         return false
     }
 
@@ -3681,10 +3669,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// Resume bridge-backed work after the cached scene is already visible.
-    /// This is part of the serialized event-pump boundary, not activation.
-    private func resumePendingActivationCoreWork() {
-        guard let slot = pendingActivationCoreWork else { return }
-        pendingActivationCoreWork = nil
+    /// This runs at the serialized event-pump boundary after local painting.
+    private func flushDeferredSceneBridgeWork() {
+        guard let slot = deferredBridgeWorkScene else { return }
+        deferredBridgeWorkScene = nil
         guard !isClosing,
               slot.visibility == .visible,
               bridge === slot.bridge
@@ -3701,7 +3689,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // UI actions only enqueue.  This is the single command boundary next
         // to the single workspace-event drain, so Core never races a click
         // handler or needs a frontend lock.
-        resumePendingActivationCoreWork()
+        flushDeferredSceneBridgeWork()
         // Resuming a scene may enqueue deferred input/resize work collected
         // while bridge queries were paused, so flush after the resume as well.
         flushCoreCommandQueue()
@@ -3715,10 +3703,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             }
             retryPendingPanelJump()
             return
-        }
-        if tabWarmupRequested {
-            tabWarmupRequested = false
-            warmNextBackgroundTab()
         }
         terminalManager.beginEventBatch()
         defer { terminalManager.endEventBatch() }
@@ -4035,7 +4019,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.001, execute: work)
     }
 
-    /// 在一个全局主线程预算内轮转所有 warm Workspace，active 优先。
+    /// 在一个全局主线程预算内轮转所有待处理的 Workspace scene，active 优先。
     private func flushSurfaceCatchUpPass() {
         guard !isClosing else {
             surfaceCatchUpScenes.removeAll()
@@ -4224,7 +4208,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             content.paneLayout.markActivePane(activePane)
             restoreTerminalFocusIfAllowed()
         }
-        scheduleTabTreeWarmup()
         cacheActiveSlotSnapshot(
             tabIdsByPane: snap.tabs.isEmpty ? nil : tabIdsByPane,
             tabNumbersByPane: snap.tabs.isEmpty ? nil : tabNumbersByPane
@@ -4247,55 +4230,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 tabIdsByPane: tabIdsByPane,
                 tabNumbersByPane: tabNumbersByPane
             )
-        }
-    }
-
-    /// 每拍只预热一个还没点过的 tab，第一次点击就能走缓存树。
-    private func scheduleTabTreeWarmup() {
-        guard TabWarmupPolicy.canStart(
-            activeSurfaceReady: activeSurfaceReadyForTabWarmup()
-        ) else {
-            return
-        }
-        guard !tabWarmupScheduled else { return }
-        tabWarmupScheduled = true
-        DispatchQueue.main.asyncAfter(
-            deadline: .now() + TabWarmupPolicy.delayAfterFirstPaint
-        ) { [weak self] in
-            guard let self else { return }
-            self.tabWarmupScheduled = false
-            guard !self.isClosing else { return }
-            self.tabWarmupRequested = true
-        }
-    }
-
-    private func activeSurfaceReadyForTabWarmup() -> Bool {
-        guard let activePane = lastSnapshot.panes.first(where: \.isActive)?.id
-            ?? lastSnapshot.panes.first?.id
-        else {
-            return false
-        }
-        return terminalManager.isSurfaceReady(for: activePane)
-    }
-
-    private func warmNextBackgroundTab() {
-        guard activeSurfaceReadyForTabWarmup()
-        else { return }
-        let current = lastSnapshot.activeTab
-        for tab in lastSnapshot.tabs where tab.id != current {
-            if content.paneLayout.hasCachedTab(tab.id) { continue }
-            let panes = bridge.getPanes(tabId: tab.id)
-            let layout = bridge.getLayout(tabId: tab.id)
-            guard FirstTabPaintPolicy.canPaintFromLocalLayout(
-                paneCount: panes.count,
-                hasLayout: layout != nil
-            ) else {
-                continue
-            }
-            if content.paneLayout.prewarm(tabId: tab.id, layout: layout, panes: panes) {
-                scheduleTabTreeWarmup()
-                return
-            }
         }
     }
 
@@ -4923,7 +4857,7 @@ extension MainWindowController: TerminalInputHandler {
         let paneId = replyOverlayPaneId ?? view.paneId
         let payload = Data(data)
         // W19-E：overlay 快速回复不清 Blocked（注意力行保留，Enter 仍可跳转）。
-        performWhenForegroundReady { [weak self] in
+        performIfWindowOpen { [weak self] in
             _ = self?.enqueueCoreInput(
                 paneId: paneId,
                 data: payload,

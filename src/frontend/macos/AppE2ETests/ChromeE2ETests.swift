@@ -224,7 +224,7 @@ final class ChromeE2ETests: XCTestCase {
         XCTAssertEqual(sampler.sample(totalBytes: 1636, now: 12), 0)
         XCTAssertEqual(sampler.sample(totalBytes: 8, now: 13), 0, "连接切换后累计值归零")
         sampler.reset()
-        XCTAssertEqual(sampler.sample(totalBytes: 4096, now: 14), 0, "warm workspace 切换后重建基线")
+        XCTAssertEqual(sampler.sample(totalBytes: 4096, now: 14), 0, "切换 Workspace 后重建基线")
     }
 
     private func find(_ root: NSView, _ id: String) -> NSView? {
