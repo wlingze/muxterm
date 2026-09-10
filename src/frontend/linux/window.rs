@@ -16,8 +16,6 @@ use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{ApplicationWindow, Box, Button, CheckButton, Label, Orientation, Window};
 
-use anyhow::anyhow;
-
 use crate::frontend::command_queue::{ClientCommand, CommandQueue};
 use crate::frontend::event_pump::EventPump;
 use crate::frontend::ffi_client::{
@@ -40,7 +38,6 @@ use crate::frontend::linux::lifecycle::{cycle_pane_id, should_close_window, OnLa
 use crate::frontend::linux::overlay::OverlayLayer;
 use crate::frontend::linux::pane_view::{PaneMenuAction, PaneSurface};
 use crate::frontend::linux::panel_model::PanelTab;
-use crate::frontend::linux::preferences_window::ConfigApi;
 use crate::frontend::linux::quickconnect::existing::{ExistingEntry, ExistingTransport};
 use crate::frontend::linux::quickconnect::font::FontSettings;
 use crate::frontend::linux::quickconnect::model::{
@@ -74,6 +71,8 @@ use muxterm_protocol::WorkspaceId;
 mod window_appearance;
 #[path = "window_chrome.rs"]
 mod window_chrome;
+#[path = "window_config.rs"]
+mod window_config;
 #[path = "window_discovery.rs"]
 mod window_discovery;
 #[path = "window_layout.rs"]
@@ -90,6 +89,8 @@ mod window_scene;
 mod window_status;
 #[path = "window_surface.rs"]
 mod window_surface;
+#[path = "window_worktree.rs"]
+mod window_worktree;
 
 /// 主窗口。
 pub struct AppWindow {
@@ -2769,75 +2770,7 @@ fn workspace_replica_matches(id: &WorkspaceId, requested: &str) -> bool {
 
 /// 打开配置页：保存/热加载后重读 config.toml 并应用主题/字体/attention。
 fn open_preferences(state: &Rc<RefCell<UiState>>, window: &Window) {
-    let path = match FfiClient::new_catalog().and_then(|client| client.config_describe()) {
-        Ok(snapshot) if !snapshot.path.trim().is_empty() => std::path::PathBuf::from(snapshot.path),
-        Ok(_) | Err(_) => {
-            tracing::warn!(
-                target = "muxterm::linux",
-                "Core 未返回配置路径，无法打开配置页"
-            );
-            return;
-        }
-    };
-    let st = state.clone();
-    let hosts = FfiClient::discover_ssh_hosts().unwrap_or_default();
-    let runtimes = FfiClient::discover_runtimes().unwrap_or_default();
-    let config_api = ConfigApi::from_callbacks(
-        {
-            let state = Rc::downgrade(state);
-            move || with_config_client(&state, FfiClient::config_describe)
-        },
-        {
-            let state = Rc::downgrade(state);
-            move |patch| with_config_client(&state, |client| client.config_apply(patch))
-        },
-        {
-            let state = Rc::downgrade(state);
-            move || {
-                with_config_client(&state, |client| {
-                    client.config_reload()?;
-                    client.config_describe()
-                })
-            }
-        },
-    );
-    let snapshot = match config_api.describe() {
-        Ok(snapshot) => snapshot,
-        Err(error) => {
-            tracing::warn!(
-                target = "muxterm::config",
-                "打开设置页读取配置失败: {error}"
-            );
-            return;
-        }
-    };
-    let config_for_saved = config_api.clone();
-    crate::frontend::linux::preferences_window::show(
-        window,
-        path,
-        config_api,
-        snapshot,
-        std::boxed::Box::new(move || {
-            let snapshot = config_for_saved.describe();
-            let mut s = st.borrow_mut();
-            // 保存后重新读取 Core FFI 快照；EventPump 外部配置变更走同一函数。
-            if let Ok(snapshot) = snapshot {
-                apply_config_snapshot(&mut s, snapshot);
-            }
-        }),
-        Some((runtimes, hosts)),
-    );
-}
-
-fn with_config_client<T>(
-    state: &std::rc::Weak<RefCell<UiState>>,
-    operation: impl FnOnce(&FfiClient) -> anyhow::Result<T>,
-) -> anyhow::Result<T> {
-    let state = state.upgrade().ok_or_else(|| anyhow!("主窗口状态已销毁"))?;
-    let state = state
-        .try_borrow()
-        .map_err(|error| anyhow!("主窗口状态正在更新: {error}"))?;
-    operation(state.event_pump.client())
+    window_config::open_preferences(state, window);
 }
 
 fn open_target_config(
@@ -2845,44 +2778,7 @@ fn open_target_config(
     window: &Window,
     editing: Option<TargetConfig>,
 ) {
-    let store = state.borrow().qc_store.clone();
-    let hosts = FfiClient::discover_ssh_hosts().unwrap_or_default();
-    let runtimes = FfiClient::discover_runtimes().unwrap_or_default();
-    let st = state.clone();
-    let win = window.clone();
-    crate::frontend::linux::target_config_window::show(
-        window,
-        editing,
-        store,
-        hosts,
-        runtimes,
-        {
-            let st = st.clone();
-            let win = win.clone();
-            move |saved| {
-                let mut s = st.borrow_mut();
-                s.qc_store.upsert_project(&saved);
-                match serde_json::to_value(s.qc_store.project_documents()) {
-                    Ok(projects) => {
-                        persist_config(s.event_pump.client(), "projects", projects);
-                    }
-                    Err(error) => tracing::warn!(
-                        target = "muxterm::config",
-                        "序列化 Project 配置失败: {error}"
-                    ),
-                }
-                drop(s);
-                open_quick_connect(&st, &win);
-            }
-        },
-        {
-            let st = st.clone();
-            let win = win.clone();
-            move || {
-                open_quick_connect(&st, &win);
-            }
-        },
-    );
+    window_config::open_target_config(state, window, editing);
 }
 
 /// W20：SSH 已有连接探测结果（alias → 该 host 的 tmux/Herdr 行）。
@@ -2890,98 +2786,7 @@ type ExistingSshProbeResult = Vec<(String, Vec<ExistingEntry>)>;
 
 /// worktree 创建对话框：分支 + 路径，Create 后后台建 checkout 并开新格。
 fn show_worktree_create_dialog(state: &Rc<RefCell<UiState>>, parent: &gtk4::Window) {
-    let dialog = gtk4::Window::builder()
-        .title("新建 worktree")
-        .modal(true)
-        .transient_for(parent)
-        .default_width(460)
-        .build();
-    let vbox = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
-    vbox.set_margin_top(12);
-    vbox.set_margin_bottom(12);
-    vbox.set_margin_start(12);
-    vbox.set_margin_end(12);
-    let branch = gtk4::Entry::builder()
-        .placeholder_text("分支名（如 feat/xxx）")
-        .build();
-    branch.set_widget_name("muxterm-worktree-create-branch");
-    let path = gtk4::Entry::builder()
-        .placeholder_text("checkout 路径（如 /tmp/muxterm-test-herdr-wt-1）")
-        .build();
-    path.set_widget_name("muxterm-worktree-create-path");
-    let create = gtk4::Button::with_label("创建");
-    create.set_widget_name("muxterm-worktree-create-confirm");
-    let cancel = gtk4::Button::with_label("取消");
-    let row = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
-    row.append(&cancel);
-    row.append(&create);
-    vbox.append(&branch);
-    vbox.append(&path);
-    vbox.append(&row);
-    dialog.set_child(Some(&vbox));
-
-    let dlg = dialog.clone();
-    cancel.connect_clicked(move |_| dlg.close());
-    let st = state.clone();
-    let dlg = dialog.clone();
-    create.connect_clicked(move |_| {
-        let branch_text = branch.text().to_string();
-        let path_text = path.text().to_string();
-        if branch_text.trim().is_empty() || path_text.trim().is_empty() {
-            return;
-        }
-        create_worktree(
-            &st,
-            branch_text.trim().to_string(),
-            path_text.trim().to_string(),
-        );
-        dlg.close();
-    });
-    dialog.present();
-}
-
-/// 通过 Core FFI 创建 native worktree，并在成功后刷新 owned workspace DTO。
-fn create_worktree(state: &Rc<RefCell<UiState>>, branch: String, path: String) {
-    let source_workspace_id = {
-        let s = state.borrow();
-        Some(s.active_workspace_key())
-    };
-    let Some(source_workspace_id) = source_workspace_id else {
-        return;
-    };
-    let result = {
-        let s = state.borrow();
-        s.event_pump.client().create_native_worktree(
-            &source_workspace_id,
-            &branch,
-            &path,
-            None,
-            None,
-        )
-    };
-    match result {
-        Ok(opened) => {
-            let mut s = state.borrow_mut();
-            if let Err(error) = sync_view_store(&mut s) {
-                tracing::warn!(target = "muxterm::linux", %error, "worktree snapshot refresh failed");
-                return;
-            }
-            if parse_workspace_id(&opened.id).is_some() {
-                after_activate(&mut s);
-            }
-        }
-        Err(error) => {
-            let detail = error.to_string();
-            tracing::error!(
-                target = "muxterm::linux",
-                "worktree create failed: {detail}"
-            );
-            state
-                .borrow_mut()
-                .notification_log
-                .push(format!("worktree create failed: {detail}"));
-        }
-    }
+    window_worktree::show_worktree_create_dialog(state, parent);
 }
 
 /// TargetConfig + session → 稳定 WorkspaceId。
