@@ -15,11 +15,9 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context, Result};
 use tracing::{info, warn};
 
-use crate::frontend::cli::format_ffi_output;
-use crate::frontend::cli::CliCommand;
-use crate::frontend::ffi_client::{
-    ClientOpenIntent, ClientResizeAxis, ClientTarget, ClientTask, FfiClient,
-};
+use crate::cli::format_ffi_output;
+use crate::cli::CliCommand;
+use crate::ffi_client::{ClientOpenIntent, ClientResizeAxis, ClientTarget, ClientTask, FfiClient};
 use muxterm_protocol::daemon::{Request, Response};
 
 /// daemon 共享状态：一个 Core FFI handle 与其 workspace identity。
@@ -352,10 +350,7 @@ fn handle_connection(
         };
 
         // 检查是否是 KillSession
-        if matches!(
-            req.command,
-            crate::frontend::cli::CliCommand::CloseWorkspace { .. }
-        ) {
+        if matches!(req.command, crate::cli::CliCommand::CloseWorkspace { .. }) {
             should_kill = true;
         }
 
