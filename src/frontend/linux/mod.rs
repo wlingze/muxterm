@@ -25,6 +25,7 @@ pub mod quickconnect_panel;
 pub mod scene_stack;
 pub mod scroll_policy;
 pub mod scrollback_view;
+pub mod settings_model;
 pub mod status_bar;
 pub mod target_config_window;
 pub mod theme;
