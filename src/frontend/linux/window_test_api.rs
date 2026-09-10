@@ -4,6 +4,9 @@
 //! the stable production paths exposed to GTK/e2e tests in one boundary.
 
 use super::window_actions::{adjust_font, handle_action, paste_active_pane};
+use super::window_activity::{
+    drain_attention_notifications, update_command_marks, update_jump_latest,
+};
 use super::*;
 
 impl AppWindow {

@@ -6,6 +6,9 @@
 use super::window_actions::{
     handle_action, handle_pane_menu_action, prepare_core_tab_mutation, report_all_pane_colours,
 };
+use super::window_activity::{
+    drain_attention_notifications, scroll_to_command_text, update_command_marks, update_jump_latest,
+};
 use super::*;
 
 impl AppWindow {
