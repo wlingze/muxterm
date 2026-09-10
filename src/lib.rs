@@ -10,7 +10,7 @@
 pub mod app {
     /// Start the selected frontend from the single binary entry point.
     pub fn run() -> anyhow::Result<()> {
-        crate::platform::cli::application::run()
+        crate::frontend::cli::application::run()
     }
 
     pub use crate::core::fault::install_hook;
@@ -40,7 +40,6 @@ pub mod ffi {
 
 pub(crate) use muxterm_core as core;
 mod frontend;
-mod platform;
 
 /// Test-only compatibility exports for the existing integration contract suite.
 ///
@@ -54,6 +53,6 @@ pub mod test_support {
     }
 
     pub mod platform {
-        pub use crate::platform::*;
+        pub use crate::frontend::*;
     }
 }
