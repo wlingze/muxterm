@@ -11,7 +11,10 @@ use super::window_event_pump::{
     activity_snapshot, enqueue_workspace_input, flush_command_queue, poll_event_store,
     sync_view_store,
 };
+use super::window_sidebar::{maybe_warn_workspace_capacity, refresh_sidebar_if_open};
 use super::*;
+
+use crate::frontend::ffi_client::{ClientOpenIntent, ClientTarget};
 
 impl AppWindow {
     /// W21 测试钩子：向指定 pane 的生产滚轮路径发一次滚动。

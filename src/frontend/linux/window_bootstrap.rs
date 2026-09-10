@@ -3,6 +3,8 @@
 //! Core ownership, initial ViewStore synchronization, the resident Scene
 //! tree, and the single GTK EventPump loop are assembled here.
 
+use gtk4::ApplicationWindow;
+
 use super::window_actions::{
     handle_action, handle_pane_menu_action, prepare_core_tab_mutation, report_all_pane_colours,
 };
@@ -10,6 +12,10 @@ use super::window_activity::{
     drain_attention_notifications, scroll_to_command_text, update_command_marks, update_jump_latest,
 };
 use super::window_event_pump::{activity_snapshot, flush_command_queue, poll_event_store};
+use super::window_sidebar::{
+    activate_sidebar_activity, close_sidebar_workspace, maybe_warn_workspace_capacity,
+    refresh_sidebar_if_open,
+};
 use super::*;
 
 impl AppWindow {

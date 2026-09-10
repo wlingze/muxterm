@@ -10,10 +10,11 @@ use gtk4::prelude::*;
 use muxterm_protocol::WorkspaceId;
 
 use super::window_actions::{handle_pane_menu_action, report_all_pane_colours};
+use super::window_sidebar::{refresh_sidebar_if_open, refresh_sidebar_workspaces_if_open};
 use super::{
     active_workspace_key, mark_active_attention_visible, maybe_refresh_status, parse_workspace_id,
-    recent_target_configs, refresh_sidebar_if_open, refresh_sidebar_workspaces_if_open, refresh_ui,
-    refresh_workspace_layout, sync_chrome_visibility, LayoutHost, UiState,
+    recent_target_configs, refresh_ui, refresh_workspace_layout, sync_chrome_visibility,
+    LayoutHost, UiState,
 };
 
 pub(super) fn switch_tab_n(s: &mut UiState, n: usize) {
