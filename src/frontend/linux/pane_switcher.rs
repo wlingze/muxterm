@@ -5,8 +5,24 @@
 use gtk4::prelude::*;
 use gtk4::{Align, Box as GtkBox, Dialog, Entry, Label, Orientation, Window};
 
-use crate::frontend::linux::notebook::{PaneKey, TabKey};
 use crate::frontend::linux::quick_pick::{self, QuickPickItem};
+
+/// Pane switcher 的旧产品标识只用于生成跳转条目，不再代表 GTK Notebook
+/// 的布局所有权；实际拓扑由 Core snapshot + LayoutHost 提供。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TabKey {
+    Local(u64),
+    TmuxWindow(u32),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LocalPaneId(pub u64);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PaneKey {
+    Local(LocalPaneId),
+    Tmux(u32),
+}
 
 /// 一条可切换的 pane。
 #[derive(Debug, Clone)]
