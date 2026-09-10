@@ -136,6 +136,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private var reportedColourPanes = Set<ColourPaneKey>()
     /// 后台 tab 的 Surface 树按 runloop 一拍一棵预热，避免 attach 时一次建完卡死。
     private var tabWarmupScheduled = false
+    /// Timer 只置位请求；真正的 geometry 查询由下一拍 EventPump 执行。
+    private var tabWarmupRequested = false
     /// 最近一次 status bar 快照（用于周期刷新与位置/样式渲染）。
     private var statusBarSnapshot: StatusBarSnapshot?
     /// statusbar 需要刷新（tab 增删/激活才置位；layout-change/pane 事件不触发，
@@ -565,7 +567,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         refreshWorkspaceSidebar(force: true)
         startPolling()
         DispatchQueue.main.async { [weak self] in
-            self?.refreshUI()
+            self?.pollOnce()
         }
     }
 
@@ -2728,7 +2730,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // at the next event-pump boundary.
         terminalManager.setBridgeQueriesEnabled(false)
         content.paneLayout.resumeGeometrySync()
-        focusActiveTerminal(allowBridgeQuery: false)
+        focusActiveTerminal()
         pendingActivationCoreWork = slot
         statusBarNeedsRefresh = true
         // 切连接后立即更新 SSH 状态 + 流量监控显示。
@@ -2789,14 +2791,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         focusActiveTerminal()
     }
 
-    private func focusActiveTerminal(allowBridgeQuery: Bool = true) {
-        let snap: FrameSnapshot
-        if !lastSnapshot.panes.isEmpty {
-            snap = lastSnapshot
-        } else {
-            guard allowBridgeQuery else { return }
-            snap = bridge.snapshot()
-        }
+    private func focusActiveTerminal() {
+        let snap = lastSnapshot
+        guard !snap.panes.isEmpty else { return }
         guard let activePane = snap.panes.first(where: \.isActive)?.id ?? snap.panes.first?.id else {
             return
         }
@@ -3706,6 +3703,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             retryPendingPanelJump()
             return
         }
+        if tabWarmupRequested {
+            tabWarmupRequested = false
+            warmNextBackgroundTab()
+        }
         terminalManager.beginEventBatch()
         defer { terminalManager.endEventBatch() }
         resolvePendingLastSeen()
@@ -4250,12 +4251,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         ) { [weak self] in
             guard let self else { return }
             self.tabWarmupScheduled = false
-            guard TabWarmupPolicy.canStart(
-                activeSurfaceReady: self.activeSurfaceReadyForTabWarmup()
-            ) else {
-                return
-            }
-            self.warmNextBackgroundTab()
+            guard !self.isClosing else { return }
+            self.tabWarmupRequested = true
         }
     }
 
@@ -4316,7 +4313,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         commandPalette.refreshLocalization()
         unifiedPanel.refreshLocalization()
         content.refreshLocalization()
-        refreshUI()
+        needsLayoutReload = true
     }
 
     /// Mark a departing pane without querying Core from the tab click path.
