@@ -22,7 +22,7 @@ default = ["gtk"]
 # GTK4 原生前端：依赖 gtk4 / vte4，并通过 ffi 调用核心。
 gtk = ["dep:gtk4", "dep:vte4", "ffi"]
 # TUI 前端：纯 crossterm + ratatui，经 ffi 调用核心（CI / 无头，跨平台）。
-tui = ["dep:crossterm", "dep:ratatui", "ffi"]
+tui = ["dep:crossterm", "dep:ratatui", "ffi", "muxterm-frontend/tui"]
 # C ABI 导出（不依赖任何 GUI）。
 ffi = ["muxterm-core/ffi"]
 

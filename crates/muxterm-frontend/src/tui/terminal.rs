@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 
-use crate::frontend::tui::emulate::{Cell, TerminalState};
+use crate::tui::emulate::{Cell, TerminalState};
 
 /// 每 pane 的终端状态 + 尺寸。
 pub struct PaneTerminal {

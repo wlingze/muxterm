@@ -13,5 +13,7 @@ pub mod i18n;
 pub mod mirror;
 pub mod mouse;
 pub mod ssh_probe;
+#[cfg(feature = "tui")]
+pub mod tui;
 pub mod url_opener;
 pub mod view_store;
