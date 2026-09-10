@@ -126,6 +126,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// A shared Core handle is temporarily owned by a catalog open operation;
     /// the main-thread event pump pauses until the owned result is installed.
     private var sharedCoreOperationInFlight = false
+    /// Core work needed after a cached scene switch.  It is deliberately
+    /// resumed by `pollOnce()`, never from the click/activation stack.
+    private var pendingActivationCoreWork: WorkspaceScene?
     /// 后台 poll 只把 Surface 事件交回主线程；主线程按小批次追赶，避免
     /// 一个高流量远端 pane 把切换、输入和窗口事件挤出 run loop。
     private var surfaceCatchUpScenes: [WorkspaceScene] = []
@@ -521,6 +524,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     deinit {
         pollTimer?.invalidate()
         trafficMonitorTimer?.invalidate()
+        pendingActivationCoreWork = nil
         surfaceCatchUpWorkItem?.cancel()
         surfaceCatchUpWorkItem = nil
         surfaceCatchUpScenes.removeAll()
@@ -2177,7 +2181,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         bridge = slot.bridge
         bridge.selectWorkspace(slot.workspaceID)
         terminalManager = slot.terminalManager
-        terminalManager.setBridgeQueriesEnabled(true)
+        terminalManager.setBridgeQueriesEnabled(false)
         trafficRateSampler.reset()
         lastSeenLineSeq.removeAll()
         pendingLastSeenPanes.removeAll()
@@ -2276,10 +2280,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             slot.targetConfig.name
         )
 
-        terminalManager.setBridgeQueriesEnabled(true)
+        // Cached painting is complete; re-enable bridge-backed geometry only
+        // at the next event-pump boundary.
+        terminalManager.setBridgeQueriesEnabled(false)
         content.paneLayout.resumeGeometrySync()
-        focusActiveTerminal()
-        refreshStatusBar(force: true)
+        focusActiveTerminal(allowBridgeQuery: false)
+        pendingActivationCoreWork = slot
+        statusBarNeedsRefresh = true
         // 切连接后立即更新 SSH 状态 + 流量监控显示。
         updateTrafficMonitor()
         // 这一拍只读后台缓存；下一个正常 poll 再做 active bridge 的
@@ -2293,7 +2300,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         if hasPendingSurfaceCatchUp || slot.hasPendingSurfaceWork {
             enqueueSurfaceCatchUp(slot)
         }
-        reportPaneColoursIfNeeded(lastSnapshot.panes)
         if created {
             presentWorkspaceCapacityWarningIfNeeded()
         }
@@ -2339,11 +2345,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         focusActiveTerminal()
     }
 
-    private func focusActiveTerminal() {
+    private func focusActiveTerminal(allowBridgeQuery: Bool = true) {
         let snap: FrameSnapshot
         if !lastSnapshot.panes.isEmpty {
             snap = lastSnapshot
         } else {
+            guard allowBridgeQuery else { return }
             snap = bridge.snapshot()
         }
         guard let activePane = snap.panes.first(where: \.isActive)?.id ?? snap.panes.first?.id else {
@@ -3216,6 +3223,21 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         return activeEvents
     }
 
+    /// Resume bridge-backed work after the cached scene is already visible.
+    /// This is part of the serialized event-pump boundary, not activation.
+    private func resumePendingActivationCoreWork() {
+        guard let slot = pendingActivationCoreWork else { return }
+        pendingActivationCoreWork = nil
+        guard !isClosing,
+              slot.visibility == .visible,
+              bridge === slot.bridge
+        else {
+            return
+        }
+        terminalManager.setBridgeQueriesEnabled(true)
+        reportPaneColoursIfNeeded(lastSnapshot.panes)
+    }
+
     func pollOnce() {
         guard !isClosing else { return }
         guard !sharedCoreOperationInFlight else { return }
@@ -3223,6 +3245,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // to the single workspace-event drain, so Core never races a click
         // handler or needs a frontend lock.
         flushCoreCommandQueue()
+        resumePendingActivationCoreWork()
         // 后台排空的事件必须先于 active bridge 的新事件交付。否则切回
         // Workspace 后，新的 PaneOutput 可能越过尚未应用的旧队列。
         if flushActiveSurfaceCatchUpBeforePoll() {
@@ -3449,7 +3472,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             // 只有 tab 增删/激活才刷新 status bar（走防抖调度，避免
             // 2s 节流把切 tab 后的高亮更新吞掉）；layout-change 不触发，
             // 防止多 tab 时每次结构事件都 spawn 1+N 个子进程。
-            scheduleStatusBarRefresh()
+            refreshStatusBar(force: true)
         }
         // 布局/尺寸同步完成后再喂输出，避免 resize 竞态。
         for item in pendingSnapshots {
@@ -4035,18 +4058,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    /// 结构事件（切 tab / 建删窗口 / 布局变化）后防抖刷新 status bar：
-    /// 同一轮事件只触发一次查询，且不受 2s 周期节流限制。
+    /// 结构事件（切 tab / 建删窗口 / 布局变化）后标记 status bar 待刷新。
+    /// 实际查询由下一轮 event pump 完成，不从 UI 回调另起 Core 访问。
     private func scheduleStatusBarRefresh() {
         guard terminalManager.usesClientResize else { return }
         statusRefreshWorkItem?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            self.statusRefreshWorkItem = nil
-            self.refreshStatusBar(force: true)
-        }
-        statusRefreshWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+        statusRefreshWorkItem = nil
+        statusBarNeedsRefresh = true
     }
 
     /// 按 tmux `status-interval` 周期刷新（时钟/时间类 right 段需要）。
@@ -4055,7 +4073,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         guard snapshot.enabled else { return }
         let interval = TimeInterval(max(5, Int(snapshot.interval)))
         let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
-            self?.refreshStatusBar(force: true)
+            self?.statusBarNeedsRefresh = true
         }
         RunLoop.main.add(timer, forMode: .common)
         statusRefreshTimer = timer
