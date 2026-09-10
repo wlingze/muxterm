@@ -2,12 +2,11 @@
 
 use anyhow::{anyhow, Result};
 
-use crate::catalog::OpenRequest;
-use crate::catalog::{Catalog, ResolveIntent};
+use crate::catalog::Catalog;
 use crate::executable::expand_config_value;
 use crate::muxterm::Muxterm;
 use crate::projects::{TargetRuntime, TargetTransport};
-use crate::protocol::candidate::CandidateRef;
+use crate::protocol::candidate::{CandidateRef, OpenRequest, ResolveIntent};
 use crate::runtime::WorktreeCreateSpec;
 use crate::transport::registry::ConnectionRegistry;
 use crate::transport::ChannelRequest;
@@ -317,7 +316,7 @@ impl ProjectsService {
                 project_id: id.to_string(),
             },
             intent,
-            template: template_override,
+            template: template_override.map(|template| template.to_string()),
             activate: true,
         };
         let resolved = catalog.resolve_open_request(connections, &request, self.list_projects())?;
@@ -362,7 +361,7 @@ impl ProjectsService {
                 worktree_id: worktree_id.to_string(),
             },
             intent,
-            template: template_override,
+            template: template_override.map(|template| template.to_string()),
             activate: true,
         };
         let resolved = catalog.resolve_open_request(connections, &request, self.list_projects())?;

@@ -164,6 +164,36 @@ impl Candidate {
     }
 }
 
+/// Intent carried with a product-level open request.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ResolveIntent {
+    AttachOnly,
+    CreateIfMissing,
+}
+
+/// Frontend-visible request resolved by Core into a WorkspaceSpec.
+///
+/// Template names remain strings at the protocol boundary. Core validates and
+/// converts them into its domain-owned `TemplateName` before opening.
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+pub struct OpenRequest {
+    pub candidate: CandidateRef,
+    pub intent: ResolveIntent,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<String>,
+    #[serde(default = "default_activate")]
+    pub activate: bool,
+}
+
+fn default_activate() -> bool {
+    true
+}
+
 /// Runtime-owned discovery row retained for compatibility with provider APIs.
 #[derive(
     Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
@@ -249,5 +279,33 @@ mod tests {
         renamed.name = "renamed-display-only".into();
         let renamed_row = Candidate::existing(&renamed, None);
         assert_eq!(row.reference, renamed_row.reference);
+    }
+
+    #[test]
+    fn open_request_json_defaults_activation_and_keeps_template_name() {
+        let request = OpenRequest {
+            candidate: CandidateRef::Project {
+                project_id: "project-a".into(),
+            },
+            intent: ResolveIntent::CreateIfMissing,
+            template: Some("review".into()),
+            activate: true,
+        };
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["intent"], "create_if_missing");
+        assert_eq!(json["template"], "review");
+
+        let decoded: OpenRequest = serde_json::from_value(serde_json::json!({
+            "candidate": {
+                "kind": "project",
+                "value": {"project_id": "project-a"}
+            },
+            "intent": "attach_only",
+            "template": "review"
+        }))
+        .unwrap();
+        assert!(decoded.activate);
+        assert_eq!(decoded.intent, ResolveIntent::AttachOnly);
+        assert_eq!(decoded.template.as_deref(), Some("review"));
     }
 }

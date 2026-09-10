@@ -12,9 +12,10 @@ use std::sync::Arc;
 
 use crate::activity::attention::signal::AttentionSignal;
 use crate::activity::{ActivityContext, ActivityState};
-use crate::catalog::{OpenRequest, ResolveError, ResolveIntent, ResolvedTarget};
+use crate::catalog::{ResolveError, ResolvedTarget};
 use crate::config::SettingsService;
 use crate::projects::ProjectsService;
+use crate::protocol::candidate::{OpenRequest, ResolveIntent};
 use crate::protocol::state::{PaneAgentInfo, StateChange};
 use crate::runtime::registry::RuntimeRegistry;
 use crate::runtime::{runtime_supports_channels, Runtime};
