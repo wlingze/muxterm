@@ -10,36 +10,33 @@
 pub mod app {
     /// Start the selected frontend from the single binary entry point.
     pub fn run() -> anyhow::Result<()> {
-        crate::frontend::cli::application::run()
+        muxterm_frontend::cli::application::run()
     }
 
-    pub use crate::core::fault::install_hook;
-    pub use crate::core::logging::{init_logging, resolve_config, LoggingConfig};
+    pub use muxterm_core::fault::install_hook;
+    pub use muxterm_core::logging::{init_logging, resolve_config, LoggingConfig};
 
     /// Run a frontend callback behind the process-wide fault reporter.
     pub fn fault_run<T>(where_: &str, f: impl FnOnce() -> T) -> Option<T> {
-        crate::core::fault::run(where_, f)
+        muxterm_core::fault::run(where_, f)
     }
 
     /// Return the most recent fault message for a frontend error dialog.
     pub fn last_fault_message() -> Option<String> {
-        crate::core::fault::last_message()
+        muxterm_core::fault::last_message()
     }
 
     /// Record a caught frontend fault before presenting its UI fallback.
     pub fn report_fault(where_: &str, payload: Box<dyn std::any::Any + Send>) {
-        crate::core::fault::report(where_, payload)
+        muxterm_core::fault::report(where_, payload)
     }
 }
 
 /// Public C-ABI facade. Core implementation modules remain behind this boundary
 /// for frontend callers that use the FFI contract.
 pub mod ffi {
-    pub use crate::core::protocol::ffi::*;
+    pub use muxterm_core::protocol::ffi::*;
 }
-
-pub(crate) use muxterm_core as core;
-mod frontend;
 
 /// Test-only compatibility exports for the existing integration contract suite.
 ///
@@ -53,6 +50,6 @@ pub mod test_support {
     }
 
     pub mod platform {
-        pub use crate::frontend::*;
+        pub use muxterm_frontend::*;
     }
 }
