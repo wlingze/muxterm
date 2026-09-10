@@ -262,13 +262,13 @@ pub fn run() -> anyhow::Result<()> {
             cli.log_file.clone(),
         ),
     };
-    let cfg = crate::app::resolve_config(cli_level, cli_log_file);
+    let cfg = muxterm_core::logging::resolve_config(cli_level, cli_log_file);
     let is_macos_gui_launcher =
         cfg!(target_os = "macos") && matches!(&cli.cmd, Some(CliSubcommand::Gui { .. }));
     if !is_macos_gui_launcher {
-        crate::app::init_logging(cfg)?;
+        muxterm_core::logging::init_logging(cfg)?;
         // W19d：日志就绪后装 panic hook，未接住的 panic 也进 --log-file。
-        crate::app::install_hook();
+        muxterm_core::fault::install_hook();
     }
     // macOS 的 `muxterm gui` 只是启动器：Swift app 进程会自己 init 同一个
     // log-file；CLI 再 init 会两个进程同时写文件造成日志双写。
@@ -345,7 +345,7 @@ fn dispatch_cli(
         full.extend(["-s".to_string(), session.to_string()]);
     }
     full.extend_from_slice(args);
-    crate::frontend::cli::routing::run_cli(&full)
+    crate::cli::routing::run_cli(&full)
 }
 
 fn log_socket(cli: &Cli) {
@@ -364,7 +364,7 @@ fn run_gui_inner(
 ) -> anyhow::Result<()> {
     #[cfg(target_os = "macos")]
     {
-        return crate::frontend::macos::launch_app_bundle(
+        return crate::macos::launch_app_bundle(
             socket.as_deref(),
             session.as_deref(),
             debug,
@@ -374,7 +374,7 @@ fn run_gui_inner(
     #[cfg(feature = "gtk")]
     {
         tracing::info!(target = "muxterm", "muxterm 启动（GTK4 UI）");
-        crate::frontend::linux::app::run(socket)
+        crate::linux::app::run(socket)
     }
     #[cfg(all(not(target_os = "macos"), not(feature = "gtk")))]
     {
@@ -389,10 +389,10 @@ fn run_tui_inner(socket: Option<String>, session: Option<String>) -> anyhow::Res
         tracing::info!(target = "muxterm", "muxterm 启动（TUI）");
         if let Some(ref name) = session {
             if socket.is_none() {
-                crate::frontend::cli::routing::ensure_local_daemon(name)?;
+                crate::cli::routing::ensure_local_daemon(name)?;
             }
         }
-        crate::frontend::tui::app::run(crate::frontend::tui::app::TuiOpts { socket, session })
+        crate::tui::app::run(crate::tui::app::TuiOpts { socket, session })
     }
     #[cfg(not(feature = "tui"))]
     {

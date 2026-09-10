@@ -1,5 +1,6 @@
 //! CLI command parsing, routing, and daemon frontend.
 
+pub mod application;
 pub mod config;
 pub mod daemon;
 pub mod format;
