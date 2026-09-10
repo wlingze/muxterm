@@ -161,6 +161,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// refresh 中可能解析大量事件，阻塞这里会让 Connect/Cmd-Shift-P 出现
     /// beachball。每个 slot 自身仍用锁串行，主线程只负责投递一次任务。
     private var backgroundPollInFlight = false
+    /// A shared Core handle is temporarily owned by a catalog open operation;
+    /// the main-thread event pump pauses until the owned result is installed.
+    private var sharedCoreOperationInFlight = false
     private let backgroundPollQueue = DispatchQueue(
         label: "muxterm.macos.background-poll",
         qos: .utility
@@ -542,6 +545,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         initialSlot.openedOrder = nextWorkspaceOpenedOrder
         nextWorkspaceOpenedOrder += 1
         connectionPool.acquire(key: initialKey) { _ in initialSlot }
+        bridge.selectWorkspace(initialWorkspaceID)
 
         installKeyEquivalents()
         applyTheme(currentTheme())
@@ -2101,80 +2105,33 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         session: String,
         completion: @escaping (Result<CoreBridge, Error>) -> Void
     ) {
-        let key = Self.connectionKey(config: config, session: session)
-        // 先尝试复用 warm slot：命中则直接切换渲染，不重复建连。
-        if let slot = connectionPool.slots[key], slot.lifecycle != .evicting {
-            activate(slot: slot)
-            completion(.success(slot.bridge))
-            return
-        }
-
-        let params = config.transport.attachBackend
+        var target = config
+        target.session = session
         let initialClientSize = initialTmuxClientSizeHint()
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            do {
-                // SSH：alias 走 sshAlias，socket 不得填 Host 名（否则 `tmux -L ryzen`）。
-                let nextBridge = try CoreBridge.connect(
-                    backendType: params.type,
-                    socket: params.socket,
-                    session: session,
-                    sshAlias: params.sshAlias,
-                    initialClientSize: initialClientSize
-                )
-                DispatchQueue.main.async {
-                    guard let self else {
-                        nextBridge.shutdown()
-                        return
-                    }
-                    let slot = WarmConnectionSlot(key: key, bridge: nextBridge, now: 0)
-                    if let initialClientSize {
-                        slot.terminalManager.noteClientSize(initialClientSize)
-                    }
-                    self.activate(slot: slot)
-                    completion(.success(nextBridge))
-                }
-            } catch {
-                DispatchQueue.main.async {
-                    completion(.failure(error))
-                }
+        connectCatalogTarget(
+            config: target,
+            intent: .attachOnly,
+            initialClientSize: initialClientSize
+        ) { result in
+            switch result {
+            case .success(let connection):
+                completion(.success(connection.bridge))
+            case .failure(let error):
+                completion(.failure(error))
             }
         }
     }
 
     private func startShell(config: TargetConfig) {
-        // 本地 shell 用指定目录启动（muxterm_new_connect 的 local 分支带 workdir）。
+        // Shell is another Workspace in the same Core-owned pool; its path is
+        // carried by the resolved TargetConfig instead of creating a second
+        // legacy handle.
         switch config.transport {
         case .local:
-            let sessionName = QuickConnect.defaultName(for: config.path)
-            let key = ConnectionKey(
-                transport: "local",
-                alias: nil,
-                session: sessionName,
-                runtime: "shell",
-                path: config.path
-            )
-            if let slot = connectionPool.slots[key], slot.lifecycle != .evicting {
-                activate(slot: slot)
-                return
-            }
-            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                do {
-                    let nextBridge = try CoreBridge.connect(
-                        backendType: "local",
-                        startDirectory: config.path
-                    )
-                    DispatchQueue.main.async {
-                        guard let self else {
-                            nextBridge.shutdown()
-                            return
-                        }
-                        let slot = WarmConnectionSlot(key: key, bridge: nextBridge, now: 0)
-                        self.activate(slot: slot)
-                    }
-                } catch {
-                    DispatchQueue.main.async { [weak self] in
-                        self?.showError(error)
-                    }
+            connectCatalogTarget(config: config, intent: .createIfMissing) { [weak self] result in
+                guard let self else { return }
+                if case .failure(let error) = result {
+                    self.showError(error)
                 }
             }
         case .ssh:
@@ -2217,6 +2174,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private func connectCatalogTarget(
         config: TargetConfig,
         intent: CoreTargetOpenIntent,
+        initialClientSize: (UInt16, UInt16)? = nil,
         completion: @escaping (Result<CatalogConnection, Error>) -> Void
     ) {
         let requestedKey = Self.connectionKey(config: config, session: config.session)
@@ -2226,21 +2184,26 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 requested: config
             )
             slot.targetConfig = canonical
+            if let initialClientSize {
+                slot.terminalManager.noteClientSize(initialClientSize)
+            }
             activate(slot: slot)
             completion(.success(CatalogConnection(bridge: slot.bridge, target: canonical)))
             return
         }
 
+        let sharedBridge = bridge
+        sharedCoreOperationInFlight = true
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             do {
-                let nextBridge = try CoreBridge.connect(target: config, intent: intent)
-                let resolved = nextBridge.resolvedTargetConfig ?? config
+                let opened = try sharedBridge.openWorkspace(target: config, intent: intent)
+                let resolved = opened.target
                 let key = Self.connectionKey(config: resolved, session: resolved.session)
                 DispatchQueue.main.async {
                     guard let self else {
-                        nextBridge.shutdown()
                         return
                     }
+                    self.sharedCoreOperationInFlight = false
                     if let existing = self.connectionPool.slots[key],
                        existing.lifecycle != .evicting
                     {
@@ -2249,10 +2212,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                             requested: resolved
                         )
                         existing.targetConfig = canonical
-                        self.activate(slot: existing)
-                        DispatchQueue.global(qos: .utility).async {
-                            nextBridge.shutdown()
+                        if let initialClientSize {
+                            existing.terminalManager.noteClientSize(initialClientSize)
                         }
+                        self.activate(slot: existing)
                         completion(.success(CatalogConnection(
                             bridge: existing.bridge,
                             target: canonical
@@ -2261,15 +2224,27 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     }
                     let slot = WarmConnectionSlot(
                         key: key,
-                        bridge: nextBridge,
+                        bridge: sharedBridge,
+                        workspaceID: opened.id,
+                        usesSharedCore: true,
+                        terminalManager: TerminalManager(
+                            bridge: sharedBridge,
+                            workspaceID: opened.id,
+                            fontFamily: self.terminalFontSettings.family,
+                            fontSize: self.terminalFontSettings.size
+                        ),
                         targetConfig: resolved,
                         now: 0
                     )
+                    if let initialClientSize {
+                        slot.terminalManager.noteClientSize(initialClientSize)
+                    }
                     self.activate(slot: slot)
-                    completion(.success(CatalogConnection(bridge: nextBridge, target: resolved)))
+                    completion(.success(CatalogConnection(bridge: sharedBridge, target: resolved)))
                 }
             } catch {
                 DispatchQueue.main.async {
+                    self?.sharedCoreOperationInFlight = false
                     completion(.failure(error))
                 }
             }
@@ -2337,6 +2312,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let (_, created) = connectionPool.acquire(key: slot.key) { _ in slot }
         quickConnectStore.replaceAllRecents(connectionPool.allRecentTargetConfigs())
         bridge = slot.bridge
+        bridge.selectWorkspace(slot.workspaceID)
         terminalManager = slot.terminalManager
         // 缓存树挂载和首轮 authority 查询期间，TerminalManager 只能做
         // 本地 SwiftTerm/AppKit 工作；所有 bridge 访问在 utility 队列串行化。
@@ -2397,6 +2373,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // 读取放到后台。这样“可见切换”和“远端校准”不再绑在同一帧。
         pendingForegroundActivation = activation
         paintCachedForegroundActivation(slot, restoredParkedTree: restoredParkedTree)
+        if slot.usesSharedCore {
+            // Shared-core scenes already receive topology continuously from
+            // the single workspace event pump.  There is no second
+            // foreground authority read, and no background FFI race to
+            // serialize here.
+            pendingForegroundActivation = nil
+            completeForegroundActivation(activation)
+            return
+        }
         scheduleForegroundAuthorityRefresh()
     }
 
@@ -2597,7 +2582,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
         // 颜色查询应答很重要，但不影响 Workspace 首帧；放到后台锁内
         // 上报，完成后下一轮输出即可使用新的 OSC 颜色。
-        if WorkspaceSwitchPaintPolicy.shouldReportColours(
+        if !activation.slot.usesSharedCore,
+           WorkspaceSwitchPaintPolicy.shouldReportColours(
             restoredParkedTree: activation.restoredParkedTree
         ) {
             let osc = ColorContrast.oscColors(
@@ -3407,53 +3393,31 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         commandPalette.dismiss()
         lastPaletteSelection = "\(target.displayName):\(session)"
         lastPaletteError = nil
-        let params: (type: String, socket: String?, sshAlias: String?)
+        let transport: TargetTransport
         switch target {
         case .local:
-            params = ("tmux", resolvedSocket, nil)
+            transport = .local
         case .ssh(let host):
-            params = ("ssh", resolvedSocket, host.alias)
+            transport = .ssh(name: host.alias)
         }
-        let key = ConnectionKey(
-            transport: params.sshAlias == nil ? "local" : "ssh",
-            alias: params.sshAlias,
-            session: session,
-            runtime: "tmux",
+        let config = TargetConfig(
+            name: target.displayName,
+            runtime: .tmux,
+            transport: transport,
             path: "",
-            socket: params.socket
+            session: session,
+            socket: resolvedSocket
         )
-        if let slot = connectionPool.slots[key], slot.lifecycle != .evicting {
-            activate(slot: slot)
-            return
-        }
-
-        // CoreBridge 的 connect 可能等待远端 tmux 初始化，放到后台线程。
         let initialClientSize = initialTmuxClientSizeHint()
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            do {
-                let nextBridge = try CoreBridge.connect(
-                    backendType: params.type,
-                    socket: params.socket,
-                    session: session,
-                    sshAlias: params.sshAlias,
-                    initialClientSize: initialClientSize
-                )
-                DispatchQueue.main.async {
-                    guard let self else {
-                        nextBridge.shutdown()
-                        return
-                    }
-                    let slot = WarmConnectionSlot(key: key, bridge: nextBridge, now: 0)
-                    if let initialClientSize {
-                        slot.terminalManager.noteClientSize(initialClientSize)
-                    }
-                    self.activate(slot: slot)
-                }
-            } catch {
-                DispatchQueue.main.async { [weak self] in
-                    self?.lastPaletteError = error.localizedDescription
-                    self?.showError(error)
-                }
+        connectCatalogTarget(
+            config: config,
+            intent: .attachOnly,
+            initialClientSize: initialClientSize
+        ) { [weak self] result in
+            guard let self else { return }
+            if case .failure(let error) = result {
+                self.lastPaletteError = error.localizedDescription
+                self.showError(error)
             }
         }
     }
@@ -3572,6 +3536,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     func pollOnce() {
         guard !isClosing else { return }
+        guard !sharedCoreOperationInFlight else { return }
         if pendingForegroundActivation != nil {
             // 目标 bridge 还可能被切换前的后台批次占用。只追赶已经
             // 排队的 Surface，并继续轮询其它 background slot；任何 active

@@ -698,10 +698,16 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
         stateLock.unlock()
 
         bridgeLock.lock()
-        if terminalManager.usesClientResize {
-            _ = bridge.detach()
+        if usesSharedCore {
+            if let workspaceID {
+                _ = bridge.closeWorkspace(workspaceID: workspaceID)
+            }
+        } else {
+            if terminalManager.usesClientResize {
+                _ = bridge.detach()
+            }
+            bridge.shutdown()
         }
-        bridge.shutdown()
         bridgeLock.unlock()
     }
 
@@ -715,6 +721,7 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
         pendingAttentionNotifications.removeAll()
         stateLock.unlock()
 
+        guard !usesSharedCore else { return }
         bridgeLock.lock()
         bridge.shutdown()
         bridgeLock.unlock()
