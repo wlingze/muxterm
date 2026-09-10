@@ -289,18 +289,22 @@ fn push_paused(mailbox: &mut VecDeque<ClientEvent>, event: ClientEvent) {
 mod tests {
     use super::{
         ClientEvent, ClientEventKind, ClientLayout, ClientPane, ClientTab, ClientWorkspace,
-        PaneRenderPolicy, ViewStore,
+        PaneRenderPolicy, ViewStore, RENDER_MAILBOX_CAPACITY,
     };
 
-    fn event(type_: u32, pane_id: u32, byte: u8) -> ClientEvent {
+    fn event_with_data(type_: u32, pane_id: u32, data: Vec<u8>) -> ClientEvent {
         ClientEvent {
             type_,
             pane_id,
             tab_id: 1,
             window_id: 0,
-            data: vec![byte],
+            data,
             name: String::new(),
         }
+    }
+
+    fn event(type_: u32, pane_id: u32, byte: u8) -> ClientEvent {
+        event_with_data(type_, pane_id, vec![byte])
     }
 
     #[test]
@@ -367,6 +371,118 @@ mod tests {
         assert!(store
             .take_pane_render_events("local//one/shell/", 0)
             .is_empty());
+    }
+
+    #[test]
+    fn chatty_panes_are_isolated_across_workspaces() {
+        let mut store = ViewStore::default();
+        let workspace_a = "local//one/shell/";
+        let workspace_b = "ssh//two/tmux/";
+
+        store.set_pane_render_policy(workspace_b, 9, PaneRenderPolicy::Pause);
+
+        for byte in 0u8..=u8::MAX {
+            store.push_render_event(
+                workspace_a,
+                event(crate::ffi::types::STATE_PANE_OUTPUT, 7, byte),
+            );
+            store.push_render_event(
+                workspace_b,
+                event(crate::ffi::types::STATE_PANE_OUTPUT, 9, byte),
+            );
+            if byte < 32 {
+                store.push_render_event(
+                    workspace_a,
+                    event(crate::ffi::types::STATE_PANE_OUTPUT, 8, byte),
+                );
+                store.push_render_event(
+                    workspace_b,
+                    event(crate::ffi::types::STATE_PANE_OUTPUT, 10, byte),
+                );
+            }
+        }
+
+        let chatty = store.take_pane_render_events(workspace_a, 7);
+        assert_eq!(chatty.len(), RENDER_MAILBOX_CAPACITY);
+        assert_eq!(chatty.first().map(|event| event.data[0]), Some(128));
+        assert_eq!(chatty.last().map(|event| event.data[0]), Some(u8::MAX));
+
+        let workspace_a_quiet = store.take_pane_render_events(workspace_a, 8);
+        assert_eq!(
+            workspace_a_quiet
+                .iter()
+                .map(|event| event.data[0])
+                .collect::<Vec<_>>(),
+            (0u8..32u8).collect::<Vec<_>>()
+        );
+
+        let workspace_b_quiet = store.take_pane_render_events(workspace_b, 10);
+        assert_eq!(
+            workspace_b_quiet
+                .iter()
+                .map(|event| event.data[0])
+                .collect::<Vec<_>>(),
+            (0u8..32u8).collect::<Vec<_>>()
+        );
+        assert!(store.take_pane_render_events(workspace_b, 9).is_empty());
+    }
+
+    #[test]
+    fn coalescing_is_per_pane_and_preserves_fifo_boundaries() {
+        let mut store = ViewStore::default();
+        let workspace_a = "local//one/shell/";
+        let workspace_b = "ssh//two/tmux/";
+        store.set_pane_render_policy(workspace_a, 7, PaneRenderPolicy::Coalesce);
+        store.set_pane_render_policy(workspace_a, 8, PaneRenderPolicy::Coalesce);
+        store.set_pane_render_policy(workspace_b, 9, PaneRenderPolicy::Coalesce);
+
+        store.push_render_event(
+            workspace_a,
+            event(crate::ffi::types::STATE_PANE_OUTPUT, 7, 1),
+        );
+        store.push_render_event(
+            workspace_b,
+            event(crate::ffi::types::STATE_PANE_OUTPUT, 9, 10),
+        );
+        store.push_render_event(
+            workspace_a,
+            event(crate::ffi::types::STATE_PANE_OUTPUT, 7, 2),
+        );
+        store.push_render_event(
+            workspace_a,
+            event(crate::ffi::types::STATE_PANE_OUTPUT, 8, 20),
+        );
+        store.push_render_event(
+            workspace_a,
+            event(crate::ffi::types::STATE_PANE_FRAME, 7, 3),
+        );
+        store.push_render_event(
+            workspace_a,
+            event(crate::ffi::types::STATE_PANE_OUTPUT, 7, 4),
+        );
+        store.push_render_event(
+            workspace_a,
+            event(crate::ffi::types::STATE_PANE_OUTPUT, 7, 5),
+        );
+        store.push_render_event(
+            workspace_b,
+            event(crate::ffi::types::STATE_PANE_OUTPUT, 9, 11),
+        );
+
+        let pane_a = store.take_pane_render_events(workspace_a, 7);
+        assert_eq!(pane_a.len(), 3);
+        assert_eq!(pane_a[0].data, vec![1, 2]);
+        assert_eq!(pane_a[1].kind(), ClientEventKind::PaneFrame);
+        assert_eq!(pane_a[1].data, vec![3]);
+        assert_eq!(pane_a[2].data, vec![4, 5]);
+
+        let pane_a_other = store.take_pane_render_events(workspace_a, 8);
+        assert_eq!(pane_a_other.len(), 1);
+        assert_eq!(pane_a_other[0].data, vec![20]);
+
+        let pane_b = store.take_pane_render_events(workspace_b, 9);
+        assert_eq!(pane_b.len(), 1);
+        assert_eq!(pane_b[0].data, vec![10, 11]);
     }
 
     #[test]
