@@ -4,6 +4,9 @@ import MuxtermChrome
 /// 管理多个 pane 对应的 `MuxTerminalView`，并把输出/输入接到 CoreBridge。
 final class TerminalManager: TerminalInputHandler {
     private weak var bridge: CoreBridge?
+    /// Stable Core workspace identity for shared-handle scenes.  `nil` keeps
+    /// the legacy single-workspace bridge calls used by isolated test clients.
+    private(set) var workspaceID: String?
     private var views: [UInt32: MuxTerminalView] = [:]
     /// 后端报告的 pane 字符格尺寸：视图创建时先按它 resize SwiftTerm 模型，
     /// 再喂快照/增量。否则模型默认 80 列，codex 的 93 列帧会折行、erase-up
@@ -113,17 +116,20 @@ final class TerminalManager: TerminalInputHandler {
 
     init(
         bridge: CoreBridge,
+        workspaceID: String? = nil,
         fontFamily: String = MuxtermTerminalFont.defaultFamily,
         fontSize: CGFloat = MuxtermTerminalFont.defaultSize
     ) {
         self.bridge = bridge
+        self.workspaceID = workspaceID
         self.fontFamily = fontFamily
         self.fontSize = MuxtermTerminalFont.clamp(fontSize)
     }
 
     /// 连接面板切换 local / SSH session 后更新桥接对象。
-    func updateBridge(_ bridge: CoreBridge) {
+    func updateBridge(_ bridge: CoreBridge, workspaceID: String? = nil) {
         self.bridge = bridge
+        self.workspaceID = workspaceID
         viewCreationEnabled = true
         bridgeQueriesEnabled = true
         for view in views.values {
@@ -163,6 +169,80 @@ final class TerminalManager: TerminalInputHandler {
         pendingViewportOffsets.removeAll()
         applyingNativeScroll.removeAll()
         onOutputSnippetChanged?(recentOutputSnippet)
+    }
+
+    private func execute(_ task: MuxTask) -> Int32 {
+        guard let bridge else { return -1 }
+        if let workspaceID {
+            return bridge.execute(task: task, workspaceID: workspaceID)
+        }
+        return bridge.execute(task: task)
+    }
+
+    private func setPaneViewport(paneId: UInt32, offset: UInt32) -> Int32 {
+        guard let bridge else { return -1 }
+        if let workspaceID {
+            return bridge.setPaneViewport(
+                workspaceID: workspaceID,
+                paneId: paneId,
+                offset: offset
+            )
+        }
+        return bridge.setPaneViewport(paneId: paneId, offset: offset)
+    }
+
+    private func paneHistoryMaxOffset(paneId: UInt32, rows: UInt32) -> Int32 {
+        guard let bridge else { return -1 }
+        if let workspaceID {
+            return bridge.paneHistoryMaxOffset(
+                workspaceID: workspaceID,
+                paneId: paneId,
+                rows: rows
+            )
+        }
+        return bridge.paneHistoryMaxOffset(paneId: paneId, rows: rows)
+    }
+
+    private func resizeClient(cols: UInt16, rows: UInt16) -> Int32 {
+        guard let bridge else { return -1 }
+        if let workspaceID {
+            return bridge.resizeClient(workspaceID: workspaceID, cols: cols, rows: rows)
+        }
+        return bridge.resizeClient(cols: cols, rows: rows)
+    }
+
+    private func resizePaneAxis(paneId: UInt32, horizontal: Bool, size: UInt16) -> Int32 {
+        guard let bridge else { return -1 }
+        if let workspaceID {
+            return bridge.resizePaneAxis(
+                workspaceID: workspaceID,
+                paneId: paneId,
+                horizontal: horizontal,
+                size: size
+            )
+        }
+        return bridge.resizePaneAxis(paneId: paneId, horizontal: horizontal, size: size)
+    }
+
+    private func resizePane(paneId: UInt32, cols: UInt16, rows: UInt16) -> Int32 {
+        guard let bridge else { return -1 }
+        if let workspaceID {
+            return bridge.resizePane(
+                workspaceID: workspaceID,
+                paneId: paneId,
+                cols: cols,
+                rows: rows
+            )
+        }
+        return bridge.resizePane(paneId: paneId, cols: cols, rows: rows)
+    }
+
+    private func sendInputToCore(paneId: UInt32, data: Data) -> Int32 {
+        guard let bridge else { return -1 }
+        if let workspaceID {
+            return bridge.sendInput(workspaceID: workspaceID, paneId: paneId, data: data)
+        }
+        return bridge.sendInput(paneId: paneId, data: data)
     }
 
     /// 后台 slot 使用：保留事件/索引消费，但禁止创建 AppKit view。
@@ -222,7 +302,7 @@ final class TerminalManager: TerminalInputHandler {
             if let callback = onAuthoritativeSnapshotRequired {
                 accepted = callback(paneId)
             } else {
-                accepted = bridge?.execute(task: .requestPaneSnapshot(paneId)) == 0
+                accepted = execute(.requestPaneSnapshot(paneId)) == 0
             }
             if accepted {
                 requestedAuthoritativeSnapshots.insert(paneId)
@@ -327,7 +407,7 @@ final class TerminalManager: TerminalInputHandler {
             seed.view.scrollToLatest()
             applyingNativeScroll.remove(paneId)
             if bridgeQueriesEnabled {
-                _ = bridge?.setPaneViewport(paneId: paneId, offset: 0)
+                _ = setPaneViewport(paneId: paneId, offset: 0)
             } else {
                 pendingViewportOffsets[paneId] = 0
             }
@@ -508,7 +588,7 @@ final class TerminalManager: TerminalInputHandler {
     private func syncHistoryCapacity(paneId: UInt32, view: MuxTerminalView) {
         guard bridgeQueriesEnabled, let bridge else { return }
         let rows = UInt32(max(1, expectedPaneSizes[paneId]?.rows ?? view.getTerminal().rows))
-        let rawMax = bridge.paneHistoryMaxOffset(paneId: paneId, rows: rows)
+        let rawMax = paneHistoryMaxOffset(paneId: paneId, rows: rows)
         guard rawMax >= 0 else { return }
         let (sum, overflow) = Int(rawMax).addingReportingOverflow(Int(rows))
         let desired = overflow ? Int.max : sum
@@ -887,7 +967,7 @@ final class TerminalManager: TerminalInputHandler {
         }
         guard ClientGridHysteresis.shouldSend(current: lastClientSize, next: size) else { return }
         guard let bridge else { return }
-        if bridge.resizeClient(cols: size.0, rows: size.1) == 0 {
+        if resizeClient(cols: size.0, rows: size.1) == 0 {
             lastClientSize = size
             reportedClientResizeFailure = false
         } else if !reportedClientResizeFailure {
@@ -914,7 +994,7 @@ final class TerminalManager: TerminalInputHandler {
     @discardableResult
     func resizePaneAxis(paneId: UInt32, horizontal: Bool, size: UInt16) -> Int32 {
         guard bridgeQueriesEnabled, usesClientResize, let bridge else { return -1 }
-        let rc = bridge.resizePaneAxis(paneId: paneId, horizontal: horizontal, size: size)
+        let rc = resizePaneAxis(paneId: paneId, horizontal: horizontal, size: size)
         if rc != 0 {
             onError?(MuxtermI18n.shared.tr(.errorResizeDivider, arguments: ["id": "\(paneId)"]))
         }
@@ -989,7 +1069,7 @@ final class TerminalManager: TerminalInputHandler {
         // Core viewport 与 SwiftTerm 滚动解耦：seed 期间仍要把 offset 写回
         // FFI，否则命令时间线/last-seen 读到的仍是 0。
         if bridgeQueriesEnabled {
-            _ = bridge?.setPaneViewport(paneId: paneId, offset: offset)
+            _ = setPaneViewport(paneId: paneId, offset: offset)
         }
         if seedingPanes.contains(paneId) {
             pendingViewportOffsets[paneId] = offset
@@ -1022,7 +1102,7 @@ final class TerminalManager: TerminalInputHandler {
         unseenLines[paneId] = 0
         onUnseenLinesChanged?(paneId, 0)
         if bridgeQueriesEnabled {
-            _ = bridge?.setPaneViewport(paneId: paneId, offset: 0)
+            _ = setPaneViewport(paneId: paneId, offset: 0)
         }
         onViewportChanged?(paneId, 0)
     }
@@ -1034,13 +1114,13 @@ final class TerminalManager: TerminalInputHandler {
     private func handleNativeScroll(paneId: UInt32, position: Double) {
         guard bridgeQueriesEnabled, !applyingNativeScroll.contains(paneId) else { return }
         let rows = UInt32(max(1, expectedPaneSizes[paneId]?.rows ?? 24))
-        let rawMax = bridge?.paneHistoryMaxOffset(paneId: paneId, rows: rows) ?? -1
+        let rawMax = paneHistoryMaxOffset(paneId: paneId, rows: rows)
         let maxOffset = rawMax < 0 ? 0 : UInt32(rawMax)
         let clamped = min(max(position, 0), 1)
         let offset = clamped >= 0.999 || maxOffset == 0
             ? 0
             : UInt32((Double(maxOffset) * (1 - clamped)).rounded())
-        _ = bridge?.setPaneViewport(paneId: paneId, offset: offset)
+        _ = setPaneViewport(paneId: paneId, offset: offset)
         if offset == 0 {
             unseenLines[paneId] = 0
             onUnseenLinesChanged?(paneId, 0)
@@ -1073,7 +1153,7 @@ final class TerminalManager: TerminalInputHandler {
     private func sendPtyResize(paneId: UInt32, cols: UInt16, rows: UInt16) {
         lastPtySize[paneId] = (cols, rows)
         guard let bridge else { return }
-        if bridge.resizePane(paneId: paneId, cols: cols, rows: rows) != 0,
+        if resizePane(paneId: paneId, cols: cols, rows: rows) != 0,
            reportedResizeFailures.insert(paneId).inserted
         {
             onError?(MuxtermI18n.shared.tr(.errorResizePane, arguments: ["id": "\(paneId)"]))
@@ -1100,9 +1180,9 @@ final class TerminalManager: TerminalInputHandler {
         }
         let rows = UInt32(max(1, expectedPaneSizes[paneId]?.rows ?? view.getTerminal().rows))
         syncHistoryCapacity(paneId: paneId, view: view)
-        let rawMax = bridge?.paneHistoryMaxOffset(paneId: paneId, rows: rows) ?? -1
+        let rawMax = paneHistoryMaxOffset(paneId: paneId, rows: rows)
         let maxOffset = rawMax < 0 ? 0 : UInt32(rawMax)
-        _ = bridge?.setPaneViewport(paneId: paneId, offset: offset)
+        _ = setPaneViewport(paneId: paneId, offset: offset)
         applyingNativeScroll.insert(paneId)
         view.scrollToHistoryOffset(offset, maxOffset: maxOffset)
         applyingNativeScroll.remove(paneId)
@@ -1136,7 +1216,7 @@ final class TerminalManager: TerminalInputHandler {
             pendingInputs[paneId, default: Data()].append(data)
             return
         }
-        if bridge?.sendInput(paneId: paneId, data: data) != 0 {
+        if sendInputToCore(paneId: paneId, data: data) != 0 {
             onError?(MuxtermI18n.shared.tr(errorKey, arguments: ["id": "\(paneId)"]))
         }
     }
