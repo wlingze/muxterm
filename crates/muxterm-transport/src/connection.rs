@@ -1,5 +1,7 @@
 //! Reusable target connection identity and bounded command adapter.
 
+#[cfg(unix)]
+use std::collections::HashMap;
 use std::io;
 #[cfg(unix)]
 use std::io::{Read, Write};
@@ -12,6 +14,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 #[cfg(unix)]
+use std::sync::Mutex;
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
 use crate::local::LocalProcessTransport;
@@ -21,10 +25,11 @@ use crate::{
 };
 
 /// A reusable target connection for local or SSH target context.
-#[derive(Debug)]
 pub struct Connect {
     transport_id: String,
     target: String,
+    #[cfg(unix)]
+    unix_forwards: Mutex<HashMap<PathBuf, Arc<SshUnixSocketForward>>>,
 }
 
 impl Connect {
@@ -33,6 +38,8 @@ impl Connect {
         Arc::new(Self {
             transport_id: transport_id.into(),
             target: target.into(),
+            #[cfg(unix)]
+            unix_forwards: Mutex::new(HashMap::new()),
         })
     }
 
@@ -115,6 +122,24 @@ impl TargetConnection for Connect {
 }
 
 impl Connect {
+    #[cfg(unix)]
+    fn ssh_unix_socket_forward(
+        &self,
+        remote_path: &Path,
+    ) -> anyhow::Result<Arc<SshUnixSocketForward>> {
+        let mut forwards = self
+            .unix_forwards
+            .lock()
+            .map_err(|_| anyhow::anyhow!("SSH UnixSocket forward registry poisoned"))?;
+        if let Some(forward) = forwards.get(remote_path) {
+            return Ok(Arc::clone(forward));
+        }
+
+        let forward = Arc::new(SshUnixSocketForward::start(&self.target, remote_path)?);
+        forwards.insert(remote_path.to_path_buf(), Arc::clone(&forward));
+        Ok(forward)
+    }
+
     fn open_exec_channel(
         &self,
         argv: Vec<String>,
@@ -180,7 +205,7 @@ impl Connect {
                     if self.target.is_empty() {
                         return Err(anyhow::anyhow!("SSH UnixSocket channel 缺少 target alias"));
                     }
-                    let forward = SshUnixSocketForward::start(&self.target, &path)?;
+                    let forward = self.ssh_unix_socket_forward(&path)?;
                     let stream = UnixStream::connect(&forward.local_path).map_err(|error| {
                         anyhow::anyhow!(
                             "连接 SSH UnixSocket forwarding 失败（{}）：{error}",
@@ -282,7 +307,7 @@ fn is_valid_env_key(key: &str) -> bool {
 #[cfg(unix)]
 struct UnixSocketByteChannel {
     stream: UnixStream,
-    forward: Option<SshUnixSocketForward>,
+    forward: Option<Arc<SshUnixSocketForward>>,
 }
 
 #[cfg(unix)]
@@ -323,6 +348,7 @@ impl Drop for UnixSocketByteChannel {
 }
 
 #[cfg(unix)]
+#[derive(Debug)]
 struct SshUnixSocketForward {
     child: Child,
     local_path: PathBuf,
