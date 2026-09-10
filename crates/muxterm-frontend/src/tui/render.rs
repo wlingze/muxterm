@@ -23,10 +23,10 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, StatefulWidget, Widget};
 
-use crate::frontend::tui::emulate::Cell as TermCell;
-use crate::frontend::tui::model::{FrameSnapshot, TuiLayout, TuiTab};
-use crate::frontend::tui::palette::PaletteState;
-use crate::frontend::tui::theme::Theme;
+use crate::tui::emulate::Cell as TermCell;
+use crate::tui::model::{FrameSnapshot, TuiLayout, TuiTab};
+use crate::tui::palette::PaletteState;
+use crate::tui::theme::Theme;
 
 /// 渲染选项。
 #[derive(Debug, Clone, Copy)]
@@ -411,21 +411,21 @@ fn term_color_to_ratatui(c: vte::ansi::Color) -> Option<Color> {
 fn draw_status_bar(buf: &mut Buffer, area: Rect, snap: &FrameSnapshot, theme: &Theme) {
     let n_panes = snap.panes.len();
     let status_key = match snap.status.as_str() {
-        "connected" => crate::frontend::i18n::Key::StatusConnected,
-        "connecting" => crate::frontend::i18n::Key::StatusConnecting,
-        "disconnected" => crate::frontend::i18n::Key::StatusDisconnected,
-        "error" => crate::frontend::i18n::Key::StatusError,
-        "exited" => crate::frontend::i18n::Key::StatusExited,
-        _ => crate::frontend::i18n::Key::StatusUnknown,
+        "connected" => crate::i18n::Key::StatusConnected,
+        "connecting" => crate::i18n::Key::StatusConnecting,
+        "disconnected" => crate::i18n::Key::StatusDisconnected,
+        "error" => crate::i18n::Key::StatusError,
+        "exited" => crate::i18n::Key::StatusExited,
+        _ => crate::i18n::Key::StatusUnknown,
     };
-    let status = crate::frontend::i18n::tr(status_key);
-    let panes = crate::frontend::i18n::tr(crate::frontend::i18n::Key::Panes);
-    let palette = crate::frontend::i18n::tr(crate::frontend::i18n::Key::HintPalette);
-    let new_tab = crate::frontend::i18n::tr(crate::frontend::i18n::Key::HintNewTab);
-    let split = crate::frontend::i18n::tr(crate::frontend::i18n::Key::HintSplit);
-    let vertical_split = crate::frontend::i18n::tr(crate::frontend::i18n::Key::HintVerticalSplit);
-    let pane = crate::frontend::i18n::tr(crate::frontend::i18n::Key::HintPane);
-    let quit = crate::frontend::i18n::tr(crate::frontend::i18n::Key::HintQuit);
+    let status = crate::i18n::tr(status_key);
+    let panes = crate::i18n::tr(crate::i18n::Key::Panes);
+    let palette = crate::i18n::tr(crate::i18n::Key::HintPalette);
+    let new_tab = crate::i18n::tr(crate::i18n::Key::HintNewTab);
+    let split = crate::i18n::tr(crate::i18n::Key::HintSplit);
+    let vertical_split = crate::i18n::tr(crate::i18n::Key::HintVerticalSplit);
+    let pane = crate::i18n::tr(crate::i18n::Key::HintPane);
+    let quit = crate::i18n::tr(crate::i18n::Key::HintQuit);
     let hint = format!(
         " Alt+P {palette} · Alt+T {new_tab} · Alt+S {split} · Alt+V {vertical_split} · Alt+[ ] {pane} · Ctrl-Q {quit} "
     );
@@ -485,8 +485,8 @@ fn draw_palette(buf: &mut Buffer, palette: &PaletteState, theme: &Theme) {
     // 顶部信息行：来源 + 主机 + 当前目录
     let info_h = 1u16;
     let source_str = match palette.source {
-        crate::frontend::tui::palette::ConnectSource::Local => "local",
-        crate::frontend::tui::palette::ConnectSource::Ssh => "ssh",
+        crate::tui::palette::ConnectSource::Local => "local",
+        crate::tui::palette::ConnectSource::Ssh => "ssh",
     };
     let host_str = palette.host.as_deref().unwrap_or("");
     let dir_str = palette.dir.as_deref().unwrap_or("");
@@ -573,7 +573,7 @@ fn draw_palette(buf: &mut Buffer, palette: &PaletteState, theme: &Theme) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::frontend::tui::model::{FrameSnapshot, TuiLayout, TuiPane, TuiTab};
+    use crate::tui::model::{FrameSnapshot, TuiLayout, TuiPane, TuiTab};
     use std::collections::HashMap;
 
     fn snap_single_pane() -> FrameSnapshot {
@@ -708,9 +708,7 @@ mod tests {
     fn render_has_status_bar() {
         let buf = render(&snap_single_pane(), None, RenderOpts::default());
         let s = buf_to_string(&buf);
-        assert!(s.contains(&crate::frontend::i18n::tr(
-            crate::frontend::i18n::Key::StatusConnected
-        )));
+        assert!(s.contains(&crate::i18n::tr(crate::i18n::Key::StatusConnected)));
         assert!(s.contains("Ctrl-Q"));
         assert!(s.contains("Alt+S"));
     }
@@ -743,9 +741,7 @@ mod tests {
         snap.status = "exited".into();
         let buf = render(&snap, None, RenderOpts::default());
         let s = buf_to_string(&buf);
-        assert!(s.contains(&crate::frontend::i18n::tr(
-            crate::frontend::i18n::Key::StatusExited
-        )));
+        assert!(s.contains(&crate::i18n::tr(crate::i18n::Key::StatusExited)));
     }
 
     #[test]
@@ -770,9 +766,9 @@ mod tests {
         let mut p = PaletteState::new();
         p.advance(); // source->action (local)
         p.set_items(vec![
-            crate::frontend::tui::palette::WizardItem::new_item(),
-            crate::frontend::tui::palette::WizardItem::plain("dev", "dev"),
-            crate::frontend::tui::palette::WizardItem::plain("prod", "prod"),
+            crate::tui::palette::WizardItem::new_item(),
+            crate::tui::palette::WizardItem::plain("dev", "dev"),
+            crate::tui::palette::WizardItem::plain("prod", "prod"),
         ]);
         let buf = render(
             &snap_single_pane(),
@@ -801,7 +797,7 @@ mod tests {
 
     #[test]
     fn colored_cells_reach_buffer() {
-        use crate::frontend::tui::emulate::TerminalState;
+        use crate::tui::emulate::TerminalState;
 
         // 用 ANSI 红字喂进终端模拟器
         let mut ts = TerminalState::new(80, 24);
