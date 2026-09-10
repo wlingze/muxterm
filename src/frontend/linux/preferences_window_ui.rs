@@ -13,6 +13,7 @@ use gtk4::{
     Align, Box as GtkBox, Button, Label, ListBox, ListBoxRow, Orientation, ScrolledWindow,
     SearchEntry, Separator, Stack, Window,
 };
+use serde_json::Value;
 
 use crate::frontend::ffi_client::{
     ClientConfigSnapshot, ClientJsonPatchOperation, ClientRuntimeInfo,
@@ -20,11 +21,188 @@ use crate::frontend::ffi_client::{
 use crate::frontend::i18n::{self, Key as TextKey};
 
 use super::{
-    appearance_preview, category_description, category_hint, category_icon, category_title,
-    control_row, field_description, field_title, install_preferences_css, replace, section,
-    show_project_manager, show_shortcut_manager, CategoryPage, ConfigApi, ControlKind,
+    control_row, field_description, field_title, install_preferences_css, option_label, pointer,
+    replace, show_project_manager, show_shortcut_manager, CategoryPage, ConfigApi, ControlKind,
     FieldControl,
 };
+
+fn section(id: &str, title_key: &str) -> GtkBox {
+    let box_ = GtkBox::builder()
+        .orientation(Orientation::Vertical)
+        .spacing(0)
+        .build();
+    box_.set_hexpand(true);
+    box_.add_css_class("prefs-card");
+    let header = GtkBox::builder()
+        .orientation(Orientation::Vertical)
+        .spacing(3)
+        .margin_top(18)
+        .margin_bottom(10)
+        .margin_start(16)
+        .margin_end(16)
+        .build();
+    let title = section_title(id, title_key);
+    let label = Label::new(Some(&title));
+    label.set_halign(Align::Start);
+    label.add_css_class("prefs-card-title");
+    header.append(&label);
+    let hint = Label::new(Some("Changes are staged until you save."));
+    hint.set_halign(Align::Start);
+    hint.add_css_class("prefs-card-hint");
+    header.append(&hint);
+    box_.append(&header);
+    box_
+}
+
+fn section_title(id: &str, title_key: &str) -> String {
+    match id {
+        "appearance" => "Terminal".into(),
+        "runtime" => "Workspace defaults".into(),
+        "attention" => "Attention".into(),
+        "ui" => "Interface".into(),
+        "ssh" => "SSH defaults".into(),
+        "behavior" => "Exit behavior".into(),
+        "platform" => "Platform".into(),
+        "projects" => "Workspace profiles".into(),
+        "shortcuts" => "Keyboard shortcuts".into(),
+        _ => category_title(id, title_key),
+    }
+}
+
+fn category_icon(id: &str) -> &'static str {
+    match id {
+        "appearance" => "Aa",
+        "runtime" => "▣",
+        "attention" => "◉",
+        "ui" => "▤",
+        "ssh" => "↗",
+        "behavior" => "↯",
+        "platform" => "⌘",
+        "projects" => "▦",
+        "shortcuts" => "⌨",
+        _ => "•",
+    }
+}
+
+fn category_hint(id: &str) -> &'static str {
+    match id {
+        "appearance" => "Fonts & colors",
+        "runtime" => "Workspaces",
+        "attention" => "Agent signals",
+        "ui" => "Window chrome",
+        "ssh" => "Remote access",
+        "behavior" => "Exit rules",
+        "platform" => "Desktop specific",
+        "projects" => "Launch profiles",
+        "shortcuts" => "Keyboard",
+        _ => "General",
+    }
+}
+
+fn category_description(id: &str) -> &'static str {
+    match id {
+        "appearance" => "Tune the terminal you look at all day: type, scale, and color.",
+        "runtime" => "Set defaults for new workspaces, panes, and terminal history.",
+        "attention" => "Decide when Muxterm should surface work that needs your attention.",
+        "ui" => "Shape the surrounding window chrome and tab bar.",
+        "ssh" => "Defaults used when opening remote workspaces over SSH.",
+        "behavior" => "Choose what Muxterm does when panes or commands exit.",
+        "platform" => "Options specific to the desktop platform you are running on.",
+        "projects" => "Save the workspaces you return to most often.",
+        "shortcuts" => "Choose a keyboard preset and customize individual actions.",
+        _ => "Configure this part of Muxterm.",
+    }
+}
+
+fn appearance_preview(values: &Value) -> GtkBox {
+    let preview = GtkBox::builder()
+        .orientation(Orientation::Vertical)
+        .spacing(12)
+        .hexpand(true)
+        .build();
+    preview.add_css_class("prefs-preview-card");
+
+    let header = GtkBox::builder()
+        .orientation(Orientation::Horizontal)
+        .spacing(8)
+        .margin_top(16)
+        .margin_start(16)
+        .margin_end(16)
+        .build();
+    let title = Label::new(Some("Terminal preview"));
+    title.set_halign(Align::Start);
+    title.add_css_class("prefs-preview-title");
+    header.append(&title);
+    let live = Label::new(Some("PREVIEW"));
+    live.set_halign(Align::End);
+    live.set_hexpand(true);
+    live.add_css_class("prefs-apply-badge");
+    header.append(&live);
+    preview.append(&header);
+
+    let terminal = GtkBox::builder()
+        .orientation(Orientation::Vertical)
+        .spacing(8)
+        .margin_start(16)
+        .margin_end(16)
+        .margin_bottom(16)
+        .build();
+    terminal.add_css_class("prefs-terminal-preview");
+    let dots = GtkBox::builder()
+        .orientation(Orientation::Horizontal)
+        .spacing(5)
+        .build();
+    for (dot, color) in [("●", "red"), ("●", "yellow"), ("●", "green")] {
+        let label = Label::new(Some(dot));
+        label.add_css_class("prefs-preview-dot");
+        label.add_css_class(&format!("prefs-preview-dot-{color}"));
+        dots.append(&label);
+    }
+    terminal.append(&dots);
+    let prompt = Label::new(Some("$ muxterm  --workspace ready"));
+    prompt.set_halign(Align::Start);
+    prompt.add_css_class("prefs-preview-prompt");
+    terminal.append(&prompt);
+    let output = Label::new(Some("Connected  ·  2 panes  ·  waiting for input"));
+    output.set_halign(Align::Start);
+    output.add_css_class("prefs-preview-output");
+    terminal.append(&output);
+    let family = pointer(values, "/font/family")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("JetBrains Mono");
+    let size = pointer(values, "/font/size")
+        .and_then(Value::as_f64)
+        .unwrap_or(13.0);
+    let theme = pointer(values, "/theme/name")
+        .and_then(Value::as_str)
+        .map(|value| option_label("/theme/name", value))
+        .unwrap_or_else(|| "Follow system".into());
+    let summary = Label::new(Some(&format!("{family}  ·  {size:.1} pt  ·  {theme}")));
+    summary.set_halign(Align::Start);
+    summary.add_css_class("prefs-preview-summary");
+    preview.append(&terminal);
+    preview.append(&summary);
+    preview
+}
+
+fn category_title(id: &str, title_key: &str) -> String {
+    let raw = title_key
+        .strip_prefix("settings.")
+        .filter(|title| !title.is_empty())
+        .unwrap_or(id);
+    raw.split(['_', '-'])
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut characters = part.chars();
+            match characters.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + characters.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
 
 /// Open the settings window; `on_saved` fires after a committed Apply or an
 /// external file change.
@@ -548,4 +726,18 @@ fn confirm_discard(parent: &impl IsA<Window>, on_discard: impl Fn() + 'static) {
         });
     }
     dialog.present();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::category_title;
+
+    #[test]
+    fn category_title_humanizes_manifest_key() {
+        assert_eq!(
+            category_title("appearance", "settings.appearance"),
+            "Appearance"
+        );
+        assert_eq!(category_title("tab_bar", ""), "Tab Bar");
+    }
 }
