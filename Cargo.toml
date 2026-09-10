@@ -13,6 +13,7 @@ members = [
     "crates/muxterm-transport",
     "crates/muxterm-runtime",
     "crates/muxterm-core",
+    "crates/muxterm-frontend",
 ]
 
 [features]
@@ -52,6 +53,7 @@ async-trait = "0.1"
 async-ssh2-tokio = "0.13"
 muxterm-protocol = { path = "crates/muxterm-protocol" }
 muxterm-core = { path = "crates/muxterm-core", features = ["ffi"] }
+muxterm-frontend = { path = "crates/muxterm-frontend" }
 
 # 可选：跨平台 TUI 前端
 crossterm = { version = "0.28", optional = true }
