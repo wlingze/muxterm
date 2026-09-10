@@ -11,7 +11,7 @@ use crate::frontend::cli::tmux_cli::{
     parse_tmux_cli, CliEnvelope, PaneCmd, SessionCmd, SplitDirection, TabCmd, Target,
     TmuxCliCommand,
 };
-use crate::frontend::ffi_client::{ClientTask, FfiClient};
+use crate::frontend::ffi_client::{ClientEventKind, ClientTask, FfiClient};
 
 /// tmux CLI 命令执行超时（硬限制）。
 const EXEC_TIMEOUT: Duration = Duration::from_secs(15);
@@ -45,8 +45,11 @@ impl FfiTmuxClient {
                 .with_context(|| format!("create tmux session failed: {session_name}"))?;
         }
 
-        let client = FfiClient::new_connect("tmux", socket, Some(session_name), None, None)
-            .with_context(|| format!("attach tmux session failed: {session_name}"))?;
+        // The CLI has no Surface to report a resize during construction.  A
+        // conservative initial size releases the runtime's attach barrier.
+        let client =
+            FfiClient::new_connect_sized("tmux", socket, Some(session_name), None, None, 80, 24)
+                .with_context(|| format!("attach tmux session failed: {session_name}"))?;
         let workspaces = client.workspace_list()?;
         let workspace_id = workspaces
             .iter()
@@ -74,6 +77,31 @@ impl FfiTmuxClient {
 
     fn active_tab(&self) -> Option<crate::frontend::ffi_client::ClientTab> {
         self.tabs().into_iter().find(|tab| tab.is_active)
+    }
+
+    /// Finish the attach baseline for the active pane before issuing a
+    /// short-lived client's next command.  TmuxRuntime deliberately defers
+    /// writes until this snapshot fence is complete; CLI clients have no
+    /// persistent Surface to receive the fence later.
+    fn wait_for_pane_snapshot(&self, pane_id: u32, deadline: Instant) -> bool {
+        if self.client.execute_workspace_task(
+            &self.workspace_id,
+            ClientTask::RequestPaneSnapshot { pane_id },
+        ) != 0
+        {
+            return false;
+        }
+        while Instant::now() < deadline {
+            let ready = self.client.poll_workspace_events().iter().any(|event| {
+                event.event.pane_id == pane_id
+                    && event.event.kind() == ClientEventKind::PaneSnapshot
+            });
+            if ready {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        false
     }
 
     fn pane_output(&self, pane_id: u32) -> Vec<u8> {
@@ -180,9 +208,12 @@ fn wait_cli_pane_capture(client: &mut FfiTmuxClient, pane_id: u32, deadline: Ins
     let requested_at = Instant::now();
     let mut previous = client.pane_output(pane_id);
     let mut previous_at = Instant::now();
+    let mut snapshot_seen = false;
 
     while Instant::now() < deadline {
-        client.poll();
+        snapshot_seen |= client.client.poll_workspace_events().iter().any(|event| {
+            event.event.pane_id == pane_id && event.event.kind() == ClientEventKind::PaneSnapshot
+        });
         let current = client.pane_output(pane_id);
         if current != previous {
             previous = current;
@@ -191,7 +222,7 @@ fn wait_cli_pane_capture(client: &mut FfiTmuxClient, pane_id: u32, deadline: Ins
 
         let waited_for_snapshot = requested_at.elapsed() >= SNAPSHOT_MIN_WAIT;
         let stable = previous_at.elapsed() >= Duration::from_millis(100);
-        if waited_for_snapshot && stable && !previous.is_empty() {
+        if waited_for_snapshot && snapshot_seen && stable {
             return String::from_utf8_lossy(&previous).to_string();
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -591,12 +622,16 @@ fn execute_pane(cmd: &PaneCmd, deadline: Instant) -> anyhow::Result<serde_json::
             match target {
                 Target::Local => with_local_tmux(socket.as_deref(), session, deadline, |client| {
                     wait_ready(client, READY_POLL_DURATION);
+                    if !client.wait_for_pane_snapshot(*pane, deadline) {
+                        anyhow::bail!("等待 pane {pane} 初始快照超时");
+                    }
                     client.poll();
                     // 发送文本 + Enter（让 shell 执行命令）
                     let mut bytes = text.as_bytes().to_vec();
                     bytes.push(b'\r');
                     client.send_input(*pane, &bytes)?;
-                    // 等待 shell 执行并产生输出（最多 2s）
+                    // 等待 shell readiness probe 和命令输出（最多 2s）。
+                    // attach 到非 active tab 的 pane 可能需要两轮 probe。
                     let send_deadline = Instant::now() + Duration::from_secs(2);
                     while Instant::now() < send_deadline {
                         client.poll();

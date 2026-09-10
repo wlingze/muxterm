@@ -216,6 +216,9 @@ pub struct TmuxRuntime {
     latest_switch_target: Option<TabId>,
     /// 每个 tab 的 pane 数量（从 list-windows 响应获取），用于确认所有 pane 查询完成。
     expected_panes_per_window: HashMap<TabId, usize>,
+    /// attach 尚未完成时发出的初始 pane 查询。响应可能在 active tab
+    /// topology 就绪后才到达，不能因此把已有 pane 误判为 attach 后新 pane。
+    attach_bootstrap_pane_tabs: HashSet<TabId>,
     /// 已收到 `%window-close` 但尚未经权威 `list-windows` 确认的 tab。
     ///
     /// tmux `move-window` 会先 unlink 再 link 窗口，控制模式下可能产生
@@ -335,6 +338,22 @@ pub struct TmuxRuntime {
     attach_followup_flushed: bool,
     /// seed 进行中收到的 OSC 颜色上报，等可见 capture 发出后再写 tmux。
     held_colour_reports: Vec<(PaneId, Rgb, Rgb)>,
+}
+
+impl Drop for TmuxRuntime {
+    fn drop(&mut self) {
+        // WorkspacePool 的同步释放路径已经把 detach-client 放入发送队列，
+        // 但不会再等待异步 sender。主动 abort 可避免 FFI handle 释放时
+        // Tokio runtime 继续等待这个短命 control client；tmux session 本身
+        // 不受影响，下一次 attach 仍复用同一 session。
+        if let Some(sender) = self._sender_handle.take() {
+            sender.abort();
+        }
+        self.cmd_tx.take();
+        if let Some(pump) = self._pump_handle.take() {
+            pump.abort();
+        }
+    }
 }
 
 /// 解析 `tmux -V` 输出（如 `tmux 3.7b` / `tmux 2.9a`）。
@@ -755,6 +774,7 @@ impl TmuxRuntime {
             window_zoomed: HashSet::new(),
             latest_switch_target: None,
             expected_panes_per_window: HashMap::new(),
+            attach_bootstrap_pane_tabs: HashSet::new(),
             pending_close_tabs: HashSet::new(),
             initial_capture_pending: HashSet::new(),
             initial_capture_done: HashSet::new(),
@@ -2835,6 +2855,7 @@ impl TmuxRuntime {
                 return;
             }
         }
+        let bootstrap_query = self.attach_bootstrap_pane_tabs.remove(&tab_id);
         let tab_is_active = self
             .tabs
             .iter()
@@ -2877,7 +2898,7 @@ impl TmuxRuntime {
             } else {
                 let mut pane = np.clone();
                 pane.active = globally_active;
-                if self.attach_bootstrap_complete && self.is_attach_mode() {
+                if self.attach_bootstrap_complete && self.is_attach_mode() && !bootstrap_query {
                     self.new_attach_panes.insert(np.id);
                 }
                 self.panes.push(pane);
@@ -3079,6 +3100,9 @@ impl TmuxRuntime {
         }
         let line = format!("list-panes -t @{}\n", tab.0);
         if self.dispatch_command(line).is_ok() {
+            if self.is_attach_mode() && !self.attach_bootstrap_complete {
+                self.attach_bootstrap_pane_tabs.insert(tab);
+            }
             self.replace_last_pending(PendingQuery::ListPanes { tab });
         }
     }

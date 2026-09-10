@@ -1079,6 +1079,41 @@ impl FfiClient {
         Self::from_raw(handle)
     }
 
+    /// Create and connect a handle while supplying the initial client size.
+    ///
+    /// A control runtime may defer its attach snapshot until a frontend
+    /// reports a size.  Frontends without a Surface should use this variant
+    /// so the runtime can complete that baseline during construction.
+    pub fn new_connect_sized(
+        runtime_type: &str,
+        socket: Option<&str>,
+        session: Option<&str>,
+        ssh_alias: Option<&str>,
+        start_directory: Option<&str>,
+        cols: u16,
+        rows: u16,
+    ) -> anyhow::Result<Self> {
+        let runtime = cstring(runtime_type);
+        let socket = cstring_opt(socket);
+        let session = cstring_opt(session);
+        let ssh_alias = cstring_opt(ssh_alias);
+        let start_directory = cstring_opt(start_directory);
+        let handle = ffi::muxterm_new_connect_sized(
+            runtime.as_ptr(),
+            socket.as_ref().map_or(ptr::null(), |value| value.as_ptr()),
+            session.as_ref().map_or(ptr::null(), |value| value.as_ptr()),
+            ssh_alias
+                .as_ref()
+                .map_or(ptr::null(), |value| value.as_ptr()),
+            start_directory
+                .as_ref()
+                .map_or(ptr::null(), |value| value.as_ptr()),
+            cols,
+            rows,
+        );
+        Self::from_raw(handle)
+    }
+
     fn from_raw(handle: *mut ffi::MuxtermHandle) -> anyhow::Result<Self> {
         let handle = NonNull::new(handle)
             .ok_or_else(|| anyhow::anyhow!("Core FFI handle construction failed"))?;
@@ -2253,12 +2288,16 @@ impl FfiClient {
         let transport = cstring(transport_type);
         let target = cstring_opt(target);
         let socket = cstring_opt(socket);
+        let config_path = std::env::var("MUXTERM_SSH_CONFIG_PATH").ok();
+        let config_path = cstring_opt(config_path.as_deref());
         let value = Self::discovery_json(|| {
             ffi::muxterm_discover_tmux_sessions_json(
                 transport.as_ptr(),
                 target.as_ref().map_or(ptr::null(), |value| value.as_ptr()),
                 socket.as_ref().map_or(ptr::null(), |value| value.as_ptr()),
-                ptr::null(),
+                config_path
+                    .as_ref()
+                    .map_or(ptr::null(), |value| value.as_ptr()),
                 DISCOVERY_TIMEOUT_MS,
             )
         })?;
