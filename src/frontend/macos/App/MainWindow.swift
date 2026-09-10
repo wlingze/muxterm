@@ -103,6 +103,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let paneID: UInt32
     }
     private var commandMarksCache: [CommandMarksKey: [CoreCommandMark]] = [:]
+    /// Native scroll callbacks already carry the local viewport offset. Keep
+    /// it for UI-only unseen-line updates; the event pump refreshes it from
+    /// Core when the authoritative snapshot changes.
+    private var viewportOffsets: [UInt32: UInt32] = [:]
     /// 程序化命令跳转触发 native scroll callback 时保留游标一次。
     private var commandNavigationPanes = Set<UInt32>()
     /// 最近一次 poll 的 PaneOutput 条数（W13 洪水上限）。
@@ -2057,6 +2061,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             return
         }
         terminalManager.scrollToLatest(paneId: pane)
+        viewportOffsets[pane] = 0
         content.setJumpLatestVisible(false, unseenLines: 0)
         needsLayoutReload = true
     }
@@ -2148,6 +2153,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 把 core 的 viewport 滚动偏移应用到 SwiftTerm 可见区：
     /// offset>0 时喂滚动窗口 ANSI（历史），offset==0 时恢复 live 输出。
     func applyPaneViewport(paneId: UInt32, offset: UInt32) {
+        viewportOffsets[paneId] = offset
         terminalManager.applyViewport(paneId: paneId, offset: offset)
         content.setJumpLatestVisible(
             offset > 0,
@@ -2161,6 +2167,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         terminalManager.onViewportChanged = { [weak self] paneId, offset in
             guard let self else { return }
+            self.viewportOffsets[paneId] = offset
             // 用户滚轮/触控板改变视口时，下一次命令导航应从当前状态重新开始；
             // 程序化 command jump 只保留刚设置的游标一次。
             if self.commandNavigationPanes.remove(paneId) == nil {
@@ -2177,7 +2184,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             guard let self,
                   paneId == self.activePaneID
             else { return }
-            let offset = max(0, self.bridge.paneViewport(paneId: paneId))
+            let offset = self.viewportOffsets[paneId] ?? 0
             self.content.setJumpLatestVisible(offset > 0, unseenLines: count)
         }
     }
@@ -2559,6 +2566,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         content.setLastSeenVisible(false)
         commandTimelineCursor.removeAll()
         commandNavigationPanes.removeAll()
+        viewportOffsets.removeAll()
         wireTerminalManagerCallbacks()
         let restoredParkedTree = content.paneLayout.replaceTerminalManager(slot.terminalManager)
         content.paneLayout.dropParked(
@@ -4120,6 +4128,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         content.statusBar.updateOutputSnippet(terminalManager.recentOutputSnippet)
         if let activePane = snap.panes.first(where: \.isActive)?.id ?? snap.panes.first?.id {
             let viewport = bridge.paneViewport(paneId: activePane)
+            viewportOffsets[activePane] = max(0, viewport)
             content.setJumpLatestVisible(
                 viewport > 0,
                 unseenLines: terminalManager.unseenLineCount(paneId: activePane)
