@@ -3,30 +3,24 @@
 use anyhow::{anyhow, Result};
 
 use crate::config::ProjectDocument;
-use crate::projects::TargetConfig;
 use crate::workspace::provenance::WorkspaceProvenance;
 use crate::workspace::template::TemplateName;
 
-use super::{ProjectId, Worktree, WorktreeId};
+use super::{ProjectId, ProjectTarget, TargetConfig, Worktree, WorktreeId};
 
 /// A configured Project with its registered Worktrees.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Project {
     pub id: ProjectId,
     pub name: String,
-    pub target: TargetConfig,
+    pub target: ProjectTarget,
     pub template: Option<TemplateName>,
     pub worktrees: Vec<Worktree>,
 }
 
 impl Project {
-    pub fn new(
-        id: impl Into<ProjectId>,
-        name: impl Into<String>,
-        mut target: TargetConfig,
-    ) -> Self {
+    pub fn new(id: impl Into<ProjectId>, name: impl Into<String>, target: ProjectTarget) -> Self {
         let name = name.into();
-        target.name.clone_from(&name);
         Self {
             id: id.into(),
             name,
@@ -37,9 +31,7 @@ impl Project {
     }
 
     pub fn from_document(document: &ProjectDocument) -> Result<Self> {
-        let mut target = document.to_target()?;
-        target.name.clone_from(&document.name);
-        target.path.clone_from(&document.path);
+        let target = document.to_project_target()?;
         Ok(Self {
             id: ProjectId::from(document.id.clone()),
             name: document.name.clone(),
@@ -58,10 +50,10 @@ impl Project {
     }
 
     pub fn to_document(&self) -> ProjectDocument {
-        let mut document = ProjectDocument::from_target(&self.target);
+        let mut document = ProjectDocument::from_project_target(&self.name, &self.target);
         document.id = self.id.to_string();
         document.name = self.name.clone();
-        document.path = self.target.path.clone();
+        document.path = self.target.path().to_string();
         document.template = self.template.as_ref().map(ToString::to_string);
         document.worktrees = self.worktrees.iter().map(Worktree::to_document).collect();
         document
@@ -98,6 +90,11 @@ impl Project {
         let index = self.worktrees.iter().position(|item| &item.id == id)?;
         Some(self.worktrees.remove(index))
     }
+
+    /// Build the compatibility target record consumed by Catalog resolution.
+    pub fn target_config(&self) -> TargetConfig {
+        self.target.to_target_config(&self.name)
+    }
 }
 
 #[cfg(test)]
@@ -109,12 +106,7 @@ mod tests {
         Project::new(
             "project-a",
             "Project A",
-            TargetConfig::new(
-                "old-name",
-                TargetRuntime::Shell,
-                TargetTransport::Local,
-                "/repo",
-            ),
+            super::ProjectTarget::new(TargetRuntime::Shell, TargetTransport::Local, "/repo"),
         )
     }
 

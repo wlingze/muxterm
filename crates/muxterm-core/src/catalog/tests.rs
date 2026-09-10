@@ -755,18 +755,13 @@ async fn incompatible_channel_requirements_are_rejected_without_fallback() {
 
 #[test]
 fn candidate_resolver_maps_project_and_worktree_provenance() {
-    use crate::projects::{TargetConfig, TargetRuntime, TargetTransport};
+    use crate::projects::{ProjectTarget, TargetRuntime, TargetTransport};
     use crate::workspace::template::TemplateName;
 
     let mut project = Project::new(
         "project-a",
         "Project A",
-        TargetConfig::new(
-            "ignored-display-name",
-            TargetRuntime::Shell,
-            TargetTransport::Local,
-            "/repo",
-        ),
+        ProjectTarget::new(TargetRuntime::Shell, TargetTransport::Local, "/repo"),
     );
     project.template = Some(TemplateName::try_from("default").unwrap());
     project
@@ -1037,21 +1032,18 @@ async fn candidate_resolver_rehydrates_recent_from_core_descriptor() {
 
 #[tokio::test]
 async fn catalog_candidates_aggregates_four_kinds_and_marks_pool_membership() {
-    use crate::projects::{TargetConfig, TargetRuntime, TargetTransport};
+    use crate::projects::{ProjectTarget, TargetRuntime, TargetTransport};
     use crate::workspace::provenance::WorkspaceProvenance;
 
     let mut project = Project::new(
         "project-a",
         "Project A",
-        TargetConfig::new(
-            "project",
-            TargetRuntime::Tmux,
-            TargetTransport::Local,
-            "/repo",
-        ),
+        ProjectTarget::new(TargetRuntime::Tmux, TargetTransport::Local, "/repo"),
     );
-    project.target.session = Some("demo".into());
-    project.target.socket = Some("muxterm-test-candidates".into());
+    project.target.set_session(Some("demo".into()));
+    project
+        .target
+        .set_socket(Some("muxterm-test-candidates".into()));
     project
         .add_worktree(Worktree::new(
             "wt-a",
@@ -1086,7 +1078,7 @@ async fn catalog_candidates_aggregates_four_kinds_and_marks_pool_membership() {
     pool.get_mut(&workspace_id)
         .unwrap()
         .set_resolved_target(ResolvedTarget {
-            canonical: project.target.clone(),
+            canonical: project.target_config(),
             spec,
         });
     pool.get_mut(&workspace_id)

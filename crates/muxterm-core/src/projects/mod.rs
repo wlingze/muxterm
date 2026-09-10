@@ -9,7 +9,7 @@ mod worktree;
 pub use project::Project;
 pub use service::ProjectsService;
 pub use store::ProjectStore;
-pub use target::{TargetConfig, TargetRuntime, TargetTransport};
+pub use target::{ProjectTarget, TargetConfig, TargetRuntime, TargetTransport};
 pub use worktree::{git_worktree_add_argv, Worktree};
 
 /// 配置项 Project 的稳定标识。
