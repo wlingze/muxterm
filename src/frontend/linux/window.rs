@@ -822,16 +822,37 @@ impl AppWindow {
                 .refresh_from_views(&s.view_store, Some(&active_workspace), &activity);
         }
 
-        // status bar 中区 tab 按钮 → 切换 frontend-visible scene
+        // status bar 业务入口 → 交给 frontend-visible scene / Core command queue。
         {
-            let st = state.clone();
-            state
-                .borrow()
-                .status
-                .connect_window_activate(move |tab_id| {
-                    let mut s = st.borrow_mut();
-                    request_switch_tab(&mut s, tab_id);
-                });
+            let tab_state = state.clone();
+            let attention_state = state.clone();
+            let new_tab_state = state.clone();
+            let worktree_state = state.clone();
+            let attention_window = window.clone();
+            let worktree_window = window.clone();
+            let s = state.borrow();
+            s.status.connect_actions(
+                move |tab_id| {
+                    request_switch_tab(&mut tab_state.borrow_mut(), tab_id);
+                },
+                move || {
+                    let n = activity_snapshot(&attention_state.borrow()).blocked_count;
+                    let tab = if n > 0 {
+                        PanelTab::Attention
+                    } else {
+                        PanelTab::Workspaces
+                    };
+                    open_panel(&attention_state, &attention_window, tab);
+                },
+                move || {
+                    let mut s = new_tab_state.borrow_mut();
+                    prepare_core_tab_mutation(&mut s, &ClientTask::NewTab);
+                    let _ = s.execute_active_task(ClientTask::NewTab);
+                },
+                move || {
+                    show_worktree_create_dialog(&worktree_state, &worktree_window);
+                },
+            );
         }
 
         // 命令刻度点击：滚到对应命令文本所在行（W18h）。
@@ -932,52 +953,6 @@ impl AppWindow {
                         }
                     }
                 });
-        }
-
-        // 状态点 → popover：由 StatusBar 的 connect_clicked 处理（C8.4）。
-
-        // 通知/面板按钮：n=0 → Workspaces，n>0 → Attention
-        {
-            let st = state.clone();
-            let win = window.clone();
-            state.borrow().status.connect_attention_activate(move || {
-                let n = activity_snapshot(&st.borrow()).blocked_count;
-                let tab = if n > 0 {
-                    PanelTab::Attention
-                } else {
-                    PanelTab::Workspaces
-                };
-                open_panel(&st, &win, tab);
-            });
-        }
-
-        // 新建 tab 按钮 → Action::NewTab
-        {
-            let st = state.clone();
-            state.borrow().status.connect_new_tab(move || {
-                let mut s = st.borrow_mut();
-                prepare_core_tab_mutation(&mut s, &ClientTask::NewTab);
-                let _ = s.execute_active_task(ClientTask::NewTab);
-                // Accepted 不得手工 refresh：等 LayoutChanged/MutationSettled。
-            });
-        }
-
-        // worktree 创建按钮 → 对话框（仅 support() 含 WorktreeList 时可见）。
-        {
-            let st = state.clone();
-            let win = window.clone();
-            state.borrow().status.connect_worktree_create(move || {
-                show_worktree_create_dialog(&st, &win);
-            });
-        }
-
-        // worktree 创建按钮 → 对话框（仅 support() 含 WorktreeList 时可见）。
-        {
-            let st = state.clone();
-            let win = window.clone();
-            state.borrow().status.connect_worktree_create(move || {
-                show_worktree_create_dialog(&st, &win);
-            });
         }
 
         // 快捷键
