@@ -6,17 +6,15 @@
 use std::collections::HashSet;
 
 use gtk4::prelude::*;
-use gtk4::{Box as GtkBox, Label, Overlay, Window};
+use gtk4::Window;
 
 use crate::frontend::ffi_client::{ClientCandidateRef, ClientOpenIntent, ClientOpenRequest};
 use crate::frontend::i18n::{self, Key as TextKey};
-use crate::frontend::linux::panel_model::AttentionPanelRow;
 use crate::frontend::linux::quickconnect::existing::ExistingEntry;
 use crate::frontend::linux::quickconnect::model::{
     QuickBadge, QuickConnect, QuickConnectEntry, TargetConfig,
 };
 use crate::frontend::linux::quickconnect::store::QuickConnectStore;
-use crate::frontend::ssh_probe::SshReach;
 
 #[path = "quickconnect_panel_view.rs"]
 mod quickconnect_panel_view;
@@ -321,30 +319,6 @@ pub use crate::frontend::linux::panel_model::PanelShowArgs;
 
 pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
     quickconnect_panel_ui::show(parent, args);
-}
-
-fn attention_panel_row(item: &AttentionPanelRow) -> GtkBox {
-    quickconnect_panel_view::attention_panel_row(item)
-}
-
-fn target_row(entry: &QuickConnectEntry, is_current: bool, reach: Option<SshReach>) -> GtkBox {
-    quickconnect_panel_view::target_row(entry, is_current, reach)
-}
-
-fn existing_connect_name(entry: &ExistingEntry) -> String {
-    quickconnect_panel_view::existing_connect_name(entry)
-}
-
-fn existing_row(entry: &ExistingEntry) -> GtkBox {
-    quickconnect_panel_view::existing_row(entry)
-}
-
-fn reachability_dot(reach: SshReach) -> Label {
-    quickconnect_panel_view::reachability_dot(reach)
-}
-
-fn ensure_overlay(parent: &Window) -> Overlay {
-    quickconnect_panel_view::ensure_overlay(parent)
 }
 
 #[cfg(test)]

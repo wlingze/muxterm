@@ -28,10 +28,13 @@ use crate::frontend::linux::quick_pick;
 use crate::frontend::linux::quickconnect::existing::ExistingRuntime;
 use crate::frontend::linux::quickconnect::model::{QuickConnect, TargetTransport, WorkspaceQuery};
 
+use super::quickconnect_panel_view::{
+    attention_panel_row, ensure_overlay, existing_connect_name, existing_row, reachability_dot,
+    target_row,
+};
 use super::{
-    attention_panel_row, ensure_overlay, existing_connect_name, existing_items, existing_row,
-    reachability_dot, root_items_with_existing_and_search, target_row, visible_action_for_item,
-    ExistingNav, PanelItem, PanelShowArgs, VisibleAction, PANEL_TEXT_MAX_CHARS,
+    existing_items, root_items_with_existing_and_search, visible_action_for_item, ExistingNav,
+    PanelItem, PanelShowArgs, VisibleAction, PANEL_TEXT_MAX_CHARS,
 };
 
 const NEW_PROJECT_ID: &str = "__new_project__";
