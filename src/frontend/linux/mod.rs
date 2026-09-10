@@ -12,6 +12,7 @@ pub mod input_bar;
 pub mod keymap;
 pub mod layout_host;
 pub mod lifecycle;
+pub mod overlay;
 pub(crate) mod pane_input_state;
 pub mod pane_switcher;
 pub mod pane_view;

@@ -40,6 +40,7 @@ use crate::frontend::linux::event_batch::batch_order_plan;
 use crate::frontend::linux::keymap::{default_keybindings, Action, KeyMap};
 use crate::frontend::linux::layout_host::LayoutHost;
 use crate::frontend::linux::lifecycle::{cycle_pane_id, should_close_window, OnLastPaneExit};
+use crate::frontend::linux::overlay::OverlayLayer;
 use crate::frontend::linux::pane_view::{PaneMenuAction, PaneSurface};
 use crate::frontend::linux::panel_model::PanelTab;
 use crate::frontend::linux::preferences_window::ConfigApi;
@@ -193,31 +194,12 @@ struct UiState {
     reconnect_retry_at: Option<Instant>,
     /// 连续失败次数（指数退避基数）。
     reconnect_attempts: u32,
+    /// 终端区 Overlay：常驻 workspace scene stack 是主 child，覆盖层浮在上面。
+    overlay: OverlayLayer,
     /// 窗口根容器（挂载当前工作区的 LayoutHost.root_box）。
     root_box: gtk4::Box,
-    /// 终端区 Overlay：常驻 workspace scene stack 是主 child，回底按钮浮在上面。
-    layout_overlay: gtk4::Overlay,
-    /// 回底按钮（W16a：滚离底部后显示，点击回到尾部）。
-    jump_latest: gtk4::Button,
-    /// 离开底部期间累计的新行数（W18e：按钮显示 +N）。
-    jump_unseen: u32,
-    /// 断线水印（W16b：tmux server 死后保留最后一帧 + 覆盖提示）。
-    disconnect_overlay: gtk4::Label,
-    /// 搜索命中高亮（W17c：客户端覆盖层，不改 pane 字节）。
-    search_highlight: gtk4::Label,
-    /// 当前 pane 内查找条（W18f：Ctrl+F / test_open_pane_find 同一条生产路径）。
-    pane_find: gtk4::Box,
-    pane_find_entry: gtk4::Entry,
     /// 上次看到这里（W18g）：(workspace, pane) → 离开时的最后一行文本。
     last_seen: std::collections::HashMap<(String, u32), String>,
-    /// 上次看到这里标记（客户端覆盖层，不改 pane 字节）。
-    last_seen_mark: gtk4::Button,
-    /// 命令刻度（W18h）：最近成功/失败命令的滚动条旁标记。
-    cmd_mark_ok: gtk4::Button,
-    cmd_mark_fail: gtk4::Button,
-    /// 刻度点击要滚到的命令文本（由 update_command_marks 更新）。
-    cmd_mark_ok_text: std::rc::Rc<std::cell::RefCell<Option<String>>>,
-    cmd_mark_fail_text: std::rc::Rc<std::cell::RefCell<Option<String>>>,
     /// VTE scrollback 行数（新建 LayoutHost 时用）。
     scrollback_lines: u32,
     /// 启动配置的 tmux `-L` socket（本地 tmux 连接默认用它）。
@@ -736,69 +718,7 @@ impl AppWindow {
         // 唯一 chrome：一条 status bar（LINUX-PLAN §3），没有第二条 TabBar。
         // 终端区包一层 Overlay：回底按钮浮在 VTE 右下角（W16a）。
         let scene_stack_widget = scenes.widget();
-        let layout_overlay = gtk4::Overlay::new();
-        layout_overlay.set_hexpand(true);
-        layout_overlay.set_vexpand(true);
-        layout_overlay.set_child(Some(&scene_stack_widget));
-        let jump_latest = gtk4::Button::with_label("↓");
-        jump_latest.set_widget_name("muxterm-jump-latest");
-        jump_latest.set_halign(gtk4::Align::End);
-        jump_latest.set_valign(gtk4::Align::End);
-        jump_latest.set_margin_end(12);
-        jump_latest.set_margin_bottom(12);
-        jump_latest.set_visible(false);
-        let disconnect_overlay = gtk4::Label::new(Some("已断开"));
-        disconnect_overlay.set_widget_name("muxterm-disconnect-overlay");
-        disconnect_overlay.set_halign(gtk4::Align::Center);
-        disconnect_overlay.set_valign(gtk4::Align::Center);
-        disconnect_overlay.add_css_class("muxterm-disconnect-overlay");
-        disconnect_overlay.set_visible(false);
-        let search_highlight = gtk4::Label::new(Some("▮"));
-        search_highlight.set_widget_name("muxterm-search-highlight");
-        search_highlight.set_halign(gtk4::Align::Start);
-        search_highlight.set_valign(gtk4::Align::Center);
-        search_highlight.set_margin_start(4);
-        search_highlight.add_css_class("muxterm-search-highlight");
-        search_highlight.set_visible(false);
-        let pane_find = gtk4::Box::builder()
-            .orientation(Orientation::Horizontal)
-            .spacing(6)
-            .margin_top(8)
-            .margin_start(8)
-            .margin_end(8)
-            .build();
-        pane_find.set_widget_name("muxterm-pane-find");
-        pane_find.set_halign(gtk4::Align::Start);
-        pane_find.set_valign(gtk4::Align::Start);
-        pane_find.add_css_class("muxterm-pane-find");
-        let pane_find_entry = gtk4::Entry::new();
-        pane_find_entry.set_widget_name("muxterm-pane-find-entry");
-        pane_find_entry.set_placeholder_text(Some("find in pane…"));
-        pane_find.append(&pane_find_entry);
-        pane_find.set_visible(false);
-        let last_seen_mark = gtk4::Button::with_label("上次看到这里");
-        last_seen_mark.set_widget_name("muxterm-last-seen");
-        last_seen_mark.set_halign(gtk4::Align::Start);
-        last_seen_mark.set_valign(gtk4::Align::Center);
-        last_seen_mark.set_margin_start(4);
-        last_seen_mark.add_css_class("muxterm-last-seen");
-        last_seen_mark.set_visible(false);
-        let cmd_mark_ok_text = Rc::new(RefCell::new(None::<String>));
-        let cmd_mark_fail_text = Rc::new(RefCell::new(None::<String>));
-        let cmd_mark_ok = gtk4::Button::with_label("✓");
-        cmd_mark_ok.set_widget_name("muxterm-cmd-mark-ok");
-        cmd_mark_ok.set_halign(gtk4::Align::End);
-        cmd_mark_ok.set_valign(gtk4::Align::Center);
-        cmd_mark_ok.set_margin_end(2);
-        cmd_mark_ok.add_css_class("muxterm-cmd-mark-ok");
-        cmd_mark_ok.set_visible(false);
-        let cmd_mark_fail = gtk4::Button::with_label("✗");
-        cmd_mark_fail.set_widget_name("muxterm-cmd-mark-fail");
-        cmd_mark_fail.set_halign(gtk4::Align::End);
-        cmd_mark_fail.set_valign(gtk4::Align::Center);
-        cmd_mark_fail.set_margin_end(2);
-        cmd_mark_fail.add_css_class("muxterm-cmd-mark-fail");
-        cmd_mark_fail.set_visible(false);
+        let overlay = OverlayLayer::new(&scene_stack_widget);
         // 左侧栏与右侧终端 chrome 是同一个水平 Paned 的两列。Tab/status
         // chrome 属于右列，不能延伸到侧栏下方；Paned 的 handle 同时提供
         // 用户可调宽度，避免用一个 hexpand 空壳制造中间空白。
@@ -809,7 +729,7 @@ impl AppWindow {
             .vexpand(true)
             .build();
         terminal_column.set_widget_name("muxterm-terminal-column");
-        terminal_column.append(&layout_overlay);
+        terminal_column.append(&overlay.container);
         terminal_column.append(&status.container);
 
         let content = Paned::new(Orientation::Horizontal);
@@ -827,14 +747,6 @@ impl AppWindow {
         content.set_position(280);
         root.append(&content);
         window.set_child(Some(&root));
-
-        layout_overlay.add_overlay(&pane_find);
-        layout_overlay.add_overlay(&search_highlight);
-        layout_overlay.add_overlay(&disconnect_overlay);
-        layout_overlay.add_overlay(&last_seen_mark);
-        layout_overlay.add_overlay(&cmd_mark_ok);
-        layout_overlay.add_overlay(&cmd_mark_fail);
-        layout_overlay.add_overlay(&jump_latest);
 
         let keymap = KeyMap::from_bindings(&keybindings);
         let qc_store = QuickConnectStore::from_project_documents(&projects);
@@ -896,20 +808,9 @@ impl AppWindow {
             reconnecting: false,
             reconnect_retry_at: None,
             reconnect_attempts: 0,
+            overlay,
             root_box: root.clone(),
-            layout_overlay,
-            jump_latest,
-            jump_unseen: 0,
-            disconnect_overlay,
-            search_highlight,
-            pane_find,
-            pane_find_entry,
             last_seen: std::collections::HashMap::new(),
-            last_seen_mark,
-            cmd_mark_ok,
-            cmd_mark_fail,
-            cmd_mark_ok_text: cmd_mark_ok_text.clone(),
-            cmd_mark_fail_text: cmd_mark_fail_text.clone(),
             scrollback_lines: cfg.scrollback.lines,
             default_socket: socket.clone(),
             self_weak: std::rc::Weak::new(),
@@ -1016,23 +917,27 @@ impl AppWindow {
         // 命令刻度点击：滚到对应命令文本所在行（W18h）。
         {
             let st = state.clone();
-            let text = cmd_mark_ok_text.clone();
-            state.borrow().cmd_mark_ok.connect_clicked(move |_| {
+            let text = state.borrow().overlay.command_ok_text.clone();
+            state.borrow().overlay.command_ok.connect_clicked(move |_| {
                 scroll_to_command_text(&st, &text);
             });
         }
         {
             let st = state.clone();
-            let text = cmd_mark_fail_text.clone();
-            state.borrow().cmd_mark_fail.connect_clicked(move |_| {
-                scroll_to_command_text(&st, &text);
-            });
+            let text = state.borrow().overlay.command_fail_text.clone();
+            state
+                .borrow()
+                .overlay
+                .command_fail
+                .connect_clicked(move |_| {
+                    scroll_to_command_text(&st, &text);
+                });
         }
 
         // 上次看到这里：点击滚回离开时的那一行（W18g）。
         {
             let st = state.clone();
-            state.borrow().last_seen_mark.connect_clicked(move |_| {
+            state.borrow().overlay.last_seen.connect_clicked(move |_| {
                 let s = st.borrow();
                 let ws = active_workspace_id(&s);
                 let pane = s.active_pane;
@@ -1050,54 +955,63 @@ impl AppWindow {
                         }
                     }
                 }
-                s.last_seen_mark.set_visible(false);
+                s.overlay.last_seen.set_visible(false);
             });
         }
 
         // 当前 pane 内查找：输入即滚到第一个命中（W18f）。
         {
             let st = state.clone();
-            state.borrow().pane_find_entry.connect_changed(move |e| {
-                let q = e.text().to_string();
-                if q.is_empty() {
-                    return;
-                }
-                let s = st.borrow();
-                let pane = s.active_pane;
-                let workspace_replica = active_workspace_id(&s);
-                let workspace_key = active_workspace_key(&s);
-                let hit = s.event_pump.client().search_all(&q).ok().and_then(|hits| {
-                    hits.into_iter()
-                        .find(|hit| hit.workspace_id == workspace_replica && hit.pane_id == pane)
-                });
-                if let Some(hit) = hit {
-                    if let Some(row) = s.event_pump.client().workspace_pane_viewport_for_seq(
-                        &workspace_key,
-                        pane,
-                        hit.seq,
-                    ) {
-                        if let Some(view) = s.active_layout().pane(pane).cloned() {
-                            if let Some(adj) = view.terminal().vadjustment() {
-                                adj.set_value(adj.lower() + row as f64);
+            state
+                .borrow()
+                .overlay
+                .pane_find_entry
+                .connect_changed(move |e| {
+                    let q = e.text().to_string();
+                    if q.is_empty() {
+                        return;
+                    }
+                    let s = st.borrow();
+                    let pane = s.active_pane;
+                    let workspace_replica = active_workspace_id(&s);
+                    let workspace_key = active_workspace_key(&s);
+                    let hit = s.event_pump.client().search_all(&q).ok().and_then(|hits| {
+                        hits.into_iter().find(|hit| {
+                            hit.workspace_id == workspace_replica && hit.pane_id == pane
+                        })
+                    });
+                    if let Some(hit) = hit {
+                        if let Some(row) = s.event_pump.client().workspace_pane_viewport_for_seq(
+                            &workspace_key,
+                            pane,
+                            hit.seq,
+                        ) {
+                            if let Some(view) = s.active_layout().pane(pane).cloned() {
+                                if let Some(adj) = view.terminal().vadjustment() {
+                                    adj.set_value(adj.lower() + row as f64);
+                                }
                             }
                         }
                     }
-                }
-            });
+                });
         }
 
         // 回底按钮：把当前激活 pane 的 VTE 滚回尾部（W16a）。
         {
             let st = state.clone();
-            state.borrow().jump_latest.connect_clicked(move |_| {
-                let mut s = st.borrow_mut();
-                s.jump_unseen = 0;
-                if let Some(view) = s.active_layout().pane(s.active_pane).cloned() {
-                    if let Some(adj) = view.terminal().vadjustment() {
-                        adj.set_value(adj.upper());
+            state
+                .borrow()
+                .overlay
+                .jump_latest
+                .connect_clicked(move |_| {
+                    let mut s = st.borrow_mut();
+                    s.overlay.jump_unseen = 0;
+                    if let Some(view) = s.active_layout().pane(s.active_pane).cloned() {
+                        if let Some(adj) = view.terminal().vadjustment() {
+                            adj.set_value(adj.upper());
+                        }
                     }
-                }
-            });
+                });
         }
 
         // 状态点 → popover：由 StatusBar 的 connect_clicked 处理（C8.4）。
@@ -2626,7 +2540,7 @@ fn show_tab_scene(s: &mut UiState, tab_id: u32) -> bool {
         .scenes
         .get_mut(&workspace_id)
         .is_some_and(|layout| layout.show_tab(tab_id));
-    if shown && s.panel_open.is_none() && !s.pane_find.is_visible() {
+    if shown && s.panel_open.is_none() && !s.overlay.pane_find.is_visible() {
         if let Some(pane) = active_pane.and_then(|pane| s.active_layout().pane(pane).cloned()) {
             pane.grab_focus();
         }
@@ -2716,20 +2630,20 @@ fn update_command_marks(s: &UiState) {
         .rev()
         .find(|m| m.exit_code.is_some_and(|c| c != 0));
     if let Some(m) = ok {
-        s.cmd_mark_ok.set_visible(true);
-        s.cmd_mark_ok.set_tooltip_text(Some(&m.command));
-        *s.cmd_mark_ok_text.borrow_mut() = Some(m.command.clone());
+        s.overlay.command_ok.set_visible(true);
+        s.overlay.command_ok.set_tooltip_text(Some(&m.command));
+        *s.overlay.command_ok_text.borrow_mut() = Some(m.command.clone());
     } else {
-        s.cmd_mark_ok.set_visible(false);
-        *s.cmd_mark_ok_text.borrow_mut() = None;
+        s.overlay.command_ok.set_visible(false);
+        *s.overlay.command_ok_text.borrow_mut() = None;
     }
     if let Some(m) = fail {
-        s.cmd_mark_fail.set_visible(true);
-        s.cmd_mark_fail.set_tooltip_text(Some(&m.command));
-        *s.cmd_mark_fail_text.borrow_mut() = Some(m.command.clone());
+        s.overlay.command_fail.set_visible(true);
+        s.overlay.command_fail.set_tooltip_text(Some(&m.command));
+        *s.overlay.command_fail_text.borrow_mut() = Some(m.command.clone());
     } else {
-        s.cmd_mark_fail.set_visible(false);
-        *s.cmd_mark_fail_text.borrow_mut() = None;
+        s.overlay.command_fail.set_visible(false);
+        *s.overlay.command_fail_text.borrow_mut() = None;
     }
 }
 
@@ -2752,14 +2666,16 @@ fn update_jump_latest(s: &UiState) {
         .pane(s.active_pane)
         .map(view_at_bottom)
         .unwrap_or(true);
-    s.jump_latest.set_visible(!at_bottom);
+    s.overlay.jump_latest.set_visible(!at_bottom);
     if at_bottom {
         // 回到尾部：搜索高亮不再有意义（W17c）。
-        s.search_highlight.set_visible(false);
-    } else if s.jump_unseen > 0 {
-        s.jump_latest.set_label(&format!("↓ +{}", s.jump_unseen));
+        s.overlay.search_highlight.set_visible(false);
+    } else if s.overlay.jump_unseen > 0 {
+        s.overlay
+            .jump_latest
+            .set_label(&format!("↓ +{}", s.overlay.jump_unseen));
     } else {
-        s.jump_latest.set_label("↓");
+        s.overlay.jump_latest.set_label("↓");
     }
 }
 
@@ -3044,7 +2960,7 @@ fn refresh_workspace_layout(s: &mut UiState, wid: &WorkspaceId, seed_from_core: 
                     s.active_pane = pane_id;
                     // 临时输入面板存在时不能由 topology refresh 抢走焦点；
                     // 没有输入面板时，键盘归当前 terminal。
-                    if s.panel_open.is_none() && !s.pane_find.is_visible() {
+                    if s.panel_open.is_none() && !s.overlay.pane_find.is_visible() {
                         view.grab_focus();
                     }
                 }
@@ -4023,7 +3939,7 @@ fn maybe_schedule_reconnect(state: &Rc<RefCell<UiState>>) {
         Ok(()) => {
             s.reconnect_attempts = 0;
             s.reconnect_retry_at = None;
-            s.disconnect_overlay.set_visible(false);
+            s.overlay.disconnect.set_visible(false);
             drop(s);
             handle_reconnect_success(state);
         }
@@ -4050,14 +3966,14 @@ fn handle_reconnect_success(state: &Rc<RefCell<UiState>>) {
     let mut s = state.borrow_mut();
     s.reconnect_attempts = 0;
     s.reconnect_retry_at = None;
-    s.disconnect_overlay.set_visible(false);
+    s.overlay.disconnect.set_visible(false);
 }
 
 /// 打开当前 pane 内查找条（W18f：Ctrl+F 与 test_open_pane_find 共用）。
 fn open_pane_find(state: &Rc<RefCell<UiState>>, _window: &Window) {
     let s = state.borrow();
-    s.pane_find.set_visible(true);
-    s.pane_find_entry.grab_focus();
+    s.overlay.pane_find.set_visible(true);
+    s.overlay.pane_find_entry.grab_focus();
 }
 
 fn open_quick_connect(state: &Rc<RefCell<UiState>>, window: &Window) {
@@ -4098,7 +4014,7 @@ fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelT
         let workspace_search_items = build_search_items(&store, current.as_ref());
         let ssh_reach = collect_ssh_reach(&mut s, &workspaces);
         // 临时输入 surface 互斥：QuickConnect 打开后不保留 pane-find。
-        s.pane_find.set_visible(false);
+        s.overlay.pane_find.set_visible(false);
         // C7：本地列出搬后台线程（GTK 线程禁止 ssh / 扫 herdr socket），
         // 结果经 16ms poll 收编，和 SSH probe 同一模式。
         spawn_local_existing_probe(&mut s);
@@ -4292,7 +4208,7 @@ fn jump_to_attention_pane(state: &Rc<RefCell<UiState>>, ws: &str, pane: u32, seq
                 if let Some(adj) = view.terminal().vadjustment() {
                     adj.set_value(adj.lower() + row as f64);
                 }
-                s.search_highlight.set_visible(true);
+                s.overlay.search_highlight.set_visible(true);
             }
         }
     }
