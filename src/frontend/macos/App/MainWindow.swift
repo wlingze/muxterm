@@ -234,6 +234,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         discovery.attachedRemoteSocket = bridge.sshAlias == nil ? nil : bridge.socket
         // 统一配置：初始值来自 Core 解析后的快照，不再手写解析 TOML 或读 UserDefaults。
         let resolved = Self.resolvedSettings(from: bridge)
+        let initialWorkspaceID = bridge.workspaceList().first?.id
         MuxtermTerminalColors.activePalette = MuxtermTheme.from(
             name: resolved.themeName
         ).palette
@@ -245,6 +246,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         self.bridge = bridge
         self.terminalManager = TerminalManager(
             bridge: bridge,
+            workspaceID: initialWorkspaceID,
             fontFamily: terminalFontSettings.family,
             fontSize: terminalFontSettings.size
         )
@@ -510,7 +512,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // 启动时由 AppDelegate 创建的首个连接也属于当前 Workspace。
         // 过去只有 Quick Connect 后续创建的连接才登记进池，导致初始 local
         // workspace 既不在 Recent，也无法在切走后保持 warm。
-        let initialTarget = bridge.resolvedTargetConfig
+        var initialTarget = bridge.resolvedTargetConfig
+        if var target = initialTarget,
+           target.workspaceID == nil,
+           let initialWorkspaceID
+        {
+            target.workspaceID = initialWorkspaceID
+            initialTarget = target
+        }
         let initialKey = ConnectionKey(
             transport: bridge.sshAlias == nil ? "local" : "ssh",
             alias: bridge.sshAlias,
@@ -519,11 +528,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 ?? (terminalManager.usesClientResize ? "tmux" : "shell"),
             path: initialTarget?.path ?? bridge.startDirectory ?? "",
             socket: initialTarget?.socket ?? bridge.socket,
-            workspaceID: initialTarget?.workspaceID
+            workspaceID: initialTarget?.workspaceID ?? initialWorkspaceID
         )
         let initialSlot = WarmConnectionSlot(
             key: initialKey,
             bridge: bridge,
+            workspaceID: initialWorkspaceID,
+            usesSharedCore: initialWorkspaceID != nil,
             terminalManager: terminalManager,
             targetConfig: initialTarget,
             now: 0
@@ -3513,6 +3524,52 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         )
     }
 
+    /// Drain each shared Core handle once and route its owned events by
+    /// WorkspaceId.  Isolated legacy slots keep their existing compatibility
+    /// poll path; shared scenes never call `pollEvents` independently.
+    private func pollSharedWorkspaceEvents(
+        activeSlot: WarmConnectionSlot?
+    ) -> [StateChange] {
+        var sharedSlots = connectionPool.slots.values.filter(\.usesSharedCore)
+        guard !sharedSlots.isEmpty else { return [] }
+
+        var activeEvents: [StateChange] = []
+        var polledBridges = Set<ObjectIdentifier>()
+        while let slot = sharedSlots.popLast() {
+            let bridgeID = ObjectIdentifier(slot.bridge)
+            guard polledBridges.insert(bridgeID).inserted else { continue }
+            let bridgeSlots = connectionPool.slots.values.filter {
+                $0.usesSharedCore && $0.bridge === slot.bridge
+            }
+            let events = slot.bridge.pollWorkspaceEvents()
+            var byWorkspace: [String: [StateChange]] = [:]
+            for event in events {
+                byWorkspace[event.workspaceID, default: []].append(event.event)
+            }
+
+            for candidate in bridgeSlots {
+                guard let workspaceID = candidate.workspaceID,
+                      let workspaceEvents = byWorkspace[workspaceID],
+                      !workspaceEvents.isEmpty
+                else {
+                    continue
+                }
+                if candidate === activeSlot {
+                    activeEvents.append(contentsOf: workspaceEvents)
+                } else {
+                    candidate.ingestSharedEvents(workspaceEvents)
+                    if candidate.hasPendingSurfaceWork {
+                        enqueueSurfaceCatchUp(candidate)
+                    }
+                }
+            }
+            if let error = slot.bridge.takeError() {
+                reportStatusError(error)
+            }
+        }
+        return activeEvents
+    }
+
     func pollOnce() {
         guard !isClosing else { return }
         if pendingForegroundActivation != nil {
@@ -3548,7 +3605,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         defer { terminalManager.endEventBatch() }
         resolvePendingLastSeen()
         scheduleBackgroundSlotPoll()
-        let events = bridge.pollEvents()
+        let activeSlot = connectionPool.activeKey.flatMap { connectionPool.slots[$0] }
+        let events: [StateChange]
+        if activeSlot?.usesSharedCore == true {
+            events = pollSharedWorkspaceEvents(activeSlot: activeSlot)
+        } else {
+            events = bridge.pollEvents()
+        }
         if events.contains(where: { Self.tabNumberTopologyEvents.contains($0.type) }),
            let activeSlot = connectionPool.activeKey.flatMap({ connectionPool.slots[$0] })
         {
@@ -3802,7 +3865,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 自己的 TerminalManager；主线程每次只处理一个很小的时间片。
     private func scheduleBackgroundSlotPoll() {
         guard !backgroundPollInFlight else { return }
-        let slots = connectionPool.slots.values.filter { $0.lifecycle == .background }
+        let slots = connectionPool.slots.values.filter {
+            $0.lifecycle == .background && !$0.usesSharedCore
+        }
         guard !slots.isEmpty else { return }
         backgroundPollInFlight = true
         backgroundPollQueue.async { [weak self] in

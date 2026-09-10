@@ -15,6 +15,11 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
     var key: ConnectionKey
     var targetConfig: TargetConfig
     let bridge: CoreBridge
+    /// Stable identity used when several scenes share one Core handle.
+    let workspaceID: String?
+    /// Shared-core scenes receive events from MainWindow's single event pump;
+    /// they must never start their own background poll.
+    let usesSharedCore: Bool
     let terminalManager: TerminalManager
     private let stateLock = NSLock()
     /// CoreBridge 不能与同一个 handle 并发访问，但不能把这把锁和
@@ -165,6 +170,8 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
     init(
         key: ConnectionKey,
         bridge: CoreBridge,
+        workspaceID: String? = nil,
+        usesSharedCore: Bool = false,
         terminalManager: TerminalManager? = nil,
         targetConfig: TargetConfig? = nil,
         now: UInt64,
@@ -173,18 +180,79 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
         self.key = key
         self.targetConfig = targetConfig ?? key.targetConfig
         self.bridge = bridge
-        self.terminalManager = terminalManager ?? TerminalManager(bridge: bridge)
+        self.workspaceID = workspaceID
+        self.usesSharedCore = usesSharedCore
+        self.terminalManager = terminalManager ?? TerminalManager(
+            bridge: bridge,
+            workspaceID: workspaceID
+        )
         // CoreBridge 在 connect 后已完成有限 bootstrap；把这份首帧状态直接
         // 放进 warm cache，侧栏首次渲染不必等下一次后台 poll。
-        self.lastSnapshotValue = bridge.snapshot()
+        self.lastSnapshotValue = workspaceID.map { bridge.snapshot(workspaceID: $0) }
+            ?? bridge.snapshot()
         self.structuredAgentsValue = bridge.structuredAgentSnapshot()
+        self.workspaceReplicaIDValue = workspaceID
         self.lastUsedAt = now
         self.openedOrder = openedOrder
     }
 
     /// ConnectionPool 协议入口：后台只排空 FFI，不碰 Surface。
     func pollBackground() {
+        guard !usesSharedCore else { return }
         _ = drainBackgroundEvents()
+    }
+
+    /// Consume events already copied by the main-thread workspace EventPump.
+    /// Shared-core scenes never poll their handle here; this method only
+    /// updates the scene-owned topology/cache and queues render data.
+    func ingestSharedEvents(_ events: [StateChange]) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        guard usesSharedCore, workspaceID != nil else { return }
+        guard lifecycle != .evicting else { return }
+
+        let topologyChanged = events.contains(where: { Self.changesTopology($0.type) })
+        if topologyChanged {
+            invalidateTabNumbers()
+        }
+        let topology = topologyChanged
+            ? Self.captureTopology(from: bridge, workspaceID: workspaceID)
+            : nil
+        var surface: [StateChange] = []
+        for event in events {
+            if event.type == STATE_STATUS_SUBSCRIPTION,
+               event.name.hasPrefix("muxterm.pane-cmd")
+            {
+                let value = String(data: event.data, encoding: .utf8) ?? ""
+                if let workspaceID {
+                    _ = bridge.attentionSetProcessName(
+                        workspaceID: workspaceID,
+                        paneId: event.paneId,
+                        name: value.isEmpty ? nil : value
+                    )
+                }
+            } else if event.isPaneOutput
+                || event.isPaneFrame
+                || event.isPaneSnapshot
+                || event.isPaneHistory
+                || event.isPaneClosed
+            {
+                surface.append(event)
+            }
+        }
+
+        stateLock.lock()
+        if !surface.isEmpty {
+            for event in surface {
+                enqueueSurfaceEvent(event)
+            }
+            pendingDrainedWhileBackground = true
+        }
+        if let topology {
+            lastSnapshotValue = topology.snapshot
+            tabIdsByPaneValue = topology.tabIdsByPane
+            tabNumbersByPaneValue = topology.tabNumbersByPane
+        }
+        stateLock.unlock()
     }
 
     /// 是否还有需要 hop 回主线程的 Surface 工作。
@@ -200,6 +268,7 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
     /// 返回是否有待主线程投递的 Surface 事件。
     @discardableResult
     func drainBackgroundEvents() -> Bool {
+        guard !usesSharedCore else { return false }
         stateLock.lock()
         guard lifecycleValue == .background else {
             stateLock.unlock()
@@ -365,13 +434,19 @@ final class WarmConnectionSlot: ConnectionSlotProtocol {
             || type == STATE_TAB_RENAMED
     }
 
-    private static func captureTopology(from bridge: CoreBridge) -> CachedTopology? {
-        let snapshot = bridge.snapshot()
+    private static func captureTopology(
+        from bridge: CoreBridge,
+        workspaceID: String? = nil
+    ) -> CachedTopology? {
+        let snapshot = workspaceID.map { bridge.snapshot(workspaceID: $0) }
+            ?? bridge.snapshot()
         guard !snapshot.tabs.isEmpty else { return nil }
         var tabIdsByPane: [UInt32: UInt32] = [:]
         var tabNumbersByPane: [UInt32: Int] = [:]
         for (index, tab) in snapshot.tabs.enumerated() {
-            for pane in bridge.getPanes(tabId: tab.id) {
+            let panes = workspaceID.map { bridge.getPanes(workspaceID: $0, tabId: tab.id) }
+                ?? bridge.getPanes(tabId: tab.id)
+            for pane in panes {
                 tabIdsByPane[pane.id] = tab.id
                 tabNumbersByPane[pane.id] = index + 1
             }
