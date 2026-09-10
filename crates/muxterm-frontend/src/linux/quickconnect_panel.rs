@@ -97,7 +97,7 @@ mod tests {
         let recent = cfg("recent");
         let project = cfg("project");
         store.recents.push(recent.clone());
-        store.projects.push(project.clone());
+        store.upsert_project(&project);
         let items = build_items(&store, Some(&recent));
         assert_eq!(items.len(), 3);
         assert!(matches!(
@@ -116,7 +116,7 @@ mod tests {
         let mut store = QuickConnectStore::in_memory();
         let dup = cfg("dup");
         store.recents.push(dup.clone());
-        store.projects.push(dup.clone());
+        store.upsert_project(&dup);
         let items = build_items(&store, None);
         assert_eq!(items.len(), 2, "重复目标只出现一次 + New Project");
         assert!(matches!(&items[0], PanelItem::Target(entry, false) if entry.config == dup));
@@ -177,7 +177,7 @@ mod tests {
     fn build_root_items_puts_existing_connections_first() {
         let mut store = QuickConnectStore::in_memory();
         let project = cfg("project");
-        store.projects.push(project.clone());
+        store.upsert_project(&project);
         let items = build_root_items(&store, None);
         assert_eq!(items.len(), 3, "Folder + project + NewProject");
         assert!(matches!(
@@ -193,7 +193,7 @@ mod tests {
     #[test]
     fn root_search_includes_existing_workspace_without_duplicate_project() {
         let mut store = QuickConnectStore::in_memory();
-        store.projects.push(cfg("project"));
+        store.upsert_project(&cfg("project"));
         let base = build_root_items(&store, None);
         let existing = ExistingPanelState {
             locals: vec![ExistingEntry {

@@ -114,19 +114,19 @@ fn build_items_with_recent_limit(
     recent_limit: usize,
 ) -> Vec<PanelItem> {
     let current_id = current.map(QuickConnect::unique_id);
-    let mut items: Vec<PanelItem> =
-        QuickConnect::entries(&store.recents, &store.projects, recent_limit)
-            .into_iter()
-            .map(|mut entry| {
-                let is_current = current_id
-                    .as_ref()
-                    .is_some_and(|id| QuickConnect::unique_id(&entry.config) == *id);
-                if !entry.badges.contains(&QuickBadge::Recent) {
-                    entry.project_id = store.project_id_for(&entry.config);
-                }
-                PanelItem::Target(entry, is_current)
-            })
-            .collect();
+    let projects = store.project_targets();
+    let mut items: Vec<PanelItem> = QuickConnect::entries(&store.recents, &projects, recent_limit)
+        .into_iter()
+        .map(|mut entry| {
+            let is_current = current_id
+                .as_ref()
+                .is_some_and(|id| QuickConnect::unique_id(&entry.config) == *id);
+            if !entry.badges.contains(&QuickBadge::Recent) {
+                entry.project_id = store.project_id_for(&entry.config);
+            }
+            PanelItem::Target(entry, is_current)
+        })
+        .collect();
     items.push(PanelItem::NewProject);
     items
 }
