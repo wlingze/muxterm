@@ -22,6 +22,7 @@ use vte4::prelude::*;
 
 use anyhow::anyhow;
 
+use crate::frontend::command_queue::{ClientCommand, CommandQueue};
 use crate::frontend::event_pump::EventPump;
 use crate::frontend::ffi_client::{
     ClientActivitySnapshot, ClientAttentionPane, ClientAttentionStatus, ClientCandidateRef,
@@ -89,6 +90,8 @@ struct WorkspaceCapacityCandidate {
 struct UiState {
     /// 唯一 Core owner：生产 GTK 不再直接持有 WorkspacePool。
     event_pump: EventPump,
+    /// UI → Core 的唯一命令出口；由 GTK poll owner 批量 flush。
+    command_queue: RefCell<CommandQueue>,
     /// 每个工作区一个像素缓存（VTE 不随切走销毁；Runtime 不在 GUI）。
     pixel_cache: std::collections::HashMap<WorkspaceId, LayoutHost>,
     /// 常驻 Workspace Scene 的产品身份与可见场景。
@@ -320,17 +323,58 @@ impl UiState {
         let workspace_id = self
             .view_store
             .active_workspace_id()
+            .map(str::to_owned)
             .ok_or_else(|| anyhow!("没有激活的 workspace"))?;
-        let rc = self
-            .event_pump
-            .client()
-            .execute_workspace_task(workspace_id, task);
-        if rc == 0 {
-            Ok(())
-        } else {
-            anyhow::bail!("Core FFI task dispatch failed: workspace={workspace_id}, code={rc}")
-        }
+        self.command_queue.borrow_mut().push(ClientCommand::Task {
+            workspace_id: Some(workspace_id),
+            task,
+        });
+        Ok(())
     }
+}
+
+/// Flush commands only from the GTK event-loop owner.
+fn flush_command_queue(s: &UiState) -> Vec<i32> {
+    let client = s.event_pump.client();
+    let results = s.command_queue.borrow_mut().flush(client);
+    for code in results.iter().copied().filter(|code| *code != 0) {
+        tracing::warn!(
+            target = "muxterm::linux",
+            code,
+            "Core command queue dispatch failed"
+        );
+    }
+    results
+}
+
+fn enqueue_workspace_input(
+    s: &UiState,
+    workspace_id: &str,
+    pane_id: u32,
+    data: &[u8],
+    quiet: bool,
+) {
+    s.command_queue.borrow_mut().push(ClientCommand::Input {
+        workspace_id: Some(workspace_id.to_owned()),
+        pane_id,
+        data: data.to_vec(),
+        quiet,
+    });
+}
+
+fn enqueue_workspace_resize(
+    s: &UiState,
+    workspace_id: &str,
+    pane_id: Option<u32>,
+    cols: u16,
+    rows: u16,
+) {
+    s.command_queue.borrow_mut().push(ClientCommand::Resize {
+        workspace_id: Some(workspace_id.to_owned()),
+        pane_id,
+        cols,
+        rows,
+    });
 }
 
 fn poll_event_store(s: &mut UiState) -> Vec<ClientWorkspaceEvent> {
@@ -766,6 +810,7 @@ impl AppWindow {
         let qc_store = QuickConnectStore::from_project_documents(&projects);
         let state = Rc::new(RefCell::new(UiState {
             event_pump,
+            command_queue: RefCell::new(CommandQueue::default()),
             pixel_cache,
             scene_stack: SceneStack::with_visible(startup_id.as_str()),
             scene_stack_view,
@@ -1182,6 +1227,7 @@ impl AppWindow {
                         // 输入必须在本轮 topology/snapshot/geometry 收编之后
                         // 写入，避免 attach 新 pane 尚未完成首帧时丢掉 send-keys。
                         drain_surface_input(&mut s);
+                        flush_command_queue(&s);
                         maybe_refresh_status(&mut s, structural);
                         refresh_connection_summary(&mut s);
                         update_command_marks(&s);
@@ -1247,7 +1293,7 @@ impl AppWindow {
         let ws = active_workspace_id(&s);
         let pane = s.active_pane;
         let workspace_key = active_workspace_key(&s);
-        let _ = s.event_pump.send_input(&workspace_key, pane, data);
+        enqueue_workspace_input(&s, &workspace_key, pane, data, false);
         s.compatibility_activity.on_user_input(&ws, pane);
     }
 
@@ -1295,8 +1341,22 @@ impl AppWindow {
     /// 测试用：对当前 Runtime 执行真实 detach，并保留精确 outcome。
     pub fn test_detach_active_workspace_outcome(&self) -> anyhow::Result<TaskOutcome> {
         let s = self._state.borrow();
+        if !s.active_supports(ClientRuntimeCapability::PersistDetach) {
+            return Ok(TaskOutcome::Rejected {
+                reason: "active Runtime does not support PersistDetach".into(),
+            });
+        }
         match s.execute_active_task(ClientTask::Detach) {
-            Ok(()) => Ok(TaskOutcome::Done),
+            Ok(()) => {
+                let result = flush_command_queue(&s)
+                    .into_iter()
+                    .find(|code| *code != 0)
+                    .map(|code| TaskOutcome::Rejected {
+                        reason: format!("Core FFI task dispatch failed: code={code}"),
+                    })
+                    .unwrap_or(TaskOutcome::Done);
+                Ok(result)
+            }
             Err(error) => Ok(TaskOutcome::Rejected {
                 reason: error.to_string(),
             }),
@@ -1621,6 +1681,7 @@ impl AppWindow {
             sync_pane_outputs(&mut s);
             sync_window_size(&mut s);
             drain_surface_input(&mut s);
+            flush_command_queue(&s);
             maybe_refresh_status(&mut s, true);
             refresh_connection_summary(&mut s);
             update_command_marks(&s);
@@ -2078,13 +2139,14 @@ fn run_palette_command(state: &Rc<RefCell<UiState>>, window: &Window, parent: &W
             });
         }
         PaletteAction::TmuxDetach => {
-            // 必须先放下 RefMut 再 close：close-request 会再借同一把 UiState。
-            let should_quit = {
-                let s = state.borrow();
-                s.execute_active_task(ClientTask::Detach).is_ok()
-            };
-            if should_quit {
-                request_quit_close(state, window);
+            // 命令先入队；下一轮 GTK poll flush 后再关闭，避免 close 直接
+            // 销毁窗口而丢掉尚未提交的 detach。
+            {
+                let mut s = state.borrow_mut();
+                let accepted = s.execute_active_task(ClientTask::Detach).is_ok();
+                if accepted {
+                    s.pending_close = true;
+                }
             }
         }
         PaletteAction::SshDisconnect => {
@@ -2354,7 +2416,7 @@ fn paste_pane(s: &UiState, state: &Rc<RefCell<UiState>>, pane_id: u32) {
         };
         let s = st.borrow();
         let workspace_id = active_workspace_key(&s);
-        let _ = s.event_pump.send_input(&workspace_id, pane_id, &data);
+        enqueue_workspace_input(&s, &workspace_id, pane_id, &data, false);
     });
 }
 
@@ -2959,18 +3021,8 @@ fn drain_surface_input(s: &mut UiState) {
             data.extend_from_slice(&next.data);
         }
         s.last_raw_input = data.clone();
-        if let Err(error) = s
-            .event_pump
-            .send_input(&workspace_id.as_str(), pane_id.0, &data)
-        {
-            tracing::warn!(
-                target = "muxterm::surface",
-                workspace = %workspace_id,
-                pane = %pane_id.0,
-                error = %error,
-                "surface input write failed"
-            );
-        }
+        let workspace_key = workspace_id.as_str();
+        enqueue_workspace_input(s, &workspace_key, pane_id.0, &data, false);
     }
 }
 
@@ -3228,10 +3280,7 @@ fn forward_parser_replies_for_key(s: &mut UiState, workspace_id: &str, pane_id: 
     if replies.is_empty() {
         return;
     }
-    let _ = s
-        .event_pump
-        .client()
-        .send_workspace_input(workspace_id, pane_id, &replies);
+    enqueue_workspace_input(s, workspace_id, pane_id, &replies, false);
 }
 
 /// 把窗口内容区的新字符格尺寸同步给 Runtime。
@@ -3303,10 +3352,7 @@ fn sync_window_size(s: &mut UiState) {
     s.pending_client_size = None;
     s.pending_client_hits = 0;
     let workspace_id = active_workspace_key(s);
-    let _ = s
-        .event_pump
-        .client()
-        .resize_workspace_client(&workspace_id, cols, rows);
+    enqueue_workspace_resize(s, &workspace_id, None, cols, rows);
 }
 
 /// Herdr 没有 SharedClientResize：每个可见 split 格子按自己的 VTE 分配
@@ -3355,10 +3401,7 @@ fn sync_visible_pane_sizes(s: &mut UiState) {
     }
     for (pane, cols, rows) in resizes {
         let workspace_id = active_workspace_key(s);
-        let _ = s
-            .event_pump
-            .client()
-            .resize_workspace_pane(&workspace_id, pane, cols, rows);
+        enqueue_workspace_resize(s, &workspace_id, Some(pane), cols, rows);
     }
 }
 

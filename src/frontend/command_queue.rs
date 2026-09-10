@@ -143,7 +143,7 @@ fn dispatch(client: &FfiClient, command: ClientCommand) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::{ClientCommand, CommandQueue};
-    use crate::frontend::ffi_client::ClientTask;
+    use crate::frontend::ffi_client::{ClientTask, FfiClient};
 
     #[test]
     fn consecutive_switches_keep_only_the_last_target() {
@@ -215,5 +215,23 @@ mod tests {
                 rows: 40,
             }
         );
+    }
+
+    #[test]
+    fn flush_dispatches_owned_workspace_batch_and_consumes_it() {
+        let client = FfiClient::new_catalog().expect("catalog handle");
+        let mut queue = CommandQueue::default();
+        queue.push(ClientCommand::Input {
+            workspace_id: Some("local//missing/shell/".into()),
+            pane_id: 7,
+            data: b"x".to_vec(),
+            quiet: false,
+        });
+
+        let results = queue.flush(&client);
+
+        assert_eq!(results.len(), 1);
+        assert_ne!(results[0], 0, "catalog must reject the missing workspace");
+        assert!(queue.is_empty());
     }
 }
