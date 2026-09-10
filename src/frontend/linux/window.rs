@@ -14,10 +14,7 @@ use std::time::{Duration, Instant};
 use gtk4::gdk;
 use gtk4::glib;
 use gtk4::prelude::*;
-use gtk4::{
-    ApplicationWindow, Box, Button, CheckButton, CssProvider, EventControllerKey, HeaderBar, Label,
-    Orientation, Paned, Window,
-};
+use gtk4::{ApplicationWindow, Box, Button, CheckButton, CssProvider, Label, Orientation, Window};
 use vte4::prelude::*;
 
 use anyhow::anyhow;
@@ -32,6 +29,7 @@ use crate::frontend::ffi_client::{
     FfiClient,
 };
 use crate::frontend::i18n::{self, Key};
+use crate::frontend::linux::app_shell::{AppShell, HeaderActions};
 use crate::frontend::linux::attention_compat::CompatibilityActivity;
 use crate::frontend::linux::attention_ui::{window_title, GioSink, NotificationSink};
 use crate::frontend::linux::command_palette::{parse_palette_action, PaletteAction};
@@ -40,6 +38,7 @@ use crate::frontend::linux::event_batch::batch_order_plan;
 use crate::frontend::linux::keymap::{default_keybindings, Action, KeyMap};
 use crate::frontend::linux::layout_host::LayoutHost;
 use crate::frontend::linux::lifecycle::{cycle_pane_id, should_close_window, OnLastPaneExit};
+use crate::frontend::linux::overlay::OverlayLayer;
 use crate::frontend::linux::pane_view::{PaneMenuAction, PaneSurface};
 use crate::frontend::linux::panel_model::PanelTab;
 use crate::frontend::linux::preferences_window::ConfigApi;
@@ -55,16 +54,15 @@ use crate::frontend::linux::quickconnect::store::QuickConnectStore;
 use crate::frontend::linux::quickconnect_panel::{
     build_root_items, build_search_items, ExistingNav, ExistingPanelState, PanelItem,
 };
-use crate::frontend::linux::scene_stack::SceneStack;
 use crate::frontend::linux::status_bar::{ConnectionSummary, StatusBar};
 #[cfg(test)]
 use crate::frontend::linux::theme::Rgb;
 use crate::frontend::linux::theme::{fallback_theme, toggle_target, Theme};
 use crate::frontend::linux::tmux_dialog::{self, TmuxAction};
 use crate::frontend::linux::view_store::ViewStore;
-use crate::frontend::linux::workspace_sidebar::{
-    AgentSidebarItem, CommandSidebarItem, WorkspaceSidebar, WorkspaceSidebarItem,
-};
+use crate::frontend::linux::window_input::{connect_close_handler, connect_key_handler};
+use crate::frontend::linux::workspace_scenes::WorkspaceScenes;
+use crate::frontend::linux::workspace_sidebar::{AgentSidebarItem, WorkspaceSidebar};
 use crate::frontend::ssh_probe::{classify_ssh_probe, ssh_probe_args, SshReach};
 #[cfg(test)]
 use muxterm_protocol::state::StateChange;
@@ -92,12 +90,8 @@ struct UiState {
     event_pump: EventPump,
     /// UI → Core 的唯一命令出口；由 GTK poll owner 批量 flush。
     command_queue: RefCell<CommandQueue>,
-    /// 每个工作区一个像素缓存（VTE 不随切走销毁；Runtime 不在 GUI）。
-    pixel_cache: std::collections::HashMap<WorkspaceId, LayoutHost>,
-    /// 常驻 Workspace Scene 的产品身份与可见场景。
-    scene_stack: SceneStack,
-    /// GTK scene container. Every live workspace keeps its LayoutHost page.
-    scene_stack_view: gtk4::Stack,
+    /// 每个 workspace 的常驻 LayoutHost 与 GTK Scene 由同一个 owner 管理。
+    scenes: WorkspaceScenes,
     /// 前端拥有的 workspace topology/render 快照；Core 不持有其引用。
     view_store: ViewStore,
     /// 前端当前可见的 workspace；不等同于 Core snapshot 的 active 标记。
@@ -120,6 +114,8 @@ struct UiState {
     status: StatusBar,
     /// 标题栏开启的 workspace 侧栏（主分割栏左列）。
     sidebar: WorkspaceSidebar,
+    /// 标题栏的快速连接与设置入口。
+    header: HeaderActions,
     status_mode: StatusBarMode,
     last_status_at: Instant,
     status_interval: Duration,
@@ -197,31 +193,10 @@ struct UiState {
     reconnect_retry_at: Option<Instant>,
     /// 连续失败次数（指数退避基数）。
     reconnect_attempts: u32,
-    /// 窗口根容器（挂载当前工作区的 LayoutHost.root_box）。
-    root_box: gtk4::Box,
-    /// 终端区 Overlay：常驻 workspace scene stack 是主 child，回底按钮浮在上面。
-    layout_overlay: gtk4::Overlay,
-    /// 回底按钮（W16a：滚离底部后显示，点击回到尾部）。
-    jump_latest: gtk4::Button,
-    /// 离开底部期间累计的新行数（W18e：按钮显示 +N）。
-    jump_unseen: u32,
-    /// 断线水印（W16b：tmux server 死后保留最后一帧 + 覆盖提示）。
-    disconnect_overlay: gtk4::Label,
-    /// 搜索命中高亮（W17c：客户端覆盖层，不改 pane 字节）。
-    search_highlight: gtk4::Label,
-    /// 当前 pane 内查找条（W18f：Ctrl+F / test_open_pane_find 同一条生产路径）。
-    pane_find: gtk4::Box,
-    pane_find_entry: gtk4::Entry,
+    /// 终端区 Overlay：常驻 workspace scene stack 是主 child，覆盖层浮在上面。
+    overlay: OverlayLayer,
     /// 上次看到这里（W18g）：(workspace, pane) → 离开时的最后一行文本。
     last_seen: std::collections::HashMap<(String, u32), String>,
-    /// 上次看到这里标记（客户端覆盖层，不改 pane 字节）。
-    last_seen_mark: gtk4::Button,
-    /// 命令刻度（W18h）：最近成功/失败命令的滚动条旁标记。
-    cmd_mark_ok: gtk4::Button,
-    cmd_mark_fail: gtk4::Button,
-    /// 刻度点击要滚到的命令文本（由 update_command_marks 更新）。
-    cmd_mark_ok_text: std::rc::Rc<std::cell::RefCell<Option<String>>>,
-    cmd_mark_fail_text: std::rc::Rc<std::cell::RefCell<Option<String>>>,
     /// VTE scrollback 行数（新建 LayoutHost 时用）。
     scrollback_lines: u32,
     /// 启动配置的 tmux `-L` socket（本地 tmux 连接默认用它）。
@@ -274,14 +249,14 @@ impl UiState {
 
     fn active_layout(&self) -> &LayoutHost {
         let id = self.active_ws_id();
-        self.pixel_cache
+        self.scenes
             .get(&id)
             .expect("active workspace 必须有 layout")
     }
 
     fn active_layout_mut(&mut self) -> &mut LayoutHost {
         let id = self.active_ws_id().clone();
-        self.pixel_cache
+        self.scenes
             .get_mut(&id)
             .expect("active workspace 必须有 layout")
     }
@@ -559,17 +534,11 @@ impl AppWindow {
                 id.remove();
             }
             let _ = s.event_pump.client().shutdown();
-            for layout in s.pixel_cache.values_mut() {
-                layout.reset(false);
-                while let Some(child) = layout.root_box.first_child() {
-                    layout.root_box.remove(&child);
-                }
-            }
             // 显式释放全部 LayoutHost/PaneView/VTE：GTK 对象必须在本窗口
             // destroy 前解构，否则 VTE 的 GL 资源残留到下一个测试窗口
             // realize 时才 finalize，与新的 GL 初始化交叉 = 堆损坏
             // （linux_herdr_agent_e2e 连续多测试时可见 double free）。
-            s.pixel_cache.clear();
+            s.scenes.shutdown();
             // Popover 挂在状态点按钮上：先解除父子关系，避免 dot 销毁时
             // popover 仍引用它（finalize-with-children 堆损坏）。
             s.status.popover_widget().unparent();
@@ -697,12 +666,6 @@ impl AppWindow {
             startup_sockets.insert(startup_id.clone(), socket.clone());
         }
 
-        let root = Box::builder()
-            .orientation(Orientation::Vertical)
-            .spacing(0)
-            .build();
-        root.add_css_class("muxterm-root");
-
         let theme_name = cfg.theme.name.clone().to_ascii_lowercase();
         apply_chrome_css(&theme);
         let config_font_size = cfg.font.size;
@@ -712,162 +675,28 @@ impl AppWindow {
             fallback: cfg.font.fallback.clone(),
         };
         let status_mode = StatusBarMode::from_toml(Some(&cfg.statusbar.mode));
-        let sidebar = WorkspaceSidebar::new();
-
-        let header = HeaderBar::new();
-        header.set_widget_name("muxterm-header-bar");
-        header.pack_start(&sidebar.toggle);
-        let quick_connect_button = Button::with_label("⚡");
-        quick_connect_button.set_widget_name("muxterm-quick-connect-button");
-        quick_connect_button.set_has_frame(false);
-        quick_connect_button.set_can_focus(false);
-        header.pack_start(&quick_connect_button);
-        let settings_button = Button::with_label("⚙");
-        settings_button.set_widget_name("muxterm-settings-button");
-        settings_button.set_has_frame(false);
-        settings_button.set_can_focus(false);
-        header.pack_end(&settings_button);
-        let title_label = Label::new(Some("muxterm"));
-        title_label.set_widget_name("muxterm-title-label");
-        header.set_title_widget(Some(&title_label));
-        window.set_titlebar(Some(&header));
-
         let uses_tmux = view_store
             .workspace(startup_key)
             .and_then(|view| view.workspace.as_ref())
             .is_some_and(|workspace| {
                 matches!(workspace.runtime.as_str(), "tmux" | "ssh" | "tmux-ssh")
             });
-        let mut pixel_cache = std::collections::HashMap::new();
         let layout = LayoutHost::new(theme.clone(), font.clone(), uses_tmux, cfg.scrollback.lines);
-        pixel_cache.insert(startup_id.clone(), layout);
-        let status = StatusBar::new(status_mode, theme.clone());
-        status.container.add_css_class("status-bar");
-
-        // 唯一 chrome：一条 status bar（LINUX-PLAN §3），没有第二条 TabBar。
-        // 终端区包一层 Overlay：回底按钮浮在 VTE 右下角（W16a）。
-        let scene_stack_view = gtk4::Stack::builder()
-            .hexpand(true)
-            .vexpand(true)
-            .transition_type(gtk4::StackTransitionType::None)
-            .build();
-        scene_stack_view.set_widget_name("muxterm-scene-stack");
-        scene_stack_view.add_named(
-            &pixel_cache
-                .get(&startup_id)
-                .expect("startup layout")
-                .root_box,
-            Some(&startup_id.as_str()),
-        );
-        scene_stack_view.set_visible_child_name(&startup_id.as_str());
-        let layout_overlay = gtk4::Overlay::new();
-        layout_overlay.set_hexpand(true);
-        layout_overlay.set_vexpand(true);
-        layout_overlay.set_child(Some(&scene_stack_view));
-        let jump_latest = gtk4::Button::with_label("↓");
-        jump_latest.set_widget_name("muxterm-jump-latest");
-        jump_latest.set_halign(gtk4::Align::End);
-        jump_latest.set_valign(gtk4::Align::End);
-        jump_latest.set_margin_end(12);
-        jump_latest.set_margin_bottom(12);
-        jump_latest.set_visible(false);
-        let disconnect_overlay = gtk4::Label::new(Some("已断开"));
-        disconnect_overlay.set_widget_name("muxterm-disconnect-overlay");
-        disconnect_overlay.set_halign(gtk4::Align::Center);
-        disconnect_overlay.set_valign(gtk4::Align::Center);
-        disconnect_overlay.add_css_class("muxterm-disconnect-overlay");
-        disconnect_overlay.set_visible(false);
-        let search_highlight = gtk4::Label::new(Some("▮"));
-        search_highlight.set_widget_name("muxterm-search-highlight");
-        search_highlight.set_halign(gtk4::Align::Start);
-        search_highlight.set_valign(gtk4::Align::Center);
-        search_highlight.set_margin_start(4);
-        search_highlight.add_css_class("muxterm-search-highlight");
-        search_highlight.set_visible(false);
-        let pane_find = gtk4::Box::builder()
-            .orientation(Orientation::Horizontal)
-            .spacing(6)
-            .margin_top(8)
-            .margin_start(8)
-            .margin_end(8)
-            .build();
-        pane_find.set_widget_name("muxterm-pane-find");
-        pane_find.set_halign(gtk4::Align::Start);
-        pane_find.set_valign(gtk4::Align::Start);
-        pane_find.add_css_class("muxterm-pane-find");
-        let pane_find_entry = gtk4::Entry::new();
-        pane_find_entry.set_widget_name("muxterm-pane-find-entry");
-        pane_find_entry.set_placeholder_text(Some("find in pane…"));
-        pane_find.append(&pane_find_entry);
-        pane_find.set_visible(false);
-        let last_seen_mark = gtk4::Button::with_label("上次看到这里");
-        last_seen_mark.set_widget_name("muxterm-last-seen");
-        last_seen_mark.set_halign(gtk4::Align::Start);
-        last_seen_mark.set_valign(gtk4::Align::Center);
-        last_seen_mark.set_margin_start(4);
-        last_seen_mark.add_css_class("muxterm-last-seen");
-        last_seen_mark.set_visible(false);
-        let cmd_mark_ok_text = Rc::new(RefCell::new(None::<String>));
-        let cmd_mark_fail_text = Rc::new(RefCell::new(None::<String>));
-        let cmd_mark_ok = gtk4::Button::with_label("✓");
-        cmd_mark_ok.set_widget_name("muxterm-cmd-mark-ok");
-        cmd_mark_ok.set_halign(gtk4::Align::End);
-        cmd_mark_ok.set_valign(gtk4::Align::Center);
-        cmd_mark_ok.set_margin_end(2);
-        cmd_mark_ok.add_css_class("muxterm-cmd-mark-ok");
-        cmd_mark_ok.set_visible(false);
-        let cmd_mark_fail = gtk4::Button::with_label("✗");
-        cmd_mark_fail.set_widget_name("muxterm-cmd-mark-fail");
-        cmd_mark_fail.set_halign(gtk4::Align::End);
-        cmd_mark_fail.set_valign(gtk4::Align::Center);
-        cmd_mark_fail.set_margin_end(2);
-        cmd_mark_fail.add_css_class("muxterm-cmd-mark-fail");
-        cmd_mark_fail.set_visible(false);
-        // 左侧栏与右侧终端 chrome 是同一个水平 Paned 的两列。Tab/status
-        // chrome 属于右列，不能延伸到侧栏下方；Paned 的 handle 同时提供
-        // 用户可调宽度，避免用一个 hexpand 空壳制造中间空白。
-        let terminal_column = Box::builder()
-            .orientation(Orientation::Vertical)
-            .spacing(0)
-            .hexpand(true)
-            .vexpand(true)
-            .build();
-        terminal_column.set_widget_name("muxterm-terminal-column");
-        terminal_column.append(&layout_overlay);
-        terminal_column.append(&status.container);
-
-        let content = Paned::new(Orientation::Horizontal);
-        content.set_widget_name("muxterm-content");
-        content.add_css_class("muxterm-main-split");
-        content.set_hexpand(true);
-        content.set_vexpand(true);
-        content.set_wide_handle(false);
-        content.set_resize_start_child(false);
-        content.set_shrink_start_child(false);
-        content.set_resize_end_child(true);
-        content.set_shrink_end_child(true);
-        content.set_start_child(Some(&sidebar.container));
-        content.set_end_child(Some(&terminal_column));
-        content.set_position(280);
-        root.append(&content);
-        window.set_child(Some(&root));
-
-        layout_overlay.add_overlay(&pane_find);
-        layout_overlay.add_overlay(&search_highlight);
-        layout_overlay.add_overlay(&disconnect_overlay);
-        layout_overlay.add_overlay(&last_seen_mark);
-        layout_overlay.add_overlay(&cmd_mark_ok);
-        layout_overlay.add_overlay(&cmd_mark_fail);
-        layout_overlay.add_overlay(&jump_latest);
+        let scenes = WorkspaceScenes::new(startup_id.clone(), layout);
+        let scene_stack_widget = scenes.widget();
+        let AppShell {
+            sidebar,
+            status,
+            overlay,
+            header,
+        } = AppShell::new(&window, &scene_stack_widget, status_mode, theme.clone());
 
         let keymap = KeyMap::from_bindings(&keybindings);
         let qc_store = QuickConnectStore::from_project_documents(&projects);
         let state = Rc::new(RefCell::new(UiState {
             event_pump,
             command_queue: RefCell::new(CommandQueue::default()),
-            pixel_cache,
-            scene_stack: SceneStack::with_visible(startup_id.as_str()),
-            scene_stack_view,
+            scenes,
             view_store,
             visible_workspace: startup_id.clone(),
             runtime_info,
@@ -881,6 +710,7 @@ impl AppWindow {
             theme_name,
             status,
             sidebar,
+            header,
             status_mode,
             last_status_at: Instant::now()
                 .checked_sub(Duration::from_secs(10))
@@ -922,20 +752,8 @@ impl AppWindow {
             reconnecting: false,
             reconnect_retry_at: None,
             reconnect_attempts: 0,
-            root_box: root.clone(),
-            layout_overlay,
-            jump_latest,
-            jump_unseen: 0,
-            disconnect_overlay,
-            search_highlight,
-            pane_find,
-            pane_find_entry,
+            overlay,
             last_seen: std::collections::HashMap::new(),
-            last_seen_mark,
-            cmd_mark_ok,
-            cmd_mark_fail,
-            cmd_mark_ok_text: cmd_mark_ok_text.clone(),
-            cmd_mark_fail_text: cmd_mark_fail_text.clone(),
             scrollback_lines: cfg.scrollback.lines,
             default_socket: socket.clone(),
             self_weak: std::rc::Weak::new(),
@@ -945,7 +763,7 @@ impl AppWindow {
         {
             let st = state.clone();
             let mut s = state.borrow_mut();
-            if let Some(layout) = s.pixel_cache.get_mut(&startup_id) {
+            if let Some(layout) = s.scenes.get_mut(&startup_id) {
                 layout.set_menu_callback(move |pane_id, action| {
                     handle_pane_menu_action(&st, pane_id, action);
                 });
@@ -953,240 +771,168 @@ impl AppWindow {
         }
 
         {
-            let st = state.clone();
-            let win = window.clone();
-            settings_button.connect_clicked(move |_| {
-                open_preferences(&st, &win);
-            });
+            let quick_state = state.clone();
+            let settings_state = state.clone();
+            let quick_window = window.clone();
+            let settings_window = window.clone();
+            let s = state.borrow();
+            s.header.connect_actions(
+                move || open_quick_connect(&quick_state, &quick_window),
+                move || open_preferences(&settings_state, &settings_window),
+            );
         }
 
         {
-            let st = state.clone();
-            let win = window.clone();
-            quick_connect_button.connect_clicked(move |_| {
-                open_quick_connect(&st, &win);
-            });
-        }
-
-        {
-            let st = state.clone();
-            state
-                .borrow()
-                .sidebar
-                .connect_workspace_activated(move |id| {
-                    let mut s = st.borrow_mut();
-                    activate_existing(&mut s, id.clone());
-                });
-        }
-
-        {
-            let st = state.clone();
-            state.borrow().sidebar.connect_workspace_closed(move |id| {
-                close_sidebar_workspace(&mut st.borrow_mut(), id);
-            });
-        }
-
-        {
-            let st = state.clone();
-            state
-                .borrow()
-                .sidebar
-                .connect_agent_activated(move |id, pane| {
-                    activate_sidebar_activity(&mut st.borrow_mut(), id, pane);
-                });
-        }
-
-        {
-            let st = state.clone();
-            state
-                .borrow()
-                .sidebar
-                .connect_command_activated(move |id, pane| {
-                    activate_sidebar_activity(&mut st.borrow_mut(), id, pane);
-                });
-        }
-
-        {
-            let st = state.clone();
-            let toggle = state.borrow().sidebar.toggle.clone();
-            toggle.connect_toggled(move |button| {
-                if button.is_active() {
-                    refresh_sidebar_if_open(&mut st.borrow_mut());
-                }
-            });
+            let activate_state = state.clone();
+            let close_state = state.clone();
+            let agent_state = state.clone();
+            let command_state = state.clone();
+            let toggle_state = state.clone();
+            let s = state.borrow();
+            s.sidebar.connect_actions(
+                move |id| {
+                    activate_existing(&mut activate_state.borrow_mut(), id.clone());
+                },
+                move |id| {
+                    close_sidebar_workspace(&mut close_state.borrow_mut(), id);
+                },
+                move |id, pane| {
+                    activate_sidebar_activity(&mut agent_state.borrow_mut(), id, pane);
+                },
+                move |id, pane| {
+                    activate_sidebar_activity(&mut command_state.borrow_mut(), id, pane);
+                },
+                move |is_active| {
+                    if is_active {
+                        refresh_sidebar_if_open(&mut toggle_state.borrow_mut());
+                    }
+                },
+            );
         }
 
         {
             let s = state.borrow();
-            let workspaces = sidebar_workspaces(&s);
             let activity = activity_snapshot(&s);
-            let agents = sidebar_agents(&s, &activity);
-            let commands = sidebar_commands(&s, &activity);
-            s.sidebar.set_workspaces(&workspaces);
-            s.sidebar.set_agents(&agents);
-            s.sidebar.set_commands(&commands);
+            let active_workspace = s.active_workspace_key();
+            s.sidebar
+                .refresh_from_views(&s.view_store, Some(&active_workspace), &activity);
         }
 
-        // status bar 中区 tab 按钮 → 切换 frontend-visible scene
+        // status bar 业务入口 → 交给 frontend-visible scene / Core command queue。
         {
-            let st = state.clone();
-            state
-                .borrow()
-                .status
-                .connect_window_activate(move |tab_id| {
-                    let mut s = st.borrow_mut();
-                    request_switch_tab(&mut s, tab_id);
-                });
+            let tab_state = state.clone();
+            let attention_state = state.clone();
+            let new_tab_state = state.clone();
+            let worktree_state = state.clone();
+            let attention_window = window.clone();
+            let worktree_window = window.clone();
+            let s = state.borrow();
+            s.status.connect_actions(
+                move |tab_id| {
+                    request_switch_tab(&mut tab_state.borrow_mut(), tab_id);
+                },
+                move || {
+                    let n = activity_snapshot(&attention_state.borrow()).blocked_count;
+                    let tab = if n > 0 {
+                        PanelTab::Attention
+                    } else {
+                        PanelTab::Workspaces
+                    };
+                    open_panel(&attention_state, &attention_window, tab);
+                },
+                move || {
+                    let mut s = new_tab_state.borrow_mut();
+                    prepare_core_tab_mutation(&mut s, &ClientTask::NewTab);
+                    let _ = s.execute_active_task(ClientTask::NewTab);
+                },
+                move || {
+                    show_worktree_create_dialog(&worktree_state, &worktree_window);
+                },
+            );
         }
 
         // 命令刻度点击：滚到对应命令文本所在行（W18h）。
         {
-            let st = state.clone();
-            let text = cmd_mark_ok_text.clone();
-            state.borrow().cmd_mark_ok.connect_clicked(move |_| {
-                scroll_to_command_text(&st, &text);
-            });
-        }
-        {
-            let st = state.clone();
-            let text = cmd_mark_fail_text.clone();
-            state.borrow().cmd_mark_fail.connect_clicked(move |_| {
-                scroll_to_command_text(&st, &text);
-            });
-        }
-
-        // 上次看到这里：点击滚回离开时的那一行（W18g）。
-        {
-            let st = state.clone();
-            state.borrow().last_seen_mark.connect_clicked(move |_| {
-                let s = st.borrow();
-                let ws = active_workspace_id(&s);
-                let pane = s.active_pane;
-                if let Some(text) = s.last_seen.get(&(ws.clone(), pane)).cloned() {
-                    let lines = s
+            let ok_state = state.clone();
+            let fail_state = state.clone();
+            let last_seen_state = state.clone();
+            let find_state = state.clone();
+            let jump_state = state.clone();
+            let ok_text = state.borrow().overlay.command_ok_text.clone();
+            let fail_text = state.borrow().overlay.command_fail_text.clone();
+            let s = state.borrow();
+            s.overlay.connect_actions(
+                move || scroll_to_command_text(&ok_state, &ok_text),
+                move || scroll_to_command_text(&fail_state, &fail_text),
+                move || {
+                    let s = last_seen_state.borrow();
+                    let ws = active_workspace_id(&s);
+                    let pane = s.active_pane;
+                    if let Some(text) = s.last_seen.get(&(ws.clone(), pane)).cloned() {
+                        let lines = s
+                            .event_pump
+                            .client()
+                            .workspace_pane_last_n_lines(&ws, pane, 10_000)
+                            .unwrap_or_default();
+                        if let Some(row) = lines.iter().position(|l| l.contains(&text)) {
+                            if let Some(view) = s.active_layout().pane(pane).cloned() {
+                                if let Some(adj) = view.terminal().vadjustment() {
+                                    adj.set_value(adj.lower() + row as f64);
+                                }
+                            }
+                        }
+                    }
+                    s.overlay.last_seen.set_visible(false);
+                },
+                move |query| {
+                    if query.is_empty() {
+                        return;
+                    }
+                    let s = find_state.borrow();
+                    let pane = s.active_pane;
+                    let workspace_replica = active_workspace_id(&s);
+                    let workspace_key = active_workspace_key(&s);
+                    let hit = s
                         .event_pump
                         .client()
-                        .workspace_pane_last_n_lines(&ws, pane, 10_000)
-                        .unwrap_or_default();
-                    if let Some(row) = lines.iter().position(|l| l.contains(&text)) {
-                        if let Some(view) = s.active_layout().pane(pane).cloned() {
-                            if let Some(adj) = view.terminal().vadjustment() {
-                                adj.set_value(adj.lower() + row as f64);
+                        .search_all(query)
+                        .ok()
+                        .and_then(|hits| {
+                            hits.into_iter().find(|hit| {
+                                hit.workspace_id == workspace_replica && hit.pane_id == pane
+                            })
+                        });
+                    if let Some(hit) = hit {
+                        if let Some(row) = s.event_pump.client().workspace_pane_viewport_for_seq(
+                            &workspace_key,
+                            pane,
+                            hit.seq,
+                        ) {
+                            if let Some(view) = s.active_layout().pane(pane).cloned() {
+                                if let Some(adj) = view.terminal().vadjustment() {
+                                    adj.set_value(adj.lower() + row as f64);
+                                }
                             }
                         }
                     }
-                }
-                s.last_seen_mark.set_visible(false);
-            });
-        }
-
-        // 当前 pane 内查找：输入即滚到第一个命中（W18f）。
-        {
-            let st = state.clone();
-            state.borrow().pane_find_entry.connect_changed(move |e| {
-                let q = e.text().to_string();
-                if q.is_empty() {
-                    return;
-                }
-                let s = st.borrow();
-                let pane = s.active_pane;
-                let workspace_replica = active_workspace_id(&s);
-                let workspace_key = active_workspace_key(&s);
-                let hit = s.event_pump.client().search_all(&q).ok().and_then(|hits| {
-                    hits.into_iter()
-                        .find(|hit| hit.workspace_id == workspace_replica && hit.pane_id == pane)
-                });
-                if let Some(hit) = hit {
-                    if let Some(row) = s.event_pump.client().workspace_pane_viewport_for_seq(
-                        &workspace_key,
-                        pane,
-                        hit.seq,
-                    ) {
-                        if let Some(view) = s.active_layout().pane(pane).cloned() {
-                            if let Some(adj) = view.terminal().vadjustment() {
-                                adj.set_value(adj.lower() + row as f64);
-                            }
+                },
+                move || {
+                    let mut s = jump_state.borrow_mut();
+                    s.overlay.jump_unseen = 0;
+                    if let Some(view) = s.active_layout().pane(s.active_pane).cloned() {
+                        if let Some(adj) = view.terminal().vadjustment() {
+                            adj.set_value(adj.upper());
                         }
                     }
-                }
-            });
-        }
-
-        // 回底按钮：把当前激活 pane 的 VTE 滚回尾部（W16a）。
-        {
-            let st = state.clone();
-            state.borrow().jump_latest.connect_clicked(move |_| {
-                let mut s = st.borrow_mut();
-                s.jump_unseen = 0;
-                if let Some(view) = s.active_layout().pane(s.active_pane).cloned() {
-                    if let Some(adj) = view.terminal().vadjustment() {
-                        adj.set_value(adj.upper());
-                    }
-                }
-            });
-        }
-
-        // 状态点 → popover：由 StatusBar 的 connect_clicked 处理（C8.4）。
-
-        // 通知/面板按钮：n=0 → Workspaces，n>0 → Attention
-        {
-            let st = state.clone();
-            let win = window.clone();
-            state.borrow().status.connect_attention_activate(move || {
-                let n = activity_snapshot(&st.borrow()).blocked_count;
-                let tab = if n > 0 {
-                    PanelTab::Attention
-                } else {
-                    PanelTab::Workspaces
-                };
-                open_panel(&st, &win, tab);
-            });
-        }
-
-        // 新建 tab 按钮 → Action::NewTab
-        {
-            let st = state.clone();
-            state.borrow().status.connect_new_tab(move || {
-                let mut s = st.borrow_mut();
-                prepare_core_tab_mutation(&mut s, &ClientTask::NewTab);
-                let _ = s.execute_active_task(ClientTask::NewTab);
-                // Accepted 不得手工 refresh：等 LayoutChanged/MutationSettled。
-            });
-        }
-
-        // worktree 创建按钮 → 对话框（仅 support() 含 WorktreeList 时可见）。
-        {
-            let st = state.clone();
-            let win = window.clone();
-            state.borrow().status.connect_worktree_create(move || {
-                show_worktree_create_dialog(&st, &win);
-            });
-        }
-
-        // worktree 创建按钮 → 对话框（仅 support() 含 WorktreeList 时可见）。
-        {
-            let st = state.clone();
-            let win = window.clone();
-            state.borrow().status.connect_worktree_create(move || {
-                show_worktree_create_dialog(&st, &win);
-            });
+                },
+            );
         }
 
         // 快捷键
         {
             let st = state.clone();
-            let controller = EventControllerKey::new();
-            controller.set_propagation_phase(gtk4::PropagationPhase::Capture);
             let window_for_palette = window.clone();
-            controller.connect_key_pressed(move |c, keyval, _keycode, mods| {
-                // GTK4 回调里的 mods 可能不含已被 keyval 消费的 Shift；
-                // 再并上 current_event_state，Ctrl+Shift+C 才进 Copy 而不是 \\003。
-                let mods = mods
-                    | (c.current_event_state()
-                        & (gdk::ModifierType::CONTROL_MASK
-                            | gdk::ModifierType::SHIFT_MASK
-                            | gdk::ModifierType::ALT_MASK
-                            | gdk::ModifierType::SUPER_MASK));
+            connect_key_handler(&window, move |keyval, mods| {
                 let action = {
                     let s = st.borrow();
                     s.keymap.lookup(keyval, mods)
@@ -1221,7 +967,6 @@ impl AppWindow {
                 handle_action(&mut s, action, &window_for_palette, &st);
                 glib::Propagation::Stop
             });
-            window.add_controller(controller);
         }
 
         // 关闭窗口：非 Quit 动作隐藏并保持 16ms 轮询；Quit 才真正关闭。
@@ -1229,7 +974,7 @@ impl AppWindow {
         {
             let st = state.clone();
             let win = window.clone();
-            window.connect_close_request(move |_| {
+            connect_close_handler(&window, move || {
                 let quit = st.try_borrow().map(|s| s.quit_requested).unwrap_or(false);
                 match close_intent(quit) {
                     CloseIntent::Quit => glib::Propagation::Proceed,
@@ -2390,7 +2135,7 @@ fn adjust_font(s: &mut UiState, state: &Rc<RefCell<UiState>>, direction: i32) {
 fn reset_font(s: &mut UiState) {
     s.font.size = s.config_font_size;
     let font = s.font.clone();
-    for layout in s.pixel_cache.values_mut() {
+    for layout in s.scenes.values_mut() {
         layout.set_font(&font);
     }
     persist_config(
@@ -2421,7 +2166,7 @@ fn toggle_theme(s: &mut UiState) {
     };
     s.theme_name = next_name.to_string();
     s.theme = theme.clone();
-    for layout in s.pixel_cache.values_mut() {
+    for layout in s.scenes.values_mut() {
         layout.apply_theme(&theme);
     }
     s.status.apply_theme(&theme);
@@ -2464,7 +2209,7 @@ fn apply_config_snapshot(s: &mut UiState, snapshot: ClientConfigSnapshot) {
         fallback: cfg.font.fallback.clone(),
     };
     let font = s.font.clone();
-    for layout in s.pixel_cache.values_mut() {
+    for layout in s.scenes.values_mut() {
         layout.set_font(&font);
     }
 
@@ -2472,7 +2217,7 @@ fn apply_config_snapshot(s: &mut UiState, snapshot: ClientConfigSnapshot) {
     let theme = resolved_theme.unwrap_or_else(fallback_theme);
     s.theme = theme.clone();
     apply_chrome_css(&theme);
-    for layout in s.pixel_cache.values_mut() {
+    for layout in s.scenes.values_mut() {
         layout.apply_theme(&theme);
     }
     s.status.apply_theme(&theme);
@@ -2638,7 +2383,7 @@ fn show_tab_scene(s: &mut UiState, tab_id: u32) -> bool {
     s.pending_client_size = None;
     s.pending_client_hits = 0;
     let shown = s
-        .pixel_cache
+        .scenes
         .get_mut(&workspace_id)
         .is_some_and(|layout| layout.show_tab(tab_id));
     if !shown {
@@ -2649,10 +2394,10 @@ fn show_tab_scene(s: &mut UiState, tab_id: u32) -> bool {
         refresh_workspace_layout(s, &workspace_id, false);
     }
     let shown = s
-        .pixel_cache
+        .scenes
         .get_mut(&workspace_id)
         .is_some_and(|layout| layout.show_tab(tab_id));
-    if shown && s.panel_open.is_none() && !s.pane_find.is_visible() {
+    if shown && s.panel_open.is_none() && !s.overlay.pane_find.is_visible() {
         if let Some(pane) = active_pane.and_then(|pane| s.active_layout().pane(pane).cloned()) {
             pane.grab_focus();
         }
@@ -2742,20 +2487,20 @@ fn update_command_marks(s: &UiState) {
         .rev()
         .find(|m| m.exit_code.is_some_and(|c| c != 0));
     if let Some(m) = ok {
-        s.cmd_mark_ok.set_visible(true);
-        s.cmd_mark_ok.set_tooltip_text(Some(&m.command));
-        *s.cmd_mark_ok_text.borrow_mut() = Some(m.command.clone());
+        s.overlay.command_ok.set_visible(true);
+        s.overlay.command_ok.set_tooltip_text(Some(&m.command));
+        *s.overlay.command_ok_text.borrow_mut() = Some(m.command.clone());
     } else {
-        s.cmd_mark_ok.set_visible(false);
-        *s.cmd_mark_ok_text.borrow_mut() = None;
+        s.overlay.command_ok.set_visible(false);
+        *s.overlay.command_ok_text.borrow_mut() = None;
     }
     if let Some(m) = fail {
-        s.cmd_mark_fail.set_visible(true);
-        s.cmd_mark_fail.set_tooltip_text(Some(&m.command));
-        *s.cmd_mark_fail_text.borrow_mut() = Some(m.command.clone());
+        s.overlay.command_fail.set_visible(true);
+        s.overlay.command_fail.set_tooltip_text(Some(&m.command));
+        *s.overlay.command_fail_text.borrow_mut() = Some(m.command.clone());
     } else {
-        s.cmd_mark_fail.set_visible(false);
-        *s.cmd_mark_fail_text.borrow_mut() = None;
+        s.overlay.command_fail.set_visible(false);
+        *s.overlay.command_fail_text.borrow_mut() = None;
     }
 }
 
@@ -2778,14 +2523,16 @@ fn update_jump_latest(s: &UiState) {
         .pane(s.active_pane)
         .map(view_at_bottom)
         .unwrap_or(true);
-    s.jump_latest.set_visible(!at_bottom);
+    s.overlay.jump_latest.set_visible(!at_bottom);
     if at_bottom {
         // 回到尾部：搜索高亮不再有意义（W17c）。
-        s.search_highlight.set_visible(false);
-    } else if s.jump_unseen > 0 {
-        s.jump_latest.set_label(&format!("↓ +{}", s.jump_unseen));
+        s.overlay.search_highlight.set_visible(false);
+    } else if s.overlay.jump_unseen > 0 {
+        s.overlay
+            .jump_latest
+            .set_label(&format!("↓ +{}", s.overlay.jump_unseen));
     } else {
-        s.jump_latest.set_label("↓");
+        s.overlay.jump_latest.set_label("↓");
     }
 }
 
@@ -2867,7 +2614,7 @@ fn resident_pane_view(
     wid: &WorkspaceId,
     pane: u32,
 ) -> Option<std::rc::Rc<crate::frontend::linux::pane_view::PaneSurface>> {
-    s.pixel_cache
+    s.scenes
         .get(wid)
         .and_then(|layout| layout.pane(pane).cloned())
 }
@@ -3021,7 +2768,7 @@ fn refresh_workspace_layout(s: &mut UiState, wid: &WorkspaceId, seed_from_core: 
         })
         .unwrap_or_default();
 
-    s.scene_stack.ensure(&workspace_key);
+    s.scenes.ensure(wid);
 
     if is_active {
         // tab 列表由 status bar 中区渲染（apply 时按签名重建），这里只维护
@@ -3044,7 +2791,7 @@ fn refresh_workspace_layout(s: &mut UiState, wid: &WorkspaceId, seed_from_core: 
 
     // 重建布局（pane 控件跨 tab 保留：像素缓存，不因换 tab 销毁）。
     if !layouts.is_empty() {
-        if let Some(layout) = s.pixel_cache.get_mut(wid) {
+        if let Some(layout) = s.scenes.get_mut(wid) {
             for (tab, client_layout) in &layouts {
                 layout.apply_client_layout(*tab, client_layout, &input_cb);
             }
@@ -3070,7 +2817,7 @@ fn refresh_workspace_layout(s: &mut UiState, wid: &WorkspaceId, seed_from_core: 
                     s.active_pane = pane_id;
                     // 临时输入面板存在时不能由 topology refresh 抢走焦点；
                     // 没有输入面板时，键盘归当前 terminal。
-                    if s.panel_open.is_none() && !s.pane_find.is_visible() {
+                    if s.panel_open.is_none() && !s.overlay.pane_find.is_visible() {
                         view.grab_focus();
                     }
                 }
@@ -4049,7 +3796,7 @@ fn maybe_schedule_reconnect(state: &Rc<RefCell<UiState>>) {
         Ok(()) => {
             s.reconnect_attempts = 0;
             s.reconnect_retry_at = None;
-            s.disconnect_overlay.set_visible(false);
+            s.overlay.disconnect.set_visible(false);
             drop(s);
             handle_reconnect_success(state);
         }
@@ -4076,14 +3823,14 @@ fn handle_reconnect_success(state: &Rc<RefCell<UiState>>) {
     let mut s = state.borrow_mut();
     s.reconnect_attempts = 0;
     s.reconnect_retry_at = None;
-    s.disconnect_overlay.set_visible(false);
+    s.overlay.disconnect.set_visible(false);
 }
 
 /// 打开当前 pane 内查找条（W18f：Ctrl+F 与 test_open_pane_find 共用）。
 fn open_pane_find(state: &Rc<RefCell<UiState>>, _window: &Window) {
     let s = state.borrow();
-    s.pane_find.set_visible(true);
-    s.pane_find_entry.grab_focus();
+    s.overlay.pane_find.set_visible(true);
+    s.overlay.pane_find_entry.grab_focus();
 }
 
 fn open_quick_connect(state: &Rc<RefCell<UiState>>, window: &Window) {
@@ -4124,12 +3871,12 @@ fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelT
         let workspace_search_items = build_search_items(&store, current.as_ref());
         let ssh_reach = collect_ssh_reach(&mut s, &workspaces);
         // 临时输入 surface 互斥：QuickConnect 打开后不保留 pane-find。
-        s.pane_find.set_visible(false);
+        s.overlay.pane_find.set_visible(false);
         // C7：本地列出搬后台线程（GTK 线程禁止 ssh / 扫 herdr socket），
         // 结果经 16ms poll 收编，和 SSH probe 同一模式。
         spawn_local_existing_probe(&mut s);
         let activity = activity_snapshot(&s);
-        let agents = sidebar_agents(&s, &activity);
+        let agents = AgentSidebarItem::from_views(&s.view_store, &activity);
         let attention = panel_attention_rows(&activity);
         s.panel_open = Some(initial_tab);
         (
@@ -4318,7 +4065,7 @@ fn jump_to_attention_pane(state: &Rc<RefCell<UiState>>, ws: &str, pane: u32, seq
                 if let Some(adj) = view.terminal().vadjustment() {
                     adj.set_value(adj.lower() + row as f64);
                 }
-                s.search_highlight.set_visible(true);
+                s.overlay.search_highlight.set_visible(true);
             }
         }
     }
@@ -4787,15 +4534,13 @@ fn close_sidebar_workspace(s: &mut UiState, id: &WorkspaceId) {
     s.surface_input_queue
         .borrow_mut()
         .retain(|input| &input.workspace != id);
-    s.scene_stack.remove(&workspace_key);
+    s.scenes.remove(id);
     s.view_store.remove_workspace(&workspace_key);
     s.visible_tabs.remove(&workspace_key);
     s.local_tab_overrides.remove(&workspace_key);
-    remove_scene_page(s, &workspace_key);
     if s.mounted_ws.as_ref() == Some(id) {
         s.mounted_ws = None;
     }
-    s.pixel_cache.remove(id);
     s.workspace_sockets.remove(id);
     if let Err(error) = sync_view_store(s) {
         tracing::warn!(target = "muxterm::linux", %error, "workspace list refresh failed after close");
@@ -4847,12 +4592,6 @@ fn close_sidebar_workspace(s: &mut UiState, id: &WorkspaceId) {
     }
 }
 
-fn remove_scene_page(s: &mut UiState, workspace_id: &str) {
-    if let Some(child) = s.scene_stack_view.child_by_name(workspace_id) {
-        s.scene_stack_view.remove(&child);
-    }
-}
-
 fn activate_sidebar_activity(s: &mut UiState, id: &WorkspaceId, pane: u32) {
     if s.active_ws_id() != *id {
         let workspace_key = id.as_str();
@@ -4896,39 +4635,18 @@ fn refresh_sidebar_if_open(s: &mut UiState) {
     if !s.sidebar.is_open() {
         return;
     }
-    let workspaces = sidebar_workspaces(s);
     let activity = activity_snapshot(s);
-    let agents = sidebar_agents(s, &activity);
-    let commands = sidebar_commands(s, &activity);
-    s.sidebar.set_workspaces(&workspaces);
-    s.sidebar.set_agents(&agents);
-    s.sidebar.set_commands(&commands);
+    let active_workspace = s.active_workspace_key();
+    s.sidebar
+        .refresh_from_views(&s.view_store, Some(&active_workspace), &activity);
 }
 
 fn refresh_sidebar_workspaces_if_open(s: &UiState) {
     if s.sidebar.is_open() {
-        let workspaces = sidebar_workspaces(s);
-        s.sidebar.set_workspaces(&workspaces);
+        let active_workspace = s.active_workspace_key();
+        s.sidebar
+            .refresh_workspaces_from_views(&s.view_store, Some(&active_workspace));
     }
-}
-
-fn sidebar_workspaces(s: &UiState) -> Vec<WorkspaceSidebarItem> {
-    let active_workspace = s.active_workspace_key();
-    WorkspaceSidebarItem::from_views_with_active(&s.view_store, Some(&active_workspace))
-}
-
-fn sidebar_agents(
-    s: &UiState,
-    activity: &crate::frontend::ffi_client::ClientActivitySnapshot,
-) -> Vec<AgentSidebarItem> {
-    AgentSidebarItem::from_views(&s.view_store, activity)
-}
-
-fn sidebar_commands(
-    s: &UiState,
-    activity: &crate::frontend::ffi_client::ClientActivitySnapshot,
-) -> Vec<CommandSidebarItem> {
-    CommandSidebarItem::from_views(&s.view_store, activity)
 }
 
 /// Core open/activate 完成后，把 Core snapshot 的 active workspace 交给
@@ -4951,12 +4669,12 @@ fn after_activate(s: &mut UiState) {
 /// 切工作区只改 GtkStack 可见页和前端缓存，不调用 Core。
 fn show_workspace_scene(s: &mut UiState, id: WorkspaceId, seed_from_core: bool) {
     s.visible_workspace = id.clone();
-    s.scene_stack.ensure(&id.as_str());
-    let _ = s.scene_stack.show(&id.as_str());
-    let had_cache = s.pixel_cache.contains_key(&id);
+    s.scenes.ensure(&id);
+    let _ = s.scenes.show(&id);
+    let had_cache = s.scenes.contains(&id);
     let switching = s.mounted_ws.as_ref() != Some(&id);
     if switching {
-        if !s.pixel_cache.contains_key(&id) {
+        if !s.scenes.contains(&id) {
             let uses = s.uses_tmux();
             let weak = s.self_weak.clone();
             let mut layout =
@@ -4966,31 +4684,27 @@ fn show_workspace_scene(s: &mut UiState, id: WorkspaceId, seed_from_core: bool) 
                     handle_pane_menu_action(&state, pane_id, action);
                 }
             });
-            s.pixel_cache.insert(id.clone(), layout);
+            s.scenes.insert(id.clone(), layout);
         }
         // C8：后台 cache 的字号与当前字号不同才补（不在 Ctrl+= 里遍历全部）。
         let needs_font = s
-            .pixel_cache
+            .scenes
             .get(&id)
             .map(|l| (l.font_size() - s.font.size).abs() > f32::EPSILON)
             .unwrap_or(false);
         if needs_font {
             let font = s.font.clone();
-            s.pixel_cache
+            s.scenes
                 .get_mut(&id)
                 .expect("layout 必须存在")
                 .set_font(&font);
         }
-        if s.scene_stack_view.child_by_name(&id.as_str()).is_none() {
-            let root = s
-                .pixel_cache
-                .get(&id)
-                .expect("layout 必须存在")
-                .root_box
-                .clone();
-            s.scene_stack_view.add_named(&root, Some(&id.as_str()));
+        if !s.scenes.has_page(&id) {
+            let root = s.scenes.get(&id).expect("layout 必须存在").root_box.clone();
+            s.scenes.add_page(&id, &root);
+        } else {
+            let _ = s.scenes.show(&id);
         }
-        s.scene_stack_view.set_visible_child_name(&id.as_str());
         s.mounted_ws = Some(id.clone());
     }
     if switching && had_cache && !s.uses_tmux() {

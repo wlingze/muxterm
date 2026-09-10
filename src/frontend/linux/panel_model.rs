@@ -3,11 +3,148 @@
 //! 无 GTK 依赖：tab 切换、query 保留、Tab1 工作区过滤/状态标记、
 //! Tab2 注意力排序、Tab3 搜索占位。GTK 层只负责渲染。
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
+use std::time::Duration;
 
-use crate::frontend::ffi_client::{ClientAttentionPane, ClientAttentionStatus, ClientSearchHit};
-use crate::frontend::linux::quickconnect_panel::{filter_panel_items, PanelItem};
+use crate::frontend::ffi_client::{
+    ClientAttentionPane, ClientAttentionStatus, ClientOpenRequest, ClientSearchHit,
+};
+use crate::frontend::i18n::{self, Key as TextKey};
+use crate::frontend::linux::quickconnect::existing::ExistingEntry;
+use crate::frontend::linux::quickconnect::model::{
+    QuickConnectEntry, TargetConfig, WorkspaceQuery,
+};
 use crate::frontend::linux::workspace_sidebar::{ActivityIndicator, AgentSidebarItem};
+use crate::frontend::ssh_probe::SshReach;
+
+/// QuickConnect 面板的候选项。
+///
+/// 这是页面模型，不携带 GTK widget；View 只负责把它们渲染成 ListBox 行。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PanelItem {
+    Target(QuickConnectEntry, bool),
+    NewProject,
+    /// 目录（已有的连接 / 本地 / SSH）。
+    Folder {
+        id: &'static str,
+        title: String,
+    },
+    /// 子目录返回。
+    Back,
+    /// 一条活着的 tmux session 或 Herdr workspace。
+    Existing(ExistingEntry),
+    /// SSH host 行（探测到至少一条 tmux 或 Herdr）。
+    Host {
+        alias: String,
+    },
+    /// SSH 探测中占位。
+    Loading,
+    /// 空目录占位。
+    Empty {
+        title: String,
+    },
+}
+
+/// 已有连接面板的纯逻辑导航状态。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum ExistingNav {
+    #[default]
+    Root,
+    Home,
+    Local,
+    SshHosts,
+    SshHost {
+        alias: String,
+    },
+}
+
+/// 已有连接面板共享状态。
+///
+/// Window 侧负责更新探测结果，面板 View 只读取这份 owned snapshot 并重建行。
+#[derive(Debug, Clone, Default)]
+pub struct ExistingPanelState {
+    pub nav: ExistingNav,
+    pub locals: Vec<ExistingEntry>,
+    pub hosts: Vec<String>,
+    pub remote: HashMap<String, Vec<ExistingEntry>>,
+    /// SSH config 中的全部 alias（即使该 host 当前没有可连接 workspace，
+    /// 也要能用于 `@alias` 补全）。
+    pub ssh_aliases: Vec<String>,
+    /// SSH 探测是否在跑：空 host + inflight → Loading；空 + 完成 → Empty。
+    pub probe_inflight: bool,
+}
+
+type SearchCallback = Box<dyn Fn(&str, SearchScope) -> Vec<SearchRow>>;
+type MuteCallback = Box<dyn Fn(String, u32, Duration)>;
+
+/// QuickConnect View 的输入快照与业务回调契约。
+///
+/// 该结构只包含 owned DTO、模型值和闭包，不依赖 GTK；View 负责消费它并
+/// 将用户手势转发给这些回调。
+pub struct PanelShowArgs {
+    pub initial_tab: PanelTab,
+    pub workspaces: Vec<PanelItem>,
+    /// 非空搜索时追加的完整 Recent/Project 候选。
+    pub workspace_search_items: Vec<PanelItem>,
+    pub agents: Vec<AgentSidebarItem>,
+    pub attention: Vec<ClientAttentionPane>,
+    pub on_connect: Box<dyn Fn(ClientOpenRequest)>,
+    pub on_existing_connect: Box<dyn Fn(ClientOpenRequest)>,
+    pub on_edit: Box<dyn Fn(TargetConfig)>,
+    pub on_new_project: Box<dyn Fn()>,
+    pub on_jump_pane: Box<dyn Fn(String, u32, u64)>,
+    pub on_mute: MuteCallback,
+    pub search: SearchCallback,
+    pub on_close: Box<dyn Fn()>,
+    pub ssh_reach: HashMap<String, SshReach>,
+    pub existing: Rc<RefCell<ExistingPanelState>>,
+    pub on_existing_nav: Box<dyn Fn(ExistingNav)>,
+}
+
+/// 按查询过滤 QuickConnect 候选，并保持原始顺序作为同分排序依据。
+pub(crate) fn filter_panel_items(items: &[PanelItem], query: &str) -> Vec<PanelItem> {
+    let q = query.trim();
+    if q.is_empty() {
+        return items.to_vec();
+    }
+    let parsed = WorkspaceQuery::parse(q);
+    let needle = q.to_lowercase();
+    let mut matched: Vec<(usize, u32, PanelItem)> = items
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| {
+            let score = match item {
+                PanelItem::Target(entry, _) => parsed.score(&entry.config),
+                PanelItem::NewProject => {
+                    let label = format!(
+                        "new project {}",
+                        i18n::tr(TextKey::NewProject).to_lowercase()
+                    );
+                    label.contains(&needle).then_some(0)
+                }
+                PanelItem::Folder { title, .. } => {
+                    title.to_lowercase().contains(&needle).then_some(0)
+                }
+                PanelItem::Back => Some(0),
+                PanelItem::Existing(entry) => parsed.score(&entry.target_config()),
+                PanelItem::Host { alias } => parsed.host_score(alias),
+                PanelItem::Loading => Some(0),
+                PanelItem::Empty { title } => title.to_lowercase().contains(&needle).then_some(0),
+            }?;
+            Some((index, score, item.clone()))
+        })
+        .collect();
+    matched.sort_by(
+        |(left_index, left_score, _), (right_index, right_score, _)| {
+            right_score
+                .cmp(left_score)
+                .then(left_index.cmp(right_index))
+        },
+    );
+    matched.into_iter().map(|(_, _, item)| item).collect()
+}
 
 /// 面板 tab。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

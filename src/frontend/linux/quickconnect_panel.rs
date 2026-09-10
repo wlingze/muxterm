@@ -18,13 +18,12 @@ use gtk4::{
 };
 
 use crate::frontend::ffi_client::{
-    ClientAttentionPane, ClientAttentionStatus, ClientCandidateRef, ClientOpenIntent,
-    ClientOpenRequest,
+    ClientAttentionStatus, ClientCandidateRef, ClientOpenIntent, ClientOpenRequest,
 };
 use crate::frontend::i18n::{self, Key as TextKey};
 use crate::frontend::linux::panel_model::{
     filter_attention_panel_rows, filter_workspace_rows, search_rows, AttentionPanelRow, PanelModel,
-    PanelTab, SearchRow, SearchScope,
+    PanelTab, SearchScope,
 };
 use crate::frontend::linux::quick_pick;
 use crate::frontend::linux::quickconnect::existing::{
@@ -34,7 +33,7 @@ use crate::frontend::linux::quickconnect::model::{
     QuickBadge, QuickConnect, QuickConnectEntry, TargetConfig, TargetTransport, WorkspaceQuery,
 };
 use crate::frontend::linux::quickconnect::store::QuickConnectStore;
-use crate::frontend::linux::workspace_sidebar::{ActivityIndicator, AgentSidebarItem};
+use crate::frontend::linux::workspace_sidebar::ActivityIndicator;
 use crate::frontend::ssh_probe::{ssh_dot_css_class, ssh_dot_widget_name, SshReach};
 
 const NEW_PROJECT_ID: &str = "__new_project__";
@@ -69,29 +68,12 @@ enum VisibleAction {
     None,
 }
 
-type SearchCb = Box<dyn Fn(&str, SearchScope) -> Vec<SearchRow>>;
-type MuteCb = Box<dyn Fn(String, u32, Duration)>;
-
 thread_local! {
     static PANEL_DISMISS: RefCell<Option<Box<dyn Fn()>>> = const { RefCell::new(None) };
 }
 
 thread_local! {
     static PANEL_REFRESH: RefCell<Option<Box<dyn Fn()>>> = const { RefCell::new(None) };
-}
-
-/// 已有的连接面板共享状态（window 侧更新，面板 rebuild 读取）。
-#[derive(Debug, Clone, Default)]
-pub struct ExistingPanelState {
-    pub nav: ExistingNav,
-    pub locals: Vec<ExistingEntry>,
-    pub hosts: Vec<String>,
-    pub remote: std::collections::HashMap<String, Vec<ExistingEntry>>,
-    /// SSH config 中的全部 alias（即使该 host 当前没有可连接 workspace，
-    /// 也要能用于 `@alias` 补全）。
-    pub ssh_aliases: Vec<String>,
-    /// SSH 探测是否在跑：空 host + inflight → Loading；空 + 完成 → Empty。
-    pub probe_inflight: bool,
 }
 
 /// 测试/生产共用：让当前面板按最新状态重建列表（SSH 探测回来再填）。
@@ -128,86 +110,9 @@ pub struct QuickConnectCallbacks {
     pub on_new_project: Box<dyn Fn()>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PanelItem {
-    Target(QuickConnectEntry, bool),
-    NewProject,
-    /// 目录（已有的连接 / 本地 / SSH）。
-    Folder {
-        id: &'static str,
-        title: String,
-    },
-    /// 子目录返回。
-    Back,
-    /// 一条活着的 tmux session 或 Herdr workspace。
-    Existing(ExistingEntry),
-    /// SSH host 行（探测到至少一条 tmux 或 Herdr）。
-    Host {
-        alias: String,
-    },
-    /// SSH 探测中占位。
-    Loading,
-    /// 空目录占位。
-    Empty {
-        title: String,
-    },
-}
-
-/// 已有的连接导航状态（纯逻辑）。
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub enum ExistingNav {
-    #[default]
-    Root,
-    Home,
-    Local,
-    SshHosts,
-    SshHost {
-        alias: String,
-    },
-}
-
-/// 按查询过滤（纯逻辑，便于单测）。
-pub(crate) fn filter_panel_items(items: &[PanelItem], query: &str) -> Vec<PanelItem> {
-    let q = query.trim();
-    if q.is_empty() {
-        return items.to_vec();
-    }
-    let parsed = WorkspaceQuery::parse(q);
-    let needle = q.to_lowercase();
-    let mut matched: Vec<(usize, u32, PanelItem)> = items
-        .iter()
-        .enumerate()
-        .filter_map(|(index, item)| {
-            let score = match item {
-                PanelItem::Target(entry, _) => parsed.score(&entry.config),
-                PanelItem::NewProject => {
-                    let label = format!(
-                        "new project {}",
-                        i18n::tr(TextKey::NewProject).to_lowercase()
-                    );
-                    label.contains(&needle).then_some(0)
-                }
-                PanelItem::Folder { title, .. } => {
-                    title.to_lowercase().contains(&needle).then_some(0)
-                }
-                PanelItem::Back => Some(0),
-                PanelItem::Existing(e) => parsed.score(&e.target_config()),
-                PanelItem::Host { alias } => parsed.host_score(alias),
-                PanelItem::Loading => Some(0),
-                PanelItem::Empty { title } => title.to_lowercase().contains(&needle).then_some(0),
-            }?;
-            Some((index, score, item.clone()))
-        })
-        .collect();
-    matched.sort_by(
-        |(left_index, left_score, _), (right_index, right_score, _)| {
-            right_score
-                .cmp(left_score)
-                .then(left_index.cmp(right_index))
-        },
-    );
-    matched.into_iter().map(|(_, _, item)| item).collect()
-}
+#[cfg(test)]
+pub(crate) use crate::frontend::linux::panel_model::filter_panel_items;
+pub use crate::frontend::linux::panel_model::{ExistingNav, ExistingPanelState, PanelItem};
 
 pub fn build_items(store: &QuickConnectStore, current: Option<&TargetConfig>) -> Vec<PanelItem> {
     build_items_with_recent_limit(store, current, 5)
@@ -456,35 +361,7 @@ fn visible_action_for_item(item: &PanelItem, nav: &ExistingNav) -> VisibleAction
 
 /// 弹出 QuickConnect 面板。
 /// 三 tab 面板参数（LINUX-PLAN §10 C3.2/C3.3）。
-pub struct PanelShowArgs {
-    pub initial_tab: PanelTab,
-    pub workspaces: Vec<PanelItem>,
-    /// 非空搜索时追加的完整 Recent/Project 候选；空列表表示与 `workspaces`
-    /// 相同，兼容只关心紧凑列表的测试调用方。
-    pub workspace_search_items: Vec<PanelItem>,
-    pub agents: Vec<AgentSidebarItem>,
-    pub attention: Vec<ClientAttentionPane>,
-    pub on_connect: Box<dyn Fn(ClientOpenRequest)>,
-    /// Existing 行专用回调：接收 typed CandidateRef + attach-only 意图。
-    pub on_existing_connect: Box<dyn Fn(ClientOpenRequest)>,
-    pub on_edit: Box<dyn Fn(TargetConfig)>,
-    pub on_new_project: Box<dyn Fn()>,
-    /// 跳转回调：`(ws, pane, seq)`。seq 是搜索命中的 PaneBuf 行号（W17c），
-    /// Attention 跳转没有搜索语义传 0。
-    pub on_jump_pane: Box<dyn Fn(String, u32, u64)>,
-    /// 禁止提醒：`(ws, pane, duration)`，由 window 侧转发到 Core。
-    pub on_mute: MuteCb,
-    /// Search tab：query → replica 命中行。
-    pub search: SearchCb,
-    /// 面板关闭回调（window 侧清 panel_open 状态）。
-    pub on_close: Box<dyn Fn()>,
-    /// SSH 别名 → 可达性（测试注入；生产由后台探测填充）。
-    pub ssh_reach: HashMap<String, SshReach>,
-    /// 已有的连接共享状态（nav + 本地/SSH 数据）。
-    pub existing: Rc<RefCell<ExistingPanelState>>,
-    /// 导航变化回调（window 侧触发 SSH 探测等）。
-    pub on_existing_nav: Box<dyn Fn(ExistingNav)>,
-}
+pub use crate::frontend::linux::panel_model::PanelShowArgs;
 
 /// 弹出三 tab QuickConnect 面板（普通 Overlay，不构造 AppWindow）。
 pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {

@@ -238,6 +238,25 @@ impl StatusBar {
         *self.on_worktree_create.borrow_mut() = Some(Box::new(f));
     }
 
+    /// 连接 StatusBar 的全部业务入口；StatusBar 只保存闭包，不接触 Core 状态。
+    pub fn connect_actions<W, N, T, C>(
+        &self,
+        on_window: W,
+        on_notify: N,
+        on_new_tab: T,
+        on_worktree: C,
+    ) where
+        W: Fn(u32) + 'static,
+        N: Fn() + 'static,
+        T: Fn() + 'static,
+        C: Fn() + 'static,
+    {
+        self.connect_window_activate(on_window);
+        self.connect_attention_activate(on_notify);
+        self.connect_new_tab(on_new_tab);
+        self.connect_worktree_create(on_worktree);
+    }
+
     /// 按当前工作区能力显示/隐藏 worktree 创建按钮。
     ///
     /// 不支持的 Runtime 必须**找不到**该控件（不是只隐藏），
