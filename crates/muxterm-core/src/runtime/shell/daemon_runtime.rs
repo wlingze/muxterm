@@ -357,8 +357,14 @@ impl DaemonRuntime {
             Task::NextPane
             | Task::PrevPane
             | Task::ResizePaneStep { .. }
-            | Task::ReportPaneColours { .. }
-            | Task::RequestPaneSnapshot { .. } => None,
+            | Task::ReportPaneColours { .. } => None,
+            // A short-lived CLI client may have missed the daemon's earlier
+            // render events.  Ask the host for one raw pane baseline so the
+            // client can resume from the current output before deltas.
+            Task::RequestPaneSnapshot { target, .. } => Some(CliCommand::CapturePane {
+                target: Some(*target),
+                lines: None,
+            }),
         }
     }
 }
@@ -488,8 +494,19 @@ impl Runtime for DaemonRuntime {
                 RuntimeCapability::SplitPane,
                 RuntimeCapability::SharedClientResize,
             ],
-            "shell" => &[RuntimeCapability::MultiTab, RuntimeCapability::SplitPane],
-            _ => &[],
+            // The daemon host owns the shell lifetime.  Closing this IPC
+            // client must detach from it; only an explicit Shutdown task may
+            // terminate the daemon process.
+            "shell" => &[
+                RuntimeCapability::PersistDetach,
+                RuntimeCapability::MultiTab,
+                RuntimeCapability::SplitPane,
+            ],
+            // The kind is learned from the daemon topology.  Before the
+            // first topology event arrives this client is still a persistent
+            // daemon connection, so releasing it must never terminate the
+            // host by falling through to the non-persistent default.
+            _ => &[RuntimeCapability::PersistDetach],
         }
     }
 
@@ -595,6 +612,25 @@ mod tests {
     #[test]
     fn task_detach_maps_to_none() {
         assert!(DaemonRuntime::task_to_cli(&Task::Detach).is_none());
+    }
+
+    #[test]
+    fn task_snapshot_maps_to_daemon_capture() {
+        assert!(matches!(
+            DaemonRuntime::task_to_cli(&Task::RequestPaneSnapshot { target: PaneId(7) }),
+            Some(CliCommand::CapturePane {
+                target: Some(PaneId(7)),
+                lines: None,
+            })
+        ));
+    }
+
+    #[test]
+    fn daemon_is_persistent_before_topology_baseline_arrives() {
+        let runtime = DaemonRuntime::new("/tmp/muxterm-test-daemon.sock", "test");
+        assert!(runtime
+            .support()
+            .contains(&RuntimeCapability::PersistDetach));
     }
 
     #[test]
