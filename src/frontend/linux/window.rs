@@ -413,42 +413,6 @@ fn mark_active_attention_visible(s: &UiState) {
 /// 窗口 present/realize 前 feed 会被 VTE 丢弃（白屏），所以只在 widget
 /// 已 realized 时播种；未 realized 的 pane 保持 unseeded，等布局挂载后
 /// 由下一次 refresh_ui / sync_pane_outputs 补种。
-fn seed_unseeded_pane(
-    s: &mut UiState,
-    view: &std::rc::Rc<PaneSurface>,
-    pane_id: u32,
-    cols: u16,
-    rows: u16,
-) {
-    window_surface::seed_unseeded_pane(s, view, pane_id, cols, rows);
-}
-
-/// VTE 只有在 realize 且二维分配都有效时才能可靠接收首帧。
-fn surface_allocation_is_seedable(realized: bool, width: i32, height: i32) -> bool {
-    window_surface::surface_allocation_is_seedable(realized, width, height)
-}
-
-fn seed_unseeded_pane_for(
-    s: &mut UiState,
-    wid: &WorkspaceId,
-    view: &std::rc::Rc<PaneSurface>,
-    pane_id: u32,
-    cols: u16,
-    rows: u16,
-) {
-    window_surface::seed_unseeded_pane_for(s, wid, view, pane_id, cols, rows);
-}
-
-/// Flush render events retained while a pane had no realized Surface.
-fn drain_view_store_render_events(
-    s: &mut UiState,
-    wid: &WorkspaceId,
-    view: &std::rc::Rc<PaneSurface>,
-    pane_id: u32,
-) {
-    window_surface::drain_view_store_render_events(s, wid, view, pane_id);
-}
-
 fn sync_pane_grid_size(s: &UiState, pane_id: u32) {
     window_render::sync_pane_grid_size(s, pane_id);
 }
@@ -694,6 +658,7 @@ mod tests {
     use super::window_activity::{attention_event_pane, UiBatchEffects};
     use super::window_event_pump::take_surface_input;
     use super::window_status::local_status_snapshot;
+    use super::window_surface::surface_allocation_is_seedable;
     use super::*;
 
     #[test]
