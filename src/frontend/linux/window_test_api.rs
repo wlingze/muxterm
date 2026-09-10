@@ -14,6 +14,7 @@ use super::window_event_pump::{
     activity_snapshot, drain_surface_input, enqueue_workspace_input, flush_command_queue,
     poll_event_store, sync_view_store,
 };
+use super::window_overlay::{activate_attention_workspace, open_pane_find, open_panel};
 use super::window_render::{refresh_event_workspaces, sync_pane_outputs};
 use super::window_resize::sync_window_size;
 use super::window_scene::after_activate;
@@ -766,6 +767,6 @@ impl AppWindow {
 
     /// 测试用：打开当前 pane 内查找条（与 Ctrl+F 同一条生产路径）。
     pub fn test_open_pane_find(&self) {
-        open_pane_find(&self._state.clone(), &self.window);
+        open_pane_find(&self._state.clone());
     }
 }

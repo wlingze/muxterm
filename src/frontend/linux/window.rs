@@ -387,43 +387,6 @@ enum ExistingProbeMsg {
     Done,
 }
 
-/// 打开当前 pane 内查找条（W18f：Ctrl+F 与 test_open_pane_find 共用）。
-fn open_pane_find(state: &Rc<RefCell<UiState>>, _window: &Window) {
-    window_overlay::open_pane_find(state);
-}
-
-fn open_quick_connect(state: &Rc<RefCell<UiState>>, window: &Window) {
-    window_overlay::open_quick_connect(state, window);
-}
-
-/// 打开三 tab 面板（initial_tab 由入口决定：Alt+Q → Workspaces，红点 → Attention）。
-///
-/// 内部自行 borrow：面板回调会再次借用 state，调用方不能同时持有 RefMut。
-fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelTab) {
-    window_overlay::open_panel(state, window, initial_tab);
-}
-
-/// 跳到注意力 pane：若目标工作区不是当前前台连接，先切连接；
-/// 命中在别的 tab 时先 `SwitchTab` 再 `SwitchPane`（W15b）。
-/// `seq` 是搜索命中的 PaneBuf 行号（W17c）：切完后把 VTE 滚到该行并显示高亮。
-fn jump_to_attention_pane(state: &Rc<RefCell<UiState>>, ws: &str, pane: u32, seq: u64) {
-    window_overlay::jump_to_attention_pane(state, ws, pane, seq);
-}
-
-/// 目标工作区不是当前前台时切连接；相同则不动（避免无谓的 layout 重建）。
-fn activate_attention_workspace(s: &mut UiState, ws: &str) {
-    window_overlay::activate_attention_workspace(s, ws);
-}
-
-/// 按 workspace_id（name@transport）找 WorkspaceId。
-fn attention_workspace_id(s: &UiState, ws: &str) -> Option<WorkspaceId> {
-    window_overlay::attention_workspace_id(s, ws)
-}
-
-fn workspace_replica_matches(id: &WorkspaceId, requested: &str) -> bool {
-    window_overlay::workspace_replica_matches(id, requested)
-}
-
 /// 打开配置页：保存/热加载后重读 config.toml 并应用主题/字体/attention。
 fn open_preferences(state: &Rc<RefCell<UiState>>, window: &Window) {
     window_config::open_preferences(state, window);
@@ -509,6 +472,7 @@ fn apply_chrome_css(theme: &Theme) {
 mod tests {
     use super::window_activity::{attention_event_pane, UiBatchEffects};
     use super::window_event_pump::take_surface_input;
+    use super::window_overlay::workspace_replica_matches;
     use super::window_resize::pending_pane_resizes;
     use super::window_status::local_status_snapshot;
     use super::window_surface::surface_allocation_is_seedable;

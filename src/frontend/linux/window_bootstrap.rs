@@ -16,6 +16,7 @@ use super::window_event_pump::{
     activity_snapshot, drain_surface_input, flush_command_queue, poll_event_store,
 };
 use super::window_layout::refresh_ui;
+use super::window_overlay::{open_pane_find, open_panel, open_quick_connect};
 use super::window_render::{
     mark_active_attention_visible, refresh_event_workspaces, sync_pane_outputs,
 };
@@ -423,7 +424,7 @@ impl AppWindow {
                     && mods.contains(gdk::ModifierType::CONTROL_MASK)
                     && !mods.contains(gdk::ModifierType::SHIFT_MASK)
                 {
-                    open_pane_find(&st, &window_for_palette);
+                    open_pane_find(&st);
                     return glib::Propagation::Stop;
                 }
                 let mut s = st.borrow_mut();
