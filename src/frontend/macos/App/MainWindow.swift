@@ -1262,6 +1262,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 } else {
                     result = bridge.setPaneViewport(paneId: paneID, offset: offset)
                 }
+            case .closeWorkspace:
+                if let workspaceID = command.workspaceID {
+                    result = bridge.closeWorkspace(workspaceID: workspaceID)
+                } else {
+                    result = -1
+                }
             case .attention(let attention):
                 switch attention {
                 case .acknowledge(let paneID):
@@ -1559,6 +1565,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 ?? ordered.prefix(index).last
             : nil
 
+        // Keep the UI switch local, but close the corresponding Core-owned
+        // workspace at the next serialized event-pump boundary.  The last
+        // visible workspace is handled by the window shutdown path instead.
+        if let sceneWorkspaceID = slot.workspaceID,
+           !wasActive || fallback != nil
+        {
+            _ = enqueueCoreCommand(.closeWorkspace(
+                workspaceID: sceneWorkspaceID,
+                failureMessage: MuxtermI18n.shared.tr(.errorCommandFailed)
+            ))
+        }
         sceneStack.close(key: slot.key)
         content.paneLayout.dropParked(except: Array(sceneStack.scenes.values.map(\.terminalManager)))
         quickConnectStore.replaceAllRecents(sceneStack.allRecentTargetConfigs())

@@ -41,6 +41,7 @@ public enum QueuedMuxOperation: Equatable, Sendable {
     case resize(QueuedMuxResize)
     case attention(QueuedMuxAttention)
     case viewport(paneID: UInt32, offset: UInt32)
+    case closeWorkspace
 
     private var coalescingKey: CoalescingKey? {
         switch self {
@@ -50,7 +51,7 @@ public enum QueuedMuxOperation: Equatable, Sendable {
             return .resize(resize.coalescingKey)
         case .viewport(let paneID, _):
             return .viewport(paneID)
-        case .task, .input, .attention:
+        case .task, .input, .attention, .closeWorkspace:
             return nil
         }
     }
@@ -173,6 +174,17 @@ public struct QueuedMuxCommand: Equatable, Sendable {
         QueuedMuxCommand(
             workspaceID: workspaceID,
             operation: .viewport(paneID: paneID, offset: offset),
+            failureMessage: failureMessage
+        )
+    }
+
+    public static func closeWorkspace(
+        workspaceID: String,
+        failureMessage: String
+    ) -> QueuedMuxCommand {
+        QueuedMuxCommand(
+            workspaceID: workspaceID,
+            operation: .closeWorkspace,
             failureMessage: failureMessage
         )
     }

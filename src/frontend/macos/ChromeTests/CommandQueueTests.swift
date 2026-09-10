@@ -217,4 +217,19 @@ final class MacCommandQueueTests: XCTestCase {
         XCTAssertEqual(queue.count, 3)
         XCTAssertEqual(queue.drain().map { $0.workspaceID ?? "" }, ["one", "one", "two"])
     }
+
+    func testWorkspaceCloseKeepsExplicitWorkspaceIdentity() {
+        var queue = MacCommandQueue()
+        queue.enqueue(.closeWorkspace(
+            workspaceID: "one",
+            failureMessage: "close failed"
+        ))
+
+        let commands = queue.drain()
+        XCTAssertEqual(commands.count, 1)
+        XCTAssertEqual(commands[0].workspaceID, "one")
+        guard case .closeWorkspace = commands[0].operation else {
+            return XCTFail("expected a workspace close operation")
+        }
+    }
 }
