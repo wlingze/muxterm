@@ -1383,62 +1383,66 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         return blockedCount
     }
 
-    /// E2E 用：同步排空 warm 后台 Workspace，避免 QoS 队列造成偶发超时。
-    /// 仍走 WarmConnectionSlot 的生产 drain/apply 路径。
+    /// E2E 用：同步排空 shared Workspace 的主线程 event pump，避免测试
+    /// 依赖后台 QoS 队列的调度时序。
     func testPollBackgroundWorkspaces() {
-        // testPollOnce() 可能刚把同一批 slot 投递到后台队列；先等该批
-        // FFI 操作结束，再从测试线程查询结果。否则测试直接读取 bridge
-        // 时会和 drainBackgroundEvents() 并发访问同一个 C handle。
-        backgroundPollQueue.sync {}
-        for slot in connectionPool.slots.values where slot.lifecycle == .background {
-            while !isClosing {
-                let drained = slot.drainBackgroundEvents()
-                var pending = slot.hasPendingSurfaceWork
-                while pending {
-                    pending = slot.applyPendingSurfaceEvents(
+        guard !isClosing else { return }
+        for _ in 0..<32 {
+            pollOnce()
+            var hasPending = false
+            for slot in connectionPool.slots.values where slot.lifecycle == .background {
+                while slot.hasPendingSurfaceWork {
+                    hasPending = true
+                    _ = slot.applyPendingSurfaceEvents(
                         maxEvents: Int.max,
                         timeBudget: .infinity
                     )
                 }
-                if !drained && !pending {
-                    break
-                }
             }
+            if !hasPending { break }
         }
     }
 
-    /// 把另一个隔离 CoreBridge 登记为 warm Workspace 并激活。
+    /// E2E 仍可传入一个独立 bridge 来准备远端 session，但真正的
+    /// Workspace 会重新通过当前 Core handle 打开，测试路径与生产事件泵一致。
     func testActivateWorkspaceBridge(_ nextBridge: CoreBridge, session: String) {
-        let currentSession = bridge.session ?? session
-        let currentKey = ConnectionKey(
-            transport: bridge.sshAlias == nil ? "local" : "ssh",
-            alias: bridge.sshAlias,
-            session: currentSession,
-            runtime: "tmux",
-            path: "",
-            socket: bridge.socket
-        )
-        if connectionPool.slots[currentKey] == nil {
-            let currentSlot = WarmConnectionSlot(
-                key: currentKey,
-                bridge: bridge,
-                terminalManager: terminalManager,
-                now: 0
-            )
-            currentSlot.openedOrder = nextWorkspaceOpenedOrder
-            nextWorkspaceOpenedOrder += 1
-            _ = connectionPool.acquire(key: currentKey) { _ in currentSlot }
+        let transport: TargetTransport
+        if let alias = nextBridge.sshAlias {
+            transport = .ssh(name: alias)
+        } else {
+            transport = .local
         }
-        let key = ConnectionKey(
-            transport: nextBridge.sshAlias == nil ? "local" : "ssh",
-            alias: nextBridge.sshAlias,
-            session: session,
-            runtime: "tmux",
+        let target = TargetConfig(
+            name: session,
+            runtime: .tmux,
+            transport: transport,
             path: "",
+            session: session,
             socket: nextBridge.socket
         )
-        nextBridge.session = session
-        activate(slot: WarmConnectionSlot(key: key, bridge: nextBridge, now: 0))
+        do {
+            let opened = try bridge.openWorkspace(target: target, intent: .attachOnly)
+            nextBridge.shutdown()
+            let key = Self.connectionKey(config: opened.target, session: opened.target.session)
+            let slot = WarmConnectionSlot(
+                key: key,
+                bridge: bridge,
+                workspaceID: opened.id,
+                usesSharedCore: true,
+                terminalManager: TerminalManager(
+                    bridge: bridge,
+                    workspaceID: opened.id,
+                    fontFamily: terminalFontSettings.family,
+                    fontSize: terminalFontSettings.size
+                ),
+                targetConfig: opened.target,
+                now: 0
+            )
+            activate(slot: slot)
+        } catch {
+            nextBridge.shutdown()
+            showError(error)
+        }
     }
 
     /// Close a warm workspace from the sidebar. The active slot falls forward to

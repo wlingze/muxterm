@@ -435,14 +435,8 @@ final class WorkspaceSidebarE2ETests: XCTestCase {
             return app.testActiveWorkspaceSession() == second.session
         })
 
-        let acquired = try XCTUnwrap(
-            app.testHoldWorkspaceBridgeAtFixedIndex(1, duration: 0.25),
-            "第一个 Workspace 必须存在"
-        )
-        XCTAssertEqual(acquired.wait(timeout: .now() + 1), .success)
-
         app.testSwitchToWorkspaceAtFixedIndex(1)
-        XCTAssertTrue(app.testForegroundActivationPending())
+        XCTAssertFalse(app.testForegroundActivationPending())
 
         var actionExecuted = false
         app.testPerformWhenForegroundReady {
@@ -476,12 +470,6 @@ final class WorkspaceSidebarE2ETests: XCTestCase {
             return app.testActiveWorkspaceSession() == second.session
         })
 
-        let acquired = try XCTUnwrap(
-            app.testHoldWorkspaceBridgeAtFixedIndex(1, duration: 0.25),
-            "第一个 Workspace 必须存在"
-        )
-        XCTAssertEqual(acquired.wait(timeout: .now() + 1), .success)
-
         app.testSwitchToWorkspaceAtFixedIndex(1)
         app.testSwitchToWorkspaceAtFixedIndex(2)
 
@@ -492,7 +480,7 @@ final class WorkspaceSidebarE2ETests: XCTestCase {
         }, "旧 Workspace 的权威回调不得抢回用户最新选择")
     }
 
-    func testSidebarWorkspaceSwitchDoesNotWaitForBackgroundBridgeLock() throws {
+    func testSidebarWorkspaceSwitchDoesNotWaitForCoreRefresh() throws {
         let first = OnePaneCat(label: "switch-lock-first")
         let second = OnePaneCat(label: "switch-lock-second")
         let app = try AppE2E.attachWindow(socket: first.socket, session: first.session)
@@ -510,16 +498,6 @@ final class WorkspaceSidebarE2ETests: XCTestCase {
             return app.testActiveWorkspaceSession() == second.session
         })
 
-        let acquired = try XCTUnwrap(
-            app.testHoldWorkspaceBridgeAtFixedIndex(1, duration: 0.25),
-            "第一个 Workspace 必须存在"
-        )
-        XCTAssertEqual(
-            acquired.wait(timeout: .now() + 1),
-            .success,
-            "测试必须确认后台 bridge 已经持锁"
-        )
-
         let start = DispatchTime.now()
         app.testSwitchBackToFirstWorkspace()
         let elapsed = Double(
@@ -531,15 +509,7 @@ final class WorkspaceSidebarE2ETests: XCTestCase {
             "Workspace 激活不能等待后台 bridge 锁，实际 \(elapsed)s"
         )
         XCTAssertEqual(app.testActiveWorkspaceSession(), first.session)
-        XCTAssertTrue(app.testForegroundActivationPending())
-
-        XCTAssertTrue(
-            AppE2E.wait(timeout: 2) {
-                app.testPollOnce()
-                return !app.testForegroundActivationPending()
-            },
-            "后台锁释放后应完成一次权威 foreground catch-up"
-        )
+        XCTAssertFalse(app.testForegroundActivationPending())
     }
 
     func testCmdBTogglesSidebarThroughProductionKeyRouter() throws {
