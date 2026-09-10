@@ -5,8 +5,8 @@
 //! runtime / session / target-side socket / workspace_id），name/path 是
 //! 显示/项目元数据，不参与身份。
 
+use crate::projects::{TargetConfig, TargetRuntime, TargetTransport};
 use crate::protocol::candidate::CandidateRef;
-use crate::quickconnect::model::{TargetConfig, TargetRuntime, TargetTransport};
 use crate::workspace::spec::WorkspaceSpec;
 use crate::workspace::template::TemplateName;
 

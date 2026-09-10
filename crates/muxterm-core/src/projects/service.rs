@@ -6,8 +6,8 @@ use crate::catalog::OpenRequest;
 use crate::catalog::{Catalog, ResolveIntent};
 use crate::executable::expand_config_value;
 use crate::muxterm::Muxterm;
+use crate::projects::{TargetRuntime, TargetTransport};
 use crate::protocol::candidate::CandidateRef;
-use crate::quickconnect::model::{TargetRuntime, TargetTransport};
 use crate::runtime::WorktreeCreateSpec;
 use crate::transport::registry::ConnectionRegistry;
 use crate::transport::ChannelRequest;
@@ -394,7 +394,7 @@ impl ProjectsService {
 mod tests {
     use super::*;
     use crate::projects::Project;
-    use crate::quickconnect::model::{TargetConfig, TargetRuntime, TargetTransport};
+    use crate::projects::{TargetConfig, TargetRuntime, TargetTransport};
 
     fn project(id: &str) -> Project {
         Project::new(

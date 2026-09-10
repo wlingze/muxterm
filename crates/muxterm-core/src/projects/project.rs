@@ -3,7 +3,7 @@
 use anyhow::{anyhow, Result};
 
 use crate::config::ProjectDocument;
-use crate::quickconnect::model::TargetConfig;
+use crate::projects::TargetConfig;
 use crate::workspace::provenance::WorkspaceProvenance;
 use crate::workspace::template::TemplateName;
 
@@ -103,7 +103,7 @@ impl Project {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::quickconnect::model::{TargetRuntime, TargetTransport};
+    use crate::projects::{TargetRuntime, TargetTransport};
 
     fn project() -> Project {
         Project::new(

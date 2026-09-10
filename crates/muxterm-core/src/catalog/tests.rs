@@ -492,10 +492,10 @@ async fn open_resolved_uses_canonical_workspace_name() {
     }));
 
     let spec = WorkspaceSpec::herdr("default", "w2", "/tmp/herdr.sock");
-    let canonical = crate::quickconnect::model::TargetConfig {
+    let canonical = crate::projects::TargetConfig {
         name: "muxterm".into(),
-        runtime: crate::quickconnect::model::TargetRuntime::Herdr,
-        transport: crate::quickconnect::model::TargetTransport::Local,
+        runtime: crate::projects::TargetRuntime::Herdr,
+        transport: crate::projects::TargetTransport::Local,
         path: "/home/example/muxterm".into(),
         socket: Some("/tmp/herdr.sock".into()),
         session: Some("default".into()),
@@ -755,7 +755,7 @@ async fn incompatible_channel_requirements_are_rejected_without_fallback() {
 
 #[test]
 fn candidate_resolver_maps_project_and_worktree_provenance() {
-    use crate::quickconnect::model::{TargetConfig, TargetRuntime, TargetTransport};
+    use crate::projects::{TargetConfig, TargetRuntime, TargetTransport};
     use crate::workspace::template::TemplateName;
 
     let mut project = Project::new(
@@ -991,7 +991,7 @@ async fn catalog_applies_templates_only_to_create_specs() {
 
 #[tokio::test]
 async fn candidate_resolver_rehydrates_recent_from_core_descriptor() {
-    use crate::quickconnect::model::{TargetConfig, TargetRuntime, TargetTransport};
+    use crate::projects::{TargetConfig, TargetRuntime, TargetTransport};
 
     let catalog = Catalog::new();
     let mut connections = ConnectionRegistry::new();
@@ -1037,7 +1037,7 @@ async fn candidate_resolver_rehydrates_recent_from_core_descriptor() {
 
 #[tokio::test]
 async fn catalog_candidates_aggregates_four_kinds_and_marks_pool_membership() {
-    use crate::quickconnect::model::{TargetConfig, TargetRuntime, TargetTransport};
+    use crate::projects::{TargetConfig, TargetRuntime, TargetTransport};
     use crate::workspace::provenance::WorkspaceProvenance;
 
     let mut project = Project::new(

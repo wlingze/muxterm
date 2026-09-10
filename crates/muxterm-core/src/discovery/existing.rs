@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use crate::quickconnect::model::{TargetRuntime, TargetTransport};
+use crate::projects::{TargetRuntime, TargetTransport};
 use crate::runtime::herdr::session::HerdrSession;
 
 use super::{list_local_tmux_sessions, list_ssh_tmux_sessions, TmuxSessionInfo};
@@ -41,8 +41,8 @@ impl ExistingEntry {
     ///
     /// Existing 的 attach identity 必须来自发现结果中的 typed 字段；这里
     /// 不从 workspace id 猜项目路径，也不从本机 HOME 猜 SSH socket。
-    pub fn target_config(&self) -> crate::quickconnect::model::TargetConfig {
-        use crate::quickconnect::model::TargetConfig;
+    pub fn target_config(&self) -> crate::projects::TargetConfig {
+        use crate::projects::TargetConfig;
 
         let path = if self.runtime == TargetRuntime::Herdr {
             String::new()

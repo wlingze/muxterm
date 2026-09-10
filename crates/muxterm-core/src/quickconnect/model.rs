@@ -5,217 +5,24 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-/// 快速连接目标的运行时（shell / tmux）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TargetRuntime {
-    Shell,
-    Tmux,
-    Herdr,
-}
+pub use crate::projects::{TargetConfig, TargetRuntime, TargetTransport};
 
-impl TargetRuntime {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            TargetRuntime::Shell => "shell",
-            TargetRuntime::Tmux => "tmux",
-            TargetRuntime::Herdr => "herdr",
-        }
+fn runtime_from_query_token(value: &str) -> Option<TargetRuntime> {
+    if let Some(exact) = TargetRuntime::from_str(value) {
+        return Some(exact);
     }
-
-    pub fn from_str(value: &str) -> Option<Self> {
-        match value.to_ascii_lowercase().as_str() {
-            "shell" => Some(TargetRuntime::Shell),
-            "tmux" => Some(TargetRuntime::Tmux),
-            "herdr" => Some(TargetRuntime::Herdr),
-            _ => None,
-        }
+    if value.len() < 2 {
+        return None;
     }
-
-    /// 查询 token：完整名字，或长度 ≥ 2 且在 shell/tmux/herdr 中唯一的前缀。
-    /// `@tm` → tmux；配置解析仍走精确的 `from_str`。
-    fn from_query_token(value: &str) -> Option<Self> {
-        if let Some(exact) = Self::from_str(value) {
-            return Some(exact);
-        }
-        if value.len() < 2 {
-            return None;
-        }
-        let hits: Vec<Self> = [Self::Shell, Self::Tmux, Self::Herdr]
-            .into_iter()
-            .filter(|runtime| runtime.as_str().starts_with(value))
-            .collect();
-        match hits.as_slice() {
-            [only] => Some(*only),
-            _ => None,
-        }
-    }
-}
-
-/// 连接传输（ssh 需要名字；local 不需要）。
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum TargetTransport {
-    Local,
-    Ssh { name: String },
-}
-
-impl TargetTransport {
-    pub fn label(&self) -> String {
-        match self {
-            TargetTransport::Local => "local".into(),
-            TargetTransport::Ssh { name } => name.clone(),
-        }
-    }
-
-    pub fn is_ssh(&self) -> bool {
-        matches!(self, TargetTransport::Ssh { .. })
-    }
-
-    /// 创建 detached session 时走 discovery FFI（`local` / `ssh`）。
-    pub fn create_backend(&self) -> (&'static str, Option<&str>) {
-        match self {
-            TargetTransport::Local => ("local", None),
-            TargetTransport::Ssh { name } => ("ssh", Some(name.as_str())),
-        }
-    }
-
-    /// attach 控制模式时走 `tmux` / `tmux-ssh`。
-    pub fn attach_backend(&self) -> (&'static str, Option<&str>) {
-        match self {
-            TargetTransport::Local => ("tmux", None),
-            TargetTransport::Ssh { name } => ("tmux-ssh", Some(name.as_str())),
-        }
-    }
-}
-
-/// 一个可快速连接的目标（Recent / Project 共用）。
-///
-/// 身份字段（transport target / runtime / session / target-side socket /
-/// workspace_id）与显示/项目元数据（name / path）分离：
-/// identity key 只由身份字段构成，`name`/`path` 变更不改变身份。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TargetConfig {
-    pub name: String,
-    pub runtime: TargetRuntime,
-    pub transport: TargetTransport,
-    /// 项目目录（显示/元数据）；Herdr 的 `wN` workspace_id 独立存放，互不覆盖。
-    pub path: String,
-    /// Herdr：target-side API socket 绝对路径（本地 = 本机 socket；
-    /// SSH = 远端 socket 路径，转发由 Runtime 创建，保存的永远是 target-side）。
-    pub socket: Option<String>,
-    /// Herdr：named session 名（默认 socket 为 "default"）。
-    pub session: Option<String>,
-    /// Herdr：workspace id（`wN`）。tmux/shell 为空。
-    pub workspace_id: Option<String>,
-}
-
-impl TargetConfig {
-    pub fn new(
-        name: impl Into<String>,
-        runtime: TargetRuntime,
-        transport: TargetTransport,
-        path: impl Into<String>,
-    ) -> Self {
-        TargetConfig {
-            name: name.into(),
-            runtime,
-            transport,
-            path: path.into(),
-            socket: None,
-            session: None,
-            workspace_id: None,
-        }
-    }
-
-    /// 命令面板 / SSH 向导：attach 指定 tmux session。
-    pub fn tmux_session(session: impl Into<String>, transport: TargetTransport) -> Self {
-        let session = session.into();
-        TargetConfig::new(session, TargetRuntime::Tmux, transport, "~")
-    }
-
-    /// 身份 key：transport target、runtime、session、target-side socket 与
-    /// workspace_id。`name`/`path` 是显示/项目元数据，不参与身份。
-    pub fn identity_key(&self) -> String {
-        let (transport, target) = match &self.transport {
-            TargetTransport::Local => ("local", ""),
-            TargetTransport::Ssh { name } => ("ssh", name.as_str()),
-        };
-        let runtime = self.runtime.as_str();
-        let components = match self.runtime {
-            // Shell 的 cwd 是它的 attach identity；name 只用于显示。
-            TargetRuntime::Shell => vec![
-                runtime.to_string(),
-                transport.to_string(),
-                target.to_string(),
-                if self.path.is_empty() {
-                    self.name.clone()
-                } else {
-                    self.path.clone()
-                },
-            ],
-            // Project 记录通常没有单独的 session 字段，但 tmux Project
-            // 的 name 就是创建/attach 时使用的 session 名。
-            TargetRuntime::Tmux => vec![
-                runtime.to_string(),
-                transport.to_string(),
-                target.to_string(),
-                self.session
-                    .clone()
-                    .filter(|session| !session.is_empty())
-                    .unwrap_or_else(|| self.name.clone()),
-                self.socket.clone().unwrap_or_default(),
-            ],
-            // Herdr 只有三项 typed identity 都存在时才可跨 Project/Existing
-            // 复用；旧配置则保留 name/path 作为 provisional key。
-            TargetRuntime::Herdr
-                if self.session.as_deref().is_some_and(|v| !v.is_empty())
-                    && self.socket.as_deref().is_some_and(|v| !v.is_empty())
-                    && self.workspace_id.as_deref().is_some_and(|v| !v.is_empty()) =>
-            {
-                vec![
-                    runtime.to_string(),
-                    transport.to_string(),
-                    target.to_string(),
-                    self.session.clone().unwrap_or_default(),
-                    self.socket.clone().unwrap_or_default(),
-                    self.workspace_id.clone().unwrap_or_default(),
-                ]
-            }
-            TargetRuntime::Herdr => vec![
-                "herdr-provisional".to_string(),
-                transport.to_string(),
-                target.to_string(),
-                self.name.clone(),
-                self.path.clone(),
-            ],
-        };
-        // 长度前缀避免 session/socket/path 中的分隔符造成碰撞。
-        components
-            .iter()
-            .map(|component| format!("{}:{component}", component.len()))
-            .collect::<Vec<_>>()
-            .join("|")
-    }
-
-    /// 用于工作区面板搜索的字段集合。
-    ///
-    /// 这些字段都是目标描述的一部分；尤其是 SSH alias、session、socket
-    /// 和 Herdr workspace_id，不能只靠用户可见的 name/path 搜索到。
-    fn search_fields(&self) -> Vec<String> {
-        let transport = match &self.transport {
-            TargetTransport::Local => "local".to_string(),
-            TargetTransport::Ssh { name } => format!("ssh {name}"),
-        };
-        vec![
-            self.name.clone(),
-            self.runtime.as_str().to_string(),
-            transport,
-            self.path.clone(),
-            self.session.clone().unwrap_or_default(),
-            self.socket.clone().unwrap_or_default(),
-            self.workspace_id.clone().unwrap_or_default(),
-        ]
-    }
+    let matches: Vec<TargetRuntime> = [
+        TargetRuntime::Shell,
+        TargetRuntime::Tmux,
+        TargetRuntime::Herdr,
+    ]
+    .into_iter()
+    .filter(|runtime| runtime.as_str().starts_with(value))
+    .collect();
+    (matches.len() == 1).then(|| matches[0])
 }
 
 /// 工作区面板查询。
@@ -246,7 +53,7 @@ impl WorkspaceQuery {
                 continue;
             }
             let filter = filter.to_lowercase();
-            if let Some(runtime) = TargetRuntime::from_query_token(&filter) {
+            if let Some(runtime) = runtime_from_query_token(&filter) {
                 query.runtime_filters.push(runtime);
             } else if filter == "local" || unique_local_prefix(&filter) {
                 query.local_only = true;
