@@ -6,7 +6,8 @@ use std::rc::Rc;
 use gtk4::prelude::*;
 use gtk4::{Box, Button, Entry, Orientation, Window};
 
-use super::{after_activate, parse_workspace_id, sync_view_store, UiState};
+use super::window_event_pump::sync_view_store;
+use super::{after_activate, parse_workspace_id, UiState};
 
 /// worktree 创建对话框：分支 + 路径，Create 后后台建 checkout 并开新格。
 pub(super) fn show_worktree_create_dialog(state: &Rc<RefCell<UiState>>, parent: &Window) {

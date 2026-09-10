@@ -4,10 +4,11 @@ use std::collections::HashSet;
 
 use muxterm_protocol::WorkspaceId;
 
+use super::window_event_pump::enqueue_workspace_input;
 use super::{
-    active_workspace_key, drain_view_store_render_events, enqueue_workspace_input,
-    parse_workspace_id, refresh_workspace_layout, resident_pane_view, seed_unseeded_pane_for,
-    show_workspace_scene, ClientRuntimeCapability, ClientWorkspaceEvent, UiState,
+    active_workspace_key, drain_view_store_render_events, parse_workspace_id,
+    refresh_workspace_layout, resident_pane_view, seed_unseeded_pane_for, show_workspace_scene,
+    ClientRuntimeCapability, ClientWorkspaceEvent, UiState,
 };
 
 /// Consume every opened scene's render mailbox without recapturing hidden

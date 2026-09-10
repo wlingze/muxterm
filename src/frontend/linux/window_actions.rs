@@ -3,6 +3,7 @@
 //! The parent window owns state and the event loop; this module keeps
 //! user actions as a separate controller boundary.
 
+use super::window_event_pump::enqueue_workspace_input;
 use super::*;
 
 pub(super) fn prepare_core_tab_mutation(s: &mut UiState, task: &ClientTask) {

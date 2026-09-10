@@ -8,7 +8,8 @@ use vte4::prelude::*;
 
 use crate::frontend::linux::quickconnect::event_policy::ClientSizePolicy;
 
-use super::{active_workspace_key, enqueue_workspace_resize, ClientRuntimeCapability, UiState};
+use super::window_event_pump::enqueue_workspace_resize;
+use super::{active_workspace_key, ClientRuntimeCapability, UiState};
 
 const CLIENT_SIZE_STABLE_HITS: u8 = 10;
 

@@ -8,12 +8,12 @@ use gtk4::Window;
 
 use muxterm_protocol::WorkspaceId;
 
+use super::window_event_pump::{activity_snapshot, panel_attention_rows};
 use super::{
-    activate_existing, active_workspace_id, active_workspace_key, activity_snapshot,
-    build_root_items, build_search_items, collect_ssh_reach, connect_open_request,
-    open_target_config, panel_attention_rows, parse_workspace_id, recent_target_configs,
-    refresh_attention_chrome, refresh_sidebar_if_open, request_switch_tab,
-    spawn_existing_ssh_probe, spawn_local_existing_probe, workspace_replica_id,
+    activate_existing, active_workspace_id, active_workspace_key, build_root_items,
+    build_search_items, collect_ssh_reach, connect_open_request, open_target_config,
+    parse_workspace_id, recent_target_configs, refresh_attention_chrome, refresh_sidebar_if_open,
+    request_switch_tab, spawn_existing_ssh_probe, spawn_local_existing_probe, workspace_replica_id,
     workspace_to_target_config, AgentSidebarItem, ClientTask, ExistingNav, PanelTab, UiState,
 };
 

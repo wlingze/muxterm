@@ -10,7 +10,8 @@ use crate::frontend::linux::attention_ui::window_title;
 use crate::frontend::linux::quickconnect::status_style::StatusBarSnapshot;
 use crate::frontend::linux::status_bar::ConnectionSummary;
 
-use super::{activity_snapshot, parse_workspace_id, ClientRuntimeCapability, UiState};
+use super::window_event_pump::activity_snapshot;
+use super::{parse_workspace_id, ClientRuntimeCapability, UiState};
 
 pub(super) fn refresh_attention_chrome(s: &UiState, window: &Window) {
     let n = activity_snapshot(s).blocked_count;
