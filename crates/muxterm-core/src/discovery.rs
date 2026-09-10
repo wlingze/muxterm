@@ -246,10 +246,10 @@ pub fn shell_quote_remote_path(value: &str) -> String {
 
 pub type SshPaneInfo = (u32, bool, u16, u16, String);
 
-/// 通过 SSH transport 在远端执行 `tmux list-panes`，解析结果。
+/// 通过 discovery 短命令在远端执行 `tmux list-panes`，解析结果。
 ///
-/// 使用 muxterm 自己的 `SshProcessTransport`，不直接调用 raw ssh。
-/// SSH 远端 pane 信息：(pane_id, active, cols, rows, title)
+/// 列举不需要 attach 的 PTY；统一使用 BatchMode + 短 ConnectTimeout 的
+/// discovery SSH 命令。SSH 远端 pane 信息：(pane_id, active, cols, rows, title)
 pub fn list_ssh_tmux_panes(
     alias: &str,
     ssh_config_path: Option<&str>,
@@ -257,105 +257,35 @@ pub fn list_ssh_tmux_panes(
     session: &str,
     timeout: std::time::Duration,
 ) -> anyhow::Result<Vec<SshPaneInfo>> {
-    use crate::transport::ssh::{build_ssh_command, SshProcessTransport};
-    use crate::transport::{ProcessTransport, PtySize, TransportSignal};
-    use std::sync::mpsc as std_mpsc;
-    use std::sync::{Arc, Mutex};
-    use std::time::Instant;
-
     let remote_tmux = if let Some(sk) = remote_socket {
         format!(
             "tmux -L {} list-panes -t {} -F '#{{pane_id}},#{{pane_active}},#{{pane_width}},#{{pane_height}},#{{pane_title}}'",
-            sk, session
+            shell_quote(sk),
+            shell_quote(session)
         )
     } else {
         format!(
             "tmux list-panes -t {} -F '#{{pane_id}},#{{pane_active}},#{{pane_width}},#{{pane_height}},#{{pane_title}}'",
-            session
+            shell_quote(session)
         )
     };
-    let (program, args) = build_ssh_command(alias, &remote_tmux, ssh_config_path);
-    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-
-    let mut transport = SshProcessTransport::new();
-    transport
-        .spawn_exec(&program, &arg_refs, PtySize::new(80, 24))
-        .map_err(|e| anyhow::anyhow!("SSH transport spawn 失败: {e}"))?;
-
-    let transport = Arc::new(Mutex::new(transport));
-    let (tx, rx) = std_mpsc::channel::<Vec<u8>>();
-    let rt = transport.clone();
-    let read_handle = std::thread::spawn(move || loop {
-        let mut t = rt.lock().unwrap();
-        match t.read() {
-            Ok(Some(data)) => {
-                drop(t);
-                if tx.send(data).is_err() {
-                    break;
-                }
-            }
-            Ok(None) => {
-                drop(t);
-                std::thread::sleep(std::time::Duration::from_millis(20));
-            }
-            Err(_) => break,
-        }
-    });
-
-    let deadline = Instant::now() + timeout;
-    let mut all_output = Vec::new();
-    while Instant::now() < deadline {
-        match rx.recv_timeout(std::time::Duration::from_millis(100)) {
-            Ok(data) => all_output.extend_from_slice(&data),
-            Err(std_mpsc::RecvTimeoutError::Timeout) => {
-                let mut t = transport.lock().unwrap();
-                if let Ok(Some(code)) = t.try_wait() {
-                    if code != 0 && code != 1 {
-                        let text = String::from_utf8_lossy(&all_output);
-                        return Err(anyhow::anyhow!(
-                            "SSH remote pane list failed (exit {code}): {text}"
-                        ));
-                    }
-                    drop(t);
-                    break;
-                }
-            }
-            Err(std_mpsc::RecvTimeoutError::Disconnected) => break,
-        }
+    let (program, args) = build_ssh_command_for_discovery(alias, &remote_tmux, ssh_config_path);
+    let (exit_code, output) = run_ssh_discovery_command(&program, &args, timeout)?;
+    if exit_code == 255 {
+        return Err(anyhow::anyhow!(
+            "SSH connection failed (exit {exit_code}): {}",
+            output.trim()
+        ));
+    }
+    // exit 1 from tmux = no server, return an empty pane list.
+    if exit_code != 0 && exit_code != 1 {
+        return Err(anyhow::anyhow!(
+            "SSH remote pane list failed (exit {exit_code}): {}",
+            output.trim()
+        ));
     }
 
-    {
-        let mut t = transport.lock().unwrap();
-        let _ = t.kill(TransportSignal::Term);
-    }
-    let _ = read_handle.join();
-    // 读线程结束后再 drain 尾部数据（见 list_ssh_tmux_sessions 的说明）。
-    while let Ok(d) = rx.try_recv() {
-        all_output.extend_from_slice(&d);
-    }
-
-    // Check child exit code: nonzero (except 1 = tmux no server) = error
-    let exit_code = {
-        let mut t = transport.lock().unwrap();
-        t.try_wait().ok().flatten()
-    };
-    if let Some(code) = exit_code {
-        if code != 0 && code != 1 {
-            let text = String::from_utf8_lossy(&all_output);
-            if code == 255 {
-                return Err(anyhow::anyhow!(
-                    "SSH connection failed (exit {code}): {text}"
-                ));
-            }
-            // Other nonzero = remote command failed
-            return Err(anyhow::anyhow!(
-                "SSH remote pane list failed (exit {code}): {text}"
-            ));
-        }
-    }
-
-    let text = String::from_utf8_lossy(&all_output);
-    let panes: Vec<SshPaneInfo> = text
+    let panes: Vec<SshPaneInfo> = output
         .lines()
         .filter_map(|line| {
             let parts: Vec<&str> = line.trim_end_matches('\r').split(',').collect();
@@ -651,6 +581,26 @@ mod tests {
     }
 
     /// C7：discovery 短命令禁止 portable-pty / SshProcessTransport。
+    /// C7：SSH pane discovery 同样必须走无 PTY 的短命 discovery 命令。
+    #[test]
+    fn list_ssh_tmux_panes_must_not_use_attach_transport() {
+        let src = include_str!("discovery.rs");
+        let body = fn_src(src, "list_ssh_tmux_panes");
+        assert!(
+            body.contains("build_ssh_command_for_discovery"),
+            "list_ssh_tmux_panes 必须用 discovery 命令: {body}"
+        );
+        assert!(
+            !body.contains("SshProcessTransport"),
+            "pane 列出禁止 SshProcessTransport PTY: {body}"
+        );
+        assert!(
+            !body.contains("build_ssh_command("),
+            "pane 列出禁止调用 attach 用的 build_ssh_command: {body}"
+        );
+    }
+
+    /// C7: discovery short commands must not allocate a PTY.
     #[test]
     fn run_ssh_discovery_command_must_not_use_pty() {
         let src = include_str!("discovery.rs");
