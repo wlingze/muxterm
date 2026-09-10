@@ -26,9 +26,10 @@ use crate::frontend::command_queue::{ClientCommand, CommandQueue};
 use crate::frontend::event_pump::EventPump;
 use crate::frontend::ffi_client::{
     ClientActivitySnapshot, ClientAttentionPane, ClientAttentionStatus, ClientCandidateRef,
-    ClientConfig, ClientEventKind, ClientKeyBinding, ClientLayout, ClientOpenIntent,
-    ClientOpenRequest, ClientOpenedWorkspace, ClientRuntimeCapability, ClientRuntimeInfo,
-    ClientTarget, ClientTask, ClientWorkspaceAttention, ClientWorkspaceEvent, FfiClient,
+    ClientConfig, ClientConfigSnapshot, ClientEventKind, ClientKeyBinding, ClientLayout,
+    ClientOpenIntent, ClientOpenRequest, ClientOpenedWorkspace, ClientRuntimeCapability,
+    ClientRuntimeInfo, ClientTarget, ClientTask, ClientWorkspaceAttention, ClientWorkspaceEvent,
+    FfiClient,
 };
 use crate::frontend::i18n::{self, Key};
 use crate::frontend::linux::attention_compat::CompatibilityActivity;
@@ -400,7 +401,31 @@ fn enqueue_workspace_resize(
 
 fn poll_event_store(s: &mut UiState) -> Vec<ClientWorkspaceEvent> {
     let event_pump = &s.event_pump;
-    event_pump.poll_into_with_events(&mut s.view_store)
+    let events = event_pump.poll_into_with_events(&mut s.view_store);
+    poll_config_events(s);
+    events
+}
+
+/// Drain Core configuration events through EventPump and hot-apply committed
+/// or reloaded frontend settings. Preview events stay owned by the settings
+/// overlay until its transaction commits.
+fn poll_config_events(s: &mut UiState) {
+    let changed = s
+        .event_pump
+        .poll_config_events()
+        .iter()
+        .any(|event| event.changes_values());
+    if !changed {
+        return;
+    }
+    match s.event_pump.client().config_describe() {
+        Ok(snapshot) => apply_config_snapshot(s, snapshot),
+        Err(error) => tracing::warn!(
+            target = "muxterm::config",
+            %error,
+            "读取配置变更快照失败，跳过热应用"
+        ),
+    }
 }
 
 fn sync_view_store(s: &mut UiState) -> anyhow::Result<usize> {
@@ -2404,6 +2429,59 @@ fn toggle_theme(s: &mut UiState) {
     report_all_pane_colours(s);
 }
 
+/// Apply one owned Core configuration snapshot to all live frontend surfaces.
+/// This is shared by the settings callback and the EventPump ConfigChanged
+/// path so external reloads and in-app edits have identical behavior.
+fn apply_config_snapshot(s: &mut UiState, snapshot: ClientConfigSnapshot) {
+    let resolved_theme = snapshot.resolved_theme.clone();
+    let effective_keybindings = snapshot.effective_keybindings.clone();
+    let cfg = match serde_json::from_value::<ClientConfig>(snapshot.values) {
+        Ok(config) => config,
+        Err(error) => {
+            tracing::warn!(
+                target = "muxterm::config",
+                "配置快照解码失败，跳过热应用: {error}"
+            );
+            return;
+        }
+    };
+
+    s.keymap = KeyMap::from_bindings(&effective_keybindings);
+    let attention_config = cfg.attention.clone();
+    if let Err(error) = s.event_pump.client().configure_attention(&attention_config) {
+        tracing::warn!(
+            target = "muxterm::linux",
+            %error,
+            "热加载 Core attention 配置失败"
+        );
+    }
+    s.compatibility_activity.set_config(attention_config);
+
+    s.config_font_size = cfg.font.size;
+    s.font = FontSettings {
+        family: cfg.font.family.clone(),
+        size: FontSettings::clamp_size(cfg.font.size),
+        fallback: cfg.font.fallback.clone(),
+    };
+    let font = s.font.clone();
+    for layout in s.pixel_cache.values_mut() {
+        layout.set_font(&font);
+    }
+
+    s.theme_name = cfg.theme.name.to_ascii_lowercase();
+    let theme = resolved_theme.unwrap_or_else(fallback_theme);
+    s.theme = theme.clone();
+    apply_chrome_css(&theme);
+    for layout in s.pixel_cache.values_mut() {
+        layout.apply_theme(&theme);
+    }
+    s.status.apply_theme(&theme);
+    s.status_mode = StatusBarMode::from_toml(Some(&cfg.statusbar.mode));
+    s.status.set_mode(s.status_mode);
+    report_all_pane_colours(s);
+    maybe_refresh_status(s, true);
+}
+
 fn toggle_status_mode(s: &mut UiState) {
     let next = match s.status_mode {
         StatusBarMode::Tmux => StatusBarMode::Theme,
@@ -4337,44 +4415,9 @@ fn open_preferences(state: &Rc<RefCell<UiState>>, window: &Window) {
         std::boxed::Box::new(move || {
             let snapshot = config_for_saved.describe();
             let mut s = st.borrow_mut();
-            // 保存后重新读取 Core FFI 快照，重建 keymap 并刷新运行期状态。
+            // 保存后重新读取 Core FFI 快照；EventPump 外部配置变更走同一函数。
             if let Ok(snapshot) = snapshot {
-                let resolved_theme = snapshot.resolved_theme.clone();
-                let effective_keybindings = snapshot.effective_keybindings.clone();
-                let cfg = match serde_json::from_value::<ClientConfig>(snapshot.values) {
-                    Ok(config) => config,
-                    Err(error) => {
-                        tracing::warn!(
-                            target = "muxterm::config",
-                            "配置快照解码失败，跳过热应用: {error}"
-                        );
-                        return;
-                    }
-                };
-                s.keymap = KeyMap::from_bindings(&effective_keybindings);
-                let attention_config = cfg.attention.clone();
-                if let Err(error) = s.event_pump.client().configure_attention(&attention_config) {
-                    tracing::warn!(
-                        target = "muxterm::linux",
-                        %error,
-                        "热加载 Core attention 配置失败"
-                    );
-                }
-                s.compatibility_activity.set_config(attention_config);
-                s.config_font_size = cfg.font.size;
-                s.font.size = FontSettings::clamp_size(cfg.font.size);
-                s.font.family = cfg.font.family.clone();
-                s.theme_name = cfg.theme.name.to_ascii_lowercase();
-                let theme = resolved_theme.unwrap_or_else(fallback_theme);
-                s.theme = theme.clone();
-                apply_chrome_css(&theme);
-                for layout in s.pixel_cache.values_mut() {
-                    layout.apply_theme(&theme);
-                }
-                s.status.apply_theme(&theme);
-                s.status_mode = StatusBarMode::from_toml(Some(&cfg.statusbar.mode));
-                s.status.set_mode(s.status_mode);
-                maybe_refresh_status(&mut s, true);
+                apply_config_snapshot(&mut s, snapshot);
             }
         }),
         Some((runtimes, hosts)),
