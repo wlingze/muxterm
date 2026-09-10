@@ -121,4 +121,28 @@ impl OverlayLayer {
             command_fail_text,
         }
     }
+
+    /// 连接 Overlay 的交互入口；Overlay 只转发 GTK signal，不读取 Core 状态。
+    pub fn connect_actions<O, F, L, Q, J>(
+        &self,
+        on_command_ok: O,
+        on_command_fail: F,
+        on_last_seen: L,
+        on_find_changed: Q,
+        on_jump_latest: J,
+    ) where
+        O: Fn() + 'static,
+        F: Fn() + 'static,
+        L: Fn() + 'static,
+        Q: Fn(&str) + 'static,
+        J: Fn() + 'static,
+    {
+        self.command_ok.connect_clicked(move |_| on_command_ok());
+        self.command_fail
+            .connect_clicked(move |_| on_command_fail());
+        self.last_seen.connect_clicked(move |_| on_last_seen());
+        self.pane_find_entry
+            .connect_changed(move |entry| on_find_changed(entry.text().as_str()));
+        self.jump_latest.connect_clicked(move |_| on_jump_latest());
+    }
 }

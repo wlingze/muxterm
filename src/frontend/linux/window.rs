@@ -857,70 +857,55 @@ impl AppWindow {
 
         // 命令刻度点击：滚到对应命令文本所在行（W18h）。
         {
-            let st = state.clone();
-            let text = state.borrow().overlay.command_ok_text.clone();
-            state.borrow().overlay.command_ok.connect_clicked(move |_| {
-                scroll_to_command_text(&st, &text);
-            });
-        }
-        {
-            let st = state.clone();
-            let text = state.borrow().overlay.command_fail_text.clone();
-            state
-                .borrow()
-                .overlay
-                .command_fail
-                .connect_clicked(move |_| {
-                    scroll_to_command_text(&st, &text);
-                });
-        }
-
-        // 上次看到这里：点击滚回离开时的那一行（W18g）。
-        {
-            let st = state.clone();
-            state.borrow().overlay.last_seen.connect_clicked(move |_| {
-                let s = st.borrow();
-                let ws = active_workspace_id(&s);
-                let pane = s.active_pane;
-                if let Some(text) = s.last_seen.get(&(ws.clone(), pane)).cloned() {
-                    let lines = s
-                        .event_pump
-                        .client()
-                        .workspace_pane_last_n_lines(&ws, pane, 10_000)
-                        .unwrap_or_default();
-                    if let Some(row) = lines.iter().position(|l| l.contains(&text)) {
-                        if let Some(view) = s.active_layout().pane(pane).cloned() {
-                            if let Some(adj) = view.terminal().vadjustment() {
-                                adj.set_value(adj.lower() + row as f64);
+            let ok_state = state.clone();
+            let fail_state = state.clone();
+            let last_seen_state = state.clone();
+            let find_state = state.clone();
+            let jump_state = state.clone();
+            let ok_text = state.borrow().overlay.command_ok_text.clone();
+            let fail_text = state.borrow().overlay.command_fail_text.clone();
+            let s = state.borrow();
+            s.overlay.connect_actions(
+                move || scroll_to_command_text(&ok_state, &ok_text),
+                move || scroll_to_command_text(&fail_state, &fail_text),
+                move || {
+                    let s = last_seen_state.borrow();
+                    let ws = active_workspace_id(&s);
+                    let pane = s.active_pane;
+                    if let Some(text) = s.last_seen.get(&(ws.clone(), pane)).cloned() {
+                        let lines = s
+                            .event_pump
+                            .client()
+                            .workspace_pane_last_n_lines(&ws, pane, 10_000)
+                            .unwrap_or_default();
+                        if let Some(row) = lines.iter().position(|l| l.contains(&text)) {
+                            if let Some(view) = s.active_layout().pane(pane).cloned() {
+                                if let Some(adj) = view.terminal().vadjustment() {
+                                    adj.set_value(adj.lower() + row as f64);
+                                }
                             }
                         }
                     }
-                }
-                s.overlay.last_seen.set_visible(false);
-            });
-        }
-
-        // 当前 pane 内查找：输入即滚到第一个命中（W18f）。
-        {
-            let st = state.clone();
-            state
-                .borrow()
-                .overlay
-                .pane_find_entry
-                .connect_changed(move |e| {
-                    let q = e.text().to_string();
-                    if q.is_empty() {
+                    s.overlay.last_seen.set_visible(false);
+                },
+                move |query| {
+                    if query.is_empty() {
                         return;
                     }
-                    let s = st.borrow();
+                    let s = find_state.borrow();
                     let pane = s.active_pane;
                     let workspace_replica = active_workspace_id(&s);
                     let workspace_key = active_workspace_key(&s);
-                    let hit = s.event_pump.client().search_all(&q).ok().and_then(|hits| {
-                        hits.into_iter().find(|hit| {
-                            hit.workspace_id == workspace_replica && hit.pane_id == pane
-                        })
-                    });
+                    let hit = s
+                        .event_pump
+                        .client()
+                        .search_all(query)
+                        .ok()
+                        .and_then(|hits| {
+                            hits.into_iter().find(|hit| {
+                                hit.workspace_id == workspace_replica && hit.pane_id == pane
+                            })
+                        });
                     if let Some(hit) = hit {
                         if let Some(row) = s.event_pump.client().workspace_pane_viewport_for_seq(
                             &workspace_key,
@@ -934,25 +919,17 @@ impl AppWindow {
                             }
                         }
                     }
-                });
-        }
-
-        // 回底按钮：把当前激活 pane 的 VTE 滚回尾部（W16a）。
-        {
-            let st = state.clone();
-            state
-                .borrow()
-                .overlay
-                .jump_latest
-                .connect_clicked(move |_| {
-                    let mut s = st.borrow_mut();
+                },
+                move || {
+                    let mut s = jump_state.borrow_mut();
                     s.overlay.jump_unseen = 0;
                     if let Some(view) = s.active_layout().pane(s.active_pane).cloned() {
                         if let Some(adj) = view.terminal().vadjustment() {
                             adj.set_value(adj.upper());
                         }
                     }
-                });
+                },
+            );
         }
 
         // 快捷键
