@@ -21,6 +21,7 @@ use super::window_layout::refresh_ui;
 use super::window_overlay::{open_pane_find, open_panel, open_quick_connect};
 use super::window_render::{
     mark_active_attention_visible, refresh_event_workspaces, sync_pane_outputs,
+    sync_render_policies,
 };
 use super::window_resize::sync_window_size;
 use super::window_scene::{activate_existing, request_switch_tab};
@@ -484,6 +485,7 @@ impl AppWindow {
                             maybe_warn_workspace_capacity(&st, &w);
                         }
                         let mut s = st.borrow_mut();
+                        sync_render_policies(&mut s);
                         // EventPump 是唯一事件消费者：Core 的 workspace 批次先写入
                         // owned ViewStore，再由常驻 Scene 消费 render mailbox。
                         let events = poll_event_store(&mut s);

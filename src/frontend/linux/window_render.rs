@@ -2,8 +2,12 @@
 
 use std::collections::HashSet;
 
+use crate::frontend::command_queue::ClientCommand;
+use crate::frontend::ffi_client::ClientTask;
+use crate::frontend::linux::view_store::PaneRenderPolicy;
 use muxterm_protocol::WorkspaceId;
 
+use super::super::view_store::WorkspaceView;
 use super::window_event_pump::enqueue_workspace_input;
 use super::window_layout::refresh_workspace_layout;
 use super::window_scene::show_workspace_scene;
@@ -39,10 +43,66 @@ pub(super) fn sync_pane_outputs(s: &mut UiState) {
             view.ensure_grid_size(cols, rows);
             seed_unseeded_pane_for(s, &wid, &view, pane_id, cols, rows);
             if view.is_seeded() {
+                if let Some(bytes) = s
+                    .view_store
+                    .take_pane_resume_baseline(&workspace_key, pane_id)
+                {
+                    view.feed_full(&bytes);
+                }
                 drain_view_store_render_events(s, &wid, &view, pane_id);
                 forward_parser_replies_for_key(s, &workspace_key, pane_id);
             }
         }
+    }
+}
+
+/// Assign render delivery tiers from Scene visibility and transport cost.
+///
+/// Visible scenes stay live. Hidden SSH scenes pause incremental output and
+/// resume from an asynchronous baseline; other hidden scenes coalesce adjacent
+/// output without dropping bytes.
+pub(super) fn sync_render_policies(s: &mut UiState) {
+    let visible_workspace = s.active_workspace_key();
+    let targets: Vec<(String, u32, PaneRenderPolicy)> = s
+        .view_store
+        .workspaces()
+        .flat_map(|(workspace_id, view)| {
+            let policy = if workspace_id == visible_workspace {
+                PaneRenderPolicy::Live
+            } else {
+                hidden_render_policy(view)
+            };
+            view.panes
+                .values()
+                .flat_map(|panes| panes.iter())
+                .map(move |pane| (workspace_id.to_string(), pane.id, policy))
+        })
+        .collect();
+
+    for (workspace_id, pane_id, policy) in targets {
+        let previous = s
+            .view_store
+            .set_pane_render_policy(&workspace_id, pane_id, policy);
+        if previous == PaneRenderPolicy::Pause && policy != PaneRenderPolicy::Pause {
+            s.command_queue.borrow_mut().push(ClientCommand::Task {
+                workspace_id: Some(workspace_id),
+                task: ClientTask::RequestPaneSnapshot { pane_id },
+            });
+        }
+    }
+}
+
+fn hidden_render_policy(view: &WorkspaceView) -> PaneRenderPolicy {
+    let transport = view
+        .workspace
+        .as_ref()
+        .and_then(|workspace| workspace.resolved_target.as_ref())
+        .and_then(|target| target.pointer("/canonical/transport"))
+        .and_then(serde_json::Value::as_str);
+    if transport == Some("ssh") {
+        PaneRenderPolicy::Pause
+    } else {
+        PaneRenderPolicy::Coalesce
     }
 }
 
@@ -204,4 +264,41 @@ pub(super) fn forward_parser_replies_for_key(s: &mut UiState, workspace_id: &str
         return;
     }
     enqueue_workspace_input(s, workspace_id, pane_id, &replies, false);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::hidden_render_policy;
+    use crate::frontend::ffi_client::ClientWorkspace;
+    use crate::frontend::linux::view_store::{PaneRenderPolicy, WorkspaceView};
+
+    fn workspace_with_transport(transport: &str) -> WorkspaceView {
+        let mut view = WorkspaceView::default();
+        view.workspace = Some(ClientWorkspace {
+            id: "local//test/shell/".into(),
+            name: "test".into(),
+            runtime: "shell".into(),
+            active: false,
+            resolved_target: Some(serde_json::json!({
+                "canonical": { "transport": transport }
+            })),
+        });
+        view
+    }
+
+    #[test]
+    fn hidden_ssh_uses_pause_policy() {
+        assert_eq!(
+            hidden_render_policy(&workspace_with_transport("ssh")),
+            PaneRenderPolicy::Pause
+        );
+    }
+
+    #[test]
+    fn hidden_local_uses_byte_preserving_coalesce_policy() {
+        assert_eq!(
+            hidden_render_policy(&workspace_with_transport("local")),
+            PaneRenderPolicy::Coalesce
+        );
+    }
 }

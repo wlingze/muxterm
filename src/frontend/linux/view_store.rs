@@ -39,6 +39,7 @@ pub struct WorkspaceView {
     pub layouts: HashMap<u32, ClientLayout>,
     render_mailboxes: HashMap<u32, VecDeque<ClientEvent>>,
     render_policies: HashMap<u32, PaneRenderPolicy>,
+    pending_baselines: std::collections::HashSet<u32>,
 }
 
 /// Owned snapshots and render mailboxes keyed by stable workspace identity.
@@ -116,9 +117,14 @@ impl ViewStore {
         policy: PaneRenderPolicy,
     ) -> PaneRenderPolicy {
         let view = self.ensure_workspace(workspace_id);
-        view.render_policies
+        let previous = view
+            .render_policies
             .insert(pane_id, policy)
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if previous == PaneRenderPolicy::Pause && policy != PaneRenderPolicy::Pause {
+            view.pending_baselines.insert(pane_id);
+        }
+        previous
     }
 
     pub fn pane_render_policy(&self, workspace_id: &str, pane_id: u32) -> PaneRenderPolicy {
@@ -146,11 +152,16 @@ impl ViewStore {
             .get(&event.pane_id)
             .copied()
             .unwrap_or_default();
+        let pending_baseline = view.pending_baselines.contains(&event.pane_id);
         let mailbox = view.render_mailboxes.entry(event.pane_id).or_default();
-        match policy {
-            PaneRenderPolicy::Live => push_bounded(mailbox, event),
-            PaneRenderPolicy::Coalesce => push_coalesced(mailbox, event),
-            PaneRenderPolicy::Pause => push_paused(mailbox, event),
+        if pending_baseline {
+            push_paused(mailbox, event);
+        } else {
+            match policy {
+                PaneRenderPolicy::Live => push_bounded(mailbox, event),
+                PaneRenderPolicy::Coalesce => push_coalesced(mailbox, event),
+                PaneRenderPolicy::Pause => push_paused(mailbox, event),
+            }
         }
     }
 
@@ -180,28 +191,60 @@ impl ViewStore {
     /// snapshot and can be discarded. History and events after it remain
     /// queued for the render drain.
     pub fn take_pane_baseline(&mut self, workspace_id: &str, pane_id: u32) -> Option<Vec<u8>> {
-        let mailbox = self
+        let data = {
+            let mailbox = self
+                .workspaces
+                .get_mut(workspace_id)
+                .and_then(|workspace| workspace.render_mailboxes.get_mut(&pane_id))?;
+            let baseline_index = mailbox.iter().rposition(|event| {
+                matches!(
+                    event.kind(),
+                    ClientEventKind::PaneSnapshot | ClientEventKind::PaneFrame
+                )
+            })?;
+            let data = mailbox.get(baseline_index)?.data.clone();
+            let mut retained = VecDeque::new();
+            for _ in 0..=baseline_index {
+                let event = mailbox
+                    .pop_front()
+                    .expect("baseline index must describe a queued event");
+                if matches!(event.kind(), ClientEventKind::PaneHistory) {
+                    retained.push_back(event);
+                }
+            }
+            retained.extend(mailbox.drain(..));
+            *mailbox = retained;
+            data
+        };
+        if let Some(view) = self.workspaces.get_mut(workspace_id) {
+            view.pending_baselines.remove(&pane_id);
+        }
+        Some(data)
+    }
+
+    /// Take a baseline requested when a paused pane becomes visible again.
+    ///
+    /// A resumed surface already has its last known pixels, so queued history
+    /// is discarded after the baseline is found; output after that baseline
+    /// remains queued for ordered catch-up.
+    pub fn take_pane_resume_baseline(
+        &mut self,
+        workspace_id: &str,
+        pane_id: u32,
+    ) -> Option<Vec<u8>> {
+        let pending = self
             .workspaces
-            .get_mut(workspace_id)
-            .and_then(|workspace| workspace.render_mailboxes.get_mut(&pane_id))?;
-        let baseline_index = mailbox.iter().rposition(|event| {
-            matches!(
-                event.kind(),
-                ClientEventKind::PaneSnapshot | ClientEventKind::PaneFrame
-            )
-        })?;
-        let data = mailbox.get(baseline_index)?.data.clone();
-        let mut retained = VecDeque::new();
-        for _ in 0..=baseline_index {
-            let event = mailbox
-                .pop_front()
-                .expect("baseline index must describe a queued event");
-            if matches!(event.kind(), ClientEventKind::PaneHistory) {
-                retained.push_back(event);
+            .get(workspace_id)
+            .is_some_and(|view| view.pending_baselines.contains(&pane_id));
+        if !pending {
+            return None;
+        }
+        let data = self.take_pane_baseline(workspace_id, pane_id)?;
+        if let Some(view) = self.workspaces.get_mut(workspace_id) {
+            if let Some(mailbox) = view.render_mailboxes.get_mut(&pane_id) {
+                mailbox.retain(|event| event.kind() != ClientEventKind::PaneHistory);
             }
         }
-        retained.extend(mailbox.drain(..));
-        *mailbox = retained;
         Some(data)
     }
 }
@@ -426,5 +469,35 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind(), ClientEventKind::PaneHistory);
         assert_eq!(events[0].data, vec![9]);
+    }
+
+    #[test]
+    fn resuming_paused_pane_waits_for_baseline_before_accepting_output() {
+        let mut store = ViewStore::default();
+        store.set_pane_render_policy("local//one/shell/", 7, PaneRenderPolicy::Pause);
+        store.push_render_event(
+            "local//one/shell/",
+            event(crate::ffi::types::STATE_PANE_SNAPSHOT, 7, 2),
+        );
+        assert_eq!(
+            store.set_pane_render_policy("local//one/shell/", 7, PaneRenderPolicy::Live),
+            PaneRenderPolicy::Pause
+        );
+        store.push_render_event(
+            "local//one/shell/",
+            event(crate::ffi::types::STATE_PANE_OUTPUT, 7, 3),
+        );
+
+        assert_eq!(
+            store.take_pane_resume_baseline("local//one/shell/", 7),
+            Some(vec![2])
+        );
+        assert!(store
+            .take_pane_render_events("local//one/shell/", 7)
+            .is_empty());
+        assert_eq!(
+            store.pane_render_policy("local//one/shell/", 7),
+            PaneRenderPolicy::Live
+        );
     }
 }
