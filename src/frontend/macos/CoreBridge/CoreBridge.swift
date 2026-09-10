@@ -932,6 +932,53 @@ final class CoreBridge {
         return muxterm_attention_mute(handle, paneId, seconds)
     }
 
+    /// 标记指定 Workspace 的 pane 成为前台可见。
+    @discardableResult
+    func attentionOnBecameVisible(workspaceID: String, paneId: UInt32) -> Int32 {
+        guard let handle else { return -1 }
+        return workspaceID.withCString { workspace in
+            muxterm_workspace_attention_on_became_visible(handle, workspace, paneId)
+        }
+    }
+
+    /// 显式确认指定 Workspace 的 pane 通知已读。
+    @discardableResult
+    func attentionAcknowledge(workspaceID: String, paneId: UInt32) -> Int32 {
+        guard let handle else { return -1 }
+        return workspaceID.withCString { workspace in
+            muxterm_workspace_attention_acknowledge(handle, workspace, paneId)
+        }
+    }
+
+    /// 更新指定 Workspace 的 pane 进程名。
+    @discardableResult
+    func attentionSetProcessName(
+        workspaceID: String,
+        paneId: UInt32,
+        name: String?
+    ) -> Int32 {
+        guard let handle else { return -1 }
+        return workspaceID.withCString { workspace in
+            Self.withOptionalCString(name) { namePtr in
+                muxterm_workspace_attention_set_process_name(
+                    handle,
+                    workspace,
+                    paneId,
+                    namePtr
+                )
+            }
+        }
+    }
+
+    /// 静音指定 Workspace 的 pane 一段时间（秒）。
+    @discardableResult
+    func attentionMute(workspaceID: String, paneId: UInt32, seconds: UInt64) -> Int32 {
+        guard let handle else { return -1 }
+        return workspaceID.withCString { workspace in
+            muxterm_workspace_attention_mute(handle, workspace, paneId, seconds)
+        }
+    }
+
     /// 读取某 pane 的 viewport 滚动偏移（0 = 底部/最新）。
     func paneViewport(paneId: UInt32) -> Int32 {
         guard let handle else { return -1 }
@@ -951,12 +998,53 @@ final class CoreBridge {
         return muxterm_pane_history_max_offset(handle, paneId, rows)
     }
 
+    /// 读取指定 Workspace 的 pane viewport 滚动偏移。
+    func paneViewport(workspaceID: String, paneId: UInt32) -> Int32 {
+        guard let handle else { return -1 }
+        return workspaceID.withCString { workspace in
+            muxterm_workspace_pane_viewport(handle, workspace, paneId)
+        }
+    }
+
+    /// 设置指定 Workspace 的 pane viewport 滚动偏移。
+    @discardableResult
+    func setPaneViewport(workspaceID: String, paneId: UInt32, offset: UInt32) -> Int32 {
+        guard let handle else { return -1 }
+        return workspaceID.withCString { workspace in
+            muxterm_workspace_set_pane_viewport(handle, workspace, paneId, offset)
+        }
+    }
+
+    /// 读取指定 Workspace 的 pane 最大历史 offset。
+    func paneHistoryMaxOffset(workspaceID: String, paneId: UInt32, rows: UInt32) -> Int32 {
+        guard let handle else { return -1 }
+        return workspaceID.withCString { workspace in
+            muxterm_workspace_pane_history_max_offset(handle, workspace, paneId, rows)
+        }
+    }
+
     /// 读取 OSC 133 命令刻度 JSON。
     func paneCommandMarksJSON(paneId: UInt32) -> String? {
         guard let handle else { return nil }
         guard let p = muxterm_pane_command_marks_json(handle, paneId) else { return nil }
         defer { muxterm_free_string(p) }
         return String(cString: p)
+    }
+
+    /// 读取指定 Workspace 的 OSC 133 命令刻度 JSON。
+    func paneCommandMarksJSON(workspaceID: String, paneId: UInt32) -> String? {
+        guard let handle else { return nil }
+        return workspaceID.withCString { workspace in
+            guard let p = muxterm_workspace_pane_command_marks_json(
+                handle,
+                workspace,
+                paneId
+            ) else {
+                return nil
+            }
+            defer { muxterm_free_string(p) }
+            return String(cString: p)
+        }
     }
 
     /// 读取 OSC 133 命令时间线；已淘汰的刻度由 core 直接移除，
@@ -972,16 +1060,48 @@ final class CoreBridge {
         return response.marks ?? []
     }
 
+    /// 读取指定 Workspace 的 OSC 133 命令时间线。
+    func paneCommandMarks(workspaceID: String, paneId: UInt32) -> [CoreCommandMark] {
+        guard let json = paneCommandMarksJSON(workspaceID: workspaceID, paneId: paneId),
+              let data = json.data(using: .utf8),
+              let response = try? JSONDecoder().decode(CoreCommandMarksResponse.self, from: data),
+              response.ok
+        else {
+            return []
+        }
+        return response.marks ?? []
+    }
+
     /// 读取某 pane 最新稳定行 ID。
     func paneLatestLineSeq(paneId: UInt32) -> Int64 {
         guard let handle else { return -1 }
         return muxterm_pane_latest_line_seq(handle, paneId)
     }
 
+    /// 读取指定 Workspace 的 pane 最新稳定行 ID。
+    func paneLatestLineSeq(workspaceID: String, paneId: UInt32) -> Int64 {
+        guard let handle else { return -1 }
+        return workspaceID.withCString { workspace in
+            muxterm_workspace_pane_latest_line_seq(handle, workspace, paneId)
+        }
+    }
+
     /// 搜索命中 seq 对应的 viewport 偏移（0 = 可见屏 / 未找到；-1 = err）。
     func paneViewportOffsetForSeq(paneId: UInt32, seq: UInt64) -> Int32 {
         guard let handle else { return -1 }
         return muxterm_pane_viewport_for_seq(handle, paneId, seq)
+    }
+
+    /// 读取指定 Workspace 的 seq 对应 viewport 偏移。
+    func paneViewportOffsetForSeq(
+        workspaceID: String,
+        paneId: UInt32,
+        seq: UInt64
+    ) -> Int32 {
+        guard let handle else { return -1 }
+        return workspaceID.withCString { workspace in
+            muxterm_workspace_pane_viewport_for_seq(handle, workspace, paneId, seq)
+        }
     }
 
     /// 按 pane id 反查所在 tab（注意力跳转没有带 tab_id 时用）。
@@ -994,12 +1114,36 @@ final class CoreBridge {
         return nil
     }
 
+    /// 按 pane id 反查指定 Workspace 的 tab。
+    func tabId(workspaceID: String, containingPane paneId: UInt32) -> UInt32? {
+        for tab in getTabs(workspaceID: workspaceID) {
+            if getPanes(workspaceID: workspaceID, tabId: tab.id)
+                .contains(where: { $0.id == paneId })
+            {
+                return tab.id
+            }
+        }
+        return nil
+    }
+
     /// 读取某 pane 最近 n 行文本 JSON（`muxterm_pane_last_n_lines`）。
     func paneLastNLinesJSON(paneId: UInt32, n: UInt32) -> String? {
         guard let handle else { return nil }
         guard let p = muxterm_pane_last_n_lines(handle, paneId, n) else { return nil }
         defer { muxterm_free_string(p) }
         return String(cString: p)
+    }
+
+    /// 读取指定 Workspace 的 pane 最近 n 行文本 JSON。
+    func paneLastNLinesJSON(workspaceID: String, paneId: UInt32, n: UInt32) -> String? {
+        guard let handle else { return nil }
+        return workspaceID.withCString { workspace in
+            guard let p = muxterm_workspace_pane_last_n_lines(handle, workspace, paneId, n) else {
+                return nil
+            }
+            defer { muxterm_free_string(p) }
+            return String(cString: p)
+        }
     }
 
     // MARK: - Core configuration transactions
