@@ -134,10 +134,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 已向 tmux 上报过颜色的 workspace/pane（`refresh-client -r` 只需每个
     /// pane 一次；外观变化时清空重报）。
     private var reportedColourPanes = Set<ColourPaneKey>()
-    /// 后台 tab 的 Surface 树按 runloop 一拍一棵预热，避免 attach 时一次建完卡死。
-    private var tabWarmupScheduled = false
-    /// Timer 只置位请求；真正的 geometry 查询由下一拍 EventPump 执行。
-    private var tabWarmupRequested = false
     /// 最近一次 status bar 快照（用于周期刷新与位置/样式渲染）。
     private var statusBarSnapshot: StatusBarSnapshot?
     /// statusbar 需要刷新（tab 增删/激活才置位；layout-change/pane 事件不触发，
@@ -481,11 +477,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 )
             }
         }
-        content.paneLayout.onSurfaceBecameReady = { [weak self] paneId, ready in
+        content.paneLayout.onSurfaceBecameReady = { [weak self] paneId, _ in
             guard let self else { return }
-            if ready {
-                self.scheduleTabTreeWarmup()
-            }
             let active = self.lastSnapshot.panes.first(where: \.isActive)?.id
                 ?? self.lastSnapshot.panes.first?.id
             guard TerminalInputFocusPolicy.shouldRetryWhenSurfaceReady(
@@ -2922,7 +2915,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         terminalManager.updatePaneSizes(panes)
         terminalManager.flushSeedsNow(paneIds: Set(panes.map(\.id)))
         focusVisibleTab(lastSnapshot)
-        scheduleTabTreeWarmup()
         return false
     }
 
@@ -3716,10 +3708,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             retryPendingPanelJump()
             return
         }
-        if tabWarmupRequested {
-            tabWarmupRequested = false
-            warmNextBackgroundTab()
-        }
         terminalManager.beginEventBatch()
         defer { terminalManager.endEventBatch() }
         resolvePendingLastSeen()
@@ -4035,7 +4023,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.001, execute: work)
     }
 
-    /// 在一个全局主线程预算内轮转所有 warm Workspace，active 优先。
+    /// 在一个全局主线程预算内轮转所有待处理的 Workspace scene，active 优先。
     private func flushSurfaceCatchUpPass() {
         guard !isClosing else {
             surfaceCatchUpScenes.removeAll()
@@ -4224,7 +4212,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             content.paneLayout.markActivePane(activePane)
             restoreTerminalFocusIfAllowed()
         }
-        scheduleTabTreeWarmup()
         cacheActiveSlotSnapshot(
             tabIdsByPane: snap.tabs.isEmpty ? nil : tabIdsByPane,
             tabNumbersByPane: snap.tabs.isEmpty ? nil : tabNumbersByPane
@@ -4247,55 +4234,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 tabIdsByPane: tabIdsByPane,
                 tabNumbersByPane: tabNumbersByPane
             )
-        }
-    }
-
-    /// 每拍只预热一个还没点过的 tab，第一次点击就能走缓存树。
-    private func scheduleTabTreeWarmup() {
-        guard TabWarmupPolicy.canStart(
-            activeSurfaceReady: activeSurfaceReadyForTabWarmup()
-        ) else {
-            return
-        }
-        guard !tabWarmupScheduled else { return }
-        tabWarmupScheduled = true
-        DispatchQueue.main.asyncAfter(
-            deadline: .now() + TabWarmupPolicy.delayAfterFirstPaint
-        ) { [weak self] in
-            guard let self else { return }
-            self.tabWarmupScheduled = false
-            guard !self.isClosing else { return }
-            self.tabWarmupRequested = true
-        }
-    }
-
-    private func activeSurfaceReadyForTabWarmup() -> Bool {
-        guard let activePane = lastSnapshot.panes.first(where: \.isActive)?.id
-            ?? lastSnapshot.panes.first?.id
-        else {
-            return false
-        }
-        return terminalManager.isSurfaceReady(for: activePane)
-    }
-
-    private func warmNextBackgroundTab() {
-        guard activeSurfaceReadyForTabWarmup()
-        else { return }
-        let current = lastSnapshot.activeTab
-        for tab in lastSnapshot.tabs where tab.id != current {
-            if content.paneLayout.hasCachedTab(tab.id) { continue }
-            let panes = bridge.getPanes(tabId: tab.id)
-            let layout = bridge.getLayout(tabId: tab.id)
-            guard FirstTabPaintPolicy.canPaintFromLocalLayout(
-                paneCount: panes.count,
-                hasLayout: layout != nil
-            ) else {
-                continue
-            }
-            if content.paneLayout.prewarm(tabId: tab.id, layout: layout, panes: panes) {
-                scheduleTabTreeWarmup()
-                return
-            }
         }
     }
 

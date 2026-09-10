@@ -274,26 +274,6 @@ final class SurfaceVisibilityE2ETests: XCTestCase {
         )
     }
 
-    func testPrewarmMakesFirstVisitACacheHit() throws {
-        let (bridge, manager) = try makeManager()
-        defer { bridge.shutdown() }
-
-        let layout = PaneLayoutView(terminalManager: manager)
-        layout.frame = NSRect(x: 0, y: 0, width: 800, height: 400)
-        let panes1 = [Pane(id: 1, cols: 80, rows: 24, isActive: true)]
-        let panes2 = [Pane(id: 2, cols: 80, rows: 24, isActive: true)]
-        XCTAssertTrue(layout.apply(layout: .leaf(paneId: 1), panes: panes1, tabId: 10))
-        XCTAssertTrue(layout.prewarm(tabId: 20, layout: .leaf(paneId: 2), panes: panes2))
-        XCTAssertTrue(layout.hasCachedTab(20))
-        let host2 = layout.testHost(for: 2)
-        XCTAssertNotNil(host2)
-        XCTAssertNotNil(layout.revealCachedTab(20))
-        XCTAssertTrue(
-            layout.testHost(for: 2) === host2,
-            "预热过的 tab 第一次点击必须复用 host"
-        )
-    }
-
     func testApplyingANewTabDoesNotDropCachedTrees() throws {
         let (bridge, manager) = try makeManager()
         defer { bridge.shutdown() }
@@ -305,11 +285,11 @@ final class SurfaceVisibilityE2ETests: XCTestCase {
         let panes3 = [Pane(id: 3, cols: 80, rows: 24, isActive: true)]
         XCTAssertTrue(layout.apply(layout: .leaf(paneId: 1), panes: panes1, tabId: 10))
         let host1 = layout.testHost(for: 1)
-        XCTAssertTrue(layout.prewarm(tabId: 20, layout: .leaf(paneId: 2), panes: panes2))
+        XCTAssertTrue(layout.apply(layout: .leaf(paneId: 2), panes: panes2, tabId: 20))
         let host2 = layout.testHost(for: 2)
         XCTAssertTrue(layout.apply(layout: .leaf(paneId: 3), panes: panes3, tabId: 30))
         XCTAssertTrue(layout.hasCachedTab(10), "新建 tab 不得把已打开的树丢掉")
-        XCTAssertTrue(layout.hasCachedTab(20), "新建 tab 不得把预热树丢掉")
+        XCTAssertTrue(layout.hasCachedTab(20), "新建 tab 不得把已打开的树丢掉")
         XCTAssertNotNil(layout.revealCachedTab(10))
         XCTAssertTrue(layout.testHost(for: 1) === host1)
         XCTAssertNotNil(layout.revealCachedTab(20))

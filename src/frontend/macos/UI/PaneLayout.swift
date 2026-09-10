@@ -237,44 +237,6 @@ final class PaneLayoutView: NSView {
         tabTrees[tabId] != nil || currentTabId == tabId
     }
 
-    /// 前台 Workspace 把还没点过的 tab 先建成停驻树。第一次点击只挂树。
-    @discardableResult
-    func prewarm(tabId: UInt32, layout: LayoutNode?, panes: [Pane]) -> Bool {
-        guard tabId != currentTabId, tabTrees[tabId] == nil, !panes.isEmpty else {
-            return false
-        }
-        let expectedPaneIDs = panes.map(\.id)
-        let tree: LayoutNode?
-        if let layout {
-            guard PaneLayoutProjection.accepts(
-                treePaneIDs: layout.leafPaneIDs(),
-                paneIDs: expectedPaneIDs
-            ) else {
-                return false
-            }
-            tree = layout
-        } else if panes.count == 1 {
-            tree = .leaf(paneId: panes[0].id)
-        } else {
-            return false
-        }
-        guard let tree else { return false }
-        let savedHosts = hostByPane
-        hostByPane.removeAll()
-        let built = build(node: tree)
-        let ids = Set(collectPaneIds(tree))
-        let active = panes.first(where: \.isActive)?.id ?? panes.first?.id ?? 0
-        tabTrees[tabId] = CachedTabTree(
-            layout: tree,
-            paneIds: ids,
-            rootView: built,
-            hostByPane: hostByPane,
-            activePaneId: active
-        )
-        hostByPane = savedHosts
-        return true
-    }
-
     /// 乐观切 tab：缓存命中时立刻挂树。返回该 tab 上次的活动 pane。
     @discardableResult
     func revealCachedTab(_ tabId: UInt32) -> UInt32? {
@@ -368,7 +330,7 @@ final class PaneLayoutView: NSView {
         hostByPane = cached.hostByPane
         currentPaneIds = cached.paneIds
         // 不要在这里写 lastLayoutBounds：窗口外框没变时 layout() 会跳过，
-        // 但预热/停驻树可能是 0×0 建的，必须按现在的 host 像素重算格子。
+        // 但停驻树可能是 0×0 建的，必须按现在的 host 像素重算格子。
         for host in hostByPane.values {
             host.setAllowsMoveToNewTab(allowsPaneBreak && currentPaneIds.count > 1)
         }
