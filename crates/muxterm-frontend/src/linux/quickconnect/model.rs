@@ -197,6 +197,36 @@ impl TargetConfig {
     }
 }
 
+/// Search fields shared by list rows without forcing every row into the
+/// editable TargetConfig shape.
+pub(crate) trait QuickConnectSearchTarget {
+    fn runtime_name(&self) -> &str;
+    fn is_local_transport(&self) -> bool;
+    fn ssh_alias(&self) -> Option<&str>;
+    fn search_fields(&self) -> Vec<String>;
+}
+
+impl QuickConnectSearchTarget for TargetConfig {
+    fn runtime_name(&self) -> &str {
+        self.runtime.as_str()
+    }
+
+    fn is_local_transport(&self) -> bool {
+        matches!(self.transport, TargetTransport::Local)
+    }
+
+    fn ssh_alias(&self) -> Option<&str> {
+        match &self.transport {
+            TargetTransport::Ssh { name } => Some(name),
+            TargetTransport::Local => None,
+        }
+    }
+
+    fn search_fields(&self) -> Vec<String> {
+        self.search_fields()
+    }
+}
+
 /// JSON shape of one persisted Project record.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProjectDocument {
@@ -369,21 +399,19 @@ impl WorkspaceQuery {
             && self.ssh_alias_filters.is_empty()
     }
 
-    pub fn score(&self, config: &TargetConfig) -> Option<u32> {
+    pub(crate) fn score<T: QuickConnectSearchTarget>(&self, config: &T) -> Option<u32> {
         if self
             .runtime_filters
             .iter()
-            .any(|runtime| runtime != &config.runtime)
+            .any(|runtime| runtime.as_str() != config.runtime_name())
         {
             return None;
         }
-        if self.local_only && config.transport.is_ssh() {
+        if self.local_only && !config.is_local_transport() {
             return None;
         }
         for alias in &self.ssh_alias_filters {
-            let TargetTransport::Ssh { name } = &config.transport else {
-                return None;
-            };
+            let name = config.ssh_alias()?;
             if !ssh_alias_token_matches(name, alias) {
                 return None;
             }

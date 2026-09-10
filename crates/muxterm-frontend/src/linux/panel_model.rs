@@ -166,9 +166,9 @@ pub fn existing_root_items(existing: &ExistingPanelState) -> Vec<PanelItem> {
             entries.extend(rows.iter().cloned());
         }
     }
-    entries.sort_by_key(|entry| QuickConnect::unique_id(&entry.target_config()));
+    entries.sort_by_key(ExistingEntry::identity_key);
     for entry in entries {
-        let id = QuickConnect::unique_id(&entry.target_config());
+        let id = entry.identity_key();
         if seen.insert(id) {
             result.push(PanelItem::Existing(entry));
         }
@@ -221,7 +221,7 @@ pub fn root_items_with_existing_and_search(
         let PanelItem::Existing(entry) = &item else {
             continue;
         };
-        if seen.insert(QuickConnect::unique_id(&entry.target_config())) {
+        if seen.insert(entry.identity_key()) {
             items.push(item);
         }
     }
@@ -324,7 +324,7 @@ pub(crate) fn filter_panel_items(items: &[PanelItem], query: &str) -> Vec<PanelI
                     title.to_lowercase().contains(&needle).then_some(0)
                 }
                 PanelItem::Back => Some(0),
-                PanelItem::Existing(entry) => parsed.score(&entry.target_config()),
+                PanelItem::Existing(entry) => parsed.score(entry),
                 PanelItem::Host { alias } => parsed.host_score(alias),
                 PanelItem::Loading => Some(0),
                 PanelItem::Empty { title } => title.to_lowercase().contains(&needle).then_some(0),
