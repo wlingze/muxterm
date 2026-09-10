@@ -380,32 +380,6 @@ pub fn should_poll_status(
     !sub_active && now.duration_since(last) >= interval
 }
 
-/// 把窗口内容区的新字符格尺寸同步给 Runtime。
-///
-/// 共享 client viewport 的 Runtime（tmux）收到整个 Workspace 的尺寸；
-/// 其它 Runtime（shell / Herdr）收到当前 Surface 的实际字符格尺寸。
-/// platform 只问 capability，不按实现名字分支。
-///
-/// tmux SharedClientResize：同一尺寸连续 ~10 次 poll（约 160ms）才 -C，
-/// 过滤窗口 map / VTE preferred 抖动（dogfood 2152：106→284→142）。
-fn sync_window_size(s: &mut UiState) {
-    window_resize::sync_window_size(s);
-}
-
-/// Herdr 没有 SharedClientResize：每个可见 split 格子按自己的 VTE 分配
-/// 发 ResizePane。只同步 active pane 会让 0218.log 里 54/57 停在 27×12。
-fn sync_visible_pane_sizes(s: &mut UiState) {
-    window_resize::sync_visible_pane_sizes(s);
-}
-
-/// 0218.log：三个可见格子都要有自己的 ResizePane；已同步过的尺寸跳过。
-fn pending_pane_resizes(
-    last: &HashMap<u32, (u16, u16)>,
-    measured: &[(u32, u16, u16)],
-) -> Vec<(u32, u16, u16)> {
-    window_resize::pending_pane_resizes(last, measured)
-}
-
 fn spawn_ssh_probe(s: &mut UiState, alias: String) {
     window_discovery::spawn_ssh_probe(s, alias);
 }
@@ -602,6 +576,7 @@ fn apply_chrome_css(theme: &Theme) {
 mod tests {
     use super::window_activity::{attention_event_pane, UiBatchEffects};
     use super::window_event_pump::take_surface_input;
+    use super::window_resize::pending_pane_resizes;
     use super::window_status::local_status_snapshot;
     use super::window_surface::surface_allocation_is_seedable;
     use super::*;

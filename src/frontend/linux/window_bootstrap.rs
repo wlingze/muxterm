@@ -18,6 +18,7 @@ use super::window_layout::refresh_ui;
 use super::window_render::{
     mark_active_attention_visible, refresh_event_workspaces, sync_pane_outputs,
 };
+use super::window_resize::sync_window_size;
 use super::window_scene::{activate_existing, request_switch_tab};
 use super::window_sidebar::{
     activate_sidebar_activity, close_sidebar_workspace, maybe_warn_workspace_capacity,
