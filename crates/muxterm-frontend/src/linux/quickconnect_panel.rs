@@ -96,7 +96,7 @@ mod tests {
         let mut store = QuickConnectStore::in_memory();
         let recent = cfg("recent");
         let project = cfg("project");
-        store.recents.push(recent.clone());
+        store.record_recent(&recent);
         store.upsert_project(&project);
         let items = build_items(&store, Some(&recent));
         assert_eq!(items.len(), 3);
@@ -115,7 +115,7 @@ mod tests {
     fn build_items_dedupes_recent_and_project() {
         let mut store = QuickConnectStore::in_memory();
         let dup = cfg("dup");
-        store.recents.push(dup.clone());
+        store.record_recent(&dup);
         store.upsert_project(&dup);
         let items = build_items(&store, None);
         assert_eq!(items.len(), 2, "重复目标只出现一次 + New Project");
@@ -219,7 +219,7 @@ mod tests {
     fn root_search_includes_recent_beyond_compact_display_limit() {
         let mut store = QuickConnectStore::in_memory();
         for index in 0..6 {
-            store.recents.push(cfg(&format!("recent-{index}")));
+            store.record_recent(&cfg(&format!("recent-{index}")));
         }
         let base = build_root_items(&store, None);
         let search_base = build_search_items(&store, None);

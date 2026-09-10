@@ -114,8 +114,9 @@ fn build_items_with_recent_limit(
     recent_limit: usize,
 ) -> Vec<PanelItem> {
     let current_id = current.map(QuickConnect::unique_id);
+    let recents = store.recent_targets();
     let projects = store.project_targets();
-    let mut items: Vec<PanelItem> = QuickConnect::entries(&store.recents, &projects, recent_limit)
+    let mut items: Vec<PanelItem> = QuickConnect::entries(&recents, &projects, recent_limit)
         .into_iter()
         .map(|mut entry| {
             let is_current = current_id
@@ -137,7 +138,7 @@ pub fn build_search_items(
     store: &QuickConnectStore,
     current: Option<&TargetConfig>,
 ) -> Vec<PanelItem> {
-    build_items_with_recent_limit(store, current, store.recents.len())
+    build_items_with_recent_limit(store, current, store.recent_targets().len())
 }
 
 /// W20b：根列表 = 第一项「已有的连接」Folder + 原 Recent/Project + New Project。

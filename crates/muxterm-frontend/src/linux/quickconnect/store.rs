@@ -1,12 +1,12 @@
 //! Frontend-owned Recent/Project QuickConnect store.
 
-use super::model::{ProjectDocument, QuickConnect, TargetConfig};
+use super::model::{ProjectDocument, QuickConnect, RecentWorkspaceDescriptor, TargetConfig};
 
 pub const MAX_RECENT: usize = 20;
 
 #[derive(Debug, Clone, Default)]
 pub struct QuickConnectStore {
-    pub recents: Vec<TargetConfig>,
+    recents: Vec<RecentWorkspaceDescriptor>,
     projects: Vec<ProjectDocument>,
 }
 
@@ -20,6 +20,13 @@ impl QuickConnectStore {
             recents: Vec::new(),
             projects: projects.to_vec(),
         }
+    }
+
+    pub fn recent_targets(&self) -> Vec<TargetConfig> {
+        self.recents
+            .iter()
+            .map(RecentWorkspaceDescriptor::to_target_config)
+            .collect()
     }
 
     pub fn project_documents(&self) -> Vec<ProjectDocument> {
@@ -38,20 +45,20 @@ impl QuickConnectStore {
     }
 
     pub fn record_recent(&mut self, config: &TargetConfig) {
-        let id = QuickConnect::unique_id(config);
-        self.recents
-            .retain(|recent| QuickConnect::unique_id(recent) != id);
-        self.recents.insert(0, config.clone());
+        let recent = RecentWorkspaceDescriptor::from_target(config);
+        let id = recent.identity_key();
+        self.recents.retain(|recent| recent.identity_key() != id);
+        self.recents.insert(0, recent);
         if self.recents.len() > MAX_RECENT {
             self.recents.truncate(MAX_RECENT);
         }
     }
 
-    pub fn replace_recents(&mut self, new_recents: &[TargetConfig]) {
+    pub fn replace_recents(&mut self, new_recents: &[RecentWorkspaceDescriptor]) {
         self.recents = new_recents.iter().take(MAX_RECENT).cloned().collect();
     }
 
-    pub fn replace_all_recents(&mut self, new_recents: &[TargetConfig]) {
+    pub fn replace_all_recents(&mut self, new_recents: &[RecentWorkspaceDescriptor]) {
         self.recents = new_recents.to_vec();
     }
 

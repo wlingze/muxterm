@@ -10,7 +10,7 @@ use gtk4::prelude::*;
 use muxterm_protocol::WorkspaceId;
 
 use super::window_actions::{handle_pane_menu_action, report_all_pane_colours};
-use super::window_connection::recent_target_configs;
+use super::window_connection::recent_workspaces;
 use super::window_layout::{refresh_ui, refresh_workspace_layout};
 use super::window_render::mark_active_attention_visible;
 use super::window_sidebar::{refresh_sidebar_if_open, refresh_sidebar_workspaces_if_open};
@@ -191,7 +191,7 @@ pub(super) fn show_workspace_scene(s: &mut UiState, id: WorkspaceId, seed_from_c
         s.pending_client_hits = 0;
         s.hold_pane_resize_until = None;
     }
-    let recents = recent_target_configs(
+    let recents = recent_workspaces(
         &s.view_store,
         &s.workspace_sockets,
         s.view_store.workspace_ids().count(),

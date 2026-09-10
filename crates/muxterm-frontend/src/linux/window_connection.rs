@@ -15,7 +15,7 @@ use crate::ffi_client::{
 use crate::i18n::{self, Key};
 use crate::linux::quickconnect::existing::{ExistingEntry, ExistingTransport};
 use crate::linux::quickconnect::model::{
-    QuickConnect, TargetConfig, TargetRuntime, TargetTransport,
+    QuickConnect, RecentWorkspaceDescriptor, TargetConfig, TargetRuntime, TargetTransport,
 };
 use crate::linux::quickconnect::project_flow::ProjectConnectIntent;
 use crate::linux::tmux_dialog::{self, TmuxAction};
@@ -164,11 +164,11 @@ fn client_target_from_config(config: &TargetConfig) -> ClientTarget {
 ///
 /// W6 §11.2：优先读 Core 保存的 `ResolvedTarget.canonical`（含 session /
 /// socket / workspace_id）；没有 descriptor 时回退旧五段推导（测试/直开）。
-pub(super) fn recent_target_configs(
+pub(super) fn recent_workspaces(
     view_store: &ViewStore,
     workspace_sockets: &HashMap<WorkspaceId, Option<String>>,
     limit: usize,
-) -> Vec<TargetConfig> {
+) -> Vec<RecentWorkspaceDescriptor> {
     let mut workspaces: Vec<&crate::ffi_client::ClientWorkspace> = view_store
         .workspaces()
         .filter_map(|(_, view)| view.workspace.as_ref())
@@ -183,7 +183,7 @@ pub(super) fn recent_target_configs(
                 .as_ref()
                 .and_then(|id| workspace_sockets.get(id))
                 .and_then(|value| value.as_deref());
-            workspace_to_target_config(workspace, socket)
+            RecentWorkspaceDescriptor::from_target(&workspace_to_target_config(workspace, socket))
         })
         .collect()
 }

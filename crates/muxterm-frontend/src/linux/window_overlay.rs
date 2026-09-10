@@ -10,7 +10,7 @@ use muxterm_protocol::WorkspaceId;
 
 use super::window_config::open_target_config;
 use super::window_connection::{
-    connect_open_request, recent_target_configs, workspace_to_target_config,
+    connect_open_request, recent_workspaces, workspace_to_target_config,
 };
 use super::window_discovery::{
     collect_ssh_reach, spawn_existing_ssh_probe, spawn_local_existing_probe,
@@ -39,7 +39,7 @@ pub(super) fn open_quick_connect(state: &Rc<RefCell<UiState>>, window: &Window) 
 pub(super) fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelTab) {
     let (workspaces, workspace_search_items, agents, attention, win, st, ssh_reach) = {
         let mut s = state.borrow_mut();
-        let recents = recent_target_configs(
+        let recents = recent_workspaces(
             &s.view_store,
             &s.workspace_sockets,
             s.view_store.workspace_ids().count(),

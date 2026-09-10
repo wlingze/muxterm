@@ -197,6 +197,52 @@ impl TargetConfig {
     }
 }
 
+/// A persisted-free descriptor for a workspace shown in the Recent list.
+///
+/// Recent rows describe an already opened workspace; they are not editable
+/// Project records.  A [`TargetConfig`] is created only as a short-lived
+/// compatibility projection when the panel needs the shared row renderer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecentWorkspaceDescriptor {
+    pub name: String,
+    pub runtime: TargetRuntime,
+    pub transport: TargetTransport,
+    pub path: String,
+    pub socket: Option<String>,
+    pub session: Option<String>,
+    pub workspace_id: Option<String>,
+}
+
+impl RecentWorkspaceDescriptor {
+    pub fn from_target(config: &TargetConfig) -> Self {
+        Self {
+            name: config.name.clone(),
+            runtime: config.runtime,
+            transport: config.transport.clone(),
+            path: config.path.clone(),
+            socket: config.socket.clone(),
+            session: config.session.clone(),
+            workspace_id: config.workspace_id.clone(),
+        }
+    }
+
+    pub fn to_target_config(&self) -> TargetConfig {
+        TargetConfig {
+            name: self.name.clone(),
+            runtime: self.runtime,
+            transport: self.transport.clone(),
+            path: self.path.clone(),
+            socket: self.socket.clone(),
+            session: self.session.clone(),
+            workspace_id: self.workspace_id.clone(),
+        }
+    }
+
+    pub fn identity_key(&self) -> String {
+        self.to_target_config().identity_key()
+    }
+}
+
 /// Search fields shared by list rows without forcing every row into the
 /// editable TargetConfig shape.
 pub(crate) trait QuickConnectSearchTarget {
