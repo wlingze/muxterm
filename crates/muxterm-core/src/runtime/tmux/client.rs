@@ -30,7 +30,7 @@ use std::sync::{Arc, Mutex};
 use tokio::process::{Child, ChildStdout};
 use tokio::sync::mpsc;
 
-use crate::transport::{ByteChannel, ChannelRequest, TargetConnection};
+use crate::transport::{ByteChannel, ChannelRequest, Connect, TargetConnection};
 
 /// tmux reader → runtime 的事件发送端。
 ///
@@ -565,7 +565,7 @@ pub struct TmuxClientConfig {
     pub rows: Option<u32>,
     /// 事件通道容量。
     pub event_buffer: usize,
-    /// SSH alias：非空时通过 SSH transport 在远端启动 tmux -CC。
+    /// Legacy SSH alias：非空时由兼容入口创建 SSH target connection。
     pub ssh_alias: Option<String>,
 }
 
@@ -642,94 +642,19 @@ impl TmuxClient {
         }
     }
 
-    /// SSH 模式：通过 SSH transport 在远端启动 `tmux -CC`。
+    /// SSH 兼容入口：通过 target connection 在远端启动 `tmux -CC`。
     ///
-    /// 用 `SshProcessTransport` spawn `ssh <alias> -- tmux -CC ...`，
-    /// 取其 reader/writer 替代本地 pty。读循环与本地 pty 模式相同。
+    /// 保留这个构造器供旧测试/调用方使用，但 SSH 进程的生命周期和字节
+    /// 读写统一交给 `TargetConnection::open_channel`，不再在 tmux client
+    /// 内直接持有具体 SSH transport。
     pub async fn spawn_ssh(
         config: TmuxClientConfig,
     ) -> Result<(TmuxClientHandle, TmuxEventReceiver)> {
-        use crate::transport::ssh::{build_ssh_command, SshProcessTransport};
-        use crate::transport::ProcessTransport;
-
         let alias = config
             .ssh_alias
-            .as_ref()
+            .as_deref()
             .ok_or_else(|| anyhow!("spawn_ssh 需要 ssh_alias"))?;
-
-        // 构造远端 tmux 命令字符串。
-        // 注意 argv 开头是 `-L socket` 等二进制级选项；远端经 shell 执行，必须
-        // 以 `tmux` 开头（否则 shell 会把 `-L ...` 当成 shell 自身选项报错）。
-        let remote_tmux = build_remote_tmux_command(&config);
-        // 复用 CLI 的 MUXTERM_SSH_CONFIG_PATH 约定：显式 -F 指定 ssh config
-        // （测试/CI 用生成 config，不读用户真实 ~/.ssh/config）。
-        let ssh_config = std::env::var("MUXTERM_SSH_CONFIG_PATH").ok();
-        let (program, ssh_args) = build_ssh_command(alias, &remote_tmux, ssh_config.as_deref());
-        let arg_refs: Vec<&str> = ssh_args.iter().map(|s| s.as_str()).collect();
-
-        let pty_size = crate::transport::PtySize::new(
-            config.cols.unwrap_or(80) as u16,
-            config.rows.unwrap_or(24) as u16,
-        );
-
-        tracing::info!(
-            target = "muxterm::client",
-            alias = %alias,
-            remote = %remote_tmux,
-            "spawn tmux -CC via SSH"
-        );
-
-        let traffic = crate::transport::TrafficCounters::new();
-        let mut transport = SshProcessTransport::new();
-        transport.set_traffic(traffic.clone());
-        transport
-            .spawn_exec(&program, &arg_refs, pty_size)
-            .context("SSH transport spawn 失败")?;
-
-        // 先取 writer（take_pty_writer 消费 master 的 writer 端）
-        let writer = transport
-            .take_pty_writer()
-            .context("SSH transport take_writer 失败")?;
-        let writer = PtyWriter::with_traffic(writer, traffic.clone());
-
-        // 再把 transport 移入读线程（read 是非阻塞，用后台线程桥接到 mpsc）
-        let (read_tx, read_rx) = mpsc::channel::<std::io::Result<Vec<u8>>>(4096);
-        let mut read_transport = transport;
-        std::thread::Builder::new()
-            .name("muxterm-ssh-read".into())
-            .spawn(move || loop {
-                match read_transport.read() {
-                    Ok(Some(data)) => {
-                        if read_tx.blocking_send(Ok(data)).is_err() {
-                            break;
-                        }
-                    }
-                    Ok(None) => {
-                        std::thread::sleep(std::time::Duration::from_millis(10));
-                    }
-                    Err(_) => break,
-                }
-            })
-            .expect("spawn ssh read thread");
-
-        // 用 PtyReader::from_channel 包装 read_rx，复用 read_pty_loop
-        let reader = PtyReader::from_channel(read_rx);
-        let (tx, rx) = event_channel();
-        let tx_clone = tx.clone();
-        tokio::spawn(async move {
-            read_pty_loop(reader, OutputBatcher::new(tx_clone)).await;
-        });
-
-        let handle = TmuxClientHandle {
-            pty_writer: Some(writer),
-            channel: None,
-            channel_stop: None,
-            stdin: None,
-            child: None,
-            pty_child: None,
-            traffic: Some(traffic),
-        };
-        Ok((handle, rx))
+        Self::spawn_channel(Connect::new("ssh", alias), config).await
     }
 
     /// Spawn tmux through the Runtime-facing TargetConnection contract.

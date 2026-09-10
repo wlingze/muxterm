@@ -36,7 +36,7 @@ use crate::runtime::tmux::protocol::{
     parse_layout_tree, LayoutTree, Message, NotificationKind, TmuxSessionId,
 };
 use crate::runtime::{Runtime, RuntimeBatch, RuntimeCapability};
-use crate::transport::TargetConnection;
+use crate::transport::{Connect, TargetConnection};
 use muxterm_protocol::{PaneId, Rgb, TabId};
 
 /// 后台命令查询标记：记录发出去的命令，收到 %end 时处理响应行。
@@ -165,7 +165,7 @@ pub struct TmuxRuntime {
     _sender_handle: Option<tokio::task::JoinHandle<()>>,
     /// sender task 的异步写错误；由前端轮询成可见状态事件。
     command_error_rx: Option<mpsc::UnboundedReceiver<String>>,
-    /// SSH 读写字节计数（spawn_ssh 时从 handle 克隆）。
+    /// Legacy SSH 读写字节计数（从 client handle 克隆）。
     traffic: Option<crate::transport::TrafficCounters>,
 
     // ── 内部 state ──────────────────────────────────────────
@@ -869,15 +869,10 @@ impl TmuxRuntime {
 
     /// 创建远程 SSH tmux 后端并 attach 到已有 session。
     ///
-    /// SSH 的读写、pty 和 tmux -CC 参数仍由 `TmuxClient::spawn_ssh` 统一处理，
-    /// 这里仅把 alias 写入客户端配置，避免平台前端自行解析控制协议。
+    /// alias 只用于建立 target connection；远程 `tmux -CC` 的读写统一经过
+    /// `TargetConnection::open_channel`，不在 Runtime 内直接 spawn SSH。
     pub fn new_with_ssh_attach(alias: &str, target: &str) -> Self {
-        let mut backend = Self::new(None);
-        backend.config.ssh_alias = Some(alias.to_string());
-        backend.config.mode = Some(ConnectMode::Attach {
-            target: Some(target.to_string()),
-        });
-        backend
+        Self::new_ssh_attach(alias, None, target)
     }
 
     /// 创建后端并指定 new-session 模式 + session 名。
@@ -916,10 +911,13 @@ impl TmuxRuntime {
 
     /// 通过 SSH alias 在远端启动 tmux -CC（new-session 模式）。
     ///
-    /// `ssh_alias` 是 `~/.ssh/config` 里的 Host 名；`socket` 是远端 tmux 的 `-L` socket 名（可选）。
+    /// `ssh_alias` 是 `~/.ssh/config` 里的 Host 名；`socket` 是远端 tmux 的
+    /// `-L` socket 名（可选）。Runtime 通过 target connection 打开控制通道，
+    /// 因此 alias 不会被误当成远端 tmux socket。
     pub fn new_ssh(ssh_alias: &str, socket: Option<&str>) -> Self {
         let mut backend = Self::new(socket);
         backend.config.ssh_alias = Some(ssh_alias.to_string());
+        backend.target_connection = Some(Connect::new("ssh", ssh_alias));
         backend
     }
 
@@ -4640,6 +4638,12 @@ mod tests {
         );
         let rt = TmuxRuntime::new_ssh_attach(&alias, socket.as_deref(), "yaklang-workspace");
         assert_eq!(rt.test_ssh_alias(), Some("ryzen"));
+        let connection = rt
+            .target_connection
+            .as_ref()
+            .expect("SSH runtime must retain a target connection");
+        assert_eq!(connection.transport_id(), "ssh");
+        assert_eq!(connection.target(), "ryzen");
         assert!(
             !rt.test_extra_args()
                 .windows(2)
