@@ -29,4 +29,5 @@ pub mod theme;
 pub mod tmux_dialog;
 pub mod view_store;
 pub mod window;
+pub mod workspace_scenes;
 pub mod workspace_sidebar;

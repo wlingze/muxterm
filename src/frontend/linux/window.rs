@@ -55,13 +55,13 @@ use crate::frontend::linux::quickconnect::store::QuickConnectStore;
 use crate::frontend::linux::quickconnect_panel::{
     build_root_items, build_search_items, ExistingNav, ExistingPanelState, PanelItem,
 };
-use crate::frontend::linux::scene_stack::SceneStackView;
 use crate::frontend::linux::status_bar::{ConnectionSummary, StatusBar};
 #[cfg(test)]
 use crate::frontend::linux::theme::Rgb;
 use crate::frontend::linux::theme::{fallback_theme, toggle_target, Theme};
 use crate::frontend::linux::tmux_dialog::{self, TmuxAction};
 use crate::frontend::linux::view_store::ViewStore;
+use crate::frontend::linux::workspace_scenes::WorkspaceScenes;
 use crate::frontend::linux::workspace_sidebar::{
     AgentSidebarItem, CommandSidebarItem, WorkspaceSidebar, WorkspaceSidebarItem,
 };
@@ -92,11 +92,8 @@ struct UiState {
     event_pump: EventPump,
     /// UI → Core 的唯一命令出口；由 GTK poll owner 批量 flush。
     command_queue: RefCell<CommandQueue>,
-    /// 每个工作区一个像素缓存（VTE 不随切走销毁；Runtime 不在 GUI）。
-    pixel_cache: std::collections::HashMap<WorkspaceId, LayoutHost>,
-    /// 常驻 Workspace Scene 的产品身份与可见场景。
-    /// GTK-backed scene container. Every live workspace keeps its LayoutHost page.
-    scene_stack: SceneStackView,
+    /// 每个 workspace 的常驻 LayoutHost 与 GTK Scene 由同一个 owner 管理。
+    scenes: WorkspaceScenes,
     /// 前端拥有的 workspace topology/render 快照；Core 不持有其引用。
     view_store: ViewStore,
     /// 前端当前可见的 workspace；不等同于 Core snapshot 的 active 标记。
@@ -273,14 +270,14 @@ impl UiState {
 
     fn active_layout(&self) -> &LayoutHost {
         let id = self.active_ws_id();
-        self.pixel_cache
+        self.scenes
             .get(&id)
             .expect("active workspace 必须有 layout")
     }
 
     fn active_layout_mut(&mut self) -> &mut LayoutHost {
         let id = self.active_ws_id().clone();
-        self.pixel_cache
+        self.scenes
             .get_mut(&id)
             .expect("active workspace 必须有 layout")
     }
@@ -558,17 +555,11 @@ impl AppWindow {
                 id.remove();
             }
             let _ = s.event_pump.client().shutdown();
-            for layout in s.pixel_cache.values_mut() {
-                layout.reset(false);
-                while let Some(child) = layout.root_box.first_child() {
-                    layout.root_box.remove(&child);
-                }
-            }
             // 显式释放全部 LayoutHost/PaneView/VTE：GTK 对象必须在本窗口
             // destroy 前解构，否则 VTE 的 GL 资源残留到下一个测试窗口
             // realize 时才 finalize，与新的 GL 初始化交叉 = 堆损坏
             // （linux_herdr_agent_e2e 连续多测试时可见 double free）。
-            s.pixel_cache.clear();
+            s.scenes.shutdown();
             // Popover 挂在状态点按钮上：先解除父子关系，避免 dot 销毁时
             // popover 仍引用它（finalize-with-children 堆损坏）。
             s.status.popover_widget().unparent();
@@ -737,22 +728,14 @@ impl AppWindow {
             .is_some_and(|workspace| {
                 matches!(workspace.runtime.as_str(), "tmux" | "ssh" | "tmux-ssh")
             });
-        let mut pixel_cache = std::collections::HashMap::new();
         let layout = LayoutHost::new(theme.clone(), font.clone(), uses_tmux, cfg.scrollback.lines);
-        pixel_cache.insert(startup_id.clone(), layout);
+        let scenes = WorkspaceScenes::new(startup_id.clone(), layout);
         let status = StatusBar::new(status_mode, theme.clone());
         status.container.add_css_class("status-bar");
 
         // 唯一 chrome：一条 status bar（LINUX-PLAN §3），没有第二条 TabBar。
         // 终端区包一层 Overlay：回底按钮浮在 VTE 右下角（W16a）。
-        let scene_stack = SceneStackView::new(
-            &startup_id.as_str(),
-            &pixel_cache
-                .get(&startup_id)
-                .expect("startup layout")
-                .root_box,
-        );
-        let scene_stack_widget = scene_stack.widget();
+        let scene_stack_widget = scenes.widget();
         let layout_overlay = gtk4::Overlay::new();
         layout_overlay.set_hexpand(true);
         layout_overlay.set_vexpand(true);
@@ -858,8 +841,7 @@ impl AppWindow {
         let state = Rc::new(RefCell::new(UiState {
             event_pump,
             command_queue: RefCell::new(CommandQueue::default()),
-            pixel_cache,
-            scene_stack,
+            scenes,
             view_store,
             visible_workspace: startup_id.clone(),
             runtime_info,
@@ -937,7 +919,7 @@ impl AppWindow {
         {
             let st = state.clone();
             let mut s = state.borrow_mut();
-            if let Some(layout) = s.pixel_cache.get_mut(&startup_id) {
+            if let Some(layout) = s.scenes.get_mut(&startup_id) {
                 layout.set_menu_callback(move |pane_id, action| {
                     handle_pane_menu_action(&st, pane_id, action);
                 });
@@ -2382,7 +2364,7 @@ fn adjust_font(s: &mut UiState, state: &Rc<RefCell<UiState>>, direction: i32) {
 fn reset_font(s: &mut UiState) {
     s.font.size = s.config_font_size;
     let font = s.font.clone();
-    for layout in s.pixel_cache.values_mut() {
+    for layout in s.scenes.values_mut() {
         layout.set_font(&font);
     }
     persist_config(
@@ -2413,7 +2395,7 @@ fn toggle_theme(s: &mut UiState) {
     };
     s.theme_name = next_name.to_string();
     s.theme = theme.clone();
-    for layout in s.pixel_cache.values_mut() {
+    for layout in s.scenes.values_mut() {
         layout.apply_theme(&theme);
     }
     s.status.apply_theme(&theme);
@@ -2456,7 +2438,7 @@ fn apply_config_snapshot(s: &mut UiState, snapshot: ClientConfigSnapshot) {
         fallback: cfg.font.fallback.clone(),
     };
     let font = s.font.clone();
-    for layout in s.pixel_cache.values_mut() {
+    for layout in s.scenes.values_mut() {
         layout.set_font(&font);
     }
 
@@ -2464,7 +2446,7 @@ fn apply_config_snapshot(s: &mut UiState, snapshot: ClientConfigSnapshot) {
     let theme = resolved_theme.unwrap_or_else(fallback_theme);
     s.theme = theme.clone();
     apply_chrome_css(&theme);
-    for layout in s.pixel_cache.values_mut() {
+    for layout in s.scenes.values_mut() {
         layout.apply_theme(&theme);
     }
     s.status.apply_theme(&theme);
@@ -2630,7 +2612,7 @@ fn show_tab_scene(s: &mut UiState, tab_id: u32) -> bool {
     s.pending_client_size = None;
     s.pending_client_hits = 0;
     let shown = s
-        .pixel_cache
+        .scenes
         .get_mut(&workspace_id)
         .is_some_and(|layout| layout.show_tab(tab_id));
     if !shown {
@@ -2641,7 +2623,7 @@ fn show_tab_scene(s: &mut UiState, tab_id: u32) -> bool {
         refresh_workspace_layout(s, &workspace_id, false);
     }
     let shown = s
-        .pixel_cache
+        .scenes
         .get_mut(&workspace_id)
         .is_some_and(|layout| layout.show_tab(tab_id));
     if shown && s.panel_open.is_none() && !s.pane_find.is_visible() {
@@ -2859,7 +2841,7 @@ fn resident_pane_view(
     wid: &WorkspaceId,
     pane: u32,
 ) -> Option<std::rc::Rc<crate::frontend::linux::pane_view::PaneSurface>> {
-    s.pixel_cache
+    s.scenes
         .get(wid)
         .and_then(|layout| layout.pane(pane).cloned())
 }
@@ -3013,7 +2995,7 @@ fn refresh_workspace_layout(s: &mut UiState, wid: &WorkspaceId, seed_from_core: 
         })
         .unwrap_or_default();
 
-    s.scene_stack.ensure(&workspace_key);
+    s.scenes.ensure(wid);
 
     if is_active {
         // tab 列表由 status bar 中区渲染（apply 时按签名重建），这里只维护
@@ -3036,7 +3018,7 @@ fn refresh_workspace_layout(s: &mut UiState, wid: &WorkspaceId, seed_from_core: 
 
     // 重建布局（pane 控件跨 tab 保留：像素缓存，不因换 tab 销毁）。
     if !layouts.is_empty() {
-        if let Some(layout) = s.pixel_cache.get_mut(wid) {
+        if let Some(layout) = s.scenes.get_mut(wid) {
             for (tab, client_layout) in &layouts {
                 layout.apply_client_layout(*tab, client_layout, &input_cb);
             }
@@ -4779,14 +4761,13 @@ fn close_sidebar_workspace(s: &mut UiState, id: &WorkspaceId) {
     s.surface_input_queue
         .borrow_mut()
         .retain(|input| &input.workspace != id);
-    s.scene_stack.remove(&workspace_key);
+    s.scenes.remove(id);
     s.view_store.remove_workspace(&workspace_key);
     s.visible_tabs.remove(&workspace_key);
     s.local_tab_overrides.remove(&workspace_key);
     if s.mounted_ws.as_ref() == Some(id) {
         s.mounted_ws = None;
     }
-    s.pixel_cache.remove(id);
     s.workspace_sockets.remove(id);
     if let Err(error) = sync_view_store(s) {
         tracing::warn!(target = "muxterm::linux", %error, "workspace list refresh failed after close");
@@ -4936,12 +4917,12 @@ fn after_activate(s: &mut UiState) {
 /// 切工作区只改 GtkStack 可见页和前端缓存，不调用 Core。
 fn show_workspace_scene(s: &mut UiState, id: WorkspaceId, seed_from_core: bool) {
     s.visible_workspace = id.clone();
-    s.scene_stack.ensure(&id.as_str());
-    let _ = s.scene_stack.show(&id.as_str());
-    let had_cache = s.pixel_cache.contains_key(&id);
+    s.scenes.ensure(&id);
+    let _ = s.scenes.show(&id);
+    let had_cache = s.scenes.contains(&id);
     let switching = s.mounted_ws.as_ref() != Some(&id);
     if switching {
-        if !s.pixel_cache.contains_key(&id) {
+        if !s.scenes.contains(&id) {
             let uses = s.uses_tmux();
             let weak = s.self_weak.clone();
             let mut layout =
@@ -4951,31 +4932,26 @@ fn show_workspace_scene(s: &mut UiState, id: WorkspaceId, seed_from_core: bool) 
                     handle_pane_menu_action(&state, pane_id, action);
                 }
             });
-            s.pixel_cache.insert(id.clone(), layout);
+            s.scenes.insert(id.clone(), layout);
         }
         // C8：后台 cache 的字号与当前字号不同才补（不在 Ctrl+= 里遍历全部）。
         let needs_font = s
-            .pixel_cache
+            .scenes
             .get(&id)
             .map(|l| (l.font_size() - s.font.size).abs() > f32::EPSILON)
             .unwrap_or(false);
         if needs_font {
             let font = s.font.clone();
-            s.pixel_cache
+            s.scenes
                 .get_mut(&id)
                 .expect("layout 必须存在")
                 .set_font(&font);
         }
-        if !s.scene_stack.has_page(&id.as_str()) {
-            let root = s
-                .pixel_cache
-                .get(&id)
-                .expect("layout 必须存在")
-                .root_box
-                .clone();
-            s.scene_stack.add_page(&id.as_str(), &root);
+        if !s.scenes.has_page(&id) {
+            let root = s.scenes.get(&id).expect("layout 必须存在").root_box.clone();
+            s.scenes.add_page(&id, &root);
         } else {
-            let _ = s.scene_stack.show(&id.as_str());
+            let _ = s.scenes.show(&id);
         }
         s.mounted_ws = Some(id.clone());
     }
