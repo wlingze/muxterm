@@ -9,6 +9,7 @@ mod worktree;
 pub use project::Project;
 pub use service::ProjectsService;
 pub use store::ProjectStore;
+pub(crate) use target::target_identity_key;
 pub use target::{ProjectTarget, TargetConfig, TargetRuntime, TargetTransport};
 pub use worktree::{git_worktree_add_argv, Worktree};
 

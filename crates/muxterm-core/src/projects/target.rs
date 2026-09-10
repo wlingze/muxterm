@@ -179,6 +179,71 @@ pub struct TargetConfig {
     pub workspace_id: Option<String>,
 }
 
+/// Build the stable target identity shared by compatibility and resolver DTOs.
+pub(crate) fn target_identity_key(
+    name: &str,
+    runtime: TargetRuntime,
+    transport_value: &TargetTransport,
+    path: &str,
+    session: Option<&str>,
+    socket: Option<&str>,
+    workspace_id: Option<&str>,
+) -> String {
+    let (transport, target) = match transport_value {
+        TargetTransport::Local => ("local", ""),
+        TargetTransport::Ssh { name } => ("ssh", name.as_str()),
+    };
+    let runtime_name = runtime.as_str();
+    let components = match runtime {
+        TargetRuntime::Shell => vec![
+            runtime_name.to_string(),
+            transport.to_string(),
+            target.to_string(),
+            if path.is_empty() {
+                name.to_string()
+            } else {
+                path.to_string()
+            },
+        ],
+        TargetRuntime::Tmux => vec![
+            runtime_name.to_string(),
+            transport.to_string(),
+            target.to_string(),
+            session
+                .filter(|value| !value.is_empty())
+                .unwrap_or(name)
+                .to_string(),
+            socket.unwrap_or_default().to_string(),
+        ],
+        TargetRuntime::Herdr
+            if session.is_some_and(|value| !value.is_empty())
+                && socket.is_some_and(|value| !value.is_empty())
+                && workspace_id.is_some_and(|value| !value.is_empty()) =>
+        {
+            vec![
+                runtime_name.to_string(),
+                transport.to_string(),
+                target.to_string(),
+                session.unwrap_or_default().to_string(),
+                socket.unwrap_or_default().to_string(),
+                workspace_id.unwrap_or_default().to_string(),
+            ]
+        }
+        TargetRuntime::Herdr => vec![
+            "herdr-provisional".to_string(),
+            transport.to_string(),
+            target.to_string(),
+            name.to_string(),
+            path.to_string(),
+        ],
+    };
+    components
+        .iter()
+        .map(|component| format!("{}:{component}", component.len()))
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
 impl TargetConfig {
     pub fn new(
         name: impl Into<String>,
@@ -205,68 +270,15 @@ impl TargetConfig {
 
     /// Build a stable identity from transport, runtime, and attach fields.
     pub fn identity_key(&self) -> String {
-        let (transport, target) = match &self.transport {
-            TargetTransport::Local => ("local", ""),
-            TargetTransport::Ssh { name } => ("ssh", name.as_str()),
-        };
-        let runtime = self.runtime.as_str();
-        let components = match self.runtime {
-            TargetRuntime::Shell => vec![
-                runtime.to_string(),
-                transport.to_string(),
-                target.to_string(),
-                if self.path.is_empty() {
-                    self.name.clone()
-                } else {
-                    self.path.clone()
-                },
-            ],
-            TargetRuntime::Tmux => vec![
-                runtime.to_string(),
-                transport.to_string(),
-                target.to_string(),
-                self.session
-                    .clone()
-                    .filter(|session| !session.is_empty())
-                    .unwrap_or_else(|| self.name.clone()),
-                self.socket.clone().unwrap_or_default(),
-            ],
-            TargetRuntime::Herdr
-                if self
-                    .session
-                    .as_deref()
-                    .is_some_and(|value| !value.is_empty())
-                    && self
-                        .socket
-                        .as_deref()
-                        .is_some_and(|value| !value.is_empty())
-                    && self
-                        .workspace_id
-                        .as_deref()
-                        .is_some_and(|value| !value.is_empty()) =>
-            {
-                vec![
-                    runtime.to_string(),
-                    transport.to_string(),
-                    target.to_string(),
-                    self.session.clone().unwrap_or_default(),
-                    self.socket.clone().unwrap_or_default(),
-                    self.workspace_id.clone().unwrap_or_default(),
-                ]
-            }
-            TargetRuntime::Herdr => vec![
-                "herdr-provisional".to_string(),
-                transport.to_string(),
-                target.to_string(),
-                self.name.clone(),
-                self.path.clone(),
-            ],
-        };
-        components
-            .iter()
-            .map(|component| format!("{}:{component}", component.len()))
-            .collect::<Vec<_>>()
-            .join("|")
+        target_identity_key(
+            &self.name,
+            self.runtime,
+            &self.transport,
+            &self.path,
+            self.session.as_deref(),
+            self.socket.as_deref(),
+            self.workspace_id.as_deref(),
+        )
     }
 
     /// Return fields used by QuickConnect and workspace search.

@@ -6,7 +6,7 @@ use crate::config::ProjectDocument;
 use crate::workspace::provenance::WorkspaceProvenance;
 use crate::workspace::template::TemplateName;
 
-use super::{ProjectId, ProjectTarget, TargetConfig, Worktree, WorktreeId};
+use super::{ProjectId, ProjectTarget, Worktree, WorktreeId};
 
 /// A configured Project with its registered Worktrees.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,11 +89,6 @@ impl Project {
     pub fn remove_worktree(&mut self, id: &WorktreeId) -> Option<Worktree> {
         let index = self.worktrees.iter().position(|item| &item.id == id)?;
         Some(self.worktrees.remove(index))
-    }
-
-    /// Build the compatibility target record consumed by Catalog resolution.
-    pub fn target_config(&self) -> TargetConfig {
-        self.target.to_target_config(&self.name)
     }
 }
 

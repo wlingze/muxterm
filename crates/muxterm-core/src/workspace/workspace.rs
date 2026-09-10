@@ -655,8 +655,8 @@ fn pane_agent_status(status: PaneAgentStatus) -> PaneStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::catalog::resolver::ResolvedTarget;
-    use crate::projects::{TargetConfig, TargetRuntime, TargetTransport};
+    use crate::catalog::resolver::{ResolvedTarget, ResolvedTargetDescriptor};
+    use crate::projects::{TargetRuntime, TargetTransport};
     use crate::protocol::task::Task;
     use crate::runtime::mock::MockRuntime;
     use crate::runtime::RuntimeCapability;
@@ -679,7 +679,7 @@ mod tests {
     fn resolved_spec_provenance_is_retained_by_workspace() {
         let mut spec = WorkspaceSpec::local_shell("/tmp/project/worktree");
         spec.provenance = Some(WorkspaceProvenance::worktree("project-a", "worktree-1"));
-        let canonical = TargetConfig::new(
+        let canonical = ResolvedTargetDescriptor::new(
             "project-a",
             TargetRuntime::Shell,
             TargetTransport::Local,

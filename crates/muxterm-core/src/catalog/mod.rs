@@ -29,7 +29,10 @@ pub use crate::runtime::{RuntimeInfo, RuntimeProvider};
 pub use inventory::{Inventory, InventorySnapshot, Reach};
 pub use muxterm_transport::provider::{TargetInfo, TransportInfo, TransportProvider};
 pub use muxterm_transport::Connect;
-pub use resolver::{config_to_spec, ResolveError, ResolveErrorStage, ResolvedTarget};
+pub use resolver::{
+    config_to_spec, descriptor_to_spec, ResolveError, ResolveErrorStage, ResolvedTarget,
+    ResolvedTargetDescriptor,
+};
 
 type DiscoveryJob = (String, Option<Arc<dyn TargetConnection>>, Vec<ChannelKind>);
 
@@ -266,28 +269,39 @@ impl Catalog {
         names
     }
 
-    /// 唯一 TargetConfig→ResolvedTarget 解析入口（W6 §11.2）。
-    ///
-    /// Project/Recent/Existing 三路都走这里；platform 不得复制第二套。
-    /// 只做身份解析（含 Herdr workspace 存在性检查），不建 Runtime。
+    /// Compatibility entry point for legacy TargetConfig callers.
     pub fn resolve_target(
         &self,
         connections: &mut ConnectionRegistry,
         config: &crate::projects::TargetConfig,
         intent: ResolveIntent,
     ) -> Result<ResolvedTarget, resolver::ResolveError> {
+        let descriptor = ResolvedTargetDescriptor::from_target_config(config);
+        self.resolve_descriptor(connections, &descriptor, intent)
+    }
+
+    /// 唯一 resolver descriptor→ResolvedTarget 入口（W6 §11.2）。
+    ///
+    /// Project/Recent/Existing 三路都走这里；platform 不得复制第二套。
+    /// 只做身份解析（含 Herdr workspace 存在性检查），不建 Runtime。
+    fn resolve_descriptor(
+        &self,
+        connections: &mut ConnectionRegistry,
+        descriptor: &ResolvedTargetDescriptor,
+        intent: ResolveIntent,
+    ) -> Result<ResolvedTarget, resolver::ResolveError> {
         use crate::projects::{TargetRuntime, TargetTransport};
 
-        let identity = config.identity_key();
-        match config.runtime {
+        let identity = descriptor.identity_key();
+        match descriptor.runtime {
             TargetRuntime::Herdr => {
                 // Herdr：核对 workspace 存在（AttachOnly 无匹配不创建；
                 // CreateIfMissing 且 local 才可创建，SSH 两意图都零创建命令）。
-                let transport = match &config.transport {
+                let transport = match &descriptor.transport {
                     TargetTransport::Local => "local",
                     TargetTransport::Ssh { .. } => "ssh",
                 };
-                let target = match &config.transport {
+                let target = match &descriptor.transport {
                     TargetTransport::Ssh { name } => name.as_str(),
                     TargetTransport::Local => "",
                 };
@@ -311,7 +325,7 @@ impl Catalog {
                 let driver = self
                     .runtime("herdr")
                     .expect("刚检查过的 Herdr RuntimeProvider 必须仍在");
-                let namespace = config.session.clone();
+                let namespace = descriptor.session.clone();
                 let candidates = driver
                     .discover(connect.as_ref(), namespace.as_deref())
                     .map_err(|error| resolver::ResolveError::Discovery {
@@ -322,18 +336,18 @@ impl Catalog {
                     })?;
 
                 // exact identity：workspace_id 精确命中。
-                if let Some(wid) = &config.workspace_id {
+                if let Some(wid) = &descriptor.workspace_id {
                     if let Some(hit) = candidates
                         .iter()
                         .find(|c| c.extra == *wid && c.namespace.as_deref() == namespace.as_deref())
                     {
-                        return Ok(self.resolved_from_candidate(config, hit));
+                        return Ok(self.resolved_from_candidate(descriptor, hit));
                     }
                 }
                 // name/label 命中；同名两候选 → ambiguity。
                 let named: Vec<&ExistingCandidate> = candidates
                     .iter()
-                    .filter(|c| c.name == config.name)
+                    .filter(|c| c.name == descriptor.name)
                     .collect();
                 match named.as_slice() {
                     [] => match intent {
@@ -351,13 +365,13 @@ impl Catalog {
                                 // 只允许显式 named session/socket 且该 session
                                 // 已运行；未明确或不可达返回 choice-required，
                                 // 禁止偷偷换 default 或启动 server。
-                                let Some(session_name) = config.session.clone() else {
+                                let Some(session_name) = descriptor.session.clone() else {
                                     return Err(resolver::ResolveError::CreateNotAllowed {
                                         identity,
                                         reason: "需要显式 named session".to_string(),
                                     });
                                 };
-                                let Some(socket) = config.socket.clone() else {
+                                let Some(socket) = descriptor.socket.clone() else {
                                     return Err(resolver::ResolveError::CreateNotAllowed {
                                         identity,
                                         reason: "需要显式 socket 路径".to_string(),
@@ -374,19 +388,19 @@ impl Catalog {
                                     });
                                 }
                                 let created = herdr
-                                    .workspace_create(&config.path, &config.name)
+                                    .workspace_create(&descriptor.path, &descriptor.name)
                                     .map_err(|error| resolver::ResolveError::CreateNotAllowed {
                                         identity: identity.clone(),
                                         reason: format!("workspace.create 失败: {error:#}"),
                                     })?;
-                                let mut canonical = config.clone();
+                                let mut canonical = descriptor.clone();
                                 canonical.workspace_id = Some(created.workspace_id);
-                                let spec = config_to_spec(&canonical);
+                                let spec = descriptor_to_spec(&canonical);
                                 Ok(ResolvedTarget { canonical, spec })
                             }
                         }
                     },
-                    [one] => Ok(self.resolved_from_candidate(config, one)),
+                    [one] => Ok(self.resolved_from_candidate(descriptor, one)),
                     many => Err(resolver::ResolveError::AmbiguousCandidate {
                         identity,
                         candidates: many
@@ -398,9 +412,9 @@ impl Catalog {
             }
             _ => {
                 // shell/tmux：不建 Runtime，只做规范化 spec 转换。
-                let spec = config_to_spec(config);
+                let spec = descriptor_to_spec(descriptor);
                 Ok(ResolvedTarget {
-                    canonical: config.clone(),
+                    canonical: descriptor.clone(),
                     spec,
                 })
             }
@@ -441,9 +455,10 @@ impl Catalog {
                     .ok_or_else(|| resolver::ResolveError::ProjectNotFound {
                         id: project_id.clone(),
                     })?;
-                let project_target = project.target_config();
+                let project_target =
+                    ResolvedTargetDescriptor::from_project_target(&project.name, &project.target);
                 let mut resolved =
-                    self.resolve_target(connections, &project_target, request.intent)?;
+                    self.resolve_descriptor(connections, &project_target, request.intent)?;
                 resolved.spec.provenance = Some(project.provenance());
                 resolved.spec.template = requested_template
                     .clone()
@@ -470,7 +485,8 @@ impl Catalog {
                         worktree_id: worktree_id.clone(),
                     })?;
 
-                let mut target = project.target_config();
+                let mut target =
+                    ResolvedTargetDescriptor::from_project_target(&project.name, &project.target);
                 target.name = if worktree.branch.trim().is_empty() {
                     worktree.id.to_string()
                 } else {
@@ -482,7 +498,7 @@ impl Catalog {
                     target.session = Some(worktree.id.to_string());
                 }
 
-                let mut resolved = self.resolve_target(connections, &target, request.intent)?;
+                let mut resolved = self.resolve_descriptor(connections, &target, request.intent)?;
                 if request.intent == ResolveIntent::CreateIfMissing {
                     resolved.spec.create = true;
                 }
@@ -681,7 +697,7 @@ impl Catalog {
             .ok_or_else(|| resolver::ResolveError::ExistingCandidateNotFound {
                 key: identity.key(),
             })?;
-        let config = target_config_from_existing(candidate).map_err(|error| {
+        let config = descriptor_from_existing(candidate).map_err(|error| {
             resolver::ResolveError::InvalidIdentity {
                 identity: identity.key(),
                 reason: format!("{error:#}"),
@@ -694,7 +710,7 @@ impl Catalog {
     /// typed session/socket/workspace_id，禁止从 extra 猜身份）。
     fn resolved_from_candidate(
         &self,
-        config: &crate::projects::TargetConfig,
+        config: &ResolvedTargetDescriptor,
         candidate: &ExistingCandidate,
     ) -> ResolvedTarget {
         let mut canonical = config.clone();
@@ -714,7 +730,7 @@ impl Catalog {
         if canonical.socket.is_none() {
             canonical.socket = candidate.socket.clone();
         }
-        let spec = config_to_spec(&canonical);
+        let spec = descriptor_to_spec(&canonical);
         ResolvedTarget { canonical, spec }
     }
 
@@ -808,9 +824,9 @@ fn existing_target_matches(candidate: &ExistingCandidate, identity: &ExistingCan
             && candidate.target.is_empty())
 }
 
-fn target_config_from_existing(
+fn descriptor_from_existing(
     candidate: &ExistingCandidate,
-) -> anyhow::Result<crate::projects::TargetConfig> {
+) -> anyhow::Result<ResolvedTargetDescriptor> {
     use crate::projects::{TargetRuntime, TargetTransport};
 
     let runtime = TargetRuntime::from_str(&candidate.runtime_id)
@@ -828,7 +844,7 @@ fn target_config_from_existing(
         String::new()
     };
     let mut config =
-        crate::projects::TargetConfig::new(candidate.name.clone(), runtime, transport, path);
+        ResolvedTargetDescriptor::new(candidate.name.clone(), runtime, transport, path);
     config.session = candidate
         .session
         .clone()
