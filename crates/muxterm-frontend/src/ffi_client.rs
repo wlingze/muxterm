@@ -467,8 +467,9 @@ pub struct ClientCandidate {
     pub reference: ClientCandidateRef,
 }
 
-/// Owned product-level open request.  Frontends never construct a
-/// WorkspaceSpec; Core resolves this request through Catalog.
+/// Owned product-level open request. Frontends send this product request;
+/// Core resolves it through Catalog without exposing its internal workspace
+/// specification.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct ClientOpenRequest {
     pub candidate: ClientCandidateRef,
