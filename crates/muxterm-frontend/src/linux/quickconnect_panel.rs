@@ -6,7 +6,7 @@
 use gtk4::prelude::*;
 use gtk4::Window;
 
-use crate::linux::quickconnect::model::TargetConfig;
+use crate::linux::quickconnect::model::TargetConfigDraft;
 
 #[path = "quickconnect_panel_view.rs"]
 mod quickconnect_panel_view;
@@ -38,8 +38,8 @@ pub fn clear_panel_hooks() {
 
 /// 面板回调。
 pub struct QuickConnectCallbacks {
-    pub on_connect: Box<dyn Fn(TargetConfig)>,
-    pub on_edit: Box<dyn Fn(TargetConfig)>,
+    pub on_connect: Box<dyn Fn(TargetConfigDraft)>,
+    pub on_edit: Box<dyn Fn(TargetConfigDraft)>,
     pub on_new_project: Box<dyn Fn()>,
 }
 
@@ -69,8 +69,8 @@ mod tests {
     };
     use crate::linux::quickconnect::store::QuickConnectStore;
 
-    fn cfg(name: &str) -> TargetConfig {
-        TargetConfig::new(name, TargetRuntime::Tmux, TargetTransport::Local, "~/x")
+    fn cfg(name: &str) -> TargetConfigDraft {
+        TargetConfigDraft::new(name, TargetRuntime::Tmux, TargetTransport::Local, "~/x")
     }
 
     #[test]
@@ -96,17 +96,17 @@ mod tests {
         let mut store = QuickConnectStore::in_memory();
         let recent = cfg("recent");
         let project = cfg("project");
-        store.recents.push(recent.clone());
-        store.projects.push(project.clone());
+        store.record_recent(&recent);
+        store.upsert_project(&project);
         let items = build_items(&store, Some(&recent));
         assert_eq!(items.len(), 3);
         assert!(matches!(
             &items[0],
-            PanelItem::Target(entry, true) if entry.config == recent
+            PanelItem::Target(entry, true) if entry.draft == recent
         ));
         assert!(matches!(
             &items[1],
-            PanelItem::Target(entry, false) if entry.config == project
+            PanelItem::Target(entry, false) if entry.draft == project
         ));
         assert!(matches!(items[2], PanelItem::NewProject));
     }
@@ -115,11 +115,11 @@ mod tests {
     fn build_items_dedupes_recent_and_project() {
         let mut store = QuickConnectStore::in_memory();
         let dup = cfg("dup");
-        store.recents.push(dup.clone());
-        store.projects.push(dup.clone());
+        store.record_recent(&dup);
+        store.upsert_project(&dup);
         let items = build_items(&store, None);
         assert_eq!(items.len(), 2, "重复目标只出现一次 + New Project");
-        assert!(matches!(&items[0], PanelItem::Target(entry, false) if entry.config == dup));
+        assert!(matches!(&items[0], PanelItem::Target(entry, false) if entry.draft == dup));
         assert!(matches!(items[1], PanelItem::NewProject));
     }
 
@@ -133,14 +133,14 @@ mod tests {
         assert!(matches!(
             &items[0],
             PanelItem::Target(entry, false)
-                if entry.project_id.as_deref() == Some("project@local")
+                if entry.project_id() == Some("project@local")
         ));
 
         store.record_recent(&project);
         let items = build_items(&store, None);
         assert!(matches!(
             &items[0],
-            PanelItem::Target(entry, false) if entry.project_id.is_none()
+            PanelItem::Target(entry, false) if entry.project_id().is_none()
         ));
     }
 
@@ -177,7 +177,7 @@ mod tests {
     fn build_root_items_puts_existing_connections_first() {
         let mut store = QuickConnectStore::in_memory();
         let project = cfg("project");
-        store.projects.push(project.clone());
+        store.upsert_project(&project);
         let items = build_root_items(&store, None);
         assert_eq!(items.len(), 3, "Folder + project + NewProject");
         assert!(matches!(
@@ -193,7 +193,7 @@ mod tests {
     #[test]
     fn root_search_includes_existing_workspace_without_duplicate_project() {
         let mut store = QuickConnectStore::in_memory();
-        store.projects.push(cfg("project"));
+        store.upsert_project(&cfg("project"));
         let base = build_root_items(&store, None);
         let existing = ExistingPanelState {
             locals: vec![ExistingEntry {
@@ -219,7 +219,7 @@ mod tests {
     fn root_search_includes_recent_beyond_compact_display_limit() {
         let mut store = QuickConnectStore::in_memory();
         for index in 0..6 {
-            store.recents.push(cfg(&format!("recent-{index}")));
+            store.record_recent(&cfg(&format!("recent-{index}")));
         }
         let base = build_root_items(&store, None);
         let search_base = build_search_items(&store, None);
@@ -235,7 +235,7 @@ mod tests {
         let root = root_items_with_existing_and_search(&base, &search_base, &existing, "recent-5");
         let rows = filter_panel_items(&root, "recent-5");
         assert_eq!(rows.len(), 1);
-        assert!(matches!(&rows[0], PanelItem::Target(entry, _) if entry.config.name == "recent-5"));
+        assert!(matches!(&rows[0], PanelItem::Target(entry, _) if entry.draft.name == "recent-5"));
     }
 
     #[test]
@@ -451,7 +451,7 @@ mod tests {
 
     #[test]
     fn filter_matches_subtitle_and_path() {
-        let ssh = TargetConfig::new(
+        let ssh = TargetConfigDraft::new(
             "srv",
             TargetRuntime::Tmux,
             TargetTransport::Ssh {
@@ -517,7 +517,7 @@ mod tests {
             )),
             PanelItem::Target(
                 QuickConnectEntry::new(
-                    TargetConfig::new("muxterm", TargetRuntime::Tmux, ryzen, "~/muxterm"),
+                    TargetConfigDraft::new("muxterm", TargetRuntime::Tmux, ryzen, "~/muxterm"),
                     vec![QuickBadge::Project],
                 ),
                 false,
@@ -532,7 +532,7 @@ mod tests {
         );
         assert!(
             hit.iter().any(
-                |item| matches!(item, PanelItem::Target(entry, _) if entry.config.name == "muxterm")
+                |item| matches!(item, PanelItem::Target(entry, _) if entry.draft.name == "muxterm")
             ),
             "ryzen 上的 tmux project 必须能选中连接: {hit:?}"
         );
@@ -547,8 +547,8 @@ mod tests {
                     && matches!(&e.transport, ExistingTransport::Ssh { name } if name == "ryzen")
             }
             PanelItem::Target(entry, _) => {
-                entry.config.runtime == TargetRuntime::Tmux
-                    && matches!(&entry.config.transport, TargetTransport::Ssh { name } if name == "ryzen")
+                entry.draft.runtime == TargetRuntime::Tmux
+                    && matches!(&entry.draft.transport, TargetTransport::Ssh { name } if name == "ryzen")
             }
             PanelItem::Host { alias } => alias == "ryzen",
             _ => false,

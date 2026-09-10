@@ -14,7 +14,7 @@ use crate::ffi_client::{
 use crate::i18n::{self, Key as TextKey};
 use crate::linux::quickconnect::existing::ExistingEntry;
 use crate::linux::quickconnect::model::{
-    QuickBadge, QuickConnect, QuickConnectEntry, TargetConfig, WorkspaceQuery,
+    QuickBadge, QuickConnect, QuickConnectEntry, TargetConfigDraft, WorkspaceQuery,
 };
 use crate::linux::quickconnect::store::QuickConnectStore;
 use crate::linux::workspace_sidebar::{ActivityIndicator, AgentSidebarItem};
@@ -93,7 +93,7 @@ pub struct PanelShowArgs {
     pub attention: Vec<ClientAttentionPane>,
     pub on_connect: Box<dyn Fn(ClientOpenRequest)>,
     pub on_existing_connect: Box<dyn Fn(ClientOpenRequest)>,
-    pub on_edit: Box<dyn Fn(TargetConfig)>,
+    pub on_edit: Box<dyn Fn(TargetConfigDraft)>,
     pub on_new_project: Box<dyn Fn()>,
     pub on_jump_pane: Box<dyn Fn(String, u32, u64)>,
     pub on_mute: MuteCallback,
@@ -104,29 +104,35 @@ pub struct PanelShowArgs {
     pub on_existing_nav: Box<dyn Fn(ExistingNav)>,
 }
 
-pub fn build_items(store: &QuickConnectStore, current: Option<&TargetConfig>) -> Vec<PanelItem> {
+pub fn build_items(
+    store: &QuickConnectStore,
+    current: Option<&TargetConfigDraft>,
+) -> Vec<PanelItem> {
     build_items_with_recent_limit(store, current, 5)
 }
 
 fn build_items_with_recent_limit(
     store: &QuickConnectStore,
-    current: Option<&TargetConfig>,
+    current: Option<&TargetConfigDraft>,
     recent_limit: usize,
 ) -> Vec<PanelItem> {
     let current_id = current.map(QuickConnect::unique_id);
-    let mut items: Vec<PanelItem> =
-        QuickConnect::entries(&store.recents, &store.projects, recent_limit)
-            .into_iter()
-            .map(|mut entry| {
-                let is_current = current_id
-                    .as_ref()
-                    .is_some_and(|id| QuickConnect::unique_id(&entry.config) == *id);
-                if !entry.badges.contains(&QuickBadge::Recent) {
-                    entry.project_id = store.project_id_for(&entry.config);
+    let recents = store.recent_targets();
+    let projects = store.project_targets();
+    let mut items: Vec<PanelItem> = QuickConnect::entries(&recents, &projects, recent_limit)
+        .into_iter()
+        .map(|mut entry| {
+            let is_current = current_id
+                .as_ref()
+                .is_some_and(|id| QuickConnect::unique_id(&entry.draft) == *id);
+            if !entry.badges.contains(&QuickBadge::Recent) {
+                if let Some(project_id) = store.project_id_for(&entry.draft) {
+                    entry = entry.with_project_id(project_id);
                 }
-                PanelItem::Target(entry, is_current)
-            })
-            .collect();
+            }
+            PanelItem::Target(entry, is_current)
+        })
+        .collect();
     items.push(PanelItem::NewProject);
     items
 }
@@ -135,15 +141,15 @@ fn build_items_with_recent_limit(
 /// 紧凑，只在用户开始输入时把这里的隐藏 Recent 合并进来。
 pub fn build_search_items(
     store: &QuickConnectStore,
-    current: Option<&TargetConfig>,
+    current: Option<&TargetConfigDraft>,
 ) -> Vec<PanelItem> {
-    build_items_with_recent_limit(store, current, store.recents.len())
+    build_items_with_recent_limit(store, current, store.recent_targets().len())
 }
 
 /// W20b：根列表 = 第一项「已有的连接」Folder + 原 Recent/Project + New Project。
 pub fn build_root_items(
     store: &QuickConnectStore,
-    current: Option<&TargetConfig>,
+    current: Option<&TargetConfigDraft>,
 ) -> Vec<PanelItem> {
     let mut items = vec![PanelItem::Folder {
         id: "existing-connections",
@@ -166,9 +172,9 @@ pub fn existing_root_items(existing: &ExistingPanelState) -> Vec<PanelItem> {
             entries.extend(rows.iter().cloned());
         }
     }
-    entries.sort_by_key(|entry| QuickConnect::unique_id(&entry.target_config()));
+    entries.sort_by_key(ExistingEntry::identity_key);
     for entry in entries {
-        let id = QuickConnect::unique_id(&entry.target_config());
+        let id = entry.identity_key();
         if seen.insert(id) {
             result.push(PanelItem::Existing(entry));
         }
@@ -201,7 +207,7 @@ pub fn root_items_with_existing_and_search(
     let mut seen: HashSet<String> = items
         .iter()
         .filter_map(|item| match item {
-            PanelItem::Target(entry, _) => Some(QuickConnect::unique_id(&entry.config)),
+            PanelItem::Target(entry, _) => Some(QuickConnect::unique_id(&entry.draft)),
             _ => None,
         })
         .collect();
@@ -209,7 +215,7 @@ pub fn root_items_with_existing_and_search(
         let PanelItem::Target(entry, _) = item else {
             continue;
         };
-        if seen.insert(QuickConnect::unique_id(&entry.config)) {
+        if seen.insert(QuickConnect::unique_id(&entry.draft)) {
             items.push(item.clone());
         }
     }
@@ -221,7 +227,7 @@ pub fn root_items_with_existing_and_search(
         let PanelItem::Existing(entry) = &item else {
             continue;
         };
-        if seen.insert(QuickConnect::unique_id(&entry.target_config())) {
+        if seen.insert(entry.identity_key()) {
             items.push(item);
         }
     }
@@ -312,7 +318,7 @@ pub(crate) fn filter_panel_items(items: &[PanelItem], query: &str) -> Vec<PanelI
         .enumerate()
         .filter_map(|(index, item)| {
             let score = match item {
-                PanelItem::Target(entry, _) => parsed.score(&entry.config),
+                PanelItem::Target(entry, _) => parsed.score(&entry.draft),
                 PanelItem::NewProject => {
                     let label = format!(
                         "new project {}",
@@ -324,7 +330,7 @@ pub(crate) fn filter_panel_items(items: &[PanelItem], query: &str) -> Vec<PanelI
                     title.to_lowercase().contains(&needle).then_some(0)
                 }
                 PanelItem::Back => Some(0),
-                PanelItem::Existing(entry) => parsed.score(&entry.target_config()),
+                PanelItem::Existing(entry) => parsed.score(entry),
                 PanelItem::Host { alias } => parsed.host_score(alias),
                 PanelItem::Loading => Some(0),
                 PanelItem::Empty { title } => title.to_lowercase().contains(&needle).then_some(0),
@@ -721,7 +727,7 @@ mod tests {
         let items = vec![
             PanelItem::Target(
                 crate::linux::quickconnect::model::QuickConnectEntry::new(
-                    crate::linux::quickconnect::model::TargetConfig::new(
+                    crate::linux::quickconnect::model::TargetConfigDraft::new(
                         "a",
                         crate::linux::quickconnect::model::TargetRuntime::Tmux,
                         crate::linux::quickconnect::model::TargetTransport::Local,

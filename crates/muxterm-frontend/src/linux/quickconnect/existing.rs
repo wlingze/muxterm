@@ -9,7 +9,7 @@ use crate::ffi_client::{
     ExistingCandidate,
 };
 
-use super::model::{TargetConfig, TargetRuntime, TargetTransport};
+use super::model::QuickConnectSearchTarget;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ExistingRuntime {
@@ -171,36 +171,99 @@ impl ExistingEntry {
         }
     }
 
-    /// Convert a frontend row to the legacy target configuration model used
-    /// only by the current list search/deduplication compatibility path.
-    pub fn target_config(&self) -> TargetConfig {
-        let runtime = match self.runtime {
-            ExistingRuntime::Shell => TargetRuntime::Shell,
-            ExistingRuntime::Tmux => TargetRuntime::Tmux,
-            ExistingRuntime::Herdr => TargetRuntime::Herdr,
+    /// Return the stable attach identity used for sorting and deduplication.
+    pub fn identity_key(&self) -> String {
+        let (transport, target) = match &self.transport {
+            ExistingTransport::Local => ("local", ""),
+            ExistingTransport::Ssh { name } => ("ssh", name.as_str()),
         };
-        let transport = match &self.transport {
-            ExistingTransport::Local => TargetTransport::Local,
-            ExistingTransport::Ssh { name } => TargetTransport::Ssh { name: name.clone() },
-        };
-        let path = if self.runtime == ExistingRuntime::Herdr {
-            ""
-        } else {
-            "~"
-        };
-        let mut config = TargetConfig::new(self.title.clone(), runtime, transport, path);
-        config.session = match self.runtime {
-            ExistingRuntime::Tmux => self.tmux_session.clone(),
-            ExistingRuntime::Herdr => self.herdr_session.clone(),
+        let session = match self.runtime {
+            ExistingRuntime::Tmux => self.tmux_session.as_deref(),
+            ExistingRuntime::Herdr => self.herdr_session.as_deref(),
             ExistingRuntime::Shell => None,
         };
-        config.socket = match self.runtime {
-            ExistingRuntime::Tmux => self.tmux_socket.clone(),
-            ExistingRuntime::Herdr => self.herdr_socket.clone(),
+        let socket = match self.runtime {
+            ExistingRuntime::Tmux => self.tmux_socket.as_deref(),
+            ExistingRuntime::Herdr => self.herdr_socket.as_deref(),
             ExistingRuntime::Shell => None,
         };
-        config.workspace_id = self.herdr_workspace_id.clone();
-        config
+        let workspace_id = (self.runtime == ExistingRuntime::Herdr)
+            .then_some(self.herdr_workspace_id.as_deref())
+            .flatten();
+        let components = match self.runtime {
+            ExistingRuntime::Shell => vec![
+                self.runtime.as_str().to_string(),
+                transport.to_string(),
+                target.to_string(),
+                self.title.clone(),
+            ],
+            ExistingRuntime::Tmux => vec![
+                self.runtime.as_str().to_string(),
+                transport.to_string(),
+                target.to_string(),
+                session
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or(self.title.as_str())
+                    .to_string(),
+                socket.unwrap_or_default().to_string(),
+            ],
+            ExistingRuntime::Herdr
+                if session.is_some_and(|value| !value.is_empty())
+                    && socket.is_some_and(|value| !value.is_empty())
+                    && workspace_id.is_some_and(|value| !value.is_empty()) =>
+            {
+                vec![
+                    self.runtime.as_str().to_string(),
+                    transport.to_string(),
+                    target.to_string(),
+                    session.unwrap_or_default().to_string(),
+                    socket.unwrap_or_default().to_string(),
+                    workspace_id.unwrap_or_default().to_string(),
+                ]
+            }
+            ExistingRuntime::Herdr => vec![
+                "herdr-provisional".to_string(),
+                transport.to_string(),
+                target.to_string(),
+                self.title.clone(),
+                String::new(),
+            ],
+        };
+        components
+            .iter()
+            .map(|component| format!("{}:{component}", component.len()))
+            .collect::<Vec<_>>()
+            .join("|")
+    }
+}
+
+impl QuickConnectSearchTarget for ExistingEntry {
+    fn runtime_name(&self) -> &str {
+        self.runtime.as_str()
+    }
+
+    fn is_local_transport(&self) -> bool {
+        matches!(self.transport, ExistingTransport::Local)
+    }
+
+    fn ssh_alias(&self) -> Option<&str> {
+        match &self.transport {
+            ExistingTransport::Ssh { name } => Some(name),
+            ExistingTransport::Local => None,
+        }
+    }
+
+    fn search_fields(&self) -> Vec<String> {
+        vec![
+            self.title.clone(),
+            self.runtime.as_str().to_string(),
+            self.transport.label(),
+            self.tmux_session.clone().unwrap_or_default(),
+            self.tmux_socket.clone().unwrap_or_default(),
+            self.herdr_session.clone().unwrap_or_default(),
+            self.herdr_socket.clone().unwrap_or_default(),
+            self.herdr_workspace_id.clone().unwrap_or_default(),
+        ]
     }
 }
 
@@ -234,13 +297,15 @@ mod tests {
                 name: "buildbox".into()
             }
         );
-        let config = entry.target_config();
-        assert_eq!(config.session.as_deref(), Some("agents"));
+        assert_eq!(entry.herdr_session.as_deref(), Some("agents"));
         assert_eq!(
-            config.socket.as_deref(),
+            entry.herdr_socket.as_deref(),
             Some("/remote/.config/herdr/sessions/agents/herdr.sock")
         );
-        assert_eq!(config.workspace_id.as_deref(), Some("w7"));
+        assert_eq!(entry.herdr_workspace_id.as_deref(), Some("w7"));
+        let mut renamed = entry.clone();
+        renamed.title = "display-only-name".into();
+        assert_eq!(entry.identity_key(), renamed.identity_key());
 
         let request = entry.open_request();
         assert_eq!(request.intent, ClientOpenIntent::AttachOnly);

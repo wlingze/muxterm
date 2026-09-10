@@ -15,7 +15,7 @@ use muxterm_protocol::WorkspaceId;
 use crate::ffi_client::{ClientOpenIntent, ClientTarget, ClientTask};
 use crate::i18n::{self, Key};
 
-use super::window_connection::recent_target_configs;
+use super::window_connection::recent_workspaces;
 use super::window_event_pump::{activity_snapshot, sync_view_store};
 use super::window_scene::{after_activate, request_switch_tab, show_workspace_scene};
 use super::window_status::maybe_refresh_status;
@@ -210,7 +210,7 @@ pub(super) fn close_sidebar_workspace(s: &mut UiState, id: &WorkspaceId) {
     if let Err(error) = sync_view_store(s) {
         tracing::warn!(target = "muxterm::linux", %error, "workspace list refresh failed after close");
     }
-    let recents = recent_target_configs(
+    let recents = recent_workspaces(
         &s.view_store,
         &s.workspace_sockets,
         s.view_store.workspace_ids().count(),

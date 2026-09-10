@@ -48,7 +48,7 @@ pub(super) fn collect_ssh_reach(
     let mut seen = Vec::new();
     for item in workspaces {
         if let PanelItem::Target(entry, _) = item {
-            if let TargetTransport::Ssh { name } = &entry.config.transport {
+            if let TargetTransport::Ssh { name } = &entry.draft.transport {
                 if seen.contains(name) {
                     continue;
                 }
