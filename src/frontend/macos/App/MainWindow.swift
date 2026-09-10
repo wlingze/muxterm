@@ -2506,7 +2506,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// descriptor-aware Runtime 建连；Catalog resolver 返回的 canonical target
-    /// 用于 warm key 与 Recent，不能从 WorkspaceId 五段字符串反推。
+    /// 用于 canonical scene key 与 Recent，不能从 WorkspaceId 五段字符串反推。
     private func connectCatalogTarget(
         config: TargetConfig,
         intent: CoreTargetOpenIntent,
