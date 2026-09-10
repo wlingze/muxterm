@@ -267,4 +267,24 @@ final class MacCommandQueueTests: XCTestCase {
         XCTAssertEqual(queue.count, 2)
         XCTAssertEqual(queue.drain().map { $0.workspaceID ?? "" }, ["one", "two"])
     }
+
+    func testRepeatedVisibilityAcknowledgeForOnePaneCoalesces() {
+        var queue = MacCommandQueue()
+        queue.enqueue(.attention(
+            workspaceID: "one",
+            .becameVisible(paneID: 3),
+            failureMessage: ""
+        ))
+        queue.enqueue(.attention(
+            workspaceID: "one",
+            .becameVisible(paneID: 3),
+            failureMessage: ""
+        ))
+
+        XCTAssertEqual(queue.count, 1)
+        guard case .attention(.becameVisible(let paneID)) = queue.drain()[0].operation else {
+            return XCTFail("expected a visibility operation")
+        }
+        XCTAssertEqual(paneID, 3)
+    }
 }

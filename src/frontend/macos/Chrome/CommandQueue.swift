@@ -59,7 +59,14 @@ public enum QueuedMuxOperation: Equatable, Sendable {
             case .all:
                 return .coloursAll
             }
-        case .task, .input, .attention, .closeWorkspace:
+        case .attention(let attention):
+            switch attention {
+            case .becameVisible(let paneID):
+                return .attentionVisible(paneID)
+            case .acknowledge, .mute:
+                return nil
+            }
+        case .task, .input, .closeWorkspace:
             return nil
         }
     }
@@ -75,6 +82,7 @@ public enum QueuedMuxOperation: Equatable, Sendable {
         case viewport(UInt32)
         case coloursPane(UInt32)
         case coloursAll
+        case attentionVisible(UInt32)
     }
 }
 
@@ -107,6 +115,7 @@ public enum QueuedMuxResize: Equatable, Sendable {
 /// Attention mutations are routed through the same serialized boundary as
 /// terminal tasks so a scene switch cannot retarget an acknowledgement.
 public enum QueuedMuxAttention: Equatable, Sendable {
+    case becameVisible(paneID: UInt32)
     case acknowledge(paneID: UInt32)
     case mute(paneID: UInt32, seconds: UInt64)
 }

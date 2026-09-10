@@ -1163,14 +1163,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     @discardableResult
     private func enqueueCoreAttention(
         workspaceID: String?,
-        _ attention: QueuedMuxAttention
+        _ attention: QueuedMuxAttention,
+        refreshPanel: Bool = true
     ) -> Bool {
         let queued = enqueueCoreCommand(.attention(
             workspaceID: workspaceID,
             attention,
             failureMessage: MuxtermI18n.shared.tr(.errorCommandFailed)
         ))
-        if queued {
+        if queued, refreshPanel {
             attentionPanelRefreshPending = true
         }
         return queued
@@ -1314,6 +1315,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 }
             case .attention(let attention):
                 switch attention {
+                case .becameVisible(let paneID):
+                    if let workspaceID = command.workspaceID {
+                        result = bridge.attentionOnBecameVisible(
+                            workspaceID: workspaceID,
+                            paneId: paneID
+                        )
+                    } else {
+                        result = bridge.attentionOnBecameVisible(paneId: paneID)
+                    }
                 case .acknowledge(let paneID):
                     if let workspaceID = command.workspaceID {
                         result = bridge.attentionAcknowledge(
@@ -3611,7 +3621,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     ) {
                         recordLastSeen(for: departingPane)
                     }
-                    bridge.attentionOnBecameVisible(paneId: ev.paneId)
+                    _ = enqueueCoreAttention(
+                        workspaceID: activeSceneWorkspaceID,
+                        .becameVisible(paneID: ev.paneId),
+                        refreshPanel: false
+                    )
                     focusPaneTerminal(ev.paneId)
                 }
             } else if ev.isBackendStatus {
@@ -3834,7 +3848,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let activePane = lastSnapshot.panes.first(where: \.isActive)?.id
             ?? lastSnapshot.panes.first?.id
         if allowBridgeQueries, let activePane {
-            _ = bridge.attentionOnBecameVisible(paneId: activePane)
+            _ = enqueueCoreAttention(
+                workspaceID: activeSceneWorkspaceID,
+                .becameVisible(paneID: activePane),
+                refreshPanel: false
+            )
         }
         // Core 返回的是整个 WorkspacePool 的 attention 快照；EventPump 每拍
         // 把它按 WorkspaceId 分发给各 scene 的 ViewStore，隐藏 scene 也持续更新。
