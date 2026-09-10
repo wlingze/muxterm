@@ -110,7 +110,7 @@ fn validate_project(project: &Project) -> Result<()> {
     if project.id.as_str().trim().is_empty() || project.name.trim().is_empty() {
         return Err(anyhow!("project id 和 name 不能为空"));
     }
-    if project.target.path.trim().is_empty() {
+    if project.target.path().trim().is_empty() {
         return Err(anyhow!("project {} 的 path 不能为空", project.id));
     }
     Ok(())
@@ -122,14 +122,14 @@ mod tests {
     use crate::config::ConfigDocument;
     use crate::config::SettingsService;
     use crate::projects::Project;
-    use crate::projects::{TargetConfig, TargetRuntime, TargetTransport};
+    use crate::projects::{ProjectTarget, TargetRuntime, TargetTransport};
     use std::fs;
 
     fn project(id: &str, path: &str) -> Project {
         Project::new(
             id,
             id,
-            TargetConfig::new(id, TargetRuntime::Shell, TargetTransport::Local, path),
+            ProjectTarget::new(TargetRuntime::Shell, TargetTransport::Local, path),
         )
     }
 
@@ -139,7 +139,7 @@ mod tests {
         assert!(store.upsert(project("a", "/a")).unwrap());
         assert!(!store.upsert(project("a", "/b")).unwrap());
         assert_eq!(store.projects().len(), 1);
-        assert_eq!(store.get(&"a".into()).unwrap().target.path, "/b");
+        assert_eq!(store.get(&"a".into()).unwrap().target.path(), "/b");
 
         let removed = store.remove(&"a".into()).unwrap().unwrap();
         assert_eq!(removed.id.as_str(), "a");
@@ -171,7 +171,7 @@ mod tests {
 
         assert_eq!(store.projects().len(), 1);
         assert_eq!(store.projects()[0].id.as_str(), "loaded");
-        assert_eq!(store.projects()[0].target.path, "/loaded");
+        assert_eq!(store.projects()[0].target.path(), "/loaded");
         fs::remove_file(path).unwrap();
     }
 }

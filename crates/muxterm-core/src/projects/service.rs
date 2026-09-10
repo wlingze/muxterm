@@ -105,20 +105,20 @@ impl ProjectsService {
             .get_project(project_id)
             .ok_or_else(|| anyhow!("project 不存在: {project_id}"))?
             .clone();
-        if project.target.runtime == TargetRuntime::Herdr {
+        if project.target.runtime() == TargetRuntime::Herdr {
             return Err(anyhow!("Herdr project 必须使用 native worktree strategy"));
         }
 
-        let (transport_id, target) = match &project.target.transport {
+        let (transport_id, target) = match project.target.transport() {
             TargetTransport::Local => ("local", ""),
             TargetTransport::Ssh { name } => ("ssh", name.as_str()),
         };
         let connection = catalog.connect(connections, transport_id, target)?;
-        let local = matches!(project.target.transport, TargetTransport::Local);
+        let local = matches!(project.target.transport(), TargetTransport::Local);
         let repo_root = if local {
-            expand_config_value(&project.target.path)
+            expand_config_value(project.target.path())
         } else {
-            project.target.path.clone()
+            project.target.path().to_string()
         };
         let worktree_path = if local {
             expand_config_value(&spec.path)
@@ -207,7 +207,7 @@ impl ProjectsService {
             .get_project(project_id)
             .ok_or_else(|| anyhow!("project 不存在: {project_id}"))?
             .clone();
-        if project.target.runtime != TargetRuntime::Herdr {
+        if project.target.runtime() != TargetRuntime::Herdr {
             return Err(anyhow!(
                 "native worktree strategy 只适用于支持 WorktreeCreate 的 Runtime"
             ));
@@ -245,7 +245,7 @@ impl ProjectsService {
             worktree_id,
             spec.path.clone(),
             spec.branch.clone(),
-            updated.target.path.clone(),
+            updated.target.path().to_string(),
             true,
         ))?;
         self.store.upsert(updated)?;
@@ -269,7 +269,7 @@ impl ProjectsService {
             .get_project(project_id)
             .ok_or_else(|| anyhow!("project 不存在: {project_id}"))?
             .target
-            .runtime;
+            .runtime();
         if runtime == TargetRuntime::Herdr {
             self.create_native_worktree_and_open(
                 catalog,
@@ -393,13 +393,13 @@ impl ProjectsService {
 mod tests {
     use super::*;
     use crate::projects::Project;
-    use crate::projects::{TargetConfig, TargetRuntime, TargetTransport};
+    use crate::projects::{ProjectTarget, TargetRuntime, TargetTransport};
 
     fn project(id: &str) -> Project {
         Project::new(
             id,
             id,
-            TargetConfig::new(id, TargetRuntime::Shell, TargetTransport::Local, "/repo"),
+            ProjectTarget::new(TargetRuntime::Shell, TargetTransport::Local, "/repo"),
         )
     }
 

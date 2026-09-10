@@ -73,6 +73,97 @@ impl TargetTransport {
     }
 }
 
+/// Project-owned target settings.
+///
+/// Project display identity (`name`) stays on [`super::Project`]. Recent and
+/// Existing rows continue to use `TargetConfig` until their resolver paths are
+/// migrated, so this type is the first ownership boundary for Project data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectTarget {
+    runtime: TargetRuntime,
+    transport: TargetTransport,
+    path: String,
+    socket: Option<String>,
+    session: Option<String>,
+    workspace_id: Option<String>,
+}
+
+impl ProjectTarget {
+    pub fn new(
+        runtime: TargetRuntime,
+        transport: TargetTransport,
+        path: impl Into<String>,
+    ) -> Self {
+        Self {
+            runtime,
+            transport,
+            path: path.into(),
+            socket: None,
+            session: None,
+            workspace_id: None,
+        }
+    }
+
+    pub fn runtime(&self) -> TargetRuntime {
+        self.runtime
+    }
+
+    pub fn transport(&self) -> &TargetTransport {
+        &self.transport
+    }
+
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    pub fn session(&self) -> Option<&str> {
+        self.session.as_deref()
+    }
+
+    pub fn socket(&self) -> Option<&str> {
+        self.socket.as_deref()
+    }
+
+    pub fn workspace_id(&self) -> Option<&str> {
+        self.workspace_id.as_deref()
+    }
+
+    pub fn set_session(&mut self, session: Option<String>) {
+        self.session = session;
+    }
+
+    pub fn set_socket(&mut self, socket: Option<String>) {
+        self.socket = socket;
+    }
+
+    pub fn set_workspace_id(&mut self, workspace_id: Option<String>) {
+        self.workspace_id = workspace_id;
+    }
+
+    pub fn from_target_config(config: &TargetConfig) -> Self {
+        Self {
+            runtime: config.runtime,
+            transport: config.transport.clone(),
+            path: config.path.clone(),
+            socket: config.socket.clone(),
+            session: config.session.clone(),
+            workspace_id: config.workspace_id.clone(),
+        }
+    }
+
+    pub fn to_target_config(&self, name: impl Into<String>) -> TargetConfig {
+        TargetConfig {
+            name: name.into(),
+            runtime: self.runtime,
+            transport: self.transport.clone(),
+            path: self.path.clone(),
+            socket: self.socket.clone(),
+            session: self.session.clone(),
+            workspace_id: self.workspace_id.clone(),
+        }
+    }
+}
+
 /// Target identity and display metadata used by Projects and resolver inputs.
 ///
 /// This is an interim compatibility record. The final design splits project
@@ -197,22 +288,22 @@ impl TargetConfig {
 }
 
 impl ProjectDocument {
-    /// Convert a QuickConnect target into the serializable Project contract.
-    pub fn from_target(config: &TargetConfig) -> Self {
-        let (transport_id, target) = match &config.transport {
+    /// Convert a Project-owned target into the serializable Project contract.
+    pub fn from_project_target(name: &str, config: &ProjectTarget) -> Self {
+        let (transport_id, target) = match config.transport() {
             TargetTransport::Local => ("local".to_string(), String::new()),
             TargetTransport::Ssh { name } => ("ssh".to_string(), name.clone()),
         };
         Self {
-            id: format!("{}@{}", config.name, transport_id),
-            name: config.name.clone(),
-            path: config.path.clone(),
+            id: format!("{}@{}", name, transport_id),
+            name: name.to_string(),
+            path: config.path().to_string(),
             runtime: ProjectRuntime {
-                id: config.runtime.as_str().to_string(),
+                id: config.runtime().as_str().to_string(),
                 options: BTreeMap::new(),
-                session: config.session.clone(),
-                socket: config.socket.clone(),
-                workspace_id: config.workspace_id.clone(),
+                session: config.session().map(str::to_string),
+                socket: config.socket().map(str::to_string),
+                workspace_id: config.workspace_id().map(str::to_string),
             },
             transport: ProjectTransport {
                 id: transport_id,
@@ -226,8 +317,13 @@ impl ProjectDocument {
         }
     }
 
-    /// Convert the portable Project contract back into a QuickConnect target.
-    pub fn to_target(&self) -> Result<TargetConfig> {
+    /// Convert a QuickConnect target into the serializable Project contract.
+    pub fn from_target(config: &TargetConfig) -> Self {
+        Self::from_project_target(&config.name, &ProjectTarget::from_target_config(config))
+    }
+
+    /// Convert the portable Project contract into Project-owned target data.
+    pub fn to_project_target(&self) -> Result<ProjectTarget> {
         let runtime = TargetRuntime::from_str(&self.runtime.id)
             .ok_or_else(|| anyhow!("不支持的 project runtime: {}", self.runtime.id))?;
         let transport = match self.transport.id.to_ascii_lowercase().as_str() {
@@ -251,29 +347,35 @@ impl ProjectDocument {
             }
             other => return Err(anyhow!("不支持的 project transport: {other}")),
         };
-        let mut target = TargetConfig::new(&self.name, runtime, transport, &self.path);
-        target.session = self.runtime.session.clone().or_else(|| {
+        let mut target = ProjectTarget::new(runtime, transport, &self.path);
+        target.set_session(self.runtime.session.clone().or_else(|| {
             self.runtime
                 .options
                 .get("session")
                 .and_then(Value::as_str)
                 .map(str::to_string)
-        });
-        target.socket = self.runtime.socket.clone().or_else(|| {
+        }));
+        target.set_socket(self.runtime.socket.clone().or_else(|| {
             self.runtime
                 .options
                 .get("socket")
                 .and_then(Value::as_str)
                 .map(str::to_string)
-        });
-        target.workspace_id = self.runtime.workspace_id.clone().or_else(|| {
+        }));
+        target.set_workspace_id(self.runtime.workspace_id.clone().or_else(|| {
             self.runtime
                 .options
                 .get("workspace_id")
                 .and_then(Value::as_str)
                 .map(str::to_string)
-        });
+        }));
         Ok(target)
+    }
+
+    /// Convert the portable Project contract into the compatibility target
+    /// record used by Recent/Existing resolution.
+    pub fn to_target(&self) -> Result<TargetConfig> {
+        Ok(self.to_project_target()?.to_target_config(&self.name))
     }
 }
 

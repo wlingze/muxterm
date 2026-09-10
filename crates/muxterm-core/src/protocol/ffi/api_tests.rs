@@ -29,7 +29,7 @@ use muxterm_protocol::{PaneId, TabId};
 use super::*;
 use crate::muxterm::should_export_state_change;
 use crate::projects::Project;
-use crate::projects::{TargetConfig, TargetRuntime, TargetTransport};
+use crate::projects::{ProjectTarget, TargetRuntime, TargetTransport};
 use crate::protocol::ffi::functions::events::state_change_to_c;
 use crate::protocol::ffi::functions::task::ctask_to_task;
 use crate::protocol::ffi::functions::transport::session_candidate_json;
@@ -55,12 +55,7 @@ fn ffi_open_json_resolves_a_project_candidate() {
             .create_project(Project::new(
                 "ffi-project",
                 "FFI Project",
-                TargetConfig::new(
-                    "FFI Project",
-                    TargetRuntime::Shell,
-                    TargetTransport::Local,
-                    "/tmp",
-                ),
+                ProjectTarget::new(TargetRuntime::Shell, TargetTransport::Local, "/tmp"),
             ))
             .unwrap();
         let request = CString::new(
@@ -165,12 +160,7 @@ fn ffi_candidates_json_aggregates_core_projects() {
             .create_project(Project::new(
                 "candidate-project",
                 "Candidate Project",
-                TargetConfig::new(
-                    "Candidate Project",
-                    TargetRuntime::Shell,
-                    TargetTransport::Local,
-                    "/tmp",
-                ),
+                ProjectTarget::new(TargetRuntime::Shell, TargetTransport::Local, "/tmp"),
             ))
             .unwrap();
 

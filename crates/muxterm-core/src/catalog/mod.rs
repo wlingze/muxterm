@@ -441,8 +441,9 @@ impl Catalog {
                     .ok_or_else(|| resolver::ResolveError::ProjectNotFound {
                         id: project_id.clone(),
                     })?;
+                let project_target = project.target_config();
                 let mut resolved =
-                    self.resolve_target(connections, &project.target, request.intent)?;
+                    self.resolve_target(connections, &project_target, request.intent)?;
                 resolved.spec.provenance = Some(project.provenance());
                 resolved.spec.template = requested_template
                     .clone()
@@ -469,7 +470,7 @@ impl Catalog {
                         worktree_id: worktree_id.clone(),
                     })?;
 
-                let mut target = project.target.clone();
+                let mut target = project.target_config();
                 target.name = if worktree.branch.trim().is_empty() {
                     worktree.id.to_string()
                 } else {
@@ -535,10 +536,10 @@ impl Catalog {
         let mut rows = Vec::new();
         for project in projects {
             let mut project_row = Candidate::project(project.id.to_string(), project.name.clone());
-            project_row.subtitle = project.target.path.clone();
+            project_row.subtitle = project.target.path().to_string();
             project_row.badges = vec![
-                project.target.runtime.as_str().into(),
-                project.target.transport.label(),
+                project.target.runtime().as_str().into(),
+                project.target.transport().label(),
             ];
             project_row.in_pool = self.workspace_for_provenance_in(pool, project.id.as_str(), None);
             rows.push(project_row);
