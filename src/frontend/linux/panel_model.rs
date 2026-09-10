@@ -6,8 +6,94 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::frontend::ffi_client::{ClientAttentionPane, ClientAttentionStatus, ClientSearchHit};
-use crate::frontend::linux::quickconnect_panel::{filter_panel_items, PanelItem};
+use crate::frontend::i18n::{self, Key as TextKey};
+use crate::frontend::linux::quickconnect::existing::ExistingEntry;
+use crate::frontend::linux::quickconnect::model::{QuickConnectEntry, WorkspaceQuery};
 use crate::frontend::linux::workspace_sidebar::{ActivityIndicator, AgentSidebarItem};
+
+/// QuickConnect 面板的候选项。
+///
+/// 这是页面模型，不携带 GTK widget；View 只负责把它们渲染成 ListBox 行。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PanelItem {
+    Target(QuickConnectEntry, bool),
+    NewProject,
+    /// 目录（已有的连接 / 本地 / SSH）。
+    Folder {
+        id: &'static str,
+        title: String,
+    },
+    /// 子目录返回。
+    Back,
+    /// 一条活着的 tmux session 或 Herdr workspace。
+    Existing(ExistingEntry),
+    /// SSH host 行（探测到至少一条 tmux 或 Herdr）。
+    Host {
+        alias: String,
+    },
+    /// SSH 探测中占位。
+    Loading,
+    /// 空目录占位。
+    Empty {
+        title: String,
+    },
+}
+
+/// 已有连接面板的纯逻辑导航状态。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum ExistingNav {
+    #[default]
+    Root,
+    Home,
+    Local,
+    SshHosts,
+    SshHost {
+        alias: String,
+    },
+}
+
+/// 按查询过滤 QuickConnect 候选，并保持原始顺序作为同分排序依据。
+pub(crate) fn filter_panel_items(items: &[PanelItem], query: &str) -> Vec<PanelItem> {
+    let q = query.trim();
+    if q.is_empty() {
+        return items.to_vec();
+    }
+    let parsed = WorkspaceQuery::parse(q);
+    let needle = q.to_lowercase();
+    let mut matched: Vec<(usize, u32, PanelItem)> = items
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| {
+            let score = match item {
+                PanelItem::Target(entry, _) => parsed.score(&entry.config),
+                PanelItem::NewProject => {
+                    let label = format!(
+                        "new project {}",
+                        i18n::tr(TextKey::NewProject).to_lowercase()
+                    );
+                    label.contains(&needle).then_some(0)
+                }
+                PanelItem::Folder { title, .. } => {
+                    title.to_lowercase().contains(&needle).then_some(0)
+                }
+                PanelItem::Back => Some(0),
+                PanelItem::Existing(entry) => parsed.score(&entry.target_config()),
+                PanelItem::Host { alias } => parsed.host_score(alias),
+                PanelItem::Loading => Some(0),
+                PanelItem::Empty { title } => title.to_lowercase().contains(&needle).then_some(0),
+            }?;
+            Some((index, score, item.clone()))
+        })
+        .collect();
+    matched.sort_by(
+        |(left_index, left_score, _), (right_index, right_score, _)| {
+            right_score
+                .cmp(left_score)
+                .then(left_index.cmp(right_index))
+        },
+    );
+    matched.into_iter().map(|(_, _, item)| item).collect()
+}
 
 /// 面板 tab。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

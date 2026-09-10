@@ -128,86 +128,9 @@ pub struct QuickConnectCallbacks {
     pub on_new_project: Box<dyn Fn()>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PanelItem {
-    Target(QuickConnectEntry, bool),
-    NewProject,
-    /// 目录（已有的连接 / 本地 / SSH）。
-    Folder {
-        id: &'static str,
-        title: String,
-    },
-    /// 子目录返回。
-    Back,
-    /// 一条活着的 tmux session 或 Herdr workspace。
-    Existing(ExistingEntry),
-    /// SSH host 行（探测到至少一条 tmux 或 Herdr）。
-    Host {
-        alias: String,
-    },
-    /// SSH 探测中占位。
-    Loading,
-    /// 空目录占位。
-    Empty {
-        title: String,
-    },
-}
-
-/// 已有的连接导航状态（纯逻辑）。
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub enum ExistingNav {
-    #[default]
-    Root,
-    Home,
-    Local,
-    SshHosts,
-    SshHost {
-        alias: String,
-    },
-}
-
-/// 按查询过滤（纯逻辑，便于单测）。
-pub(crate) fn filter_panel_items(items: &[PanelItem], query: &str) -> Vec<PanelItem> {
-    let q = query.trim();
-    if q.is_empty() {
-        return items.to_vec();
-    }
-    let parsed = WorkspaceQuery::parse(q);
-    let needle = q.to_lowercase();
-    let mut matched: Vec<(usize, u32, PanelItem)> = items
-        .iter()
-        .enumerate()
-        .filter_map(|(index, item)| {
-            let score = match item {
-                PanelItem::Target(entry, _) => parsed.score(&entry.config),
-                PanelItem::NewProject => {
-                    let label = format!(
-                        "new project {}",
-                        i18n::tr(TextKey::NewProject).to_lowercase()
-                    );
-                    label.contains(&needle).then_some(0)
-                }
-                PanelItem::Folder { title, .. } => {
-                    title.to_lowercase().contains(&needle).then_some(0)
-                }
-                PanelItem::Back => Some(0),
-                PanelItem::Existing(e) => parsed.score(&e.target_config()),
-                PanelItem::Host { alias } => parsed.host_score(alias),
-                PanelItem::Loading => Some(0),
-                PanelItem::Empty { title } => title.to_lowercase().contains(&needle).then_some(0),
-            }?;
-            Some((index, score, item.clone()))
-        })
-        .collect();
-    matched.sort_by(
-        |(left_index, left_score, _), (right_index, right_score, _)| {
-            right_score
-                .cmp(left_score)
-                .then(left_index.cmp(right_index))
-        },
-    );
-    matched.into_iter().map(|(_, _, item)| item).collect()
-}
+#[cfg(test)]
+pub(crate) use crate::frontend::linux::panel_model::filter_panel_items;
+pub use crate::frontend::linux::panel_model::{ExistingNav, PanelItem};
 
 pub fn build_items(store: &QuickConnectStore, current: Option<&TargetConfig>) -> Vec<PanelItem> {
     build_items_with_recent_limit(store, current, 5)
