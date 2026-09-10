@@ -1611,6 +1611,52 @@ final class CoreBridge {
         }
     }
 
+    /// 向指定 Workspace 的 pane 上报前景/背景色，不改变 Core 的 active workspace。
+    @discardableResult
+    func reportPaneColours(
+        workspaceID: String,
+        paneId: UInt32,
+        fgHex: String,
+        bgHex: String
+    ) -> Int32 {
+        guard let handle else { return -1 }
+        return workspaceID.withCString { workspace in
+            fgHex.withCString { fg in
+                bgHex.withCString { bg in
+                    muxterm_workspace_report_pane_colours(
+                        handle,
+                        workspace,
+                        paneId,
+                        fg,
+                        bg
+                    )
+                }
+            }
+        }
+    }
+
+    /// 向指定 Workspace 的所有 pane 上报前景/背景色，不改变 active workspace。
+    @discardableResult
+    func reportAllPaneColours(
+        workspaceID: String,
+        fgHex: String,
+        bgHex: String
+    ) -> Int32 {
+        guard let handle else { return -1 }
+        return workspaceID.withCString { workspace in
+            fgHex.withCString { fg in
+                bgHex.withCString { bg in
+                    muxterm_workspace_report_all_pane_colours(
+                        handle,
+                        workspace,
+                        fg,
+                        bg
+                    )
+                }
+            }
+        }
+    }
+
     /// 同步 pty 行列（SwiftTerm sizeChanged → LocalBackend resize）。
     @discardableResult
     func resizePane(paneId: UInt32, cols: UInt16, rows: UInt16) -> Int32 {

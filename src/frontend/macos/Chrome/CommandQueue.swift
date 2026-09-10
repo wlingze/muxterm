@@ -42,6 +42,7 @@ public enum QueuedMuxOperation: Equatable, Sendable {
     case attention(QueuedMuxAttention)
     case viewport(paneID: UInt32, offset: UInt32)
     case closeWorkspace
+    case colours(QueuedMuxColours)
 
     private var coalescingKey: CoalescingKey? {
         switch self {
@@ -51,6 +52,13 @@ public enum QueuedMuxOperation: Equatable, Sendable {
             return .resize(resize.coalescingKey)
         case .viewport(let paneID, _):
             return .viewport(paneID)
+        case .colours(let colours):
+            switch colours {
+            case .pane(let paneID, _, _):
+                return .coloursPane(paneID)
+            case .all:
+                return .coloursAll
+            }
         case .task, .input, .attention, .closeWorkspace:
             return nil
         }
@@ -65,6 +73,8 @@ public enum QueuedMuxOperation: Equatable, Sendable {
         case switchTab
         case resize(QueuedMuxResize.CoalescingKey)
         case viewport(UInt32)
+        case coloursPane(UInt32)
+        case coloursAll
     }
 }
 
@@ -99,6 +109,13 @@ public enum QueuedMuxResize: Equatable, Sendable {
 public enum QueuedMuxAttention: Equatable, Sendable {
     case acknowledge(paneID: UInt32)
     case mute(paneID: UInt32, seconds: UInt64)
+}
+
+/// Terminal colour reports are scoped to a workspace so a delayed event-pump
+/// flush cannot update a pane with the same numeric ID in another scene.
+public enum QueuedMuxColours: Equatable, Sendable {
+    case pane(paneID: UInt32, fgHex: String, bgHex: String)
+    case all(fgHex: String, bgHex: String)
 }
 
 /// One UI-to-Core operation waiting for the next main-thread event-pump flush.
@@ -185,6 +202,18 @@ public struct QueuedMuxCommand: Equatable, Sendable {
         QueuedMuxCommand(
             workspaceID: workspaceID,
             operation: .closeWorkspace,
+            failureMessage: failureMessage
+        )
+    }
+
+    public static func colours(
+        workspaceID: String?,
+        _ colours: QueuedMuxColours,
+        failureMessage: String = ""
+    ) -> QueuedMuxCommand {
+        QueuedMuxCommand(
+            workspaceID: workspaceID,
+            operation: .colours(colours),
             failureMessage: failureMessage
         )
     }

@@ -101,9 +101,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 最近一次 poll 的 PaneOutput 条数（W13 洪水上限）。
     private(set) var lastPaneOutputEventCount: Int = 0
     private var languageObserver: NSObjectProtocol?
-    /// 已向 tmux 上报过颜色的 pane（`refresh-client -r` 只需每个 pane 一次；
-    /// 外观变化时清空重报）。
-    private var reportedColourPanes = Set<UInt32>()
+    private struct ColourPaneKey: Hashable {
+        let workspaceID: String?
+        let paneID: UInt32
+    }
+
+    /// 已向 tmux 上报过颜色的 workspace/pane（`refresh-client -r` 只需每个
+    /// pane 一次；外观变化时清空重报）。
+    private var reportedColourPanes = Set<ColourPaneKey>()
     /// 后台 tab 的 Surface 树按 runloop 一拍一棵预热，避免 attach 时一次建完卡死。
     private var tabWarmupScheduled = false
     /// 最近一次 status bar 快照（用于周期刷新与位置/样式渲染）。
@@ -851,9 +856,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // tmux session，普通 `tmux attach` 里字也会变白。
         reportedColourPanes.removeAll()
         let osc = ColorContrast.oscColors(fg: theme.palette.fg, bg: theme.palette.bg)
-        _ = bridge.reportAllPaneColours(
-            fgHex: osc.fg,
-            bgHex: osc.bg
+        _ = enqueueCoreColours(
+            workspaceID: activeSceneWorkspaceID,
+            .all(fgHex: osc.fg, bgHex: osc.bg)
         )
         // 重新渲染 status bar（GUI 黑白模式跟随主题；tmux 模式样式不变）。
         if statusBarSnapshot != nil {
@@ -1171,6 +1176,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         return queued
     }
 
+    @discardableResult
+    private func enqueueCoreColours(
+        workspaceID: String?,
+        _ colours: QueuedMuxColours
+    ) -> Bool {
+        enqueueCoreCommand(.colours(
+            workspaceID: workspaceID,
+            colours
+        ))
+    }
+
     /// Dispatch queued commands at the same serialized boundary that drains
     /// workspace events.  Explicit workspace dispatch keeps a queued command
     /// attached to its originating scene after a subsequent scene switch.
@@ -1268,6 +1284,34 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 } else {
                     result = -1
                 }
+            case .colours(let colours):
+                switch colours {
+                case .pane(let paneID, let fgHex, let bgHex):
+                    if let workspaceID = command.workspaceID {
+                        result = bridge.reportPaneColours(
+                            workspaceID: workspaceID,
+                            paneId: paneID,
+                            fgHex: fgHex,
+                            bgHex: bgHex
+                        )
+                    } else {
+                        result = bridge.reportPaneColours(
+                            paneId: paneID,
+                            fgHex: fgHex,
+                            bgHex: bgHex
+                        )
+                    }
+                case .all(let fgHex, let bgHex):
+                    if let workspaceID = command.workspaceID {
+                        result = bridge.reportAllPaneColours(
+                            workspaceID: workspaceID,
+                            fgHex: fgHex,
+                            bgHex: bgHex
+                        )
+                    } else {
+                        result = bridge.reportAllPaneColours(fgHex: fgHex, bgHex: bgHex)
+                    }
+                }
             case .attention(let attention):
                 switch attention {
                 case .acknowledge(let paneID):
@@ -1292,6 +1336,19 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                             seconds: seconds
                         )
                     }
+                }
+            }
+            if result != 0 {
+                switch command.operation {
+                case .colours(.pane(let paneID, _, _)):
+                    reportedColourPanes.remove(ColourPaneKey(
+                        workspaceID: command.workspaceID,
+                        paneID: paneID
+                    ))
+                case .colours(.all):
+                    reportedColourPanes.removeAll()
+                default:
+                    break
                 }
             }
             if result != 0, !command.failureMessage.isEmpty {
@@ -4184,15 +4241,19 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// OSC 10/11 颜色查询时用的是自己的默认色板（codex 黑底黑字/白底白字）。
     private func reportPaneColoursIfNeeded(_ panes: [Pane]) {
         guard terminalManager.usesClientResize else { return }
-        let fresh = Set(panes.map(\.id)).subtracting(reportedColourPanes)
-        guard !fresh.isEmpty else { return }
         let osc = ColorContrast.oscColors(
             fg: MuxtermTerminalColors.activePalette.fg,
             bg: MuxtermTerminalColors.activePalette.bg
         )
-        for id in fresh {
-            if bridge.reportPaneColours(paneId: id, fgHex: osc.fg, bgHex: osc.bg) == 0 {
-                reportedColourPanes.insert(id)
+        let workspaceID = activeSceneWorkspaceID
+        for id in Set(panes.map(\.id)) {
+            let key = ColourPaneKey(workspaceID: workspaceID, paneID: id)
+            guard !reportedColourPanes.contains(key) else { continue }
+            if enqueueCoreColours(
+                workspaceID: workspaceID,
+                .pane(paneID: id, fgHex: osc.fg, bgHex: osc.bg)
+            ) {
+                reportedColourPanes.insert(key)
             }
         }
     }

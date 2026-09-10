@@ -232,4 +232,39 @@ final class MacCommandQueueTests: XCTestCase {
             return XCTFail("expected a workspace close operation")
         }
     }
+
+    func testConsecutiveColourReportsForOneWorkspaceAndPaneKeepLatest() {
+        var queue = MacCommandQueue()
+        queue.enqueue(.colours(
+            workspaceID: "one",
+            .pane(paneID: 3, fgHex: "111111", bgHex: "eeeeee")
+        ))
+        queue.enqueue(.colours(
+            workspaceID: "one",
+            .pane(paneID: 3, fgHex: "222222", bgHex: "dddddd")
+        ))
+
+        XCTAssertEqual(queue.count, 1)
+        guard case .colours(.pane(let paneID, let fgHex, let bgHex)) = queue.drain()[0].operation else {
+            return XCTFail("expected a pane colour report")
+        }
+        XCTAssertEqual(paneID, 3)
+        XCTAssertEqual(fgHex, "222222")
+        XCTAssertEqual(bgHex, "dddddd")
+    }
+
+    func testColourReportsAcrossWorkspacesRemainOrdered() {
+        var queue = MacCommandQueue()
+        queue.enqueue(.colours(
+            workspaceID: "one",
+            .pane(paneID: 3, fgHex: "111111", bgHex: "eeeeee")
+        ))
+        queue.enqueue(.colours(
+            workspaceID: "two",
+            .pane(paneID: 3, fgHex: "222222", bgHex: "dddddd")
+        ))
+
+        XCTAssertEqual(queue.count, 2)
+        XCTAssertEqual(queue.drain().map { $0.workspaceID ?? "" }, ["one", "two"])
+    }
 }
