@@ -5,9 +5,27 @@
 //! Runtime（W12 遗留，未统一）；spec 只携带 runtime / transport / name /
 //! socket / ssh / dir 等解析结果字段。
 
+use std::path::Path;
+
 use crate::workspace::provenance::WorkspaceProvenance;
 use crate::workspace::template::TemplateName;
 use muxterm_protocol::WorkspaceId;
+
+fn default_workspace_name(path: &str) -> String {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return "workspace".into();
+    }
+    let last = Path::new(trimmed)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("");
+    if last.is_empty() || last == "/" {
+        "workspace".into()
+    } else {
+        last.to_string()
+    }
+}
 
 /// 打开一个工作区的产品规格（不含 tmux 词）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -189,7 +207,7 @@ impl WorkspaceSpec {
     /// 用户可见工作区名。
     pub fn name(&self) -> String {
         if self.session.is_empty() {
-            crate::quickconnect::model::QuickConnect::default_name(&self.path)
+            default_workspace_name(&self.path)
         } else {
             self.session.clone()
         }
@@ -233,6 +251,9 @@ mod tests {
         assert_eq!(shell.id().path, "/tmp/work");
         assert_eq!(shell.id().runtime, "shell");
         assert!(!shell.name().is_empty());
+        assert_eq!(default_workspace_name("/a/b/c"), "c");
+        assert_eq!(default_workspace_name(""), "workspace");
+        assert_eq!(default_workspace_name("/"), "workspace");
 
         let ssh_shell = WorkspaceSpec::ssh_shell("dev", "/srv/project");
         assert_eq!(ssh_shell.id().transport, "ssh");

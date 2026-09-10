@@ -25,7 +25,6 @@ pub mod logging;
 pub mod muxterm;
 pub mod projects;
 pub mod protocol;
-pub mod quickconnect;
 pub mod render_policy;
 pub mod runtime;
 pub mod transport;
