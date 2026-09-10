@@ -33,12 +33,18 @@ pub struct WorkspaceSidebarItem {
 impl WorkspaceSidebarItem {
     /// Build sidebar rows from the frontend-owned workspace snapshot.
     pub fn from_views(store: &ViewStore) -> Vec<Self> {
+        Self::from_views_with_active(store, store.active_workspace_id())
+    }
+
+    /// Build rows using the frontend-visible workspace instead of Core's
+    /// transport-level active marker.  Scene switching is local and must not
+    /// rewrite the Core snapshot just to update sidebar selection.
+    pub fn from_views_with_active(store: &ViewStore, active_id: Option<&str>) -> Vec<Self> {
         let mut workspaces: Vec<&ClientWorkspace> = store
             .workspaces()
             .filter_map(|(_, view)| view.workspace.as_ref())
             .collect();
         workspaces.sort_by(|left, right| left.id.cmp(&right.id));
-        let active_id = store.active_workspace_id();
         workspaces
             .into_iter()
             .enumerate()
@@ -1321,6 +1327,11 @@ mod tests {
         assert_eq!(items[1].runtime, "herdr");
         assert_eq!(items[1].transport, "archmini");
         assert_eq!(items[1].shortcut, Some(2));
+
+        let beta_key = beta.as_str();
+        let visible_beta = WorkspaceSidebarItem::from_views_with_active(&store, Some(&beta_key));
+        assert!(!visible_beta[0].active);
+        assert!(visible_beta[1].active);
     }
 
     #[test]

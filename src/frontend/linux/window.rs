@@ -27,7 +27,7 @@ use crate::frontend::event_pump::EventPump;
 use crate::frontend::ffi_client::{
     ClientActivitySnapshot, ClientAttentionPane, ClientAttentionStatus, ClientCandidateRef,
     ClientConfig, ClientEventKind, ClientKeyBinding, ClientOpenIntent, ClientOpenRequest,
-    ClientOpenedWorkspace, ClientRuntimeCapability, ClientTarget, ClientTask,
+    ClientOpenedWorkspace, ClientRuntimeCapability, ClientRuntimeInfo, ClientTarget, ClientTask,
     ClientWorkspaceAttention, ClientWorkspaceEvent, FfiClient,
 };
 use crate::frontend::i18n::{self, Key};
@@ -100,6 +100,10 @@ struct UiState {
     scene_stack_view: gtk4::Stack,
     /// 前端拥有的 workspace topology/render 快照；Core 不持有其引用。
     view_store: ViewStore,
+    /// 前端当前可见的 workspace；不等同于 Core snapshot 的 active 标记。
+    visible_workspace: WorkspaceId,
+    /// 启动时读取的 provider 能力快照；切场景时不得再查询 Core。
+    runtime_info: Vec<ClientRuntimeInfo>,
     /// 当前挂载到窗口的 LayoutHost 对应的工作区。
     mounted_ws: Option<WorkspaceId>,
     /// 本轮结构事件触发 refresh_ui 后，已经从 core snapshot seed 的 pane。
@@ -258,11 +262,11 @@ fn parse_workspace_id(value: &str) -> Option<WorkspaceId> {
 
 impl UiState {
     fn active_ws_id(&self) -> WorkspaceId {
-        let key = self
-            .view_store
-            .active_workspace_id()
-            .expect("必须有前台连接");
-        parse_workspace_id(key).expect("Core workspace id 必须保持五段格式")
+        self.visible_workspace.clone()
+    }
+
+    fn active_workspace_key(&self) -> String {
+        self.visible_workspace.as_str()
     }
 
     fn active_layout(&self) -> &LayoutHost {
@@ -286,18 +290,16 @@ impl UiState {
     }
 
     fn active_workspace_runtime(&self) -> Option<&str> {
-        let id = self.view_store.active_workspace_id()?;
+        let id = self.active_workspace_key();
         self.view_store
-            .workspace(id)
+            .workspace(&id)
             .and_then(|view| view.workspace.as_ref())
             .map(|workspace| workspace.runtime.as_str())
     }
 
     fn active_supports(&self, capability: ClientRuntimeCapability) -> bool {
-        let Some(workspace_id) = self.view_store.active_workspace_id() else {
-            return false;
-        };
-        self.workspace_supports(workspace_id, capability)
+        let workspace_id = self.active_workspace_key();
+        self.workspace_supports(&workspace_id, capability)
     }
 
     fn workspace_supports(&self, workspace_id: &str, capability: ClientRuntimeCapability) -> bool {
@@ -309,22 +311,17 @@ impl UiState {
         else {
             return false;
         };
-        self.event_pump
-            .client()
-            .runtime_list()
-            .ok()
-            .into_iter()
-            .flatten()
+        self.runtime_info
+            .iter()
             .find(|provider| provider.id == runtime)
             .is_some_and(|provider| provider.supports(capability))
     }
 
     fn execute_active_task(&self, task: ClientTask) -> anyhow::Result<()> {
-        let workspace_id = self
-            .view_store
-            .active_workspace_id()
-            .map(str::to_owned)
-            .ok_or_else(|| anyhow!("没有激活的 workspace"))?;
+        let workspace_id = self.active_workspace_key();
+        if self.view_store.workspace(&workspace_id).is_none() {
+            anyhow::bail!("没有激活的 workspace");
+        }
         self.command_queue.borrow_mut().push(ClientCommand::Task {
             workspace_id: Some(workspace_id),
             task,
@@ -611,6 +608,14 @@ impl AppWindow {
         event_pump
             .sync_view_store(&mut view_store)
             .expect("Core workspace snapshot 必须可用");
+        let runtime_info = event_pump.client().runtime_list().unwrap_or_else(|error| {
+            tracing::warn!(
+                target = "muxterm::linux",
+                %error,
+                "读取 runtime capability snapshot 失败"
+            );
+            Vec::new()
+        });
         let projects = match event_pump.client().config_describe() {
             Ok(snapshot) => match serde_json::from_value(snapshot.values["projects"].clone()) {
                 Ok(projects) => projects,
@@ -815,6 +820,8 @@ impl AppWindow {
             scene_stack: SceneStack::with_visible(startup_id.as_str()),
             scene_stack_view,
             view_store,
+            visible_workspace: startup_id.clone(),
+            runtime_info,
             mounted_ws: Some(startup_id.clone()),
             snapshot_seeded_this_batch: HashSet::new(),
             qc_store,
@@ -1033,14 +1040,15 @@ impl AppWindow {
                 }
                 let s = st.borrow();
                 let pane = s.active_pane;
-                let workspace_id = active_workspace_id(&s);
+                let workspace_replica = active_workspace_id(&s);
+                let workspace_key = active_workspace_key(&s);
                 let hit = s.event_pump.client().search_all(&q).ok().and_then(|hits| {
                     hits.into_iter()
-                        .find(|hit| hit.workspace_id == workspace_id && hit.pane_id == pane)
+                        .find(|hit| hit.workspace_id == workspace_replica && hit.pane_id == pane)
                 });
                 if let Some(hit) = hit {
                     if let Some(row) = s.event_pump.client().workspace_pane_viewport_for_seq(
-                        &workspace_id,
+                        &workspace_key,
                         pane,
                         hit.seq,
                     ) {
@@ -1986,7 +1994,7 @@ impl AppWindow {
     /// 测试用：只搜当前工作区当前 pane。
     pub fn test_search_pane(&self, pane: u32, query: &str) -> Vec<(String, u32, String)> {
         let s = self._state.borrow();
-        let workspace_id = active_workspace_key(&s);
+        let workspace_id = active_workspace_id(&s);
         s.event_pump
             .client()
             .search_all(query)
@@ -2000,7 +2008,7 @@ impl AppWindow {
     /// 测试用：只搜当前工作区全部 pane。
     pub fn test_search_workspace(&self, query: &str) -> Vec<(String, u32, String)> {
         let s = self._state.borrow();
-        let workspace_id = active_workspace_key(&s);
+        let workspace_id = active_workspace_id(&s);
         s.event_pump
             .client()
             .search_all(query)
@@ -2515,10 +2523,10 @@ fn switch_pane_offset(s: &mut UiState, forward: bool) {
 fn refresh_attention_chrome(s: &UiState, window: &Window) {
     let n = activity_snapshot(s).blocked_count;
     s.status.set_attention(n);
+    let active_workspace = s.active_workspace_key();
     let workspace = s
         .view_store
-        .active_workspace_id()
-        .and_then(|id| s.view_store.workspace(id))
+        .workspace(&active_workspace)
         .and_then(|view| view.workspace.as_ref())
         .map(|workspace| workspace.name.clone())
         .unwrap_or_else(|| "muxterm".into());
@@ -2614,12 +2622,10 @@ fn update_jump_latest(s: &UiState) {
 /// 速率由连续两次 `traffic_bytes()` 快照 + 墙钟差出来（W15a），
 /// 禁止把累计字节标成 `B/s`。
 fn refresh_connection_summary(s: &mut UiState) {
-    let Some(workspace_id) = s.view_store.active_workspace_id() else {
-        return;
-    };
+    let workspace_id = s.active_workspace_key();
     let Some(workspace) = s
         .view_store
-        .workspace(workspace_id)
+        .workspace(&workspace_id)
         .and_then(|view| view.workspace.as_ref())
     else {
         return;
@@ -2668,19 +2674,12 @@ fn refresh_connection_summary(s: &mut UiState) {
 
 /// 当前前台连接的 workspace id（ReplicaStore 键）。
 fn active_workspace_id(s: &UiState) -> String {
-    s.view_store
-        .active_workspace_id()
-        .and_then(parse_workspace_id)
-        .map(|id| workspace_replica_id(&id))
-        .unwrap_or_default()
+    workspace_replica_id(&s.active_ws_id())
 }
 
 /// Current Core workspace identity used at FFI boundaries.
 fn active_workspace_key(s: &UiState) -> String {
-    s.view_store
-        .active_workspace_id()
-        .unwrap_or_default()
-        .to_string()
+    s.active_workspace_key()
 }
 
 /// WorkspaceId → ReplicaStore 键（`name@transport`，与 QuickConnect 一致）。
@@ -2798,7 +2797,7 @@ fn record_attention_notification(s: &mut UiState, workspace: &str, kind: &str) {
 
 fn refresh_ui(s: &mut UiState) {
     let wid = s.active_ws_id();
-    refresh_workspace_layout(s, &wid);
+    refresh_workspace_layout(s, &wid, true);
     maybe_refresh_status(s, true);
     sync_chrome_visibility(s);
 }
@@ -2808,7 +2807,7 @@ fn refresh_ui(s: &mut UiState) {
 /// This function intentionally does not switch the active window for a
 /// background workspace.  It only creates/reparents resident PaneViews and
 /// feeds an already-realized Surface from the frontend-owned ViewStore state.
-fn refresh_workspace_layout(s: &mut UiState, wid: &WorkspaceId) {
+fn refresh_workspace_layout(s: &mut UiState, wid: &WorkspaceId, seed_from_core: bool) {
     let is_active = s.active_ws_id() == *wid;
     let workspace_key = wid.as_str();
     let Some(view) = s.view_store.workspace(&workspace_key) else {
@@ -2887,7 +2886,9 @@ fn refresh_workspace_layout(s: &mut UiState, wid: &WorkspaceId) {
                 // attach 保真（1820.log 白屏）：布局建好后，把 core 里
                 // capture-pane 快照播种进 VTE。快照事件可能在视图创建前
                 // 已消费，不能只依赖 PaneOutput 增量。
-                seed_unseeded_pane_for(s, wid, &view, pane_id, cols, rows);
+                if seed_from_core {
+                    seed_unseeded_pane_for(s, wid, &view, pane_id, cols, rows);
+                }
                 if is_active && pane_active {
                     s.active_pane = pane_id;
                     // 临时输入面板存在时不能由 topology refresh 抢走焦点；
@@ -3073,16 +3074,30 @@ fn refresh_event_workspaces(s: &mut UiState, events: &[ClientWorkspaceEvent]) {
         .into_iter()
         .collect();
     for workspace_id in workspace_ids {
-        refresh_workspace_layout(s, &workspace_id);
+        refresh_workspace_layout(s, &workspace_id, true);
     }
+    repair_visible_workspace(s);
     apply_attention_visibility_events(s, events);
     mark_active_attention_visible(s);
 }
 
-fn apply_attention_visibility_events(s: &UiState, events: &[ClientWorkspaceEvent]) {
-    let Some(active_workspace) = s.view_store.active_workspace_id() else {
+fn repair_visible_workspace(s: &mut UiState) {
+    let visible_key = s.active_workspace_key();
+    if s.view_store.workspace(&visible_key).is_some() {
         return;
-    };
+    }
+    let fallback = s
+        .view_store
+        .active_workspace_id()
+        .and_then(parse_workspace_id)
+        .or_else(|| s.view_store.workspace_ids().find_map(parse_workspace_id));
+    if let Some(fallback) = fallback {
+        show_workspace_scene(s, fallback, true);
+    }
+}
+
+fn apply_attention_visibility_events(s: &UiState, events: &[ClientWorkspaceEvent]) {
+    let active_workspace = s.active_workspace_key();
     for event in events
         .iter()
         .filter(|event| event.workspace_id == active_workspace)
@@ -3829,13 +3844,7 @@ fn maybe_schedule_reconnect(state: &Rc<RefCell<UiState>>) {
         if s.reconnect_retry_at.is_some_and(|at| now < at) {
             return;
         }
-        let Some(id) = s
-            .view_store
-            .active_workspace_id()
-            .and_then(parse_workspace_id)
-        else {
-            return;
-        };
+        let id = s.active_ws_id();
         if !s.workspace_supports(&id.as_str(), ClientRuntimeCapability::SharedClientResize) {
             return;
         }
@@ -3905,21 +3914,21 @@ fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelT
             s.view_store.workspace_ids().count(),
         );
         s.qc_store.replace_all_recents(&recents);
-        let current = s
-            .view_store
-            .active_workspace_id()
-            .and_then(|workspace_key| {
-                let workspace = s
-                    .view_store
-                    .workspace(workspace_key)
-                    .and_then(|view| view.workspace.as_ref())?;
-                let id = parse_workspace_id(workspace_key)?;
+        let current = {
+            let workspace_key = s.active_workspace_key();
+            let workspace = s
+                .view_store
+                .workspace(&workspace_key)
+                .and_then(|view| view.workspace.as_ref());
+            workspace.and_then(|workspace| {
+                let id = parse_workspace_id(&workspace_key)?;
                 let socket = s
                     .workspace_sockets
                     .get(&id)
                     .and_then(|value| value.as_deref());
                 Some(workspace_to_target_config(workspace, socket))
-            });
+            })
+        };
         let store = s.qc_store.clone();
         let win = window.clone();
         let st = state.clone();
@@ -4032,7 +4041,7 @@ fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelT
                         return Vec::new();
                     }
                     let s = st.borrow();
-                    let workspace_id = active_workspace_key(&s);
+                    let workspace_replica = active_workspace_id(&s);
                     let hits = s
                         .event_pump
                         .client()
@@ -4041,10 +4050,11 @@ fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelT
                         .into_iter()
                         .filter(|hit| match scope {
                             crate::frontend::linux::panel_model::SearchScope::Pane => {
-                                hit.workspace_id == workspace_id && hit.pane_id == s.active_pane
+                                hit.workspace_id == workspace_replica
+                                    && hit.pane_id == s.active_pane
                             }
                             crate::frontend::linux::panel_model::SearchScope::Workspace => {
-                                hit.workspace_id == workspace_id
+                                hit.workspace_id == workspace_replica
                             }
                             crate::frontend::linux::panel_model::SearchScope::All => true,
                         })
@@ -4136,18 +4146,7 @@ fn activate_attention_workspace(s: &mut UiState, ws: &str) {
     }
     let id = attention_workspace_id(s, ws);
     if let Some(id) = id {
-        let key = id.as_str();
-        if s.event_pump.client().activate_workspace(&key).is_ok() {
-            if let Err(error) = sync_view_store(s) {
-                tracing::warn!(
-                    target = "muxterm::linux",
-                    %error,
-                    workspace = %key,
-                    "workspace activation snapshot refresh failed"
-                );
-            }
-            after_activate(s);
-        }
+        activate_existing(s, id);
     }
 }
 
@@ -4157,7 +4156,22 @@ fn attention_workspace_id(s: &UiState, ws: &str) -> Option<WorkspaceId> {
         .workspaces()
         .filter_map(|(_, view)| view.workspace.as_ref())
         .filter_map(|workspace| parse_workspace_id(&workspace.id))
-        .find(|id| workspace_replica_id(id) == ws)
+        .find(|id| workspace_replica_matches(id, ws))
+}
+
+fn workspace_replica_matches(id: &WorkspaceId, requested: &str) -> bool {
+    if workspace_replica_id(id) == requested {
+        return true;
+    }
+    if id.session.is_empty() {
+        return false;
+    }
+    let transport = if id.transport == "ssh" {
+        id.alias.as_deref().unwrap_or("ssh")
+    } else {
+        "local"
+    };
+    requested == format!("{}@{transport}", id.session)
 }
 
 /// 打开配置页：保存/热加载后重读 config.toml 并应用主题/字体/attention。
@@ -4372,7 +4386,7 @@ fn show_worktree_create_dialog(state: &Rc<RefCell<UiState>>, parent: &gtk4::Wind
 fn create_worktree(state: &Rc<RefCell<UiState>>, branch: String, path: String) {
     let source_workspace_id = {
         let s = state.borrow();
-        s.view_store.active_workspace_id().map(ToOwned::to_owned)
+        Some(s.active_workspace_key())
     };
     let Some(source_workspace_id) = source_workspace_id else {
         return;
@@ -4437,25 +4451,15 @@ fn activate_existing(s: &mut UiState, id: WorkspaceId) {
         return;
     }
     let key = id.as_str();
-    if let Err(error) = s.event_pump.client().activate_workspace(&key) {
+    if s.view_store.workspace(&key).is_none() {
         tracing::warn!(
             target = "muxterm::linux",
-            %error,
             workspace = %key,
-            "workspace activation failed"
+            "workspace scene is missing from the owned snapshot"
         );
         return;
     }
-    if let Err(error) = sync_view_store(s) {
-        tracing::warn!(
-            target = "muxterm::linux",
-            %error,
-            workspace = %key,
-            "workspace activation snapshot refresh failed"
-        );
-        return;
-    }
-    after_activate(s);
+    show_workspace_scene(s, id, false);
 }
 
 /// 超过 soft capacity 时提醒用户选择关闭最久未使用的后台 Workspace。
@@ -4477,12 +4481,12 @@ fn maybe_warn_workspace_capacity(state: &Rc<RefCell<UiState>>, parent: &Window) 
             None
         } else {
             let overflow = count.saturating_sub(s.capacity_limit).max(1);
-            let active = s.view_store.active_workspace_id();
+            let active = s.active_workspace_key();
             let mut candidates: Vec<WorkspaceCapacityCandidate> = s
                 .view_store
                 .workspaces()
                 .filter_map(|(_, view)| view.workspace.as_ref())
-                .filter(|workspace| active != Some(workspace.id.as_str()))
+                .filter(|workspace| active != workspace.id)
                 .filter_map(|workspace| {
                     Some(WorkspaceCapacityCandidate {
                         id: parse_workspace_id(&workspace.id)?,
@@ -4651,8 +4655,10 @@ fn close_sidebar_workspace(s: &mut UiState, id: &WorkspaceId) {
     if was_active {
         if let Some(fallback) = fallback {
             let fallback_key = fallback.as_str();
-            let _ = s.event_pump.client().activate_workspace(&fallback_key);
             let _ = sync_view_store(s);
+            if s.view_store.workspace(&fallback_key).is_some() {
+                show_workspace_scene(s, fallback, false);
+            }
         } else {
             // 主窗口始终需要一个可轮询的前台 Workspace。关闭最后一格时
             // 立即回到一格空本地 shell；Core 负责旧 Runtime 的 detach/
@@ -4695,17 +4701,10 @@ fn remove_scene_page(s: &mut UiState, workspace_id: &str) {
 fn activate_sidebar_activity(s: &mut UiState, id: &WorkspaceId, pane: u32) {
     if s.active_ws_id() != *id {
         let workspace_key = id.as_str();
-        if s.event_pump
-            .client()
-            .activate_workspace(&workspace_key)
-            .is_err()
-        {
+        if s.view_store.workspace(&workspace_key).is_none() {
             return;
         }
-        if sync_view_store(s).is_err() {
-            return;
-        }
-        after_activate(s);
+        show_workspace_scene(s, id.clone(), false);
     }
     let workspace_key = active_workspace_key(s);
     let tab = {
@@ -4751,8 +4750,16 @@ fn refresh_sidebar_if_open(s: &mut UiState) {
     s.sidebar.set_commands(&commands);
 }
 
+fn refresh_sidebar_workspaces_if_open(s: &UiState) {
+    if s.sidebar.is_open() {
+        let workspaces = sidebar_workspaces(s);
+        s.sidebar.set_workspaces(&workspaces);
+    }
+}
+
 fn sidebar_workspaces(s: &UiState) -> Vec<WorkspaceSidebarItem> {
-    WorkspaceSidebarItem::from_views(&s.view_store)
+    let active_workspace = s.active_workspace_key();
+    WorkspaceSidebarItem::from_views_with_active(&s.view_store, Some(&active_workspace))
 }
 
 fn sidebar_agents(
@@ -4769,9 +4776,26 @@ fn sidebar_commands(
     CommandSidebarItem::from_views(&s.view_store, activity)
 }
 
+/// Core open/activate 完成后，把 Core snapshot 的 active workspace 交给
+/// frontend-visible Scene；Core activation 本身只发生在 open/close 等生命周期。
 fn after_activate(s: &mut UiState) {
-    // 切工作区 = 改绑体现：挂载该工作区的像素缓存（没有则新建）。
-    let id = s.active_ws_id().clone();
+    let Some(id) = s
+        .view_store
+        .active_workspace_id()
+        .and_then(parse_workspace_id)
+    else {
+        return;
+    };
+    show_workspace_scene(s, id, true);
+    mark_active_attention_visible(s);
+    refresh_sidebar_if_open(s);
+    report_all_pane_colours(s);
+    maybe_refresh_status(s, true);
+}
+
+/// 切工作区只改 GtkStack 可见页和前端缓存，不调用 Core。
+fn show_workspace_scene(s: &mut UiState, id: WorkspaceId, seed_from_core: bool) {
+    s.visible_workspace = id.clone();
     s.scene_stack.ensure(&id.as_str());
     let _ = s.scene_stack.show(&id.as_str());
     let had_cache = s.pixel_cache.contains_key(&id);
@@ -4812,7 +4836,7 @@ fn after_activate(s: &mut UiState) {
             s.scene_stack_view.add_named(&root, Some(&id.as_str()));
         }
         s.scene_stack_view.set_visible_child_name(&id.as_str());
-        s.mounted_ws = Some(id);
+        s.mounted_ws = Some(id.clone());
     }
     s.tab_gate = TabSwitchGate::new(Duration::from_millis(1500));
     if switching && had_cache && !s.uses_tmux() {
@@ -4830,11 +4854,14 @@ fn after_activate(s: &mut UiState) {
         s.view_store.workspace_ids().count(),
     );
     s.qc_store.replace_all_recents(&recents);
-    refresh_ui(s);
-    mark_active_attention_visible(s);
-    refresh_sidebar_if_open(s);
-    report_all_pane_colours(s);
-    maybe_refresh_status(s, true);
+    if seed_from_core {
+        refresh_ui(s);
+    } else {
+        refresh_workspace_layout(s, &id, false);
+        maybe_refresh_status(s, true);
+        sync_chrome_visibility(s);
+        refresh_sidebar_workspaces_if_open(s);
+    }
 }
 
 fn connect_target(state: &Rc<RefCell<UiState>>, config: TargetConfig) {
@@ -5426,6 +5453,30 @@ mod tests {
     fn close_intent_maps_quit_and_hide() {
         assert_eq!(close_intent(true), CloseIntent::Quit);
         assert_eq!(close_intent(false), CloseIntent::HideKeepPolling);
+    }
+
+    #[test]
+    fn existing_workspace_activation_is_scene_only() {
+        let src = include_str!("window.rs");
+        let activation = fn_src(src, "activate_existing");
+        assert!(
+            activation.contains("show_workspace_scene(s, id, false)"),
+            "{activation}"
+        );
+        assert!(!activation.contains("activate_workspace"), "{activation}");
+        assert!(!activation.contains("sync_view_store"), "{activation}");
+
+        let scene = fn_src(src, "show_workspace_scene");
+        assert!(!scene.contains("event_pump"), "{scene}");
+        assert!(!scene.contains("seed_unseeded_pane_for"), "{scene}");
+    }
+
+    #[test]
+    fn workspace_replica_matching_accepts_path_and_session_aliases() {
+        let id = WorkspaceId::new("local", None, "session", "tmux", "/worktree");
+        assert!(workspace_replica_matches(&id, "session:/worktree@local"));
+        assert!(workspace_replica_matches(&id, "session@local"));
+        assert!(!workspace_replica_matches(&id, "other@local"));
     }
 
     #[test]
