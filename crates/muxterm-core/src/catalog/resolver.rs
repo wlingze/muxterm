@@ -1,11 +1,11 @@
-//! Catalog resolver：TargetConfig → ResolvedTarget 的唯一入口（W6 §11.2）。
+//! Catalog resolver：target descriptor → ResolvedTarget 的唯一入口（W6 §11.2）。
 //!
 //! Project/Recent/Existing 三路都走 [`resolve_target`]；platform 不得复制
 //! 第二套 resolver。identity key 只由身份字段构成（transport target /
 //! runtime / session / target-side socket / workspace_id），name/path 是
-//! 显示/项目元数据，不参与身份。
+//! 显示/项目元数据，不参与身份。旧 TargetConfig 仅在兼容 API 边界转换。
 
-use crate::projects::{TargetConfig, TargetRuntime, TargetTransport};
+use crate::projects::{ProjectTarget, TargetConfig, TargetRuntime, TargetTransport};
 use crate::workspace::spec::WorkspaceSpec;
 
 pub use muxterm_protocol::candidate::{OpenRequest, ResolveIntent};
@@ -142,7 +142,92 @@ impl std::fmt::Display for ResolveErrorStage {
     }
 }
 
-/// 解析后的打开目标：规范化 TargetConfig（identity + 显示元数据）+
+/// Resolver 产出的规范化 target descriptor。
+///
+/// 这是 Catalog 自己拥有的 identity/display 记录，不是 Project 持久化记录，
+/// 也不是 frontend 的 QuickConnect 编辑模型。旧 `TargetConfig` 只在兼容
+/// 输入边界转换为该类型。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedTargetDescriptor {
+    pub name: String,
+    pub runtime: TargetRuntime,
+    pub transport: TargetTransport,
+    pub path: String,
+    pub socket: Option<String>,
+    pub session: Option<String>,
+    pub workspace_id: Option<String>,
+}
+
+impl ResolvedTargetDescriptor {
+    pub fn new(
+        name: impl Into<String>,
+        runtime: TargetRuntime,
+        transport: TargetTransport,
+        path: impl Into<String>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            runtime,
+            transport,
+            path: path.into(),
+            socket: None,
+            session: None,
+            workspace_id: None,
+        }
+    }
+
+    pub fn from_target_config(config: &TargetConfig) -> Self {
+        Self {
+            name: config.name.clone(),
+            runtime: config.runtime,
+            transport: config.transport.clone(),
+            path: config.path.clone(),
+            socket: config.socket.clone(),
+            session: config.session.clone(),
+            workspace_id: config.workspace_id.clone(),
+        }
+    }
+
+    pub fn from_project_target(name: impl Into<String>, target: &ProjectTarget) -> Self {
+        Self {
+            name: name.into(),
+            runtime: target.runtime(),
+            transport: target.transport().clone(),
+            path: target.path().to_string(),
+            socket: target.socket().map(str::to_string),
+            session: target.session().map(str::to_string),
+            workspace_id: target.workspace_id().map(str::to_string),
+        }
+    }
+
+    /// Build the old record only for compatibility callers that still need it.
+    pub fn to_target_config(&self) -> TargetConfig {
+        TargetConfig {
+            name: self.name.clone(),
+            runtime: self.runtime,
+            transport: self.transport.clone(),
+            path: self.path.clone(),
+            socket: self.socket.clone(),
+            session: self.session.clone(),
+            workspace_id: self.workspace_id.clone(),
+        }
+    }
+
+    /// Return the stable identity key used by Recent candidate references.
+    pub fn identity_key(&self) -> String {
+        crate::projects::target_identity_key(
+            &self.name,
+            self.runtime,
+            &self.transport,
+            &self.path,
+            self.session.as_deref(),
+            self.socket.as_deref(),
+            self.workspace_id.as_deref(),
+        )
+    }
+}
+
+/// 解析后的打开目标：规范化 descriptor（identity + 显示元数据）+
 /// 实际打开用 WorkspaceSpec + 稳定 WorkspaceId。
 ///
 /// Catalog open 后 Workspace 保存这份 descriptor；Recent/重连/高亮只读它，
@@ -150,7 +235,7 @@ impl std::fmt::Display for ResolveErrorStage {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedTarget {
     /// 规范化身份与显示元数据（Catalog 打开时保存）。
-    pub canonical: TargetConfig,
+    pub canonical: ResolvedTargetDescriptor,
     /// 实际打开用 spec（Herdr SSH：spec.socket 是转发后的本地路径，
     /// canonical.socket 永远是 target-side 远端路径，Project/Recent 不保存临时转发）。
     pub spec: WorkspaceSpec,
@@ -173,14 +258,14 @@ impl ResolvedTarget {
     }
 }
 
-/// 从规范化 TargetConfig 构造打开用 WorkspaceSpec。
+/// 从规范化 descriptor 构造打开用 WorkspaceSpec。
 ///
 /// - shell/tmux：session/socket 直通；path 是工作目录。
 /// - herdr local：socket = target-side 本机 socket（无转发）。
 /// - herdr ssh：spec.socket 保持 target-side 远端路径；`HerdrDriver::open`
 ///   在 attach 时创建本地 forward，Runtime shutdown 清理，保存的永远不
 ///   是临时转发路径。
-pub fn config_to_spec(config: &TargetConfig) -> WorkspaceSpec {
+pub fn descriptor_to_spec(config: &ResolvedTargetDescriptor) -> WorkspaceSpec {
     let transport = match &config.transport {
         TargetTransport::Local => "local",
         TargetTransport::Ssh { .. } => "ssh",
@@ -213,18 +298,23 @@ pub fn config_to_spec(config: &TargetConfig) -> WorkspaceSpec {
     }
 }
 
-/// 把一条 Herdr 候选转换为 TargetConfig（Core 内完成；Linux 不按 HOME 猜
+/// Convert a legacy TargetConfig at a compatibility boundary.
+pub fn config_to_spec(config: &TargetConfig) -> WorkspaceSpec {
+    descriptor_to_spec(&ResolvedTargetDescriptor::from_target_config(config))
+}
+
+/// 把一条 Herdr 候选转换为 resolver descriptor（Core 内完成；Linux 不按 HOME 猜
 /// socket、不读 `extra`）。`candidate_name` 是用户可见名；缺权威 project
 /// path 时 path 保持空（合并同 identity 的已保存 Project path 由调用方
 /// 完成，绝不回填 workspace id 当目录）。
-pub fn herdr_candidate_to_config(
+pub fn herdr_candidate_to_descriptor(
     candidate_name: String,
     transport: TargetTransport,
     session: Option<String>,
     target_side_socket: Option<String>,
     workspace_id: String,
-) -> TargetConfig {
-    let mut config = TargetConfig::new(
+) -> ResolvedTargetDescriptor {
+    let mut config = ResolvedTargetDescriptor::new(
         candidate_name,
         TargetRuntime::Herdr,
         transport,
@@ -234,6 +324,24 @@ pub fn herdr_candidate_to_config(
     config.socket = target_side_socket;
     config.workspace_id = Some(workspace_id);
     config
+}
+
+/// Compatibility helper for callers that still consume TargetConfig.
+pub fn herdr_candidate_to_config(
+    candidate_name: String,
+    transport: TargetTransport,
+    session: Option<String>,
+    target_side_socket: Option<String>,
+    workspace_id: String,
+) -> TargetConfig {
+    herdr_candidate_to_descriptor(
+        candidate_name,
+        transport,
+        session,
+        target_side_socket,
+        workspace_id,
+    )
+    .to_target_config()
 }
 
 #[cfg(test)]
@@ -267,5 +375,44 @@ mod tests {
         .unwrap();
         assert!(decoded.activate);
         assert_eq!(decoded.intent, ResolveIntent::AttachOnly);
+    }
+
+    #[test]
+    fn resolved_descriptor_keeps_legacy_identity_without_project_record() {
+        let mut legacy = TargetConfig::new(
+            "agents",
+            TargetRuntime::Herdr,
+            TargetTransport::Ssh {
+                name: "buildbox".into(),
+            },
+            "/work/muxterm",
+        );
+        legacy.session = Some("agents".into());
+        legacy.socket = Some("/remote/herdr.sock".into());
+        legacy.workspace_id = Some("w7".into());
+
+        let descriptor = ResolvedTargetDescriptor::from_target_config(&legacy);
+        assert_eq!(descriptor.identity_key(), legacy.identity_key());
+        assert_eq!(descriptor.to_target_config(), legacy);
+        assert_eq!(descriptor.name, "agents");
+        assert_eq!(descriptor.path, "/work/muxterm");
+    }
+
+    #[test]
+    fn resolved_descriptor_reads_project_target_without_project_display_name() {
+        let mut project_target =
+            ProjectTarget::new(TargetRuntime::Tmux, TargetTransport::Local, "/repo");
+        project_target.set_session(Some("demo".into()));
+        project_target.set_socket(Some("muxterm-test-resolved-descriptor".into()));
+
+        let descriptor = ResolvedTargetDescriptor::from_project_target("Project", &project_target);
+        assert_eq!(descriptor.name, "Project");
+        assert_eq!(descriptor.runtime, TargetRuntime::Tmux);
+        assert_eq!(descriptor.path, "/repo");
+        assert_eq!(descriptor.session.as_deref(), Some("demo"));
+        assert_eq!(
+            descriptor.socket.as_deref(),
+            Some("muxterm-test-resolved-descriptor")
+        );
     }
 }

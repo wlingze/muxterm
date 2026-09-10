@@ -3,7 +3,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use super::{Catalog, OpenRequest, Reach, ResolveIntent, ResolvedTarget};
+use super::{Catalog, OpenRequest, Reach, ResolveIntent, ResolvedTarget, ResolvedTargetDescriptor};
 use crate::muxterm::Muxterm;
 use crate::projects::{Project, Worktree};
 use crate::protocol::candidate::{CandidateRef, ExistingCandidate, ExistingCandidateRef};
@@ -492,7 +492,7 @@ async fn open_resolved_uses_canonical_workspace_name() {
     }));
 
     let spec = WorkspaceSpec::herdr("default", "w2", "/tmp/herdr.sock");
-    let canonical = crate::projects::TargetConfig {
+    let canonical = ResolvedTargetDescriptor {
         name: "muxterm".into(),
         runtime: crate::projects::TargetRuntime::Herdr,
         transport: crate::projects::TargetTransport::Local,
@@ -986,7 +986,7 @@ async fn catalog_applies_templates_only_to_create_specs() {
 
 #[tokio::test]
 async fn candidate_resolver_rehydrates_recent_from_core_descriptor() {
-    use crate::projects::{TargetConfig, TargetRuntime, TargetTransport};
+    use crate::projects::{TargetRuntime, TargetTransport};
 
     let catalog = Catalog::new();
     let mut connections = ConnectionRegistry::new();
@@ -998,7 +998,7 @@ async fn candidate_resolver_rehydrates_recent_from_core_descriptor() {
     })
     .await
     .unwrap();
-    let canonical = TargetConfig::new(
+    let canonical = ResolvedTargetDescriptor::new(
         "Recent Project",
         TargetRuntime::Shell,
         TargetTransport::Local,
@@ -1078,7 +1078,10 @@ async fn catalog_candidates_aggregates_four_kinds_and_marks_pool_membership() {
     pool.get_mut(&workspace_id)
         .unwrap()
         .set_resolved_target(ResolvedTarget {
-            canonical: project.target_config(),
+            canonical: ResolvedTargetDescriptor::from_project_target(
+                &project.name,
+                &project.target,
+            ),
             spec,
         });
     pool.get_mut(&workspace_id)
