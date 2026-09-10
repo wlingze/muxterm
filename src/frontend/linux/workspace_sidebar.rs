@@ -751,6 +751,27 @@ impl WorkspaceSidebar {
         }
     }
 
+    /// 从 frontend-owned 快照生成并应用 Sidebar 的全部页面模型。
+    pub fn refresh_from_views(
+        &self,
+        store: &ViewStore,
+        active_id: Option<&str>,
+        activity: &ClientActivitySnapshot,
+    ) {
+        let workspaces = WorkspaceSidebarItem::from_views_with_active(store, active_id);
+        let agents = AgentSidebarItem::from_views(store, activity);
+        let commands = CommandSidebarItem::from_views(store, activity);
+        self.set_workspaces(&workspaces);
+        self.set_agents(&agents);
+        self.set_commands(&commands);
+    }
+
+    /// 只刷新 workspace 区域，保留 agent/command 列表的现有 widget。
+    pub fn refresh_workspaces_from_views(&self, store: &ViewStore, active_id: Option<&str>) {
+        let workspaces = WorkspaceSidebarItem::from_views_with_active(store, active_id);
+        self.set_workspaces(&workspaces);
+    }
+
     /// Set every row from the Core pool.
     pub fn set_workspaces(&self, items: &[WorkspaceSidebarItem]) {
         if self.workspace_items.borrow().as_slice() == items {

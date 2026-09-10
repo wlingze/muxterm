@@ -64,9 +64,7 @@ use crate::frontend::linux::theme::{fallback_theme, toggle_target, Theme};
 use crate::frontend::linux::tmux_dialog::{self, TmuxAction};
 use crate::frontend::linux::view_store::ViewStore;
 use crate::frontend::linux::workspace_scenes::WorkspaceScenes;
-use crate::frontend::linux::workspace_sidebar::{
-    AgentSidebarItem, CommandSidebarItem, WorkspaceSidebar, WorkspaceSidebarItem,
-};
+use crate::frontend::linux::workspace_sidebar::{AgentSidebarItem, WorkspaceSidebar};
 use crate::frontend::ssh_probe::{classify_ssh_probe, ssh_probe_args, SshReach};
 #[cfg(test)]
 use muxterm_protocol::state::StateChange;
@@ -838,13 +836,10 @@ impl AppWindow {
 
         {
             let s = state.borrow();
-            let workspaces = sidebar_workspaces(&s);
             let activity = activity_snapshot(&s);
-            let agents = sidebar_agents(&s, &activity);
-            let commands = sidebar_commands(&s, &activity);
-            s.sidebar.set_workspaces(&workspaces);
-            s.sidebar.set_agents(&agents);
-            s.sidebar.set_commands(&commands);
+            let active_workspace = s.active_workspace_key();
+            s.sidebar
+                .refresh_from_views(&s.view_store, Some(&active_workspace), &activity);
         }
 
         // status bar 中区 tab 按钮 → 切换 frontend-visible scene
@@ -3964,7 +3959,7 @@ fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelT
         // 结果经 16ms poll 收编，和 SSH probe 同一模式。
         spawn_local_existing_probe(&mut s);
         let activity = activity_snapshot(&s);
-        let agents = sidebar_agents(&s, &activity);
+        let agents = AgentSidebarItem::from_views(&s.view_store, &activity);
         let attention = panel_attention_rows(&activity);
         s.panel_open = Some(initial_tab);
         (
@@ -4723,39 +4718,18 @@ fn refresh_sidebar_if_open(s: &mut UiState) {
     if !s.sidebar.is_open() {
         return;
     }
-    let workspaces = sidebar_workspaces(s);
     let activity = activity_snapshot(s);
-    let agents = sidebar_agents(s, &activity);
-    let commands = sidebar_commands(s, &activity);
-    s.sidebar.set_workspaces(&workspaces);
-    s.sidebar.set_agents(&agents);
-    s.sidebar.set_commands(&commands);
+    let active_workspace = s.active_workspace_key();
+    s.sidebar
+        .refresh_from_views(&s.view_store, Some(&active_workspace), &activity);
 }
 
 fn refresh_sidebar_workspaces_if_open(s: &UiState) {
     if s.sidebar.is_open() {
-        let workspaces = sidebar_workspaces(s);
-        s.sidebar.set_workspaces(&workspaces);
+        let active_workspace = s.active_workspace_key();
+        s.sidebar
+            .refresh_workspaces_from_views(&s.view_store, Some(&active_workspace));
     }
-}
-
-fn sidebar_workspaces(s: &UiState) -> Vec<WorkspaceSidebarItem> {
-    let active_workspace = s.active_workspace_key();
-    WorkspaceSidebarItem::from_views_with_active(&s.view_store, Some(&active_workspace))
-}
-
-fn sidebar_agents(
-    s: &UiState,
-    activity: &crate::frontend::ffi_client::ClientActivitySnapshot,
-) -> Vec<AgentSidebarItem> {
-    AgentSidebarItem::from_views(&s.view_store, activity)
-}
-
-fn sidebar_commands(
-    s: &UiState,
-    activity: &crate::frontend::ffi_client::ClientActivitySnapshot,
-) -> Vec<CommandSidebarItem> {
-    CommandSidebarItem::from_views(&s.view_store, activity)
 }
 
 /// Core open/activate 完成后，把 Core snapshot 的 active workspace 交给
