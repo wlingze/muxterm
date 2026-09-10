@@ -585,6 +585,7 @@ impl Runtime for DaemonRuntime {
 mod tests {
     use super::*;
     use crate::protocol::terminal::input::KeyEvent;
+    use crate::runtime::{ControlEvent, RenderEvent, RuntimeSignal};
 
     #[test]
     fn task_send_keys_maps_to_write_raw() {
@@ -690,6 +691,125 @@ mod tests {
                 ..
             }]
         ));
+    }
+
+    #[test]
+    fn daemon_wire_routes_control_signal_and_render_lanes() {
+        let mut runtime = DaemonRuntime::new("/tmp/muxterm-test-daemon.sock", "test");
+        runtime.enqueue_wire_events([
+            serde_json::json!({
+                "kind": "pane_output",
+                "pane_id": 7,
+                "data": [111, 117, 116]
+            }),
+            serde_json::json!({
+                "kind": "pane_frame",
+                "pane_id": 7,
+                "data": [102, 114, 97, 109, 101]
+            }),
+            serde_json::json!({
+                "kind": "tab_added",
+                "tab_id": 2
+            }),
+            serde_json::json!({
+                "kind": "pane_agent_changed",
+                "pane_id": 7,
+                "payload": {
+                    "agent": null,
+                    "initial": true
+                }
+            }),
+        ]);
+
+        let mut batch = RuntimeBatch::default();
+        runtime.drain_events(&mut batch);
+
+        assert_eq!(
+            batch.control,
+            vec![ControlEvent::TabAdded { tab: TabId(2) }]
+        );
+        assert_eq!(
+            batch.render,
+            vec![
+                RenderEvent::PaneOutput {
+                    pane: PaneId(7),
+                    data: b"out".to_vec(),
+                },
+                RenderEvent::PaneFrame {
+                    pane: PaneId(7),
+                    data: b"frame".to_vec(),
+                },
+            ]
+        );
+        assert_eq!(
+            batch.signals,
+            vec![RuntimeSignal::PaneAgentChanged {
+                pane: PaneId(7),
+                agent: None,
+                initial: true,
+            }]
+        );
+
+        let ordered = batch.into_state_changes();
+        assert!(matches!(
+            ordered.as_slice(),
+            [
+                StateChange::TabAdded { tab: TabId(2) },
+                StateChange::PaneAgentChanged {
+                    pane: PaneId(7),
+                    initial: true,
+                    ..
+                },
+                StateChange::PaneFrame {
+                    pane: PaneId(7),
+                    data,
+                },
+                StateChange::PaneOutput {
+                    pane: PaneId(7),
+                    data: output,
+                },
+            ] if data == b"frame" && output == b"out"
+        ));
+    }
+
+    #[test]
+    fn topology_baseline_is_control_authority_not_render_data() {
+        let mut runtime = DaemonRuntime::new("/tmp/muxterm-test-daemon.sock", "test");
+        let topology = TopologySnapshot {
+            workspace_name: "baseline".into(),
+            workspace_runtime: "shell".into(),
+            tabs: vec![TabInfo {
+                id: TabId(3),
+                name: "main".into(),
+                active: true,
+            }],
+            panes: vec![PaneInfo {
+                id: PaneId(8),
+                tab: TabId(3),
+                active: true,
+                title: "bash".into(),
+                cols: 80,
+                rows: 24,
+            }],
+            layouts: vec![],
+            active_tab: Some(3),
+            active_pane: Some(8),
+        };
+        runtime.enqueue_wire_events([serde_json::json!({
+            "kind": "workspace_topology",
+            "workspace_id": "ws",
+            "snapshot": serde_json::to_value(topology).unwrap()
+        })]);
+
+        let mut batch = RuntimeBatch::default();
+        runtime.drain_events(&mut batch);
+
+        assert!(batch.is_empty());
+        assert_eq!(runtime.workspace_name(), "baseline");
+        assert_eq!(runtime.workspace_runtime(), "shell");
+        assert_eq!(runtime.active_tab().map(|tab| tab.id), Some(TabId(3)));
+        assert_eq!(runtime.active_pane().map(|pane| pane.id), Some(PaneId(8)));
+        assert_eq!(runtime.pane_output(&PaneId(8)), None);
     }
 
     #[test]
