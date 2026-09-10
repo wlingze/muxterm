@@ -473,7 +473,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             }
             let active = self.lastSnapshot.panes.first(where: \.isActive)?.id
                 ?? self.lastSnapshot.panes.first?.id
-                ?? self.bridge.snapshot().panes.first(where: \.isActive)?.id
             guard TerminalInputFocusPolicy.shouldRetryWhenSurfaceReady(
                 isActivePane: active == paneId,
                 ready: ready

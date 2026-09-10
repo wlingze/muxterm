@@ -169,11 +169,8 @@ final class WorkspaceScene: SceneProtocol {
             bridge: bridge,
             workspaceID: workspaceID
         )
-        // CoreBridge 在 connect 后已完成有限 bootstrap；把这份首帧状态直接
-        // 放进 ViewStore，侧栏首次渲染不必等待下一拍事件。
-        self.viewStore.snapshot = workspaceID.map { bridge.snapshot(workspaceID: $0) }
-            ?? bridge.snapshot()
-        self.viewStore.structuredAgents = bridge.structuredAgentSnapshot()
+        // 首帧拓扑和 agent 状态由 MainWindow 的 EventPump 提交；构造 scene
+        // 不得绕过 ViewStore 直接查询 Core。首轮 poll 会处理 needsLayoutReload。
         self.viewStore.workspaceReplicaID = workspaceID
         self.lastUsedAt = now
         self.openedOrder = openedOrder
