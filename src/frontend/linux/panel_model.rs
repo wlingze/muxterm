@@ -3,13 +3,21 @@
 //! 无 GTK 依赖：tab 切换、query 保留、Tab1 工作区过滤/状态标记、
 //! Tab2 注意力排序、Tab3 搜索占位。GTK 层只负责渲染。
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
+use std::time::Duration;
 
-use crate::frontend::ffi_client::{ClientAttentionPane, ClientAttentionStatus, ClientSearchHit};
+use crate::frontend::ffi_client::{
+    ClientAttentionPane, ClientAttentionStatus, ClientOpenRequest, ClientSearchHit,
+};
 use crate::frontend::i18n::{self, Key as TextKey};
 use crate::frontend::linux::quickconnect::existing::ExistingEntry;
-use crate::frontend::linux::quickconnect::model::{QuickConnectEntry, WorkspaceQuery};
+use crate::frontend::linux::quickconnect::model::{
+    QuickConnectEntry, TargetConfig, WorkspaceQuery,
+};
 use crate::frontend::linux::workspace_sidebar::{ActivityIndicator, AgentSidebarItem};
+use crate::frontend::ssh_probe::SshReach;
 
 /// QuickConnect 面板的候选项。
 ///
@@ -66,6 +74,33 @@ pub struct ExistingPanelState {
     pub ssh_aliases: Vec<String>,
     /// SSH 探测是否在跑：空 host + inflight → Loading；空 + 完成 → Empty。
     pub probe_inflight: bool,
+}
+
+type SearchCallback = Box<dyn Fn(&str, SearchScope) -> Vec<SearchRow>>;
+type MuteCallback = Box<dyn Fn(String, u32, Duration)>;
+
+/// QuickConnect View 的输入快照与业务回调契约。
+///
+/// 该结构只包含 owned DTO、模型值和闭包，不依赖 GTK；View 负责消费它并
+/// 将用户手势转发给这些回调。
+pub struct PanelShowArgs {
+    pub initial_tab: PanelTab,
+    pub workspaces: Vec<PanelItem>,
+    /// 非空搜索时追加的完整 Recent/Project 候选。
+    pub workspace_search_items: Vec<PanelItem>,
+    pub agents: Vec<AgentSidebarItem>,
+    pub attention: Vec<ClientAttentionPane>,
+    pub on_connect: Box<dyn Fn(ClientOpenRequest)>,
+    pub on_existing_connect: Box<dyn Fn(ClientOpenRequest)>,
+    pub on_edit: Box<dyn Fn(TargetConfig)>,
+    pub on_new_project: Box<dyn Fn()>,
+    pub on_jump_pane: Box<dyn Fn(String, u32, u64)>,
+    pub on_mute: MuteCallback,
+    pub search: SearchCallback,
+    pub on_close: Box<dyn Fn()>,
+    pub ssh_reach: HashMap<String, SshReach>,
+    pub existing: Rc<RefCell<ExistingPanelState>>,
+    pub on_existing_nav: Box<dyn Fn(ExistingNav)>,
 }
 
 /// 按查询过滤 QuickConnect 候选，并保持原始顺序作为同分排序依据。
