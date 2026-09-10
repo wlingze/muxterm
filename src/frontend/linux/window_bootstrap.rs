@@ -11,6 +11,7 @@ use super::window_actions::{
 use super::window_activity::{
     drain_attention_notifications, scroll_to_command_text, update_command_marks, update_jump_latest,
 };
+use super::window_chrome::apply_chrome_css;
 use super::window_config::open_preferences;
 use super::window_discovery::{drain_local_existing, drain_ssh_probes, maybe_schedule_reconnect};
 use super::window_event_pump::{

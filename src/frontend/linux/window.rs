@@ -388,17 +388,10 @@ enum ExistingProbeMsg {
 /// W20：SSH 已有连接探测结果（alias → 该 host 的 tmux/Herdr 行）。
 type ExistingSshProbeResult = Vec<(String, Vec<ExistingEntry>)>;
 
-pub(crate) fn chrome_css(theme: &Theme) -> String {
-    window_chrome::chrome_css(theme)
-}
-
-fn apply_chrome_css(theme: &Theme) {
-    window_chrome::apply_chrome_css(theme);
-}
-
 #[cfg(test)]
 mod tests {
     use super::window_activity::{attention_event_pane, UiBatchEffects};
+    use super::window_chrome::chrome_css;
     use super::window_event_pump::take_surface_input;
     use super::window_overlay::workspace_replica_matches;
     use super::window_resize::pending_pane_resizes;
