@@ -8,6 +8,28 @@ use crate::frontend::linux::status_bar::StatusBar;
 use crate::frontend::linux::theme::Theme;
 use crate::frontend::linux::workspace_sidebar::WorkspaceSidebar;
 
+/// 标题栏中的前端业务入口。
+///
+/// 标题栏只保存 GTK signal 的转发点，不读取 Core 状态；实际动作由主窗口
+/// 通过闭包接回 frontend 的 state / command queue。
+pub(crate) struct HeaderActions {
+    quick_connect: gtk4::Button,
+    settings: gtk4::Button,
+}
+
+impl HeaderActions {
+    /// 连接标题栏的快速连接与设置入口。
+    pub fn connect_actions<Q, S>(&self, on_quick_connect: Q, on_settings: S)
+    where
+        Q: Fn() + 'static,
+        S: Fn() + 'static,
+    {
+        self.quick_connect
+            .connect_clicked(move |_| on_quick_connect());
+        self.settings.connect_clicked(move |_| on_settings());
+    }
+}
+
 /// 主窗口的固定 widget 骨架。
 ///
 /// AppShell 只负责组装 GTK widget 树；Core 状态、事件泵和命令处理仍由
@@ -16,8 +38,7 @@ pub struct AppShell {
     pub(crate) sidebar: WorkspaceSidebar,
     pub(crate) status: StatusBar,
     pub(crate) overlay: OverlayLayer,
-    pub(crate) quick_connect_button: gtk4::Button,
-    pub(crate) settings_button: gtk4::Button,
+    pub(crate) header: HeaderActions,
 }
 
 impl AppShell {
@@ -93,8 +114,10 @@ impl AppShell {
             sidebar,
             status,
             overlay,
-            quick_connect_button,
-            settings_button,
+            header: HeaderActions {
+                quick_connect: quick_connect_button,
+                settings: settings_button,
+            },
         }
     }
 }

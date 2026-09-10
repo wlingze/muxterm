@@ -32,7 +32,7 @@ use crate::frontend::ffi_client::{
     FfiClient,
 };
 use crate::frontend::i18n::{self, Key};
-use crate::frontend::linux::app_shell::AppShell;
+use crate::frontend::linux::app_shell::{AppShell, HeaderActions};
 use crate::frontend::linux::attention_compat::CompatibilityActivity;
 use crate::frontend::linux::attention_ui::{window_title, GioSink, NotificationSink};
 use crate::frontend::linux::command_palette::{parse_palette_action, PaletteAction};
@@ -116,6 +116,8 @@ struct UiState {
     status: StatusBar,
     /// 标题栏开启的 workspace 侧栏（主分割栏左列）。
     sidebar: WorkspaceSidebar,
+    /// 标题栏的快速连接与设置入口。
+    header: HeaderActions,
     status_mode: StatusBarMode,
     last_status_at: Instant,
     status_interval: Duration,
@@ -688,8 +690,7 @@ impl AppWindow {
             sidebar,
             status,
             overlay,
-            quick_connect_button,
-            settings_button,
+            header,
         } = AppShell::new(&window, &scene_stack_widget, status_mode, theme.clone());
 
         let keymap = KeyMap::from_bindings(&keybindings);
@@ -711,6 +712,7 @@ impl AppWindow {
             theme_name,
             status,
             sidebar,
+            header,
             status_mode,
             last_status_at: Instant::now()
                 .checked_sub(Duration::from_secs(10))
@@ -771,19 +773,15 @@ impl AppWindow {
         }
 
         {
-            let st = state.clone();
-            let win = window.clone();
-            settings_button.connect_clicked(move |_| {
-                open_preferences(&st, &win);
-            });
-        }
-
-        {
-            let st = state.clone();
-            let win = window.clone();
-            quick_connect_button.connect_clicked(move |_| {
-                open_quick_connect(&st, &win);
-            });
+            let quick_state = state.clone();
+            let settings_state = state.clone();
+            let quick_window = window.clone();
+            let settings_window = window.clone();
+            let s = state.borrow();
+            s.header.connect_actions(
+                move || open_quick_connect(&quick_state, &quick_window),
+                move || open_preferences(&settings_state, &settings_window),
+            );
         }
 
         {
