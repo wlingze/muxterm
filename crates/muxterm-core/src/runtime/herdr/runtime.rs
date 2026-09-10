@@ -2511,6 +2511,12 @@ impl HerdrRuntime {
         };
         let _ = forward.kill();
         let _ = forward.wait();
+        // `ssh -L` leaves both local Unix socket entries behind after the
+        // forwarding child exits.  The compatibility constructor owns this
+        // forwarding lifecycle, so it must remove the API and observe paths
+        // after the child has stopped.
+        let _ = std::fs::remove_file(self.session.socket_path());
+        let _ = std::fs::remove_file(self.session.client_socket_path());
     }
 }
 
