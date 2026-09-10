@@ -8,10 +8,8 @@ use gtk4::prelude::*;
 
 use muxterm_protocol::{PaneId, WorkspaceId};
 
-use super::{
-    maybe_refresh_status, resident_pane_view, seed_unseeded_pane_for, sync_chrome_visibility,
-    ClientLayout, SurfaceInput, UiState,
-};
+use super::window_status::{maybe_refresh_status, sync_chrome_visibility};
+use super::{resident_pane_view, seed_unseeded_pane_for, ClientLayout, SurfaceInput, UiState};
 
 pub(super) fn refresh_ui(s: &mut UiState) {
     let wid = s.active_ws_id();

@@ -5,9 +5,10 @@ use std::rc::Rc;
 
 use gtk4::glib;
 
+use super::window_status::maybe_refresh_status;
 use super::{
-    apply_chrome_css, fallback_theme, maybe_refresh_status, persist_config, ClientConfig,
-    ClientConfigSnapshot, FontSettings, KeyMap, StatusBarMode, UiState,
+    apply_chrome_css, fallback_theme, persist_config, ClientConfig, ClientConfigSnapshot,
+    FontSettings, KeyMap, StatusBarMode, UiState,
 };
 
 /// C8：字号写盘防抖（300ms），避免 Ctrl+= 热路径同步写 config.toml。

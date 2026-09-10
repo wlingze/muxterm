@@ -39,7 +39,7 @@ use crate::frontend::linux::quickconnect::existing::{ExistingEntry, ExistingTran
 use crate::frontend::linux::quickconnect::font::FontSettings;
 use crate::frontend::linux::quickconnect::model::{TargetConfig, TargetTransport};
 use crate::frontend::linux::quickconnect::project_flow::ProjectConnectIntent;
-use crate::frontend::linux::quickconnect::status_style::{StatusBarMode, StatusBarSnapshot};
+use crate::frontend::linux::quickconnect::status_style::StatusBarMode;
 use crate::frontend::linux::quickconnect::store::QuickConnectStore;
 use crate::frontend::linux::quickconnect_panel::{
     build_root_items, build_search_items, ExistingNav, ExistingPanelState, PanelItem,
@@ -338,19 +338,6 @@ fn request_switch_tab(s: &mut UiState, tab_id: u32) {
     window_scene::request_switch_tab(s, tab_id);
 }
 
-/// 刷新状态栏红点与窗口标题（blocked 工作区数）。
-fn refresh_attention_chrome(s: &UiState, window: &Window) {
-    window_status::refresh_attention_chrome(s, window);
-}
-
-/// 把当前连接摘要刷到状态点 popover（C7.7）。
-///
-/// 速率由连续两次 `traffic_bytes()` 快照 + 墙钟差出来（W15a），
-/// 禁止把累计字节标成 `B/s`。
-fn refresh_connection_summary(s: &mut UiState) {
-    window_status::refresh_connection_summary(s);
-}
-
 /// 当前前台连接的 workspace id（ReplicaStore 键）。
 fn active_workspace_id(s: &UiState) -> String {
     workspace_replica_id(&s.active_ws_id())
@@ -387,14 +374,6 @@ fn refresh_workspace_layout(s: &mut UiState, wid: &WorkspaceId, seed_from_core: 
     window_layout::refresh_workspace_layout(s, wid, seed_from_core);
 }
 
-fn local_status_snapshot(npanes: usize, tabs: &[(u32, String, bool)]) -> StatusBarSnapshot {
-    window_status::local_status_snapshot(npanes, tabs)
-}
-
-fn maybe_refresh_status(s: &mut UiState, force: bool) {
-    window_status::maybe_refresh_status(s, force);
-}
-
 /// 窗口关闭意图：非 Quit 动作 → 隐藏并保持轮询；Quit → 真正关闭。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CloseIntent {
@@ -427,10 +406,6 @@ pub fn should_poll_status(
     interval: Duration,
 ) -> bool {
     !sub_active && now.duration_since(last) >= interval
-}
-
-fn sync_chrome_visibility(s: &UiState) {
-    window_status::sync_chrome_visibility(s);
 }
 
 fn sync_pane_outputs(s: &mut UiState) {
@@ -753,6 +728,7 @@ fn apply_chrome_css(theme: &Theme) {
 mod tests {
     use super::window_activity::{attention_event_pane, UiBatchEffects};
     use super::window_event_pump::take_surface_input;
+    use super::window_status::local_status_snapshot;
     use super::*;
 
     #[test]

@@ -18,6 +18,9 @@ use super::window_sidebar::{
     activate_sidebar_activity, close_sidebar_workspace, maybe_warn_workspace_capacity,
     refresh_sidebar_if_open,
 };
+use super::window_status::{
+    maybe_refresh_status, refresh_attention_chrome, refresh_connection_summary,
+};
 use super::*;
 
 impl AppWindow {

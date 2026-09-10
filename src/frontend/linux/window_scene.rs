@@ -11,10 +11,10 @@ use muxterm_protocol::WorkspaceId;
 
 use super::window_actions::{handle_pane_menu_action, report_all_pane_colours};
 use super::window_sidebar::{refresh_sidebar_if_open, refresh_sidebar_workspaces_if_open};
+use super::window_status::{maybe_refresh_status, sync_chrome_visibility};
 use super::{
-    active_workspace_key, mark_active_attention_visible, maybe_refresh_status, parse_workspace_id,
-    recent_target_configs, refresh_ui, refresh_workspace_layout, sync_chrome_visibility,
-    LayoutHost, UiState,
+    active_workspace_key, mark_active_attention_visible, parse_workspace_id, recent_target_configs,
+    refresh_ui, refresh_workspace_layout, LayoutHost, UiState,
 };
 
 pub(super) fn switch_tab_n(s: &mut UiState, n: usize) {
