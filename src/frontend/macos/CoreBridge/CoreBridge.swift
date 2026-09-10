@@ -64,6 +64,15 @@ struct StateChange: Equatable {
     var isPoolChanged: Bool { type == STATE_POOL_CHANGED }
 }
 
+/// 从 workspace-event FFI 复制出的带身份事件。
+///
+/// WorkspaceId 在 Core 事件边界保留，前端事件泵不需要依赖当前激活的
+/// bridge 或重新猜测事件属于哪个场景。
+struct WorkspaceStateChange: Equatable {
+    let workspaceID: String
+    let event: StateChange
+}
+
 /// Runtime-neutral payload carried by `STATE_PANE_AGENT_CHANGED`.
 private struct CorePaneAgentEvent: Decodable {
     let agent: CorePaneAgentPayload?
@@ -477,6 +486,8 @@ final class CoreBridge {
     /// connect 后先排空的 bootstrap 事件。agent registry 可立即拿到初始
     /// 状态，但 Surface/拓扑事件仍按原顺序交给正常轮询消费者。
     private var pendingEvents: [StateChange] = []
+    /// 连接 bootstrap 阶段复制出的带 WorkspaceId 事件。
+    private var pendingWorkspaceEvents: [WorkspaceStateChange] = []
     /// Core has already normalized these snapshots; the platform only keeps a
     /// pane-indexed registry so read agents remain visible in the sidebar.
     private var structuredAgents = StructuredAgentRegistry()
@@ -1037,9 +1048,9 @@ final class CoreBridge {
     private func primeInitialEvents(maxPasses: Int = 4) {
         guard handle != nil else { return }
         for _ in 0..<maxPasses {
-            let events = pollFFIEvents(maxCount: 64)
+            let events = pollWorkspaceFFIEvents(maxCount: 64)
             guard !events.isEmpty else { break }
-            pendingEvents.append(contentsOf: events)
+            pendingWorkspaceEvents.append(contentsOf: events)
             if events.count < 64 { break }
         }
     }
@@ -1060,27 +1071,58 @@ final class CoreBridge {
         }
         guard n > 0 else { return [] }
 
-        let events = buf.prefix(Int(n)).map { c in
-            if c.type_ == STATE_BACKEND_STATUS {
-                lastStatus = c.pane_id
-            }
-            let data: Data
-            if c.data != nil && c.data_len > 0 {
-                data = Data(bytes: c.data, count: c.data_len)
-            } else {
-                data = Data()
-            }
-            return StateChange(
-                type: c.type_,
-                paneId: c.pane_id,
-                tabId: c.tab_id,
-                windowId: c.window_id,
-                data: data,
-                name: Self.string(from: c.name)
-            )
+        let events = buf.prefix(Int(n)).map(Self.decodeStateChange)
+        if let status = events.last(where: \.isBackendStatus) {
+            lastStatus = status.paneId
         }
         updateStructuredAgents(with: events)
         return events
+    }
+
+    /// 从 workspace-event FFI 复制一批带 WorkspaceId 的 owned 事件。
+    private func pollWorkspaceFFIEvents(maxCount: Int) -> [WorkspaceStateChange] {
+        guard let handle else { return [] }
+        let count = min(max(maxCount, 1), 64)
+        var buf = Array(repeating: CWorkspaceStateChange(), count: count)
+        let n = muxterm_poll_workspace_events(handle, &buf, Int32(buf.count))
+        if n < 0 {
+            if !pollFailureReported {
+                pendingError = MuxtermI18n.shared.tr(.errorCorePoll)
+                pollFailureReported = true
+            }
+            return []
+        }
+        guard n > 0 else { return [] }
+
+        let events = buf.prefix(Int(n)).map { c in
+            WorkspaceStateChange(
+                workspaceID: Self.string(from: c.workspace_id),
+                event: Self.decodeStateChange(c.event)
+            )
+        }
+        if let status = events.last(where: { $0.event.isBackendStatus }) {
+            lastStatus = status.event.paneId
+        }
+        updateStructuredAgents(with: events.map(\.event))
+        return events
+    }
+
+    /// 将 CStateChange 的 borrowed 指针复制为 Swift owned DTO。
+    private static func decodeStateChange(_ c: CStateChange) -> StateChange {
+        let data: Data
+        if c.data != nil && c.data_len > 0 {
+            data = Data(bytes: c.data, count: c.data_len)
+        } else {
+            data = Data()
+        }
+        return StateChange(
+            type: c.type_,
+            paneId: c.pane_id,
+            tabId: c.tab_id,
+            windowId: c.window_id,
+            data: data,
+            name: Self.string(from: c.name)
+        )
     }
 
     private func updateStructuredAgents(with events: [StateChange]) {
@@ -1108,13 +1150,34 @@ final class CoreBridge {
     /// 长时间占用它的 CoreBridge。默认值保持前台原有批量。
     func pollEvents(maxCount: Int = 64) -> [StateChange] {
         let count = min(max(maxCount, 1), 64)
-        var events = Array(pendingEvents.prefix(count))
+        var events = pendingWorkspaceEvents.prefix(count).map(\.event)
         if !events.isEmpty {
-            pendingEvents.removeFirst(events.count)
+            pendingWorkspaceEvents.removeFirst(events.count)
+        }
+        if events.count < count {
+            let legacy = pendingEvents.prefix(count - events.count)
+            events.append(contentsOf: legacy)
+            if !legacy.isEmpty {
+                pendingEvents.removeFirst(legacy.count)
+            }
         }
         let remaining = count - events.count
         if remaining > 0 {
             events.append(contentsOf: pollFFIEvents(maxCount: remaining))
+        }
+        return events
+    }
+
+    /// 唯一的 workspace-event 消费入口；所有事件在返回前已复制成 owned DTO。
+    func pollWorkspaceEvents(maxCount: Int = 64) -> [WorkspaceStateChange] {
+        let count = min(max(maxCount, 1), 64)
+        var events = Array(pendingWorkspaceEvents.prefix(count))
+        if !events.isEmpty {
+            pendingWorkspaceEvents.removeFirst(events.count)
+        }
+        let remaining = count - events.count
+        if remaining > 0 {
+            events.append(contentsOf: pollWorkspaceFFIEvents(maxCount: remaining))
         }
         return events
     }
