@@ -8,12 +8,9 @@ use std::collections::HashSet;
 use gtk4::prelude::*;
 use gtk4::Window;
 
-use crate::frontend::ffi_client::{ClientCandidateRef, ClientOpenIntent, ClientOpenRequest};
 use crate::frontend::i18n::{self, Key as TextKey};
 use crate::frontend::linux::quickconnect::existing::ExistingEntry;
-use crate::frontend::linux::quickconnect::model::{
-    QuickBadge, QuickConnect, QuickConnectEntry, TargetConfig,
-};
+use crate::frontend::linux::quickconnect::model::{QuickBadge, QuickConnect, TargetConfig};
 use crate::frontend::linux::quickconnect::store::QuickConnectStore;
 
 #[path = "quickconnect_panel_view.rs"]
@@ -26,20 +23,6 @@ mod quickconnect_panel_ui;
 use crate::frontend::linux::quickconnect::existing::ExistingTransport;
 
 const PANEL_TEXT_MAX_CHARS: i32 = 64;
-
-#[derive(Clone)]
-enum VisibleAction {
-    Connect(ClientOpenRequest),
-    ExistingConnect(ClientOpenRequest),
-    NewProject,
-    Navigate(ExistingNav),
-    Jump {
-        workspace_id: String,
-        pane_id: u32,
-        seq: u64,
-    },
-    None,
-}
 
 /// 测试/生产共用：让当前面板按最新状态重建列表（SSH 探测回来再填）。
 pub fn refresh_current() {
@@ -264,56 +247,6 @@ pub fn existing_items(
     items
 }
 
-fn target_open_request(entry: &QuickConnectEntry) -> ClientOpenRequest {
-    let (candidate, intent) = if let Some(project_id) = &entry.project_id {
-        (
-            ClientCandidateRef::Project {
-                project_id: project_id.clone(),
-            },
-            ClientOpenIntent::CreateIfMissing,
-        )
-    } else {
-        (
-            ClientCandidateRef::Recent {
-                key: QuickConnect::unique_id(&entry.config),
-            },
-            ClientOpenIntent::AttachOnly,
-        )
-    };
-    ClientOpenRequest {
-        candidate,
-        intent,
-        template: None,
-        activate: true,
-    }
-}
-
-fn visible_action_for_item(item: &PanelItem, nav: &ExistingNav) -> VisibleAction {
-    match item {
-        PanelItem::Target(entry, _) => VisibleAction::Connect(target_open_request(entry)),
-        PanelItem::NewProject => VisibleAction::NewProject,
-        PanelItem::Folder { id, .. } => match *id {
-            "existing-connections" => VisibleAction::Navigate(ExistingNav::Home),
-            "existing-local" => VisibleAction::Navigate(ExistingNav::Local),
-            "existing-ssh" => VisibleAction::Navigate(ExistingNav::SshHosts),
-            _ => VisibleAction::None,
-        },
-        PanelItem::Back => VisibleAction::Navigate(match nav {
-            ExistingNav::Home => ExistingNav::Root,
-            ExistingNav::Local | ExistingNav::SshHosts => ExistingNav::Home,
-            ExistingNav::SshHost { .. } => ExistingNav::SshHosts,
-            ExistingNav::Root => ExistingNav::Root,
-        }),
-        PanelItem::Existing(existing_entry) => {
-            VisibleAction::ExistingConnect(existing_entry.open_request())
-        }
-        PanelItem::Host { alias } => VisibleAction::Navigate(ExistingNav::SshHost {
-            alias: alias.clone(),
-        }),
-        PanelItem::Loading | PanelItem::Empty { .. } => VisibleAction::None,
-    }
-}
-
 /// 弹出三 tab QuickConnect 面板（普通 Overlay，不构造 AppWindow）。
 pub use crate::frontend::linux::panel_model::PanelShowArgs;
 
@@ -323,9 +256,13 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
 
 #[cfg(test)]
 mod tests {
+    use super::quickconnect_panel_ui::{visible_action_for_item, VisibleAction};
     use super::*;
+    use crate::frontend::ffi_client::{ClientCandidateRef, ClientOpenIntent};
     use crate::frontend::linux::quickconnect::existing::ExistingRuntime;
-    use crate::frontend::linux::quickconnect::model::{TargetRuntime, TargetTransport};
+    use crate::frontend::linux::quickconnect::model::{
+        QuickConnectEntry, TargetRuntime, TargetTransport,
+    };
 
     fn cfg(name: &str) -> TargetConfig {
         TargetConfig::new(name, TargetRuntime::Tmux, TargetTransport::Local, "~/x")

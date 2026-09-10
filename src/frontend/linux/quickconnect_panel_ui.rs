@@ -18,7 +18,9 @@ use gtk4::{
     Window,
 };
 
-use crate::frontend::ffi_client::ClientAttentionStatus;
+use crate::frontend::ffi_client::{
+    ClientAttentionStatus, ClientCandidateRef, ClientOpenIntent, ClientOpenRequest,
+};
 use crate::frontend::i18n::{self, Key as TextKey};
 use crate::frontend::linux::panel_model::{
     filter_attention_panel_rows, filter_workspace_rows, search_rows, PanelModel, PanelTab,
@@ -26,21 +28,87 @@ use crate::frontend::linux::panel_model::{
 };
 use crate::frontend::linux::quick_pick;
 use crate::frontend::linux::quickconnect::existing::ExistingRuntime;
-use crate::frontend::linux::quickconnect::model::{QuickConnect, TargetTransport, WorkspaceQuery};
+use crate::frontend::linux::quickconnect::model::{
+    QuickConnect, QuickConnectEntry, TargetTransport, WorkspaceQuery,
+};
 
 use super::quickconnect_panel_view::{
     attention_panel_row, ensure_overlay, existing_connect_name, existing_row, reachability_dot,
     target_row,
 };
 use super::{
-    existing_items, root_items_with_existing_and_search, visible_action_for_item, ExistingNav,
-    PanelItem, PanelShowArgs, VisibleAction, PANEL_TEXT_MAX_CHARS,
+    existing_items, root_items_with_existing_and_search, ExistingNav, PanelItem, PanelShowArgs,
+    PANEL_TEXT_MAX_CHARS,
 };
 
 const NEW_PROJECT_ID: &str = "__new_project__";
 const PANEL_ENTRY_HEIGHT: i32 = 36;
 const PANEL_MAX_WIDTH: i32 = 640;
 const PANEL_REBUILD_DEBOUNCE_MS: u64 = 24;
+
+#[derive(Clone)]
+pub(super) enum VisibleAction {
+    Connect(ClientOpenRequest),
+    ExistingConnect(ClientOpenRequest),
+    NewProject,
+    Navigate(ExistingNav),
+    Jump {
+        workspace_id: String,
+        pane_id: u32,
+        seq: u64,
+    },
+    None,
+}
+
+fn target_open_request(entry: &QuickConnectEntry) -> ClientOpenRequest {
+    let (candidate, intent) = if let Some(project_id) = &entry.project_id {
+        (
+            ClientCandidateRef::Project {
+                project_id: project_id.clone(),
+            },
+            ClientOpenIntent::CreateIfMissing,
+        )
+    } else {
+        (
+            ClientCandidateRef::Recent {
+                key: QuickConnect::unique_id(&entry.config),
+            },
+            ClientOpenIntent::AttachOnly,
+        )
+    };
+    ClientOpenRequest {
+        candidate,
+        intent,
+        template: None,
+        activate: true,
+    }
+}
+
+pub(super) fn visible_action_for_item(item: &PanelItem, nav: &ExistingNav) -> VisibleAction {
+    match item {
+        PanelItem::Target(entry, _) => VisibleAction::Connect(target_open_request(entry)),
+        PanelItem::NewProject => VisibleAction::NewProject,
+        PanelItem::Folder { id, .. } => match *id {
+            "existing-connections" => VisibleAction::Navigate(ExistingNav::Home),
+            "existing-local" => VisibleAction::Navigate(ExistingNav::Local),
+            "existing-ssh" => VisibleAction::Navigate(ExistingNav::SshHosts),
+            _ => VisibleAction::None,
+        },
+        PanelItem::Back => VisibleAction::Navigate(match nav {
+            ExistingNav::Home => ExistingNav::Root,
+            ExistingNav::Local | ExistingNav::SshHosts => ExistingNav::Home,
+            ExistingNav::SshHost { .. } => ExistingNav::SshHosts,
+            ExistingNav::Root => ExistingNav::Root,
+        }),
+        PanelItem::Existing(existing_entry) => {
+            VisibleAction::ExistingConnect(existing_entry.open_request())
+        }
+        PanelItem::Host { alias } => VisibleAction::Navigate(ExistingNav::SshHost {
+            alias: alias.clone(),
+        }),
+        PanelItem::Loading | PanelItem::Empty { .. } => VisibleAction::None,
+    }
+}
 
 thread_local! {
     static PANEL_DISMISS: RefCell<Option<Box<dyn Fn()>>> = const { RefCell::new(None) };
