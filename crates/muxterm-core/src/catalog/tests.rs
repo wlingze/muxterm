@@ -818,7 +818,7 @@ fn candidate_resolver_maps_project_and_worktree_provenance() {
             worktree_id: "wt-a".into(),
         },
         intent: ResolveIntent::AttachOnly,
-        template: Some(TemplateName::try_from("override").unwrap()),
+        template: Some("override".into()),
         activate: true,
     };
     let resolved_worktree = catalog

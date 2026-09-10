@@ -3,9 +3,8 @@
 use std::ffi::{c_char, CStr};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-use crate::catalog::{OpenRequest, ResolveIntent};
 use crate::muxterm::Muxterm;
-use crate::protocol::candidate::CandidateRef;
+use crate::protocol::candidate::{CandidateRef, OpenRequest, ResolveIntent};
 
 use super::support::{
     cstr_opt, json_error, json_open_error, json_resolve_error, json_string, parse_workspace_id,

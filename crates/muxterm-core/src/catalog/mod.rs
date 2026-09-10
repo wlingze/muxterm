@@ -19,19 +19,31 @@ use crate::transport::registry::ConnectionRegistry;
 use crate::transport::registry::TransportRegistry;
 use crate::transport::{ChannelKind, TargetConnection};
 use crate::workspace::pool::WorkspacePool;
+use crate::workspace::template::TemplateName;
 use muxterm_protocol::WorkspaceId;
 
 pub use crate::protocol::candidate::ExistingCandidate;
+pub use crate::protocol::candidate::{OpenRequest, ResolveIntent};
 pub use crate::runtime::{RuntimeInfo, RuntimeProvider};
 #[allow(unused_imports)] // 给 FFI / 测试用的公开类型
 pub use inventory::{Inventory, InventorySnapshot, Reach};
 pub use muxterm_transport::provider::{TargetInfo, TransportInfo, TransportProvider};
 pub use muxterm_transport::Connect;
-pub use resolver::{
-    config_to_spec, OpenRequest, ResolveError, ResolveErrorStage, ResolveIntent, ResolvedTarget,
-};
+pub use resolver::{config_to_spec, ResolveError, ResolveErrorStage, ResolvedTarget};
 
 type DiscoveryJob = (String, Option<Arc<dyn TargetConnection>>, Vec<ChannelKind>);
+
+fn request_template(request: &OpenRequest) -> Result<Option<TemplateName>, resolver::ResolveError> {
+    let Some(name) = request.template.as_deref() else {
+        return Ok(None);
+    };
+    TemplateName::try_from(name).map(Some).map_err(|error| {
+        resolver::ResolveError::InvalidTemplate {
+            name: name.to_owned(),
+            reason: error.to_string(),
+        }
+    })
+}
 
 /// 进程内一份 backend 总状态。
 pub struct Catalog {
@@ -420,6 +432,7 @@ impl Catalog {
         projects: &[Project],
         recent: &[ResolvedTarget],
     ) -> Result<ResolvedTarget, resolver::ResolveError> {
+        let requested_template = request_template(request)?;
         match &request.candidate {
             CandidateRef::Project { project_id } => {
                 let project = projects
@@ -431,8 +444,7 @@ impl Catalog {
                 let mut resolved =
                     self.resolve_target(connections, &project.target, request.intent)?;
                 resolved.spec.provenance = Some(project.provenance());
-                resolved.spec.template = request
-                    .template
+                resolved.spec.template = requested_template
                     .clone()
                     .or_else(|| project.template.clone());
                 resolved.spec.create = request.intent == ResolveIntent::CreateIfMissing;
@@ -474,15 +486,14 @@ impl Catalog {
                     resolved.spec.create = true;
                 }
                 resolved.spec.provenance = Some(project.worktree_provenance(&worktree.id));
-                resolved.spec.template = request
-                    .template
+                resolved.spec.template = requested_template
                     .clone()
                     .or_else(|| project.template.clone());
                 Ok(resolved)
             }
             CandidateRef::Existing { identity } => {
                 let mut resolved = self.resolve_existing_candidate(connections, identity)?;
-                resolved.spec.template = request.template.clone();
+                resolved.spec.template = requested_template;
                 // An Existing row is an attach identity even if a caller
                 // accidentally supplies CreateIfMissing.
                 resolved.spec.create = false;
@@ -494,7 +505,7 @@ impl Catalog {
                     .find(|resolved| resolved.canonical.identity_key() == *key)
                     .cloned()
                     .ok_or_else(|| resolver::ResolveError::RecentNotFound { key: key.clone() })?;
-                resolved.spec.template = request.template.clone().or(resolved.spec.template);
+                resolved.spec.template = requested_template.or(resolved.spec.template);
                 resolved.spec.create = false;
                 Ok(resolved)
             }

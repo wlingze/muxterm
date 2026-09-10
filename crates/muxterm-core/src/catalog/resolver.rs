@@ -6,38 +6,9 @@
 //! 显示/项目元数据，不参与身份。
 
 use crate::projects::{TargetConfig, TargetRuntime, TargetTransport};
-use crate::protocol::candidate::CandidateRef;
 use crate::workspace::spec::WorkspaceSpec;
-use crate::workspace::template::TemplateName;
 
-/// 打开意图：Existing/Recent/普通 Project 重连 = AttachOnly（无匹配不创建）；
-/// 初次新建 Project 才允许 CreateIfMissing。
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum ResolveIntent {
-    AttachOnly,
-    CreateIfMissing,
-}
-
-/// Frontend-facing request. Catalog resolves the CandidateRef into a
-/// WorkspaceSpec; the frontend never constructs the spec itself.
-#[derive(
-    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
-pub struct OpenRequest {
-    pub candidate: CandidateRef,
-    pub intent: ResolveIntent,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub template: Option<TemplateName>,
-    #[serde(default = "default_activate")]
-    pub activate: bool,
-}
-
-fn default_activate() -> bool {
-    true
-}
+pub use muxterm_protocol::candidate::{OpenRequest, ResolveIntent};
 
 /// 解析失败阶段（用户通知显示阶段 + 身份摘要）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,6 +84,8 @@ pub enum ResolveError {
     },
     #[error("workspace identity 不完整（identity={identity}）：{reason}")]
     InvalidIdentity { identity: String, reason: String },
+    #[error("template 名称无效（name={name}）：{reason}")]
+    InvalidTemplate { name: String, reason: String },
 }
 
 impl ResolveError {
@@ -130,7 +103,8 @@ impl ResolveError {
             | Self::NoMatch { .. }
             | Self::CreateNotAllowed { .. }
             | Self::AmbiguousCandidate { .. }
-            | Self::InvalidIdentity { .. } => ResolveErrorStage::IdentityResolution,
+            | Self::InvalidIdentity { .. }
+            | Self::InvalidTemplate { .. } => ResolveErrorStage::IdentityResolution,
             Self::RuntimeOpen { .. } => ResolveErrorStage::RuntimeConnect,
         }
     }
@@ -151,6 +125,7 @@ impl ResolveError {
             Self::CreateNotAllowed { .. } => "create_not_allowed",
             Self::AmbiguousCandidate { .. } => "ambiguous_candidate",
             Self::InvalidIdentity { .. } => "invalid_identity",
+            Self::InvalidTemplate { .. } => "invalid_template",
         }
     }
 }
@@ -264,6 +239,7 @@ pub fn herdr_candidate_to_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use muxterm_protocol::candidate::CandidateRef;
 
     #[test]
     fn open_request_round_trips_typed_reference_and_defaults_activation() {
@@ -273,7 +249,7 @@ mod tests {
                 worktree_id: "worktree-a".into(),
             },
             intent: ResolveIntent::CreateIfMissing,
-            template: Some(TemplateName::try_from("review").unwrap()),
+            template: Some("review".into()),
             activate: true,
         };
         let json = serde_json::to_value(&request).unwrap();
