@@ -74,6 +74,8 @@ use muxterm_protocol::WorkspaceId;
 mod window_discovery;
 #[path = "window_layout.rs"]
 mod window_layout;
+#[path = "window_overlay.rs"]
+mod window_overlay;
 #[path = "window_render.rs"]
 mod window_render;
 #[path = "window_resize.rs"]
@@ -2870,285 +2872,39 @@ fn handle_reconnect_success(state: &Rc<RefCell<UiState>>) {
 
 /// 打开当前 pane 内查找条（W18f：Ctrl+F 与 test_open_pane_find 共用）。
 fn open_pane_find(state: &Rc<RefCell<UiState>>, _window: &Window) {
-    let s = state.borrow();
-    s.overlay.pane_find.set_visible(true);
-    s.overlay.pane_find_entry.grab_focus();
+    window_overlay::open_pane_find(state);
 }
 
 fn open_quick_connect(state: &Rc<RefCell<UiState>>, window: &Window) {
-    open_panel(state, window, PanelTab::Workspaces);
+    window_overlay::open_quick_connect(state, window);
 }
 
 /// 打开三 tab 面板（initial_tab 由入口决定：Alt+Q → Workspaces，红点 → Attention）。
 ///
 /// 内部自行 borrow：面板回调会再次借用 state，调用方不能同时持有 RefMut。
 fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelTab) {
-    let (workspaces, workspace_search_items, agents, attention, win, st, ssh_reach) = {
-        let mut s = state.borrow_mut();
-        let recents = recent_target_configs(
-            &s.view_store,
-            &s.workspace_sockets,
-            s.view_store.workspace_ids().count(),
-        );
-        s.qc_store.replace_all_recents(&recents);
-        let current = {
-            let workspace_key = s.active_workspace_key();
-            let workspace = s
-                .view_store
-                .workspace(&workspace_key)
-                .and_then(|view| view.workspace.as_ref());
-            workspace.and_then(|workspace| {
-                let id = parse_workspace_id(&workspace_key)?;
-                let socket = s
-                    .workspace_sockets
-                    .get(&id)
-                    .and_then(|value| value.as_deref());
-                Some(workspace_to_target_config(workspace, socket))
-            })
-        };
-        let store = s.qc_store.clone();
-        let win = window.clone();
-        let st = state.clone();
-        let workspaces = build_root_items(&store, current.as_ref());
-        let workspace_search_items = build_search_items(&store, current.as_ref());
-        let ssh_reach = collect_ssh_reach(&mut s, &workspaces);
-        // 临时输入 surface 互斥：QuickConnect 打开后不保留 pane-find。
-        s.overlay.pane_find.set_visible(false);
-        // C7：本地列出搬后台线程（GTK 线程禁止 ssh / 扫 herdr socket），
-        // 结果经 16ms poll 收编，和 SSH probe 同一模式。
-        spawn_local_existing_probe(&mut s);
-        let activity = activity_snapshot(&s);
-        let agents = AgentSidebarItem::from_views(&s.view_store, &activity);
-        let attention = panel_attention_rows(&activity);
-        s.panel_open = Some(initial_tab);
-        (
-            workspaces,
-            workspace_search_items,
-            agents,
-            attention,
-            win,
-            st,
-            ssh_reach,
-        )
-    };
-    if !window.is_visible() {
-        window.present();
-    }
-    crate::frontend::linux::quickconnect_panel::show(
-        &win,
-        crate::frontend::linux::quickconnect_panel::PanelShowArgs {
-            initial_tab,
-            workspaces,
-            workspace_search_items,
-            agents,
-            attention,
-            on_connect: {
-                let st = st.clone();
-                std::boxed::Box::new(move |request| {
-                    connect_open_request(&st, request);
-                })
-            },
-            on_existing_connect: {
-                let st = st.clone();
-                std::boxed::Box::new(move |request| {
-                    connect_open_request(&st, request);
-                })
-            },
-            on_edit: {
-                let st = st.clone();
-                let win = win.clone();
-                std::boxed::Box::new(move |cfg| {
-                    open_target_config(&st, &win, Some(cfg));
-                })
-            },
-            on_new_project: {
-                let st = st.clone();
-                let win = win.clone();
-                std::boxed::Box::new(move || {
-                    open_target_config(&st, &win, None);
-                })
-            },
-            on_jump_pane: {
-                let st = st.clone();
-                std::boxed::Box::new(move |ws, pane, seq| {
-                    jump_to_attention_pane(&st, &ws, pane, seq);
-                })
-            },
-            on_mute: {
-                let st = st.clone();
-                let win = win.clone();
-                std::boxed::Box::new(move |ws, pane, duration| {
-                    let seconds = duration.as_secs();
-                    let rc = {
-                        let s = st.borrow();
-                        attention_workspace_id(&s, &ws)
-                            .map(|workspace_id| {
-                                s.event_pump.client().workspace_attention_mute(
-                                    &workspace_id.as_str(),
-                                    pane,
-                                    seconds,
-                                )
-                            })
-                            .unwrap_or(-1)
-                    };
-                    if rc == 0 {
-                        let mut s = st.borrow_mut();
-                        if let Some(workspace_id) = attention_workspace_id(&s, &ws) {
-                            s.compatibility_activity.mute_for(
-                                &workspace_id.as_str(),
-                                pane,
-                                seconds,
-                            );
-                        }
-                        refresh_sidebar_if_open(&mut s);
-                        refresh_attention_chrome(&s, &win);
-                    } else {
-                        tracing::warn!(
-                            target = "muxterm::linux",
-                            "Core attention mute failed: workspace={ws}, pane={pane}, code={rc}"
-                        );
-                    }
-                })
-            },
-            search: {
-                let st = st.clone();
-                std::boxed::Box::new(move |query, scope| {
-                    // C8：空 query 不扫 replica（emulate 已返回空）。
-                    if query.trim().is_empty() {
-                        return Vec::new();
-                    }
-                    let s = st.borrow();
-                    let workspace_replica = active_workspace_id(&s);
-                    let hits = s
-                        .event_pump
-                        .client()
-                        .search_all(query)
-                        .unwrap_or_default()
-                        .into_iter()
-                        .filter(|hit| match scope {
-                            crate::frontend::linux::panel_model::SearchScope::Pane => {
-                                hit.workspace_id == workspace_replica
-                                    && hit.pane_id == s.active_pane
-                            }
-                            crate::frontend::linux::panel_model::SearchScope::Workspace => {
-                                hit.workspace_id == workspace_replica
-                            }
-                            crate::frontend::linux::panel_model::SearchScope::All => true,
-                        })
-                        .map(crate::frontend::linux::panel_model::SearchRow::from)
-                        .collect();
-                    hits
-                })
-            },
-            on_close: {
-                let st = st.clone();
-                std::boxed::Box::new(move || {
-                    let active_view = {
-                        let mut s = st.borrow_mut();
-                        s.panel_open = None;
-                        let pane = s.active_pane;
-                        s.active_layout().pane(pane).cloned()
-                    };
-                    if let Some(view) = active_view {
-                        view.grab_focus();
-                    }
-                })
-            },
-            ssh_reach,
-            existing: state.borrow().existing.clone(),
-            on_existing_nav: {
-                let st = st.clone();
-                std::boxed::Box::new(move |nav| {
-                    if nav == ExistingNav::SshHosts {
-                        spawn_existing_ssh_probe(&st);
-                    }
-                })
-            },
-        },
-    );
+    window_overlay::open_panel(state, window, initial_tab);
 }
 
 /// 跳到注意力 pane：若目标工作区不是当前前台连接，先切连接；
 /// 命中在别的 tab 时先 `SwitchTab` 再 `SwitchPane`（W15b）。
 /// `seq` 是搜索命中的 PaneBuf 行号（W17c）：切完后把 VTE 滚到该行并显示高亮。
 fn jump_to_attention_pane(state: &Rc<RefCell<UiState>>, ws: &str, pane: u32, seq: u64) {
-    let mut s = state.borrow_mut();
-    activate_attention_workspace(&mut s, ws);
-    let workspace_key = active_workspace_key(&s);
-    // 按 pane 查所在 tab（SearchRow 已带 tab_id，但回调只传 ws/pane；
-    // 这里从 owned topology 反查，结果必须切 tab）。
-    let tab_id = {
-        s.view_store
-            .workspace(&workspace_key)
-            .and_then(|view| {
-                view.tabs.iter().find(|tab| {
-                    view.panes
-                        .get(&tab.id)
-                        .is_some_and(|panes| panes.iter().any(|candidate| candidate.id == pane))
-                })
-            })
-            .map(|tab| tab.id)
-    };
-    if let Some(tid) = tab_id {
-        if tid != s.active_tab {
-            request_switch_tab(&mut s, tid);
-        }
-    }
-    // 激活 pane（若已在前台连接中）。
-    let _ = s.execute_active_task(ClientTask::SwitchPane { pane_id: pane });
-    // 搜索命中：滚到该行并显示客户端高亮（W17c）。
-    if seq > 0 {
-        let row = s
-            .event_pump
-            .client()
-            .workspace_pane_viewport_for_seq(&workspace_key, pane, seq);
-        if let Some(row) = row {
-            if let Some(view) = s.active_layout().pane(pane).cloned() {
-                if let Some(adj) = view.terminal().vadjustment() {
-                    adj.set_value(adj.lower() + row as f64);
-                }
-                s.overlay.search_highlight.set_visible(true);
-            }
-        }
-    }
-    // 跳转完成后面板关闭（W15b；独立面板测试不经过这里，面板保持打开）。
-    drop(s);
-    crate::frontend::linux::quickconnect_panel::close_current();
+    window_overlay::jump_to_attention_pane(state, ws, pane, seq);
 }
 
 /// 目标工作区不是当前前台时切连接；相同则不动（避免无谓的 layout 重建）。
 fn activate_attention_workspace(s: &mut UiState, ws: &str) {
-    if active_workspace_id(s) == ws {
-        return;
-    }
-    let id = attention_workspace_id(s, ws);
-    if let Some(id) = id {
-        activate_existing(s, id);
-    }
+    window_overlay::activate_attention_workspace(s, ws);
 }
 
 /// 按 workspace_id（name@transport）找 WorkspaceId。
 fn attention_workspace_id(s: &UiState, ws: &str) -> Option<WorkspaceId> {
-    s.view_store
-        .workspaces()
-        .filter_map(|(_, view)| view.workspace.as_ref())
-        .filter_map(|workspace| parse_workspace_id(&workspace.id))
-        .find(|id| workspace_replica_matches(id, ws))
+    window_overlay::attention_workspace_id(s, ws)
 }
 
 fn workspace_replica_matches(id: &WorkspaceId, requested: &str) -> bool {
-    if workspace_replica_id(id) == requested {
-        return true;
-    }
-    if id.session.is_empty() {
-        return false;
-    }
-    let transport = if id.transport == "ssh" {
-        id.alias.as_deref().unwrap_or("ssh")
-    } else {
-        "local"
-    };
-    requested == format!("{}@{transport}", id.session)
+    window_overlay::workspace_replica_matches(id, requested)
 }
 
 /// 打开配置页：保存/热加载后重读 config.toml 并应用主题/字体/attention。
@@ -4634,7 +4390,7 @@ mod tests {
     /// C7：打开面板禁止在调用线程同步 discover_existing（会冻 GTK）。
     #[test]
     fn open_panel_must_not_probe_existing_on_caller() {
-        let src = include_str!("window.rs");
+        let src = include_str!("window_overlay.rs");
         let body = fn_src(src, "open_panel");
         assert!(
             !body.contains("discover_existing"),
