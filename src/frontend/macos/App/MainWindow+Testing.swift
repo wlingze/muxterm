@@ -255,7 +255,7 @@ extension MainWindowController {
         // 先 poll 同步布局/尺寸，再喂滚动 ANSI，避免布局重建清掉内容。
         pollOnce()
         applyPaneViewport(paneId: pane, offset: offset)
-        content.setJumpLatestVisible(bridge.paneViewport(paneId: pane) > 0)
+        content.setJumpLatestVisible(offset > 0)
     }
 
     /// 触控板/native scrollback 生产路径：模拟 TerminalView 的滚轮。
@@ -263,7 +263,7 @@ extension MainWindowController {
         let pane = testActivePaneID()
         pollOnce()
         terminalManager.scrollPaneHistory(paneId: pane, deltaLines: deltaLines)
-        content.setJumpLatestVisible(bridge.paneViewport(paneId: pane) > 0)
+        content.setJumpLatestVisible((viewportOffsets[pane] ?? 0) > 0)
     }
 
     /// 通过真实 NSWindow/AppKit 事件分发滚轮；与 `testScrollHistory` 不同，
@@ -324,7 +324,7 @@ extension MainWindowController {
     }
 
     func testPaneViewport() -> UInt32 {
-        UInt32(max(0, bridge.paneViewport(paneId: testActivePaneID())))
+        viewportOffsets[testActivePaneID()] ?? 0
     }
 
 

@@ -2,6 +2,14 @@ import AppKit
 import Foundation
 import MuxtermChrome
 
+struct MuxtermConfigTransactionRequest {
+    let operations: [[String: Any]]
+    let completion: (Result<Void, Error>) -> Void
+}
+
+typealias MuxtermConfigTransactionHandler =
+    (MuxtermConfigTransactionRequest) -> Bool
+
 /// AppKit settings renderer backed by Core's Schema/Manifest transaction API.
 ///
 /// The window renders every field published by the Core manifest; a new Core
@@ -242,6 +250,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
 
     private let bridge: CoreBridge
     private let quickConnectStore: QuickConnectStore
+    private let configTransaction: MuxtermConfigTransactionHandler
     private var controls: [String: NSView] = [:]
     private var baselines: [String: Any] = [:]
     private var pendingFontPath: String?
@@ -259,9 +268,17 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
     private var projectEditorView: SettingsProjectEditorView?
     private var activeProjectEditor: TargetConfigWindow?
 
-    init(bridge: CoreBridge, quickConnectStore: QuickConnectStore? = nil) {
+    init(
+        bridge: CoreBridge,
+        quickConnectStore: QuickConnectStore? = nil,
+        configTransaction: @escaping MuxtermConfigTransactionHandler
+    ) {
         self.bridge = bridge
-        self.quickConnectStore = quickConnectStore ?? Self.makeCoreBackedStore(bridge: bridge)
+        self.configTransaction = configTransaction
+        self.quickConnectStore = quickConnectStore ?? Self.makeCoreBackedStore(
+            bridge: bridge,
+            configTransaction: configTransaction
+        )
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 980, height: 720),
             styleMask: [.titled, .closable, .resizable],
@@ -276,26 +293,39 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         loadSnapshotAndBuild()
     }
 
-    private static func makeCoreBackedStore(bridge: CoreBridge) -> QuickConnectStore {
+    convenience init(bridge: CoreBridge, quickConnectStore: QuickConnectStore? = nil) {
+        self.init(
+            bridge: bridge,
+            quickConnectStore: quickConnectStore,
+            configTransaction: bridge.directConfigTransactionHandler()
+        )
+    }
+
+    private static func makeCoreBackedStore(
+        bridge: CoreBridge,
+        configTransaction: @escaping MuxtermConfigTransactionHandler
+    ) -> QuickConnectStore {
         let projects = projects(from: bridge)
         return QuickConnectStore(projects: projects) { [weak bridge] updated in
-            guard let bridge else { return }
-            do {
-                let transaction = try bridge.configBegin()
-                try bridge.configPatch(
-                    transaction: transaction,
-                    operations: [[
-                        "op": "replace",
-                        "path": "/projects",
-                        "value": QuickConnectStore.projectJSON(from: updated),
-                    ]]
-                )
-                try bridge.configCommit(transaction: transaction)
-            } catch {
-                NSLog(
-                    "muxterm: failed to persist projects from settings: %@",
-                    error.localizedDescription
-                )
+            guard bridge != nil else { return }
+            let operations: [[String: Any]] = [[
+                "op": "replace",
+                "path": "/projects",
+                "value": QuickConnectStore.projectJSON(from: updated),
+            ]]
+            let accepted = configTransaction(MuxtermConfigTransactionRequest(
+                operations: operations,
+                completion: { result in
+                    if case .failure(let error) = result {
+                        NSLog(
+                            "muxterm: failed to persist projects from settings: %@",
+                            error.localizedDescription
+                        )
+                    }
+                }
+            ))
+            if !accepted {
+                NSLog("muxterm: config transaction was not accepted")
             }
         }
     }
@@ -1088,23 +1118,33 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
     }
 
     @objc private func applySettings() {
-        var transaction: String?
-        do {
-            transaction = try bridge.configBegin()
-            try bridge.configPatch(transaction: transaction!, operations: collectOperations())
-            try bridge.configCommit(transaction: transaction!)
-            dirty = false
-            window?.close()
-        } catch {
-            if let transaction {
-                bridge.configCancel(transaction: transaction)
+        let request = MuxtermConfigTransactionRequest(
+            operations: collectOperations(),
+            completion: { [weak self] result in
+                guard let self else { return }
+                switch result {
+                case .success:
+                    self.dirty = false
+                    self.window?.close()
+                case .failure(let error):
+                    self.showSettingsApplyError(error)
+                }
             }
-            let alert = NSAlert()
-            alert.messageText = "Unable to save settings"
-            alert.informativeText = error.localizedDescription
-            alert.alertStyle = .warning
-            alert.beginSheetModal(for: window!, completionHandler: nil)
+        )
+        if !configTransaction(request) {
+            showSettingsApplyError(
+                CoreBridgeDiscoveryError.message("config transaction was not accepted")
+            )
         }
+    }
+
+    private func showSettingsApplyError(_ error: Error) {
+        guard let owner = window else { return }
+        let alert = NSAlert()
+        alert.messageText = "Unable to save settings"
+        alert.informativeText = error.localizedDescription
+        alert.alertStyle = .warning
+        alert.beginSheetModal(for: owner, completionHandler: nil)
     }
 
     @objc private func cancelSettings() {

@@ -232,4 +232,149 @@ final class MacCommandQueueTests: XCTestCase {
             return XCTFail("expected a workspace close operation")
         }
     }
+
+    func testConsecutiveColourReportsForOneWorkspaceAndPaneKeepLatest() {
+        var queue = MacCommandQueue()
+        queue.enqueue(.colours(
+            workspaceID: "one",
+            .pane(paneID: 3, fgHex: "111111", bgHex: "eeeeee")
+        ))
+        queue.enqueue(.colours(
+            workspaceID: "one",
+            .pane(paneID: 3, fgHex: "222222", bgHex: "dddddd")
+        ))
+
+        XCTAssertEqual(queue.count, 1)
+        guard case .colours(.pane(let paneID, let fgHex, let bgHex)) = queue.drain()[0].operation else {
+            return XCTFail("expected a pane colour report")
+        }
+        XCTAssertEqual(paneID, 3)
+        XCTAssertEqual(fgHex, "222222")
+        XCTAssertEqual(bgHex, "dddddd")
+    }
+
+    func testColourReportsAcrossWorkspacesRemainOrdered() {
+        var queue = MacCommandQueue()
+        queue.enqueue(.colours(
+            workspaceID: "one",
+            .pane(paneID: 3, fgHex: "111111", bgHex: "eeeeee")
+        ))
+        queue.enqueue(.colours(
+            workspaceID: "two",
+            .pane(paneID: 3, fgHex: "222222", bgHex: "dddddd")
+        ))
+
+        XCTAssertEqual(queue.count, 2)
+        XCTAssertEqual(queue.drain().map { $0.workspaceID ?? "" }, ["one", "two"])
+    }
+
+    func testConfigTransactionsRemainOrderedAndCarryRequestIdentity() {
+        var queue = MacCommandQueue()
+        queue.enqueue(.config(
+            operationsJSON: "[{\"path\":\"/font/size\"}]",
+            requestID: 7
+        ))
+        queue.enqueue(.config(
+            operationsJSON: "[{\"path\":\"/theme/name\"}]",
+            requestID: 8
+        ))
+
+        XCTAssertEqual(queue.count, 2)
+        let commands = queue.drain()
+        guard case .config(let first) = commands[0].operation,
+              case .config(let second) = commands[1].operation
+        else {
+            return XCTFail("expected ordered config transactions")
+        }
+        XCTAssertEqual(first.requestID, 7)
+        XCTAssertEqual(second.requestID, 8)
+        XCTAssertTrue(first.operationsJSON.contains("/font/size"))
+        XCTAssertTrue(second.operationsJSON.contains("/theme/name"))
+    }
+
+    func testSearchRequestsRemainOrderedAndCarryRequestIdentity() {
+        var queue = MacCommandQueue()
+        queue.enqueue(.search(query: "first", requestID: 11))
+        queue.enqueue(.search(query: "second", requestID: 12))
+
+        XCTAssertEqual(queue.count, 2)
+        let commands = queue.drain()
+        guard case .search(let first) = commands[0].operation,
+              case .search(let second) = commands[1].operation
+        else {
+            return XCTFail("expected ordered search requests")
+        }
+        XCTAssertEqual(first.query, "first")
+        XCTAssertEqual(first.requestID, 11)
+        XCTAssertEqual(second.query, "second")
+        XCTAssertEqual(second.requestID, 12)
+    }
+
+    func testPaneOutputRequestsRemainScopedAndCarryRequestIdentity() {
+        var queue = MacCommandQueue()
+        queue.enqueue(.paneOutput(
+            workspaceID: "one",
+            paneID: 3,
+            requestID: 17
+        ))
+        queue.enqueue(.paneOutput(
+            workspaceID: "two",
+            paneID: 3,
+            requestID: 18
+        ))
+
+        XCTAssertEqual(queue.count, 2)
+        let commands = queue.drain()
+        XCTAssertEqual(commands.map { $0.workspaceID ?? "" }, ["one", "two"])
+        guard case .paneOutput(let first) = commands[0].operation,
+              case .paneOutput(let second) = commands[1].operation
+        else {
+            return XCTFail("expected ordered pane-output requests")
+        }
+        XCTAssertEqual(first.paneID, 3)
+        XCTAssertEqual(first.requestID, 17)
+        XCTAssertEqual(second.paneID, 3)
+        XCTAssertEqual(second.requestID, 18)
+    }
+
+    func testRepeatedVisibilityAcknowledgeForOnePaneCoalesces() {
+        var queue = MacCommandQueue()
+        queue.enqueue(.attention(
+            workspaceID: "one",
+            .becameVisible(paneID: 3),
+            failureMessage: ""
+        ))
+        queue.enqueue(.attention(
+            workspaceID: "one",
+            .becameVisible(paneID: 3),
+            failureMessage: ""
+        ))
+
+        XCTAssertEqual(queue.count, 1)
+        guard case .attention(.becameVisible(let paneID)) = queue.drain()[0].operation else {
+            return XCTFail("expected a visibility operation")
+        }
+        XCTAssertEqual(paneID, 3)
+    }
+
+    func testProcessNameUpdatesForOnePaneCoalesce() {
+        var queue = MacCommandQueue()
+        queue.enqueue(.attention(
+            workspaceID: "one",
+            .setProcessName(paneID: 3, name: "old"),
+            failureMessage: ""
+        ))
+        queue.enqueue(.attention(
+            workspaceID: "one",
+            .setProcessName(paneID: 3, name: "new"),
+            failureMessage: ""
+        ))
+
+        XCTAssertEqual(queue.count, 1)
+        guard case .attention(.setProcessName(let paneID, let name)) = queue.drain()[0].operation else {
+            return XCTFail("expected a process-name operation")
+        }
+        XCTAssertEqual(paneID, 3)
+        XCTAssertEqual(name, "new")
+    }
 }

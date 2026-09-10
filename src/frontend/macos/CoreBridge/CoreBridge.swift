@@ -1268,6 +1268,38 @@ final class CoreBridge {
         }
     }
 
+    /// Compatibility adapter for settings controllers created without the
+    /// MainWindow event pump (for example, focused AppKit tests). Production
+    /// windows inject the queued handler instead, so their UI path never
+    /// begins a Core transaction directly.
+    func directConfigTransactionHandler() -> MuxtermConfigTransactionHandler {
+        { [weak self] request in
+            guard let self else {
+                request.completion(.failure(CoreBridgeDiscoveryError.message(
+                    "config bridge unavailable"
+                )))
+                return false
+            }
+            do {
+                let transaction = try self.configBegin()
+                do {
+                    try self.configPatch(
+                        transaction: transaction,
+                        operations: request.operations
+                    )
+                    try self.configCommit(transaction: transaction)
+                } catch {
+                    self.configCancel(transaction: transaction)
+                    throw error
+                }
+                request.completion(.success(()))
+            } catch {
+                request.completion(.failure(error))
+            }
+            return true
+        }
+    }
+
     deinit {
         shutdownAndFree()
     }
@@ -1607,6 +1639,52 @@ final class CoreBridge {
         return fgHex.withCString { fg in
             bgHex.withCString { bg in
                 muxterm_report_all_pane_colours(handle, fg, bg)
+            }
+        }
+    }
+
+    /// 向指定 Workspace 的 pane 上报前景/背景色，不改变 Core 的 active workspace。
+    @discardableResult
+    func reportPaneColours(
+        workspaceID: String,
+        paneId: UInt32,
+        fgHex: String,
+        bgHex: String
+    ) -> Int32 {
+        guard let handle else { return -1 }
+        return workspaceID.withCString { workspace in
+            fgHex.withCString { fg in
+                bgHex.withCString { bg in
+                    muxterm_workspace_report_pane_colours(
+                        handle,
+                        workspace,
+                        paneId,
+                        fg,
+                        bg
+                    )
+                }
+            }
+        }
+    }
+
+    /// 向指定 Workspace 的所有 pane 上报前景/背景色，不改变 active workspace。
+    @discardableResult
+    func reportAllPaneColours(
+        workspaceID: String,
+        fgHex: String,
+        bgHex: String
+    ) -> Int32 {
+        guard let handle else { return -1 }
+        return workspaceID.withCString { workspace in
+            fgHex.withCString { fg in
+                bgHex.withCString { bg in
+                    muxterm_workspace_report_all_pane_colours(
+                        handle,
+                        workspace,
+                        fg,
+                        bg
+                    )
+                }
             }
         }
     }

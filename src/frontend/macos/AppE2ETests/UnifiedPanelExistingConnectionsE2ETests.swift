@@ -134,9 +134,8 @@ final class UnifiedPanelExistingConnectionsE2ETests: XCTestCase {
             store: QuickConnectStore(),
             ownerWindow: nil,
             snapshot: { nil },
-            paneOutput: { _ in Data() },
             sendInput: { _, _ in },
-            search: { _, _ in [] },
+            search: { _ in },
             connectedWorkspaces: { [connected] }
         )
         var discoveryCompletion: ((Result<[ExistingConnectionChoice], Error>) -> Void)?
@@ -182,9 +181,8 @@ final class UnifiedPanelExistingConnectionsE2ETests: XCTestCase {
             store: QuickConnectStore(),
             ownerWindow: nil,
             snapshot: { nil },
-            paneOutput: { _ in Data() },
             sendInput: { _, _ in },
-            search: { _, _ in [] },
+            search: { _ in },
             connectedWorkspaces: { [connected] }
         )
         panel.present(initial: .workspaces)
@@ -261,9 +259,8 @@ final class UnifiedPanelExistingConnectionsE2ETests: XCTestCase {
             store: QuickConnectStore(),
             ownerWindow: nil,
             snapshot: { nil },
-            paneOutput: { _ in Data() },
             sendInput: { _, _ in },
-            search: { _, _ in [] }
+            search: { _ in }
         )
     }
 }

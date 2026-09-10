@@ -48,7 +48,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 来自 ~/.config/muxterm/config.toml 的自定义快捷键（可选）。
     private var customKeybindings: [KeyChord: KeyAction] = [:]
     private var nextWorkspaceOpenedOrder: UInt64 = 1
-    private let quickConnectStore: QuickConnectStore
+    private var quickConnectStore: QuickConnectStore!
     private var pollTimer: Timer?
     /// 主窗口 local key monitor 的 token；独立 NSPanel 的事件不能进入这里。
     private var keyMonitor: Any?
@@ -66,6 +66,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 注意力 Cmd-Enter 的 replica overlay（W19-E）。
     private var replyOverlayView: MuxTerminalView?
     var replyOverlayPaneId: UInt32?
+    private var replyOverlayWorkspaceID: String?
     /// 搜索跳转：切 tab 完成后再滚到命中行。
     private var pendingSearchJump: PendingSearchJump?
     /// 面板行可能在后台 Workspace 的身份缓存到达前被选中。保留最后一次
@@ -96,16 +97,47 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 当前 pane 在命令时间线中的游标；手动滚轮/搜索会清掉游标，
     /// Cmd+Option+↑/↓ 则按此游标前后移动。
     private var commandTimelineCursor: [UInt32: UInt64] = [:]
+    /// Event-pump snapshot of OSC 133 marks. The workspace key prevents a
+    /// delayed pane-id reuse from exposing another scene's command history.
+    private struct CommandMarksKey: Hashable {
+        let workspaceID: String?
+        let paneID: UInt32
+    }
+    private var commandMarksCache: [CommandMarksKey: [CoreCommandMark]] = [:]
+    private struct PaneHistoryKey: Hashable {
+        let workspaceID: String?
+        let paneID: UInt32
+    }
+    private struct PaneHistoryOffsetKey: Hashable {
+        let workspaceID: String?
+        let paneID: UInt32
+        let seq: UInt64
+    }
+    /// Event-pump snapshots used by last-seen UI and test diagnostics. UI
+    /// callbacks must not re-enter the Core index for these values.
+    private var paneLatestLineSeqCache: [PaneHistoryKey: Int64] = [:]
+    private var paneViewportOffsetForSeqCache: [PaneHistoryOffsetKey: Int32] = [:]
+    /// Native scroll callbacks already carry the local viewport offset. Keep
+    /// it for UI-only unseen-line updates; the event pump refreshes it from
+    /// Core when the authoritative snapshot changes.
+    private var viewportOffsets: [UInt32: UInt32] = [:]
     /// 程序化命令跳转触发 native scroll callback 时保留游标一次。
     private var commandNavigationPanes = Set<UInt32>()
     /// 最近一次 poll 的 PaneOutput 条数（W13 洪水上限）。
     private(set) var lastPaneOutputEventCount: Int = 0
     private var languageObserver: NSObjectProtocol?
-    /// 已向 tmux 上报过颜色的 pane（`refresh-client -r` 只需每个 pane 一次；
-    /// 外观变化时清空重报）。
-    private var reportedColourPanes = Set<UInt32>()
+    private struct ColourPaneKey: Hashable {
+        let workspaceID: String?
+        let paneID: UInt32
+    }
+
+    /// 已向 tmux 上报过颜色的 workspace/pane（`refresh-client -r` 只需每个
+    /// pane 一次；外观变化时清空重报）。
+    private var reportedColourPanes = Set<ColourPaneKey>()
     /// 后台 tab 的 Surface 树按 runloop 一拍一棵预热，避免 attach 时一次建完卡死。
     private var tabWarmupScheduled = false
+    /// Timer 只置位请求；真正的 geometry 查询由下一拍 EventPump 执行。
+    private var tabWarmupRequested = false
     /// 最近一次 status bar 快照（用于周期刷新与位置/样式渲染）。
     private var statusBarSnapshot: StatusBarSnapshot?
     /// statusbar 需要刷新（tab 增删/激活才置位；layout-change/pane 事件不触发，
@@ -130,6 +162,19 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// A shared Core handle is temporarily owned by a catalog open operation;
     /// the main-thread event pump pauses until the owned result is installed.
     private var sharedCoreOperationInFlight = false
+    /// Configuration completions are retained until the queued transaction is
+    /// executed by the event pump.  This keeps Settings from closing before
+    /// Core has accepted its draft.
+    private var nextConfigRequestID: UInt64 = 1
+    private var pendingConfigCompletions: [UInt64: (Result<Void, Error>) -> Void] = [:]
+    /// Search completions are delivered by the event pump so panel text input
+    /// never calls the Core index synchronously.
+    private var nextSearchRequestID: UInt64 = 1
+    private var pendingSearchCompletions: [UInt64: ([SearchHit]) -> Void] = [:]
+    /// Pane-output snapshots are read only by the event pump and delivered to
+    /// the overlay only if that exact overlay is still mounted.
+    private var nextPaneOutputRequestID: UInt64 = 1
+    private var pendingPaneOutputCompletions: [UInt64: (Data) -> Void] = [:]
     /// Core work needed after a cached scene switch.  It is deliberately
     /// resumed by `pollOnce()`, never from the click/activation stack.
     private var pendingActivationCoreWork: WorkspaceScene?
@@ -246,31 +291,30 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         window.appearance = initialAppearance
         content.appearance = initialAppearance
 
-        // Project 列表来自 Core 快照；变更通过 CoreBridge 事务写回统一
-        // config.toml（`[[projects]]`），不再读写 quickconnect.toml。
+        super.init(window: window)
+        // Project 列表来自 Core 快照；变更通过主线程 event pump 排队写回
+        // 统一 config.toml（`[[projects]]`），不再从 UI 回调直接碰 Core。
         if let injectedQuickConnectStore {
             quickConnectStore = injectedQuickConnectStore
         } else {
-            let configBridge = bridge
-            quickConnectStore = QuickConnectStore(projects: resolved.projects) { updated in
-                do {
-                    let transaction = try configBridge.configBegin()
-                    try configBridge.configPatch(
-                        transaction: transaction,
-                        operations: [[
-                            "op": "replace",
-                            "path": "/projects",
-                            "value": QuickConnectStore.projectJSON(from: updated),
-                        ]]
-                    )
-                    try configBridge.configCommit(transaction: transaction)
-                } catch {
-                    // 失败时保留内存列表，不覆盖用户文件；下次启动仍读 Core 快照。
-                    NSLog("muxterm: failed to persist projects: %@", error.localizedDescription)
+            quickConnectStore = QuickConnectStore(projects: resolved.projects) { [weak self] updated in
+                guard let self else { return }
+                let operations: [[String: Any]] = [[
+                    "op": "replace",
+                    "path": "/projects",
+                    "value": QuickConnectStore.projectJSON(from: updated),
+                ]]
+                _ = self.enqueueConfigTransaction(operations) { result in
+                    if case .failure(let error) = result {
+                        // 失败时保留内存列表，不覆盖用户文件；下次启动仍读 Core 快照。
+                        NSLog(
+                            "muxterm: failed to persist projects: %@",
+                            error.localizedDescription
+                        )
+                    }
                 }
             }
         }
-        super.init(window: window)
         window.delegate = self
         installMainSplit(in: window)
         installSidebarToggle(in: window)
@@ -315,20 +359,22 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             snapshot: { [weak self] in
                 self?.attentionSnapshotForPanel()
             },
-            paneOutput: { [weak self] paneId in
-                guard let self else {
-                    return Data()
-                }
-                return self.bridge.getPaneOutput(paneId: paneId)
-            },
             sendInput: { [weak self] paneId, data in
                 guard let self else { return }
                 self.performWhenForegroundReady {
                     _ = self.enqueueCoreInput(paneId: paneId, data: data)
                 }
             },
-            search: { [weak self] query, scope in
-                self?.searchHitsForPanel(query: query, scope: scope) ?? []
+            search: { [weak self] request in
+                guard let self else {
+                    request.completion([])
+                    return
+                }
+                self.requestSearchHitsForPanel(
+                    query: request.query,
+                    scope: request.scope,
+                    completion: request.completion
+                )
             },
             workspaceIndex: { [weak self] config in
                 self?.workspaceShortcutIndex(for: config)
@@ -442,7 +488,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             }
             let active = self.lastSnapshot.panes.first(where: \.isActive)?.id
                 ?? self.lastSnapshot.panes.first?.id
-                ?? self.bridge.snapshot().panes.first(where: \.isActive)?.id
             guard TerminalInputFocusPolicy.shouldRetryWhenSurfaceReady(
                 isActivePane: active == paneId,
                 ready: ready
@@ -522,7 +567,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         refreshWorkspaceSidebar(force: true)
         startPolling()
         DispatchQueue.main.async { [weak self] in
-            self?.refreshUI()
+            self?.pollOnce()
         }
     }
 
@@ -851,9 +896,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // tmux session，普通 `tmux attach` 里字也会变白。
         reportedColourPanes.removeAll()
         let osc = ColorContrast.oscColors(fg: theme.palette.fg, bg: theme.palette.bg)
-        _ = bridge.reportAllPaneColours(
-            fgHex: osc.fg,
-            bgHex: osc.bg
+        _ = enqueueCoreColours(
+            workspaceID: activeSceneWorkspaceID,
+            .all(fgHex: osc.fg, bgHex: osc.bg)
         )
         // 重新渲染 status bar（GUI 黑白模式跟随主题；tmux 模式样式不变）。
         if statusBarSnapshot != nil {
@@ -918,7 +963,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         let controller = SettingsWindowController(
             bridge: bridge,
-            quickConnectStore: quickConnectStore
+            quickConnectStore: quickConnectStore,
+            configTransaction: { [weak self] request in
+                self?.enqueueConfigTransaction(
+                    request.operations,
+                    completion: request.completion
+                ) ?? false
+            }
         )
         settingsWindow = controller
         controller.showWindow(self)
@@ -1042,13 +1093,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         unifiedPanel.show(tab: .attention)
     }
 
-    /// 统一面板的实时查询范围覆盖当前 Core handle 管理的 Workspace；
-    /// Core 已经返回带 WorkspaceId 的聚合结果，不再为每个场景重复触碰 handle。
-    private func forEachPanelBridge(_ body: (CoreBridge, WorkspaceScene?) -> Void) {
-        let activeSlot = sceneStack.activeKey.flatMap { sceneStack.scenes[$0] }
-        body(bridge, activeSlot)
-    }
-
     private func attentionSnapshot(from candidate: CoreBridge) -> AttentionSnapshot? {
         guard let json = candidate.attentionSnapshotJSON() else { return nil }
         return AttentionSnapshot.decode(Data(json.utf8))
@@ -1063,11 +1107,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             return "\(name):\(identityPath)@\(transport)"
         }
         return "\(name)@\(transport)"
-    }
-
-    private func workspaceReplicaID(from candidate: CoreBridge, target: TargetConfig) -> String {
-        attentionSnapshot(from: candidate)?.workspaces.first?.workspaceId
-            ?? fallbackReplicaID(for: target)
     }
 
     private func workspaceReplicaID(for slot: WorkspaceScene) -> String {
@@ -1087,7 +1126,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         {
             return workspaceReplicaID(for: slot)
         }
-        return workspaceReplicaID(from: bridge, target: target)
+        return fallbackReplicaID(for: target)
     }
 
     /// UI 命令在同一主线程事件泵上顺序进入 Core；场景切换本身不需要等待
@@ -1113,6 +1152,37 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         guard !isClosing else { return false }
         commandQueue.enqueue(command)
         return true
+    }
+
+    /// Serialize a configuration draft and hand its transaction to the same
+    /// event-pump boundary as terminal commands. The completion runs after
+    /// Core has committed (or rejected) the draft.
+    @discardableResult
+    private func enqueueConfigTransaction(
+        _ operations: [[String: Any]],
+        completion: @escaping (Result<Void, Error>) -> Void = { _ in }
+    ) -> Bool {
+        guard !isClosing else { return false }
+        guard let data = try? JSONSerialization.data(withJSONObject: operations),
+              let operationsJSON = String(data: data, encoding: .utf8)
+        else {
+            completion(.failure(CoreBridgeDiscoveryError.message(
+                "config patch encoding failed"
+            )))
+            return false
+        }
+
+        let requestID = nextConfigRequestID
+        nextConfigRequestID += 1
+        pendingConfigCompletions[requestID] = completion
+        let accepted = enqueueCoreCommand(.config(
+            operationsJSON: operationsJSON,
+            requestID: requestID
+        ))
+        if !accepted {
+            pendingConfigCompletions.removeValue(forKey: requestID)
+        }
+        return accepted
     }
 
     @discardableResult
@@ -1158,17 +1228,151 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     @discardableResult
     private func enqueueCoreAttention(
         workspaceID: String?,
-        _ attention: QueuedMuxAttention
+        _ attention: QueuedMuxAttention,
+        refreshPanel: Bool = true
     ) -> Bool {
         let queued = enqueueCoreCommand(.attention(
             workspaceID: workspaceID,
             attention,
             failureMessage: MuxtermI18n.shared.tr(.errorCommandFailed)
         ))
-        if queued {
+        if queued, refreshPanel {
             attentionPanelRefreshPending = true
         }
         return queued
+    }
+
+    @discardableResult
+    private func enqueueCoreColours(
+        workspaceID: String?,
+        _ colours: QueuedMuxColours
+    ) -> Bool {
+        enqueueCoreCommand(.colours(
+            workspaceID: workspaceID,
+            colours
+        ))
+    }
+
+    private func finishConfigRequest(
+        _ requestID: UInt64?,
+        result: Result<Void, Error>
+    ) {
+        guard let requestID,
+              let completion = pendingConfigCompletions.removeValue(forKey: requestID)
+        else {
+            return
+        }
+        completion(result)
+    }
+
+    /// Enqueue a Core index search and return immediately to AppKit. The
+    /// result is filtered against the current owned scene topology when the
+    /// event-pump command completes.
+    private func requestSearchHitsForPanel(
+        query: String,
+        scope: SearchScope,
+        completion: @escaping ([SearchHit]) -> Void
+    ) {
+        let requestID = nextSearchRequestID
+        nextSearchRequestID += 1
+        pendingSearchCompletions[requestID] = { [weak self] hits in
+            guard let self else { return }
+            self.cacheActiveWorkspaceIdentity(from: hits)
+            var uniqueHits: [SearchHit] = []
+            var seen = Set<String>()
+            for hit in hits {
+                let key = "\(hit.workspaceId)\u{1F}\(hit.tabId)\u{1F}\(hit.paneId)\u{1F}\(hit.seq)"
+                if seen.insert(key).inserted {
+                    uniqueHits.append(hit)
+                }
+            }
+            completion(scope.filter(
+                uniqueHits,
+                activePane: self.activePaneID,
+                workspaceId: self.activeWorkspaceReplicaID,
+                workspacePaneIDs: self.cachedWorkspacePaneIDs()
+            ))
+        }
+        let accepted = enqueueCoreCommand(.search(
+            query: query,
+            requestID: requestID
+        ))
+        if !accepted {
+            pendingSearchCompletions.removeValue(forKey: requestID)
+            completion([])
+        }
+    }
+
+    private func cacheActiveWorkspaceIdentity(from hits: [SearchHit]) {
+        guard let activeKey = sceneStack.activeKey,
+              let activeScene = sceneStack.scenes[activeKey]
+        else {
+            return
+        }
+        var activePaneIDs = Set(lastSnapshot.panes.map(\.id))
+        if let cachedPaneIDs = activeScene.cachedTabIdsByPane?.keys {
+            activePaneIDs.formUnion(cachedPaneIDs)
+        }
+        guard let workspaceID = hits.first(where: { activePaneIDs.contains($0.paneId) })?.workspaceId
+        else {
+            return
+        }
+        activeScene.cacheWorkspaceReplicaID(workspaceID)
+    }
+
+    private func finishSearchRequest(_ requestID: UInt64, hits: [SearchHit]) {
+        pendingSearchCompletions.removeValue(forKey: requestID)?(hits)
+    }
+
+    /// Enqueue a pane-output snapshot without touching the Core handle from a
+    /// panel or overlay action.
+    @discardableResult
+    private func enqueuePaneOutput(
+        workspaceID: String?,
+        paneID: UInt32,
+        completion: @escaping (Data) -> Void
+    ) -> Bool {
+        guard !isClosing else { return false }
+        let requestID = nextPaneOutputRequestID
+        nextPaneOutputRequestID += 1
+        pendingPaneOutputCompletions[requestID] = completion
+        let accepted = enqueueCoreCommand(.paneOutput(
+            workspaceID: workspaceID,
+            paneID: paneID,
+            requestID: requestID
+        ))
+        if !accepted {
+            pendingPaneOutputCompletions.removeValue(forKey: requestID)
+            completion(Data())
+        }
+        return accepted
+    }
+
+    private func finishPaneOutputRequest(_ requestID: UInt64, data: Data) {
+        pendingPaneOutputCompletions.removeValue(forKey: requestID)?(data)
+    }
+
+    private func cachedWorkspacePaneIDs() -> Set<UInt32> {
+        var paneIDs = Set(lastSnapshot.panes.map(\.id))
+        for scene in sceneStack.scenes.values where scene.visibility != .closed {
+            if let scenePaneIDs = scene.cachedTabIdsByPane?.keys {
+                paneIDs.formUnion(scenePaneIDs)
+            }
+        }
+        return paneIDs
+    }
+
+    private func cachedTabID(containingPane paneID: UInt32) -> UInt32? {
+        if let activeKey = sceneStack.activeKey,
+           let scene = sceneStack.scenes[activeKey],
+           let tabID = scene.cachedTabIdsByPane?[paneID]
+        {
+            return tabID
+        }
+        guard lastSnapshot.panes.contains(where: { $0.id == paneID }) else {
+            return nil
+        }
+        return lastSnapshot.activeTab
     }
 
     /// Dispatch queued commands at the same serialized boundary that drains
@@ -1268,8 +1472,58 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 } else {
                     result = -1
                 }
+            case .colours(let colours):
+                switch colours {
+                case .pane(let paneID, let fgHex, let bgHex):
+                    if let workspaceID = command.workspaceID {
+                        result = bridge.reportPaneColours(
+                            workspaceID: workspaceID,
+                            paneId: paneID,
+                            fgHex: fgHex,
+                            bgHex: bgHex
+                        )
+                    } else {
+                        result = bridge.reportPaneColours(
+                            paneId: paneID,
+                            fgHex: fgHex,
+                            bgHex: bgHex
+                        )
+                    }
+                case .all(let fgHex, let bgHex):
+                    if let workspaceID = command.workspaceID {
+                        result = bridge.reportAllPaneColours(
+                            workspaceID: workspaceID,
+                            fgHex: fgHex,
+                            bgHex: bgHex
+                        )
+                    } else {
+                        result = bridge.reportAllPaneColours(fgHex: fgHex, bgHex: bgHex)
+                    }
+                }
             case .attention(let attention):
                 switch attention {
+                case .becameVisible(let paneID):
+                    if let workspaceID = command.workspaceID {
+                        result = bridge.attentionOnBecameVisible(
+                            workspaceID: workspaceID,
+                            paneId: paneID
+                        )
+                    } else {
+                        result = bridge.attentionOnBecameVisible(paneId: paneID)
+                    }
+                case .setProcessName(let paneID, let name):
+                    if let workspaceID = command.workspaceID {
+                        result = bridge.attentionSetProcessName(
+                            workspaceID: workspaceID,
+                            paneId: paneID,
+                            name: name
+                        )
+                    } else {
+                        result = bridge.attentionSetProcessName(
+                            paneId: paneID,
+                            name: name
+                        )
+                    }
                 case .acknowledge(let paneID):
                     if let workspaceID = command.workspaceID {
                         result = bridge.attentionAcknowledge(
@@ -1292,6 +1546,68 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                             seconds: seconds
                         )
                     }
+                }
+            case .config(let config):
+                do {
+                    guard let data = config.operationsJSON.data(using: .utf8),
+                          let operations = try JSONSerialization.jsonObject(with: data)
+                              as? [[String: Any]]
+                    else {
+                        throw CoreBridgeDiscoveryError.message(
+                            "config patch encoding failed"
+                        )
+                    }
+                    let transaction = try bridge.configBegin()
+                    do {
+                        try bridge.configPatch(
+                            transaction: transaction,
+                            operations: operations
+                        )
+                        try bridge.configCommit(transaction: transaction)
+                    } catch {
+                        bridge.configCancel(transaction: transaction)
+                        throw error
+                    }
+                    finishConfigRequest(config.requestID, result: .success(()))
+                    result = 0
+                } catch {
+                    finishConfigRequest(config.requestID, result: .failure(error))
+                    result = -1
+                }
+            case .search(let search):
+                var hits: [SearchHit] = []
+                if let json = bridge.searchAllJSON(query: search.query),
+                   let data = json.data(using: .utf8),
+                   let snapshot = SearchSnapshot.decode(data)
+                {
+                    hits = snapshot.hits
+                }
+                finishSearchRequest(search.requestID, hits: hits)
+                result = 0
+            case .paneOutput(let request):
+                let data: Data
+                if let workspaceID = command.workspaceID {
+                    data = bridge.getPaneOutput(
+                        workspaceID: workspaceID,
+                        paneId: request.paneID
+                    )
+                } else {
+                    data = bridge.getPaneOutput(paneId: request.paneID)
+                }
+                finishPaneOutputRequest(request.requestID, data: data)
+                result = 0
+            }
+            if result != 0 {
+                switch command.operation {
+                case .colours(.pane(let paneID, _, _)):
+                    reportedColourPanes.remove(ColourPaneKey(
+                        workspaceID: command.workspaceID,
+                        paneID: paneID
+                    ))
+                case .colours(.all):
+                    reportedColourPanes.removeAll()
+                default:
+                    break
                 }
             }
             if result != 0, !command.failureMessage.isEmpty {
@@ -1317,23 +1633,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 }
                 return lhs.key.session < rhs.key.session
         }
-    }
-
-    /// Build the sidebar's pane navigation cache in one topology walk. Core
-    /// keeps both the stable TabId and the user-facing 1-based order
-    /// authoritative.
-    private static func tabTargetsByPane(
-        from candidate: CoreBridge
-    ) -> (tabIdsByPane: [UInt32: UInt32], tabNumbersByPane: [UInt32: Int]) {
-        var tabIdsByPane: [UInt32: UInt32] = [:]
-        var tabNumbersByPane: [UInt32: Int] = [:]
-        for (index, tab) in candidate.getTabs().enumerated() {
-            for pane in candidate.getPanes(tabId: tab.id) {
-                tabIdsByPane[pane.id] = tab.id
-                tabNumbersByPane[pane.id] = index + 1
-            }
-        }
-        return (tabIdsByPane, tabNumbersByPane)
     }
 
     private func tabTargetsByPane(
@@ -1437,45 +1736,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         return AttentionSnapshot(blockedCount: blockedCount, workspaces: workspaces)
     }
 
-    private func searchHitsForPanel(query: String, scope: SearchScope) -> [SearchHit] {
-        var allHits: [SearchHit] = []
-        var seen = Set<String>()
-        let consume: (CoreBridge, WorkspaceScene?) -> Void = { candidate, slot in
-            guard let json = candidate.searchAllJSON(query: query),
-                  let snapshot = SearchSnapshot.decode(Data(json.utf8))
-            else {
-                return
-            }
-            // 搜索结果本身也携带稳定 Workspace ID。后台 attention 尚未
-            // 首轮到达时先把它写入 slot，后续点击搜索命中无需再做同步
-            // FFI 身份探测。
-            if let workspaceID = snapshot.hits.first?.workspaceId {
-                slot?.cacheWorkspaceReplicaID(workspaceID)
-            }
-            for hit in snapshot.hits {
-                let key = "\(hit.workspaceId)\u{1F}\(hit.tabId)\u{1F}\(hit.paneId)\u{1F}\(hit.seq)"
-                if seen.insert(key).inserted {
-                    allHits.append(hit)
-                }
-            }
-        }
-        if scope == .all {
-            forEachPanelBridge(consume)
-        } else {
-            let activeSlot = sceneStack.activeKey.flatMap { sceneStack.scenes[$0] }
-            consume(bridge, activeSlot)
-        }
-        let workspacePaneIDs = Set(
-            bridge.getTabs().flatMap { bridge.getPanes(tabId: $0.id).map(\.id) }
-        )
-        return scope.filter(
-            allHits,
-            activePane: activePaneID,
-            workspaceId: activeWorkspaceReplicaID,
-            workspacePaneIDs: workspacePaneIDs
-        )
-    }
-
     /// 测试用：按 Workspace 读取 Core 的 attention 快照。
     func testAttentionBlockedCount(workspaceId: String) -> Int {
         var blockedCount = -1
@@ -1575,6 +1835,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 workspaceID: sceneWorkspaceID,
                 failureMessage: MuxtermI18n.shared.tr(.errorCommandFailed)
             ))
+        }
+        if let sceneWorkspaceID = slot.workspaceID {
+            commandMarksCache = commandMarksCache.filter {
+                $0.key.workspaceID != sceneWorkspaceID
+            }
         }
         sceneStack.close(key: slot.key)
         content.paneLayout.dropParked(except: Array(sceneStack.scenes.values.map(\.terminalManager)))
@@ -1694,7 +1959,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             // replica id 字符串暂时对不上时，若当前连接已经有这个 pane，
             // 仍立即跳转（Linux jump_to_attention_pane 同语义）。只有跨
             // Workspace 且目标 slot 尚未 ready 才排队等下一轮 poll。
-            if bridge.tabId(containingPane: paneId) != nil {
+            if cachedWorkspacePaneIDs().contains(paneId) {
                 pendingPanelJump = nil
                 performWhenForegroundReady { [weak self] in
                     self?.jumpToPane(tabId: tabId, paneId: paneId, seq: seq, query: query)
@@ -1771,7 +2036,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// `tabId` 为 nil 时按 pane 反查（注意力行没有 tab）。tmux window 0
     /// 是真实 tab，不能当哨兵跳过。`seq>0` 时把历史滚到命中行。
     func jumpToPane(tabId: UInt32?, paneId: UInt32, seq: UInt64 = 0, query: String = "") {
-        let resolvedTab = tabId ?? bridge.tabId(containingPane: paneId)
+        let resolvedTab = tabId ?? cachedTabID(containingPane: paneId)
         if let resolvedTab {
             requestSwitchTab(resolvedTab)
         }
@@ -1804,7 +2069,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         restoreTerminalFocusIfAllowed()
         if seq > 0 || !query.isEmpty {
             pendingSearchJump = PendingSearchJump(paneId: paneId, seq: seq, query: query)
-            applyPendingSearchJumpIfReady()
         }
     }
 
@@ -1815,6 +2079,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             overlay.removeFromSuperview()
             replyOverlayView = nil
             replyOverlayPaneId = nil
+            replyOverlayWorkspaceID = nil
             content.replyOverlayContainer.isHidden = true
             content.replyOverlayContainer.setAccessibilityValue("0")
             return
@@ -1837,6 +2102,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         ])
         replyOverlayView = overlay
         replyOverlayPaneId = targetPaneId
+        let workspaceID = activeSceneWorkspaceID
+        replyOverlayWorkspaceID = workspaceID
         content.replyOverlayContainer.isHidden = false
         // 手动布局（不依赖容器 Auto Layout，headless 下容器高度可能为 0）。
         window?.layoutIfNeeded()
@@ -1846,10 +2113,23 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         overlay.frame = content.replyOverlayContainer.bounds
         overlay.layoutSubtreeIfNeeded()
         _ = overlay.syncSizeToPty(notifyResize: false)
-        let raw = bridge.getPaneOutput(paneId: targetPaneId)
-        let data = PanePaintPolicy.lastScreen(raw, visibleRows: 24)
-        if !data.isEmpty {
-            overlay.feedOutput(data, isSnapshot: true)
+        _ = enqueuePaneOutput(
+            workspaceID: workspaceID,
+            paneID: targetPaneId
+        ) { [weak self, weak overlay] raw in
+            guard let self,
+                  let overlay,
+                  self.replyOverlayView === overlay,
+                  self.replyOverlayPaneId == targetPaneId,
+                  self.replyOverlayWorkspaceID == workspaceID,
+                  !self.content.replyOverlayContainer.isHidden
+            else {
+                return
+            }
+            let data = PanePaintPolicy.lastScreen(raw, visibleRows: 24)
+            if !data.isEmpty {
+                overlay.feedOutput(data, isSnapshot: true)
+            }
         }
         content.replyOverlayContainer.setAccessibilityValue("1")
     }
@@ -1862,6 +2142,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             return
         }
         terminalManager.scrollToLatest(paneId: pane)
+        viewportOffsets[pane] = 0
         content.setJumpLatestVisible(false, unseenLines: 0)
         needsLayoutReload = true
     }
@@ -1925,8 +2206,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func commandMarks(for paneId: UInt32) -> [CoreCommandMark] {
-        bridge.paneCommandMarks(paneId: paneId)
-            .filter { $0.exitCode != nil && $0.historyOffset != nil }
+        commandMarksCache[CommandMarksKey(
+            workspaceID: activeSceneWorkspaceID,
+            paneID: paneId
+        )] ?? []
     }
 
     private func jumpToCommandMark(_ mark: CoreCommandMark, paneId: UInt32) {
@@ -1951,6 +2234,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 把 core 的 viewport 滚动偏移应用到 SwiftTerm 可见区：
     /// offset>0 时喂滚动窗口 ANSI（历史），offset==0 时恢复 live 输出。
     func applyPaneViewport(paneId: UInt32, offset: UInt32) {
+        viewportOffsets[paneId] = offset
         terminalManager.applyViewport(paneId: paneId, offset: offset)
         content.setJumpLatestVisible(
             offset > 0,
@@ -1964,6 +2248,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         terminalManager.onViewportChanged = { [weak self] paneId, offset in
             guard let self else { return }
+            self.viewportOffsets[paneId] = offset
             // 用户滚轮/触控板改变视口时，下一次命令导航应从当前状态重新开始；
             // 程序化 command jump 只保留刚设置的游标一次。
             if self.commandNavigationPanes.remove(paneId) == nil {
@@ -1980,7 +2265,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             guard let self,
                   paneId == self.activePaneID
             else { return }
-            let offset = max(0, self.bridge.paneViewport(paneId: paneId))
+            let offset = self.viewportOffsets[paneId] ?? 0
             self.content.setJumpLatestVisible(offset > 0, unseenLines: count)
         }
     }
@@ -2362,6 +2647,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         content.setLastSeenVisible(false)
         commandTimelineCursor.removeAll()
         commandNavigationPanes.removeAll()
+        viewportOffsets.removeAll()
+        paneLatestLineSeqCache.removeAll()
+        paneViewportOffsetForSeqCache.removeAll()
         wireTerminalManagerCallbacks()
         let restoredParkedTree = content.paneLayout.replaceTerminalManager(slot.terminalManager)
         content.paneLayout.dropParked(
@@ -2455,7 +2743,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // at the next event-pump boundary.
         terminalManager.setBridgeQueriesEnabled(false)
         content.paneLayout.resumeGeometrySync()
-        focusActiveTerminal(allowBridgeQuery: false)
+        focusActiveTerminal()
         pendingActivationCoreWork = slot
         statusBarNeedsRefresh = true
         // 切连接后立即更新 SSH 状态 + 流量监控显示。
@@ -2516,14 +2804,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         focusActiveTerminal()
     }
 
-    private func focusActiveTerminal(allowBridgeQuery: Bool = true) {
-        let snap: FrameSnapshot
-        if !lastSnapshot.panes.isEmpty {
-            snap = lastSnapshot
-        } else {
-            guard allowBridgeQuery else { return }
-            snap = bridge.snapshot()
-        }
+    private func focusActiveTerminal() {
+        let snap = lastSnapshot
+        guard !snap.panes.isEmpty else { return }
         guard let activePane = snap.panes.first(where: \.isActive)?.id ?? snap.panes.first?.id else {
             return
         }
@@ -3378,6 +3661,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 else {
                     continue
                 }
+                candidate.enqueueCoreCommand = { [weak self] command in
+                    self?.enqueueCoreCommand(command) ?? false
+                }
                 if candidate === activeSlot {
                     activeEvents.append(contentsOf: workspaceEvents)
                 } else {
@@ -3430,6 +3716,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             retryPendingPanelJump()
             return
         }
+        if tabWarmupRequested {
+            tabWarmupRequested = false
+            warmNextBackgroundTab()
+        }
         terminalManager.beginEventBatch()
         defer { terminalManager.endEventBatch() }
         resolvePendingLastSeen()
@@ -3466,6 +3756,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             if ev.isPaneClosed {
                 // pane 真正关闭才销毁视图；切 tab / 布局变化保留视图状态。
                 terminalManager.removePane(ev.paneId)
+                commandMarksCache.removeValue(forKey: CommandMarksKey(
+                    workspaceID: activeSceneWorkspaceID,
+                    paneID: ev.paneId
+                ))
             } else if ev.isPaneSnapshot {
                 guard shouldHandleSurfaceEvent(paneId: ev.paneId) else {
                     continue
@@ -3554,7 +3848,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     ) {
                         recordLastSeen(for: departingPane)
                     }
-                    bridge.attentionOnBecameVisible(paneId: ev.paneId)
+                    _ = enqueueCoreAttention(
+                        workspaceID: activeSceneWorkspaceID,
+                        .becameVisible(paneID: ev.paneId),
+                        refreshPanel: false
+                    )
                     focusPaneTerminal(ev.paneId)
                 }
             } else if ev.isBackendStatus {
@@ -3565,9 +3863,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     if ev.name.hasPrefix("muxterm.pane-cmd") {
                         // pane-cmd 订阅 → AttentionEngine.set_process_name（Linux 同款）。
                         // pane @0 是合法 tmux pane，不能把 0 当作“无 pane”哨兵。
-                        _ = bridge.attentionSetProcessName(
-                            paneId: ev.paneId,
-                            name: value.isEmpty ? nil : value
+                        _ = enqueueCoreAttention(
+                            workspaceID: activeSceneWorkspaceID,
+                            .setProcessName(
+                                paneID: ev.paneId,
+                                name: value.isEmpty ? nil : value
+                            ),
+                            refreshPanel: false
                         )
                     } else {
                         content.statusBar.applySubscription(name: ev.name, value: value)
@@ -3680,8 +3982,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         retryPendingPanelJump()
         refreshAttentionChrome()
         if let activePane = activePaneID {
-            refreshHistoryChrome(for: activePane)
+            refreshHistoryChromeFromCore(for: activePane)
         }
+        applyPendingSearchJumpIfReady()
     }
 
     /// 激活后先处理当前 Workspace 的旧 Surface 队列，再 poll 新事件，保持
@@ -3777,7 +4080,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let activePane = lastSnapshot.panes.first(where: \.isActive)?.id
             ?? lastSnapshot.panes.first?.id
         if allowBridgeQueries, let activePane {
-            _ = bridge.attentionOnBecameVisible(paneId: activePane)
+            _ = enqueueCoreAttention(
+                workspaceID: activeSceneWorkspaceID,
+                .becameVisible(paneID: activePane),
+                refreshPanel: false
+            )
         }
         // Core 返回的是整个 WorkspacePool 的 attention 快照；EventPump 每拍
         // 把它按 WorkspaceId 分发给各 scene 的 ViewStore，隐藏 scene 也持续更新。
@@ -3904,6 +4211,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         content.statusBar.updateOutputSnippet(terminalManager.recentOutputSnippet)
         if let activePane = snap.panes.first(where: \.isActive)?.id ?? snap.panes.first?.id {
             let viewport = bridge.paneViewport(paneId: activePane)
+            viewportOffsets[activePane] = max(0, viewport)
             content.setJumpLatestVisible(
                 viewport > 0,
                 unseenLines: terminalManager.unseenLineCount(paneId: activePane)
@@ -3916,7 +4224,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             content.paneLayout.markActivePane(activePane)
             restoreTerminalFocusIfAllowed()
         }
-        applyPendingSearchJumpIfReady()
         scheduleTabTreeWarmup()
         cacheActiveSlotSnapshot(
             tabIdsByPane: snap.tabs.isEmpty ? nil : tabIdsByPane,
@@ -3957,12 +4264,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         ) { [weak self] in
             guard let self else { return }
             self.tabWarmupScheduled = false
-            guard TabWarmupPolicy.canStart(
-                activeSurfaceReady: self.activeSurfaceReadyForTabWarmup()
-            ) else {
-                return
-            }
-            self.warmNextBackgroundTab()
+            guard !self.isClosing else { return }
+            self.tabWarmupRequested = true
         }
     }
 
@@ -4023,7 +4326,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         commandPalette.refreshLocalization()
         unifiedPanel.refreshLocalization()
         content.refreshLocalization()
-        refreshUI()
+        needsLayoutReload = true
     }
 
     /// Mark a departing pane without querying Core from the tab click path.
@@ -4046,9 +4349,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             }
             return
         }
-        guard let seq = LastSeenNavigation.baselineSequence(
-            latest: latest ?? bridge.paneLatestLineSeq(paneId: paneId)
-        ) else {
+        let latest = latest ?? paneLatestLineSeqCache[PaneHistoryKey(
+            workspaceID: activeSceneWorkspaceID,
+            paneID: paneId
+        )] ?? -1
+        guard let seq = LastSeenNavigation.baselineSequence(latest: latest) else {
             pendingLastSeenPanes.insert(paneId)
             return
         }
@@ -4067,7 +4372,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private func resolvePendingLastSeen() {
         guard !pendingLastSeenPanes.isEmpty else { return }
         for paneId in Array(pendingLastSeenPanes) {
-            recordLastSeen(for: paneId)
+            let key = PaneHistoryKey(
+                workspaceID: activeSceneWorkspaceID,
+                paneID: paneId
+            )
+            let latest = bridge.paneLatestLineSeq(paneId: paneId)
+            paneLatestLineSeqCache[key] = latest
+            recordLastSeen(for: paneId, latest: latest)
         }
     }
 
@@ -4077,20 +4388,38 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     /// 测试用：last-seen 状态机的三个输入，便于 E2E 失败定位。
     func testLastSeenDiagnostics(paneId: UInt32) -> String {
-        let latest = bridge.paneLatestLineSeq(paneId: paneId)
+        let workspaceID = activeSceneWorkspaceID
+        let latest = paneLatestLineSeqCache[PaneHistoryKey(
+            workspaceID: workspaceID,
+            paneID: paneId
+        )] ?? -1
         let seen = lastSeenLineSeq[paneId]
         let rawOffset = seen
-            .map { bridge.paneViewportOffsetForSeq(paneId: paneId, seq: $0) }
+            .map { seq in
+                paneViewportOffsetForSeqCache[PaneHistoryOffsetKey(
+                    workspaceID: workspaceID,
+                    paneID: paneId,
+                    seq: seq
+                )] ?? -1
+            }
             ?? -1
         return "latest=\(latest) seen=\(seen.map(String.init) ?? "nil") rawOffset=\(rawOffset)"
     }
 
     private func refreshHistoryChrome(for paneId: UInt32) {
         guard paneId == activePaneID else { return }
-        let latest = bridge.paneLatestLineSeq(paneId: paneId)
+        let workspaceID = activeSceneWorkspaceID
+        let latest = paneLatestLineSeqCache[PaneHistoryKey(
+            workspaceID: workspaceID,
+            paneID: paneId
+        )] ?? -1
         let seen = lastSeenLineSeq[paneId]
         let rawOffset = seen.map {
-            bridge.paneViewportOffsetForSeq(paneId: paneId, seq: $0)
+            paneViewportOffsetForSeqCache[PaneHistoryOffsetKey(
+                workspaceID: workspaceID,
+                paneID: paneId,
+                seq: $0
+            )] ?? -1
         } ?? -1
         if let offset = LastSeenNavigation.targetOffset(
             latest: latest,
@@ -4127,20 +4456,48 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             setLastSeenVisible(false, paneId: paneId)
         }
 
+        let marks = commandMarksCache[CommandMarksKey(
+            workspaceID: workspaceID,
+            paneID: paneId
+        )] ?? []
         var ok: (command: String, exitCode: Int, offset: UInt32)?
         var fail: (command: String, exitCode: Int, offset: UInt32)?
-        for mark in bridge.paneCommandMarks(paneId: paneId).reversed() {
-                // Core 返回 nil history_offset 时表示 seq 已淘汰；绝不能
-                // 回退成 0，否则点击红/绿刻度会错误跳到 live 底部。
-                guard let code = mark.exitCode, let offset = mark.historyOffset else { continue }
-                if code == 0, ok == nil {
-                    ok = (mark.command, code, offset)
-                } else if code != 0, fail == nil {
-                    fail = (mark.command, code, offset)
-                }
-                if ok != nil, fail != nil { break }
+        for mark in marks.reversed() {
+            // Core 返回 nil history_offset 时表示 seq 已淘汰；绝不能
+            // 回退成 0，否则点击红/绿刻度会错误跳到 live 底部。
+            guard let code = mark.exitCode, let offset = mark.historyOffset else { continue }
+            if code == 0, ok == nil {
+                ok = (mark.command, code, offset)
+            } else if code != 0, fail == nil {
+                fail = (mark.command, code, offset)
+            }
+            if ok != nil, fail != nil { break }
         }
         content.setCommandMarks(ok: ok, fail: fail)
+    }
+
+    /// Refresh history/index values at the EventPump boundary, then render
+    /// from the owned caches so AppKit callbacks remain Core-free.
+    private func refreshHistoryChromeFromCore(for paneId: UInt32) {
+        guard paneId == activePaneID else { return }
+        let workspaceID = activeSceneWorkspaceID
+        let historyKey = PaneHistoryKey(workspaceID: workspaceID, paneID: paneId)
+        let latest = bridge.paneLatestLineSeq(paneId: paneId)
+        paneLatestLineSeqCache[historyKey] = latest
+        if let seen = lastSeenLineSeq[paneId] {
+            paneViewportOffsetForSeqCache[PaneHistoryOffsetKey(
+                workspaceID: workspaceID,
+                paneID: paneId,
+                seq: seen
+            )] = bridge.paneViewportOffsetForSeq(paneId: paneId, seq: seen)
+        }
+        let marks = bridge.paneCommandMarks(paneId: paneId)
+            .filter { $0.exitCode != nil && $0.historyOffset != nil }
+        commandMarksCache[CommandMarksKey(
+            workspaceID: workspaceID,
+            paneID: paneId
+        )] = marks
+        refreshHistoryChrome(for: paneId)
     }
 
     private func setLastSeenVisible(_ visible: Bool, paneId: UInt32) {
@@ -4167,12 +4524,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     /// 通过 Core SettingsService 事务写配置；失败只提示，不直接改文件。
     private func persistConfig(_ operations: [[String: Any]]) {
-        do {
-            let transaction = try bridge.configBegin()
-            try bridge.configPatch(transaction: transaction, operations: operations)
-            try bridge.configCommit(transaction: transaction)
-        } catch {
-            reportStatusError(MuxtermI18n.shared.tr(.errorCommandFailed))
+        _ = enqueueConfigTransaction(operations) { [weak self] result in
+            if case .failure = result {
+                self?.reportStatusError(MuxtermI18n.shared.tr(.errorCommandFailed))
+            }
         }
     }
 
@@ -4184,15 +4539,19 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// OSC 10/11 颜色查询时用的是自己的默认色板（codex 黑底黑字/白底白字）。
     private func reportPaneColoursIfNeeded(_ panes: [Pane]) {
         guard terminalManager.usesClientResize else { return }
-        let fresh = Set(panes.map(\.id)).subtracting(reportedColourPanes)
-        guard !fresh.isEmpty else { return }
         let osc = ColorContrast.oscColors(
             fg: MuxtermTerminalColors.activePalette.fg,
             bg: MuxtermTerminalColors.activePalette.bg
         )
-        for id in fresh {
-            if bridge.reportPaneColours(paneId: id, fgHex: osc.fg, bgHex: osc.bg) == 0 {
-                reportedColourPanes.insert(id)
+        let workspaceID = activeSceneWorkspaceID
+        for id in Set(panes.map(\.id)) {
+            let key = ColourPaneKey(workspaceID: workspaceID, paneID: id)
+            guard !reportedColourPanes.contains(key) else { continue }
+            if enqueueCoreColours(
+                workspaceID: workspaceID,
+                .pane(paneID: id, fgHex: osc.fg, bgHex: osc.bg)
+            ) {
+                reportedColourPanes.insert(key)
             }
         }
     }

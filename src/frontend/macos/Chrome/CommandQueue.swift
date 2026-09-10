@@ -42,6 +42,10 @@ public enum QueuedMuxOperation: Equatable, Sendable {
     case attention(QueuedMuxAttention)
     case viewport(paneID: UInt32, offset: UInt32)
     case closeWorkspace
+    case colours(QueuedMuxColours)
+    case config(QueuedMuxConfig)
+    case search(QueuedMuxSearch)
+    case paneOutput(QueuedMuxPaneOutput)
 
     private var coalescingKey: CoalescingKey? {
         switch self {
@@ -51,7 +55,23 @@ public enum QueuedMuxOperation: Equatable, Sendable {
             return .resize(resize.coalescingKey)
         case .viewport(let paneID, _):
             return .viewport(paneID)
-        case .task, .input, .attention, .closeWorkspace:
+        case .colours(let colours):
+            switch colours {
+            case .pane(let paneID, _, _):
+                return .coloursPane(paneID)
+            case .all:
+                return .coloursAll
+            }
+        case .attention(let attention):
+            switch attention {
+            case .becameVisible(let paneID):
+                return .attentionVisible(paneID)
+            case .setProcessName(let paneID, _):
+                return .attentionProcessName(paneID)
+            case .acknowledge, .mute:
+                return nil
+            }
+        case .task, .input, .closeWorkspace, .config, .search, .paneOutput:
             return nil
         }
     }
@@ -65,6 +85,10 @@ public enum QueuedMuxOperation: Equatable, Sendable {
         case switchTab
         case resize(QueuedMuxResize.CoalescingKey)
         case viewport(UInt32)
+        case coloursPane(UInt32)
+        case coloursAll
+        case attentionVisible(UInt32)
+        case attentionProcessName(UInt32)
     }
 }
 
@@ -97,8 +121,52 @@ public enum QueuedMuxResize: Equatable, Sendable {
 /// Attention mutations are routed through the same serialized boundary as
 /// terminal tasks so a scene switch cannot retarget an acknowledgement.
 public enum QueuedMuxAttention: Equatable, Sendable {
+    case becameVisible(paneID: UInt32)
+    case setProcessName(paneID: UInt32, name: String?)
     case acknowledge(paneID: UInt32)
     case mute(paneID: UInt32, seconds: UInt64)
+}
+
+/// Terminal colour reports are scoped to a workspace so a delayed event-pump
+/// flush cannot update a pane with the same numeric ID in another scene.
+public enum QueuedMuxColours: Equatable, Sendable {
+    case pane(paneID: UInt32, fgHex: String, bgHex: String)
+    case all(fgHex: String, bgHex: String)
+}
+
+/// A Core configuration transaction waiting for the event-pump boundary.
+/// JSON keeps the Chrome queue independent from the CoreBridge C/Swift model.
+public struct QueuedMuxConfig: Equatable, Sendable {
+    public let operationsJSON: String
+    public let requestID: UInt64?
+
+    public init(operationsJSON: String, requestID: UInt64? = nil) {
+        self.operationsJSON = operationsJSON
+        self.requestID = requestID
+    }
+}
+
+/// A Core index search waiting for the event-pump boundary.
+public struct QueuedMuxSearch: Equatable, Sendable {
+    public let query: String
+    public let requestID: UInt64
+
+    public init(query: String, requestID: UInt64) {
+        self.query = query
+        self.requestID = requestID
+    }
+}
+
+/// A pane-output snapshot waiting for the main-thread event-pump boundary.
+/// The request identity lets a late read be discarded when its overlay closes.
+public struct QueuedMuxPaneOutput: Equatable, Sendable {
+    public let paneID: UInt32
+    public let requestID: UInt64
+
+    public init(paneID: UInt32, requestID: UInt64) {
+        self.paneID = paneID
+        self.requestID = requestID
+    }
 }
 
 /// One UI-to-Core operation waiting for the next main-thread event-pump flush.
@@ -185,6 +253,64 @@ public struct QueuedMuxCommand: Equatable, Sendable {
         QueuedMuxCommand(
             workspaceID: workspaceID,
             operation: .closeWorkspace,
+            failureMessage: failureMessage
+        )
+    }
+
+    public static func colours(
+        workspaceID: String?,
+        _ colours: QueuedMuxColours,
+        failureMessage: String = ""
+    ) -> QueuedMuxCommand {
+        QueuedMuxCommand(
+            workspaceID: workspaceID,
+            operation: .colours(colours),
+            failureMessage: failureMessage
+        )
+    }
+
+    public static func config(
+        operationsJSON: String,
+        requestID: UInt64? = nil,
+        failureMessage: String = ""
+    ) -> QueuedMuxCommand {
+        QueuedMuxCommand(
+            workspaceID: nil,
+            operation: .config(QueuedMuxConfig(
+                operationsJSON: operationsJSON,
+                requestID: requestID
+            )),
+            failureMessage: failureMessage
+        )
+    }
+
+    public static func search(
+        query: String,
+        requestID: UInt64,
+        failureMessage: String = ""
+    ) -> QueuedMuxCommand {
+        QueuedMuxCommand(
+            workspaceID: nil,
+            operation: .search(QueuedMuxSearch(
+                query: query,
+                requestID: requestID
+            )),
+            failureMessage: failureMessage
+        )
+    }
+
+    public static func paneOutput(
+        workspaceID: String?,
+        paneID: UInt32,
+        requestID: UInt64,
+        failureMessage: String = ""
+    ) -> QueuedMuxCommand {
+        QueuedMuxCommand(
+            workspaceID: workspaceID,
+            operation: .paneOutput(QueuedMuxPaneOutput(
+                paneID: paneID,
+                requestID: requestID
+            )),
             failureMessage: failureMessage
         )
     }
