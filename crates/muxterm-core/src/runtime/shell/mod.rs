@@ -35,10 +35,8 @@ use crate::protocol::state::{BackendStatus, PaneInfo, State, StateChange, TabInf
 use crate::protocol::task::{Task, TaskOutcome};
 use crate::protocol::terminal::input::encode;
 use crate::runtime::{RenderEvent, Runtime, RuntimeBatch, RuntimeCapability};
-use crate::transport::ssh::{build_ssh_command, SshProcessTransport};
 use crate::transport::{
-    ByteChannel, ChannelRequest, ProcessTransport, PtySize as TransportPtySize, TargetConnection,
-    TransportSignal,
+    ByteChannel, ChannelRequest, Connect, PtySize as TransportPtySize, TargetConnection,
 };
 use muxterm_protocol::{PaneId, TabId};
 
@@ -69,9 +67,6 @@ enum PaneProcess {
     Local {
         master: Box<dyn portable_pty::MasterPty + Send>,
         child: Box<dyn portable_pty::Child + Send + Sync>,
-    },
-    Ssh {
-        transport: SshProcessTransport,
     },
     Channel {
         channel: Arc<Mutex<Box<dyn ByteChannel>>>,
@@ -170,10 +165,7 @@ impl ShellRuntime {
         default_workdir: impl Into<String>,
     ) -> Self {
         let alias = alias.into();
-        let mut runtime = Self::new(default_command, default_workdir);
-        runtime.workspace_name = alias.clone();
-        runtime.ssh_alias = Some(alias);
-        runtime
+        Self::new_with_connection(Connect::new("ssh", alias), default_command, default_workdir)
     }
 
     /// Create a Runtime whose panes are opened through a reusable target connection.
@@ -207,33 +199,6 @@ impl ShellRuntime {
     fn drain_pty_output(&mut self) {
         let mut outputs = Vec::new();
         let mut exits = Vec::new();
-
-        // SSH transport 自带后台 reader；在 Runtime refresh 时非阻塞 drain。
-        for pane in &mut self.panes {
-            let PaneProcess::Ssh { transport } = &mut pane.process else {
-                continue;
-            };
-            loop {
-                match transport.read() {
-                    Ok(Some(data)) => outputs.push((pane.info.id, data)),
-                    Ok(None) => break,
-                    Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
-                        exits.push(pane.info.id);
-                        break;
-                    }
-                    Err(error) => {
-                        tracing::warn!(
-                            target = "muxterm::shell",
-                            pane = pane.info.id.0,
-                            %error,
-                            "ssh shell read failed"
-                        );
-                        exits.push(pane.info.id);
-                        break;
-                    }
-                }
-            }
-        }
 
         if let Some(rx) = self.pty_rx.as_mut() {
             while let Ok(msg) = rx.try_recv() {
@@ -445,19 +410,8 @@ impl ShellRuntime {
             return self.spawn_channel_pane(connection, tab, &argv, &workdir, cols, rows, active);
         }
 
-        if let Some(alias) = self.ssh_alias.clone() {
-            let use_remote_default_shell =
-                command.is_none() && self.default_command.trim() == "$SHELL";
-            return self.spawn_ssh_pane(
-                &alias,
-                tab,
-                &argv,
-                &workdir,
-                use_remote_default_shell,
-                cols,
-                rows,
-                active,
-            );
+        if let Some(alias) = &self.ssh_alias {
+            anyhow::bail!("SSH shell runtime has no target connection for alias {alias}");
         }
 
         let pty_system = NativePtySystem::default();
@@ -625,67 +579,6 @@ impl ShellRuntime {
         Ok(pane_id)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn spawn_ssh_pane(
-        &mut self,
-        alias: &str,
-        tab: TabId,
-        argv: &[String],
-        workdir: &str,
-        use_remote_default_shell: bool,
-        cols: u16,
-        rows: u16,
-        active: bool,
-    ) -> Result<PaneId> {
-        let exec = if use_remote_default_shell {
-            "exec \"${SHELL:-/bin/sh}\"".to_string()
-        } else {
-            let quoted = argv
-                .iter()
-                .map(|arg| crate::discovery::shell_quote(arg))
-                .collect::<Vec<_>>()
-                .join(" ");
-            format!("exec {quoted}")
-        };
-        let remote_command = if workdir.is_empty() {
-            exec
-        } else {
-            format!("cd {} && {exec}", crate::discovery::shell_quote(workdir))
-        };
-        let ssh_config = std::env::var("MUXTERM_SSH_CONFIG_PATH").ok();
-        let (program, args) = build_ssh_command(alias, &remote_command, ssh_config.as_deref());
-        let arg_refs = args.iter().map(String::as_str).collect::<Vec<_>>();
-        let mut transport = SshProcessTransport::new();
-        transport
-            .spawn_exec(&program, &arg_refs, TransportPtySize::new(cols, rows))
-            .with_context(|| format!("spawn SSH shell 失败（alias={alias}）"))?;
-        let writer = transport
-            .take_pty_writer()
-            .with_context(|| format!("获取 SSH shell writer 失败（alias={alias}）"))?;
-
-        let pane_id = self.alloc_pane_id();
-        let title = if use_remote_default_shell {
-            "shell".to_string()
-        } else {
-            program_basename(&argv[0])
-        };
-        self.panes.push(LocalPane {
-            info: PaneInfo {
-                id: pane_id,
-                tab,
-                active,
-                title,
-                cols,
-                rows,
-            },
-            process: PaneProcess::Ssh { transport },
-            output: Vec::new(),
-            writer: Some(Arc::new(Mutex::new(writer))),
-            pid: 0,
-        });
-        Ok(pane_id)
-    }
-
     /// 新建一个 tab（含第一个 pane）。返回 tab id + pane id。
     fn new_tab_internal(
         &mut self,
@@ -752,9 +645,6 @@ impl ShellRuntime {
             PaneProcess::Local { child, .. } => {
                 let _ = child.kill();
             }
-            PaneProcess::Ssh { transport } => {
-                let _ = transport.kill(TransportSignal::Hangup);
-            }
             PaneProcess::Channel { channel } => {
                 if let Ok(mut channel) = channel.lock() {
                     let _ = channel.shutdown();
@@ -817,7 +707,6 @@ impl ShellRuntime {
                     pixel_height: 0,
                 })
                 .is_ok(),
-            PaneProcess::Ssh { transport } => transport.resize(cols, rows).is_ok(),
             PaneProcess::Channel { channel } => channel
                 .lock()
                 .map(|mut channel| channel.resize(cols, rows).is_ok())
@@ -1392,6 +1281,14 @@ mod tests {
             Some(PaneProcess::Channel { .. })
         ));
         b.shutdown().await.unwrap();
+    }
+
+    #[test]
+    fn ssh_constructor_uses_a_target_connection() {
+        let runtime = ShellRuntime::new_ssh("dev", "$SHELL", "/srv/project");
+
+        assert_eq!(runtime.test_ssh_alias(), Some("dev"));
+        assert!(runtime.target_connection.is_some());
     }
 
     #[tokio::test]
