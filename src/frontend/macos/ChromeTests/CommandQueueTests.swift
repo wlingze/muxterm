@@ -160,4 +160,30 @@ final class MacCommandQueueTests: XCTestCase {
         XCTAssertEqual(queue.count, 3)
         XCTAssertEqual(queue.drain().map(\.failureMessage), ["first", "input", "second"])
     }
+
+    func testAttentionMutationsRemainWorkspaceAwareAndOrdered() {
+        var queue = MacCommandQueue()
+        queue.enqueue(.attention(
+            workspaceID: "one",
+            .acknowledge(paneID: 3),
+            failureMessage: "acknowledge failed"
+        ))
+        queue.enqueue(.attention(
+            workspaceID: "two",
+            .mute(paneID: 4, seconds: 30),
+            failureMessage: "mute failed"
+        ))
+
+        XCTAssertEqual(queue.count, 2)
+        let commands = queue.drain()
+        XCTAssertEqual(commands.map { $0.workspaceID ?? "" }, ["one", "two"])
+        guard case .attention(.acknowledge(let firstPaneID)) = commands[0].operation,
+              case .attention(.mute(let secondPaneID, let seconds)) = commands[1].operation
+        else {
+            return XCTFail("expected ordered attention operations")
+        }
+        XCTAssertEqual(firstPaneID, 3)
+        XCTAssertEqual(secondPaneID, 4)
+        XCTAssertEqual(seconds, 30)
+    }
 }

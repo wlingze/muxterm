@@ -39,6 +39,7 @@ public enum QueuedMuxOperation: Equatable, Sendable {
     case task(QueuedMuxTask)
     case input(paneID: UInt32, data: Data, quiet: Bool)
     case resize(QueuedMuxResize)
+    case attention(QueuedMuxAttention)
 
     private var coalescingKey: CoalescingKey? {
         switch self {
@@ -46,7 +47,7 @@ public enum QueuedMuxOperation: Equatable, Sendable {
             return .switchTab
         case .resize(let resize):
             return .resize(resize.coalescingKey)
-        case .task, .input:
+        case .task, .input, .attention:
             return nil
         }
     }
@@ -86,6 +87,13 @@ public enum QueuedMuxResize: Equatable, Sendable {
         case paneAxis(UInt32, horizontal: Bool)
         case client
     }
+}
+
+/// Attention mutations are routed through the same serialized boundary as
+/// terminal tasks so a scene switch cannot retarget an acknowledgement.
+public enum QueuedMuxAttention: Equatable, Sendable {
+    case acknowledge(paneID: UInt32)
+    case mute(paneID: UInt32, seconds: UInt64)
 }
 
 /// One UI-to-Core operation waiting for the next main-thread event-pump flush.
@@ -136,6 +144,18 @@ public struct QueuedMuxCommand: Equatable, Sendable {
         QueuedMuxCommand(
             workspaceID: workspaceID,
             operation: .resize(resize),
+            failureMessage: failureMessage
+        )
+    }
+
+    public static func attention(
+        workspaceID: String?,
+        _ attention: QueuedMuxAttention,
+        failureMessage: String
+    ) -> QueuedMuxCommand {
+        QueuedMuxCommand(
+            workspaceID: workspaceID,
+            operation: .attention(attention),
             failureMessage: failureMessage
         )
     }

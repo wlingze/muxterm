@@ -123,6 +123,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// them to Core.  The queue stores the workspace identity so a fast scene
     /// switch cannot retarget a command that was already clicked.
     private var commandQueue = MacCommandQueue()
+    /// Attention mutations update the panel after the queued Core command has
+    /// crossed the event-pump boundary, rather than refreshing stale data from
+    /// the click handler.
+    private var attentionPanelRefreshPending = false
     /// A shared Core handle is temporarily owned by a catalog open operation;
     /// the main-thread event pump pauses until the owned result is installed.
     private var sharedCoreOperationInFlight = false
@@ -282,7 +286,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             guard let self, self.activateWorkspaceIfAvailable(workspaceId) else { return }
             self.performWhenForegroundReady { [weak self] in
                 guard let self else { return }
-                _ = self.bridge.attentionAcknowledge(paneId: paneId)
+                _ = self.enqueueCoreAttention(
+                    workspaceID: self.activeSceneWorkspaceID,
+                    .acknowledge(paneID: paneId)
+                )
                 self.jumpToPane(tabId: tabId, paneId: paneId)
             }
         }
@@ -290,7 +297,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             guard let self, self.activateWorkspaceIfAvailable(workspaceId) else { return }
             self.performWhenForegroundReady { [weak self] in
                 guard let self else { return }
-                _ = self.bridge.attentionAcknowledge(paneId: paneId)
+                _ = self.enqueueCoreAttention(
+                    workspaceID: self.activeSceneWorkspaceID,
+                    .acknowledge(paneID: paneId)
+                )
                 self.jumpToPane(tabId: tabId, paneId: paneId)
             }
         }
@@ -1145,6 +1155,22 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         ))
     }
 
+    @discardableResult
+    private func enqueueCoreAttention(
+        workspaceID: String?,
+        _ attention: QueuedMuxAttention
+    ) -> Bool {
+        let queued = enqueueCoreCommand(.attention(
+            workspaceID: workspaceID,
+            attention,
+            failureMessage: MuxtermI18n.shared.tr(.errorCommandFailed)
+        ))
+        if queued {
+            attentionPanelRefreshPending = true
+        }
+        return queued
+    }
+
     /// Dispatch queued commands at the same serialized boundary that drains
     /// workspace events.  Explicit workspace dispatch keeps a queued command
     /// attached to its originating scene after a subsequent scene switch.
@@ -1226,10 +1252,39 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                         result = bridge.resizeClient(cols: cols, rows: rows)
                     }
                 }
+            case .attention(let attention):
+                switch attention {
+                case .acknowledge(let paneID):
+                    if let workspaceID = command.workspaceID {
+                        result = bridge.attentionAcknowledge(
+                            workspaceID: workspaceID,
+                            paneId: paneID
+                        )
+                    } else {
+                        result = bridge.attentionAcknowledge(paneId: paneID)
+                    }
+                case .mute(let paneID, let seconds):
+                    if let workspaceID = command.workspaceID {
+                        result = bridge.attentionMute(
+                            workspaceID: workspaceID,
+                            paneId: paneID,
+                            seconds: seconds
+                        )
+                    } else {
+                        result = bridge.attentionMute(
+                            paneId: paneID,
+                            seconds: seconds
+                        )
+                    }
+                }
             }
             if result != 0 {
                 reportStatusError(command.failureMessage)
             }
+        }
+        if attentionPanelRefreshPending {
+            attentionPanelRefreshPending = false
+            unifiedPanel.refreshData()
         }
     }
 
@@ -1659,11 +1714,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 self.workspaceReplicaID(for: $0) == workspaceId
                     || QuickConnect.uniqueID(for: $0.targetConfig) == workspaceId
             }), let sceneWorkspaceID = scene.workspaceID else { return }
-            _ = self.bridge.attentionAcknowledge(
+            _ = self.enqueueCoreAttention(
                 workspaceID: sceneWorkspaceID,
-                paneId: paneId
+                .acknowledge(paneID: paneId)
             )
-            self.unifiedPanel.refreshData()
         }
     }
 
@@ -1678,10 +1732,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 self.workspaceReplicaID(for: $0) == workspaceId
                     || QuickConnect.uniqueID(for: $0.targetConfig) == workspaceId
             }), let sceneWorkspaceID = scene.workspaceID else { return }
-            _ = self.bridge.attentionMute(
+            _ = self.enqueueCoreAttention(
                 workspaceID: sceneWorkspaceID,
-                paneId: paneId,
-                seconds: seconds
+                .mute(paneID: paneId, seconds: seconds)
             )
         }
     }
