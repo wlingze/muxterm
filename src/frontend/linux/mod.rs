@@ -26,7 +26,6 @@ pub mod scene_stack;
 pub mod scroll_policy;
 pub mod scrollback_view;
 pub mod status_bar;
-pub mod tab_bar;
 pub mod target_config_window;
 pub mod theme;
 pub mod tmux_dialog;
