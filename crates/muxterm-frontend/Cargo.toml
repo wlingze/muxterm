@@ -6,6 +6,12 @@ publish = false
 
 [features]
 default = []
+gtk = [
+    "dep:gtk4",
+    "dep:vte4",
+    "dep:vte",
+    "dep:yeslogic-fontconfig-sys",
+]
 tui = ["dep:crossterm", "dep:ratatui", "dep:vte"]
 
 [dependencies]
@@ -19,7 +25,13 @@ tracing = "0.1"
 
 crossterm = { version = "0.28", optional = true }
 ratatui = { version = "0.29", optional = true }
+regex = "1"
 vte = { version = "0.13", default-features = false, features = ["ansi"], optional = true }
+gtk4 = { version = "0.9", optional = true }
+vte4 = { version = "0.8", optional = true, features = ["v0_76"] }
 
 [target."cfg(unix)".dependencies]
 libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+yeslogic-fontconfig-sys = { version = "6", optional = true }
