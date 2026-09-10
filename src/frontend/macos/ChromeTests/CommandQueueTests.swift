@@ -186,4 +186,35 @@ final class MacCommandQueueTests: XCTestCase {
         XCTAssertEqual(secondPaneID, 4)
         XCTAssertEqual(seconds, 30)
     }
+
+    func testConsecutiveViewportChangesForOneWorkspaceAndPaneKeepLastOffset() {
+        var queue = MacCommandQueue()
+        queue.enqueue(.viewport(
+            workspaceID: "one",
+            paneID: 3,
+            offset: 12
+        ))
+        queue.enqueue(.viewport(
+            workspaceID: "one",
+            paneID: 3,
+            offset: 4
+        ))
+
+        XCTAssertEqual(queue.count, 1)
+        guard case .viewport(let paneID, let offset) = queue.drain()[0].operation else {
+            return XCTFail("expected a viewport operation")
+        }
+        XCTAssertEqual(paneID, 3)
+        XCTAssertEqual(offset, 4)
+    }
+
+    func testViewportChangesAcrossPanesRemainOrdered() {
+        var queue = MacCommandQueue()
+        queue.enqueue(.viewport(workspaceID: "one", paneID: 3, offset: 12))
+        queue.enqueue(.viewport(workspaceID: "one", paneID: 4, offset: 8))
+        queue.enqueue(.viewport(workspaceID: "two", paneID: 3, offset: 2))
+
+        XCTAssertEqual(queue.count, 3)
+        XCTAssertEqual(queue.drain().map { $0.workspaceID ?? "" }, ["one", "one", "two"])
+    }
 }

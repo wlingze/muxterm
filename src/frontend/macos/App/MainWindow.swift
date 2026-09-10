@@ -1252,6 +1252,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                         result = bridge.resizeClient(cols: cols, rows: rows)
                     }
                 }
+            case .viewport(let paneID, let offset):
+                if let workspaceID = command.workspaceID {
+                    result = bridge.setPaneViewport(
+                        workspaceID: workspaceID,
+                        paneId: paneID,
+                        offset: offset
+                    )
+                } else {
+                    result = bridge.setPaneViewport(paneId: paneID, offset: offset)
+                }
             case .attention(let attention):
                 switch attention {
                 case .acknowledge(let paneID):
@@ -1278,7 +1288,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     }
                 }
             }
-            if result != 0 {
+            if result != 0, !command.failureMessage.isEmpty {
                 reportStatusError(command.failureMessage)
             }
         }
@@ -3980,7 +3990,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             let offset = max(0, bridge.paneViewportOffsetForSeq(paneId: jump.paneId, seq: jump.seq))
             if offset > 0 {
                 let uoff = UInt32(offset)
-                _ = bridge.setPaneViewport(paneId: jump.paneId, offset: uoff)
                 applyPaneViewport(paneId: jump.paneId, offset: uoff)
                 content.setJumpLatestVisible(true)
             }

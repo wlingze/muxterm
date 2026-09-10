@@ -201,15 +201,13 @@ final class TerminalManager: TerminalInputHandler {
     }
 
     private func setPaneViewport(paneId: UInt32, offset: UInt32) -> Int32 {
-        guard let bridge else { return -1 }
-        if let workspaceID {
-            return bridge.setPaneViewport(
-                workspaceID: workspaceID,
-                paneId: paneId,
-                offset: offset
-            )
-        }
-        return bridge.setPaneViewport(paneId: paneId, offset: offset)
+        guard let enqueueCoreCommand else { return -1 }
+        let command = QueuedMuxCommand.viewport(
+            workspaceID: workspaceID,
+            paneID: paneId,
+            offset: offset
+        )
+        return enqueueCoreCommand(command) ? 0 : -1
     }
 
     private func paneHistoryMaxOffset(paneId: UInt32, rows: UInt32) -> Int32 {
