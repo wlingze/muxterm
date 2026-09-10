@@ -124,9 +124,11 @@ fn build_items_with_recent_limit(
         .map(|mut entry| {
             let is_current = current_id
                 .as_ref()
-                .is_some_and(|id| QuickConnect::unique_id(&entry.config) == *id);
+                .is_some_and(|id| QuickConnect::unique_id(&entry.draft) == *id);
             if !entry.badges.contains(&QuickBadge::Recent) {
-                entry.project_id = store.project_id_for(&entry.config);
+                if let Some(project_id) = store.project_id_for(&entry.draft) {
+                    entry = entry.with_project_id(project_id);
+                }
             }
             PanelItem::Target(entry, is_current)
         })
@@ -205,7 +207,7 @@ pub fn root_items_with_existing_and_search(
     let mut seen: HashSet<String> = items
         .iter()
         .filter_map(|item| match item {
-            PanelItem::Target(entry, _) => Some(QuickConnect::unique_id(&entry.config)),
+            PanelItem::Target(entry, _) => Some(QuickConnect::unique_id(&entry.draft)),
             _ => None,
         })
         .collect();
@@ -213,7 +215,7 @@ pub fn root_items_with_existing_and_search(
         let PanelItem::Target(entry, _) = item else {
             continue;
         };
-        if seen.insert(QuickConnect::unique_id(&entry.config)) {
+        if seen.insert(QuickConnect::unique_id(&entry.draft)) {
             items.push(item.clone());
         }
     }
@@ -316,7 +318,7 @@ pub(crate) fn filter_panel_items(items: &[PanelItem], query: &str) -> Vec<PanelI
         .enumerate()
         .filter_map(|(index, item)| {
             let score = match item {
-                PanelItem::Target(entry, _) => parsed.score(&entry.config),
+                PanelItem::Target(entry, _) => parsed.score(&entry.draft),
                 PanelItem::NewProject => {
                     let label = format!(
                         "new project {}",

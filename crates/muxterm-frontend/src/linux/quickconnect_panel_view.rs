@@ -88,7 +88,7 @@ pub(super) fn target_row(
         .spacing(6)
         .build();
     // SSH 可达性灯（W15d）：与 host picker 共用 ssh_dot_widget_name / ssh_dot_css_class。
-    if let (Some(reach), TargetTransport::Ssh { name }) = (reach, &entry.config.transport) {
+    if let (Some(reach), TargetTransport::Ssh { name }) = (reach, &entry.draft.transport) {
         let dot = Label::new(Some("●"));
         dot.set_widget_name(&ssh_dot_widget_name(name));
         dot.add_css_class(ssh_dot_css_class(reach));
@@ -99,7 +99,7 @@ pub(super) fn target_row(
         }));
         title_row.append(&dot);
     }
-    let name = Label::new(Some(&entry.config.name));
+    let name = Label::new(Some(&entry.draft.name));
     name.set_halign(Align::Start);
     name.add_css_class("qc-name");
     title_row.append(&name);
@@ -118,11 +118,11 @@ pub(super) fn target_row(
         cur.add_css_class("qc-badge-current");
         title_row.append(&cur);
     }
-    let subtitle = QuickConnect::subtitle(&entry.config);
-    let detail = if entry.config.path.trim().is_empty() {
+    let subtitle = QuickConnect::subtitle(&entry.draft);
+    let detail = if entry.draft.path.trim().is_empty() {
         subtitle
     } else {
-        format!("{subtitle} · {}", entry.config.path)
+        format!("{subtitle} · {}", entry.draft.path)
     };
     let sub = Label::new(Some(&detail));
     sub.set_halign(Align::Start);

@@ -513,7 +513,7 @@ pub(super) fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                 PanelTab::Workspaces => {
                     let rows = filter_workspace_rows(&all, &query, |item| {
                         let id = match item {
-                            PanelItem::Target(entry, _) => QuickConnect::unique_id(&entry.config),
+                            PanelItem::Target(entry, _) => QuickConnect::unique_id(&entry.draft),
                             _ => return None,
                         };
                         workspace_status.get(&id).copied()
@@ -524,11 +524,11 @@ pub(super) fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                         actions.push(visible_action_for_item(&row.item, &existing.borrow().nav));
                         match &row.item {
                             PanelItem::Target(entry, is_current) => {
-                                row_widget.set_widget_name(&QuickConnect::unique_id(&entry.config));
+                                row_widget.set_widget_name(&QuickConnect::unique_id(&entry.draft));
                                 if *is_current {
                                     row_widget.add_css_class("qc-current");
                                 }
-                                let reach = match &entry.config.transport {
+                                let reach = match &entry.draft.transport {
                                     TargetTransport::Ssh { name } => ssh_reach.get(name).copied(),
                                     TargetTransport::Local => None,
                                 };
@@ -543,7 +543,7 @@ pub(super) fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
                                     boxed.prepend(&mark);
                                 }
                                 row_widget.set_child(Some(&boxed));
-                                let cfg = entry.config.clone();
+                                let cfg = entry.draft.clone();
                                 let on_edit = {
                                     let callbacks = callbacks.clone();
                                     let cfg = cfg.clone();

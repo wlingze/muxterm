@@ -6,7 +6,9 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::ffi_client::{ClientCandidateRef, ClientOpenIntent, ClientOpenRequest};
+use crate::ffi_client::{
+    ClientCandidate, ClientCandidateKind, ClientCandidateRef, ClientOpenIntent, ClientOpenRequest,
+};
 
 /// Runtime selected by a QuickConnect target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -572,39 +574,54 @@ impl QuickBadge {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuickConnectEntry {
-    pub config: TargetConfigDraft,
+    pub candidate: Box<ClientCandidate>,
+    pub draft: TargetConfigDraft,
     pub badges: Vec<QuickBadge>,
-    pub project_id: Option<String>,
 }
 
 impl QuickConnectEntry {
-    pub fn new(config: TargetConfigDraft, badges: Vec<QuickBadge>) -> Self {
+    pub fn new(draft: TargetConfigDraft, badges: Vec<QuickBadge>) -> Self {
+        let candidate = ClientCandidate {
+            kind: ClientCandidateKind::Recent,
+            title: draft.name.clone(),
+            subtitle: QuickConnect::subtitle(&draft),
+            badges: badges
+                .iter()
+                .map(|badge| badge.label().to_ascii_lowercase())
+                .collect(),
+            in_pool: None,
+            reference: ClientCandidateRef::Recent {
+                key: QuickConnect::unique_id(&draft),
+            },
+        };
         Self {
-            config,
+            candidate: Box::new(candidate),
+            draft,
             badges,
-            project_id: None,
         }
     }
 
     pub fn with_project_id(mut self, project_id: impl Into<String>) -> Self {
-        self.project_id = Some(project_id.into());
+        self.candidate.kind = ClientCandidateKind::Project;
+        self.candidate.reference = ClientCandidateRef::Project {
+            project_id: project_id.into(),
+        };
         self
     }
 
-    pub fn candidate_ref(&self) -> ClientCandidateRef {
-        if let Some(project_id) = &self.project_id {
-            ClientCandidateRef::Project {
-                project_id: project_id.clone(),
-            }
-        } else {
-            ClientCandidateRef::Recent {
-                key: QuickConnect::unique_id(&self.config),
-            }
+    pub fn project_id(&self) -> Option<&str> {
+        match &self.candidate.reference {
+            ClientCandidateRef::Project { project_id } => Some(project_id),
+            _ => None,
         }
     }
 
+    pub fn candidate_ref(&self) -> ClientCandidateRef {
+        self.candidate.reference.clone()
+    }
+
     pub fn open_request(&self) -> ClientOpenRequest {
-        let intent = if self.project_id.is_some() {
+        let intent = if self.project_id().is_some() {
             ClientOpenIntent::CreateIfMissing
         } else {
             ClientOpenIntent::AttachOnly

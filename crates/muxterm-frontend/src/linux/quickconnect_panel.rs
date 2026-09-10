@@ -102,11 +102,11 @@ mod tests {
         assert_eq!(items.len(), 3);
         assert!(matches!(
             &items[0],
-            PanelItem::Target(entry, true) if entry.config == recent
+            PanelItem::Target(entry, true) if entry.draft == recent
         ));
         assert!(matches!(
             &items[1],
-            PanelItem::Target(entry, false) if entry.config == project
+            PanelItem::Target(entry, false) if entry.draft == project
         ));
         assert!(matches!(items[2], PanelItem::NewProject));
     }
@@ -119,7 +119,7 @@ mod tests {
         store.upsert_project(&dup);
         let items = build_items(&store, None);
         assert_eq!(items.len(), 2, "重复目标只出现一次 + New Project");
-        assert!(matches!(&items[0], PanelItem::Target(entry, false) if entry.config == dup));
+        assert!(matches!(&items[0], PanelItem::Target(entry, false) if entry.draft == dup));
         assert!(matches!(items[1], PanelItem::NewProject));
     }
 
@@ -133,14 +133,14 @@ mod tests {
         assert!(matches!(
             &items[0],
             PanelItem::Target(entry, false)
-                if entry.project_id.as_deref() == Some("project@local")
+                if entry.project_id() == Some("project@local")
         ));
 
         store.record_recent(&project);
         let items = build_items(&store, None);
         assert!(matches!(
             &items[0],
-            PanelItem::Target(entry, false) if entry.project_id.is_none()
+            PanelItem::Target(entry, false) if entry.project_id().is_none()
         ));
     }
 
@@ -235,7 +235,7 @@ mod tests {
         let root = root_items_with_existing_and_search(&base, &search_base, &existing, "recent-5");
         let rows = filter_panel_items(&root, "recent-5");
         assert_eq!(rows.len(), 1);
-        assert!(matches!(&rows[0], PanelItem::Target(entry, _) if entry.config.name == "recent-5"));
+        assert!(matches!(&rows[0], PanelItem::Target(entry, _) if entry.draft.name == "recent-5"));
     }
 
     #[test]
@@ -532,7 +532,7 @@ mod tests {
         );
         assert!(
             hit.iter().any(
-                |item| matches!(item, PanelItem::Target(entry, _) if entry.config.name == "muxterm")
+                |item| matches!(item, PanelItem::Target(entry, _) if entry.draft.name == "muxterm")
             ),
             "ryzen 上的 tmux project 必须能选中连接: {hit:?}"
         );
@@ -547,8 +547,8 @@ mod tests {
                     && matches!(&e.transport, ExistingTransport::Ssh { name } if name == "ryzen")
             }
             PanelItem::Target(entry, _) => {
-                entry.config.runtime == TargetRuntime::Tmux
-                    && matches!(&entry.config.transport, TargetTransport::Ssh { name } if name == "ryzen")
+                entry.draft.runtime == TargetRuntime::Tmux
+                    && matches!(&entry.draft.transport, TargetTransport::Ssh { name } if name == "ryzen")
             }
             PanelItem::Host { alias } => alias == "ryzen",
             _ => false,
