@@ -11,7 +11,7 @@ use crate::frontend::ffi_client::{
 };
 
 use super::window_actions;
-use super::UiState;
+use super::{SurfaceInput, UiState};
 
 /// Flush commands only from the GTK event-loop owner.
 pub(super) fn flush_command_queue(s: &UiState) -> Vec<i32> {
@@ -55,6 +55,42 @@ pub(super) fn enqueue_workspace_resize(
         cols,
         rows,
     });
+}
+
+/// Drain VTE input callbacks on the production GTK poll.
+///
+/// The queue is deliberately independent from `UiState`: PaneView callbacks
+/// can outlive the layout pass that installed them, so they must never borrow
+/// or mutate the state directly. An input whose workspace/pane disappeared is
+/// dropped with a diagnostic instead of being redirected to the active pane.
+pub(super) fn drain_surface_input(s: &mut UiState) {
+    let pending = take_surface_input(&s.surface_input_queue);
+    let mut pending = pending.into_iter().peekable();
+    while let Some(first) = pending.next() {
+        // GTK/VTE emits one commit for each typed character. Keep adjacent
+        // commits for the same owner together so a newly-created tmux pane
+        // receives one ordered write instead of a burst of independent
+        // control-mode commands that can race pane startup.
+        let workspace_id = first.workspace.clone();
+        let pane_id = first.pane;
+        let mut data = first.data;
+        while let Some(next) = pending.peek() {
+            if next.workspace != workspace_id || next.pane != pane_id {
+                break;
+            }
+            let next = pending.next().expect("peeked SurfaceInput");
+            data.extend_from_slice(&next.data);
+        }
+        s.last_raw_input = data.clone();
+        let workspace_key = workspace_id.as_str();
+        enqueue_workspace_input(s, &workspace_key, pane_id.0, &data, false);
+    }
+}
+
+pub(super) fn take_surface_input(
+    queue: &std::rc::Rc<std::cell::RefCell<std::collections::VecDeque<SurfaceInput>>>,
+) -> Vec<SurfaceInput> {
+    queue.borrow_mut().drain(..).collect()
 }
 
 pub(super) fn poll_event_store(s: &mut UiState) -> Vec<ClientWorkspaceEvent> {

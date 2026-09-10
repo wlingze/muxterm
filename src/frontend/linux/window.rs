@@ -100,8 +100,6 @@ mod window_test_api;
 #[path = "window_worktree.rs"]
 mod window_worktree;
 
-use self::window_event_pump::enqueue_workspace_input;
-
 /// 通过统一 FFI client 的 Core 配置事务写回 config.toml（唯一事实源）。
 /// 平台禁止直接解析或写 TOML；失败只记日志，不覆盖用户文件。
 pub fn persist_config(client: &FfiClient, dotted: &str, value: serde_json::Value) {
@@ -547,40 +545,6 @@ fn sync_chrome_visibility(s: &UiState) {
     window_status::sync_chrome_visibility(s);
 }
 
-/// Drain VTE input callbacks on the production GTK poll.
-///
-/// The queue is deliberately independent from `UiState`: PaneView callbacks
-/// can outlive the layout pass that installed them, so they must never borrow
-/// or mutate the state directly.  An input whose workspace/pane disappeared is
-/// dropped with a diagnostic instead of being redirected to the active pane.
-fn drain_surface_input(s: &mut UiState) {
-    let pending = take_surface_input(&s.surface_input_queue);
-    let mut pending = pending.into_iter().peekable();
-    while let Some(first) = pending.next() {
-        // GTK/VTE emits one commit for each typed character.  Keep adjacent
-        // commits for the same owner together so a newly-created tmux pane
-        // receives one ordered write instead of a burst of independent
-        // control-mode commands that can race pane startup.
-        let workspace_id = first.workspace.clone();
-        let pane_id = first.pane;
-        let mut data = first.data;
-        while let Some(next) = pending.peek() {
-            if next.workspace != workspace_id || next.pane != pane_id {
-                break;
-            }
-            let next = pending.next().expect("peeked SurfaceInput");
-            data.extend_from_slice(&next.data);
-        }
-        s.last_raw_input = data.clone();
-        let workspace_key = workspace_id.as_str();
-        enqueue_workspace_input(s, &workspace_key, pane_id.0, &data, false);
-    }
-}
-
-fn take_surface_input(queue: &Rc<RefCell<VecDeque<SurfaceInput>>>) -> Vec<SurfaceInput> {
-    queue.borrow_mut().drain(..).collect()
-}
-
 fn sync_pane_outputs(s: &mut UiState) {
     window_render::sync_pane_outputs(s);
 }
@@ -900,6 +864,7 @@ fn apply_chrome_css(theme: &Theme) {
 #[cfg(test)]
 mod tests {
     use super::window_activity::{attention_event_pane, UiBatchEffects};
+    use super::window_event_pump::take_surface_input;
     use super::*;
 
     #[test]

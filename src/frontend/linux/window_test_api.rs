@@ -8,8 +8,8 @@ use super::window_activity::{
     drain_attention_notifications, update_command_marks, update_jump_latest,
 };
 use super::window_event_pump::{
-    activity_snapshot, enqueue_workspace_input, flush_command_queue, poll_event_store,
-    sync_view_store,
+    activity_snapshot, drain_surface_input, enqueue_workspace_input, flush_command_queue,
+    poll_event_store, sync_view_store,
 };
 use super::window_sidebar::{maybe_warn_workspace_capacity, refresh_sidebar_if_open};
 use super::*;
