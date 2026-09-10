@@ -170,8 +170,8 @@ pub struct RenderTrace {
     pub seeds: u32,
 }
 
-/// 一个 pane 的 GTK 视图（薄包装；内部用 Rc 供合并定时器弱引用）。
-pub struct PaneView {
+/// 一个 pane 的常驻 GTK surface（内部用 Rc 供合并定时器弱引用）。
+pub struct PaneSurface {
     inner: Rc<PaneViewInner>,
 }
 
@@ -215,7 +215,7 @@ struct PaneViewInner {
     pointer_buttons: Cell<u32>,
 }
 
-impl PaneView {
+impl PaneSurface {
     pub fn new(
         pane_id: u32,
         theme: &Theme,
@@ -259,7 +259,7 @@ impl PaneView {
             last_pointer_cell: Cell::new((1, 1)),
             pointer_buttons: Cell::new(0),
         });
-        let view = PaneView { inner };
+        let view = PaneSurface { inner };
         view.install_context_menu();
         view.attach_scroll_controller();
         view.attach_pointer_controllers();
@@ -351,7 +351,7 @@ impl PaneView {
                 let Some(inner) = weak.upgrade() else {
                     return;
                 };
-                let view = PaneView { inner };
+                let view = PaneSurface { inner };
                 if view.forward_mouse_button(3, true, x, y, g.current_event_state()) {
                     g.set_state(gtk4::EventSequenceState::Claimed);
                     return;
@@ -367,7 +367,7 @@ impl PaneView {
                 let Some(inner) = weak.upgrade() else {
                     return;
                 };
-                let view = PaneView { inner };
+                let view = PaneSurface { inner };
                 view.forward_mouse_button(3, false, x, y, g.current_event_state());
             });
         }
@@ -413,7 +413,7 @@ impl PaneView {
             gtk4::EventControllerScroll::new(gtk4::EventControllerScrollFlags::VERTICAL);
         controller.connect_scroll(move |c, _dx, dy| {
             if let Some(inner) = weak.upgrade() {
-                let view = PaneView { inner };
+                let view = PaneSurface { inner };
                 let shift = c
                     .current_event_state()
                     .contains(gdk::ModifierType::SHIFT_MASK);
@@ -434,7 +434,7 @@ impl PaneView {
                 let Some(inner) = weak.upgrade() else {
                     return;
                 };
-                let view = PaneView { inner };
+                let view = PaneSurface { inner };
                 let shift = c
                     .current_event_state()
                     .contains(gdk::ModifierType::SHIFT_MASK);
@@ -453,7 +453,7 @@ impl PaneView {
                     let Some(inner) = weak.upgrade() else {
                         return;
                     };
-                    let view = PaneView { inner };
+                    let view = PaneSurface { inner };
                     if view.forward_mouse_button(g.button(), true, x, y, g.current_event_state()) {
                         g.set_state(gtk4::EventSequenceState::Claimed);
                     }
@@ -465,7 +465,7 @@ impl PaneView {
                     let Some(inner) = weak.upgrade() else {
                         return;
                     };
-                    let view = PaneView { inner };
+                    let view = PaneSurface { inner };
                     view.forward_mouse_button(g.button(), false, x, y, g.current_event_state());
                 });
             }
@@ -1313,8 +1313,12 @@ pub fn should_forward_replies(is_tmux_mirror: bool, replies: &[u8]) -> bool {
     !replies.is_empty() && should_forward_parser_response(true, is_tmux_mirror)
 }
 
-/// 便于在闭包里共享的 PaneView 句柄。
-pub type PaneViewRc = Rc<PaneView>;
+/// Compatibility alias for tests and older frontend fixtures.
+pub type PaneView = PaneSurface;
+
+/// Shared handle used by surface callbacks.
+pub type PaneSurfaceRc = Rc<PaneSurface>;
+pub type PaneViewRc = PaneSurfaceRc;
 
 /// 主题色转 hex（`rrggbb`，供 tmux refresh-client -r 上报）。
 pub fn rgb_hex(c: Rgb) -> String {

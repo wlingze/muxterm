@@ -39,7 +39,7 @@ use crate::frontend::linux::event_batch::batch_order_plan;
 use crate::frontend::linux::keymap::{default_keybindings, Action, KeyMap};
 use crate::frontend::linux::layout_host::LayoutHost;
 use crate::frontend::linux::lifecycle::{cycle_pane_id, should_close_window, OnLastPaneExit};
-use crate::frontend::linux::pane_view::{PaneMenuAction, PaneView};
+use crate::frontend::linux::pane_view::{PaneMenuAction, PaneSurface};
 use crate::frontend::linux::panel_model::PanelTab;
 use crate::frontend::linux::preferences_window::ConfigApi;
 use crate::frontend::linux::quickconnect::event_policy::ClientSizePolicy;
@@ -2682,7 +2682,7 @@ fn update_command_marks(s: &UiState) {
 }
 
 /// 当前激活 pane 的 VTE 是否在底部（scroll lock / 回底按钮共用）。
-fn view_at_bottom(view: &std::rc::Rc<PaneView>) -> bool {
+fn view_at_bottom(view: &std::rc::Rc<PaneSurface>) -> bool {
     view.terminal()
         .vadjustment()
         .map(|adj| {
@@ -2788,7 +2788,7 @@ fn resident_pane_view(
     s: &UiState,
     wid: &WorkspaceId,
     pane: u32,
-) -> Option<std::rc::Rc<crate::frontend::linux::pane_view::PaneView>> {
+) -> Option<std::rc::Rc<crate::frontend::linux::pane_view::PaneSurface>> {
     s.pixel_cache
         .get(wid)
         .and_then(|layout| layout.pane(pane).cloned())
@@ -3266,7 +3266,7 @@ fn mark_active_attention_visible(s: &UiState) {
 /// 由下一次 refresh_ui / sync_pane_outputs 补种。
 fn seed_unseeded_pane(
     s: &mut UiState,
-    view: &std::rc::Rc<PaneView>,
+    view: &std::rc::Rc<PaneSurface>,
     pane_id: u32,
     cols: u16,
     rows: u16,
@@ -3283,7 +3283,7 @@ fn surface_allocation_is_seedable(realized: bool, width: i32, height: i32) -> bo
 fn seed_unseeded_pane_for(
     s: &mut UiState,
     wid: &WorkspaceId,
-    view: &std::rc::Rc<PaneView>,
+    view: &std::rc::Rc<PaneSurface>,
     pane_id: u32,
     cols: u16,
     rows: u16,
@@ -3329,7 +3329,7 @@ fn seed_unseeded_pane_for(
 fn drain_view_store_render_events(
     s: &mut UiState,
     wid: &WorkspaceId,
-    view: &std::rc::Rc<PaneView>,
+    view: &std::rc::Rc<PaneSurface>,
     pane_id: u32,
 ) {
     let workspace_key = wid.as_str();
