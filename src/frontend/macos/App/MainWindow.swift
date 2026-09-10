@@ -1362,6 +1362,19 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         return paneIDs
     }
 
+    private func cachedTabID(containingPane paneID: UInt32) -> UInt32? {
+        if let activeKey = sceneStack.activeKey,
+           let scene = sceneStack.scenes[activeKey],
+           let tabID = scene.cachedTabIdsByPane?[paneID]
+        {
+            return tabID
+        }
+        guard lastSnapshot.panes.contains(where: { $0.id == paneID }) else {
+            return nil
+        }
+        return lastSnapshot.activeTab
+    }
+
     /// Dispatch queued commands at the same serialized boundary that drains
     /// workspace events.  Explicit workspace dispatch keeps a queued command
     /// attached to its originating scene after a subsequent scene switch.
@@ -1946,7 +1959,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             // replica id 字符串暂时对不上时，若当前连接已经有这个 pane，
             // 仍立即跳转（Linux jump_to_attention_pane 同语义）。只有跨
             // Workspace 且目标 slot 尚未 ready 才排队等下一轮 poll。
-            if bridge.tabId(containingPane: paneId) != nil {
+            if cachedWorkspacePaneIDs().contains(paneId) {
                 pendingPanelJump = nil
                 performWhenForegroundReady { [weak self] in
                     self?.jumpToPane(tabId: tabId, paneId: paneId, seq: seq, query: query)
@@ -2023,7 +2036,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// `tabId` 为 nil 时按 pane 反查（注意力行没有 tab）。tmux window 0
     /// 是真实 tab，不能当哨兵跳过。`seq>0` 时把历史滚到命中行。
     func jumpToPane(tabId: UInt32?, paneId: UInt32, seq: UInt64 = 0, query: String = "") {
-        let resolvedTab = tabId ?? bridge.tabId(containingPane: paneId)
+        let resolvedTab = tabId ?? cachedTabID(containingPane: paneId)
         if let resolvedTab {
             requestSwitchTab(resolvedTab)
         }
