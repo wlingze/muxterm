@@ -666,6 +666,27 @@ fn ffi_workspace_task_targets_background_workspace_without_activation() {
             ),
             0
         );
+        let fg = CString::new("112233").unwrap();
+        let bg = CString::new("ddeeFF").unwrap();
+        assert_eq!(
+            muxterm_workspace_report_pane_colours(
+                h,
+                first_id_text.as_ptr(),
+                pane_id,
+                fg.as_ptr(),
+                bg.as_ptr()
+            ),
+            0
+        );
+        assert_eq!(
+            muxterm_workspace_report_all_pane_colours(
+                h,
+                first_id_text.as_ptr(),
+                fg.as_ptr(),
+                bg.as_ptr()
+            ),
+            0
+        );
 
         assert_eq!(
             muxterm_workspace_pane_viewport(h, first_id_text.as_ptr(), pane_id),

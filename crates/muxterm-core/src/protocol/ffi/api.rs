@@ -45,6 +45,7 @@ pub use super::functions::task::{
     muxterm_execute, muxterm_execute_json, muxterm_execute_workspace,
     muxterm_report_all_pane_colours, muxterm_report_pane_colours, muxterm_resize_client,
     muxterm_resize_pane, muxterm_resize_pane_axis, muxterm_send_input, muxterm_send_input_quiet,
+    muxterm_workspace_report_all_pane_colours, muxterm_workspace_report_pane_colours,
     muxterm_workspace_resize_client, muxterm_workspace_resize_pane,
     muxterm_workspace_resize_pane_axis, muxterm_workspace_send_input,
     muxterm_workspace_send_input_quiet,

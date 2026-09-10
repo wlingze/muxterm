@@ -699,6 +699,105 @@ pub unsafe extern "C" fn muxterm_report_all_pane_colours(
     .unwrap_or(-1)
 }
 
+/// Report one pane's foreground/background colours in a specific workspace
+/// without changing the pool's active workspace.
+///
+/// # Safety
+/// `h`, `workspace_id`, `fg_hex`, and `bg_hex` are valid pointers; all strings
+/// are NUL-terminated.
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_workspace_report_pane_colours(
+    h: *mut MuxtermHandle,
+    workspace_id: *const c_char,
+    pane_id: u32,
+    fg_hex: *const c_char,
+    bg_hex: *const c_char,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() || workspace_id.is_null() {
+            return -1;
+        }
+        let (Some(workspace_id), Some(fg_hex), Some(bg_hex)) =
+            (cstr_opt(workspace_id), cstr_opt(fg_hex), cstr_opt(bg_hex))
+        else {
+            return -1;
+        };
+        let (Ok(fg), Ok(bg)) = (parse_hex(&fg_hex), parse_hex(&bg_hex)) else {
+            return -1;
+        };
+        let workspace_id = parse_workspace_id(&workspace_id);
+        let handle = &mut *h;
+        let Some(ws) = handle.pool_mut().get_mut(&workspace_id) else {
+            return -1;
+        };
+        let Some(pane) = resolve_c_io_pane(pane_id, ws) else {
+            return -1;
+        };
+        task_result_code(ws.execute(Task::ReportPaneColours {
+            target: pane,
+            fg,
+            bg,
+        }))
+    }))
+    .unwrap_or(-1)
+}
+
+/// Report foreground/background colours for every pane in a specific
+/// workspace without changing the pool's active workspace.
+///
+/// # Safety
+/// `h`, `workspace_id`, `fg_hex`, and `bg_hex` are valid pointers; all strings
+/// are NUL-terminated.
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_workspace_report_all_pane_colours(
+    h: *mut MuxtermHandle,
+    workspace_id: *const c_char,
+    fg_hex: *const c_char,
+    bg_hex: *const c_char,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() || workspace_id.is_null() {
+            return -1;
+        }
+        let (Some(workspace_id), Some(fg_hex), Some(bg_hex)) =
+            (cstr_opt(workspace_id), cstr_opt(fg_hex), cstr_opt(bg_hex))
+        else {
+            return -1;
+        };
+        let (Ok(fg), Ok(bg)) = (parse_hex(&fg_hex), parse_hex(&bg_hex)) else {
+            return -1;
+        };
+        let workspace_id = parse_workspace_id(&workspace_id);
+        let handle = &mut *h;
+        let Some(ws) = handle.pool_mut().get_mut(&workspace_id) else {
+            return -1;
+        };
+        let panes: Vec<PaneId> = ws
+            .state()
+            .tabs()
+            .iter()
+            .flat_map(|tab| ws.state().panes(&tab.id))
+            .map(|pane| pane.id)
+            .collect();
+        let mut dispatched = 0;
+        for pane in panes {
+            if let Ok(TaskOutcome::Done) = ws.execute(Task::ReportPaneColours {
+                target: pane,
+                fg,
+                bg,
+            }) {
+                dispatched += 1;
+            }
+        }
+        if dispatched > 0 {
+            0
+        } else {
+            -1
+        }
+    }))
+    .unwrap_or(-1)
+}
+
 /// Resize a pane's pty grid.
 ///
 /// # Safety
