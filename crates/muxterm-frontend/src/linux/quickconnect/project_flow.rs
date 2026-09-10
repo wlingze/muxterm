@@ -2,7 +2,7 @@
 //! session（twork 语义：session 名 = 显式 name / path basename），创建成功
 //! 后 attach 同一 session。local 与 ssh 共用同一状态机（纯逻辑）。
 
-use super::model::{QuickConnect, TargetConfig};
+use super::model::{QuickConnect, TargetConfigDraft};
 
 /// 连接失败（区分 attach / create / attach-after-create）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,11 +54,11 @@ pub struct ProjectConnectFlow {
 }
 
 impl ProjectConnectFlow {
-    pub fn new(config: &TargetConfig) -> Self {
+    pub fn new(config: &TargetConfigDraft) -> Self {
         Self::new_with_intent(config, ProjectConnectIntent::CreateIfMissing)
     }
 
-    pub fn new_with_intent(config: &TargetConfig, intent: ProjectConnectIntent) -> Self {
+    pub fn new_with_intent(config: &TargetConfigDraft, intent: ProjectConnectIntent) -> Self {
         let trimmed_name = config.name.trim();
         let session = config
             .session
@@ -142,8 +142,8 @@ mod tests {
     use super::*;
     use crate::linux::quickconnect::model::{TargetRuntime, TargetTransport};
 
-    fn cfg(name: &str, path: &str) -> TargetConfig {
-        TargetConfig::new(name, TargetRuntime::Tmux, TargetTransport::Local, path)
+    fn cfg(name: &str, path: &str) -> TargetConfigDraft {
+        TargetConfigDraft::new(name, TargetRuntime::Tmux, TargetTransport::Local, path)
     }
 
     #[test]

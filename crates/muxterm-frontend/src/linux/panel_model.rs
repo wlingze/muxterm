@@ -14,7 +14,7 @@ use crate::ffi_client::{
 use crate::i18n::{self, Key as TextKey};
 use crate::linux::quickconnect::existing::ExistingEntry;
 use crate::linux::quickconnect::model::{
-    QuickBadge, QuickConnect, QuickConnectEntry, TargetConfig, WorkspaceQuery,
+    QuickBadge, QuickConnect, QuickConnectEntry, TargetConfigDraft, WorkspaceQuery,
 };
 use crate::linux::quickconnect::store::QuickConnectStore;
 use crate::linux::workspace_sidebar::{ActivityIndicator, AgentSidebarItem};
@@ -93,7 +93,7 @@ pub struct PanelShowArgs {
     pub attention: Vec<ClientAttentionPane>,
     pub on_connect: Box<dyn Fn(ClientOpenRequest)>,
     pub on_existing_connect: Box<dyn Fn(ClientOpenRequest)>,
-    pub on_edit: Box<dyn Fn(TargetConfig)>,
+    pub on_edit: Box<dyn Fn(TargetConfigDraft)>,
     pub on_new_project: Box<dyn Fn()>,
     pub on_jump_pane: Box<dyn Fn(String, u32, u64)>,
     pub on_mute: MuteCallback,
@@ -104,13 +104,16 @@ pub struct PanelShowArgs {
     pub on_existing_nav: Box<dyn Fn(ExistingNav)>,
 }
 
-pub fn build_items(store: &QuickConnectStore, current: Option<&TargetConfig>) -> Vec<PanelItem> {
+pub fn build_items(
+    store: &QuickConnectStore,
+    current: Option<&TargetConfigDraft>,
+) -> Vec<PanelItem> {
     build_items_with_recent_limit(store, current, 5)
 }
 
 fn build_items_with_recent_limit(
     store: &QuickConnectStore,
-    current: Option<&TargetConfig>,
+    current: Option<&TargetConfigDraft>,
     recent_limit: usize,
 ) -> Vec<PanelItem> {
     let current_id = current.map(QuickConnect::unique_id);
@@ -136,7 +139,7 @@ fn build_items_with_recent_limit(
 /// 紧凑，只在用户开始输入时把这里的隐藏 Recent 合并进来。
 pub fn build_search_items(
     store: &QuickConnectStore,
-    current: Option<&TargetConfig>,
+    current: Option<&TargetConfigDraft>,
 ) -> Vec<PanelItem> {
     build_items_with_recent_limit(store, current, store.recent_targets().len())
 }
@@ -144,7 +147,7 @@ pub fn build_search_items(
 /// W20b：根列表 = 第一项「已有的连接」Folder + 原 Recent/Project + New Project。
 pub fn build_root_items(
     store: &QuickConnectStore,
-    current: Option<&TargetConfig>,
+    current: Option<&TargetConfigDraft>,
 ) -> Vec<PanelItem> {
     let mut items = vec![PanelItem::Folder {
         id: "existing-connections",
@@ -722,7 +725,7 @@ mod tests {
         let items = vec![
             PanelItem::Target(
                 crate::linux::quickconnect::model::QuickConnectEntry::new(
-                    crate::linux::quickconnect::model::TargetConfig::new(
+                    crate::linux::quickconnect::model::TargetConfigDraft::new(
                         "a",
                         crate::linux::quickconnect::model::TargetRuntime::Tmux,
                         crate::linux::quickconnect::model::TargetTransport::Local,

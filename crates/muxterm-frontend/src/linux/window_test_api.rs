@@ -26,7 +26,7 @@ use super::window_status::{
 use super::*;
 
 use crate::ffi_client::{ClientOpenIntent, ClientTarget};
-use crate::linux::quickconnect::model::TargetConfig;
+use crate::linux::quickconnect::model::TargetConfigDraft;
 
 impl AppWindow {
     /// W21 测试钩子：向指定 pane 的生产滚轮路径发一次滚动。
@@ -696,7 +696,7 @@ impl AppWindow {
     }
 
     /// 测试用：连接一个 QuickConnect 目标（走生产 connect_target 路径）。
-    pub fn test_connect_target(&self, config: TargetConfig) {
+    pub fn test_connect_target(&self, config: TargetConfigDraft) {
         connect_target(&self._state.clone(), config);
     }
 

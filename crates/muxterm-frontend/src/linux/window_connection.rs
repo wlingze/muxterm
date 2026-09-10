@@ -15,7 +15,7 @@ use crate::ffi_client::{
 use crate::i18n::{self, Key};
 use crate::linux::quickconnect::existing::{ExistingEntry, ExistingTransport};
 use crate::linux::quickconnect::model::{
-    QuickConnect, RecentWorkspaceDescriptor, TargetConfig, TargetRuntime, TargetTransport,
+    QuickConnect, RecentWorkspaceDescriptor, TargetConfigDraft, TargetRuntime, TargetTransport,
 };
 use crate::linux::quickconnect::project_flow::ProjectConnectIntent;
 use crate::linux::tmux_dialog::{self, TmuxAction};
@@ -25,8 +25,8 @@ use super::window_event_pump::sync_view_store;
 use super::window_scene::after_activate;
 use super::{parse_workspace_id, UiState};
 
-/// TargetConfig + session → 稳定 WorkspaceId。
-pub(super) fn workspace_id_for_config(config: &TargetConfig, session: &str) -> WorkspaceId {
+/// TargetConfigDraft + session → 稳定 WorkspaceId。
+pub(super) fn workspace_id_for_config(config: &TargetConfigDraft, session: &str) -> WorkspaceId {
     let alias = match &config.transport {
         TargetTransport::Ssh { name } => Some(name.as_str()),
         TargetTransport::Local => None,
@@ -45,13 +45,13 @@ pub(super) fn workspace_id_for_config(config: &TargetConfig, session: &str) -> W
     )
 }
 
-pub(super) fn connect_target(state: &Rc<RefCell<UiState>>, config: TargetConfig) {
+pub(super) fn connect_target(state: &Rc<RefCell<UiState>>, config: TargetConfigDraft) {
     connect_target_with_intent(state, config, ProjectConnectIntent::CreateIfMissing);
 }
 
 pub(super) fn connect_target_with_intent(
     state: &Rc<RefCell<UiState>>,
-    config: TargetConfig,
+    config: TargetConfigDraft,
     intent: ProjectConnectIntent,
 ) {
     let target = client_target_from_config(&config);
@@ -144,7 +144,7 @@ fn opened_workspace_socket(opened: &ClientOpenedWorkspace) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn client_target_from_config(config: &TargetConfig) -> ClientTarget {
+fn client_target_from_config(config: &TargetConfigDraft) -> ClientTarget {
     let (transport, target) = match &config.transport {
         TargetTransport::Local => ("local".to_string(), None),
         TargetTransport::Ssh { name } => ("ssh".to_string(), Some(name.clone())),
@@ -183,7 +183,7 @@ pub(super) fn recent_workspaces(
                 .as_ref()
                 .and_then(|id| workspace_sockets.get(id))
                 .and_then(|value| value.as_deref());
-            RecentWorkspaceDescriptor::from_target(&workspace_to_target_config(workspace, socket))
+            RecentWorkspaceDescriptor::from_draft(&workspace_to_draft_config(workspace, socket))
         })
         .collect()
 }
@@ -192,10 +192,10 @@ pub(super) fn recent_workspaces(
 ///
 /// 读 `resolved_target().canonical`（Catalog 打开时保存）；无 descriptor 时
 /// 从 WorkspaceId 推导（测试 mock/CLI 直开路径）。
-pub(super) fn workspace_to_target_config(
+pub(super) fn workspace_to_draft_config(
     workspace: &crate::ffi_client::ClientWorkspace,
     tmux_socket: Option<&str>,
-) -> TargetConfig {
+) -> TargetConfigDraft {
     if let Some(canonical) = workspace
         .resolved_target
         .as_ref()
@@ -225,7 +225,7 @@ pub(super) fn workspace_to_target_config(
             },
             _ => TargetTransport::Local,
         };
-        let mut config = TargetConfig::new(
+        let mut config = TargetConfigDraft::new(
             name,
             runtime,
             transport,
@@ -250,7 +250,7 @@ pub(super) fn workspace_to_target_config(
         return config;
     }
     let Some(id) = parse_workspace_id(&workspace.id) else {
-        return TargetConfig::new(
+        return TargetConfigDraft::new(
             workspace.name.clone(),
             TargetRuntime::from_str(&workspace.runtime).unwrap_or(TargetRuntime::Tmux),
             TargetTransport::Local,
@@ -274,7 +274,7 @@ pub(super) fn workspace_to_target_config(
     } else {
         TargetTransport::Local
     };
-    let mut config = TargetConfig::new(name, runtime, transport, id.path.clone());
+    let mut config = TargetConfigDraft::new(name, runtime, transport, id.path.clone());
     if runtime == TargetRuntime::Tmux {
         config.session = (!id.session.is_empty()).then(|| id.session.clone());
         config.socket = tmux_socket.map(str::to_owned);

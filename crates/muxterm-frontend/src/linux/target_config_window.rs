@@ -9,7 +9,7 @@ use gtk4::prelude::IsA;
 use gtk4::Window;
 
 use crate::ffi_client::{ClientRuntimeInfo, SshHostEntry};
-use crate::linux::quickconnect::model::TargetConfig;
+use crate::linux::quickconnect::model::TargetConfigDraft;
 use crate::linux::quickconnect::store::QuickConnectStore;
 
 #[cfg(test)]
@@ -50,11 +50,11 @@ pub(crate) fn should_skip_directory_listing(is_ssh: bool, alias: Option<&str>) -
 /// 打开新建/编辑 Project 窗口。
 pub fn show(
     parent: &impl IsA<Window>,
-    editing: Option<TargetConfig>,
+    editing: Option<TargetConfigDraft>,
     store: QuickConnectStore,
     ssh_hosts: Vec<SshHostEntry>,
     runtimes: Vec<ClientRuntimeInfo>,
-    on_save: impl Fn(TargetConfig) + 'static,
+    on_save: impl Fn(TargetConfigDraft) + 'static,
     on_cancel: impl Fn() + 'static,
 ) -> Window {
     target_config_window_ui::show(

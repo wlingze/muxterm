@@ -21,7 +21,7 @@ use crate::linux::quickconnect::directory::{
     DirectoryListingResponse, DirectorySuggestionController,
 };
 use crate::linux::quickconnect::model::{
-    QuickConnect, TargetConfig, TargetRuntime, TargetTransport,
+    QuickConnect, TargetConfigDraft, TargetRuntime, TargetTransport,
 };
 use crate::linux::quickconnect::options::TargetOptionSelection;
 use crate::linux::quickconnect::store::QuickConnectStore;
@@ -34,11 +34,11 @@ use super::{should_skip_directory_listing, ListingDebounce};
 /// 打开新建/编辑 Project 窗口。
 pub(super) fn show(
     parent: &impl IsA<Window>,
-    editing: Option<TargetConfig>,
+    editing: Option<TargetConfigDraft>,
     store: QuickConnectStore,
     ssh_hosts: Vec<SshHostEntry>,
     runtimes: Vec<ClientRuntimeInfo>,
-    on_save: impl Fn(TargetConfig) + 'static,
+    on_save: impl Fn(TargetConfigDraft) + 'static,
     on_cancel: impl Fn() + 'static,
 ) -> Window {
     let parent = parent.as_ref();
@@ -526,7 +526,8 @@ pub(super) fn show(
             } else {
                 TargetTransport::Local
             };
-            let cfg = TargetConfig::new(name, s.selection.runtime, transport, s.path.text.clone());
+            let cfg =
+                TargetConfigDraft::new(name, s.selection.runtime, transport, s.path.text.clone());
             drop(s);
             let mut store = store.clone();
             store.upsert_project(&cfg);

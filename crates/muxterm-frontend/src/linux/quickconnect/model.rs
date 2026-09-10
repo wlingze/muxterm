@@ -85,7 +85,7 @@ impl TargetTransport {
 
 /// A frontend target used for Recent and Project rows.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TargetConfig {
+pub struct TargetConfigDraft {
     pub name: String,
     pub runtime: TargetRuntime,
     pub transport: TargetTransport,
@@ -95,7 +95,7 @@ pub struct TargetConfig {
     pub workspace_id: Option<String>,
 }
 
-impl TargetConfig {
+impl TargetConfigDraft {
     pub fn new(
         name: impl Into<String>,
         runtime: TargetRuntime,
@@ -202,7 +202,7 @@ impl TargetConfig {
 /// A persisted-free descriptor for a workspace shown in the Recent list.
 ///
 /// Recent rows describe an already opened workspace; they are not editable
-/// Project records.  A [`TargetConfig`] is created only as a short-lived
+/// Project records.  A [`TargetConfigDraft`] is created only as a short-lived
 /// compatibility projection when the panel needs the shared row renderer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecentWorkspaceDescriptor {
@@ -216,7 +216,7 @@ pub struct RecentWorkspaceDescriptor {
 }
 
 impl RecentWorkspaceDescriptor {
-    pub fn from_target(config: &TargetConfig) -> Self {
+    pub fn from_draft(config: &TargetConfigDraft) -> Self {
         Self {
             name: config.name.clone(),
             runtime: config.runtime,
@@ -228,8 +228,8 @@ impl RecentWorkspaceDescriptor {
         }
     }
 
-    pub fn to_target_config(&self) -> TargetConfig {
-        TargetConfig {
+    pub fn to_draft_config(&self) -> TargetConfigDraft {
+        TargetConfigDraft {
             name: self.name.clone(),
             runtime: self.runtime,
             transport: self.transport.clone(),
@@ -241,12 +241,12 @@ impl RecentWorkspaceDescriptor {
     }
 
     pub fn identity_key(&self) -> String {
-        self.to_target_config().identity_key()
+        self.to_draft_config().identity_key()
     }
 }
 
 /// Search fields shared by list rows without forcing every row into the
-/// editable TargetConfig shape.
+/// editable TargetConfigDraft shape.
 pub(crate) trait QuickConnectSearchTarget {
     fn runtime_name(&self) -> &str;
     fn is_local_transport(&self) -> bool;
@@ -254,7 +254,7 @@ pub(crate) trait QuickConnectSearchTarget {
     fn search_fields(&self) -> Vec<String>;
 }
 
-impl QuickConnectSearchTarget for TargetConfig {
+impl QuickConnectSearchTarget for TargetConfigDraft {
     fn runtime_name(&self) -> &str {
         self.runtime.as_str()
     }
@@ -328,7 +328,7 @@ pub struct ProjectTransport {
 }
 
 impl ProjectDocument {
-    pub fn from_target(config: &TargetConfig) -> Self {
+    pub fn from_draft(config: &TargetConfigDraft) -> Self {
         let (transport_id, target) = match &config.transport {
             TargetTransport::Local => ("local".to_string(), String::new()),
             TargetTransport::Ssh { name } => ("ssh".to_string(), name.clone()),
@@ -356,7 +356,7 @@ impl ProjectDocument {
         }
     }
 
-    pub fn to_target(&self) -> anyhow::Result<TargetConfig> {
+    pub fn to_draft(&self) -> anyhow::Result<TargetConfigDraft> {
         let runtime = TargetRuntime::from_str(&self.runtime.id)
             .ok_or_else(|| anyhow::anyhow!("unsupported project runtime: {}", self.runtime.id))?;
         let transport = match self.transport.id.to_ascii_lowercase().as_str() {
@@ -383,7 +383,7 @@ impl ProjectDocument {
             }
             other => return Err(anyhow::anyhow!("unsupported project transport: {other}")),
         };
-        let mut target = TargetConfig::new(&self.name, runtime, transport, &self.path);
+        let mut target = TargetConfigDraft::new(&self.name, runtime, transport, &self.path);
         target.session = self.runtime.session.clone().or_else(|| {
             self.runtime
                 .options
@@ -572,13 +572,13 @@ impl QuickBadge {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuickConnectEntry {
-    pub config: TargetConfig,
+    pub config: TargetConfigDraft,
     pub badges: Vec<QuickBadge>,
     pub project_id: Option<String>,
 }
 
 impl QuickConnectEntry {
-    pub fn new(config: TargetConfig, badges: Vec<QuickBadge>) -> Self {
+    pub fn new(config: TargetConfigDraft, badges: Vec<QuickBadge>) -> Self {
         Self {
             config,
             badges,
@@ -638,22 +638,22 @@ impl QuickConnect {
         }
     }
 
-    pub fn subtitle(config: &TargetConfig) -> String {
+    pub fn subtitle(config: &TargetConfigDraft) -> String {
         format!("{} @ {}", config.runtime.as_str(), config.transport.label())
     }
 
-    pub fn search_text(config: &TargetConfig) -> String {
+    pub fn search_text(config: &TargetConfigDraft) -> String {
         config.search_fields().join(" ").to_lowercase()
     }
 
-    pub fn unique_id(config: &TargetConfig) -> String {
+    pub fn unique_id(config: &TargetConfigDraft) -> String {
         config.identity_key()
     }
 
     pub fn badges(
-        config: &TargetConfig,
-        recents: &[TargetConfig],
-        projects: &[TargetConfig],
+        config: &TargetConfigDraft,
+        recents: &[TargetConfigDraft],
+        projects: &[TargetConfigDraft],
     ) -> Vec<QuickBadge> {
         let id = Self::unique_id(config);
         let mut badges = Vec::new();
@@ -670,8 +670,8 @@ impl QuickConnect {
     }
 
     pub fn entries(
-        recents: &[TargetConfig],
-        projects: &[TargetConfig],
+        recents: &[TargetConfigDraft],
+        projects: &[TargetConfigDraft],
         recent_limit: usize,
     ) -> Vec<QuickConnectEntry> {
         let mut seen = HashSet::new();

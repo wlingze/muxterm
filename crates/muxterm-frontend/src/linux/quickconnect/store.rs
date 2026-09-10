@@ -1,6 +1,6 @@
 //! Frontend-owned Recent/Project QuickConnect store.
 
-use super::model::{ProjectDocument, QuickConnect, RecentWorkspaceDescriptor, TargetConfig};
+use super::model::{ProjectDocument, QuickConnect, RecentWorkspaceDescriptor, TargetConfigDraft};
 
 pub const MAX_RECENT: usize = 20;
 
@@ -22,10 +22,10 @@ impl QuickConnectStore {
         }
     }
 
-    pub fn recent_targets(&self) -> Vec<TargetConfig> {
+    pub fn recent_targets(&self) -> Vec<TargetConfigDraft> {
         self.recents
             .iter()
-            .map(RecentWorkspaceDescriptor::to_target_config)
+            .map(RecentWorkspaceDescriptor::to_draft_config)
             .collect()
     }
 
@@ -37,15 +37,15 @@ impl QuickConnectStore {
     ///
     /// The store keeps the original documents so an invalid/unknown project is
     /// not silently deleted when another project is edited or saved.
-    pub fn project_targets(&self) -> Vec<TargetConfig> {
+    pub fn project_targets(&self) -> Vec<TargetConfigDraft> {
         self.projects
             .iter()
-            .filter_map(|project| project.to_target().ok())
+            .filter_map(|project| project.to_draft().ok())
             .collect()
     }
 
-    pub fn record_recent(&mut self, config: &TargetConfig) {
-        let recent = RecentWorkspaceDescriptor::from_target(config);
+    pub fn record_recent(&mut self, config: &TargetConfigDraft) {
+        let recent = RecentWorkspaceDescriptor::from_draft(config);
         let id = recent.identity_key();
         self.recents.retain(|recent| recent.identity_key() != id);
         self.recents.insert(0, recent);
@@ -62,20 +62,20 @@ impl QuickConnectStore {
         self.recents = new_recents.to_vec();
     }
 
-    pub fn project_id_for(&self, config: &TargetConfig) -> Option<String> {
+    pub fn project_id_for(&self, config: &TargetConfigDraft) -> Option<String> {
         let id = QuickConnect::unique_id(config);
         self.projects.iter().find_map(|project| {
-            let target = project.to_target().ok()?;
+            let target = project.to_draft().ok()?;
             (QuickConnect::unique_id(&target) == id).then(|| project.id.clone())
         })
     }
 
-    pub fn upsert_project(&mut self, config: &TargetConfig) -> bool {
+    pub fn upsert_project(&mut self, config: &TargetConfigDraft) -> bool {
         let id = QuickConnect::unique_id(config);
-        let mut document = ProjectDocument::from_target(config);
+        let mut document = ProjectDocument::from_draft(config);
         if let Some(index) = self.projects.iter().position(|project| {
             project
-                .to_target()
+                .to_draft()
                 .ok()
                 .is_some_and(|target| QuickConnect::unique_id(&target) == id)
         }) {
@@ -101,11 +101,11 @@ impl QuickConnectStore {
         }
     }
 
-    pub fn remove_project(&mut self, config: &TargetConfig) {
+    pub fn remove_project(&mut self, config: &TargetConfigDraft) {
         let id = QuickConnect::unique_id(config);
         self.projects.retain(|project| {
             project
-                .to_target()
+                .to_draft()
                 .ok()
                 .is_none_or(|target| QuickConnect::unique_id(&target) != id)
         });
@@ -117,13 +117,13 @@ mod tests {
     use super::*;
     use crate::linux::quickconnect::model::{TargetRuntime, TargetTransport};
 
-    fn config(name: &str) -> TargetConfig {
-        TargetConfig::new(name, TargetRuntime::Tmux, TargetTransport::Local, "~/work")
+    fn config(name: &str) -> TargetConfigDraft {
+        TargetConfigDraft::new(name, TargetRuntime::Tmux, TargetTransport::Local, "~/work")
     }
 
     #[test]
     fn store_round_trips_documents_without_rebuilding_them() {
-        let mut document = ProjectDocument::from_target(&config("project"));
+        let mut document = ProjectDocument::from_draft(&config("project"));
         document.template = Some("review".into());
         document.command = vec!["cargo".into(), "test".into()];
         document
@@ -146,7 +146,7 @@ mod tests {
     fn editing_a_project_preserves_persisted_metadata() {
         let mut original = config("project");
         original.session = Some("stable-session".into());
-        let mut document = ProjectDocument::from_target(&original);
+        let mut document = ProjectDocument::from_draft(&original);
         document.id = "stable-project-id".into();
         document.template = Some("review".into());
         document.command = vec!["cargo".into(), "test".into()];

@@ -10,7 +10,7 @@ use muxterm_protocol::WorkspaceId;
 
 use super::window_config::open_target_config;
 use super::window_connection::{
-    connect_open_request, recent_workspaces, workspace_to_target_config,
+    connect_open_request, recent_workspaces, workspace_to_draft_config,
 };
 use super::window_discovery::{
     collect_ssh_reach, spawn_existing_ssh_probe, spawn_local_existing_probe,
@@ -57,7 +57,7 @@ pub(super) fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_
                     .workspace_sockets
                     .get(&id)
                     .and_then(|value| value.as_deref());
-                Some(workspace_to_target_config(workspace, socket))
+                Some(workspace_to_draft_config(workspace, socket))
             })
         };
         let store = s.qc_store.clone();

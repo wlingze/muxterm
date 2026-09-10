@@ -147,7 +147,7 @@ pub(super) fn show_project_manager(
                 let runtimes = runtimes_for_rows.clone();
                 edit.connect_clicked(move |_| {
                     let store = Rc::new(RefCell::new(store_for_edit.clone()));
-                    let target = match project_for_edit.to_target() {
+                    let target = match project_for_edit.to_draft() {
                         Ok(target) => target,
                         Err(error) => {
                             tracing::error!(

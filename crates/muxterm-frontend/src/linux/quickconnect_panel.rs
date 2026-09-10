@@ -6,7 +6,7 @@
 use gtk4::prelude::*;
 use gtk4::Window;
 
-use crate::linux::quickconnect::model::TargetConfig;
+use crate::linux::quickconnect::model::TargetConfigDraft;
 
 #[path = "quickconnect_panel_view.rs"]
 mod quickconnect_panel_view;
@@ -38,8 +38,8 @@ pub fn clear_panel_hooks() {
 
 /// 面板回调。
 pub struct QuickConnectCallbacks {
-    pub on_connect: Box<dyn Fn(TargetConfig)>,
-    pub on_edit: Box<dyn Fn(TargetConfig)>,
+    pub on_connect: Box<dyn Fn(TargetConfigDraft)>,
+    pub on_edit: Box<dyn Fn(TargetConfigDraft)>,
     pub on_new_project: Box<dyn Fn()>,
 }
 
@@ -69,8 +69,8 @@ mod tests {
     };
     use crate::linux::quickconnect::store::QuickConnectStore;
 
-    fn cfg(name: &str) -> TargetConfig {
-        TargetConfig::new(name, TargetRuntime::Tmux, TargetTransport::Local, "~/x")
+    fn cfg(name: &str) -> TargetConfigDraft {
+        TargetConfigDraft::new(name, TargetRuntime::Tmux, TargetTransport::Local, "~/x")
     }
 
     #[test]
@@ -451,7 +451,7 @@ mod tests {
 
     #[test]
     fn filter_matches_subtitle_and_path() {
-        let ssh = TargetConfig::new(
+        let ssh = TargetConfigDraft::new(
             "srv",
             TargetRuntime::Tmux,
             TargetTransport::Ssh {
@@ -517,7 +517,7 @@ mod tests {
             )),
             PanelItem::Target(
                 QuickConnectEntry::new(
-                    TargetConfig::new("muxterm", TargetRuntime::Tmux, ryzen, "~/muxterm"),
+                    TargetConfigDraft::new("muxterm", TargetRuntime::Tmux, ryzen, "~/muxterm"),
                     vec![QuickBadge::Project],
                 ),
                 false,

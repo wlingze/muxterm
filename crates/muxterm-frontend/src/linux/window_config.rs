@@ -6,7 +6,7 @@ use std::rc::{Rc, Weak};
 use anyhow::anyhow;
 use gtk4::Window;
 
-use crate::linux::quickconnect::model::TargetConfig;
+use crate::linux::quickconnect::model::TargetConfigDraft;
 
 use super::window_actions::apply_config_snapshot;
 use super::window_overlay::open_quick_connect;
@@ -89,7 +89,7 @@ fn with_config_client<T>(
 pub(super) fn open_target_config(
     state: &Rc<RefCell<UiState>>,
     window: &Window,
-    editing: Option<TargetConfig>,
+    editing: Option<TargetConfigDraft>,
 ) {
     let store = state.borrow().qc_store.clone();
     let hosts = FfiClient::discover_ssh_hosts().unwrap_or_default();
