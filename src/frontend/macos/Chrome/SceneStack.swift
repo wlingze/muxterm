@@ -1,11 +1,10 @@
 import Foundation
 
-/// Warm connection pool 的纯逻辑（无 AppKit 依赖）。
+/// 常驻 Workspace scene 的纯逻辑（无 AppKit 依赖）。
 ///
-/// 连接池持有多个后台连接；前台同一时刻至多一个 active slot。
-/// 切换目标时优先复用已有连接（不 shutdown）。容量超限只触发 UI 提醒；
-/// 用户明确关闭、TTL 到期或 memory pressure 时才淘汰（tmux 用 detach，保留 server/session）。
-public struct ConnectionKey: Hashable, Sendable {
+/// SceneStack 持有所有已打开 scene；同一时刻只有一个 scene 可见。
+/// 切换只改变可见 scene，关闭/容量策略才销毁 scene。
+public struct SceneKey: Hashable, Sendable {
     public let transport: String // "local" / "ssh"
     public let alias: String?    // SSH host alias；local 为 nil
     public let session: String
@@ -42,7 +41,7 @@ public struct ConnectionKey: Hashable, Sendable {
             && !(workspaceID?.isEmpty ?? true)
     }
 
-    public static func == (lhs: ConnectionKey, rhs: ConnectionKey) -> Bool {
+    public static func == (lhs: SceneKey, rhs: SceneKey) -> Bool {
         guard lhs.transport == rhs.transport,
               lhs.alias == rhs.alias,
               lhs.session == rhs.session,
@@ -70,8 +69,8 @@ public struct ConnectionKey: Hashable, Sendable {
     }
 }
 
-/// 连接池 key → QuickConnect 目标：tmux 用 session 名，shell 用路径目录名。
-public extension ConnectionKey {
+/// Scene key → QuickConnect 目标：tmux 用 session 名，shell 用路径目录名。
+public extension SceneKey {
     var targetConfig: TargetConfig {
         let name = session.isEmpty ? QuickConnect.defaultName(for: path) : session
         let runtime = TargetRuntime(rawValue: runtime) ?? .tmux
@@ -93,82 +92,80 @@ public extension ConnectionKey {
     }
 }
 
-public enum ConnectionLifecycle: Equatable, Sendable {
-    case active
-    case background
-    case evicting
+public enum SceneVisibility: Equatable, Sendable {
+    case visible
+    case hidden
+    case closed
 }
 
-public enum ConnectionEvictionReason: Equatable, Sendable {
+public enum SceneEvictionReason: Equatable, Sendable {
     case capacity
     case ttl
     case memoryPressure
     case closed
 }
 
-/// 后台连接容量提醒显示给用户的摘要。
-public struct ConnectionCapacityCandidate: Equatable, Sendable {
-    public let key: ConnectionKey
+/// 隐藏 scene 容量提醒显示给用户的摘要。
+public struct SceneCapacityCandidate: Equatable, Sendable {
+    public let key: SceneKey
     public let targetConfig: TargetConfig
     public let lastUsedAt: UInt64
 
-    public init(key: ConnectionKey, targetConfig: TargetConfig, lastUsedAt: UInt64) {
+    public init(key: SceneKey, targetConfig: TargetConfig, lastUsedAt: UInt64) {
         self.key = key
         self.targetConfig = targetConfig
         self.lastUsedAt = lastUsedAt
     }
 }
 
-/// 连接池中一个连接的抽象：真实实现持有 CoreBridge / TerminalManager。
-public protocol ConnectionSlotProtocol: AnyObject {
-    var key: ConnectionKey { get set }
+/// SceneStack 中一个 scene 的抽象：真实实现持有 CoreBridge / TerminalManager。
+public protocol SceneProtocol: AnyObject {
+    var key: SceneKey { get set }
     var targetConfig: TargetConfig { get set }
-    var lifecycle: ConnectionLifecycle { get set }
+    var visibility: SceneVisibility { get set }
     var lastUsedAt: UInt64 { get set }
-    /// 后台继续 poll 事件、维护 warm 状态；不得同步 displayIfNeeded。
-    func pollBackground()
-    /// 淘汰：tmux 用 detach 保留 session；local shell 按实现策略处理。
-    func evict(reason: ConnectionEvictionReason)
-    /// 窗口/应用关闭：直接回收 handle，不再保留后台连接。
+    /// 关闭 scene；共享 Core handle 的生命周期由窗口统一管理。
+    func evict(reason: SceneEvictionReason)
+    /// 窗口/应用关闭：回收所有 scene；共享 Core handle 由窗口统一关闭。
     func shutdown()
 }
 
-public struct ConnectionPoolPolicy: Sendable {
-    public var maxSlots: Int
+public struct SceneStackPolicy: Sendable {
+    public var maxScenes: Int
     public var ttlNanoseconds: UInt64?
 
-    public init(maxSlots: Int, ttlNanoseconds: UInt64? = nil) {
-        self.maxSlots = maxSlots
+    public init(maxScenes: Int, ttlNanoseconds: UInt64? = nil) {
+        self.maxScenes = maxScenes
         self.ttlNanoseconds = ttlNanoseconds
     }
 }
 
-public final class ConnectionPool<Slot: ConnectionSlotProtocol> {
-    public private(set) var slots: [ConnectionKey: Slot] = [:]
-    public private(set) var activeKey: ConnectionKey?
-    public var policy: ConnectionPoolPolicy
+public final class SceneStack<Slot: SceneProtocol> {
+    public private(set) var scenes: [SceneKey: Slot] = [:]
+    public private(set) var activeKey: SceneKey?
+    public var policy: SceneStackPolicy
     private let nowProvider: () -> UInt64
 
     public init(
-        policy: ConnectionPoolPolicy,
+        policy: SceneStackPolicy,
         nowProvider: @escaping () -> UInt64 = { DispatchTime.now().uptimeNanoseconds }
     ) {
         self.policy = policy
         self.nowProvider = nowProvider
     }
 
-    public var slotCount: Int { slots.count }
+    public var sceneCount: Int { scenes.count }
 
-    public var maxSlots: Int { max(1, policy.maxSlots) }
+    public var maxScenes: Int { max(1, policy.maxScenes) }
 
     /// 容量是软提醒阈值；新连接不会因此静默淘汰旧 Workspace。
-    public var isOverCapacity: Bool { slotCount > maxSlots }
+    public var isOverCapacity: Bool { sceneCount > maxScenes }
 
-    /// 返回最久未使用的后台连接，供 UI 让用户选择性关闭。
-    public func oldestBackgroundCandidates(limit: Int) -> [ConnectionCapacityCandidate] {
+    /// 返回最久未使用的隐藏 scene，供 UI 让用户选择性关闭。
+    public func oldestHiddenCandidates(limit: Int) -> [SceneCapacityCandidate] {
         guard limit > 0 else { return [] }
-        return slots.values
-            .filter { $0.lifecycle == .background }
+        return scenes.values
+            .filter { $0.visibility == .hidden }
             .sorted {
                 if $0.lastUsedAt != $1.lastUsedAt {
                     return $0.lastUsedAt < $1.lastUsedAt
@@ -177,7 +174,7 @@ public final class ConnectionPool<Slot: ConnectionSlotProtocol> {
             }
             .prefix(limit)
             .map {
-                ConnectionCapacityCandidate(
+                SceneCapacityCandidate(
                     key: $0.key,
                     targetConfig: $0.targetConfig,
                     lastUsedAt: $0.lastUsedAt
@@ -185,12 +182,12 @@ public final class ConnectionPool<Slot: ConnectionSlotProtocol> {
             }
     }
 
-    /// 最近打开的目标（按 lastUsedAt 倒序），供 QuickConnect 的 Recent 列表。
+    /// 最近使用的目标（按 lastUsedAt 倒序），供 QuickConnect 的 Recent 列表。
     public func recentTargetConfigs(limit: Int = 5) -> [TargetConfig] {
         guard limit > 0 else { return [] }
         let active = activeKey.flatMap { key in
-            slots[key].flatMap { slot in
-                slot.lifecycle == .evicting ? nil : slot
+            scenes[key].flatMap { slot in
+                slot.visibility == .closed ? nil : slot
             }
         }
         let activeKey = active.map(\.key)
@@ -200,8 +197,8 @@ public final class ConnectionPool<Slot: ConnectionSlotProtocol> {
             // 的时间戳比历史连接旧（例如启动时登记的 local workspace）。
             ordered.append(active)
         }
-        ordered.append(contentsOf: slots.values
-            .filter { $0.lifecycle != .evicting && $0.key != activeKey }
+        ordered.append(contentsOf: scenes.values
+            .filter { $0.visibility != .closed && $0.key != activeKey }
             .sorted {
                 if $0.lastUsedAt != $1.lastUsedAt {
                     return $0.lastUsedAt > $1.lastUsedAt
@@ -211,21 +208,21 @@ public final class ConnectionPool<Slot: ConnectionSlotProtocol> {
         return ordered.prefix(limit).map(\.targetConfig)
     }
 
-    /// 连接池中的完整 Workspace 快照，按最近使用顺序返回。
-    /// 与紧凑 Recent 展示不同，搜索需要包含软阈值之后仍保留的连接。
+    /// SceneStack 中的完整 Workspace 快照，按最近使用顺序返回。
+    /// 与紧凑 Recent 展示不同，搜索需要包含容量阈值之后仍保留的 scene。
     public func allRecentTargetConfigs() -> [TargetConfig] {
         recentTargetConfigs(limit: Int.max)
     }
 
-    /// 当前前台连接对应的目标（用于 QuickConnect 行高亮）。
+    /// 当前可见 scene 对应的目标（用于 QuickConnect 行高亮）。
     public var currentTargetConfig: TargetConfig? {
-        activeKey.flatMap { slots[$0]?.targetConfig }
+        activeKey.flatMap { scenes[$0]?.targetConfig }
     }
 
     /// 更新当前 Workspace 的展示名。tmux rename 会改变后续 attach 使用的
-    /// session 名，因此同时重建连接 key；本地 shell 只改展示名。
+    /// session 名，因此同时重建 scene key；本地 shell 只改展示名。
     public func renameActiveTarget(to name: String, rekeySession: Bool) {
-        guard let oldKey = activeKey, let slot = slots[oldKey] else { return }
+        guard let oldKey = activeKey, let slot = scenes[oldKey] else { return }
         var config = slot.targetConfig
         config.name = name
         if rekeySession {
@@ -234,7 +231,7 @@ public final class ConnectionPool<Slot: ConnectionSlotProtocol> {
         slot.targetConfig = config
         guard rekeySession else { return }
 
-        let newKey = ConnectionKey(
+        let newKey = SceneKey(
             transport: oldKey.transport,
             alias: oldKey.alias,
             session: name,
@@ -243,119 +240,109 @@ public final class ConnectionPool<Slot: ConnectionSlotProtocol> {
             socket: oldKey.socket,
             workspaceID: oldKey.workspaceID
         )
-        guard newKey != oldKey, slots[newKey] == nil else { return }
-        slots.removeValue(forKey: oldKey)
+        guard newKey != oldKey, scenes[newKey] == nil else { return }
+        scenes.removeValue(forKey: oldKey)
         slot.key = newKey
-        slots[newKey] = slot
+        scenes[newKey] = slot
         activeKey = newKey
     }
 
-    /// 获取目标连接：已存在则复用并提升为 active；不存在则用 `create` 新建。
-    /// 切换时旧 active 自动降为 background，不立即 shutdown。
+    /// 激活目标 scene：已存在则复用；不存在则用 `create` 新建。
+    /// 切换时旧 scene 隐藏但不销毁其视图树。
     @discardableResult
-    public func acquire(
-        key: ConnectionKey,
-        create: (ConnectionKey) -> Slot
+    public func activate(
+        key: SceneKey,
+        create: (SceneKey) -> Slot
     ) -> (Slot, Bool) {
         let now = nowProvider()
 
-        if let existing = slots[key] {
-            // 把当前 active 降为 background（如果不是同一个 key）
-            if let activeKey, activeKey != key, let active = slots[activeKey] {
-                active.lifecycle = .background
+        if let existing = scenes[key] {
+            // 把当前 scene 隐藏（如果不是同一个 key）
+            if let activeKey, activeKey != key, let active = scenes[activeKey] {
+                active.visibility = .hidden
             }
             existing.lastUsedAt = now
-            existing.lifecycle = .active
+            existing.visibility = .visible
             activeKey = key
             return (existing, false)
         }
 
         // 切走旧 active
-        if let activeKey, activeKey != key, let active = slots[activeKey] {
-            active.lifecycle = .background
+        if let activeKey, activeKey != key, let active = scenes[activeKey] {
+            active.visibility = .hidden
         }
 
         let slot = create(key)
         slot.lastUsedAt = now
-        slot.lifecycle = .active
-        slots[key] = slot
+        slot.visibility = .visible
+        scenes[key] = slot
         activeKey = key
         return (slot, true)
     }
 
-    /// 把 active 连接降为 background，不 shutdown（warm）。
-    public func release(key: ConnectionKey) {
+    /// 把当前 scene 标为隐藏，不销毁其视图树。
+    public func hide(key: SceneKey) {
         guard activeKey == key else { return }
-        slots[key]?.lifecycle = .background
+        scenes[key]?.visibility = .hidden
         activeKey = nil
     }
 
-    /// 显式容量清理：按 LRU（lastUsedAt 升序）淘汰超过 maxSlots 的 background。
-    /// acquire 本身不会调用此方法。
+    /// 显式容量清理：按 LRU（lastUsedAt 升序）关闭超过 maxScenes 的隐藏 scene。
+    /// activate 本身不会调用此方法。
     public func evictForCapacity() {
-        let maxSlots = self.maxSlots
-        guard slots.count > maxSlots else { return }
-        let background = slots.values
-            .filter { $0.lifecycle == .background }
+        let maxScenes = self.maxScenes
+        guard scenes.count > maxScenes else { return }
+        let hidden = scenes.values
+            .filter { $0.visibility == .hidden }
             .sorted { $0.lastUsedAt < $1.lastUsedAt }
-        var overflow = slots.count - maxSlots
-        for slot in background where overflow > 0 {
+        var overflow = scenes.count - maxScenes
+        for slot in hidden where overflow > 0 {
             evict(slot, reason: .capacity)
             overflow -= 1
         }
     }
 
-    /// TTL 到期：淘汰超时的 background 连接。
+    /// TTL 到期：关闭超时的隐藏 scene。
     public func evictExpired() {
         guard let ttl = policy.ttlNanoseconds else { return }
         let now = nowProvider()
-        let expired = slots.values.filter { slot in
-            slot.lifecycle == .background && now >= slot.lastUsedAt && now - slot.lastUsedAt > ttl
+        let expired = scenes.values.filter { slot in
+            slot.visibility == .hidden && now >= slot.lastUsedAt && now - slot.lastUsedAt > ttl
         }
         for slot in expired {
             evict(slot, reason: .ttl)
         }
     }
 
-    /// memory pressure：淘汰全部 background 连接。
+    /// memory pressure：关闭全部隐藏 scene。
     public func evictUnderMemoryPressure() {
-        let background = slots.values.filter { $0.lifecycle == .background }
-        for slot in background {
+        let hidden = scenes.values.filter { $0.visibility == .hidden }
+        for slot in hidden {
             evict(slot, reason: .memoryPressure)
         }
     }
 
-    /// 关闭并移除指定 warm slot。返回 false 表示 key 不存在。
-    ///
-    /// 这不是 LRU 淘汰：用户明确要求关闭该 Workspace。tmux slot 会 detach
-    /// 保留远端 session；local shell 会 shutdown 终止进程。
+    /// 关闭并移除指定 scene。返回 false 表示 key 不存在。
     @discardableResult
-    public func close(key: ConnectionKey) -> Bool {
-        guard let slot = slots[key] else { return false }
+    public func close(key: SceneKey) -> Bool {
+        guard let slot = scenes[key] else { return false }
         evict(slot, reason: .closed)
         return true
     }
 
-    /// 后台连接继续 poll，保持 warm；不得同步 displayIfNeeded。
-    public func pollBackgroundSlots() {
-        for slot in slots.values where slot.lifecycle == .background {
-            slot.pollBackground()
-        }
-    }
-
-    /// 窗口/应用关闭：回收全部连接（不保留后台）。
+    /// 窗口/应用关闭：回收全部 scene。
     public func shutdownAll() {
-        for slot in slots.values {
+        for slot in scenes.values {
             slot.shutdown()
         }
-        slots.removeAll()
+        scenes.removeAll()
         activeKey = nil
     }
 
-    private func evict(_ slot: Slot, reason: ConnectionEvictionReason) {
-        slot.lifecycle = .evicting
+    private func evict(_ slot: Slot, reason: SceneEvictionReason) {
+        slot.visibility = .closed
         slot.evict(reason: reason)
-        slots.removeValue(forKey: slot.key)
+        scenes.removeValue(forKey: slot.key)
         if activeKey == slot.key {
             activeKey = nil
         }
