@@ -14,10 +14,7 @@ use std::time::{Duration, Instant};
 use gtk4::gdk;
 use gtk4::glib;
 use gtk4::prelude::*;
-use gtk4::{
-    ApplicationWindow, Box, Button, CheckButton, CssProvider, EventControllerKey, Label,
-    Orientation, Window,
-};
+use gtk4::{ApplicationWindow, Box, Button, CheckButton, CssProvider, Label, Orientation, Window};
 use vte4::prelude::*;
 
 use anyhow::anyhow;
@@ -63,6 +60,7 @@ use crate::frontend::linux::theme::Rgb;
 use crate::frontend::linux::theme::{fallback_theme, toggle_target, Theme};
 use crate::frontend::linux::tmux_dialog::{self, TmuxAction};
 use crate::frontend::linux::view_store::ViewStore;
+use crate::frontend::linux::window_input::{connect_close_handler, connect_key_handler};
 use crate::frontend::linux::workspace_scenes::WorkspaceScenes;
 use crate::frontend::linux::workspace_sidebar::{AgentSidebarItem, WorkspaceSidebar};
 use crate::frontend::ssh_probe::{classify_ssh_probe, ssh_probe_args, SshReach};
@@ -933,18 +931,8 @@ impl AppWindow {
         // 快捷键
         {
             let st = state.clone();
-            let controller = EventControllerKey::new();
-            controller.set_propagation_phase(gtk4::PropagationPhase::Capture);
             let window_for_palette = window.clone();
-            controller.connect_key_pressed(move |c, keyval, _keycode, mods| {
-                // GTK4 回调里的 mods 可能不含已被 keyval 消费的 Shift；
-                // 再并上 current_event_state，Ctrl+Shift+C 才进 Copy 而不是 \\003。
-                let mods = mods
-                    | (c.current_event_state()
-                        & (gdk::ModifierType::CONTROL_MASK
-                            | gdk::ModifierType::SHIFT_MASK
-                            | gdk::ModifierType::ALT_MASK
-                            | gdk::ModifierType::SUPER_MASK));
+            connect_key_handler(&window, move |keyval, mods| {
                 let action = {
                     let s = st.borrow();
                     s.keymap.lookup(keyval, mods)
@@ -979,7 +967,6 @@ impl AppWindow {
                 handle_action(&mut s, action, &window_for_palette, &st);
                 glib::Propagation::Stop
             });
-            window.add_controller(controller);
         }
 
         // 关闭窗口：非 Quit 动作隐藏并保持 16ms 轮询；Quit 才真正关闭。
@@ -987,7 +974,7 @@ impl AppWindow {
         {
             let st = state.clone();
             let win = window.clone();
-            window.connect_close_request(move |_| {
+            connect_close_handler(&window, move || {
                 let quit = st.try_borrow().map(|s| s.quit_requested).unwrap_or(false);
                 match close_intent(quit) {
                     CloseIntent::Quit => glib::Propagation::Proceed,
