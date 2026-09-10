@@ -3,6 +3,8 @@
 //! The parent window owns state and the event loop; this module keeps
 //! user actions as a separate controller boundary.
 
+use crate::frontend::linux::lifecycle::cycle_pane_id;
+
 use super::window_event_pump::enqueue_workspace_input;
 use super::*;
 
@@ -104,6 +106,28 @@ pub(super) fn handle_action(
         Action::TogglePaneFullscreen => toggle_fullscreen(s),
     }
     refresh_ui(s);
+}
+
+/// 与 macOS `movePane` 对齐：用当前 tab 快照算目标，发 SwitchPane。
+/// 不要发 NextPane——tmux 布局树若没解析完会落到无效的
+/// `select-pane -t @N -N/-P`（2219.log 14:41:29）。
+fn switch_pane_offset(s: &mut UiState, forward: bool) {
+    let workspace_id = s.active_workspace_key();
+    let panes = s
+        .view_store
+        .workspace(&workspace_id)
+        .and_then(|view| view.panes.get(&s.active_tab))
+        .cloned()
+        .unwrap_or_default();
+    let ids: Vec<u32> = panes.iter().map(|pane| pane.id).collect();
+    let active = panes
+        .iter()
+        .find(|pane| pane.is_active)
+        .map(|pane| pane.id)
+        .unwrap_or(s.active_pane);
+    if let Some(target) = cycle_pane_id(&ids, active, forward) {
+        let _ = s.execute_active_task(ClientTask::SwitchPane { pane_id: target });
+    }
 }
 
 pub(super) fn open_command_palette(s: &UiState, window: &Window, state: &Rc<RefCell<UiState>>) {

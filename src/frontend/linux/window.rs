@@ -31,7 +31,7 @@ use crate::frontend::linux::command_palette::{parse_palette_action, PaletteActio
 use crate::frontend::linux::event_batch::batch_order_plan;
 use crate::frontend::linux::keymap::{default_keybindings, Action, KeyMap};
 use crate::frontend::linux::layout_host::LayoutHost;
-use crate::frontend::linux::lifecycle::{cycle_pane_id, should_close_window, OnLastPaneExit};
+use crate::frontend::linux::lifecycle::{should_close_window, OnLastPaneExit};
 use crate::frontend::linux::overlay::OverlayLayer;
 use crate::frontend::linux::pane_view::{PaneMenuAction, PaneSurface};
 use crate::frontend::linux::panel_model::PanelTab;
@@ -426,28 +426,6 @@ fn show_tab_scene(s: &mut UiState, tab_id: u32) -> bool {
 
 fn request_switch_tab(s: &mut UiState, tab_id: u32) {
     window_scene::request_switch_tab(s, tab_id);
-}
-
-/// 与 macOS `movePane` 对齐：用当前 tab 快照算目标，发 SwitchPane。
-/// 不要发 NextPane——tmux 布局树若没解析完会落到无效的
-/// `select-pane -t @N -N/-P`（2219.log 14:41:29）。
-fn switch_pane_offset(s: &mut UiState, forward: bool) {
-    let workspace_id = active_workspace_key(s);
-    let panes = s
-        .view_store
-        .workspace(&workspace_id)
-        .and_then(|view| view.panes.get(&s.active_tab))
-        .cloned()
-        .unwrap_or_default();
-    let ids: Vec<u32> = panes.iter().map(|pane| pane.id).collect();
-    let active = panes
-        .iter()
-        .find(|pane| pane.is_active)
-        .map(|pane| pane.id)
-        .unwrap_or(s.active_pane);
-    if let Some(target) = cycle_pane_id(&ids, active, forward) {
-        let _ = s.execute_active_task(ClientTask::SwitchPane { pane_id: target });
-    }
 }
 
 /// 刷新状态栏红点与窗口标题（blocked 工作区数）。
