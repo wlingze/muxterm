@@ -18,9 +18,7 @@ use gtk4::{
     Window,
 };
 
-use crate::ffi_client::{
-    ClientAttentionStatus, ClientCandidateRef, ClientOpenIntent, ClientOpenRequest,
-};
+use crate::ffi_client::{ClientAttentionStatus, ClientOpenRequest};
 use crate::i18n::{self, Key as TextKey};
 use crate::linux::panel_model::{
     filter_attention_panel_rows, filter_workspace_rows, search_rows, PanelModel, PanelTab,
@@ -28,9 +26,7 @@ use crate::linux::panel_model::{
 };
 use crate::linux::quick_pick;
 use crate::linux::quickconnect::existing::ExistingRuntime;
-use crate::linux::quickconnect::model::{
-    QuickConnect, QuickConnectEntry, TargetTransport, WorkspaceQuery,
-};
+use crate::linux::quickconnect::model::{QuickConnect, TargetTransport, WorkspaceQuery};
 
 use super::quickconnect_panel_view::{
     attention_panel_row, ensure_overlay, existing_connect_name, existing_row, reachability_dot,
@@ -60,33 +56,9 @@ pub(super) enum VisibleAction {
     None,
 }
 
-fn target_open_request(entry: &QuickConnectEntry) -> ClientOpenRequest {
-    let (candidate, intent) = if let Some(project_id) = &entry.project_id {
-        (
-            ClientCandidateRef::Project {
-                project_id: project_id.clone(),
-            },
-            ClientOpenIntent::CreateIfMissing,
-        )
-    } else {
-        (
-            ClientCandidateRef::Recent {
-                key: QuickConnect::unique_id(&entry.config),
-            },
-            ClientOpenIntent::AttachOnly,
-        )
-    };
-    ClientOpenRequest {
-        candidate,
-        intent,
-        template: None,
-        activate: true,
-    }
-}
-
 pub(super) fn visible_action_for_item(item: &PanelItem, nav: &ExistingNav) -> VisibleAction {
     match item {
-        PanelItem::Target(entry, _) => VisibleAction::Connect(target_open_request(entry)),
+        PanelItem::Target(entry, _) => VisibleAction::Connect(entry.open_request()),
         PanelItem::NewProject => VisibleAction::NewProject,
         PanelItem::Folder { id, .. } => match *id {
             "existing-connections" => VisibleAction::Navigate(ExistingNav::Home),

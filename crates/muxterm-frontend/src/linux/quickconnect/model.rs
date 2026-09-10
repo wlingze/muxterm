@@ -6,6 +6,8 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::ffi_client::{ClientCandidateRef, ClientOpenIntent, ClientOpenRequest};
+
 /// Runtime selected by a QuickConnect target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TargetRuntime {
@@ -587,6 +589,32 @@ impl QuickConnectEntry {
     pub fn with_project_id(mut self, project_id: impl Into<String>) -> Self {
         self.project_id = Some(project_id.into());
         self
+    }
+
+    pub fn candidate_ref(&self) -> ClientCandidateRef {
+        if let Some(project_id) = &self.project_id {
+            ClientCandidateRef::Project {
+                project_id: project_id.clone(),
+            }
+        } else {
+            ClientCandidateRef::Recent {
+                key: QuickConnect::unique_id(&self.config),
+            }
+        }
+    }
+
+    pub fn open_request(&self) -> ClientOpenRequest {
+        let intent = if self.project_id.is_some() {
+            ClientOpenIntent::CreateIfMissing
+        } else {
+            ClientOpenIntent::AttachOnly
+        };
+        ClientOpenRequest {
+            candidate: self.candidate_ref(),
+            intent,
+            template: None,
+            activate: true,
+        }
     }
 }
 
