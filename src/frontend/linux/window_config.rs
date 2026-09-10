@@ -6,9 +6,11 @@ use std::rc::{Rc, Weak};
 use anyhow::anyhow;
 use gtk4::Window;
 
+use crate::frontend::linux::quickconnect::model::TargetConfig;
+
 use super::window_actions::apply_config_snapshot;
 use super::window_overlay::open_quick_connect;
-use super::{persist_config, FfiClient, TargetConfig, UiState};
+use super::{persist_config, FfiClient, UiState};
 use crate::frontend::linux::preferences_window::ConfigApi;
 
 /// 打开配置页：保存/热加载后重读 config.toml 并应用主题/字体/attention。

@@ -5,6 +5,7 @@
 
 use crate::frontend::linux::lifecycle::cycle_pane_id;
 
+use super::window_config::open_preferences;
 use super::window_connection::{open_ssh_connect, open_tmux_attach};
 use super::window_event_pump::enqueue_workspace_input;
 use super::window_layout::refresh_ui;

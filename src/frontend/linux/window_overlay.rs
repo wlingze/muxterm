@@ -8,6 +8,7 @@ use gtk4::Window;
 
 use muxterm_protocol::WorkspaceId;
 
+use super::window_config::open_target_config;
 use super::window_connection::{
     connect_open_request, recent_target_configs, workspace_to_target_config,
 };
@@ -20,8 +21,8 @@ use super::window_sidebar::refresh_sidebar_if_open;
 use super::window_status::refresh_attention_chrome;
 use super::{
     active_workspace_id, active_workspace_key, build_root_items, build_search_items,
-    open_target_config, parse_workspace_id, workspace_replica_id, AgentSidebarItem, ClientTask,
-    ExistingNav, PanelTab, UiState,
+    parse_workspace_id, workspace_replica_id, AgentSidebarItem, ClientTask, ExistingNav, PanelTab,
+    UiState,
 };
 
 pub(super) fn open_pane_find(state: &Rc<RefCell<UiState>>) {

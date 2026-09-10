@@ -37,7 +37,6 @@ use crate::frontend::linux::pane_view::{PaneMenuAction, PaneSurface};
 use crate::frontend::linux::panel_model::PanelTab;
 use crate::frontend::linux::quickconnect::existing::ExistingEntry;
 use crate::frontend::linux::quickconnect::font::FontSettings;
-use crate::frontend::linux::quickconnect::model::{TargetConfig, TargetTransport};
 use crate::frontend::linux::quickconnect::status_style::StatusBarMode;
 use crate::frontend::linux::quickconnect::store::QuickConnectStore;
 use crate::frontend::linux::quickconnect_panel::{
@@ -384,19 +383,6 @@ enum ExistingProbeMsg {
     Aliases(Vec<String>),
     Rows(Vec<ExistingEntry>),
     Done,
-}
-
-/// 打开配置页：保存/热加载后重读 config.toml 并应用主题/字体/attention。
-fn open_preferences(state: &Rc<RefCell<UiState>>, window: &Window) {
-    window_config::open_preferences(state, window);
-}
-
-fn open_target_config(
-    state: &Rc<RefCell<UiState>>,
-    window: &Window,
-    editing: Option<TargetConfig>,
-) {
-    window_config::open_target_config(state, window, editing);
 }
 
 /// W20：SSH 已有连接探测结果（alias → 该 host 的 tmux/Herdr 行）。

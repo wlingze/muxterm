@@ -26,6 +26,7 @@ use super::window_status::{
 use super::*;
 
 use crate::frontend::ffi_client::{ClientOpenIntent, ClientTarget};
+use crate::frontend::linux::quickconnect::model::TargetConfig;
 
 impl AppWindow {
     /// W21 测试钩子：向指定 pane 的生产滚轮路径发一次滚动。
