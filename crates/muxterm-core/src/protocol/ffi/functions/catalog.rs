@@ -284,8 +284,8 @@ pub unsafe extern "C" fn muxterm_workspace_worktree_create_json(
 
 pub(crate) fn target_config_from_json(
     v: &serde_json::Value,
-) -> Option<crate::quickconnect::model::TargetConfig> {
-    use crate::quickconnect::model::{TargetConfig, TargetRuntime, TargetTransport};
+) -> Option<crate::projects::TargetConfig> {
+    use crate::projects::{TargetConfig, TargetRuntime, TargetTransport};
 
     let name = v.get("name")?.as_str()?.to_string();
     let runtime = TargetRuntime::from_str(v.get("runtime")?.as_str()?)?;
@@ -323,12 +323,12 @@ pub(crate) fn resolved_target_json(resolved: &crate::catalog::ResolvedTarget) ->
             "name": canonical.name,
             "runtime": canonical.runtime.as_str(),
             "transport": match &canonical.transport {
-                crate::quickconnect::model::TargetTransport::Local => "local",
-                crate::quickconnect::model::TargetTransport::Ssh { .. } => "ssh",
+                crate::projects::TargetTransport::Local => "local",
+                crate::projects::TargetTransport::Ssh { .. } => "ssh",
             },
             "target": match &canonical.transport {
-                crate::quickconnect::model::TargetTransport::Ssh { name } => name,
-                crate::quickconnect::model::TargetTransport::Local => "",
+                crate::projects::TargetTransport::Ssh { name } => name,
+                crate::projects::TargetTransport::Local => "",
             },
             "path": canonical.path,
             "session": canonical.session,

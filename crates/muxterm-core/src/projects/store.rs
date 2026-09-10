@@ -122,7 +122,7 @@ mod tests {
     use crate::config::ConfigDocument;
     use crate::config::SettingsService;
     use crate::projects::Project;
-    use crate::quickconnect::model::{TargetConfig, TargetRuntime, TargetTransport};
+    use crate::projects::{TargetConfig, TargetRuntime, TargetTransport};
     use std::fs;
 
     fn project(id: &str, path: &str) -> Project {

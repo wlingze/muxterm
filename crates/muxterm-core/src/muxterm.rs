@@ -347,7 +347,7 @@ impl Muxterm {
     /// to the frontend caller.
     pub(crate) async fn open_target(
         &mut self,
-        config: &crate::quickconnect::model::TargetConfig,
+        config: &crate::projects::TargetConfig,
         intent: ResolveIntent,
     ) -> anyhow::Result<&mut Workspace> {
         let resolved = self

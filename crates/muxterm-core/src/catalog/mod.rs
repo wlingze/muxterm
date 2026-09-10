@@ -261,10 +261,10 @@ impl Catalog {
     pub fn resolve_target(
         &self,
         connections: &mut ConnectionRegistry,
-        config: &crate::quickconnect::model::TargetConfig,
+        config: &crate::projects::TargetConfig,
         intent: ResolveIntent,
     ) -> Result<ResolvedTarget, resolver::ResolveError> {
-        use crate::quickconnect::model::{TargetRuntime, TargetTransport};
+        use crate::projects::{TargetRuntime, TargetTransport};
 
         let identity = config.identity_key();
         match config.runtime {
@@ -465,7 +465,7 @@ impl Catalog {
                 };
                 target.path = worktree.path.clone();
                 target.workspace_id = None;
-                if target.runtime == crate::quickconnect::model::TargetRuntime::Tmux {
+                if target.runtime == crate::projects::TargetRuntime::Tmux {
                     target.session = Some(worktree.id.to_string());
                 }
 
@@ -610,12 +610,12 @@ impl Catalog {
             let resolved = workspace.resolved_target()?;
             let canonical = &resolved.canonical;
             let target = match &canonical.transport {
-                crate::quickconnect::model::TargetTransport::Local => "",
-                crate::quickconnect::model::TargetTransport::Ssh { name } => name.as_str(),
+                crate::projects::TargetTransport::Local => "",
+                crate::projects::TargetTransport::Ssh { name } => name.as_str(),
             };
             let transport_id = match &canonical.transport {
-                crate::quickconnect::model::TargetTransport::Local => "local",
-                crate::quickconnect::model::TargetTransport::Ssh { .. } => "ssh",
+                crate::projects::TargetTransport::Local => "local",
+                crate::projects::TargetTransport::Ssh { .. } => "ssh",
             };
             let target_matches =
                 identity.target == target || (target.is_empty() && identity.target == "local");
@@ -682,7 +682,7 @@ impl Catalog {
     /// typed session/socket/workspace_id，禁止从 extra 猜身份）。
     fn resolved_from_candidate(
         &self,
-        config: &crate::quickconnect::model::TargetConfig,
+        config: &crate::projects::TargetConfig,
         candidate: &ExistingCandidate,
     ) -> ResolvedTarget {
         let mut canonical = config.clone();
@@ -798,8 +798,8 @@ fn existing_target_matches(candidate: &ExistingCandidate, identity: &ExistingCan
 
 fn target_config_from_existing(
     candidate: &ExistingCandidate,
-) -> anyhow::Result<crate::quickconnect::model::TargetConfig> {
-    use crate::quickconnect::model::{TargetRuntime, TargetTransport};
+) -> anyhow::Result<crate::projects::TargetConfig> {
+    use crate::projects::{TargetRuntime, TargetTransport};
 
     let runtime = TargetRuntime::from_str(&candidate.runtime_id)
         .ok_or_else(|| anyhow::anyhow!("unknown runtime '{}'", candidate.runtime_id))?;
@@ -815,12 +815,8 @@ fn target_config_from_existing(
     } else {
         String::new()
     };
-    let mut config = crate::quickconnect::model::TargetConfig::new(
-        candidate.name.clone(),
-        runtime,
-        transport,
-        path,
-    );
+    let mut config =
+        crate::projects::TargetConfig::new(candidate.name.clone(), runtime, transport, path);
     config.session = candidate
         .session
         .clone()

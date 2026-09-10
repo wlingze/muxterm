@@ -656,8 +656,8 @@ fn pane_agent_status(status: PaneAgentStatus) -> PaneStatus {
 mod tests {
     use super::*;
     use crate::catalog::resolver::ResolvedTarget;
+    use crate::projects::{TargetConfig, TargetRuntime, TargetTransport};
     use crate::protocol::task::Task;
-    use crate::quickconnect::model::{TargetConfig, TargetRuntime, TargetTransport};
     use crate::runtime::mock::MockRuntime;
     use crate::runtime::RuntimeCapability;
     use crate::workspace::provenance::WorkspaceProvenance;

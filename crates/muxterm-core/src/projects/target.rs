@@ -8,7 +8,193 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 
 use crate::config::{ProjectDocument, ProjectRuntime, ProjectTransport};
-use crate::quickconnect::model::{TargetConfig, TargetRuntime, TargetTransport};
+
+/// Runtime selected when opening a project or existing target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TargetRuntime {
+    Shell,
+    Tmux,
+    Herdr,
+}
+
+impl TargetRuntime {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Shell => "shell",
+            Self::Tmux => "tmux",
+            Self::Herdr => "herdr",
+        }
+    }
+
+    pub fn from_str(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "shell" => Some(Self::Shell),
+            "tmux" => Some(Self::Tmux),
+            "herdr" => Some(Self::Herdr),
+            _ => None,
+        }
+    }
+}
+
+/// Transport target selected when opening a project or existing target.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum TargetTransport {
+    Local,
+    Ssh { name: String },
+}
+
+impl TargetTransport {
+    pub fn label(&self) -> String {
+        match self {
+            Self::Local => "local".into(),
+            Self::Ssh { name } => name.clone(),
+        }
+    }
+
+    pub fn is_ssh(&self) -> bool {
+        matches!(self, Self::Ssh { .. })
+    }
+
+    /// Create detached sessions through the discovery backend.
+    pub fn create_backend(&self) -> (&'static str, Option<&str>) {
+        match self {
+            Self::Local => ("local", None),
+            Self::Ssh { name } => ("ssh", Some(name.as_str())),
+        }
+    }
+
+    /// Attach existing sessions through the control backend.
+    pub fn attach_backend(&self) -> (&'static str, Option<&str>) {
+        match self {
+            Self::Local => ("tmux", None),
+            Self::Ssh { name } => ("tmux-ssh", Some(name.as_str())),
+        }
+    }
+}
+
+/// Target identity and display metadata used by Projects and resolver inputs.
+///
+/// This is an interim compatibility record. The final design splits project
+/// persistence, existing candidates, and WorkspaceSpec into separate types.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TargetConfig {
+    pub name: String,
+    pub runtime: TargetRuntime,
+    pub transport: TargetTransport,
+    pub path: String,
+    pub socket: Option<String>,
+    pub session: Option<String>,
+    pub workspace_id: Option<String>,
+}
+
+impl TargetConfig {
+    pub fn new(
+        name: impl Into<String>,
+        runtime: TargetRuntime,
+        transport: TargetTransport,
+        path: impl Into<String>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            runtime,
+            transport,
+            path: path.into(),
+            socket: None,
+            session: None,
+            workspace_id: None,
+        }
+    }
+
+    /// Build a tmux target for an explicitly named session.
+    pub fn tmux_session(session: impl Into<String>, transport: TargetTransport) -> Self {
+        let session = session.into();
+        Self::new(session, TargetRuntime::Tmux, transport, "~")
+    }
+
+    /// Build a stable identity from transport, runtime, and attach fields.
+    pub fn identity_key(&self) -> String {
+        let (transport, target) = match &self.transport {
+            TargetTransport::Local => ("local", ""),
+            TargetTransport::Ssh { name } => ("ssh", name.as_str()),
+        };
+        let runtime = self.runtime.as_str();
+        let components = match self.runtime {
+            TargetRuntime::Shell => vec![
+                runtime.to_string(),
+                transport.to_string(),
+                target.to_string(),
+                if self.path.is_empty() {
+                    self.name.clone()
+                } else {
+                    self.path.clone()
+                },
+            ],
+            TargetRuntime::Tmux => vec![
+                runtime.to_string(),
+                transport.to_string(),
+                target.to_string(),
+                self.session
+                    .clone()
+                    .filter(|session| !session.is_empty())
+                    .unwrap_or_else(|| self.name.clone()),
+                self.socket.clone().unwrap_or_default(),
+            ],
+            TargetRuntime::Herdr
+                if self
+                    .session
+                    .as_deref()
+                    .is_some_and(|value| !value.is_empty())
+                    && self
+                        .socket
+                        .as_deref()
+                        .is_some_and(|value| !value.is_empty())
+                    && self
+                        .workspace_id
+                        .as_deref()
+                        .is_some_and(|value| !value.is_empty()) =>
+            {
+                vec![
+                    runtime.to_string(),
+                    transport.to_string(),
+                    target.to_string(),
+                    self.session.clone().unwrap_or_default(),
+                    self.socket.clone().unwrap_or_default(),
+                    self.workspace_id.clone().unwrap_or_default(),
+                ]
+            }
+            TargetRuntime::Herdr => vec![
+                "herdr-provisional".to_string(),
+                transport.to_string(),
+                target.to_string(),
+                self.name.clone(),
+                self.path.clone(),
+            ],
+        };
+        components
+            .iter()
+            .map(|component| format!("{}:{component}", component.len()))
+            .collect::<Vec<_>>()
+            .join("|")
+    }
+
+    /// Return fields used by QuickConnect and workspace search.
+    pub(crate) fn search_fields(&self) -> Vec<String> {
+        let transport = match &self.transport {
+            TargetTransport::Local => "local".to_string(),
+            TargetTransport::Ssh { name } => format!("ssh {name}"),
+        };
+        vec![
+            self.name.clone(),
+            self.runtime.as_str().to_string(),
+            transport,
+            self.path.clone(),
+            self.session.clone().unwrap_or_default(),
+            self.socket.clone().unwrap_or_default(),
+            self.workspace_id.clone().unwrap_or_default(),
+        ]
+    }
+}
 
 impl ProjectDocument {
     /// Convert a QuickConnect target into the serializable Project contract.

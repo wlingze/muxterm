@@ -9,8 +9,9 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use super::model::{QuickConnect, TargetConfig};
+use super::model::QuickConnect;
 use crate::config::ProjectDocument;
+use crate::projects::TargetConfig;
 
 /// QuickConnect 数据存储。
 #[derive(Debug, Clone, Default)]
@@ -208,7 +209,7 @@ impl QuickConnectStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::quickconnect::model::{TargetRuntime, TargetTransport};
+    use crate::projects::{TargetRuntime, TargetTransport};
 
     fn cfg(
         name: &str,

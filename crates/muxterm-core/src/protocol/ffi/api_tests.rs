@@ -29,6 +29,7 @@ use muxterm_protocol::{PaneId, TabId};
 use super::*;
 use crate::muxterm::should_export_state_change;
 use crate::projects::Project;
+use crate::projects::{TargetConfig, TargetRuntime, TargetTransport};
 use crate::protocol::ffi::functions::events::state_change_to_c;
 use crate::protocol::ffi::functions::task::ctask_to_task;
 use crate::protocol::ffi::functions::transport::session_candidate_json;
@@ -37,7 +38,6 @@ use crate::protocol::ffi::types::DIR_HORIZONTAL;
 use crate::protocol::state::{
     PaneAgentInfo, PaneAgentSession, PaneAgentSessionKind, PaneAgentStatus,
 };
-use crate::quickconnect::model::{TargetConfig, TargetRuntime, TargetTransport};
 use crate::runtime::mock::MockRuntime;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
