@@ -55,7 +55,7 @@ use crate::frontend::linux::quickconnect::store::QuickConnectStore;
 use crate::frontend::linux::quickconnect_panel::{
     build_root_items, build_search_items, ExistingNav, ExistingPanelState, PanelItem,
 };
-use crate::frontend::linux::scene_stack::SceneStack;
+use crate::frontend::linux::scene_stack::SceneStackView;
 use crate::frontend::linux::status_bar::{ConnectionSummary, StatusBar};
 #[cfg(test)]
 use crate::frontend::linux::theme::Rgb;
@@ -95,9 +95,8 @@ struct UiState {
     /// 每个工作区一个像素缓存（VTE 不随切走销毁；Runtime 不在 GUI）。
     pixel_cache: std::collections::HashMap<WorkspaceId, LayoutHost>,
     /// 常驻 Workspace Scene 的产品身份与可见场景。
-    scene_stack: SceneStack,
-    /// GTK scene container. Every live workspace keeps its LayoutHost page.
-    scene_stack_view: gtk4::Stack,
+    /// GTK-backed scene container. Every live workspace keeps its LayoutHost page.
+    scene_stack: SceneStackView,
     /// 前端拥有的 workspace topology/render 快照；Core 不持有其引用。
     view_store: ViewStore,
     /// 前端当前可见的 workspace；不等同于 Core snapshot 的 active 标记。
@@ -746,24 +745,18 @@ impl AppWindow {
 
         // 唯一 chrome：一条 status bar（LINUX-PLAN §3），没有第二条 TabBar。
         // 终端区包一层 Overlay：回底按钮浮在 VTE 右下角（W16a）。
-        let scene_stack_view = gtk4::Stack::builder()
-            .hexpand(true)
-            .vexpand(true)
-            .transition_type(gtk4::StackTransitionType::None)
-            .build();
-        scene_stack_view.set_widget_name("muxterm-scene-stack");
-        scene_stack_view.add_named(
+        let scene_stack = SceneStackView::new(
+            &startup_id.as_str(),
             &pixel_cache
                 .get(&startup_id)
                 .expect("startup layout")
                 .root_box,
-            Some(&startup_id.as_str()),
         );
-        scene_stack_view.set_visible_child_name(&startup_id.as_str());
+        let scene_stack_widget = scene_stack.widget();
         let layout_overlay = gtk4::Overlay::new();
         layout_overlay.set_hexpand(true);
         layout_overlay.set_vexpand(true);
-        layout_overlay.set_child(Some(&scene_stack_view));
+        layout_overlay.set_child(Some(&scene_stack_widget));
         let jump_latest = gtk4::Button::with_label("↓");
         jump_latest.set_widget_name("muxterm-jump-latest");
         jump_latest.set_halign(gtk4::Align::End);
@@ -866,8 +859,7 @@ impl AppWindow {
             event_pump,
             command_queue: RefCell::new(CommandQueue::default()),
             pixel_cache,
-            scene_stack: SceneStack::with_visible(startup_id.as_str()),
-            scene_stack_view,
+            scene_stack,
             view_store,
             visible_workspace: startup_id.clone(),
             runtime_info,
@@ -4791,7 +4783,6 @@ fn close_sidebar_workspace(s: &mut UiState, id: &WorkspaceId) {
     s.view_store.remove_workspace(&workspace_key);
     s.visible_tabs.remove(&workspace_key);
     s.local_tab_overrides.remove(&workspace_key);
-    remove_scene_page(s, &workspace_key);
     if s.mounted_ws.as_ref() == Some(id) {
         s.mounted_ws = None;
     }
@@ -4844,12 +4835,6 @@ fn close_sidebar_workspace(s: &mut UiState, id: &WorkspaceId) {
     } else {
         refresh_sidebar_if_open(s);
         maybe_refresh_status(s, true);
-    }
-}
-
-fn remove_scene_page(s: &mut UiState, workspace_id: &str) {
-    if let Some(child) = s.scene_stack_view.child_by_name(workspace_id) {
-        s.scene_stack_view.remove(&child);
     }
 }
 
@@ -4981,16 +4966,17 @@ fn show_workspace_scene(s: &mut UiState, id: WorkspaceId, seed_from_core: bool) 
                 .expect("layout 必须存在")
                 .set_font(&font);
         }
-        if s.scene_stack_view.child_by_name(&id.as_str()).is_none() {
+        if !s.scene_stack.has_page(&id.as_str()) {
             let root = s
                 .pixel_cache
                 .get(&id)
                 .expect("layout 必须存在")
                 .root_box
                 .clone();
-            s.scene_stack_view.add_named(&root, Some(&id.as_str()));
+            s.scene_stack.add_page(&id.as_str(), &root);
+        } else {
+            let _ = s.scene_stack.show(&id.as_str());
         }
-        s.scene_stack_view.set_visible_child_name(&id.as_str());
         s.mounted_ws = Some(id.clone());
     }
     if switching && had_cache && !s.uses_tmux() {

@@ -5,6 +5,8 @@
 
 use std::collections::HashSet;
 
+use gtk4::prelude::*;
+
 /// Workspace 场景的常驻索引。
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct SceneStack {
@@ -74,6 +76,84 @@ impl SceneStack {
     /// Return the stable scene ids as a set for diagnostics/tests.
     pub fn id_set(&self) -> HashSet<&str> {
         self.order.iter().map(String::as_str).collect()
+    }
+}
+
+/// GTK-backed SceneStack owner.
+///
+/// The pure [`SceneStack`] keeps lifecycle identity testable without GTK;
+/// this wrapper owns the corresponding resident `GtkStack` pages so callers
+/// cannot accidentally update one representation without the other.
+pub struct SceneStackView {
+    model: SceneStack,
+    stack: gtk4::Stack,
+}
+
+impl SceneStackView {
+    pub fn new(startup_id: &str, root: &impl IsA<gtk4::Widget>) -> Self {
+        let stack = gtk4::Stack::builder()
+            .hexpand(true)
+            .vexpand(true)
+            .transition_type(gtk4::StackTransitionType::None)
+            .build();
+        stack.set_widget_name("muxterm-scene-stack");
+        stack.add_named(root, Some(startup_id));
+        stack.set_visible_child_name(startup_id);
+        Self {
+            model: SceneStack::with_visible(startup_id),
+            stack,
+        }
+    }
+
+    pub fn widget(&self) -> gtk4::Stack {
+        self.stack.clone()
+    }
+
+    pub fn ensure(&mut self, workspace_id: &str) {
+        self.model.ensure(workspace_id);
+    }
+
+    /// Show a resident scene. The model remains authoritative even when its
+    /// page is still pending topology construction for one GTK tick.
+    pub fn show(&mut self, workspace_id: &str) -> bool {
+        if !self.model.show(workspace_id) {
+            return false;
+        }
+        if self.stack.child_by_name(workspace_id).is_some() {
+            self.stack.set_visible_child_name(workspace_id);
+        }
+        true
+    }
+
+    /// Add a workspace page once, then make it visible.
+    pub fn add_page(&mut self, workspace_id: &str, root: &impl IsA<gtk4::Widget>) {
+        self.model.ensure(workspace_id);
+        if self.stack.child_by_name(workspace_id).is_none() {
+            self.stack.add_named(root, Some(workspace_id));
+        }
+        let _ = self.show(workspace_id);
+    }
+
+    pub fn has_page(&self, workspace_id: &str) -> bool {
+        self.stack.child_by_name(workspace_id).is_some()
+    }
+
+    /// Remove a scene at the workspace-close boundary and reveal the model's
+    /// fallback scene, if any.
+    pub fn remove(&mut self, workspace_id: &str) {
+        self.model.remove(workspace_id);
+        if let Some(child) = self.stack.child_by_name(workspace_id) {
+            self.stack.remove(&child);
+        }
+        if let Some(visible) = self.model.visible_id() {
+            if self.stack.child_by_name(visible).is_some() {
+                self.stack.set_visible_child_name(visible);
+            }
+        }
+    }
+
+    pub fn visible_id(&self) -> Option<&str> {
+        self.model.visible_id()
     }
 }
 
