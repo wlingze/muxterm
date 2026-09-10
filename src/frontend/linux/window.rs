@@ -20,8 +20,8 @@ use crate::frontend::command_queue::CommandQueue;
 use crate::frontend::event_pump::EventPump;
 use crate::frontend::ffi_client::{
     ClientAttentionStatus, ClientConfig, ClientConfigSnapshot, ClientEventKind, ClientKeyBinding,
-    ClientLayout, ClientOpenRequest, ClientRuntimeCapability, ClientRuntimeInfo, ClientTask,
-    ClientWorkspaceEvent, FfiClient,
+    ClientLayout, ClientRuntimeCapability, ClientRuntimeInfo, ClientTask, ClientWorkspaceEvent,
+    FfiClient,
 };
 use crate::frontend::linux::app_shell::{AppShell, HeaderActions};
 use crate::frontend::linux::attention_compat::CompatibilityActivity;
@@ -38,7 +38,6 @@ use crate::frontend::linux::panel_model::PanelTab;
 use crate::frontend::linux::quickconnect::existing::ExistingEntry;
 use crate::frontend::linux::quickconnect::font::FontSettings;
 use crate::frontend::linux::quickconnect::model::{TargetConfig, TargetTransport};
-use crate::frontend::linux::quickconnect::project_flow::ProjectConnectIntent;
 use crate::frontend::linux::quickconnect::status_style::StatusBarMode;
 use crate::frontend::linux::quickconnect::store::QuickConnectStore;
 use crate::frontend::linux::quickconnect_panel::{
@@ -406,58 +405,6 @@ type ExistingSshProbeResult = Vec<(String, Vec<ExistingEntry>)>;
 /// worktree 创建对话框：分支 + 路径，Create 后后台建 checkout 并开新格。
 fn show_worktree_create_dialog(state: &Rc<RefCell<UiState>>, parent: &gtk4::Window) {
     window_worktree::show_worktree_create_dialog(state, parent);
-}
-
-/// TargetConfig + session → 稳定 WorkspaceId。
-fn workspace_id_for_config(config: &TargetConfig, session: &str) -> WorkspaceId {
-    window_connection::workspace_id_for_config(config, session)
-}
-
-fn connect_target(state: &Rc<RefCell<UiState>>, config: TargetConfig) {
-    window_connection::connect_target(state, config);
-}
-
-fn connect_target_with_intent(
-    state: &Rc<RefCell<UiState>>,
-    config: TargetConfig,
-    intent: ProjectConnectIntent,
-) {
-    window_connection::connect_target_with_intent(state, config, intent);
-}
-
-fn connect_open_request(state: &Rc<RefCell<UiState>>, request: ClientOpenRequest) {
-    window_connection::connect_open_request(state, request);
-}
-
-/// 最近打开的工作区 → QuickConnect 目标。
-///
-/// W6 §11.2：优先读 Core 保存的 `ResolvedTarget.canonical`（含 session /
-/// socket / workspace_id）；没有 descriptor 时回退旧五段推导（测试/直开）。
-fn recent_target_configs(
-    view_store: &ViewStore,
-    workspace_sockets: &HashMap<WorkspaceId, Option<String>>,
-    limit: usize,
-) -> Vec<TargetConfig> {
-    window_connection::recent_target_configs(view_store, workspace_sockets, limit)
-}
-
-/// Owned workspace DTO → QuickConnect 目标（Recents 列表 / 面板高亮）。
-///
-/// 读 `resolved_target().canonical`（Catalog 打开时保存）；无 descriptor 时
-/// 从 WorkspaceId 推导（测试 mock/CLI 直开路径）。
-fn workspace_to_target_config(
-    workspace: &crate::frontend::ffi_client::ClientWorkspace,
-    tmux_socket: Option<&str>,
-) -> TargetConfig {
-    window_connection::workspace_to_target_config(workspace, tmux_socket)
-}
-
-fn open_tmux_attach(state: &Rc<RefCell<UiState>>, parent: &Window, _create_only: bool) {
-    window_connection::open_tmux_attach(state, parent, _create_only);
-}
-
-fn open_ssh_connect(state: &Rc<RefCell<UiState>>, parent: &Window) {
-    window_connection::open_ssh_connect(state, parent);
 }
 
 pub(crate) fn chrome_css(theme: &Theme) -> String {
