@@ -13,6 +13,20 @@ use super::super::ffi_client::{
 };
 
 const RENDER_MAILBOX_CAPACITY: usize = 128;
+const COALESCED_OUTPUT_MAX_BYTES: usize = 64 * 1024;
+
+/// Delivery policy for a pane's render-data mailbox.
+///
+/// `Live` preserves every event boundary. `Coalesce` preserves bytes while
+/// merging adjacent output events. `Pause` keeps history and the newest full
+/// baseline, while dropping incremental output until the pane is resumed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PaneRenderPolicy {
+    #[default]
+    Live,
+    Coalesce,
+    Pause,
+}
 
 /// One owned workspace view snapshot.
 #[derive(Debug, Default)]
@@ -24,6 +38,8 @@ pub struct WorkspaceView {
     /// so a renderer never has to query Core while switching scenes.
     pub layouts: HashMap<u32, ClientLayout>,
     render_mailboxes: HashMap<u32, VecDeque<ClientEvent>>,
+    render_policies: HashMap<u32, PaneRenderPolicy>,
+    pending_baselines: std::collections::HashSet<u32>,
 }
 
 /// Owned snapshots and render mailboxes keyed by stable workspace identity.
@@ -93,6 +109,31 @@ impl ViewStore {
         self.ensure_workspace(workspace_id).layouts = layouts.into_iter().collect();
     }
 
+    /// Set the delivery policy for one pane and return the previous policy.
+    pub fn set_pane_render_policy(
+        &mut self,
+        workspace_id: &str,
+        pane_id: u32,
+        policy: PaneRenderPolicy,
+    ) -> PaneRenderPolicy {
+        let view = self.ensure_workspace(workspace_id);
+        let previous = view
+            .render_policies
+            .insert(pane_id, policy)
+            .unwrap_or_default();
+        if previous == PaneRenderPolicy::Pause && policy != PaneRenderPolicy::Pause {
+            view.pending_baselines.insert(pane_id);
+        }
+        previous
+    }
+
+    pub fn pane_render_policy(&self, workspace_id: &str, pane_id: u32) -> PaneRenderPolicy {
+        self.workspaces
+            .get(workspace_id)
+            .and_then(|view| view.render_policies.get(&pane_id).copied())
+            .unwrap_or_default()
+    }
+
     /// Retain only render-data events. Control events are represented by the
     /// owned topology snapshot and do not belong in a pane byte mailbox.
     pub fn push_render_event(&mut self, workspace_id: &str, event: ClientEvent) {
@@ -105,15 +146,23 @@ impl ViewStore {
         ) {
             return;
         }
-        let mailbox = self
-            .ensure_workspace(workspace_id)
-            .render_mailboxes
-            .entry(event.pane_id)
-            .or_default();
-        if mailbox.len() == RENDER_MAILBOX_CAPACITY {
-            mailbox.pop_front();
+        let view = self.ensure_workspace(workspace_id);
+        let policy = view
+            .render_policies
+            .get(&event.pane_id)
+            .copied()
+            .unwrap_or_default();
+        let pending_baseline = view.pending_baselines.contains(&event.pane_id);
+        let mailbox = view.render_mailboxes.entry(event.pane_id).or_default();
+        if pending_baseline {
+            push_paused(mailbox, event);
+        } else {
+            match policy {
+                PaneRenderPolicy::Live => push_bounded(mailbox, event),
+                PaneRenderPolicy::Coalesce => push_coalesced(mailbox, event),
+                PaneRenderPolicy::Pause => push_paused(mailbox, event),
+            }
         }
-        mailbox.push_back(event);
     }
 
     /// Apply one owned FFI event without exposing the C event buffer to the
@@ -142,29 +191,97 @@ impl ViewStore {
     /// snapshot and can be discarded. History and events after it remain
     /// queued for the render drain.
     pub fn take_pane_baseline(&mut self, workspace_id: &str, pane_id: u32) -> Option<Vec<u8>> {
-        let mailbox = self
+        let data = {
+            let mailbox = self
+                .workspaces
+                .get_mut(workspace_id)
+                .and_then(|workspace| workspace.render_mailboxes.get_mut(&pane_id))?;
+            let baseline_index = mailbox.iter().rposition(|event| {
+                matches!(
+                    event.kind(),
+                    ClientEventKind::PaneSnapshot | ClientEventKind::PaneFrame
+                )
+            })?;
+            let data = mailbox.get(baseline_index)?.data.clone();
+            let mut retained = VecDeque::new();
+            for _ in 0..=baseline_index {
+                let event = mailbox
+                    .pop_front()
+                    .expect("baseline index must describe a queued event");
+                if matches!(event.kind(), ClientEventKind::PaneHistory) {
+                    retained.push_back(event);
+                }
+            }
+            retained.extend(mailbox.drain(..));
+            *mailbox = retained;
+            data
+        };
+        if let Some(view) = self.workspaces.get_mut(workspace_id) {
+            view.pending_baselines.remove(&pane_id);
+        }
+        Some(data)
+    }
+
+    /// Take a baseline requested when a paused pane becomes visible again.
+    ///
+    /// A resumed surface already has its last known pixels, so queued history
+    /// is discarded after the baseline is found; output after that baseline
+    /// remains queued for ordered catch-up.
+    pub fn take_pane_resume_baseline(
+        &mut self,
+        workspace_id: &str,
+        pane_id: u32,
+    ) -> Option<Vec<u8>> {
+        let pending = self
             .workspaces
-            .get_mut(workspace_id)
-            .and_then(|workspace| workspace.render_mailboxes.get_mut(&pane_id))?;
-        let baseline_index = mailbox.iter().rposition(|event| {
-            matches!(
-                event.kind(),
-                ClientEventKind::PaneSnapshot | ClientEventKind::PaneFrame
-            )
-        })?;
-        let data = mailbox.get(baseline_index)?.data.clone();
-        let mut retained = VecDeque::new();
-        for _ in 0..=baseline_index {
-            let event = mailbox
-                .pop_front()
-                .expect("baseline index must describe a queued event");
-            if matches!(event.kind(), ClientEventKind::PaneHistory) {
-                retained.push_back(event);
+            .get(workspace_id)
+            .is_some_and(|view| view.pending_baselines.contains(&pane_id));
+        if !pending {
+            return None;
+        }
+        let data = self.take_pane_baseline(workspace_id, pane_id)?;
+        if let Some(view) = self.workspaces.get_mut(workspace_id) {
+            if let Some(mailbox) = view.render_mailboxes.get_mut(&pane_id) {
+                mailbox.retain(|event| event.kind() != ClientEventKind::PaneHistory);
             }
         }
-        retained.extend(mailbox.drain(..));
-        *mailbox = retained;
         Some(data)
+    }
+}
+
+fn push_bounded(mailbox: &mut VecDeque<ClientEvent>, event: ClientEvent) {
+    if mailbox.len() == RENDER_MAILBOX_CAPACITY {
+        mailbox.pop_front();
+    }
+    mailbox.push_back(event);
+}
+
+fn push_coalesced(mailbox: &mut VecDeque<ClientEvent>, event: ClientEvent) {
+    if event.kind() == ClientEventKind::PaneOutput {
+        if let Some(previous) = mailbox.back_mut().filter(|previous| {
+            previous.kind() == ClientEventKind::PaneOutput
+                && previous.data.len() + event.data.len() <= COALESCED_OUTPUT_MAX_BYTES
+        }) {
+            previous.data.extend_from_slice(&event.data);
+            return;
+        }
+    }
+    push_bounded(mailbox, event);
+}
+
+fn push_paused(mailbox: &mut VecDeque<ClientEvent>, event: ClientEvent) {
+    match event.kind() {
+        ClientEventKind::PaneOutput => {}
+        ClientEventKind::PaneSnapshot | ClientEventKind::PaneFrame => {
+            let history = mailbox
+                .drain(..)
+                .filter(|queued| queued.kind() == ClientEventKind::PaneHistory)
+                .collect::<VecDeque<_>>();
+            *mailbox = history;
+            mailbox.push_back(event);
+        }
+        ClientEventKind::PaneHistory => push_bounded(mailbox, event),
+        ClientEventKind::PaneClosed | ClientEventKind::PaneResized | ClientEventKind::Other(_) => {}
     }
 }
 
@@ -172,7 +289,7 @@ impl ViewStore {
 mod tests {
     use super::{
         ClientEvent, ClientEventKind, ClientLayout, ClientPane, ClientTab, ClientWorkspace,
-        ViewStore,
+        PaneRenderPolicy, ViewStore,
     };
 
     fn event(type_: u32, pane_id: u32, byte: u8) -> ClientEvent {
@@ -289,5 +406,98 @@ mod tests {
         assert_eq!(remaining[0].kind(), ClientEventKind::PaneHistory);
         assert_eq!(remaining[0].data, vec![9]);
         assert_eq!(remaining[1].data, vec![5]);
+    }
+
+    #[test]
+    fn coalesce_policy_merges_adjacent_output_without_losing_bytes() {
+        let mut store = ViewStore::default();
+        store.set_pane_render_policy("local//one/shell/", 7, PaneRenderPolicy::Coalesce);
+        store.push_render_event(
+            "local//one/shell/",
+            event(crate::ffi::types::STATE_PANE_OUTPUT, 7, 1),
+        );
+        store.push_render_event(
+            "local//one/shell/",
+            event(crate::ffi::types::STATE_PANE_OUTPUT, 7, 2),
+        );
+        store.push_render_event(
+            "local//one/shell/",
+            event(crate::ffi::types::STATE_PANE_FRAME, 7, 3),
+        );
+        store.push_render_event(
+            "local//one/shell/",
+            event(crate::ffi::types::STATE_PANE_OUTPUT, 7, 4),
+        );
+
+        let events = store.take_pane_render_events("local//one/shell/", 7);
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].data, vec![1, 2]);
+        assert_eq!(events[1].kind(), ClientEventKind::PaneFrame);
+        assert_eq!(events[2].data, vec![4]);
+    }
+
+    #[test]
+    fn pause_policy_drops_output_but_keeps_latest_baseline_and_history() {
+        let mut store = ViewStore::default();
+        store.set_pane_render_policy("local//one/shell/", 7, PaneRenderPolicy::Pause);
+        store.push_render_event(
+            "local//one/shell/",
+            event(crate::ffi::types::STATE_PANE_HISTORY, 7, 9),
+        );
+        store.push_render_event(
+            "local//one/shell/",
+            event(crate::ffi::types::STATE_PANE_OUTPUT, 7, 1),
+        );
+        store.push_render_event(
+            "local//one/shell/",
+            event(crate::ffi::types::STATE_PANE_SNAPSHOT, 7, 2),
+        );
+        store.push_render_event(
+            "local//one/shell/",
+            event(crate::ffi::types::STATE_PANE_OUTPUT, 7, 3),
+        );
+        store.push_render_event(
+            "local//one/shell/",
+            event(crate::ffi::types::STATE_PANE_FRAME, 7, 4),
+        );
+
+        assert_eq!(
+            store.take_pane_baseline("local//one/shell/", 7),
+            Some(vec![4])
+        );
+        let events = store.take_pane_render_events("local//one/shell/", 7);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind(), ClientEventKind::PaneHistory);
+        assert_eq!(events[0].data, vec![9]);
+    }
+
+    #[test]
+    fn resuming_paused_pane_waits_for_baseline_before_accepting_output() {
+        let mut store = ViewStore::default();
+        store.set_pane_render_policy("local//one/shell/", 7, PaneRenderPolicy::Pause);
+        store.push_render_event(
+            "local//one/shell/",
+            event(crate::ffi::types::STATE_PANE_SNAPSHOT, 7, 2),
+        );
+        assert_eq!(
+            store.set_pane_render_policy("local//one/shell/", 7, PaneRenderPolicy::Live),
+            PaneRenderPolicy::Pause
+        );
+        store.push_render_event(
+            "local//one/shell/",
+            event(crate::ffi::types::STATE_PANE_OUTPUT, 7, 3),
+        );
+
+        assert_eq!(
+            store.take_pane_resume_baseline("local//one/shell/", 7),
+            Some(vec![2])
+        );
+        assert!(store
+            .take_pane_render_events("local//one/shell/", 7)
+            .is_empty());
+        assert_eq!(
+            store.pane_render_policy("local//one/shell/", 7),
+            PaneRenderPolicy::Live
+        );
     }
 }

@@ -14,8 +14,9 @@ use crate::frontend::ffi_client::{
 use crate::frontend::i18n::{self, Key as TextKey};
 use crate::frontend::linux::quickconnect::existing::ExistingEntry;
 use crate::frontend::linux::quickconnect::model::{
-    QuickConnectEntry, TargetConfig, WorkspaceQuery,
+    QuickBadge, QuickConnect, QuickConnectEntry, TargetConfig, WorkspaceQuery,
 };
+use crate::frontend::linux::quickconnect::store::QuickConnectStore;
 use crate::frontend::linux::workspace_sidebar::{ActivityIndicator, AgentSidebarItem};
 use crate::frontend::ssh_probe::SshReach;
 
@@ -101,6 +102,201 @@ pub struct PanelShowArgs {
     pub ssh_reach: HashMap<String, SshReach>,
     pub existing: Rc<RefCell<ExistingPanelState>>,
     pub on_existing_nav: Box<dyn Fn(ExistingNav)>,
+}
+
+pub fn build_items(store: &QuickConnectStore, current: Option<&TargetConfig>) -> Vec<PanelItem> {
+    build_items_with_recent_limit(store, current, 5)
+}
+
+fn build_items_with_recent_limit(
+    store: &QuickConnectStore,
+    current: Option<&TargetConfig>,
+    recent_limit: usize,
+) -> Vec<PanelItem> {
+    let current_id = current.map(QuickConnect::unique_id);
+    let mut items: Vec<PanelItem> =
+        QuickConnect::entries(&store.recents, &store.projects, recent_limit)
+            .into_iter()
+            .map(|mut entry| {
+                let is_current = current_id
+                    .as_ref()
+                    .is_some_and(|id| QuickConnect::unique_id(&entry.config) == *id);
+                if !entry.badges.contains(&QuickBadge::Recent) {
+                    entry.project_id = store.project_id_for(&entry.config);
+                }
+                PanelItem::Target(entry, is_current)
+            })
+            .collect();
+    items.push(PanelItem::NewProject);
+    items
+}
+
+/// 搜索用的完整 Recent/Project 集合；空 query 的展示仍由 `build_items` 保持
+/// 紧凑，只在用户开始输入时把这里的隐藏 Recent 合并进来。
+pub fn build_search_items(
+    store: &QuickConnectStore,
+    current: Option<&TargetConfig>,
+) -> Vec<PanelItem> {
+    build_items_with_recent_limit(store, current, store.recents.len())
+}
+
+/// W20b：根列表 = 第一项「已有的连接」Folder + 原 Recent/Project + New Project。
+pub fn build_root_items(
+    store: &QuickConnectStore,
+    current: Option<&TargetConfig>,
+) -> Vec<PanelItem> {
+    let mut items = vec![PanelItem::Folder {
+        id: "existing-connections",
+        title: i18n::tr(TextKey::ExistingConnections),
+    }];
+    items.extend(build_items(store, current));
+    items
+}
+
+/// 把已有连接压平成根查询候选。空 query 时仍只显示 Folder，避免改变
+/// 原有的工作区入口；用户开始搜索后才把 local/SSH 的 Existing 行并入结果。
+pub fn existing_root_items(existing: &ExistingPanelState) -> Vec<PanelItem> {
+    let mut result = Vec::new();
+    let mut seen = HashSet::new();
+    let mut entries = existing.locals.clone();
+    let mut aliases: Vec<&String> = existing.remote.keys().collect();
+    aliases.sort();
+    for alias in aliases {
+        if let Some(rows) = existing.remote.get(alias) {
+            entries.extend(rows.iter().cloned());
+        }
+    }
+    entries.sort_by_key(|entry| QuickConnect::unique_id(&entry.target_config()));
+    for entry in entries {
+        let id = QuickConnect::unique_id(&entry.target_config());
+        if seen.insert(id) {
+            result.push(PanelItem::Existing(entry));
+        }
+    }
+    result
+}
+
+/// 根目录搜索候选：Recent/Project 仍保持原顺序，已存在连接仅在用户
+/// 输入查询后并入，避免空面板被大量 runtime 行挤满。
+pub fn root_items_with_existing(
+    base: &[PanelItem],
+    existing: &ExistingPanelState,
+    query: &str,
+) -> Vec<PanelItem> {
+    root_items_with_existing_and_search(base, &[], existing, query)
+}
+
+/// 根目录搜索候选的完整版本：非空 query 时合并完整 Recent/Project 集合，
+/// 再追加 Existing workspace；空 query 仍只返回紧凑的 `base`。
+pub fn root_items_with_existing_and_search(
+    base: &[PanelItem],
+    search_base: &[PanelItem],
+    existing: &ExistingPanelState,
+    query: &str,
+) -> Vec<PanelItem> {
+    let mut items = base.to_vec();
+    if query.trim().is_empty() {
+        return items;
+    }
+    let mut seen: HashSet<String> = items
+        .iter()
+        .filter_map(|item| match item {
+            PanelItem::Target(entry, _) => Some(QuickConnect::unique_id(&entry.config)),
+            _ => None,
+        })
+        .collect();
+    for item in search_base {
+        let PanelItem::Target(entry, _) = item else {
+            continue;
+        };
+        if seen.insert(QuickConnect::unique_id(&entry.config)) {
+            items.push(item.clone());
+        }
+    }
+    let root_existing = existing_root_items(existing);
+    if root_existing.is_empty() && existing.probe_inflight {
+        items.push(PanelItem::Loading);
+    }
+    for item in root_existing {
+        let PanelItem::Existing(entry) = &item else {
+            continue;
+        };
+        if seen.insert(QuickConnect::unique_id(&entry.target_config())) {
+            items.push(item);
+        }
+    }
+    items
+}
+
+/// W20c：已有的连接子目录内容（纯函数，可单测）。
+///
+/// - Home：Back + Local + SSH 两个 Folder
+/// - Local：Back + 本地 tmux/Herdr 行（空 → Empty）
+/// - SshHosts：Back + 探测到的 Host 行（探测中 → Loading）
+/// - SshHost{alias}：Back + 该 host 的 tmux/Herdr 行
+pub fn existing_items(
+    nav: ExistingNav,
+    locals: &[ExistingEntry],
+    hosts: &[String],
+    probe_inflight: bool,
+    remote_of_alias: impl Fn(&str) -> Vec<ExistingEntry>,
+) -> Vec<PanelItem> {
+    let mut items = vec![PanelItem::Back];
+    match nav {
+        ExistingNav::Root | ExistingNav::Home => {
+            // C9：扁平 runtime list。locals + 每个 connect 的远端行，双份不去重。
+            let mut rows: Vec<ExistingEntry> = locals.to_vec();
+            for host in hosts {
+                rows.extend(remote_of_alias(host));
+            }
+            if rows.is_empty() {
+                if probe_inflight {
+                    items.push(PanelItem::Loading);
+                } else {
+                    items.push(PanelItem::Empty {
+                        title: i18n::tr(TextKey::ExistingEmpty),
+                    });
+                }
+            } else {
+                items.extend(rows.into_iter().map(PanelItem::Existing));
+            }
+        }
+        ExistingNav::Local => {
+            if locals.is_empty() {
+                items.push(PanelItem::Empty {
+                    title: i18n::tr(TextKey::ExistingEmpty),
+                });
+            } else {
+                items.extend(locals.iter().cloned().map(PanelItem::Existing));
+            }
+        }
+        ExistingNav::SshHosts => {
+            if hosts.is_empty() {
+                if probe_inflight {
+                    items.push(PanelItem::Loading);
+                } else {
+                    items.push(PanelItem::Empty {
+                        title: i18n::tr(TextKey::ExistingEmpty),
+                    });
+                }
+            } else {
+                items.extend(hosts.iter().map(|alias| PanelItem::Host {
+                    alias: alias.clone(),
+                }));
+            }
+        }
+        ExistingNav::SshHost { alias } => {
+            let rows = remote_of_alias(&alias);
+            if rows.is_empty() {
+                items.push(PanelItem::Empty {
+                    title: i18n::tr(TextKey::ExistingEmpty),
+                });
+            } else {
+                items.extend(rows.into_iter().map(PanelItem::Existing));
+            }
+        }
+    }
+    items
 }
 
 /// 按查询过滤 QuickConnect 候选，并保持原始顺序作为同分排序依据。

@@ -18,37 +18,16 @@ use gtk4::{
     Orientation, Overlay, ScrolledWindow, SelectionMode, Widget, Window,
 };
 
-const ENTRY_HEIGHT: i32 = 36;
+#[path = "quick_pick_model.rs"]
+mod quick_pick_model;
+
+pub use quick_pick_model::{
+    filter_items, freeform_filter, fuzzy_match, panel_list_heights, QuickPickItem, ENTRY_HEIGHT,
+    FREEFORM_ID,
+};
+
 const PANEL_TOP_MARGIN: i32 = 28;
 const ROW_VERTICAL_MARGIN: i32 = 2;
-
-/// 一条可选项。
-#[derive(Debug, Clone)]
-pub struct QuickPickItem {
-    pub id: String,
-    pub label: String,
-    pub detail: Option<String>,
-}
-
-/// 根据父窗口高度计算面板/列表高度（纯函数，保证列表不溢出）。
-/// 返回 `(panel_h, list_h)`。
-pub fn panel_list_heights(parent_h: i32) -> (i32, i32) {
-    let panel_h = (parent_h / 2).clamp(200, 420);
-    let list_h = (panel_h - ENTRY_HEIGHT - 8).max(100);
-    (panel_h, list_h)
-}
-
-/// 按 query 过滤候选项（label / detail 模糊匹配）。
-pub fn filter_items(items: &[QuickPickItem], query: &str) -> Vec<QuickPickItem> {
-    items
-        .iter()
-        .filter(|it| {
-            fuzzy_match(query, &it.label)
-                || it.detail.as_ref().is_some_and(|d| fuzzy_match(query, d))
-        })
-        .cloned()
-        .collect()
-}
 
 /// 弹出 Quick Pick。`on_done(None)` 表示取消；`Some(item)` 表示选中。
 pub fn show<F>(parent: &impl IsA<Window>, placeholder: &str, items: Vec<QuickPickItem>, on_done: F)
@@ -293,36 +272,6 @@ where
         gtk4::prelude::GtkWindowExt::set_focus(&parent_focus, Some(&entry_focus));
         entry_focus.grab_focus();
     });
-}
-
-/// 带自由输入的 Quick Pick：输入框非空时，始终把当前文本作为首选项。
-///
-/// 用于 SSH 目标等「可从列表选、也可直接敲」的场景。选中自由输入项时
-/// `id == FREEFORM_ID`。
-pub const FREEFORM_ID: &str = "__typed__";
-
-/// 自由输入过滤（纯函数）：query 非空时首项为 typed target。
-pub fn freeform_filter(presets: &[QuickPickItem], query: &str) -> Vec<QuickPickItem> {
-    let mut next = Vec::new();
-    let qtrim = query.trim();
-    if !qtrim.is_empty() {
-        next.push(QuickPickItem {
-            id: FREEFORM_ID.into(),
-            label: qtrim.to_string(),
-            detail: Some(crate::frontend::i18n::tr(
-                crate::frontend::i18n::Key::FreeformUseTypedTarget,
-            )),
-        });
-    }
-    for it in presets {
-        if qtrim.is_empty()
-            || fuzzy_match(qtrim, &it.label)
-            || it.detail.as_ref().is_some_and(|d| fuzzy_match(qtrim, d))
-        {
-            next.push(it.clone());
-        }
-    }
-    next
 }
 
 pub fn show_freeform<F>(
@@ -618,161 +567,5 @@ pub(crate) fn ensure_overlay(parent: &Window) -> Overlay {
             parent.set_child(Some(&ov));
             ov
         }
-    }
-}
-
-/// 模糊匹配：查询的每个字符按序出现在目标中（大小写不敏感）。
-pub fn fuzzy_match(query: &str, target: &str) -> bool {
-    if query.is_empty() {
-        return true;
-    }
-    let q = query.to_lowercase();
-    let t = target.to_lowercase();
-    if t.contains(&q) {
-        return true;
-    }
-    let mut ti = t.chars().peekable();
-    for qc in q.chars() {
-        loop {
-            match ti.next() {
-                Some(tc) if tc == qc => break,
-                Some(_) => continue,
-                None => return false,
-            }
-        }
-    }
-    true
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fuzzy_empty_matches_all() {
-        assert!(fuzzy_match("", "tmux: attach"));
-    }
-
-    #[test]
-    fn fuzzy_substring() {
-        assert!(fuzzy_match("tmux", "tmux: attach to session"));
-        assert!(fuzzy_match("tab", "new tab"));
-        assert!(!fuzzy_match("zzz", "new tab"));
-    }
-
-    #[test]
-    fn fuzzy_subsequence() {
-        assert!(fuzzy_match("ntb", "new tab"));
-        assert!(fuzzy_match("tcns", "tmux: create new session"));
-    }
-
-    /// 对应：模糊匹配大小写不敏感。
-    #[test]
-    fn test_quick_pick_fuzzy_case_insensitive() {
-        assert!(fuzzy_match("TMUX", "tmux: attach"));
-        assert!(fuzzy_match("NeW tAb", "new tab"));
-        assert!(fuzzy_match("ntb", "NEW TAB"));
-    }
-
-    /// 对应：中文命令名可匹配。
-    #[test]
-    fn test_quick_pick_fuzzy_chinese() {
-        assert!(fuzzy_match("命令", "打开命令面板"));
-        assert!(fuzzy_match("面板", "打开命令面板"));
-        assert!(!fuzzy_match("窗口", "打开命令面板"));
-    }
-
-    #[test]
-    fn test_quick_pick_fuzzy_no_match() {
-        assert!(!fuzzy_match("zzz", "new tab"));
-        assert!(!fuzzy_match("abcdef", "ab"));
-    }
-
-    /// 对应：过滤保持输入顺序（无额外排序）。
-    #[test]
-    fn test_quick_pick_filter_preserves_order() {
-        let items = vec![
-            QuickPickItem {
-                id: "a".into(),
-                label: "new tab".into(),
-                detail: None,
-            },
-            QuickPickItem {
-                id: "b".into(),
-                label: "tmux: attach".into(),
-                detail: None,
-            },
-            QuickPickItem {
-                id: "c".into(),
-                label: "close tab".into(),
-                detail: None,
-            },
-        ];
-        let f = filter_items(&items, "tab");
-        assert_eq!(f.len(), 2);
-        assert_eq!(f[0].id, "a");
-        assert_eq!(f[1].id, "c");
-    }
-
-    #[test]
-    fn test_quick_pick_filter_empty_query_keeps_all() {
-        let items = vec![QuickPickItem {
-            id: "1".into(),
-            label: "x".into(),
-            detail: Some("detail".into()),
-        }];
-        assert_eq!(filter_items(&items, "").len(), 1);
-    }
-
-    #[test]
-    fn test_quick_pick_filter_empty_list() {
-        assert!(filter_items(&[], "anything").is_empty());
-    }
-
-    /// 对应：命令面板滚动——列表高度钳制，不超过面板可用区。
-    #[test]
-    fn test_quick_pick_list_height_clamped() {
-        let (panel, list) = panel_list_heights(900);
-        assert_eq!(panel, 420); // clamp 上限
-        assert_eq!(list, panel - ENTRY_HEIGHT - 8);
-        assert!(list <= panel);
-
-        let (panel2, list2) = panel_list_heights(100);
-        assert_eq!(panel2, 200); // clamp 下限
-        assert_eq!(list2, 156); // 200 - 36 - 8 = 156 (>100)
-        assert!(list2 <= panel2);
-        assert!(list2 >= 100);
-    }
-
-    #[test]
-    fn test_quick_pick_filter_matches_detail() {
-        let items = vec![QuickPickItem {
-            id: "s".into(),
-            label: "session".into(),
-            detail: Some("main · 2 windows".into()),
-        }];
-        assert_eq!(filter_items(&items, "windows").len(), 1);
-    }
-
-    #[test]
-    fn test_quick_pick_freeform_filter_prepends_typed() {
-        let presets = vec![QuickPickItem {
-            id: "cfg".into(),
-            label: "alice@box:22".into(),
-            detail: Some("from config".into()),
-        }];
-        let f = freeform_filter(&presets, "bob@h");
-        assert_eq!(f[0].id, FREEFORM_ID);
-        assert_eq!(f[0].label, "bob@h");
-        // 不匹配预设时只有 typed 一项
-        assert_eq!(f.len(), 1);
-
-        let f2 = freeform_filter(&presets, "alice");
-        assert_eq!(f2[0].id, FREEFORM_ID);
-        assert!(f2.iter().any(|i| i.id == "cfg"));
-
-        let empty_q = freeform_filter(&presets, "");
-        assert_eq!(empty_q.len(), 1);
-        assert_eq!(empty_q[0].id, "cfg");
     }
 }

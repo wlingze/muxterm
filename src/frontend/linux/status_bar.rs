@@ -18,6 +18,11 @@ use crate::frontend::linux::quickconnect::status_style::{
 };
 use crate::frontend::linux::theme::Theme;
 
+#[path = "status_bar_model.rs"]
+mod status_bar_model;
+
+pub use status_bar_model::ConnectionSummary;
+
 /// status bar 高度（≤ 24px）。
 pub const STATUS_BAR_HEIGHT: u32 = 24;
 
@@ -31,22 +36,6 @@ pub fn status_dot_css() -> &'static str {
     ".muxterm-status-dot.status-ok { color: #27ae60; }\n\
      .muxterm-status-dot.status-warn { color: #f39c12; }\n\
      .muxterm-status-dot.status-err { color: #c0392b; }"
-}
-
-/// 连接摘要（C7.7 popover 内容）。
-#[derive(Debug, Clone, Default)]
-pub struct ConnectionSummary {
-    pub kind: String,
-    pub host: Option<String>,
-    pub status: String,
-    /// 累计下行字节（SSH transport 读端）。
-    pub down: u64,
-    /// 累计上行字节（SSH PtyWriter 写端）。
-    pub up: u64,
-    /// 瞬时下行字节/秒（由连续两次 snapshot 差出来，不是累计）。
-    pub down_rate: u64,
-    /// 瞬时上行字节/秒。
-    pub up_rate: u64,
 }
 
 /// muxterm status bar（唯一 chrome）。
