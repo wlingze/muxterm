@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 @testable import MuxtermChrome
 
@@ -158,5 +159,77 @@ final class MacCommandQueueTests: XCTestCase {
 
         XCTAssertEqual(queue.count, 3)
         XCTAssertEqual(queue.drain().map(\.failureMessage), ["first", "input", "second"])
+    }
+
+    func testAttentionMutationsRemainWorkspaceAwareAndOrdered() {
+        var queue = MacCommandQueue()
+        queue.enqueue(.attention(
+            workspaceID: "one",
+            .acknowledge(paneID: 3),
+            failureMessage: "acknowledge failed"
+        ))
+        queue.enqueue(.attention(
+            workspaceID: "two",
+            .mute(paneID: 4, seconds: 30),
+            failureMessage: "mute failed"
+        ))
+
+        XCTAssertEqual(queue.count, 2)
+        let commands = queue.drain()
+        XCTAssertEqual(commands.map { $0.workspaceID ?? "" }, ["one", "two"])
+        guard case .attention(.acknowledge(let firstPaneID)) = commands[0].operation,
+              case .attention(.mute(let secondPaneID, let seconds)) = commands[1].operation
+        else {
+            return XCTFail("expected ordered attention operations")
+        }
+        XCTAssertEqual(firstPaneID, 3)
+        XCTAssertEqual(secondPaneID, 4)
+        XCTAssertEqual(seconds, 30)
+    }
+
+    func testConsecutiveViewportChangesForOneWorkspaceAndPaneKeepLastOffset() {
+        var queue = MacCommandQueue()
+        queue.enqueue(.viewport(
+            workspaceID: "one",
+            paneID: 3,
+            offset: 12
+        ))
+        queue.enqueue(.viewport(
+            workspaceID: "one",
+            paneID: 3,
+            offset: 4
+        ))
+
+        XCTAssertEqual(queue.count, 1)
+        guard case .viewport(let paneID, let offset) = queue.drain()[0].operation else {
+            return XCTFail("expected a viewport operation")
+        }
+        XCTAssertEqual(paneID, 3)
+        XCTAssertEqual(offset, 4)
+    }
+
+    func testViewportChangesAcrossPanesRemainOrdered() {
+        var queue = MacCommandQueue()
+        queue.enqueue(.viewport(workspaceID: "one", paneID: 3, offset: 12))
+        queue.enqueue(.viewport(workspaceID: "one", paneID: 4, offset: 8))
+        queue.enqueue(.viewport(workspaceID: "two", paneID: 3, offset: 2))
+
+        XCTAssertEqual(queue.count, 3)
+        XCTAssertEqual(queue.drain().map { $0.workspaceID ?? "" }, ["one", "one", "two"])
+    }
+
+    func testWorkspaceCloseKeepsExplicitWorkspaceIdentity() {
+        var queue = MacCommandQueue()
+        queue.enqueue(.closeWorkspace(
+            workspaceID: "one",
+            failureMessage: "close failed"
+        ))
+
+        let commands = queue.drain()
+        XCTAssertEqual(commands.count, 1)
+        XCTAssertEqual(commands[0].workspaceID, "one")
+        guard case .closeWorkspace = commands[0].operation else {
+            return XCTFail("expected a workspace close operation")
+        }
     }
 }

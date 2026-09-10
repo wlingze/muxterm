@@ -39,6 +39,9 @@ public enum QueuedMuxOperation: Equatable, Sendable {
     case task(QueuedMuxTask)
     case input(paneID: UInt32, data: Data, quiet: Bool)
     case resize(QueuedMuxResize)
+    case attention(QueuedMuxAttention)
+    case viewport(paneID: UInt32, offset: UInt32)
+    case closeWorkspace
 
     private var coalescingKey: CoalescingKey? {
         switch self {
@@ -46,7 +49,9 @@ public enum QueuedMuxOperation: Equatable, Sendable {
             return .switchTab
         case .resize(let resize):
             return .resize(resize.coalescingKey)
-        case .task, .input:
+        case .viewport(let paneID, _):
+            return .viewport(paneID)
+        case .task, .input, .attention, .closeWorkspace:
             return nil
         }
     }
@@ -59,6 +64,7 @@ public enum QueuedMuxOperation: Equatable, Sendable {
     private enum CoalescingKey: Equatable {
         case switchTab
         case resize(QueuedMuxResize.CoalescingKey)
+        case viewport(UInt32)
     }
 }
 
@@ -88,7 +94,14 @@ public enum QueuedMuxResize: Equatable, Sendable {
     }
 }
 
-/// One UI-to-Core task waiting for the next main-thread event-pump flush.
+/// Attention mutations are routed through the same serialized boundary as
+/// terminal tasks so a scene switch cannot retarget an acknowledgement.
+public enum QueuedMuxAttention: Equatable, Sendable {
+    case acknowledge(paneID: UInt32)
+    case mute(paneID: UInt32, seconds: UInt64)
+}
+
+/// One UI-to-Core operation waiting for the next main-thread event-pump flush.
 public struct QueuedMuxCommand: Equatable, Sendable {
     public let workspaceID: String?
     public let operation: QueuedMuxOperation
@@ -136,6 +149,42 @@ public struct QueuedMuxCommand: Equatable, Sendable {
         QueuedMuxCommand(
             workspaceID: workspaceID,
             operation: .resize(resize),
+            failureMessage: failureMessage
+        )
+    }
+
+    public static func attention(
+        workspaceID: String?,
+        _ attention: QueuedMuxAttention,
+        failureMessage: String
+    ) -> QueuedMuxCommand {
+        QueuedMuxCommand(
+            workspaceID: workspaceID,
+            operation: .attention(attention),
+            failureMessage: failureMessage
+        )
+    }
+
+    public static func viewport(
+        workspaceID: String?,
+        paneID: UInt32,
+        offset: UInt32,
+        failureMessage: String = ""
+    ) -> QueuedMuxCommand {
+        QueuedMuxCommand(
+            workspaceID: workspaceID,
+            operation: .viewport(paneID: paneID, offset: offset),
+            failureMessage: failureMessage
+        )
+    }
+
+    public static func closeWorkspace(
+        workspaceID: String,
+        failureMessage: String
+    ) -> QueuedMuxCommand {
+        QueuedMuxCommand(
+            workspaceID: workspaceID,
+            operation: .closeWorkspace,
             failureMessage: failureMessage
         )
     }
