@@ -80,20 +80,6 @@ thread_local! {
     static PANEL_REFRESH: RefCell<Option<Box<dyn Fn()>>> = const { RefCell::new(None) };
 }
 
-/// 已有的连接面板共享状态（window 侧更新，面板 rebuild 读取）。
-#[derive(Debug, Clone, Default)]
-pub struct ExistingPanelState {
-    pub nav: ExistingNav,
-    pub locals: Vec<ExistingEntry>,
-    pub hosts: Vec<String>,
-    pub remote: std::collections::HashMap<String, Vec<ExistingEntry>>,
-    /// SSH config 中的全部 alias（即使该 host 当前没有可连接 workspace，
-    /// 也要能用于 `@alias` 补全）。
-    pub ssh_aliases: Vec<String>,
-    /// SSH 探测是否在跑：空 host + inflight → Loading；空 + 完成 → Empty。
-    pub probe_inflight: bool,
-}
-
 /// 测试/生产共用：让当前面板按最新状态重建列表（SSH 探测回来再填）。
 pub fn refresh_current() {
     PANEL_REFRESH.with(|slot| {
@@ -130,7 +116,7 @@ pub struct QuickConnectCallbacks {
 
 #[cfg(test)]
 pub(crate) use crate::frontend::linux::panel_model::filter_panel_items;
-pub use crate::frontend::linux::panel_model::{ExistingNav, PanelItem};
+pub use crate::frontend::linux::panel_model::{ExistingNav, ExistingPanelState, PanelItem};
 
 pub fn build_items(store: &QuickConnectStore, current: Option<&TargetConfig>) -> Vec<PanelItem> {
     build_items_with_recent_limit(store, current, 5)

@@ -52,6 +52,22 @@ pub enum ExistingNav {
     },
 }
 
+/// 已有连接面板共享状态。
+///
+/// Window 侧负责更新探测结果，面板 View 只读取这份 owned snapshot 并重建行。
+#[derive(Debug, Clone, Default)]
+pub struct ExistingPanelState {
+    pub nav: ExistingNav,
+    pub locals: Vec<ExistingEntry>,
+    pub hosts: Vec<String>,
+    pub remote: HashMap<String, Vec<ExistingEntry>>,
+    /// SSH config 中的全部 alias（即使该 host 当前没有可连接 workspace，
+    /// 也要能用于 `@alias` 补全）。
+    pub ssh_aliases: Vec<String>,
+    /// SSH 探测是否在跑：空 host + inflight → Loading；空 + 完成 → Empty。
+    pub probe_inflight: bool,
+}
+
 /// 按查询过滤 QuickConnect 候选，并保持原始顺序作为同分排序依据。
 pub(crate) fn filter_panel_items(items: &[PanelItem], query: &str) -> Vec<PanelItem> {
     let q = query.trim();
