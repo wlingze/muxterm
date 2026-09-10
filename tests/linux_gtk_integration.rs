@@ -33,13 +33,12 @@ use gtk4::prelude::*;
 use gtk4::{Orientation, Widget};
 
 use muxterm::test_support::core::config::Config;
-use muxterm::test_support::platform::ffi_client::{ClientTab, FfiClient, SshHostEntry};
+use muxterm::test_support::platform::ffi_client::{FfiClient, SshHostEntry};
 use muxterm::test_support::platform::linux::keymap::{default_keybindings, Action, KeyMap};
 use muxterm::test_support::platform::linux::layout_host::LayoutHost;
 use muxterm::test_support::platform::linux::quickconnect::font::FontSettings;
 use muxterm::test_support::platform::linux::quickconnect::model::TargetRuntime;
 use muxterm::test_support::platform::linux::quickconnect::store::QuickConnectStore;
-use muxterm::test_support::platform::linux::tab_bar::TabBar;
 use muxterm::test_support::platform::linux::target_config_window;
 use muxterm::test_support::platform::linux::window::AppWindow;
 
@@ -183,48 +182,6 @@ fn assert_active_pane_echo(app: &AppWindow, step: &str) {
         ok,
         "{step}: echo '{marker}' 应同时出现在核心缓冲与 VTE 可见文本\ncore={core}\nvte={vte}"
     );
-}
-
-fn assert_tab_bar_renders() {
-    let tabs = TabBar::new(28);
-    let win = gtk4::Window::builder()
-        .title("tab-bar-test")
-        .default_width(400)
-        .default_height(80)
-        .child(&tabs.container)
-        .build();
-    win.present();
-    tabs.set_tabs(&[
-        ClientTab {
-            id: 1,
-            name: "shell".into(),
-            is_active: true,
-        },
-        ClientTab {
-            id: 2,
-            name: "build".into(),
-            is_active: false,
-        },
-    ]);
-    gtk4::test_widget_wait_for_draw(&win);
-    assert_eq!(count_css_class(&tabs.container, "tab-button"), 2);
-    assert_eq!(
-        count_css_class(&tabs.container, "tab-active"),
-        1,
-        "当前 tab 应有且仅有一个 tab-active 标识"
-    );
-    let labels = widget_label_texts(&tabs.container);
-    assert!(
-        labels.iter().any(|t| t == "1:shell"),
-        "第 1 个 tab 应标 1: 以对应 Alt+1，got={labels:?}"
-    );
-    assert!(
-        labels.iter().any(|t| t == "2:build"),
-        "第 2 个 tab 应标 2: 以对应 Alt+2，got={labels:?}"
-    );
-    win.set_child(None::<&Widget>);
-    win.destroy();
-    pump_main_loop(40);
 }
 
 fn assert_pane_layout_widget() {
@@ -404,7 +361,6 @@ fn gtk_linux_ui_integration() {
     }
     gtk4::test_synced(|| {
         gtk_test_framework_smoke();
-        assert_tab_bar_renders();
         assert_pane_layout_widget();
         // 与 AppWindow 相同，target-config 窗口用例同进程只跑一次，
         // 重复建/析构会触发二次析构堆损坏。

@@ -22,12 +22,13 @@ use vte4::prelude::*;
 
 use anyhow::anyhow;
 
+use crate::frontend::command_queue::{ClientCommand, CommandQueue};
 use crate::frontend::event_pump::EventPump;
 use crate::frontend::ffi_client::{
     ClientActivitySnapshot, ClientAttentionPane, ClientAttentionStatus, ClientCandidateRef,
-    ClientConfig, ClientEventKind, ClientKeyBinding, ClientOpenIntent, ClientOpenRequest,
-    ClientOpenedWorkspace, ClientRuntimeCapability, ClientTarget, ClientTask,
-    ClientWorkspaceAttention, ClientWorkspaceEvent, FfiClient,
+    ClientConfig, ClientEventKind, ClientKeyBinding, ClientLayout, ClientOpenIntent,
+    ClientOpenRequest, ClientOpenedWorkspace, ClientRuntimeCapability, ClientRuntimeInfo,
+    ClientTarget, ClientTask, ClientWorkspaceAttention, ClientWorkspaceEvent, FfiClient,
 };
 use crate::frontend::i18n::{self, Key};
 use crate::frontend::linux::attention_compat::CompatibilityActivity;
@@ -38,7 +39,7 @@ use crate::frontend::linux::event_batch::batch_order_plan;
 use crate::frontend::linux::keymap::{default_keybindings, Action, KeyMap};
 use crate::frontend::linux::layout_host::LayoutHost;
 use crate::frontend::linux::lifecycle::{cycle_pane_id, should_close_window, OnLastPaneExit};
-use crate::frontend::linux::pane_view::{PaneMenuAction, PaneView};
+use crate::frontend::linux::pane_view::{PaneMenuAction, PaneSurface};
 use crate::frontend::linux::panel_model::PanelTab;
 use crate::frontend::linux::preferences_window::ConfigApi;
 use crate::frontend::linux::quickconnect::event_policy::ClientSizePolicy;
@@ -50,7 +51,6 @@ use crate::frontend::linux::quickconnect::model::{
 use crate::frontend::linux::quickconnect::project_flow::ProjectConnectIntent;
 use crate::frontend::linux::quickconnect::status_style::{StatusBarMode, StatusBarSnapshot};
 use crate::frontend::linux::quickconnect::store::QuickConnectStore;
-use crate::frontend::linux::quickconnect::tab_gate::TabSwitchGate;
 use crate::frontend::linux::quickconnect_panel::{
     build_root_items, build_search_items, ExistingNav, ExistingPanelState, PanelItem,
 };
@@ -89,6 +89,8 @@ struct WorkspaceCapacityCandidate {
 struct UiState {
     /// 唯一 Core owner：生产 GTK 不再直接持有 WorkspacePool。
     event_pump: EventPump,
+    /// UI → Core 的唯一命令出口；由 GTK poll owner 批量 flush。
+    command_queue: RefCell<CommandQueue>,
     /// 每个工作区一个像素缓存（VTE 不随切走销毁；Runtime 不在 GUI）。
     pixel_cache: std::collections::HashMap<WorkspaceId, LayoutHost>,
     /// 常驻 Workspace Scene 的产品身份与可见场景。
@@ -97,6 +99,10 @@ struct UiState {
     scene_stack_view: gtk4::Stack,
     /// 前端拥有的 workspace topology/render 快照；Core 不持有其引用。
     view_store: ViewStore,
+    /// 前端当前可见的 workspace；不等同于 Core snapshot 的 active 标记。
+    visible_workspace: WorkspaceId,
+    /// 启动时读取的 provider 能力快照；切场景时不得再查询 Core。
+    runtime_info: Vec<ClientRuntimeInfo>,
     /// 当前挂载到窗口的 LayoutHost 对应的工作区。
     mounted_ws: Option<WorkspaceId>,
     /// 本轮结构事件触发 refresh_ui 后，已经从 core snapshot seed 的 pane。
@@ -117,6 +123,10 @@ struct UiState {
     last_status_at: Instant,
     status_interval: Duration,
     keymap: KeyMap,
+    /// 每个 workspace 当前由 frontend 显示的 tab；不等同于 Core 的 active 标记。
+    visible_tabs: HashMap<String, u32>,
+    /// 用户点击 tab 后的 frontend override；Core 的迟到 active 事件不能覆盖它。
+    local_tab_overrides: HashSet<String>,
     active_tab: u32,
     active_pane: u32,
     /// 最近一次同步给后端/PTY 的尺寸。
@@ -134,7 +144,6 @@ struct UiState {
     /// 避免 map 时 106→284→142 连发 -C（dogfood 2152）。
     pending_client_size: Option<(u16, u16)>,
     pending_client_hits: u8,
-    tab_gate: TabSwitchGate,
     on_last_pane_exit: OnLastPaneExit,
     /// 事件分发里不能同步 `window.close()`（可能正握着 RefCell）。
     pending_close: bool,
@@ -255,11 +264,11 @@ fn parse_workspace_id(value: &str) -> Option<WorkspaceId> {
 
 impl UiState {
     fn active_ws_id(&self) -> WorkspaceId {
-        let key = self
-            .view_store
-            .active_workspace_id()
-            .expect("必须有前台连接");
-        parse_workspace_id(key).expect("Core workspace id 必须保持五段格式")
+        self.visible_workspace.clone()
+    }
+
+    fn active_workspace_key(&self) -> String {
+        self.visible_workspace.as_str()
     }
 
     fn active_layout(&self) -> &LayoutHost {
@@ -276,6 +285,28 @@ impl UiState {
             .expect("active workspace 必须有 layout")
     }
 
+    /// Return the tab currently shown by the frontend for one workspace.
+    ///
+    /// Core's `ClientTab::is_active` remains the fallback for startup and for
+    /// mutations that Core performs itself.  Once the frontend has shown a
+    /// tab, its choice wins until that tab disappears or Core reports a new
+    /// active-tab mutation.
+    fn visible_tab_id(&self, workspace_key: &str) -> Option<u32> {
+        let view = self.view_store.workspace(workspace_key)?;
+        self.visible_tabs
+            .get(workspace_key)
+            .copied()
+            .filter(|tab_id| view.tabs.iter().any(|tab| tab.id == *tab_id))
+            .or_else(|| view.tabs.iter().find(|tab| tab.is_active).map(|tab| tab.id))
+            .or_else(|| view.tabs.first().map(|tab| tab.id))
+    }
+
+    fn active_tab_id(&self) -> u32 {
+        let workspace_key = self.active_workspace_key();
+        self.visible_tab_id(&workspace_key)
+            .unwrap_or(self.active_tab)
+    }
+
     /// 当前前台是否 tmux/SSH 控制 client（local shell 不支持 detach）。
     fn uses_tmux(&self) -> bool {
         self.active_workspace_runtime()
@@ -283,18 +314,16 @@ impl UiState {
     }
 
     fn active_workspace_runtime(&self) -> Option<&str> {
-        let id = self.view_store.active_workspace_id()?;
+        let id = self.active_workspace_key();
         self.view_store
-            .workspace(id)
+            .workspace(&id)
             .and_then(|view| view.workspace.as_ref())
             .map(|workspace| workspace.runtime.as_str())
     }
 
     fn active_supports(&self, capability: ClientRuntimeCapability) -> bool {
-        let Some(workspace_id) = self.view_store.active_workspace_id() else {
-            return false;
-        };
-        self.workspace_supports(workspace_id, capability)
+        let workspace_id = self.active_workspace_key();
+        self.workspace_supports(&workspace_id, capability)
     }
 
     fn workspace_supports(&self, workspace_id: &str, capability: ClientRuntimeCapability) -> bool {
@@ -306,31 +335,67 @@ impl UiState {
         else {
             return false;
         };
-        self.event_pump
-            .client()
-            .runtime_list()
-            .ok()
-            .into_iter()
-            .flatten()
+        self.runtime_info
+            .iter()
             .find(|provider| provider.id == runtime)
             .is_some_and(|provider| provider.supports(capability))
     }
 
     fn execute_active_task(&self, task: ClientTask) -> anyhow::Result<()> {
-        let workspace_id = self
-            .view_store
-            .active_workspace_id()
-            .ok_or_else(|| anyhow!("没有激活的 workspace"))?;
-        let rc = self
-            .event_pump
-            .client()
-            .execute_workspace_task(workspace_id, task);
-        if rc == 0 {
-            Ok(())
-        } else {
-            anyhow::bail!("Core FFI task dispatch failed: workspace={workspace_id}, code={rc}")
+        let workspace_id = self.active_workspace_key();
+        if self.view_store.workspace(&workspace_id).is_none() {
+            anyhow::bail!("没有激活的 workspace");
         }
+        self.command_queue.borrow_mut().push(ClientCommand::Task {
+            workspace_id: Some(workspace_id),
+            task,
+        });
+        Ok(())
     }
+}
+
+/// Flush commands only from the GTK event-loop owner.
+fn flush_command_queue(s: &UiState) -> Vec<i32> {
+    let client = s.event_pump.client();
+    let results = s.command_queue.borrow_mut().flush(client);
+    for code in results.iter().copied().filter(|code| *code != 0) {
+        tracing::warn!(
+            target = "muxterm::linux",
+            code,
+            "Core command queue dispatch failed"
+        );
+    }
+    results
+}
+
+fn enqueue_workspace_input(
+    s: &UiState,
+    workspace_id: &str,
+    pane_id: u32,
+    data: &[u8],
+    quiet: bool,
+) {
+    s.command_queue.borrow_mut().push(ClientCommand::Input {
+        workspace_id: Some(workspace_id.to_owned()),
+        pane_id,
+        data: data.to_vec(),
+        quiet,
+    });
+}
+
+fn enqueue_workspace_resize(
+    s: &UiState,
+    workspace_id: &str,
+    pane_id: Option<u32>,
+    cols: u16,
+    rows: u16,
+) {
+    s.command_queue.borrow_mut().push(ClientCommand::Resize {
+        workspace_id: Some(workspace_id.to_owned()),
+        pane_id,
+        cols,
+        rows,
+    });
 }
 
 fn poll_event_store(s: &mut UiState) -> Vec<ClientWorkspaceEvent> {
@@ -567,6 +632,14 @@ impl AppWindow {
         event_pump
             .sync_view_store(&mut view_store)
             .expect("Core workspace snapshot 必须可用");
+        let runtime_info = event_pump.client().runtime_list().unwrap_or_else(|error| {
+            tracing::warn!(
+                target = "muxterm::linux",
+                %error,
+                "读取 runtime capability snapshot 失败"
+            );
+            Vec::new()
+        });
         let projects = match event_pump.client().config_describe() {
             Ok(snapshot) => match serde_json::from_value(snapshot.values["projects"].clone()) {
                 Ok(projects) => projects,
@@ -766,10 +839,13 @@ impl AppWindow {
         let qc_store = QuickConnectStore::from_project_documents(&projects);
         let state = Rc::new(RefCell::new(UiState {
             event_pump,
+            command_queue: RefCell::new(CommandQueue::default()),
             pixel_cache,
             scene_stack: SceneStack::with_visible(startup_id.as_str()),
             scene_stack_view,
             view_store,
+            visible_workspace: startup_id.clone(),
+            runtime_info,
             mounted_ws: Some(startup_id.clone()),
             snapshot_seeded_this_batch: HashSet::new(),
             qc_store,
@@ -786,6 +862,8 @@ impl AppWindow {
                 .unwrap_or_else(Instant::now),
             status_interval: Duration::from_secs(1),
             keymap,
+            visible_tabs: HashMap::new(),
+            local_tab_overrides: HashSet::new(),
             active_tab: 0,
             active_pane: 0,
             last_client_size: None,
@@ -793,7 +871,6 @@ impl AppWindow {
             hold_pane_resize_until: None,
             pending_client_size: None,
             pending_client_hits: 0,
-            tab_gate: TabSwitchGate::new(Duration::from_millis(1500)),
             on_last_pane_exit: cfg.behavior.on_last_pane_exit,
             pending_close: false,
             compatibility_activity: CompatibilityActivity::new(cfg.attention.clone()),
@@ -925,7 +1002,7 @@ impl AppWindow {
             s.sidebar.set_commands(&commands);
         }
 
-        // status bar 中区 tab 按钮 → SwitchTab(id)
+        // status bar 中区 tab 按钮 → 切换 frontend-visible scene
         {
             let st = state.clone();
             state
@@ -988,14 +1065,15 @@ impl AppWindow {
                 }
                 let s = st.borrow();
                 let pane = s.active_pane;
-                let workspace_id = active_workspace_id(&s);
+                let workspace_replica = active_workspace_id(&s);
+                let workspace_key = active_workspace_key(&s);
                 let hit = s.event_pump.client().search_all(&q).ok().and_then(|hits| {
                     hits.into_iter()
-                        .find(|hit| hit.workspace_id == workspace_id && hit.pane_id == pane)
+                        .find(|hit| hit.workspace_id == workspace_replica && hit.pane_id == pane)
                 });
                 if let Some(hit) = hit {
                     if let Some(row) = s.event_pump.client().workspace_pane_viewport_for_seq(
-                        &workspace_id,
+                        &workspace_key,
                         pane,
                         hit.seq,
                     ) {
@@ -1044,7 +1122,8 @@ impl AppWindow {
         {
             let st = state.clone();
             state.borrow().status.connect_new_tab(move || {
-                let s = st.borrow();
+                let mut s = st.borrow_mut();
+                prepare_core_tab_mutation(&mut s, &ClientTask::NewTab);
                 let _ = s.execute_active_task(ClientTask::NewTab);
                 // Accepted 不得手工 refresh：等 LayoutChanged/MutationSettled。
             });
@@ -1182,6 +1261,7 @@ impl AppWindow {
                         // 输入必须在本轮 topology/snapshot/geometry 收编之后
                         // 写入，避免 attach 新 pane 尚未完成首帧时丢掉 send-keys。
                         drain_surface_input(&mut s);
+                        flush_command_queue(&s);
                         maybe_refresh_status(&mut s, structural);
                         refresh_connection_summary(&mut s);
                         update_command_marks(&s);
@@ -1247,7 +1327,7 @@ impl AppWindow {
         let ws = active_workspace_id(&s);
         let pane = s.active_pane;
         let workspace_key = active_workspace_key(&s);
-        let _ = s.event_pump.send_input(&workspace_key, pane, data);
+        enqueue_workspace_input(&s, &workspace_key, pane, data, false);
         s.compatibility_activity.on_user_input(&ws, pane);
     }
 
@@ -1295,8 +1375,22 @@ impl AppWindow {
     /// 测试用：对当前 Runtime 执行真实 detach，并保留精确 outcome。
     pub fn test_detach_active_workspace_outcome(&self) -> anyhow::Result<TaskOutcome> {
         let s = self._state.borrow();
+        if !s.active_supports(ClientRuntimeCapability::PersistDetach) {
+            return Ok(TaskOutcome::Rejected {
+                reason: "active Runtime does not support PersistDetach".into(),
+            });
+        }
         match s.execute_active_task(ClientTask::Detach) {
-            Ok(()) => Ok(TaskOutcome::Done),
+            Ok(()) => {
+                let result = flush_command_queue(&s)
+                    .into_iter()
+                    .find(|code| *code != 0)
+                    .map(|code| TaskOutcome::Rejected {
+                        reason: format!("Core FFI task dispatch failed: code={code}"),
+                    })
+                    .unwrap_or(TaskOutcome::Done);
+                Ok(result)
+            }
             Err(error) => Ok(TaskOutcome::Rejected {
                 reason: error.to_string(),
             }),
@@ -1406,12 +1500,7 @@ impl AppWindow {
         let Some(view) = s.view_store.workspace(&workspace_id) else {
             return Vec::new();
         };
-        let active_tab = view
-            .tabs
-            .iter()
-            .find(|tab| tab.is_active)
-            .map(|tab| tab.id)
-            .unwrap_or(s.active_tab);
+        let active_tab = s.visible_tab_id(&workspace_id).unwrap_or(s.active_tab);
         let Some(layout) = view.layouts.get(&active_tab) else {
             return Vec::new();
         };
@@ -1591,12 +1680,7 @@ impl AppWindow {
             return (0, 0);
         };
         let n_tabs = view.tabs.len();
-        let active_tab = view
-            .tabs
-            .iter()
-            .find(|tab| tab.is_active)
-            .map(|tab| tab.id)
-            .unwrap_or(s.active_tab);
+        let active_tab = s.visible_tab_id(&workspace_id).unwrap_or(s.active_tab);
         let n_panes = view.panes.get(&active_tab).map_or(0, Vec::len);
         (n_tabs, n_panes)
     }
@@ -1621,6 +1705,7 @@ impl AppWindow {
             sync_pane_outputs(&mut s);
             sync_window_size(&mut s);
             drain_surface_input(&mut s);
+            flush_command_queue(&s);
             maybe_refresh_status(&mut s, true);
             refresh_connection_summary(&mut s);
             update_command_marks(&s);
@@ -1925,7 +2010,7 @@ impl AppWindow {
     /// 测试用：只搜当前工作区当前 pane。
     pub fn test_search_pane(&self, pane: u32, query: &str) -> Vec<(String, u32, String)> {
         let s = self._state.borrow();
-        let workspace_id = active_workspace_key(&s);
+        let workspace_id = active_workspace_id(&s);
         s.event_pump
             .client()
             .search_all(query)
@@ -1939,7 +2024,7 @@ impl AppWindow {
     /// 测试用：只搜当前工作区全部 pane。
     pub fn test_search_workspace(&self, query: &str) -> Vec<(String, u32, String)> {
         let s = self._state.borrow();
-        let workspace_id = active_workspace_key(&s);
+        let workspace_id = active_workspace_id(&s);
         s.event_pump
             .client()
             .search_all(query)
@@ -1956,9 +2041,26 @@ impl AppWindow {
     }
 }
 
+/// A Core tab mutation is allowed to change the authoritative active tab.
+/// Drop a local display override before dispatching it so the resulting
+/// `ActiveTabChanged` event can select the new Core tab.
+fn prepare_core_tab_mutation(s: &mut UiState, task: &ClientTask) {
+    let clear = match task {
+        ClientTask::NewTab => true,
+        ClientTask::CloseTab { tab_id } => *tab_id == s.active_tab,
+        _ => false,
+    };
+    if clear {
+        let workspace_key = s.active_workspace_key();
+        s.visible_tabs.remove(&workspace_key);
+        s.local_tab_overrides.remove(&workspace_key);
+    }
+}
+
 fn handle_action(s: &mut UiState, action: Action, window: &Window, state: &Rc<RefCell<UiState>>) {
     match action {
         Action::NewTab | Action::NewWindow => {
+            prepare_core_tab_mutation(s, &ClientTask::NewTab);
             let _ = s.execute_active_task(ClientTask::NewTab);
             // Accepted 不得手工 refresh：等 16ms 批里 LayoutChanged/MutationSettled。
             return;
@@ -2078,13 +2180,14 @@ fn run_palette_command(state: &Rc<RefCell<UiState>>, window: &Window, parent: &W
             });
         }
         PaletteAction::TmuxDetach => {
-            // 必须先放下 RefMut 再 close：close-request 会再借同一把 UiState。
-            let should_quit = {
-                let s = state.borrow();
-                s.execute_active_task(ClientTask::Detach).is_ok()
-            };
-            if should_quit {
-                request_quit_close(state, window);
+            // 命令先入队；下一轮 GTK poll flush 后再关闭，避免 close 直接
+            // 销毁窗口而丢掉尚未提交的 detach。
+            {
+                let mut s = state.borrow_mut();
+                let accepted = s.execute_active_task(ClientTask::Detach).is_ok();
+                if accepted {
+                    s.pending_close = true;
+                }
             }
         }
         PaletteAction::SshDisconnect => {
@@ -2125,7 +2228,8 @@ fn run_palette_command(state: &Rc<RefCell<UiState>>, window: &Window, parent: &W
             request_quit_close(state, window);
         }
         PaletteAction::NewTab => {
-            let s = state.borrow();
+            let mut s = state.borrow_mut();
+            prepare_core_tab_mutation(&mut s, &ClientTask::NewTab);
             let _ = s.execute_active_task(ClientTask::NewTab);
             // Accepted 不得手工 refresh：等 LayoutChanged/MutationSettled。
         }
@@ -2154,7 +2258,9 @@ fn run_palette_command(state: &Rc<RefCell<UiState>>, window: &Window, parent: &W
         PaletteAction::CloseTab => {
             let mut s = state.borrow_mut();
             let tab = s.active_tab;
-            let _ = s.execute_active_task(ClientTask::CloseTab { tab_id: tab });
+            let task = ClientTask::CloseTab { tab_id: tab };
+            prepare_core_tab_mutation(&mut s, &task);
+            let _ = s.execute_active_task(task);
             refresh_ui(&mut s);
         }
         PaletteAction::CloseWindow => window.close(),
@@ -2354,7 +2460,7 @@ fn paste_pane(s: &UiState, state: &Rc<RefCell<UiState>>, pane_id: u32) {
         };
         let s = st.borrow();
         let workspace_id = active_workspace_key(&s);
-        let _ = s.event_pump.send_input(&workspace_id, pane_id, &data);
+        enqueue_workspace_input(&s, &workspace_id, pane_id, &data, false);
     });
 }
 
@@ -2419,12 +2525,70 @@ fn switch_workspace_n(s: &mut UiState, n: usize) {
     }
 }
 
+/// 切 tab 只显示已经常驻的 GTK Stack page，不通知 Core。
+fn show_tab_scene(s: &mut UiState, tab_id: u32) -> bool {
+    let workspace_id = s.active_ws_id();
+    let workspace_key = workspace_id.as_str();
+    let active_pane = s
+        .view_store
+        .workspace(&workspace_key)
+        .and_then(|view| view.panes.get(&tab_id))
+        .and_then(|panes| {
+            panes
+                .iter()
+                .find(|pane| pane.is_active)
+                .or_else(|| panes.first())
+        })
+        .map(|pane| pane.id);
+
+    if s.view_store
+        .workspace(&workspace_key)
+        .is_none_or(|view| !view.tabs.iter().any(|tab| tab.id == tab_id))
+    {
+        return false;
+    }
+
+    s.visible_tabs.insert(workspace_key, tab_id);
+    s.local_tab_overrides
+        .insert(workspace_id.as_str().to_owned());
+    s.active_tab = tab_id;
+    if let Some(pane) = active_pane {
+        s.active_pane = pane;
+    }
+    s.last_client_size = None;
+    s.last_pane_sizes.clear();
+    s.pending_client_size = None;
+    s.pending_client_hits = 0;
+    let shown = s
+        .pixel_cache
+        .get_mut(&workspace_id)
+        .is_some_and(|layout| layout.show_tab(tab_id));
+    if !shown {
+        // A topology event can expose the tab in ViewStore one GTK tick
+        // before its resident root has been built.  Build from the owned
+        // snapshot and retry; this still does not touch Core.  The visible
+        // selection above remains pending if the layout is not available yet.
+        refresh_workspace_layout(s, &workspace_id, false);
+    }
+    let shown = s
+        .pixel_cache
+        .get_mut(&workspace_id)
+        .is_some_and(|layout| layout.show_tab(tab_id));
+    if shown && s.panel_open.is_none() && !s.pane_find.is_visible() {
+        if let Some(pane) = active_pane.and_then(|pane| s.active_layout().pane(pane).cloned()) {
+            pane.grab_focus();
+        }
+    }
+    maybe_refresh_status(s, true);
+    sync_chrome_visibility(s);
+    true
+}
+
 fn request_switch_tab(s: &mut UiState, tab_id: u32) {
     if tab_id == s.active_tab {
         return;
     }
-    s.tab_gate.request(tab_id);
-    let _ = s.execute_active_task(ClientTask::SwitchTab { tab_id });
+    let _ = show_tab_scene(s, tab_id);
 }
 
 /// 与 macOS `movePane` 对齐：用当前 tab 快照算目标，发 SwitchPane。
@@ -2453,10 +2617,10 @@ fn switch_pane_offset(s: &mut UiState, forward: bool) {
 fn refresh_attention_chrome(s: &UiState, window: &Window) {
     let n = activity_snapshot(s).blocked_count;
     s.status.set_attention(n);
+    let active_workspace = s.active_workspace_key();
     let workspace = s
         .view_store
-        .active_workspace_id()
-        .and_then(|id| s.view_store.workspace(id))
+        .workspace(&active_workspace)
         .and_then(|view| view.workspace.as_ref())
         .map(|workspace| workspace.name.clone())
         .unwrap_or_else(|| "muxterm".into());
@@ -2518,7 +2682,7 @@ fn update_command_marks(s: &UiState) {
 }
 
 /// 当前激活 pane 的 VTE 是否在底部（scroll lock / 回底按钮共用）。
-fn view_at_bottom(view: &std::rc::Rc<PaneView>) -> bool {
+fn view_at_bottom(view: &std::rc::Rc<PaneSurface>) -> bool {
     view.terminal()
         .vadjustment()
         .map(|adj| {
@@ -2552,12 +2716,10 @@ fn update_jump_latest(s: &UiState) {
 /// 速率由连续两次 `traffic_bytes()` 快照 + 墙钟差出来（W15a），
 /// 禁止把累计字节标成 `B/s`。
 fn refresh_connection_summary(s: &mut UiState) {
-    let Some(workspace_id) = s.view_store.active_workspace_id() else {
-        return;
-    };
+    let workspace_id = s.active_workspace_key();
     let Some(workspace) = s
         .view_store
-        .workspace(workspace_id)
+        .workspace(&workspace_id)
         .and_then(|view| view.workspace.as_ref())
     else {
         return;
@@ -2606,19 +2768,12 @@ fn refresh_connection_summary(s: &mut UiState) {
 
 /// 当前前台连接的 workspace id（ReplicaStore 键）。
 fn active_workspace_id(s: &UiState) -> String {
-    s.view_store
-        .active_workspace_id()
-        .and_then(parse_workspace_id)
-        .map(|id| workspace_replica_id(&id))
-        .unwrap_or_default()
+    workspace_replica_id(&s.active_ws_id())
 }
 
 /// Current Core workspace identity used at FFI boundaries.
 fn active_workspace_key(s: &UiState) -> String {
-    s.view_store
-        .active_workspace_id()
-        .unwrap_or_default()
-        .to_string()
+    s.active_workspace_key()
 }
 
 /// WorkspaceId → ReplicaStore 键（`name@transport`，与 QuickConnect 一致）。
@@ -2633,7 +2788,7 @@ fn resident_pane_view(
     s: &UiState,
     wid: &WorkspaceId,
     pane: u32,
-) -> Option<std::rc::Rc<crate::frontend::linux::pane_view::PaneView>> {
+) -> Option<std::rc::Rc<crate::frontend::linux::pane_view::PaneSurface>> {
     s.pixel_cache
         .get(wid)
         .and_then(|layout| layout.pane(pane).cloned())
@@ -2736,7 +2891,7 @@ fn record_attention_notification(s: &mut UiState, workspace: &str, kind: &str) {
 
 fn refresh_ui(s: &mut UiState) {
     let wid = s.active_ws_id();
-    refresh_workspace_layout(s, &wid);
+    refresh_workspace_layout(s, &wid, true);
     maybe_refresh_status(s, true);
     sync_chrome_visibility(s);
 }
@@ -2746,18 +2901,20 @@ fn refresh_ui(s: &mut UiState) {
 /// This function intentionally does not switch the active window for a
 /// background workspace.  It only creates/reparents resident PaneViews and
 /// feeds an already-realized Surface from the frontend-owned ViewStore state.
-fn refresh_workspace_layout(s: &mut UiState, wid: &WorkspaceId) {
+fn refresh_workspace_layout(s: &mut UiState, wid: &WorkspaceId, seed_from_core: bool) {
     let is_active = s.active_ws_id() == *wid;
     let workspace_key = wid.as_str();
     let Some(view) = s.view_store.workspace(&workspace_key) else {
         return;
     };
     let tab_ids: Vec<u32> = view.tabs.iter().map(|tab| tab.id).collect();
-    let active_tab = view
-        .tabs
-        .iter()
-        .find(|tab| tab.is_active)
-        .map(|tab| tab.id)
+    let stored_tab = s.visible_tabs.get(&workspace_key).copied();
+    if stored_tab.is_some_and(|tab_id| !tab_ids.contains(&tab_id)) {
+        s.visible_tabs.remove(&workspace_key);
+        s.local_tab_overrides.remove(&workspace_key);
+    }
+    let active_tab = s
+        .visible_tab_id(&workspace_key)
         .or_else(|| tab_ids.first().copied());
     // W4：topology sync 必须为**所有** tab 的 leaves 建立常驻 PaneView，
     // 不能只建 active tab；hidden tab 的 frame/output 隐藏期间继续 feed。
@@ -2767,6 +2924,12 @@ fn refresh_workspace_layout(s: &mut UiState, wid: &WorkspaceId) {
             view.layouts
                 .get(tab_id)
                 .cloned()
+                .or_else(|| {
+                    view.panes
+                        .get(tab_id)
+                        .and_then(|panes| panes.first())
+                        .map(|pane| ClientLayout::Leaf { pane_id: pane.id })
+                })
                 .map(|layout| (*tab_id, layout))
         })
         .collect::<Vec<_>>();
@@ -2783,14 +2946,11 @@ fn refresh_workspace_layout(s: &mut UiState, wid: &WorkspaceId) {
     s.scene_stack.ensure(&workspace_key);
 
     if is_active {
-        // tab 列表由 status bar 中区渲染（apply 时按签名重建），这里只维护门禁。
-        s.tab_gate.on_snapshot(&tab_ids);
+        // tab 列表由 status bar 中区渲染（apply 时按签名重建），这里只维护
+        // 当前 frontend-visible tab 的兼容缓存。
         if let Some(active) = active_tab {
             s.active_tab = active;
-        }
-        if !s.tab_gate.is_released() {
-            sync_chrome_visibility(s);
-            return;
+            s.visible_tabs.insert(workspace_key.to_owned(), active);
         }
     }
 
@@ -2825,7 +2985,9 @@ fn refresh_workspace_layout(s: &mut UiState, wid: &WorkspaceId) {
                 // attach 保真（1820.log 白屏）：布局建好后，把 core 里
                 // capture-pane 快照播种进 VTE。快照事件可能在视图创建前
                 // 已消费，不能只依赖 PaneOutput 增量。
-                seed_unseeded_pane_for(s, wid, &view, pane_id, cols, rows);
+                if seed_from_core {
+                    seed_unseeded_pane_for(s, wid, &view, pane_id, cols, rows);
+                }
                 if is_active && pane_active {
                     s.active_pane = pane_id;
                     // 临时输入面板存在时不能由 topology refresh 抢走焦点；
@@ -2865,14 +3027,14 @@ fn maybe_refresh_status(s: &mut UiState, force: bool) {
     let active_tab = view
         .tabs
         .iter()
-        .find(|tab| tab.is_active)
+        .find(|tab| tab.id == s.active_tab_id())
         .map(|tab| tab.id)
         .unwrap_or(s.active_tab);
     let npanes = view.panes.get(&active_tab).map(Vec::len).unwrap_or(0);
     let rows: Vec<(u32, String, bool)> = view
         .tabs
         .iter()
-        .map(|tab| (tab.id, tab.name.clone(), tab.is_active))
+        .map(|tab| (tab.id, tab.name.clone(), tab.id == active_tab))
         .collect();
     let mut snap = if s.uses_tmux() {
         crate::frontend::linux::quickconnect::status_style::snapshot_from_tabs(
@@ -2959,18 +3121,8 @@ fn drain_surface_input(s: &mut UiState) {
             data.extend_from_slice(&next.data);
         }
         s.last_raw_input = data.clone();
-        if let Err(error) = s
-            .event_pump
-            .send_input(&workspace_id.as_str(), pane_id.0, &data)
-        {
-            tracing::warn!(
-                target = "muxterm::surface",
-                workspace = %workspace_id,
-                pane = %pane_id.0,
-                error = %error,
-                "surface input write failed"
-            );
-        }
+        let workspace_key = workspace_id.as_str();
+        enqueue_workspace_input(s, &workspace_key, pane_id.0, &data, false);
     }
 }
 
@@ -3013,6 +3165,29 @@ fn sync_pane_outputs(s: &mut UiState) {
 }
 
 fn refresh_event_workspaces(s: &mut UiState, events: &[ClientWorkspaceEvent]) {
+    // A Core task (for example NewTab/CloseTab) may change its authoritative
+    // active tab.  This is distinct from the status-bar click path, which
+    // never emits an event because it never calls Core.
+    let core_active_tab_workspaces: HashSet<String> = events
+        .iter()
+        .filter(|event| event.event.type_ == crate::ffi::types::STATE_ACTIVE_TAB_CHANGED)
+        .map(|event| event.workspace_id.clone())
+        .collect();
+    for workspace_key in core_active_tab_workspaces {
+        if s.local_tab_overrides.contains(&workspace_key) {
+            continue;
+        }
+        let active = s
+            .view_store
+            .workspace(&workspace_key)
+            .and_then(|view| view.tabs.iter().find(|tab| tab.is_active).map(|tab| tab.id));
+        if let Some(active) = active {
+            s.visible_tabs.insert(workspace_key, active);
+        } else {
+            s.visible_tabs.remove(&workspace_key);
+        }
+    }
+
     let workspace_ids: Vec<WorkspaceId> = events
         .iter()
         .filter(|event| event.event.is_topology())
@@ -3021,16 +3196,30 @@ fn refresh_event_workspaces(s: &mut UiState, events: &[ClientWorkspaceEvent]) {
         .into_iter()
         .collect();
     for workspace_id in workspace_ids {
-        refresh_workspace_layout(s, &workspace_id);
+        refresh_workspace_layout(s, &workspace_id, true);
     }
+    repair_visible_workspace(s);
     apply_attention_visibility_events(s, events);
     mark_active_attention_visible(s);
 }
 
-fn apply_attention_visibility_events(s: &UiState, events: &[ClientWorkspaceEvent]) {
-    let Some(active_workspace) = s.view_store.active_workspace_id() else {
+fn repair_visible_workspace(s: &mut UiState) {
+    let visible_key = s.active_workspace_key();
+    if s.view_store.workspace(&visible_key).is_some() {
         return;
-    };
+    }
+    let fallback = s
+        .view_store
+        .active_workspace_id()
+        .and_then(parse_workspace_id)
+        .or_else(|| s.view_store.workspace_ids().find_map(parse_workspace_id));
+    if let Some(fallback) = fallback {
+        show_workspace_scene(s, fallback, true);
+    }
+}
+
+fn apply_attention_visibility_events(s: &UiState, events: &[ClientWorkspaceEvent]) {
+    let active_workspace = s.active_workspace_key();
     for event in events
         .iter()
         .filter(|event| event.workspace_id == active_workspace)
@@ -3077,7 +3266,7 @@ fn mark_active_attention_visible(s: &UiState) {
 /// 由下一次 refresh_ui / sync_pane_outputs 补种。
 fn seed_unseeded_pane(
     s: &mut UiState,
-    view: &std::rc::Rc<PaneView>,
+    view: &std::rc::Rc<PaneSurface>,
     pane_id: u32,
     cols: u16,
     rows: u16,
@@ -3094,7 +3283,7 @@ fn surface_allocation_is_seedable(realized: bool, width: i32, height: i32) -> bo
 fn seed_unseeded_pane_for(
     s: &mut UiState,
     wid: &WorkspaceId,
-    view: &std::rc::Rc<PaneView>,
+    view: &std::rc::Rc<PaneSurface>,
     pane_id: u32,
     cols: u16,
     rows: u16,
@@ -3140,7 +3329,7 @@ fn seed_unseeded_pane_for(
 fn drain_view_store_render_events(
     s: &mut UiState,
     wid: &WorkspaceId,
-    view: &std::rc::Rc<PaneView>,
+    view: &std::rc::Rc<PaneSurface>,
     pane_id: u32,
 ) {
     let workspace_key = wid.as_str();
@@ -3167,11 +3356,7 @@ fn sync_pane_grid_size(s: &UiState, pane_id: u32) {
         return;
     };
     let workspace_key = s.active_ws_id().as_str();
-    let active_tab = s
-        .view_store
-        .workspace(&workspace_key)
-        .and_then(|view| view.tabs.iter().find(|tab| tab.is_active).map(|tab| tab.id))
-        .unwrap_or(s.active_tab);
+    let active_tab = s.active_tab_id();
     let Some(pane) = s
         .view_store
         .workspace(&workspace_key)
@@ -3228,10 +3413,7 @@ fn forward_parser_replies_for_key(s: &mut UiState, workspace_id: &str, pane_id: 
     if replies.is_empty() {
         return;
     }
-    let _ = s
-        .event_pump
-        .client()
-        .send_workspace_input(workspace_id, pane_id, &replies);
+    enqueue_workspace_input(s, workspace_id, pane_id, &replies, false);
 }
 
 /// 把窗口内容区的新字符格尺寸同步给 Runtime。
@@ -3266,11 +3448,7 @@ fn sync_window_size(s: &mut UiState) {
     }
     let allocated = term.width() > 0 && term.height() > 0;
     let workspace_key = s.active_ws_id().as_str();
-    let active_tab = s
-        .view_store
-        .workspace(&workspace_key)
-        .and_then(|view| view.tabs.iter().find(|tab| tab.is_active).map(|tab| tab.id))
-        .unwrap_or(s.active_tab);
+    let active_tab = s.active_tab_id();
     let multi_pane = s
         .view_store
         .workspace(&workspace_key)
@@ -3303,10 +3481,7 @@ fn sync_window_size(s: &mut UiState) {
     s.pending_client_size = None;
     s.pending_client_hits = 0;
     let workspace_id = active_workspace_key(s);
-    let _ = s
-        .event_pump
-        .client()
-        .resize_workspace_client(&workspace_id, cols, rows);
+    enqueue_workspace_resize(s, &workspace_id, None, cols, rows);
 }
 
 /// Herdr 没有 SharedClientResize：每个可见 split 格子按自己的 VTE 分配
@@ -3319,11 +3494,7 @@ fn sync_visible_pane_sizes(s: &mut UiState) {
     }
     s.hold_pane_resize_until = None;
     let workspace_key = s.active_ws_id().as_str();
-    let active_tab = s
-        .view_store
-        .workspace(&workspace_key)
-        .and_then(|view| view.tabs.iter().find(|tab| tab.is_active).map(|tab| tab.id))
-        .unwrap_or(s.active_tab);
+    let active_tab = s.active_tab_id();
     let pane_ids: Vec<u32> = s
         .view_store
         .workspace(&workspace_key)
@@ -3355,10 +3526,7 @@ fn sync_visible_pane_sizes(s: &mut UiState) {
     }
     for (pane, cols, rows) in resizes {
         let workspace_id = active_workspace_key(s);
-        let _ = s
-            .event_pump
-            .client()
-            .resize_workspace_pane(&workspace_id, pane, cols, rows);
+        enqueue_workspace_resize(s, &workspace_id, Some(pane), cols, rows);
     }
 }
 
@@ -3786,13 +3954,7 @@ fn maybe_schedule_reconnect(state: &Rc<RefCell<UiState>>) {
         if s.reconnect_retry_at.is_some_and(|at| now < at) {
             return;
         }
-        let Some(id) = s
-            .view_store
-            .active_workspace_id()
-            .and_then(parse_workspace_id)
-        else {
-            return;
-        };
+        let id = s.active_ws_id();
         if !s.workspace_supports(&id.as_str(), ClientRuntimeCapability::SharedClientResize) {
             return;
         }
@@ -3862,21 +4024,21 @@ fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelT
             s.view_store.workspace_ids().count(),
         );
         s.qc_store.replace_all_recents(&recents);
-        let current = s
-            .view_store
-            .active_workspace_id()
-            .and_then(|workspace_key| {
-                let workspace = s
-                    .view_store
-                    .workspace(workspace_key)
-                    .and_then(|view| view.workspace.as_ref())?;
-                let id = parse_workspace_id(workspace_key)?;
+        let current = {
+            let workspace_key = s.active_workspace_key();
+            let workspace = s
+                .view_store
+                .workspace(&workspace_key)
+                .and_then(|view| view.workspace.as_ref());
+            workspace.and_then(|workspace| {
+                let id = parse_workspace_id(&workspace_key)?;
                 let socket = s
                     .workspace_sockets
                     .get(&id)
                     .and_then(|value| value.as_deref());
                 Some(workspace_to_target_config(workspace, socket))
-            });
+            })
+        };
         let store = s.qc_store.clone();
         let win = window.clone();
         let st = state.clone();
@@ -3989,7 +4151,7 @@ fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelT
                         return Vec::new();
                     }
                     let s = st.borrow();
-                    let workspace_id = active_workspace_key(&s);
+                    let workspace_replica = active_workspace_id(&s);
                     let hits = s
                         .event_pump
                         .client()
@@ -3998,10 +4160,11 @@ fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_tab: PanelT
                         .into_iter()
                         .filter(|hit| match scope {
                             crate::frontend::linux::panel_model::SearchScope::Pane => {
-                                hit.workspace_id == workspace_id && hit.pane_id == s.active_pane
+                                hit.workspace_id == workspace_replica
+                                    && hit.pane_id == s.active_pane
                             }
                             crate::frontend::linux::panel_model::SearchScope::Workspace => {
-                                hit.workspace_id == workspace_id
+                                hit.workspace_id == workspace_replica
                             }
                             crate::frontend::linux::panel_model::SearchScope::All => true,
                         })
@@ -4093,18 +4256,7 @@ fn activate_attention_workspace(s: &mut UiState, ws: &str) {
     }
     let id = attention_workspace_id(s, ws);
     if let Some(id) = id {
-        let key = id.as_str();
-        if s.event_pump.client().activate_workspace(&key).is_ok() {
-            if let Err(error) = sync_view_store(s) {
-                tracing::warn!(
-                    target = "muxterm::linux",
-                    %error,
-                    workspace = %key,
-                    "workspace activation snapshot refresh failed"
-                );
-            }
-            after_activate(s);
-        }
+        activate_existing(s, id);
     }
 }
 
@@ -4114,7 +4266,22 @@ fn attention_workspace_id(s: &UiState, ws: &str) -> Option<WorkspaceId> {
         .workspaces()
         .filter_map(|(_, view)| view.workspace.as_ref())
         .filter_map(|workspace| parse_workspace_id(&workspace.id))
-        .find(|id| workspace_replica_id(id) == ws)
+        .find(|id| workspace_replica_matches(id, ws))
+}
+
+fn workspace_replica_matches(id: &WorkspaceId, requested: &str) -> bool {
+    if workspace_replica_id(id) == requested {
+        return true;
+    }
+    if id.session.is_empty() {
+        return false;
+    }
+    let transport = if id.transport == "ssh" {
+        id.alias.as_deref().unwrap_or("ssh")
+    } else {
+        "local"
+    };
+    requested == format!("{}@{transport}", id.session)
 }
 
 /// 打开配置页：保存/热加载后重读 config.toml 并应用主题/字体/attention。
@@ -4329,7 +4496,7 @@ fn show_worktree_create_dialog(state: &Rc<RefCell<UiState>>, parent: &gtk4::Wind
 fn create_worktree(state: &Rc<RefCell<UiState>>, branch: String, path: String) {
     let source_workspace_id = {
         let s = state.borrow();
-        s.view_store.active_workspace_id().map(ToOwned::to_owned)
+        Some(s.active_workspace_key())
     };
     let Some(source_workspace_id) = source_workspace_id else {
         return;
@@ -4394,25 +4561,15 @@ fn activate_existing(s: &mut UiState, id: WorkspaceId) {
         return;
     }
     let key = id.as_str();
-    if let Err(error) = s.event_pump.client().activate_workspace(&key) {
+    if s.view_store.workspace(&key).is_none() {
         tracing::warn!(
             target = "muxterm::linux",
-            %error,
             workspace = %key,
-            "workspace activation failed"
+            "workspace scene is missing from the owned snapshot"
         );
         return;
     }
-    if let Err(error) = sync_view_store(s) {
-        tracing::warn!(
-            target = "muxterm::linux",
-            %error,
-            workspace = %key,
-            "workspace activation snapshot refresh failed"
-        );
-        return;
-    }
-    after_activate(s);
+    show_workspace_scene(s, id, false);
 }
 
 /// 超过 soft capacity 时提醒用户选择关闭最久未使用的后台 Workspace。
@@ -4434,12 +4591,12 @@ fn maybe_warn_workspace_capacity(state: &Rc<RefCell<UiState>>, parent: &Window) 
             None
         } else {
             let overflow = count.saturating_sub(s.capacity_limit).max(1);
-            let active = s.view_store.active_workspace_id();
+            let active = s.active_workspace_key();
             let mut candidates: Vec<WorkspaceCapacityCandidate> = s
                 .view_store
                 .workspaces()
                 .filter_map(|(_, view)| view.workspace.as_ref())
-                .filter(|workspace| active != Some(workspace.id.as_str()))
+                .filter(|workspace| active != workspace.id)
                 .filter_map(|workspace| {
                     Some(WorkspaceCapacityCandidate {
                         id: parse_workspace_id(&workspace.id)?,
@@ -4589,6 +4746,8 @@ fn close_sidebar_workspace(s: &mut UiState, id: &WorkspaceId) {
         .retain(|input| &input.workspace != id);
     s.scene_stack.remove(&workspace_key);
     s.view_store.remove_workspace(&workspace_key);
+    s.visible_tabs.remove(&workspace_key);
+    s.local_tab_overrides.remove(&workspace_key);
     remove_scene_page(s, &workspace_key);
     if s.mounted_ws.as_ref() == Some(id) {
         s.mounted_ws = None;
@@ -4608,8 +4767,10 @@ fn close_sidebar_workspace(s: &mut UiState, id: &WorkspaceId) {
     if was_active {
         if let Some(fallback) = fallback {
             let fallback_key = fallback.as_str();
-            let _ = s.event_pump.client().activate_workspace(&fallback_key);
             let _ = sync_view_store(s);
+            if s.view_store.workspace(&fallback_key).is_some() {
+                show_workspace_scene(s, fallback, false);
+            }
         } else {
             // 主窗口始终需要一个可轮询的前台 Workspace。关闭最后一格时
             // 立即回到一格空本地 shell；Core 负责旧 Runtime 的 detach/
@@ -4652,17 +4813,10 @@ fn remove_scene_page(s: &mut UiState, workspace_id: &str) {
 fn activate_sidebar_activity(s: &mut UiState, id: &WorkspaceId, pane: u32) {
     if s.active_ws_id() != *id {
         let workspace_key = id.as_str();
-        if s.event_pump
-            .client()
-            .activate_workspace(&workspace_key)
-            .is_err()
-        {
+        if s.view_store.workspace(&workspace_key).is_none() {
             return;
         }
-        if sync_view_store(s).is_err() {
-            return;
-        }
-        after_activate(s);
+        show_workspace_scene(s, id.clone(), false);
     }
     let workspace_key = active_workspace_key(s);
     let tab = {
@@ -4708,8 +4862,16 @@ fn refresh_sidebar_if_open(s: &mut UiState) {
     s.sidebar.set_commands(&commands);
 }
 
+fn refresh_sidebar_workspaces_if_open(s: &UiState) {
+    if s.sidebar.is_open() {
+        let workspaces = sidebar_workspaces(s);
+        s.sidebar.set_workspaces(&workspaces);
+    }
+}
+
 fn sidebar_workspaces(s: &UiState) -> Vec<WorkspaceSidebarItem> {
-    WorkspaceSidebarItem::from_views(&s.view_store)
+    let active_workspace = s.active_workspace_key();
+    WorkspaceSidebarItem::from_views_with_active(&s.view_store, Some(&active_workspace))
 }
 
 fn sidebar_agents(
@@ -4726,9 +4888,26 @@ fn sidebar_commands(
     CommandSidebarItem::from_views(&s.view_store, activity)
 }
 
+/// Core open/activate 完成后，把 Core snapshot 的 active workspace 交给
+/// frontend-visible Scene；Core activation 本身只发生在 open/close 等生命周期。
 fn after_activate(s: &mut UiState) {
-    // 切工作区 = 改绑体现：挂载该工作区的像素缓存（没有则新建）。
-    let id = s.active_ws_id().clone();
+    let Some(id) = s
+        .view_store
+        .active_workspace_id()
+        .and_then(parse_workspace_id)
+    else {
+        return;
+    };
+    show_workspace_scene(s, id, true);
+    mark_active_attention_visible(s);
+    refresh_sidebar_if_open(s);
+    report_all_pane_colours(s);
+    maybe_refresh_status(s, true);
+}
+
+/// 切工作区只改 GtkStack 可见页和前端缓存，不调用 Core。
+fn show_workspace_scene(s: &mut UiState, id: WorkspaceId, seed_from_core: bool) {
+    s.visible_workspace = id.clone();
     s.scene_stack.ensure(&id.as_str());
     let _ = s.scene_stack.show(&id.as_str());
     let had_cache = s.pixel_cache.contains_key(&id);
@@ -4769,9 +4948,8 @@ fn after_activate(s: &mut UiState) {
             s.scene_stack_view.add_named(&root, Some(&id.as_str()));
         }
         s.scene_stack_view.set_visible_child_name(&id.as_str());
-        s.mounted_ws = Some(id);
+        s.mounted_ws = Some(id.clone());
     }
-    s.tab_gate = TabSwitchGate::new(Duration::from_millis(1500));
     if switching && had_cache && !s.uses_tmux() {
         s.hold_pane_resize_until = Some(Instant::now() + Duration::from_millis(400));
     } else {
@@ -4787,11 +4965,14 @@ fn after_activate(s: &mut UiState) {
         s.view_store.workspace_ids().count(),
     );
     s.qc_store.replace_all_recents(&recents);
-    refresh_ui(s);
-    mark_active_attention_visible(s);
-    refresh_sidebar_if_open(s);
-    report_all_pane_colours(s);
-    maybe_refresh_status(s, true);
+    if seed_from_core {
+        refresh_ui(s);
+    } else {
+        refresh_workspace_layout(s, &id, false);
+        maybe_refresh_status(s, true);
+        sync_chrome_visibility(s);
+        refresh_sidebar_workspaces_if_open(s);
+    }
 }
 
 fn connect_target(state: &Rc<RefCell<UiState>>, config: TargetConfig) {
@@ -5383,6 +5564,50 @@ mod tests {
     fn close_intent_maps_quit_and_hide() {
         assert_eq!(close_intent(true), CloseIntent::Quit);
         assert_eq!(close_intent(false), CloseIntent::HideKeepPolling);
+    }
+
+    #[test]
+    fn existing_workspace_activation_is_scene_only() {
+        let src = include_str!("window.rs");
+        let activation = fn_src(src, "activate_existing");
+        assert!(
+            activation.contains("show_workspace_scene(s, id, false)"),
+            "{activation}"
+        );
+        assert!(!activation.contains("activate_workspace"), "{activation}");
+        assert!(!activation.contains("sync_view_store"), "{activation}");
+
+        let scene = fn_src(src, "show_workspace_scene");
+        assert!(!scene.contains("event_pump"), "{scene}");
+        assert!(!scene.contains("seed_unseeded_pane_for"), "{scene}");
+    }
+
+    #[test]
+    fn existing_tab_activation_is_scene_only() {
+        let src = include_str!("window.rs");
+        let activation = fn_src(src, "request_switch_tab");
+        assert!(
+            activation.contains("show_tab_scene(s, tab_id)"),
+            "{activation}"
+        );
+        assert!(
+            !activation.contains("ClientTask::SwitchTab"),
+            "{activation}"
+        );
+        assert!(!activation.contains("command_queue"), "{activation}");
+
+        let scene = fn_src(src, "show_tab_scene");
+        assert!(scene.contains("layout.show_tab(tab_id)"), "{scene}");
+        assert!(!scene.contains("event_pump"), "{scene}");
+        assert!(!scene.contains("execute_active_task"), "{scene}");
+    }
+
+    #[test]
+    fn workspace_replica_matching_accepts_path_and_session_aliases() {
+        let id = WorkspaceId::new("local", None, "session", "tmux", "/worktree");
+        assert!(workspace_replica_matches(&id, "session:/worktree@local"));
+        assert!(workspace_replica_matches(&id, "session@local"));
+        assert!(!workspace_replica_matches(&id, "other@local"));
     }
 
     #[test]

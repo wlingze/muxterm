@@ -8,7 +8,7 @@ use gtk4::prelude::*;
 use gtk4::{Orientation, Paned, Widget};
 
 use crate::frontend::ffi_client::ClientLayout;
-use crate::frontend::linux::pane_view::{PaneMenuAction, PaneView};
+use crate::frontend::linux::pane_view::{PaneMenuAction, PaneSurface};
 use crate::frontend::linux::quickconnect::font::FontSettings;
 #[cfg(test)]
 use crate::frontend::linux::theme::Rgb;
@@ -27,7 +27,7 @@ enum LayoutTree {
     },
 }
 
-/// 布局根：持有 pane_id → PaneView，以及当前根 widget。
+/// 布局根：持有 pane_id → PaneSurface，以及当前根 widget。
 pub struct LayoutHost {
     pub root_box: gtk4::Box,
     /// 每个 tab 的完整 GTK 树常驻 Stack；切 tab 只 show/hide，不拆 VTE。
@@ -35,7 +35,7 @@ pub struct LayoutHost {
     tab_roots: HashMap<u32, Widget>,
     tab_leaves: HashMap<u32, Vec<u32>>,
     active_tab: Option<u32>,
-    panes: HashMap<u32, Rc<PaneView>>,
+    panes: HashMap<u32, Rc<PaneSurface>>,
     theme: Theme,
     font: FontSettings,
     is_tmux_mirror: bool,
@@ -48,7 +48,7 @@ pub struct LayoutHost {
     split_ratios: HashMap<u32, HashMap<Paned, Rc<Cell<u32>>>>,
     /// 本地 shell 模式的全屏 pane（tmux 模式由 resize-pane -Z 处理）。
     fullscreen_pane: Option<u32>,
-    /// 右键菜单动作回调；新建 PaneView 时统一接线。
+    /// 右键菜单动作回调；新建 PaneSurface 时统一接线。
     menu_cb: Option<Rc<dyn Fn(u32, PaneMenuAction)>>,
 }
 
@@ -94,7 +94,7 @@ impl LayoutHost {
         self.menu_cb = Some(Rc::new(callback));
     }
 
-    pub fn pane(&self, id: u32) -> Option<&Rc<PaneView>> {
+    pub fn pane(&self, id: u32) -> Option<&Rc<PaneSurface>> {
         self.panes.get(&id)
     }
 
@@ -112,7 +112,7 @@ impl LayoutHost {
         }
     }
 
-    pub fn panes_mut(&mut self) -> &mut HashMap<u32, Rc<PaneView>> {
+    pub fn panes_mut(&mut self) -> &mut HashMap<u32, Rc<PaneSurface>> {
         &mut self.panes
     }
 
@@ -146,14 +146,14 @@ impl LayoutHost {
         true
     }
 
-    pub fn ensure_pane<F>(&mut self, id: u32, on_input: &F) -> Rc<PaneView>
+    pub fn ensure_pane<F>(&mut self, id: u32, on_input: &F) -> Rc<PaneSurface>
     where
         F: Fn(u32, &[u8]) + Clone + 'static,
     {
         if let Some(p) = self.panes.get(&id) {
             return p.clone();
         }
-        let view = Rc::new(PaneView::new(
+        let view = Rc::new(PaneSurface::new(
             id,
             &self.theme,
             &self.font,
