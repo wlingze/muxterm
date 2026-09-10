@@ -314,7 +314,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             sendInput: { [weak self] paneId, data in
                 guard let self else { return }
                 self.performWhenForegroundReady {
-                    _ = self.bridge.sendInput(paneId: paneId, data: data)
+                    _ = self.enqueueCoreInput(paneId: paneId, data: data)
                 }
             },
             search: { [weak self] query, scope in
@@ -1099,12 +1099,19 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// Enqueue a UI task without synchronously touching the Core handle.
     /// `pollOnce()` is the only consumer of this queue.
     @discardableResult
+    private func enqueueCoreCommand(_ command: QueuedMuxCommand) -> Bool {
+        guard !isClosing else { return false }
+        commandQueue.enqueue(command)
+        return true
+    }
+
+    @discardableResult
     private func enqueueCoreTask(
         _ task: MuxTask,
         failureMessage: String
     ) -> Bool {
         guard !isClosing else { return false }
-        commandQueue.enqueue(QueuedMuxCommand(
+        return enqueueCoreCommand(QueuedMuxCommand(
             workspaceID: activeSceneWorkspaceID,
             task: QueuedMuxTask(
                 type: task.type,
@@ -1116,7 +1123,26 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             ),
             failureMessage: failureMessage
         ))
-        return true
+    }
+
+    @discardableResult
+    private func enqueueCoreInput(
+        paneId: UInt32,
+        data: Data,
+        quiet: Bool = false,
+        errorKey: MuxtermTextKey = .errorSendInput
+    ) -> Bool {
+        guard !data.isEmpty else { return true }
+        return enqueueCoreCommand(.input(
+            workspaceID: activeSceneWorkspaceID,
+            paneID: paneId,
+            data: data,
+            quiet: quiet,
+            failureMessage: MuxtermI18n.shared.tr(
+                errorKey,
+                arguments: ["id": "\(paneId)"]
+            )
+        ))
     }
 
     /// Dispatch queued commands at the same serialized boundary that drains
@@ -1126,18 +1152,80 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let commands = commandQueue.drain()
         guard !commands.isEmpty else { return }
         for command in commands {
-            let task = MuxTask(
-                type: command.task.type,
-                targetPane: command.task.targetPane,
-                targetTab: command.task.targetTab,
-                dir: command.task.dir,
-                name: command.task.name
-            )
             let result: Int32
-            if let workspaceID = command.workspaceID {
-                result = bridge.execute(task: task, workspaceID: workspaceID)
-            } else {
-                result = bridge.execute(task: task)
+            switch command.operation {
+            case .task(let queuedTask):
+                let task = MuxTask(
+                    type: queuedTask.type,
+                    targetPane: queuedTask.targetPane,
+                    targetTab: queuedTask.targetTab,
+                    dir: queuedTask.dir,
+                    name: queuedTask.name
+                )
+                if let workspaceID = command.workspaceID {
+                    result = bridge.execute(task: task, workspaceID: workspaceID)
+                } else {
+                    result = bridge.execute(task: task)
+                }
+            case .input(let paneID, let data, let quiet):
+                if let workspaceID = command.workspaceID {
+                    if quiet {
+                        result = bridge.sendInputQuiet(
+                            workspaceID: workspaceID,
+                            paneId: paneID,
+                            data: data
+                        )
+                    } else {
+                        result = bridge.sendInput(
+                            workspaceID: workspaceID,
+                            paneId: paneID,
+                            data: data
+                        )
+                    }
+                } else if quiet {
+                    result = bridge.sendInputQuiet(paneId: paneID, data: data)
+                } else {
+                    result = bridge.sendInput(paneId: paneID, data: data)
+                }
+            case .resize(let resize):
+                switch resize {
+                case .pane(let paneID, let cols, let rows):
+                    if let workspaceID = command.workspaceID {
+                        result = bridge.resizePane(
+                            workspaceID: workspaceID,
+                            paneId: paneID,
+                            cols: cols,
+                            rows: rows
+                        )
+                    } else {
+                        result = bridge.resizePane(paneId: paneID, cols: cols, rows: rows)
+                    }
+                case .paneAxis(let paneID, let horizontal, let size):
+                    if let workspaceID = command.workspaceID {
+                        result = bridge.resizePaneAxis(
+                            workspaceID: workspaceID,
+                            paneId: paneID,
+                            horizontal: horizontal,
+                            size: size
+                        )
+                    } else {
+                        result = bridge.resizePaneAxis(
+                            paneId: paneID,
+                            horizontal: horizontal,
+                            size: size
+                        )
+                    }
+                case .client(let cols, let rows):
+                    if let workspaceID = command.workspaceID {
+                        result = bridge.resizeClient(
+                            workspaceID: workspaceID,
+                            cols: cols,
+                            rows: rows
+                        )
+                    } else {
+                        result = bridge.resizeClient(cols: cols, rows: rows)
+                    }
+                }
             }
             if result != 0 {
                 reportStatusError(command.failureMessage)
@@ -1791,6 +1879,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func wireTerminalManagerCallbacks() {
+        terminalManager.enqueueCoreCommand = { [weak self] command in
+            self?.enqueueCoreCommand(command) ?? false
+        }
         terminalManager.onViewportChanged = { [weak self] paneId, offset in
             guard let self else { return }
             // 用户滚轮/触控板改变视口时，下一次命令导航应从当前状态重新开始；
@@ -3244,8 +3335,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // UI actions only enqueue.  This is the single command boundary next
         // to the single workspace-event drain, so Core never races a click
         // handler or needs a frontend lock.
-        flushCoreCommandQueue()
         resumePendingActivationCoreWork()
+        // Resuming a scene may enqueue deferred input/resize work collected
+        // while bridge queries were paused, so flush after the resume as well.
+        flushCoreCommandQueue()
         // 后台排空的事件必须先于 active bridge 的新事件交付。否则切回
         // Workspace 后，新的 PaneOutput 可能越过尚未应用的旧队列。
         if flushActiveSurfaceCatchUpBeforePoll() {
@@ -4393,7 +4486,11 @@ extension MainWindowController: TerminalInputHandler {
         let payload = Data(data)
         // W19-E：overlay 快速回复不清 Blocked（注意力行保留，Enter 仍可跳转）。
         performWhenForegroundReady { [weak self] in
-            _ = self?.bridge.sendInputQuiet(paneId: paneId, data: payload)
+            _ = self?.enqueueCoreInput(
+                paneId: paneId,
+                data: payload,
+                quiet: true
+            )
         }
     }
 

@@ -24,14 +24,19 @@ final class TerminalManager: TerminalInputHandler {
     private var swiftTermSeeded = Set<UInt32>()
     /// 最近喂给终端的 UTF-8 片段（供 UITest / 状态栏无障碍查询）。
     private(set) var recentOutputSnippet: String = ""
-    /// 上次成功同步到 PTY 的行列，避免无意义重复 resize。
+    /// 上次入队到 PTY 的行列，避免无意义重复 resize。
     private var lastPtySize: [UInt32: (UInt16, UInt16)] = [:]
     /// bridge 查询暂停期间收到的 local PTY 尺寸；恢复后只提交每个 pane
     /// 的最后一帧，避免 Workspace 切换把 resize 事件堆到主线程。
     private var pendingPtySizes: [UInt32: (UInt16, UInt16)] = [:]
     /// bridge 暂停期间的用户输入。切换 Workspace 不应吞掉用户刚输入的
     /// 字节，恢复时按 pane 保持原顺序一次发送。
-    private var pendingInputs: [UInt32: Data] = [:]
+    private struct PendingInput {
+        let paneId: UInt32
+        let data: Data
+        let errorKey: MuxtermTextKey
+    }
+    private var pendingInputs: [PendingInput] = []
     /// 上次发送给 tmux control client 的整体尺寸。
     private var lastClientSize: (UInt16, UInt16)?
     /// 已排队但尚未发送的整体尺寸；窗口 live resize 期间只保留最后一帧。
@@ -86,6 +91,9 @@ final class TerminalManager: TerminalInputHandler {
 
     weak var focusTarget: MuxTerminalView?
     var onOutputSnippetChanged: ((String) -> Void)?
+    /// MainWindow supplies the single UI-to-Core command boundary.  Terminal
+    /// input and resize callbacks never call CoreBridge directly.
+    var enqueueCoreCommand: ((QueuedMuxCommand) -> Bool)?
     /// Surface 首帧完成后通知布局层一次性显示 PaneHostView。
     /// 回调只在主线程触发；后台 slot 不创建/重建 AppKit view。
     var onSurfaceReadinessChanged: ((UInt32, Bool) -> Void)?
@@ -179,6 +187,19 @@ final class TerminalManager: TerminalInputHandler {
         return bridge.execute(task: task)
     }
 
+    @discardableResult
+    private func enqueueCoreOperation(
+        _ operation: QueuedMuxOperation,
+        failureMessage: String
+    ) -> Bool {
+        guard let enqueueCoreCommand else { return false }
+        return enqueueCoreCommand(QueuedMuxCommand(
+            workspaceID: workspaceID,
+            operation: operation,
+            failureMessage: failureMessage
+        ))
+    }
+
     private func setPaneViewport(paneId: UInt32, offset: UInt32) -> Int32 {
         guard let bridge else { return -1 }
         if let workspaceID {
@@ -201,48 +222,6 @@ final class TerminalManager: TerminalInputHandler {
             )
         }
         return bridge.paneHistoryMaxOffset(paneId: paneId, rows: rows)
-    }
-
-    private func resizeClient(cols: UInt16, rows: UInt16) -> Int32 {
-        guard let bridge else { return -1 }
-        if let workspaceID {
-            return bridge.resizeClient(workspaceID: workspaceID, cols: cols, rows: rows)
-        }
-        return bridge.resizeClient(cols: cols, rows: rows)
-    }
-
-    private func resizePaneAxis(paneId: UInt32, horizontal: Bool, size: UInt16) -> Int32 {
-        guard let bridge else { return -1 }
-        if let workspaceID {
-            return bridge.resizePaneAxis(
-                workspaceID: workspaceID,
-                paneId: paneId,
-                horizontal: horizontal,
-                size: size
-            )
-        }
-        return bridge.resizePaneAxis(paneId: paneId, horizontal: horizontal, size: size)
-    }
-
-    private func resizePane(paneId: UInt32, cols: UInt16, rows: UInt16) -> Int32 {
-        guard let bridge else { return -1 }
-        if let workspaceID {
-            return bridge.resizePane(
-                workspaceID: workspaceID,
-                paneId: paneId,
-                cols: cols,
-                rows: rows
-            )
-        }
-        return bridge.resizePane(paneId: paneId, cols: cols, rows: rows)
-    }
-
-    private func sendInputToCore(paneId: UInt32, data: Data) -> Int32 {
-        guard let bridge else { return -1 }
-        if let workspaceID {
-            return bridge.sendInput(workspaceID: workspaceID, paneId: paneId, data: data)
-        }
-        return bridge.sendInput(paneId: paneId, data: data)
     }
 
     /// 后台 slot 使用：保留事件/索引消费，但禁止创建 AppKit view。
@@ -966,13 +945,16 @@ final class TerminalManager: TerminalInputHandler {
             return
         }
         guard ClientGridHysteresis.shouldSend(current: lastClientSize, next: size) else { return }
-        guard let bridge else { return }
-        if resizeClient(cols: size.0, rows: size.1) == 0 {
+        let failureMessage = MuxtermI18n.shared.tr(.errorResizeClient)
+        if enqueueCoreOperation(
+            .resize(.client(cols: size.0, rows: size.1)),
+            failureMessage: failureMessage
+        ) {
             lastClientSize = size
             reportedClientResizeFailure = false
         } else if !reportedClientResizeFailure {
             reportedClientResizeFailure = true
-            onError?(MuxtermI18n.shared.tr(.errorResizeClient))
+            onError?(failureMessage)
         }
     }
 
@@ -993,12 +975,19 @@ final class TerminalManager: TerminalInputHandler {
     /// 提交鼠标拖动后的单轴 pane 尺寸；tmux 会把结果保存到其窗口 layout。
     @discardableResult
     func resizePaneAxis(paneId: UInt32, horizontal: Bool, size: UInt16) -> Int32 {
-        guard bridgeQueriesEnabled, usesClientResize, let bridge else { return -1 }
-        let rc = resizePaneAxis(paneId: paneId, horizontal: horizontal, size: size)
-        if rc != 0 {
-            onError?(MuxtermI18n.shared.tr(.errorResizeDivider, arguments: ["id": "\(paneId)"]))
+        guard bridgeQueriesEnabled, usesClientResize else { return -1 }
+        let failureMessage = MuxtermI18n.shared.tr(
+            .errorResizeDivider,
+            arguments: ["id": "\(paneId)"]
+        )
+        guard enqueueCoreOperation(
+            .resize(.paneAxis(paneID: paneId, horizontal: horizontal, size: size)),
+            failureMessage: failureMessage
+        else {
+            onError?(failureMessage)
+            return -1
         }
-        return rc
+        return 0
     }
 
     /// 强制重绘（分割后 Metal/layer 偶发留黑）。
@@ -1152,11 +1141,15 @@ final class TerminalManager: TerminalInputHandler {
 
     private func sendPtyResize(paneId: UInt32, cols: UInt16, rows: UInt16) {
         lastPtySize[paneId] = (cols, rows)
-        guard let bridge else { return }
-        if resizePane(paneId: paneId, cols: cols, rows: rows) != 0,
-           reportedResizeFailures.insert(paneId).inserted
-        {
-            onError?(MuxtermI18n.shared.tr(.errorResizePane, arguments: ["id": "\(paneId)"]))
+        let failureMessage = MuxtermI18n.shared.tr(
+            .errorResizePane,
+            arguments: ["id": "\(paneId)"]
+        )
+        if !enqueueCoreOperation(
+            .resize(.pane(paneID: paneId, cols: cols, rows: rows)),
+            failureMessage: failureMessage
+        ), reportedResizeFailures.insert(paneId).inserted {
+            onError?(failureMessage)
         }
     }
 
@@ -1213,11 +1206,22 @@ final class TerminalManager: TerminalInputHandler {
     ) {
         guard !data.isEmpty else { return }
         guard bridgeQueriesEnabled else {
-            pendingInputs[paneId, default: Data()].append(data)
+            pendingInputs.append(PendingInput(
+                paneId: paneId,
+                data: data,
+                errorKey: errorKey
+            ))
             return
         }
-        if sendInputToCore(paneId: paneId, data: data) != 0 {
-            onError?(MuxtermI18n.shared.tr(errorKey, arguments: ["id": "\(paneId)"]))
+        let failureMessage = MuxtermI18n.shared.tr(
+            errorKey,
+            arguments: ["id": "\(paneId)"]
+        )
+        if !enqueueCoreOperation(
+            .input(paneID: paneId, data: data, quiet: false),
+            failureMessage: failureMessage
+        ) {
+            onError?(failureMessage)
         }
     }
 
@@ -1225,8 +1229,12 @@ final class TerminalManager: TerminalInputHandler {
         guard !pendingInputs.isEmpty else { return }
         let inputs = pendingInputs
         pendingInputs.removeAll()
-        for (paneId, data) in inputs {
-            sendInput(paneId: paneId, data: data)
+        for input in inputs {
+            sendInput(
+                paneId: input.paneId,
+                data: input.data,
+                errorKey: input.errorKey
+            )
         }
     }
 

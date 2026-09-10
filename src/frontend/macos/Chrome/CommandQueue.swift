@@ -88,7 +88,7 @@ public enum QueuedMuxResize: Equatable, Sendable {
     }
 }
 
-/// One UI-to-Core task waiting for the next main-thread event-pump flush.
+/// One UI-to-Core operation waiting for the next main-thread event-pump flush.
 public struct QueuedMuxCommand: Equatable, Sendable {
     public let workspaceID: String?
     public let operation: QueuedMuxOperation
