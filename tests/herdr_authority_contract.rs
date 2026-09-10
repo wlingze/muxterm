@@ -380,20 +380,19 @@ fn run_case(rt: &tokio::runtime::Runtime, sshd: &LoopbackSshd, transport: &str) 
         let runtime = herdr_runtime(workspace)?;
         if transport == "ssh" {
             ensure!(
-                runtime.session().socket_path() != herdr.socket_path(),
-                "SSH case 必须使用 Runtime 持有的本地 forwarded API socket"
+                runtime.session().transport_id() == "ssh",
+                "SSH case 必须通过 SSH TargetConnection 建立 Herdr 通道"
             );
             ensure!(
-                runtime
-                    .session()
-                    .socket_path()
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.starts_with("muxterm-herdr-fwd-")),
-                "SSH Runtime socket 不是生产 forward: {}",
-                runtime.session().socket_path().display()
+                runtime.session().target() == sshd.alias,
+                "SSH Runtime target 必须保留 loopback alias: {}",
+                runtime.session().target()
             );
         } else {
+            ensure!(
+                runtime.session().transport_id() == "local",
+                "local case 必须通过 local TargetConnection 建立 Herdr 通道"
+            );
             ensure!(
                 runtime.session().socket_path() == herdr.socket_path(),
                 "local case 必须直连隔离 named-session socket"

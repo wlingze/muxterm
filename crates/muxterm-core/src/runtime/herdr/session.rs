@@ -108,6 +108,16 @@ impl HerdrSession {
         &self.client_socket_path
     }
 
+    /// The transport that owns channel creation for this Herdr session.
+    pub fn transport_id(&self) -> &str {
+        self.connection.transport_id()
+    }
+
+    /// The target identity used by the owning transport (for example an SSH alias).
+    pub fn target(&self) -> &str {
+        self.connection.target()
+    }
+
     pub(crate) fn open_socket_channel(&self, path: &Path) -> Result<SharedChannel> {
         open_unix_socket(self.connection.as_ref(), path)
     }
