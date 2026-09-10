@@ -530,17 +530,23 @@ fn title_bar_actions_and_workspace_sidebar() {
         let ordered_workspaces = app.test_workspace_replica_ids();
         let ctrl = window_key_controller(&app.window).expect("window key controller");
         let workspace_mods = gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::ALT_MASK;
+        let switch_started = std::time::Instant::now();
         simulate_key_press(&ctrl, gdk::Key::_1, workspace_mods);
+        let switch_elapsed = switch_started.elapsed();
+        let first_scene_page = scene_stack
+            .visible_child_name()
+            .map(|name| name.to_string())
+            .expect("first workspace must reveal a scene page immediately");
+        assert!(
+            switch_elapsed <= std::time::Duration::from_millis(16),
+            "workspace scene switch must fit one 60Hz frame: {switch_elapsed:?}"
+        );
         pump_main_loop(100);
         assert_eq!(
             app.test_active_workspace_replica_id(),
             ordered_workspaces[0],
             "Ctrl+Alt+1 must activate the first workspace"
         );
-        let first_scene_page = scene_stack
-            .visible_child_name()
-            .map(|name| name.to_string())
-            .expect("first workspace must reveal a scene page");
         assert_ne!(
             &first_scene_page, &second_scene_page,
             "switching must only change the visible scene page"
@@ -550,7 +556,18 @@ fn title_bar_actions_and_workspace_sidebar() {
             ordered_workspaces,
             "activating a workspace must not reorder the numbered list"
         );
+        let switch_started = std::time::Instant::now();
         simulate_key_press(&ctrl, gdk::Key::_2, workspace_mods);
+        let switch_elapsed = switch_started.elapsed();
+        assert_eq!(
+            scene_stack.visible_child_name().as_deref(),
+            Some(second_scene_page.as_str()),
+            "second workspace scene must be visible immediately"
+        );
+        assert!(
+            switch_elapsed <= std::time::Duration::from_millis(16),
+            "workspace scene switch must fit one 60Hz frame: {switch_elapsed:?}"
+        );
         pump_main_loop(100);
         assert_eq!(
             app.test_active_workspace_replica_id(),
