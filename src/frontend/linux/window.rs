@@ -787,51 +787,31 @@ impl AppWindow {
         }
 
         {
-            let st = state.clone();
-            state
-                .borrow()
-                .sidebar
-                .connect_workspace_activated(move |id| {
-                    let mut s = st.borrow_mut();
-                    activate_existing(&mut s, id.clone());
-                });
-        }
-
-        {
-            let st = state.clone();
-            state.borrow().sidebar.connect_workspace_closed(move |id| {
-                close_sidebar_workspace(&mut st.borrow_mut(), id);
-            });
-        }
-
-        {
-            let st = state.clone();
-            state
-                .borrow()
-                .sidebar
-                .connect_agent_activated(move |id, pane| {
-                    activate_sidebar_activity(&mut st.borrow_mut(), id, pane);
-                });
-        }
-
-        {
-            let st = state.clone();
-            state
-                .borrow()
-                .sidebar
-                .connect_command_activated(move |id, pane| {
-                    activate_sidebar_activity(&mut st.borrow_mut(), id, pane);
-                });
-        }
-
-        {
-            let st = state.clone();
-            let toggle = state.borrow().sidebar.toggle.clone();
-            toggle.connect_toggled(move |button| {
-                if button.is_active() {
-                    refresh_sidebar_if_open(&mut st.borrow_mut());
-                }
-            });
+            let activate_state = state.clone();
+            let close_state = state.clone();
+            let agent_state = state.clone();
+            let command_state = state.clone();
+            let toggle_state = state.clone();
+            let s = state.borrow();
+            s.sidebar.connect_actions(
+                move |id| {
+                    activate_existing(&mut activate_state.borrow_mut(), id.clone());
+                },
+                move |id| {
+                    close_sidebar_workspace(&mut close_state.borrow_mut(), id);
+                },
+                move |id, pane| {
+                    activate_sidebar_activity(&mut agent_state.borrow_mut(), id, pane);
+                },
+                move |id, pane| {
+                    activate_sidebar_activity(&mut command_state.borrow_mut(), id, pane);
+                },
+                move |is_active| {
+                    if is_active {
+                        refresh_sidebar_if_open(&mut toggle_state.borrow_mut());
+                    }
+                },
+            );
         }
 
         {

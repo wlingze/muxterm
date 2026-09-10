@@ -772,6 +772,29 @@ impl WorkspaceSidebar {
         self.set_workspaces(&workspaces);
     }
 
+    /// 连接页面导航信号；业务闭包由窗口提供，Sidebar 不接触 Core 或 UiState。
+    pub fn connect_actions<A, C, P, Q, T>(
+        &self,
+        on_activate: A,
+        on_close: C,
+        on_agent_activate: P,
+        on_command_activate: Q,
+        on_toggle: T,
+    ) where
+        A: Fn(&WorkspaceId) + 'static,
+        C: Fn(&WorkspaceId) + 'static,
+        P: Fn(&WorkspaceId, u32) + 'static,
+        Q: Fn(&WorkspaceId, u32) + 'static,
+        T: Fn(bool) + 'static,
+    {
+        self.connect_workspace_activated(on_activate);
+        self.connect_workspace_closed(on_close);
+        self.connect_agent_activated(on_agent_activate);
+        self.connect_command_activated(on_command_activate);
+        let toggle = self.toggle.clone();
+        toggle.connect_toggled(move |button| on_toggle(button.is_active()));
+    }
+
     /// Set every row from the Core pool.
     pub fn set_workspaces(&self, items: &[WorkspaceSidebarItem]) {
         if self.workspace_items.borrow().as_slice() == items {
