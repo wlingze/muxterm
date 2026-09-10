@@ -31,7 +31,7 @@ use crate::frontend::ffi_client::{
 use crate::frontend::i18n::{self, Key};
 use crate::frontend::linux::app_shell::{AppShell, HeaderActions};
 use crate::frontend::linux::attention_compat::CompatibilityActivity;
-use crate::frontend::linux::attention_ui::{window_title, GioSink, NotificationSink};
+use crate::frontend::linux::attention_ui::{GioSink, NotificationSink};
 use crate::frontend::linux::command_palette::{parse_palette_action, PaletteAction};
 #[cfg(test)]
 use crate::frontend::linux::event_batch::batch_order_plan;
@@ -54,7 +54,7 @@ use crate::frontend::linux::quickconnect::store::QuickConnectStore;
 use crate::frontend::linux::quickconnect_panel::{
     build_root_items, build_search_items, ExistingNav, ExistingPanelState, PanelItem,
 };
-use crate::frontend::linux::status_bar::{ConnectionSummary, StatusBar};
+use crate::frontend::linux::status_bar::StatusBar;
 #[cfg(test)]
 use crate::frontend::linux::theme::Rgb;
 use crate::frontend::linux::theme::{fallback_theme, toggle_target, Theme};
@@ -76,6 +76,8 @@ use muxterm_protocol::WorkspaceId;
 mod window_layout;
 #[path = "window_scene.rs"]
 mod window_scene;
+#[path = "window_status.rs"]
+mod window_status;
 
 /// 主窗口。
 pub struct AppWindow {
@@ -2369,16 +2371,7 @@ fn switch_pane_offset(s: &mut UiState, forward: bool) {
 
 /// 刷新状态栏红点与窗口标题（blocked 工作区数）。
 fn refresh_attention_chrome(s: &UiState, window: &Window) {
-    let n = activity_snapshot(s).blocked_count;
-    s.status.set_attention(n);
-    let active_workspace = s.active_workspace_key();
-    let workspace = s
-        .view_store
-        .workspace(&active_workspace)
-        .and_then(|view| view.workspace.as_ref())
-        .map(|workspace| workspace.name.clone())
-        .unwrap_or_else(|| "muxterm".into());
-    window.set_title(Some(&window_title(n, &workspace)));
+    window_status::refresh_attention_chrome(s, window);
 }
 
 /// 回底按钮可见性：VTE 滚离底部时显示，回到尾部隐藏（W16a）。
@@ -2472,54 +2465,7 @@ fn update_jump_latest(s: &UiState) {
 /// 速率由连续两次 `traffic_bytes()` 快照 + 墙钟差出来（W15a），
 /// 禁止把累计字节标成 `B/s`。
 fn refresh_connection_summary(s: &mut UiState) {
-    let workspace_id = s.active_workspace_key();
-    let Some(workspace) = s
-        .view_store
-        .workspace(&workspace_id)
-        .and_then(|view| view.workspace.as_ref())
-    else {
-        return;
-    };
-    let Some(id) = parse_workspace_id(&workspace.id) else {
-        return;
-    };
-    let kind = match id.runtime.as_str() {
-        "tmux-ssh" | "ssh" => "ssh",
-        "tmux" => "tmux",
-        _ => "local",
-    };
-    let host = id
-        .alias
-        .clone()
-        .or_else(|| (!id.session.is_empty()).then(|| id.session.clone()));
-    let status = match s.runtime_status {
-        crate::ffi::types::BACKEND_STATUS_CONNECTED => "connected",
-        crate::ffi::types::BACKEND_STATUS_CONNECTING => "connecting",
-        _ => "disconnected",
-    };
-    let (down, up) = s.event_pump.client().traffic_bytes();
-    let now = Instant::now();
-    let (down_rate, up_rate) = match (s.last_traffic, s.last_traffic_at) {
-        (Some((pdown, pup)), Some(at)) => {
-            let dt = now.duration_since(at);
-            (
-                crate::frontend::format::rate_bps(pdown, down, dt),
-                crate::frontend::format::rate_bps(pup, up, dt),
-            )
-        }
-        _ => (0, 0),
-    };
-    s.last_traffic = Some((down, up));
-    s.last_traffic_at = Some(now);
-    s.status.set_connection_summary(&ConnectionSummary {
-        kind: kind.into(),
-        host,
-        status: status.into(),
-        down,
-        up,
-        down_rate,
-        up_rate,
-    });
+    window_status::refresh_connection_summary(s);
 }
 
 /// 当前前台连接的 workspace id（ReplicaStore 键）。
@@ -2654,57 +2600,11 @@ fn refresh_workspace_layout(s: &mut UiState, wid: &WorkspaceId, seed_from_core: 
 }
 
 fn local_status_snapshot(npanes: usize, tabs: &[(u32, String, bool)]) -> StatusBarSnapshot {
-    let connected = i18n::tr(Key::StatusConnected);
-    let panes = i18n::tr(Key::Panes);
-    let close_hint = i18n::tr(Key::WindowCloseHint);
-    let mut snap = crate::frontend::linux::quickconnect::status_style::snapshot_from_tabs(
-        "local", npanes, tabs,
-    );
-    snap.left = format!("{connected} | {npanes} {panes}");
-    snap.right = close_hint;
-    snap.interval = 1;
-    snap
+    window_status::local_status_snapshot(npanes, tabs)
 }
 
 fn maybe_refresh_status(s: &mut UiState, force: bool) {
-    let workspace_key = s.active_ws_id().as_str();
-    let Some(view) = s.view_store.workspace(&workspace_key) else {
-        return;
-    };
-    let session = view
-        .workspace
-        .as_ref()
-        .map(|workspace| workspace.name.clone())
-        .unwrap_or_default();
-    let active_tab = view
-        .tabs
-        .iter()
-        .find(|tab| tab.id == s.active_tab_id())
-        .map(|tab| tab.id)
-        .unwrap_or(s.active_tab);
-    let npanes = view.panes.get(&active_tab).map(Vec::len).unwrap_or(0);
-    let rows: Vec<(u32, String, bool)> = view
-        .tabs
-        .iter()
-        .map(|tab| (tab.id, tab.name.clone(), tab.id == active_tab))
-        .collect();
-    let mut snap = if s.uses_tmux() {
-        crate::frontend::linux::quickconnect::status_style::snapshot_from_tabs(
-            &session, npanes, &rows,
-        )
-    } else {
-        local_status_snapshot(npanes, &rows)
-    };
-    // tmux ≥3.2 订阅推送的 status-left/right 覆盖默认文案（零轮询）。
-    if let Some(left) = s.status_left.as_deref() {
-        snap.left = left.to_string();
-    }
-    if let Some(right) = s.status_right.as_deref() {
-        snap.right = right.to_string();
-    }
-    let _ = force;
-    s.status.apply(&snap);
-    sync_chrome_visibility(s);
+    window_status::maybe_refresh_status(s, force);
 }
 
 /// 窗口关闭意图：非 Quit 动作 → 隐藏并保持轮询；Quit → 真正关闭。
@@ -2742,10 +2642,7 @@ pub fn should_poll_status(
 }
 
 fn sync_chrome_visibility(s: &UiState) {
-    // 唯一 chrome：status bar 永远可见，没有第二条 tab 带。
-    // worktree 创建入口只按 support() 露出（禁止 if runtime == "herdr"）。
-    let worktree = s.active_supports(ClientRuntimeCapability::WorktreeList);
-    s.status.set_worktree_visible(worktree);
+    window_status::sync_chrome_visibility(s);
 }
 
 /// Drain VTE input callbacks on the production GTK poll.
