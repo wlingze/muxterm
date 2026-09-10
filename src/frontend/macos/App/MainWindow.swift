@@ -96,6 +96,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 当前 pane 在命令时间线中的游标；手动滚轮/搜索会清掉游标，
     /// Cmd+Option+↑/↓ 则按此游标前后移动。
     private var commandTimelineCursor: [UInt32: UInt64] = [:]
+    /// Event-pump snapshot of OSC 133 marks. The workspace key prevents a
+    /// delayed pane-id reuse from exposing another scene's command history.
+    private struct CommandMarksKey: Hashable {
+        let workspaceID: String?
+        let paneID: UInt32
+    }
+    private var commandMarksCache: [CommandMarksKey: [CoreCommandMark]] = [:]
     /// 程序化命令跳转触发 native scroll callback 时保留游标一次。
     private var commandNavigationPanes = Set<UInt32>()
     /// 最近一次 poll 的 PaneOutput 条数（W13 洪水上限）。
@@ -1759,6 +1766,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 failureMessage: MuxtermI18n.shared.tr(.errorCommandFailed)
             ))
         }
+        if let sceneWorkspaceID = slot.workspaceID {
+            commandMarksCache = commandMarksCache.filter {
+                $0.key.workspaceID != sceneWorkspaceID
+            }
+        }
         sceneStack.close(key: slot.key)
         content.paneLayout.dropParked(except: Array(sceneStack.scenes.values.map(\.terminalManager)))
         quickConnectStore.replaceAllRecents(sceneStack.allRecentTargetConfigs())
@@ -2108,8 +2120,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func commandMarks(for paneId: UInt32) -> [CoreCommandMark] {
-        bridge.paneCommandMarks(paneId: paneId)
-            .filter { $0.exitCode != nil && $0.historyOffset != nil }
+        commandMarksCache[CommandMarksKey(
+            workspaceID: activeSceneWorkspaceID,
+            paneID: paneId
+        )] ?? []
     }
 
     private func jumpToCommandMark(_ mark: CoreCommandMark, paneId: UInt32) {
@@ -3652,6 +3666,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             if ev.isPaneClosed {
                 // pane 真正关闭才销毁视图；切 tab / 布局变化保留视图状态。
                 terminalManager.removePane(ev.paneId)
+                commandMarksCache.removeValue(forKey: CommandMarksKey(
+                    workspaceID: activeSceneWorkspaceID,
+                    paneID: ev.paneId
+                ))
             } else if ev.isPaneSnapshot {
                 guard shouldHandleSurfaceEvent(paneId: ev.paneId) else {
                     continue
@@ -4325,18 +4343,24 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             setLastSeenVisible(false, paneId: paneId)
         }
 
+        let marks = bridge.paneCommandMarks(paneId: paneId)
+            .filter { $0.exitCode != nil && $0.historyOffset != nil }
+        commandMarksCache[CommandMarksKey(
+            workspaceID: activeSceneWorkspaceID,
+            paneID: paneId
+        )] = marks
         var ok: (command: String, exitCode: Int, offset: UInt32)?
         var fail: (command: String, exitCode: Int, offset: UInt32)?
-        for mark in bridge.paneCommandMarks(paneId: paneId).reversed() {
-                // Core 返回 nil history_offset 时表示 seq 已淘汰；绝不能
-                // 回退成 0，否则点击红/绿刻度会错误跳到 live 底部。
-                guard let code = mark.exitCode, let offset = mark.historyOffset else { continue }
-                if code == 0, ok == nil {
-                    ok = (mark.command, code, offset)
-                } else if code != 0, fail == nil {
-                    fail = (mark.command, code, offset)
-                }
-                if ok != nil, fail != nil { break }
+        for mark in marks.reversed() {
+            // Core 返回 nil history_offset 时表示 seq 已淘汰；绝不能
+            // 回退成 0，否则点击红/绿刻度会错误跳到 live 底部。
+            guard let code = mark.exitCode, let offset = mark.historyOffset else { continue }
+            if code == 0, ok == nil {
+                ok = (mark.command, code, offset)
+            } else if code != 0, fail == nil {
+                fail = (mark.command, code, offset)
+            }
+            if ok != nil, fail != nil { break }
         }
         content.setCommandMarks(ok: ok, fail: fail)
     }
