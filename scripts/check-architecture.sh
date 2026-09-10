@@ -75,6 +75,10 @@ check_absent \
     'ffi_bridge' \
     src crates/muxterm-core/src
 check_absent \
+    "macOS frontend must not retain legacy scene lifecycle coordination" \
+    'bridgeLock|backgroundPollQueue|WarmConnectionSlot|ForegroundAuthority' \
+    src/frontend/macos
+check_absent \
     "FFI function modules must not depend on the api facade" \
     'super::super::api|crate::protocol::ffi::api' \
     crates/muxterm-core/src/protocol/ffi/functions
