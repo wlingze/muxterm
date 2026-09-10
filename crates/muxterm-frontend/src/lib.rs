@@ -4,6 +4,7 @@
 //! of the root package.  It gives the common FFI client a compiler-enforced
 //! dependency on Core's public ABI instead of the root module tree.
 
+pub mod command_queue;
 pub mod ffi_client;
 pub mod format;
 pub mod i18n;
