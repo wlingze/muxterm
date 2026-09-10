@@ -27,6 +27,9 @@ final class WorkspaceScene: SceneProtocol {
     let bridge: CoreBridge
     /// Stable identity used when several scenes share one Core handle.
     let workspaceID: String?
+    /// MainWindow's serialized UI-to-Core command boundary. Shared-event
+    /// ingestion uses it for attention mutations without touching CoreBridge.
+    var enqueueCoreCommand: ((QueuedMuxCommand) -> Bool)?
     let terminalManager: TerminalManager
     let viewStore: WorkspaceViewStore
     private let stateLock = NSLock()
@@ -197,12 +200,15 @@ final class WorkspaceScene: SceneProtocol {
                event.name.hasPrefix("muxterm.pane-cmd")
             {
                 let value = String(data: event.data, encoding: .utf8) ?? ""
-                if let workspaceID {
-                    _ = bridge.attentionSetProcessName(
+                if let workspaceID, let enqueueCoreCommand {
+                    _ = enqueueCoreCommand(.attention(
                         workspaceID: workspaceID,
-                        paneId: event.paneId,
-                        name: value.isEmpty ? nil : value
-                    )
+                        .setProcessName(
+                            paneID: event.paneId,
+                            name: value.isEmpty ? nil : value
+                        ),
+                        failureMessage: ""
+                    ))
                 }
             } else if event.isPaneOutput
                 || event.isPaneFrame

@@ -287,4 +287,25 @@ final class MacCommandQueueTests: XCTestCase {
         }
         XCTAssertEqual(paneID, 3)
     }
+
+    func testProcessNameUpdatesForOnePaneCoalesce() {
+        var queue = MacCommandQueue()
+        queue.enqueue(.attention(
+            workspaceID: "one",
+            .setProcessName(paneID: 3, name: "old"),
+            failureMessage: ""
+        ))
+        queue.enqueue(.attention(
+            workspaceID: "one",
+            .setProcessName(paneID: 3, name: "new"),
+            failureMessage: ""
+        ))
+
+        XCTAssertEqual(queue.count, 1)
+        guard case .attention(.setProcessName(let paneID, let name)) = queue.drain()[0].operation else {
+            return XCTFail("expected a process-name operation")
+        }
+        XCTAssertEqual(paneID, 3)
+        XCTAssertEqual(name, "new")
+    }
 }

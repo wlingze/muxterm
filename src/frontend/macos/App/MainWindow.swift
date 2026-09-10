@@ -1324,6 +1324,19 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     } else {
                         result = bridge.attentionOnBecameVisible(paneId: paneID)
                     }
+                case .setProcessName(let paneID, let name):
+                    if let workspaceID = command.workspaceID {
+                        result = bridge.attentionSetProcessName(
+                            workspaceID: workspaceID,
+                            paneId: paneID,
+                            name: name
+                        )
+                    } else {
+                        result = bridge.attentionSetProcessName(
+                            paneId: paneID,
+                            name: name
+                        )
+                    }
                 case .acknowledge(let paneID):
                     if let workspaceID = command.workspaceID {
                         result = bridge.attentionAcknowledge(
@@ -3445,6 +3458,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 else {
                     continue
                 }
+                candidate.enqueueCoreCommand = { [weak self] command in
+                    self?.enqueueCoreCommand(command) ?? false
+                }
                 if candidate === activeSlot {
                     activeEvents.append(contentsOf: workspaceEvents)
                 } else {
@@ -3636,9 +3652,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     if ev.name.hasPrefix("muxterm.pane-cmd") {
                         // pane-cmd 订阅 → AttentionEngine.set_process_name（Linux 同款）。
                         // pane @0 是合法 tmux pane，不能把 0 当作“无 pane”哨兵。
-                        _ = bridge.attentionSetProcessName(
-                            paneId: ev.paneId,
-                            name: value.isEmpty ? nil : value
+                        _ = enqueueCoreAttention(
+                            workspaceID: activeSceneWorkspaceID,
+                            .setProcessName(
+                                paneID: ev.paneId,
+                                name: value.isEmpty ? nil : value
+                            ),
+                            refreshPanel: false
                         )
                     } else {
                         content.statusBar.applySubscription(name: ev.name, value: value)
