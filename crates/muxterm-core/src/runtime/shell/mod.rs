@@ -34,7 +34,7 @@ use crate::protocol::layout::{LayoutNode, TabLayout};
 use crate::protocol::state::{BackendStatus, PaneInfo, State, StateChange, TabInfo};
 use crate::protocol::task::{Task, TaskOutcome};
 use crate::protocol::terminal::input::encode;
-use crate::runtime::{RenderEvent, Runtime, RuntimeBatch, RuntimeCapability};
+use crate::runtime::{ControlEvent, RenderEvent, Runtime, RuntimeBatch, RuntimeCapability};
 use crate::transport::{
     ByteChannel, ChannelRequest, Connect, PtySize as TransportPtySize, TargetConnection,
 };
@@ -119,9 +119,9 @@ pub struct ShellRuntime {
     tabs: Vec<LocalTab>,
     panes: Vec<LocalPane>,
     status: BackendStatus,
-    /// Lane-separated event batches.  Each parser action enters through
-    /// `push_event`; the compatibility `take_events` view is assembled only
-    /// when an old caller explicitly requests it.
+    /// Lane-separated event batches. Each parser action enters through the
+    /// lane-specific push helpers; the compatibility `take_events` view is
+    /// assembled only when an old caller explicitly requests it.
     events: VecDeque<RuntimeBatch>,
 
     /// 下一个 tab id。
@@ -218,15 +218,15 @@ impl ShellRuntime {
             if let Some(p) = self.panes.iter_mut().find(|p| p.info.id == pane) {
                 append_capped(&mut p.output, &data, MAX_PANE_OUTPUT_BYTES);
             }
-            self.push_event(StateChange::PaneOutput { pane, data });
+            self.push_render(RenderEvent::PaneOutput { pane, data });
         }
         for pane in exits {
             self.handle_pane_process_exit(pane);
         }
     }
 
-    fn push_event(&mut self, event: StateChange) {
-        self.events.push_back(RuntimeBatch::from(event));
+    fn push_batch(&mut self, batch: RuntimeBatch) {
+        self.events.push_back(batch);
         while self.events.len() > MAX_STATE_EVENTS {
             let Some(idx) = self.events.iter().position(|batch| {
                 batch
@@ -241,6 +241,20 @@ impl ShellRuntime {
         while self.events.len() > MAX_STATE_EVENTS {
             self.events.pop_front();
         }
+    }
+
+    fn push_control(&mut self, event: ControlEvent) {
+        self.push_batch(RuntimeBatch {
+            control: vec![event],
+            ..RuntimeBatch::default()
+        });
+    }
+
+    fn push_render(&mut self, event: RenderEvent) {
+        self.push_batch(RuntimeBatch {
+            render: vec![event],
+            ..RuntimeBatch::default()
+        });
     }
 
     /// shell/pty 子进程退出后的清理策略。
@@ -298,14 +312,14 @@ impl ShellRuntime {
             });
             match result {
                 Ok((layout, new_active)) => {
-                    self.push_event(StateChange::PaneClosed { pane: target });
-                    self.push_event(StateChange::LayoutChanged {
+                    self.push_control(ControlEvent::PaneClosed { pane: target });
+                    self.push_control(ControlEvent::LayoutChanged {
                         tab: tab_id,
                         layout,
                     });
                     if let Some(a) = new_active {
                         self.set_active_pane(tab_id, a);
-                        self.push_event(StateChange::ActivePaneChanged {
+                        self.push_control(ControlEvent::ActivePaneChanged {
                             tab: tab_id,
                             pane: a,
                         });
@@ -332,16 +346,16 @@ impl ShellRuntime {
             .collect();
         for pid in &to_kill {
             self.kill_pane(*pid);
-            self.push_event(StateChange::PaneClosed { pane: *pid });
+            self.push_control(ControlEvent::PaneClosed { pane: *pid });
         }
         self.tabs.retain(|t| t.info.id != target);
-        self.push_event(StateChange::TabClosed { tab: target });
+        self.push_control(ControlEvent::TabClosed { tab: target });
         if let Some(t) = self.tabs.first() {
             let tid = t.info.id;
             for t in self.tabs.iter_mut() {
                 t.info.active = t.info.id == tid;
             }
-            self.push_event(StateChange::ActiveTabChanged { tab: tid });
+            self.push_control(ControlEvent::ActiveTabChanged { tab: tid });
             // 激活新 tab 的 active pane
             if let Some(pane) = self
                 .tabs
@@ -350,12 +364,12 @@ impl ShellRuntime {
                 .and_then(|t| t.layout.tree.leaves().first().copied())
             {
                 self.set_active_pane(tid, pane);
-                self.push_event(StateChange::ActivePaneChanged { tab: tid, pane });
+                self.push_control(ControlEvent::ActivePaneChanged { tab: tid, pane });
             }
         } else {
             // 无剩余 tab → 后端退出
             self.status = BackendStatus::Exited;
-            self.push_event(StateChange::BackendStatusChanged(BackendStatus::Exited));
+            self.push_control(ControlEvent::BackendStatusChanged(BackendStatus::Exited));
         }
     }
 
@@ -798,7 +812,9 @@ impl Runtime for ShellRuntime {
             return Ok(());
         }
         self.status = BackendStatus::Connecting;
-        self.push_event(StateChange::BackendStatusChanged(BackendStatus::Connecting));
+        self.push_control(ControlEvent::BackendStatusChanged(
+            BackendStatus::Connecting,
+        ));
 
         self.ensure_channel();
 
@@ -806,22 +822,22 @@ impl Runtime for ShellRuntime {
         match self.new_tab_internal(None, None, None) {
             Ok((tab_id, pane_id)) => {
                 self.status = BackendStatus::Connected;
-                self.push_event(StateChange::TabAdded { tab: tab_id });
-                self.push_event(StateChange::PaneAdded {
+                self.push_control(ControlEvent::TabAdded { tab: tab_id });
+                self.push_control(ControlEvent::PaneAdded {
                     pane: pane_id,
                     tab: tab_id,
                 });
-                self.push_event(StateChange::ActiveTabChanged { tab: tab_id });
-                self.push_event(StateChange::ActivePaneChanged {
+                self.push_control(ControlEvent::ActiveTabChanged { tab: tab_id });
+                self.push_control(ControlEvent::ActivePaneChanged {
                     tab: tab_id,
                     pane: pane_id,
                 });
-                self.push_event(StateChange::BackendStatusChanged(BackendStatus::Connected));
+                self.push_control(ControlEvent::BackendStatusChanged(BackendStatus::Connected));
                 Ok(())
             }
             Err(e) => {
                 self.status = BackendStatus::Error;
-                self.push_event(StateChange::BackendStatusChanged(BackendStatus::Error));
+                self.push_control(ControlEvent::BackendStatusChanged(BackendStatus::Error));
                 Err(e.into())
             }
         }
@@ -882,15 +898,15 @@ impl Runtime for ShellRuntime {
                     None
                 };
                 if let Some(layout) = layout {
-                    self.push_event(StateChange::PaneAdded {
+                    self.push_control(ControlEvent::PaneAdded {
                         pane: new_pane,
                         tab: tab_id,
                     });
-                    self.push_event(StateChange::LayoutChanged {
+                    self.push_control(ControlEvent::LayoutChanged {
                         tab: tab_id,
                         layout,
                     });
-                    self.push_event(StateChange::ActivePaneChanged {
+                    self.push_control(ControlEvent::ActivePaneChanged {
                         tab: tab_id,
                         pane: new_pane,
                     });
@@ -923,7 +939,7 @@ impl Runtime for ShellRuntime {
                     });
                 };
                 self.set_active_pane(tab_id, *target);
-                self.push_event(StateChange::ActivePaneChanged {
+                self.push_control(ControlEvent::ActivePaneChanged {
                     tab: tab_id,
                     pane: *target,
                 });
@@ -954,7 +970,7 @@ impl Runtime for ShellRuntime {
                 };
                 if let Some(n) = next {
                     self.set_active_pane(tab_id, n);
-                    self.push_event(StateChange::ActivePaneChanged {
+                    self.push_control(ControlEvent::ActivePaneChanged {
                         tab: tab_id,
                         pane: n,
                     });
@@ -969,13 +985,13 @@ impl Runtime for ShellRuntime {
             } => {
                 match self.new_tab_internal(name.clone(), command.as_deref(), workdir.as_deref()) {
                     Ok((tab_id, pane_id)) => {
-                        self.push_event(StateChange::TabAdded { tab: tab_id });
-                        self.push_event(StateChange::PaneAdded {
+                        self.push_control(ControlEvent::TabAdded { tab: tab_id });
+                        self.push_control(ControlEvent::PaneAdded {
                             pane: pane_id,
                             tab: tab_id,
                         });
-                        self.push_event(StateChange::ActiveTabChanged { tab: tab_id });
-                        self.push_event(StateChange::ActivePaneChanged {
+                        self.push_control(ControlEvent::ActiveTabChanged { tab: tab_id });
+                        self.push_control(ControlEvent::ActivePaneChanged {
                             tab: tab_id,
                             pane: pane_id,
                         });
@@ -989,7 +1005,7 @@ impl Runtime for ShellRuntime {
 
             Task::RenameWorkspace { name } => {
                 self.workspace_name = name.clone();
-                self.push_event(StateChange::WorkspaceRenamed { name: name.clone() });
+                self.push_control(ControlEvent::WorkspaceRenamed { name: name.clone() });
                 TaskOutcome::Done
             }
 
@@ -1057,7 +1073,7 @@ impl Runtime for ShellRuntime {
                         reason: format!("resize pane {target} 失败"),
                     });
                 }
-                self.push_event(StateChange::PaneResized {
+                self.push_control(ControlEvent::PaneResized {
                     pane: *target,
                     cols: *cols,
                     rows: *rows,
@@ -1089,7 +1105,7 @@ impl Runtime for ShellRuntime {
                         reason: format!("resize pane {target} 失败"),
                     });
                 }
-                self.push_event(StateChange::PaneResized {
+                self.push_control(ControlEvent::PaneResized {
                     pane: *target,
                     cols,
                     rows,
@@ -1134,12 +1150,12 @@ impl Runtime for ShellRuntime {
                     for p in self.panes.iter_mut() {
                         p.info.active = p.info.id == active_pane && p.info.tab == *target;
                     }
-                    self.push_event(StateChange::ActivePaneChanged {
+                    self.push_control(ControlEvent::ActivePaneChanged {
                         tab: *target,
                         pane: active_pane,
                     });
                 }
-                self.push_event(StateChange::ActiveTabChanged { tab: *target });
+                self.push_control(ControlEvent::ActiveTabChanged { tab: *target });
                 TaskOutcome::Done
             }
 
@@ -1152,7 +1168,7 @@ impl Runtime for ShellRuntime {
                 if let Some(t) = self.tabs.iter_mut().find(|t| t.info.id == *target) {
                     t.info.name = name.clone();
                 }
-                self.push_event(StateChange::TabRenamed {
+                self.push_control(ControlEvent::TabRenamed {
                     tab: *target,
                     name: name.clone(),
                 });
@@ -1171,7 +1187,7 @@ impl Runtime for ShellRuntime {
                 }
                 self.tabs.clear();
                 self.status = BackendStatus::Exited;
-                self.push_event(StateChange::BackendStatusChanged(BackendStatus::Exited));
+                self.push_control(ControlEvent::BackendStatusChanged(BackendStatus::Exited));
                 TaskOutcome::Done
             }
         };
