@@ -51,6 +51,10 @@ check_absent \
     'crate::(core|muxterm_core)' \
     src/frontend src/bin
 check_absent \
+    "frontend must not expose Core workspace specifications" \
+    'WorkspaceSpec' \
+    crates/muxterm-frontend/src src/frontend
+check_absent \
     "legacy runtime mode/factory names" \
     'RuntimeMode|create_runtime|build_runtime' \
     crates/muxterm-core/src
