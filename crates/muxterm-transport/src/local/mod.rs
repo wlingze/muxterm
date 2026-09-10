@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context, Result};
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 
-use crate::{Transport, TransportError, TransportResult, TransportSignal};
+use crate::{ProcessTransport, TransportError, TransportResult, TransportSignal};
 
 /// Local PTY process transport.
 pub struct LocalProcessTransport {
@@ -99,7 +99,7 @@ impl LocalProcessTransport {
     }
 }
 
-impl Transport for LocalProcessTransport {
+impl ProcessTransport for LocalProcessTransport {
     fn spawn_exec(
         &mut self,
         program: &str,

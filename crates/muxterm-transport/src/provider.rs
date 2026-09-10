@@ -54,6 +54,3 @@ pub trait TransportProvider: Send + Sync {
         TransportInfo::new(self.id(), self.name())
     }
 }
-
-/// Compatibility name for the pre-provider Catalog implementation.
-pub use TransportProvider as Transport;

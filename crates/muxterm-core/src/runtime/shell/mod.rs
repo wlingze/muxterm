@@ -37,7 +37,7 @@ use crate::protocol::terminal::input::encode;
 use crate::runtime::{RenderEvent, Runtime, RuntimeBatch, RuntimeCapability};
 use crate::transport::ssh::{build_ssh_command, SshProcessTransport};
 use crate::transport::{
-    ByteChannel, ChannelRequest, PtySize as TransportPtySize, TargetConnection, Transport,
+    ByteChannel, ChannelRequest, ProcessTransport, PtySize as TransportPtySize, TargetConnection,
     TransportSignal,
 };
 use muxterm_protocol::{PaneId, TabId};
