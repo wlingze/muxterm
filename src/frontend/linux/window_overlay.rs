@@ -9,14 +9,15 @@ use gtk4::Window;
 use muxterm_protocol::WorkspaceId;
 
 use super::window_event_pump::{activity_snapshot, panel_attention_rows};
+use super::window_scene::{activate_existing, request_switch_tab};
 use super::window_sidebar::refresh_sidebar_if_open;
 use super::window_status::refresh_attention_chrome;
 use super::{
-    activate_existing, active_workspace_id, active_workspace_key, build_root_items,
-    build_search_items, collect_ssh_reach, connect_open_request, open_target_config,
-    parse_workspace_id, recent_target_configs, request_switch_tab, spawn_existing_ssh_probe,
-    spawn_local_existing_probe, workspace_replica_id, workspace_to_target_config, AgentSidebarItem,
-    ClientTask, ExistingNav, PanelTab, UiState,
+    active_workspace_id, active_workspace_key, build_root_items, build_search_items,
+    collect_ssh_reach, connect_open_request, open_target_config, parse_workspace_id,
+    recent_target_configs, spawn_existing_ssh_probe, spawn_local_existing_probe,
+    workspace_replica_id, workspace_to_target_config, AgentSidebarItem, ClientTask, ExistingNav,
+    PanelTab, UiState,
 };
 
 pub(super) fn open_pane_find(state: &Rc<RefCell<UiState>>) {

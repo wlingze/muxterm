@@ -22,7 +22,8 @@ use crate::frontend::linux::tmux_dialog::{self, TmuxAction};
 use crate::frontend::linux::view_store::ViewStore;
 
 use super::window_event_pump::sync_view_store;
-use super::{after_activate, parse_workspace_id, UiState};
+use super::window_scene::after_activate;
+use super::{parse_workspace_id, UiState};
 
 /// TargetConfig + session → 稳定 WorkspaceId。
 pub(super) fn workspace_id_for_config(config: &TargetConfig, session: &str) -> WorkspaceId {

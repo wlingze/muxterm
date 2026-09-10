@@ -6,6 +6,7 @@
 use crate::frontend::linux::lifecycle::cycle_pane_id;
 
 use super::window_event_pump::enqueue_workspace_input;
+use super::window_scene::{request_switch_tab, switch_tab_n, switch_workspace_n};
 use super::window_status::maybe_refresh_status;
 use super::*;
 

@@ -11,6 +11,7 @@ use super::window_event_pump::{
     activity_snapshot, drain_surface_input, enqueue_workspace_input, flush_command_queue,
     poll_event_store, sync_view_store,
 };
+use super::window_scene::after_activate;
 use super::window_sidebar::{maybe_warn_workspace_capacity, refresh_sidebar_if_open};
 use super::window_status::{
     maybe_refresh_status, refresh_attention_chrome, refresh_connection_summary,

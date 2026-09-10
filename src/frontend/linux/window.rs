@@ -318,26 +318,6 @@ impl AppWindow {
     }
 }
 
-/// A Core tab mutation is allowed to change the authoritative active tab.
-/// Drop a local display override before dispatching it so the resulting
-/// `ActiveTabChanged` event can select the new Core tab.
-fn switch_tab_n(s: &mut UiState, n: usize) {
-    window_scene::switch_tab_n(s, n);
-}
-
-fn switch_workspace_n(s: &mut UiState, n: usize) {
-    window_scene::switch_workspace_n(s, n);
-}
-
-/// 切 tab 只显示已经常驻的 GTK Stack page，不通知 Core。
-fn show_tab_scene(s: &mut UiState, tab_id: u32) -> bool {
-    window_scene::show_tab_scene(s, tab_id)
-}
-
-fn request_switch_tab(s: &mut UiState, tab_id: u32) {
-    window_scene::request_switch_tab(s, tab_id);
-}
-
 /// 当前前台连接的 workspace id（ReplicaStore 键）。
 fn active_workspace_id(s: &UiState) -> String {
     workspace_replica_id(&s.active_ws_id())
@@ -652,21 +632,6 @@ fn show_worktree_create_dialog(state: &Rc<RefCell<UiState>>, parent: &gtk4::Wind
 /// TargetConfig + session → 稳定 WorkspaceId。
 fn workspace_id_for_config(config: &TargetConfig, session: &str) -> WorkspaceId {
     window_connection::workspace_id_for_config(config, session)
-}
-
-fn activate_existing(s: &mut UiState, id: WorkspaceId) {
-    window_scene::activate_existing(s, id);
-}
-
-/// Core open/activate 完成后，把 Core snapshot 的 active workspace 交给
-/// frontend-visible Scene；Core activation 本身只发生在 open/close 等生命周期。
-fn after_activate(s: &mut UiState) {
-    window_scene::after_activate(s);
-}
-
-/// 切工作区只改 GtkStack 可见页和前端缓存，不调用 Core。
-fn show_workspace_scene(s: &mut UiState, id: WorkspaceId, seed_from_core: bool) {
-    window_scene::show_workspace_scene(s, id, seed_from_core);
 }
 
 fn connect_target(state: &Rc<RefCell<UiState>>, config: TargetConfig) {
