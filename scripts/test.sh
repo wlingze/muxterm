@@ -131,6 +131,10 @@ run_linux() {
         --test linux_attention_semantics_e2e \
         --test linux_search_e2e \
         --test linux_runtime_transport_matrix_e2e \
+        --test linux_titlebar_sidebar_e2e \
+        --test linux_config_hot_apply_e2e \
+        --test linux_ssh_pause_resume_e2e \
+        --test linux_hidden_workspace_activity_e2e \
         -- --test-threads="$THREADS"
     RETVAL=$?
     set -e

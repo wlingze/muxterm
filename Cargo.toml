@@ -315,6 +315,26 @@ name = "linux_jump_count_e2e"
 path = "tests/linux_jump_count_e2e.rs"
 required-features = ["gtk"]
 
+[[test]]
+name = "linux_titlebar_sidebar_e2e"
+path = "tests/linux_titlebar_sidebar_e2e.rs"
+required-features = ["gtk"]
+
+[[test]]
+name = "linux_config_hot_apply_e2e"
+path = "tests/linux_config_hot_apply_e2e.rs"
+required-features = ["gtk"]
+
+[[test]]
+name = "linux_ssh_pause_resume_e2e"
+path = "tests/linux_ssh_pause_resume_e2e.rs"
+required-features = ["gtk"]
+
+[[test]]
+name = "linux_hidden_workspace_activity_e2e"
+path = "tests/linux_hidden_workspace_activity_e2e.rs"
+required-features = ["gtk"]
+
 # 四模式集成测试（local/ssh × shell/tmux × CLI）
 [[test]]
 name = "four_mode_integration"
