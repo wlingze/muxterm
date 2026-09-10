@@ -20,7 +20,6 @@ pub mod preferences_window;
 pub mod quick_pick;
 pub mod quickconnect;
 pub mod quickconnect_panel;
-pub mod renderer;
 pub mod scene_stack;
 pub mod scroll_policy;
 pub mod scrollback_view;

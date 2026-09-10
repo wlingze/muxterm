@@ -13,10 +13,10 @@ use gtk4::gdk;
 use gtk4::glib;
 use gtk4::prelude::*;
 use vte4::prelude::*;
+use vte4::Terminal;
 
 use crate::frontend::linux::pane_input_state::PaneInputState;
 use crate::frontend::linux::quickconnect::font::FontSettings;
-use crate::frontend::linux::renderer::{TerminalRenderer, VteRenderer};
 use crate::frontend::linux::scroll_policy::{wheel_action, WheelAction};
 use crate::frontend::linux::theme::{Rgb, Theme};
 use crate::frontend::mirror::{
@@ -29,6 +29,123 @@ use crate::frontend::url_opener::UrlOpener;
 
 /// 同一 pane 输出合并后刷新的窗口（毫秒）。
 pub const FEED_COALESCE_MS: u64 = 25;
+
+/// VT surface renderer abstraction. The surface owns both the terminal
+/// parser/widget and the pane lifecycle; a separate renderer module is not
+/// needed for the current VTE backend.
+pub trait TerminalRenderer {
+    /// Create a renderer.
+    fn new() -> Self
+    where
+        Self: Sized;
+
+    /// Render output into the terminal surface.
+    fn render(&mut self, output: &[u8], cursor_pos: (u16, u16));
+
+    /// Resize the terminal grid.
+    fn resize(&mut self, cols: u16, rows: u16);
+
+    /// Return the GTK widget owned by this surface.
+    fn widget(&self) -> gtk4::Widget;
+}
+
+/// VTE4-backed renderer used by the Linux pane surface.
+pub struct VteRenderer {
+    terminal: Terminal,
+}
+
+impl TerminalRenderer for VteRenderer {
+    fn new() -> Self {
+        let terminal = Terminal::new();
+        terminal.set_hexpand(true);
+        terminal.set_vexpand(true);
+        terminal.set_enable_fallback_scrolling(true);
+        Self { terminal }
+    }
+
+    fn render(&mut self, output: &[u8], _cursor_pos: (u16, u16)) {
+        if output.is_empty() {
+            return;
+        }
+        self.terminal.feed(output);
+    }
+
+    fn resize(&mut self, cols: u16, rows: u16) {
+        let cols = cols.max(1) as i64;
+        let rows = rows.max(1) as i64;
+        self.terminal.set_size(cols, rows);
+    }
+
+    fn widget(&self) -> gtk4::Widget {
+        self.terminal.clone().upcast()
+    }
+}
+
+impl VteRenderer {
+    pub fn terminal(&self) -> &Terminal {
+        &self.terminal
+    }
+
+    pub fn terminal_mut(&mut self) -> &mut Terminal {
+        &mut self.terminal
+    }
+
+    /// tmux/SSH mirror policy: VTE is not backed by a PTY.
+    pub fn apply_mirror_policy(&self, is_tmux_mirror: bool) {
+        if !is_tmux_mirror {
+            return;
+        }
+        self.terminal.set_scroll_on_output(false);
+        self.terminal.set_scroll_on_insert(false);
+        self.terminal.set_enable_bidi(false);
+        self.terminal.set_property("rewrap-on-resize", false);
+    }
+
+    /// Apply foreground/background/cursor/palette colors to VTE.
+    pub fn apply_theme(&self, theme: &Theme) {
+        let fg = rgba(theme.foreground);
+        let bg = rgba(theme.background);
+        let cursor = rgba(theme.cursor);
+        let palette: Vec<gtk4::gdk::RGBA> = theme.colors.iter().map(|c| rgba(*c)).collect();
+        let refs: Vec<&gtk4::gdk::RGBA> = palette.iter().collect();
+        self.terminal.set_color_foreground(&fg);
+        self.terminal.set_color_background(&bg);
+        self.terminal.set_color_bold(Some(&fg));
+        self.terminal.set_color_cursor(Some(&cursor));
+        self.terminal.set_color_cursor_foreground(Some(&bg));
+        self.terminal.set_color_highlight(Some(&cursor));
+        self.terminal.set_color_highlight_foreground(Some(&bg));
+        self.terminal.set_colors(Some(&fg), Some(&bg), &refs);
+    }
+
+    /// Apply the configured font family and size.
+    pub fn apply_font(&self, font: &FontSettings) {
+        use gtk4::pango;
+        let mut desc = pango::FontDescription::new();
+        if !font.family.is_empty() {
+            let mut families = Vec::with_capacity(1 + font.fallback.len());
+            families.push(font.family.clone());
+            families.extend(
+                font.fallback
+                    .iter()
+                    .filter(|name| !name.trim().is_empty())
+                    .cloned(),
+            );
+            desc.set_family(&families.join(", "));
+        }
+        desc.set_size((font.size * pango::SCALE as f32) as i32);
+        self.terminal.set_font_desc(Some(&desc));
+    }
+}
+
+fn rgba(c: Rgb) -> gtk4::gdk::RGBA {
+    gtk4::gdk::RGBA::new(
+        c.0 as f32 / 255.0,
+        c.1 as f32 / 255.0,
+        c.2 as f32 / 255.0,
+        1.0,
+    )
+}
 
 /// 用户输入回调：`(pane_id, bytes)`。
 pub type InputCallback = Box<dyn Fn(u32, &[u8])>;
@@ -1321,5 +1438,14 @@ mod tests {
         assert!(!replay.windows(2).any(|bytes| bytes == b"\x1bc"));
         assert!(replay.starts_with(b"\x1b[H\x1b[2JHIST_OFFSCREEN\r\n\r\npad-01\r\n"));
         assert!(replay.ends_with(overlay));
+    }
+
+    #[test]
+    fn renderer_rgba_converts_byte_colors_to_unit_range() {
+        let c = rgba(Rgb(0xaa, 0xbb, 0xcc));
+        assert!((c.red() - 170.0 / 255.0).abs() < 1e-6, "{}", c.red());
+        assert!((c.green() - 187.0 / 255.0).abs() < 1e-6, "{}", c.green());
+        assert!((c.blue() - 204.0 / 255.0).abs() < 1e-6, "{}", c.blue());
+        assert!((c.alpha() - 1.0).abs() < 1e-6, "{}", c.alpha());
     }
 }
