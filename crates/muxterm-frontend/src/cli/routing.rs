@@ -2,14 +2,14 @@
 
 use std::time::{Duration, Instant};
 
-use crate::frontend::cli::{format_ffi_output, parse_cli_command, CliCommand, OutputFormat};
-use crate::frontend::ffi_client::{ClientEventKind, ClientResizeAxis, ClientTask, FfiClient};
+use crate::cli::{format_ffi_output, parse_cli_command, CliCommand, OutputFormat};
+use crate::ffi_client::{ClientEventKind, ClientResizeAxis, ClientTask, FfiClient};
 
 /// CLI 命令模式入口：解析命令 → 路由 → 执行 → 输出。
 pub fn run_cli(args: &[String]) -> anyhow::Result<()> {
     // tmux CLI 结构化命令：muxterm tmux session/tab/pane ...
     if args.first().map(|s| s.as_str()) == Some("tmux") {
-        return crate::frontend::cli::tmux_cli_exec::run_tmux_cli(&args[1..]);
+        return crate::cli::tmux_cli_exec::run_tmux_cli(&args[1..]);
     }
 
     let (cmd, format_str) = parse_cli_command(args)?;
@@ -18,11 +18,11 @@ pub fn run_cli(args: &[String]) -> anyhow::Result<()> {
         .unwrap_or(OutputFormat::Json);
 
     if let CliCommand::Config { args } = &cmd {
-        return match crate::frontend::cli::config::run(args, format) {
+        return match crate::cli::config::run(args, format) {
             Ok(()) => Ok(()),
             Err(error) => {
                 eprintln!("{error:#}");
-                std::process::exit(crate::frontend::cli::config::exit_code(&error));
+                std::process::exit(crate::cli::config::exit_code(&error));
             }
         };
     }
@@ -386,7 +386,7 @@ fn cli_mode_daemon(
     format: OutputFormat,
     tmux_socket: Option<&str>,
 ) -> anyhow::Result<()> {
-    use crate::frontend::cli::session::session_socket_path;
+    use crate::cli::session::session_socket_path;
 
     let sock = session_socket_path(name);
 
@@ -434,7 +434,7 @@ pub(crate) fn spawn_daemon(
     name: &str,
     tmux_socket: Option<&str>,
 ) -> anyhow::Result<()> {
-    use crate::frontend::cli::daemon::run_daemon;
+    use crate::cli::daemon::run_daemon;
 
     let pid = unsafe { libc::fork() };
     if pid < 0 {
@@ -489,7 +489,7 @@ pub(crate) fn wait_for_socket(
 
 /// TUI × local：若 daemon 不存在则 fork 启动。
 pub fn ensure_local_daemon(name: &str) -> anyhow::Result<()> {
-    use crate::frontend::cli::session::session_socket_path;
+    use crate::cli::session::session_socket_path;
     let sock = session_socket_path(name);
     if sock.exists() && !socket_is_alive(&sock) {
         let _ = std::fs::remove_file(&sock);

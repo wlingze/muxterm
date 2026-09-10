@@ -2,9 +2,7 @@
 //!
 //! 不依赖 serde_json（避免增加依赖），手写 JSON 序列化。
 
-use crate::frontend::ffi_client::{
-    ClientLayout, ClientPane, ClientTab, ClientWorkspace, FfiClient,
-};
+use crate::ffi_client::{ClientLayout, ClientPane, ClientTab, ClientWorkspace, FfiClient};
 use muxterm_protocol::layout::{LayoutNode, SplitDir};
 use muxterm_protocol::state::State;
 use muxterm_protocol::{PaneId, TabId};
