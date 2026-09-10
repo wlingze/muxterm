@@ -15,6 +15,8 @@ pub mod format;
 pub mod i18n;
 #[cfg(feature = "gtk")]
 pub mod linux;
+#[cfg(target_os = "macos")]
+pub mod macos;
 pub mod mirror;
 pub mod mouse;
 pub mod ssh_probe;

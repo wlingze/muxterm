@@ -16,6 +16,7 @@ tui = ["dep:crossterm", "dep:ratatui", "dep:vte"]
 
 [dependencies]
 anyhow = "1"
+clap = { version = "4", features = ["derive"] }
 muxterm-core = { path = "../muxterm-core", features = ["ffi"] }
 muxterm-protocol = { path = "../muxterm-protocol" }
 serde = { version = "1", features = ["derive"] }
