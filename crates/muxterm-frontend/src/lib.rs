@@ -5,3 +5,9 @@
 //! dependency on Core's public ABI instead of the root module tree.
 
 pub mod ffi_client;
+pub mod format;
+pub mod i18n;
+pub mod mirror;
+pub mod mouse;
+pub mod ssh_probe;
+pub mod url_opener;
