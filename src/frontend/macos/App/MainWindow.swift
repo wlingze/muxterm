@@ -48,7 +48,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 来自 ~/.config/muxterm/config.toml 的自定义快捷键（可选）。
     private var customKeybindings: [KeyChord: KeyAction] = [:]
     private var nextWorkspaceOpenedOrder: UInt64 = 1
-    private let quickConnectStore: QuickConnectStore
+    private var quickConnectStore: QuickConnectStore!
     private var pollTimer: Timer?
     /// 主窗口 local key monitor 的 token；独立 NSPanel 的事件不能进入这里。
     private var keyMonitor: Any?
@@ -135,6 +135,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// A shared Core handle is temporarily owned by a catalog open operation;
     /// the main-thread event pump pauses until the owned result is installed.
     private var sharedCoreOperationInFlight = false
+    /// Configuration completions are retained until the queued transaction is
+    /// executed by the event pump.  This keeps Settings from closing before
+    /// Core has accepted its draft.
+    private var nextConfigRequestID: UInt64 = 1
+    private var pendingConfigCompletions: [UInt64: (Result<Void, Error>) -> Void] = [:]
     /// Core work needed after a cached scene switch.  It is deliberately
     /// resumed by `pollOnce()`, never from the click/activation stack.
     private var pendingActivationCoreWork: WorkspaceScene?
@@ -251,31 +256,30 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         window.appearance = initialAppearance
         content.appearance = initialAppearance
 
-        // Project 列表来自 Core 快照；变更通过 CoreBridge 事务写回统一
-        // config.toml（`[[projects]]`），不再读写 quickconnect.toml。
+        super.init(window: window)
+        // Project 列表来自 Core 快照；变更通过主线程 event pump 排队写回
+        // 统一 config.toml（`[[projects]]`），不再从 UI 回调直接碰 Core。
         if let injectedQuickConnectStore {
             quickConnectStore = injectedQuickConnectStore
         } else {
-            let configBridge = bridge
-            quickConnectStore = QuickConnectStore(projects: resolved.projects) { updated in
-                do {
-                    let transaction = try configBridge.configBegin()
-                    try configBridge.configPatch(
-                        transaction: transaction,
-                        operations: [[
-                            "op": "replace",
-                            "path": "/projects",
-                            "value": QuickConnectStore.projectJSON(from: updated),
-                        ]]
-                    )
-                    try configBridge.configCommit(transaction: transaction)
-                } catch {
-                    // 失败时保留内存列表，不覆盖用户文件；下次启动仍读 Core 快照。
-                    NSLog("muxterm: failed to persist projects: %@", error.localizedDescription)
+            quickConnectStore = QuickConnectStore(projects: resolved.projects) { [weak self] updated in
+                guard let self else { return }
+                let operations: [[String: Any]] = [[
+                    "op": "replace",
+                    "path": "/projects",
+                    "value": QuickConnectStore.projectJSON(from: updated),
+                ]]
+                _ = self.enqueueConfigTransaction(operations) { result in
+                    if case .failure(let error) = result {
+                        // 失败时保留内存列表，不覆盖用户文件；下次启动仍读 Core 快照。
+                        NSLog(
+                            "muxterm: failed to persist projects: %@",
+                            error.localizedDescription
+                        )
+                    }
                 }
             }
         }
-        super.init(window: window)
         window.delegate = self
         installMainSplit(in: window)
         installSidebarToggle(in: window)
@@ -923,7 +927,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         let controller = SettingsWindowController(
             bridge: bridge,
-            quickConnectStore: quickConnectStore
+            quickConnectStore: quickConnectStore,
+            configTransaction: { [weak self] request in
+                self?.enqueueConfigTransaction(
+                    request.operations,
+                    completion: request.completion
+                ) ?? false
+            }
         )
         settingsWindow = controller
         controller.showWindow(self)
@@ -1120,6 +1130,37 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         return true
     }
 
+    /// Serialize a configuration draft and hand its transaction to the same
+    /// event-pump boundary as terminal commands. The completion runs after
+    /// Core has committed (or rejected) the draft.
+    @discardableResult
+    private func enqueueConfigTransaction(
+        _ operations: [[String: Any]],
+        completion: @escaping (Result<Void, Error>) -> Void = { _ in }
+    ) -> Bool {
+        guard !isClosing else { return false }
+        guard let data = try? JSONSerialization.data(withJSONObject: operations),
+              let operationsJSON = String(data: data, encoding: .utf8)
+        else {
+            completion(.failure(CoreBridgeDiscoveryError.message(
+                "config patch encoding failed"
+            )))
+            return false
+        }
+
+        let requestID = nextConfigRequestID
+        nextConfigRequestID += 1
+        pendingConfigCompletions[requestID] = completion
+        let accepted = enqueueCoreCommand(.config(
+            operationsJSON: operationsJSON,
+            requestID: requestID
+        ))
+        if !accepted {
+            pendingConfigCompletions.removeValue(forKey: requestID)
+        }
+        return accepted
+    }
+
     @discardableResult
     private func enqueueCoreTask(
         _ task: MuxTask,
@@ -1186,6 +1227,18 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             workspaceID: workspaceID,
             colours
         ))
+    }
+
+    private func finishConfigRequest(
+        _ requestID: UInt64?,
+        result: Result<Void, Error>
+    ) {
+        guard let requestID,
+              let completion = pendingConfigCompletions.removeValue(forKey: requestID)
+        else {
+            return
+        }
+        completion(result)
     }
 
     /// Dispatch queued commands at the same serialized boundary that drains
@@ -1359,6 +1412,33 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                             seconds: seconds
                         )
                     }
+                }
+            case .config(let config):
+                do {
+                    guard let data = config.operationsJSON.data(using: .utf8),
+                          let operations = try JSONSerialization.jsonObject(with: data)
+                              as? [[String: Any]]
+                    else {
+                        throw CoreBridgeDiscoveryError.message(
+                            "config patch encoding failed"
+                        )
+                    }
+                    let transaction = try bridge.configBegin()
+                    do {
+                        try bridge.configPatch(
+                            transaction: transaction,
+                            operations: operations
+                        )
+                        try bridge.configCommit(transaction: transaction)
+                    } catch {
+                        bridge.configCancel(transaction: transaction)
+                        throw error
+                    }
+                    finishConfigRequest(config.requestID, result: .success(()))
+                    result = 0
+                } catch {
+                    finishConfigRequest(config.requestID, result: .failure(error))
+                    result = -1
                 }
             }
             if result != 0 {
@@ -4262,12 +4342,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     /// 通过 Core SettingsService 事务写配置；失败只提示，不直接改文件。
     private func persistConfig(_ operations: [[String: Any]]) {
-        do {
-            let transaction = try bridge.configBegin()
-            try bridge.configPatch(transaction: transaction, operations: operations)
-            try bridge.configCommit(transaction: transaction)
-        } catch {
-            reportStatusError(MuxtermI18n.shared.tr(.errorCommandFailed))
+        _ = enqueueConfigTransaction(operations) { [weak self] result in
+            if case .failure = result {
+                self?.reportStatusError(MuxtermI18n.shared.tr(.errorCommandFailed))
+            }
         }
     }
 

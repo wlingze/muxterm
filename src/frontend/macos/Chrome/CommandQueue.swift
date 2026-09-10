@@ -43,6 +43,7 @@ public enum QueuedMuxOperation: Equatable, Sendable {
     case viewport(paneID: UInt32, offset: UInt32)
     case closeWorkspace
     case colours(QueuedMuxColours)
+    case config(QueuedMuxConfig)
 
     private var coalescingKey: CoalescingKey? {
         switch self {
@@ -68,7 +69,7 @@ public enum QueuedMuxOperation: Equatable, Sendable {
             case .acknowledge, .mute:
                 return nil
             }
-        case .task, .input, .closeWorkspace:
+        case .task, .input, .closeWorkspace, .config:
             return nil
         }
     }
@@ -129,6 +130,18 @@ public enum QueuedMuxAttention: Equatable, Sendable {
 public enum QueuedMuxColours: Equatable, Sendable {
     case pane(paneID: UInt32, fgHex: String, bgHex: String)
     case all(fgHex: String, bgHex: String)
+}
+
+/// A Core configuration transaction waiting for the event-pump boundary.
+/// JSON keeps the Chrome queue independent from the CoreBridge C/Swift model.
+public struct QueuedMuxConfig: Equatable, Sendable {
+    public let operationsJSON: String
+    public let requestID: UInt64?
+
+    public init(operationsJSON: String, requestID: UInt64? = nil) {
+        self.operationsJSON = operationsJSON
+        self.requestID = requestID
+    }
 }
 
 /// One UI-to-Core operation waiting for the next main-thread event-pump flush.
@@ -227,6 +240,21 @@ public struct QueuedMuxCommand: Equatable, Sendable {
         QueuedMuxCommand(
             workspaceID: workspaceID,
             operation: .colours(colours),
+            failureMessage: failureMessage
+        )
+    }
+
+    public static func config(
+        operationsJSON: String,
+        requestID: UInt64? = nil,
+        failureMessage: String = ""
+    ) -> QueuedMuxCommand {
+        QueuedMuxCommand(
+            workspaceID: nil,
+            operation: .config(QueuedMuxConfig(
+                operationsJSON: operationsJSON,
+                requestID: requestID
+            )),
             failureMessage: failureMessage
         )
     }

@@ -1268,6 +1268,38 @@ final class CoreBridge {
         }
     }
 
+    /// Compatibility adapter for settings controllers created without the
+    /// MainWindow event pump (for example, focused AppKit tests). Production
+    /// windows inject the queued handler instead, so their UI path never
+    /// begins a Core transaction directly.
+    func directConfigTransactionHandler() -> MuxtermConfigTransactionHandler {
+        { [weak self] request in
+            guard let self else {
+                request.completion(.failure(CoreBridgeDiscoveryError.message(
+                    "config bridge unavailable"
+                )))
+                return false
+            }
+            do {
+                let transaction = try self.configBegin()
+                do {
+                    try self.configPatch(
+                        transaction: transaction,
+                        operations: request.operations
+                    )
+                    try self.configCommit(transaction: transaction)
+                } catch {
+                    self.configCancel(transaction: transaction)
+                    throw error
+                }
+                request.completion(.success(()))
+            } catch {
+                request.completion(.failure(error))
+            }
+            return true
+        }
+    }
+
     deinit {
         shutdownAndFree()
     }

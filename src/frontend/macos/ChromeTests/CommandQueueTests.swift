@@ -268,6 +268,30 @@ final class MacCommandQueueTests: XCTestCase {
         XCTAssertEqual(queue.drain().map { $0.workspaceID ?? "" }, ["one", "two"])
     }
 
+    func testConfigTransactionsRemainOrderedAndCarryRequestIdentity() {
+        var queue = MacCommandQueue()
+        queue.enqueue(.config(
+            operationsJSON: "[{\"path\":\"/font/size\"}]",
+            requestID: 7
+        ))
+        queue.enqueue(.config(
+            operationsJSON: "[{\"path\":\"/theme/name\"}]",
+            requestID: 8
+        ))
+
+        XCTAssertEqual(queue.count, 2)
+        let commands = queue.drain()
+        guard case .config(let first) = commands[0].operation,
+              case .config(let second) = commands[1].operation
+        else {
+            return XCTFail("expected ordered config transactions")
+        }
+        XCTAssertEqual(first.requestID, 7)
+        XCTAssertEqual(second.requestID, 8)
+        XCTAssertTrue(first.operationsJSON.contains("/font/size"))
+        XCTAssertTrue(second.operationsJSON.contains("/theme/name"))
+    }
+
     func testRepeatedVisibilityAcknowledgeForOnePaneCoalesces() {
         var queue = MacCommandQueue()
         queue.enqueue(.attention(
