@@ -5,48 +5,12 @@
 use gtk4::prelude::*;
 use gtk4::{Align, Box as GtkBox, Dialog, Entry, Label, Orientation, Window};
 
-use crate::frontend::linux::quick_pick::{self, QuickPickItem};
+#[path = "pane_switcher_model.rs"]
+mod pane_switcher_model;
 
-/// Pane switcher 的旧产品标识只用于生成跳转条目，不再代表 GTK Notebook
-/// 的布局所有权；实际拓扑由 Core snapshot + LayoutHost 提供。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum TabKey {
-    Local(u64),
-    TmuxWindow(u32),
-}
+pub use pane_switcher_model::{pane_entries_to_items, LocalPaneId, PaneEntry, PaneKey, TabKey};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct LocalPaneId(pub u64);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum PaneKey {
-    Local(LocalPaneId),
-    Tmux(u32),
-}
-
-/// 一条可切换的 pane。
-#[derive(Debug, Clone)]
-pub struct PaneEntry {
-    pub tab: TabKey,
-    pub pane: PaneKey,
-    pub name: String,
-    /// 展示用：如 `1:bash` / `2:vim · pane2`
-    pub label: String,
-    pub detail: Option<String>,
-}
-
-/// 把 pane 列表映射成 QuickPick 条目（纯函数，便于单测）。
-pub fn pane_entries_to_items(panes: &[PaneEntry]) -> Vec<QuickPickItem> {
-    panes
-        .iter()
-        .enumerate()
-        .map(|(i, p)| QuickPickItem {
-            id: i.to_string(),
-            label: p.label.clone(),
-            detail: p.detail.clone(),
-        })
-        .collect()
-}
+use crate::frontend::linux::quick_pick;
 
 /// 弹出 pane 切换器。选中后回调；取消不回调。
 pub fn show<F>(parent: &impl IsA<Window>, panes: Vec<PaneEntry>, on_pick: F)
