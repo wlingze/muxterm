@@ -31,7 +31,7 @@ let appLibSources = [
     "App/ContentView.swift",
     "App/CommandPalette.swift",
     "App/ConnectionDiscovery.swift",
-    "App/WarmConnectionSlot.swift",
+    "App/WorkspaceScene.swift",
     "App/QuickConnectController.swift",
     "App/SearchPanelController.swift",
     "App/AttentionPanelController.swift",

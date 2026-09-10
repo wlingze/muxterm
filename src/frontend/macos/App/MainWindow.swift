@@ -28,29 +28,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let query: String
     }
 
-    /// Workspace 已经完成视觉切换，但目标 CoreBridge 仍被上一轮后台
-    /// FFI 占用时的延迟激活记录。缓存路径先把窗口交给用户，锁释放后再
-    /// 做一次权威刷新；generation 防止旧 Workspace 的回调覆盖新选择。
-    private struct PendingForegroundActivation {
-        let slot: WarmConnectionSlot
-        let oldBridge: CoreBridge
-        let restoredParkedTree: Bool
-        let hasPendingSurfaceCatchUp: Bool
-        let created: Bool
-        let generation: UInt64
-        let startedAt: TimeInterval
-        let wasDeferred: Bool
-    }
-
-    /// 在 utility 队列完成的权威拓扑读取。主线程只应用这些值类型并挂载
-    /// 已缓存的 AppKit 树，不再在 Workspace 点击回调里逐项询问远端。
-    private struct ForegroundAuthoritySnapshot {
-        let frame: FrameSnapshot
-        let allPanes: [Pane]
-        let tabIdsByPane: [UInt32: UInt32]
-        let tabNumbersByPane: [UInt32: Int]
-    }
-
     private struct CatalogConnection {
         let bridge: CoreBridge
         let target: TargetConfig
@@ -91,20 +68,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     var replyOverlayPaneId: UInt32?
     /// 搜索跳转：切 tab 完成后再滚到命中行。
     private var pendingSearchJump: PendingSearchJump?
-    /// 后台 FFI 正在使用目标 bridge 时，激活先走缓存；主线程只在这里
-    /// 保存一次重试，不得在 Workspace 点击路径上阻塞等待。
-    private var pendingForegroundActivation: PendingForegroundActivation?
-    private var foregroundActivationGeneration: UInt64 = 0
-    /// 当前 utility 队列正在读取哪个激活代的权威快照。旧代结果只能丢弃，
-    /// 不能覆盖用户已经再次选择的 Workspace。
-    private var foregroundAuthorityRefreshGeneration: UInt64?
-    /// Agent/Command 点击可能紧跟 Workspace 激活到达；等目标 bridge ready
-    /// 后重放，避免点击动作因短暂锁竞争丢失。动作带目标 slot，重复选择
-    /// 同一个 Workspace 时保留；切到另一个 Workspace 时只丢弃旧目标动作。
-    private struct PendingForegroundAction {
-        let slot: WarmConnectionSlot
-        let action: () -> Void
-    }
     /// 面板行可能在后台 Workspace 的身份缓存到达前被选中。保留最后一次
     /// 跳转请求，下一轮 poll 再解析，不能因为一次非阻塞 identity 查询失败
     /// 就把用户动作静默丢掉。
@@ -115,7 +78,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let seq: UInt64
         let query: String
     }
-    private var pendingForegroundActions: [PendingForegroundAction] = []
     private var pendingPanelJump: PendingPanelJump?
     /// pane → 最近一次离开时的稳定行 ID。连接切换时清空，避免把不同
     /// workspace 的 seq 混用。
@@ -157,27 +119,19 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private var trafficMonitorTimer: Timer?
     private var trafficRateSampler = TrafficRateSampler()
     private var activeProjectFlow: ProjectConnectFlowBox?
-    /// 后台 warm slot 的 poll 不能和 UI timer 同步执行：远端控制模式在一轮
-    /// refresh 中可能解析大量事件，阻塞这里会让 Connect/Cmd-Shift-P 出现
-    /// beachball。每个 slot 自身仍用锁串行，主线程只负责投递一次任务。
-    private var backgroundPollInFlight = false
     /// A shared Core handle is temporarily owned by a catalog open operation;
     /// the main-thread event pump pauses until the owned result is installed.
     private var sharedCoreOperationInFlight = false
-    private let backgroundPollQueue = DispatchQueue(
-        label: "muxterm.macos.background-poll",
-        qos: .utility
-    )
     /// 后台 poll 只把 Surface 事件交回主线程；主线程按小批次追赶，避免
     /// 一个高流量远端 pane 把切换、输入和窗口事件挤出 run loop。
-    private var surfaceCatchUpSlots: [WarmConnectionSlot] = []
+    private var surfaceCatchUpScenes: [WorkspaceScene] = []
     private var surfaceCatchUpWorkItem: DispatchWorkItem?
-    /// Warm connection pool：已使用过的 QuickConnect 目标切换时不立即关闭，
-    /// 后台连接继续 poll；按 LRU/TTL/memory pressure 淘汰。
-    private let connectionPool: ConnectionPool<WarmConnectionSlot>
-    /// 已针对该 slot 数量显示过一次容量提醒；用户选择保留后不在每个 poll
+    /// SceneStack：已打开 Workspace 的 scene 从 open 到 close 常驻；
+    /// 隐藏 scene 不参与绘制，容量/TTL/memory pressure 只在明确关闭时回收。
+    private let sceneStack: SceneStack<WorkspaceScene>
+    /// 已针对 scene 数量显示过一次容量提醒；用户选择保留后不在每拍
     /// 重复打断，数量变化（新建或关闭）后才重新评估。
-    private var capacityWarningPresentedForSlotCount: Int?
+    private var capacityWarningPresentedForSceneCount: Int?
     /// 终端字体配置（config.toml `[font]`；Cmd +/- 缩放时保留 family）。
     private var terminalFontSettings: MuxtermTerminalFont.Settings
     /// Cmd +/- / Cmd 0 只写 Core `[font] size`；不再使用 UserDefaults 覆盖。
@@ -257,8 +211,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         content.statusBar.setDebug(debug)
         content.statusBar.colorMode = resolved.statusBarMode
         content.applyTabBarPosition(resolved.tabBarPosition)
-        connectionPool = ConnectionPool(
-            policy: ConnectionPoolPolicy(maxSlots: resolved.poolMaxSlots)
+        sceneStack = SceneStack(
+            policy: SceneStackPolicy(maxScenes: resolved.poolMaxSlots)
         )
 
         let window = NSWindow(
@@ -345,7 +299,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 self?.attentionSnapshotForPanel()
             },
             paneOutput: { [weak self] paneId in
-                guard let self, self.pendingForegroundActivation == nil else {
+                guard let self else {
                     return Data()
                 }
                 return self.bridge.getPaneOutput(paneId: paneId)
@@ -363,7 +317,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 self?.workspaceShortcutIndex(for: config)
             },
             connectedWorkspaces: { [weak self] in
-                self?.connectionPool.allRecentTargetConfigs() ?? []
+                self?.sceneStack.allRecentTargetConfigs() ?? []
             }
         )
         unifiedPanel.onConnect = { [weak self] config in
@@ -469,9 +423,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             }
             let active = self.lastSnapshot.panes.first(where: \.isActive)?.id
                 ?? self.lastSnapshot.panes.first?.id
-                ?? (self.pendingForegroundActivation == nil
-                    ? self.bridge.snapshot().panes.first(where: \.isActive)?.id
-                    : nil)
+                ?? self.bridge.snapshot().panes.first(where: \.isActive)?.id
             guard TerminalInputFocusPolicy.shouldRetryWhenSurfaceReady(
                 isActivePane: active == paneId,
                 ready: ready
@@ -514,7 +466,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
         // 启动时由 AppDelegate 创建的首个连接也属于当前 Workspace。
         // 过去只有 Quick Connect 后续创建的连接才登记进池，导致初始 local
-        // workspace 既不在 Recent，也无法在切走后保持 warm。
+        // workspace 既不在 Recent，也无法在切走后保持常驻。
         var initialTarget = bridge.resolvedTargetConfig
         if var target = initialTarget,
            target.workspaceID == nil,
@@ -523,7 +475,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             target.workspaceID = initialWorkspaceID
             initialTarget = target
         }
-        let initialKey = ConnectionKey(
+        let initialKey = SceneKey(
             transport: bridge.sshAlias == nil ? "local" : "ssh",
             alias: bridge.sshAlias,
             session: initialTarget?.session ?? bridge.session ?? "",
@@ -533,18 +485,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             socket: initialTarget?.socket ?? bridge.socket,
             workspaceID: initialTarget?.workspaceID ?? initialWorkspaceID
         )
-        let initialSlot = WarmConnectionSlot(
+        let initialSlot = WorkspaceScene(
             key: initialKey,
             bridge: bridge,
             workspaceID: initialWorkspaceID,
-            usesSharedCore: initialWorkspaceID != nil,
             terminalManager: terminalManager,
             targetConfig: initialTarget,
             now: 0
         )
         initialSlot.openedOrder = nextWorkspaceOpenedOrder
         nextWorkspaceOpenedOrder += 1
-        connectionPool.acquire(key: initialKey) { _ in initialSlot }
+        sceneStack.activate(key: initialKey) { _ in initialSlot }
         bridge.selectWorkspace(initialWorkspaceID)
 
         installKeyEquivalents()
@@ -566,12 +517,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         trafficMonitorTimer?.invalidate()
         surfaceCatchUpWorkItem?.cancel()
         surfaceCatchUpWorkItem = nil
-        surfaceCatchUpSlots.removeAll()
+        surfaceCatchUpScenes.removeAll()
         if let languageObserver {
             NotificationCenter.default.removeObserver(languageObserver)
         }
         if !isClosing {
-            connectionPool.shutdownAll()
+            sceneStack.shutdownAll()
             bridge.shutdown()
         }
         statusRefreshTimer?.invalidate()
@@ -595,7 +546,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     @objc func renameCurrentWorkspace() {
-        let current = connectionPool.currentTargetConfig?.name
+        let current = sceneStack.currentTargetConfig?.name
             ?? bridge.session
             ?? "workspace"
         promptForName(title: MuxtermI18n.shared.tr(.renameWorkspace), current: current) {
@@ -660,7 +611,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         if terminalManager.usesClientResize {
             bridge.session = name
         }
-        connectionPool.renameActiveTarget(
+        sceneStack.renameActiveTarget(
             to: name,
             rekeySession: terminalManager.usesClientResize
         )
@@ -708,12 +659,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     @discardableResult
     func movePaneToNewTab(_ paneId: UInt32) -> Bool {
-        if pendingForegroundActivation != nil {
-            performWhenForegroundReady { [weak self] in
-                _ = self?.movePaneToNewTab(paneId)
-            }
-            return true
-        }
         guard terminalManager.usesClientResize,
               lastSnapshot.panes.count > 1,
               lastSnapshot.panes.contains(where: { $0.id == paneId })
@@ -790,7 +735,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 与 Linux Ctrl+Alt+N 使用同一组 `switch_workspace_N` 语义。
     func switchToWorkspaceAtFixedIndex(_ oneBased: Int) {
         guard (1...5).contains(oneBased) else { return }
-        let ordered = workspaceSidebarFixedSlots()
+        let ordered = workspaceSidebarScenes()
         guard ordered.indices.contains(oneBased - 1) else { return }
         activate(slot: ordered[oneBased - 1])
     }
@@ -805,12 +750,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     /// 当前 pane 全屏切换：tmux/ssh 发 `resize-pane -Z`，本地 shell 用布局全屏。
     @objc func toggleActivePaneFullscreen() {
-        if pendingForegroundActivation != nil {
-            performWhenForegroundReady { [weak self] in
-                self?.toggleActivePaneFullscreen()
-            }
-            return
-        }
         guard let pane = lastSnapshot.panes.first(where: \.isActive)?.id
             ?? lastSnapshot.panes.first?.id
         else {
@@ -965,9 +904,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     @objc func openQuickConnect() {
         guard let unifiedPanel else { return }
-        // Recent 由连接池派生（最近打开且仍 warm 的连接）；当前连接用于行高亮。
-        unifiedPanel.currentConfig = connectionPool.currentTargetConfig
-        quickConnectStore.replaceAllRecents(connectionPool.allRecentTargetConfigs())
+        // Recent 由 SceneStack 派生；当前 scene 用于行高亮。
+        unifiedPanel.currentConfig = sceneStack.currentTargetConfig
+        quickConnectStore.replaceAllRecents(sceneStack.allRecentTargetConfigs())
         unifiedPanel.show(tab: .workspaces)
     }
 
@@ -1081,27 +1020,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         unifiedPanel.show(tab: .attention)
     }
 
-    /// 统一面板的实时查询范围覆盖当前 warm 连接；当前 Workspace 固定排在
-    /// 首位，其余按稳定 Workspace ID 排序。搜索本身需要进入后台 bridge，
-    /// 但侧栏/Attention 展示优先读 WarmConnectionSlot 的后台缓存。
-    private func forEachPanelBridge(_ body: (CoreBridge, WarmConnectionSlot?) -> Void) {
-        // 延迟 Workspace 激活期间，`bridge` 已经指向目标但仍可能被旧的
-        // 后台 poll 持有；不要让搜索回调在主线程触碰它。
-        if pendingForegroundActivation == nil {
-            let activeSlot = connectionPool.activeKey.flatMap { connectionPool.slots[$0] }
-            body(bridge, activeSlot)
-        }
-        let background = connectionPool.slots.values
-            .filter { $0.bridge !== bridge && $0.lifecycle != .evicting }
-            .sorted {
-                QuickConnect.uniqueID(for: $0.targetConfig)
-                    < QuickConnect.uniqueID(for: $1.targetConfig)
-        }
-        for slot in background {
-            _ = slot.tryWithBridge { candidate in
-                body(candidate, slot)
-            }
-        }
+    /// 统一面板的实时查询范围覆盖当前 Core handle 管理的 Workspace；
+    /// Core 已经返回带 WorkspaceId 的聚合结果，不再为每个场景重复触碰 handle。
+    private func forEachPanelBridge(_ body: (CoreBridge, WorkspaceScene?) -> Void) {
+        let activeSlot = sceneStack.activeKey.flatMap { sceneStack.scenes[$0] }
+        body(bridge, activeSlot)
     }
 
     private func attentionSnapshot(from candidate: CoreBridge) -> AttentionSnapshot? {
@@ -1125,48 +1048,40 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             ?? fallbackReplicaID(for: target)
     }
 
-    private func workspaceReplicaID(for slot: WarmConnectionSlot) -> String {
+    private func workspaceReplicaID(for slot: WorkspaceScene) -> String {
         slot.cachedWorkspaceReplicaID ?? fallbackReplicaID(for: slot.targetConfig)
     }
 
-    /// 后台连接的 Attention 展示只读缓存；这样侧栏刷新不会因为远端
-    /// bridge 正在 poll 而等待。首轮缓存由 utility poll 尽快填充。
-    private func attentionSnapshot(for slot: WarmConnectionSlot) -> AttentionSnapshot? {
+    /// 隐藏 scene 的 Attention 展示只读 ViewStore；侧栏刷新不触碰远端
+    /// bridge，所有更新来自主线程 event pump。
+    private func attentionSnapshot(for slot: WorkspaceScene) -> AttentionSnapshot? {
         return slot.cachedAttentionSnapshot
     }
 
     private var activeWorkspaceReplicaID: String? {
-        guard let target = connectionPool.currentTargetConfig else { return nil }
-        if let activeKey = connectionPool.activeKey,
-           let slot = connectionPool.slots[activeKey]
+        guard let target = sceneStack.currentTargetConfig else { return nil }
+        if let activeKey = sceneStack.activeKey,
+           let slot = sceneStack.scenes[activeKey]
         {
             return workspaceReplicaID(for: slot)
         }
         return workspaceReplicaID(from: bridge, target: target)
     }
 
-    /// Workspace 点击可能已经把窗口切到目标缓存，但目标 bridge 还在等
-    /// 上一批后台 FFI 释放。动作必须等到权威刷新完成后再重放，不能在
-    /// 主线程直接碰那把锁。
+    /// UI 命令在同一主线程事件泵上顺序进入 Core；场景切换本身不需要等待
+    /// 任何后台 FFI，也不再保留待重放动作。
     func performWhenForegroundReady(_ action: @escaping () -> Void) {
         guard !isClosing else { return }
-        if let activation = pendingForegroundActivation {
-            pendingForegroundActions.append(PendingForegroundAction(
-                slot: activation.slot,
-                action: action
-            ))
-        } else {
-            action()
-        }
+        action()
     }
 
     var foregroundActivationIsPending: Bool {
-        pendingForegroundActivation != nil
+        false
     }
 
-    func workspaceSidebarFixedSlots() -> [WarmConnectionSlot] {
-        connectionPool.slots.values
-            .filter { $0.lifecycle != .evicting }
+    func workspaceSidebarScenes() -> [WorkspaceScene] {
+        sceneStack.scenes.values
+            .filter { $0.visibility != .closed }
             .sorted { lhs, rhs in
                 if lhs.openedOrder != rhs.openedOrder {
                     return lhs.openedOrder < rhs.openedOrder
@@ -1193,7 +1108,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func tabTargetsByPane(
-        for slot: WarmConnectionSlot
+        for slot: WorkspaceScene
     ) -> (tabIdsByPane: [UInt32: UInt32], tabNumbersByPane: [UInt32: Int]) {
         if let tabIds = slot.cachedTabIdsByPane,
            let tabNumbers = slot.cachedTabNumbersByPane
@@ -1208,18 +1123,18 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     private func workspaceShortcutIndex(for config: TargetConfig) -> Int? {
         let targetID = QuickConnect.uniqueID(for: config)
-        let orderedTargetIDs = workspaceSidebarFixedSlots().map {
+        let orderedTargetIDs = workspaceSidebarScenes().map {
             QuickConnect.uniqueID(for: $0.targetConfig)
         }
         return WorkspaceShortcutIndex.byWorkspaceID(orderedTargetIDs)[targetID]
     }
 
     private func sidebarItems() -> [WorkspaceSidebarItem] {
-        let slots = workspaceSidebarFixedSlots()
+        let slots = workspaceSidebarScenes()
         let workspaceIDs = slots.map { workspaceReplicaID(for: $0) }
         let shortcutByWorkspaceID = WorkspaceShortcutIndex.byWorkspaceID(workspaceIDs)
         return slots.enumerated().compactMap { index, slot in
-            let isActive = slot.lifecycle == .active
+            let isActive = slot.visibility == .visible
             let target = slot.targetConfig
             let structuredAgents = slot.cachedStructuredAgents
             let workspaceID = workspaceIDs[index]
@@ -1267,23 +1182,20 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             }
         }
         let activeSnapshot: AttentionSnapshot?
-        if pendingForegroundActivation != nil {
-            activeSnapshot = connectionPool.activeKey
-                .flatMap { connectionPool.slots[$0]?.cachedAttentionSnapshot }
-        } else if refreshActive {
+        if refreshActive {
             // 面板打开/刷新是低频的用户动作。此时读取 active bridge 的
             // 权威快照，避免上一拍 sidebar cache 让刚完成的 command
             // 仍显示 process_name=nil；高频侧栏调用默认仍走 cache。
             activeSnapshot = attentionSnapshot(from: bridge)
         } else {
-            activeSnapshot = connectionPool.activeKey
-                .flatMap { connectionPool.slots[$0]?.cachedAttentionSnapshot }
+            activeSnapshot = sceneStack.activeKey
+                .flatMap { sceneStack.scenes[$0]?.cachedAttentionSnapshot }
         }
         if let snapshot = activeSnapshot {
             append(snapshot)
         }
-        for slot in connectionPool.slots.values
-            where slot.bridge !== bridge && slot.lifecycle != .evicting
+        for slot in sceneStack.scenes.values
+            where slot.visibility != .closed
         {
             if let snapshot = attentionSnapshot(for: slot) {
                 append(snapshot)
@@ -1297,12 +1209,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func searchHitsForPanel(query: String, scope: SearchScope) -> [SearchHit] {
-        // 在延迟激活窗口内，active bridge 仍可能被上一批后台 FFI 使用。
-        // 面板先显示空结果，ready 后 completeForegroundActivation 会刷新。
-        guard pendingForegroundActivation == nil else { return [] }
         var allHits: [SearchHit] = []
         var seen = Set<String>()
-        let consume: (CoreBridge, WarmConnectionSlot?) -> Void = { candidate, slot in
+        let consume: (CoreBridge, WorkspaceScene?) -> Void = { candidate, slot in
             guard let json = candidate.searchAllJSON(query: query),
                   let snapshot = SearchSnapshot.decode(Data(json.utf8))
             else {
@@ -1324,7 +1233,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         if scope == .all {
             forEachPanelBridge(consume)
         } else {
-            let activeSlot = connectionPool.activeKey.flatMap { connectionPool.slots[$0] }
+            let activeSlot = sceneStack.activeKey.flatMap { sceneStack.scenes[$0] }
             consume(bridge, activeSlot)
         }
         let workspacePaneIDs = Set(
@@ -1338,48 +1247,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         )
     }
 
-    @discardableResult
-    private func withWorkspaceBridge(
-        _ workspaceId: String,
-        _ body: (CoreBridge) -> Void
-    ) -> Bool {
-        if activeWorkspaceReplicaID == workspaceId {
-            body(bridge)
-            return true
-        }
-        for slot in connectionPool.slots.values where slot.lifecycle != .evicting {
-            var matches = workspaceReplicaID(for: slot) == workspaceId
-                || QuickConnect.uniqueID(for: slot.targetConfig) == workspaceId
-            // 首轮后台 metadata 尚未抵达时，不能让 Attention/Search 的
-            // activate 因缓存为空而失败；只在 fast path 未命中时实时确认。
-            if !matches, slot.cachedAttentionSnapshot == nil {
-                matches = slot.withBridge { candidate in
-                    workspaceReplicaID(from: candidate, target: slot.targetConfig) == workspaceId
-                        || QuickConnect.uniqueID(for: slot.targetConfig) == workspaceId
-                } ?? false
-            }
-            if matches {
-                return slot.withBridge { candidate in
-                    body(candidate)
-                    return true
-                } ?? false
-            }
-        }
-        return false
-    }
-
-    /// 测试用：按 Workspace 安全读取 blocked 计数（后台 slot 会锁住 bridge）。
+    /// 测试用：按 Workspace 读取 Core 的 attention 快照。
     func testAttentionBlockedCount(workspaceId: String) -> Int {
         var blockedCount = -1
-        _ = withWorkspaceBridge(workspaceId) { bridge in
-            guard let json = bridge.attentionSnapshotJSON(),
-                  let data = json.data(using: .utf8),
-                  let snapshot = AttentionSnapshot.decode(data)
-            else {
-                return
-            }
-            blockedCount = snapshot.blockedCount
+        guard let slot = sceneStack.scenes.values.first(where: {
+            workspaceReplicaID(for: $0) == workspaceId
+                || QuickConnect.uniqueID(for: $0.targetConfig) == workspaceId
+        }), let snapshot = slot.cachedAttentionSnapshot else {
+            return blockedCount
         }
+        blockedCount = snapshot.blockedCount
         return blockedCount
     }
 
@@ -1390,7 +1267,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         for _ in 0..<32 {
             pollOnce()
             var hasPending = false
-            for slot in connectionPool.slots.values where slot.lifecycle == .background {
+            for slot in sceneStack.scenes.values where slot.visibility == .hidden {
                 while slot.hasPendingSurfaceWork {
                     hasPending = true
                     _ = slot.applyPendingSurfaceEvents(
@@ -1424,11 +1301,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             let opened = try bridge.openWorkspace(target: target, intent: .attachOnly)
             nextBridge.shutdown()
             let key = Self.connectionKey(config: opened.target, session: opened.target.session)
-            let slot = WarmConnectionSlot(
+            let slot = WorkspaceScene(
                 key: key,
                 bridge: bridge,
                 workspaceID: opened.id,
-                usesSharedCore: true,
                 terminalManager: TerminalManager(
                     bridge: bridge,
                     workspaceID: opened.id,
@@ -1445,24 +1321,24 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    /// Close a warm workspace from the sidebar. The active slot falls forward to
-    /// the next warm workspace; closing the last one closes the session window.
+    /// Close a hidden workspace from the sidebar. The visible scene falls forward
+    /// to the next scene; closing the last one closes the session window.
     func closeWorkspace(_ workspaceId: String) {
-        guard let slot = connectionPool.slots.values.first(where: { candidate in
-            candidate.lifecycle != .evicting && workspaceReplicaID(for: candidate) == workspaceId
+        guard let slot = sceneStack.scenes.values.first(where: { candidate in
+            candidate.visibility != .closed && workspaceReplicaID(for: candidate) == workspaceId
         }) else { return }
 
-        let wasActive = slot.lifecycle == .active
-        let ordered = workspaceSidebarFixedSlots()
+        let wasActive = slot.visibility == .visible
+        let ordered = workspaceSidebarScenes()
         let index = ordered.firstIndex(where: { $0 === slot }) ?? 0
         let fallback = wasActive
             ? ordered.dropFirst(index + 1).first
                 ?? ordered.prefix(index).last
             : nil
 
-        connectionPool.close(key: slot.key)
-        content.paneLayout.dropParked(except: Array(connectionPool.slots.values.map(\.terminalManager)))
-        quickConnectStore.replaceAllRecents(connectionPool.allRecentTargetConfigs())
+        sceneStack.close(key: slot.key)
+        content.paneLayout.dropParked(except: Array(sceneStack.scenes.values.map(\.terminalManager)))
+        quickConnectStore.replaceAllRecents(sceneStack.allRecentTargetConfigs())
         if wasActive {
             if let fallback {
                 activate(slot: fallback)
@@ -1478,34 +1354,34 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 选择框中；用户选择后才调用同一条 sidebar close/evict 资源路径。
     private func presentWorkspaceCapacityWarningIfNeeded() {
         guard !isClosing else { return }
-        if !connectionPool.isOverCapacity {
-            capacityWarningPresentedForSlotCount = nil
+        if !sceneStack.isOverCapacity {
+            capacityWarningPresentedForSceneCount = nil
             return
         }
-        guard capacityWarningPresentedForSlotCount != connectionPool.slotCount,
+        guard capacityWarningPresentedForSceneCount != sceneStack.sceneCount,
               let ownerWindow = window
         else { return }
 
-        let slotCount = connectionPool.slotCount
-        let overflow = max(1, slotCount - connectionPool.maxSlots)
-        let candidates = connectionPool.oldestBackgroundCandidates(
+        let sceneCount = sceneStack.sceneCount
+        let overflow = max(1, sceneCount - sceneStack.maxScenes)
+        let candidates = sceneStack.oldestHiddenCandidates(
             limit: min(8, overflow)
         )
         guard !candidates.isEmpty else { return }
-        capacityWarningPresentedForSlotCount = slotCount
+        capacityWarningPresentedForSceneCount = sceneCount
 
         let alert = NSAlert()
         alert.messageText = MuxtermI18n.shared.tr(.workspaceCapacityTitle)
         alert.informativeText = MuxtermI18n.shared.tr(
             .workspaceCapacityMessage,
             arguments: [
-                "count": "\(slotCount)",
-                "limit": "\(connectionPool.maxSlots)",
+                "count": "\(sceneCount)",
+                "limit": "\(sceneStack.maxScenes)",
             ]
         )
         alert.alertStyle = .warning
 
-        let choices = candidates.map { candidate -> (ConnectionCapacityCandidate, NSButton) in
+        let choices = candidates.map { candidate -> (SceneCapacityCandidate, NSButton) in
             let config = candidate.targetConfig
             let button = NSButton(
                 checkboxWithTitle: "\(config.name) · \(config.runtime.rawValue) @ \(config.transport.label)",
@@ -1531,21 +1407,21 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             guard let self else { return }
             if response == .alertFirstButtonReturn {
                 for (candidate, checkbox) in choices where checkbox.state == .on {
-                    _ = self.connectionPool.close(key: candidate.key)
+                    _ = self.sceneStack.close(key: candidate.key)
                 }
                 self.content.paneLayout.dropParked(
-                    except: Array(self.connectionPool.slots.values.map(\.terminalManager))
+                    except: Array(self.sceneStack.scenes.values.map(\.terminalManager))
                 )
                 self.quickConnectStore.replaceAllRecents(
-                    self.connectionPool.allRecentTargetConfigs()
+                    self.sceneStack.allRecentTargetConfigs()
                 )
                 self.refreshWorkspaceSidebar(force: true)
                 self.unifiedPanel.refreshData()
             }
             // 关闭了部分候选后仍然超限时，不在同一轮连续弹窗；下一次新增
             // slot（或手动关闭使数量变化）再重新提醒。
-            self.capacityWarningPresentedForSlotCount = self.connectionPool.isOverCapacity
-                ? self.connectionPool.slotCount
+            self.capacityWarningPresentedForSceneCount = self.sceneStack.isOverCapacity
+                ? self.sceneStack.sceneCount
                 : nil
         }
     }
@@ -1555,20 +1431,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         if activeWorkspaceReplicaID == workspaceId {
             return true
         }
-        for slot in connectionPool.slots.values where slot.lifecycle != .evicting {
-            var matches = workspaceReplicaID(for: slot) == workspaceId
+        for slot in sceneStack.scenes.values where slot.visibility != .closed {
+            let matches = workspaceReplicaID(for: slot) == workspaceId
                 || QuickConnect.uniqueID(for: slot.targetConfig) == workspaceId
-            // 首轮后台 metadata 尚未抵达时，不能让侧栏/Attention 的激活
-            // 因缓存为空而失败；active slot 的缓存也可能是旧的，需实时确认。
-            if !matches, (slot.cachedAttentionSnapshot == nil || slot.lifecycle == .active) {
-                matches = slot.tryWithBridge { candidate in
-                    workspaceReplicaID(from: candidate, target: slot.targetConfig) == workspaceId
-                        || QuickConnect.uniqueID(for: slot.targetConfig) == workspaceId
-                } ?? false
-                if matches {
-                    slot.cacheWorkspaceReplicaID(workspaceId)
-                }
-            }
             if matches {
                 activate(slot: slot)
                 return true
@@ -1577,9 +1442,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         return false
     }
 
-    /// 面板跳转的统一入口。workspace identity 解析是非阻塞的，遇到后台
-    /// poll/metadata 竞争时先保存请求；下一轮 poll 会重试并在成功后复用
-    /// 正常的 foreground-ready 路径。
+    /// 面板跳转的统一入口。目标 scene 常驻，由主线程 event pump 持续更新。
     private func routePanelJump(
         workspaceId: String?,
         tabId: UInt32?,
@@ -1631,48 +1494,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    /// 面板中的确认/静音是 UI 动作，后台 Workspace 的 bridge 竞争时只
-    /// 尝试一次；下一轮后台快照会把列表和 badge 校准回来。这样点击面板
-    /// 也不会复制 Legion 的卡顿路径。
-    @discardableResult
-    private func tryWithWorkspaceBridge(
-        _ workspaceId: String,
-        _ body: (CoreBridge) -> Void
-    ) -> Bool {
-        guard pendingForegroundActivation == nil else { return false }
-        if activeWorkspaceReplicaID == workspaceId {
-            body(bridge)
-            return true
-        }
-        for slot in connectionPool.slots.values where slot.lifecycle != .evicting {
-            var matches = workspaceReplicaID(for: slot) == workspaceId
-                || QuickConnect.uniqueID(for: slot.targetConfig) == workspaceId
-            if !matches, slot.cachedAttentionSnapshot == nil {
-                matches = slot.tryWithBridge { candidate in
-                    workspaceReplicaID(from: candidate, target: slot.targetConfig) == workspaceId
-                        || QuickConnect.uniqueID(for: slot.targetConfig) == workspaceId
-                } ?? false
-            }
-            guard matches else { continue }
-            return slot.tryWithBridge { candidate in
-                body(candidate)
-                return true
-            } ?? false
-        }
-        return false
-    }
-
     private func acknowledgeWorkspacePane(workspaceId: String, paneId: UInt32) {
         performWhenForegroundReady { [weak self] in
             guard let self else { return }
-            let acknowledged = self.tryWithWorkspaceBridge(workspaceId) { targetBridge in
-                _ = targetBridge.attentionAcknowledge(paneId: paneId)
-            }
-            guard acknowledged else {
-                return
-            }
-            // Open/Jump 之后列表和 badge 都应立即反映“已读”，不等待下一轮
-            // 60Hz poll；后台 Workspace 也必须走它自己的 bridge。
+            guard let scene = self.sceneStack.scenes.values.first(where: {
+                self.workspaceReplicaID(for: $0) == workspaceId
+                    || QuickConnect.uniqueID(for: $0.targetConfig) == workspaceId
+            }), let sceneWorkspaceID = scene.workspaceID else { return }
+            _ = self.bridge.attentionAcknowledge(
+                workspaceID: sceneWorkspaceID,
+                paneId: paneId
+            )
             self.unifiedPanel.refreshData()
         }
     }
@@ -1684,9 +1516,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     ) {
         performWhenForegroundReady { [weak self] in
             guard let self else { return }
-            _ = self.tryWithWorkspaceBridge(workspaceId) { targetBridge in
-                _ = targetBridge.attentionMute(paneId: paneId, seconds: seconds)
-            }
+            guard let scene = self.sceneStack.scenes.values.first(where: {
+                self.workspaceReplicaID(for: $0) == workspaceId
+                    || QuickConnect.uniqueID(for: $0.targetConfig) == workspaceId
+            }), let sceneWorkspaceID = scene.workspaceID else { return }
+            _ = self.bridge.attentionMute(
+                workspaceID: sceneWorkspaceID,
+                paneId: paneId,
+                seconds: seconds
+            )
         }
     }
 
@@ -1695,12 +1533,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// `tabId` 为 nil 时按 pane 反查（注意力行没有 tab）。tmux window 0
     /// 是真实 tab，不能当哨兵跳过。`seq>0` 时把历史滚到命中行。
     func jumpToPane(tabId: UInt32?, paneId: UInt32, seq: UInt64 = 0, query: String = "") {
-        if pendingForegroundActivation != nil {
-            performWhenForegroundReady { [weak self] in
-                self?.jumpToPane(tabId: tabId, paneId: paneId, seq: seq, query: query)
-            }
-            return
-        }
         let resolvedTab = tabId ?? bridge.tabId(containingPane: paneId)
         if let resolvedTab {
             requestSwitchTab(resolvedTab)
@@ -1746,12 +1578,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             replyOverlayPaneId = nil
             content.replyOverlayContainer.isHidden = true
             content.replyOverlayContainer.setAccessibilityValue("0")
-            return
-        }
-        if pendingForegroundActivation != nil {
-            performWhenForegroundReady { [weak self] in
-                self?.toggleReplyOverlay(paneId: paneId)
-            }
             return
         }
         guard unifiedPanel?.modelTab == .attention else { return }
@@ -1830,12 +1656,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     /// 按 OSC 133 时间线跳到当前命令之前最近的一条命令。
     @objc func jumpToPreviousCommand() {
-        if pendingForegroundActivation != nil {
-            performWhenForegroundReady { [weak self] in
-                self?.jumpToPreviousCommand()
-            }
-            return
-        }
         guard let pane = activePaneID else { return }
         let marks = commandMarks(for: pane)
         guard !marks.isEmpty else { return }
@@ -1853,12 +1673,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 按 OSC 133 时间线跳到当前命令之后最近的一条命令；已经在末尾时
     /// 清掉游标并回到实时底部，和向下滚动到底部的语义一致。
     @objc func jumpToNextCommand() {
-        if pendingForegroundActivation != nil {
-            performWhenForegroundReady { [weak self] in
-                self?.jumpToNextCommand()
-            }
-            return
-        }
         guard let pane = activePaneID else { return }
         let marks = commandMarks(for: pane)
         if let current = commandTimelineCursor[pane],
@@ -1917,13 +1731,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 offset > 0,
                 unseenLines: self.terminalManager.unseenLineCount(paneId: paneId)
             )
-            guard self.pendingForegroundActivation == nil else { return }
             guard paneId == self.activePaneID else { return }
             self.refreshHistoryChrome(for: paneId)
         }
         terminalManager.onUnseenLinesChanged = { [weak self] paneId, count in
             guard let self,
-                  self.pendingForegroundActivation == nil,
                   paneId == self.activePaneID
             else { return }
             let offset = max(0, self.bridge.paneViewport(paneId: paneId))
@@ -1984,7 +1796,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     func connect(config: TargetConfig) {
         unifiedPanel.dismiss()
         content.setConnectProgress(stage: .resolving)
-        // recents 由连接池派生：连接成功后 pool.acquire 会更新最近列表。
+        // recents 由 SceneStack 派生：连接成功后 sceneStack.activate 会更新列表。
         switch config.runtime {
         case .tmux:
             connectProject(config: config)
@@ -2021,7 +1833,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     box.flow.attachExistingSucceeded()
                     self.activeProjectFlow = nil
                     self.content.setConnectProgress(stage: nil)
-                    // attachTmux 内部已通过 connectionPool 激活 slot 并切换渲染。
+                    // attachTmux 内部已通过 sceneStack 激活 slot 并切换渲染。
                 case .failure(let error):
                     box.flow.attachExistingFailed(message: error.localizedDescription)
                     self.content.setConnectProgress(stage: nil)
@@ -2068,7 +1880,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     box.flow.attachCreatedSucceeded()
                     self.activeProjectFlow = nil
                     self.content.setConnectProgress(stage: nil)
-                    // attachTmux 内部已通过 connectionPool 激活 slot 并切换渲染。
+                    // attachTmux 内部已通过 sceneStack 激活 slot 并切换渲染。
                 case .failure(let error):
                     box.flow.attachCreatedFailed(message: error.localizedDescription)
                     self.activeProjectFlow = nil
@@ -2182,7 +1994,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         completion: @escaping (Result<CatalogConnection, Error>) -> Void
     ) {
         let requestedKey = Self.connectionKey(config: config, session: config.session)
-        if let slot = connectionPool.slots[requestedKey], slot.lifecycle != .evicting {
+        if let slot = sceneStack.scenes[requestedKey], slot.visibility != .closed {
             let canonical = QuickConnect.mergingProjectMetadata(
                 resolved: slot.targetConfig,
                 requested: config
@@ -2208,8 +2020,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                         return
                     }
                     self.sharedCoreOperationInFlight = false
-                    if let existing = self.connectionPool.slots[key],
-                       existing.lifecycle != .evicting
+                    if let existing = self.sceneStack.scenes[key],
+                       existing.visibility != .closed
                     {
                         let canonical = QuickConnect.mergingProjectMetadata(
                             resolved: existing.targetConfig,
@@ -2226,11 +2038,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                         )))
                         return
                     }
-                    let slot = WarmConnectionSlot(
+                    let slot = WorkspaceScene(
                         key: key,
                         bridge: sharedBridge,
                         workspaceID: opened.id,
-                        usesSharedCore: true,
                         terminalManager: TerminalManager(
                             bridge: sharedBridge,
                             workspaceID: opened.id,
@@ -2266,14 +2077,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private static func connectionKey(
         config: TargetConfig,
         session: String?
-    ) -> ConnectionKey {
+    ) -> SceneKey {
         let alias: String?
         if case .ssh(let name) = config.transport {
             alias = name
         } else {
             alias = nil
         }
-        return ConnectionKey(
+        return SceneKey(
             transport: config.transport.isSSH ? "ssh" : "local",
             alias: alias,
             session: session ?? (config.runtime == .tmux ? config.name : ""),
@@ -2284,43 +2095,22 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         )
     }
 
-    /// 激活一个 warm slot：替换 bridge / TerminalManager / PaneLayout 的渲染源。
-    /// 旧 slot 由 ConnectionPool.acquire 自动降为 background，不 shutdown；
-    /// 新 slot 进入后再由 UI 检查 soft capacity。
-    /// 激活已有 warm slot。保持 module-internal，供 in-process E2E 验证跨
-    /// Workspace 搜索/Attention 跳转；产品入口仍由 Quick Connect 驱动。
-    func activate(slot: WarmConnectionSlot) {
+    /// 激活一个常驻 Workspace scene：只切换 AppKit 的渲染源，不调用 Core。
+    /// Core event pump 已经持续维护所有 scene 的快照，因此不存在前台校准。
+    func activate(slot: WorkspaceScene) {
         guard !isClosing else { return }
 
-        // 每次新的 Workspace 选择都使之前的延迟激活失效。旧目标已经
-        // 被用户明确切走，不能在稍后拿到锁时把画面抢回来。
-        foregroundActivationGeneration &+= 1
-        let generation = foregroundActivationGeneration
-        foregroundAuthorityRefreshGeneration = nil
-        pendingForegroundActivation = nil
-        // 只清掉属于已经被用户切走的 Workspace 的动作。属于本次目标
-        // 的动作（例如重复点击同一行后排队的 pane 跳转）必须保留到
-        // 权威刷新完成，否则点击看起来会“闪一下但没有反应”。
-        pendingForegroundActions.removeAll { $0.slot !== slot }
-
-        let oldBridge = bridge
-        let startedAt = ProcessInfo.processInfo.systemUptime
-        let bridgeReady = slot.prepareForForeground()
-        // 只读取队列状态，不在点击回调里同步重放 Surface。远端锁/输出
-        // 洪水必须留给后续主线程小批次，避免 SSH Workspace 点击卡住。
         let hasPendingSurfaceCatchUp = slot.hasPendingSurfaceWork
         if slot.openedOrder == 0 {
             slot.openedOrder = nextWorkspaceOpenedOrder
             nextWorkspaceOpenedOrder += 1
         }
-        let (_, created) = connectionPool.acquire(key: slot.key) { _ in slot }
-        quickConnectStore.replaceAllRecents(connectionPool.allRecentTargetConfigs())
+        let (_, created) = sceneStack.activate(key: slot.key) { _ in slot }
+        quickConnectStore.replaceAllRecents(sceneStack.allRecentTargetConfigs())
         bridge = slot.bridge
         bridge.selectWorkspace(slot.workspaceID)
         terminalManager = slot.terminalManager
-        // 缓存树挂载和首轮 authority 查询期间，TerminalManager 只能做
-        // 本地 SwiftTerm/AppKit 工作；所有 bridge 访问在 utility 队列串行化。
-        terminalManager.setBridgeQueriesEnabled(false)
+        terminalManager.setBridgeQueriesEnabled(true)
         trafficRateSampler.reset()
         lastSeenLineSeq.removeAll()
         pendingLastSeenPanes.removeAll()
@@ -2333,18 +2123,18 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         wireTerminalManagerCallbacks()
         let restoredParkedTree = content.paneLayout.replaceTerminalManager(slot.terminalManager)
         content.paneLayout.dropParked(
-            except: Array(connectionPool.slots.values.map(\.terminalManager))
+            except: Array(sceneStack.scenes.values.map(\.terminalManager))
         )
         content.statusBar.allowsTabReordering = terminalManager.usesClientResize
         content.paneLayout.allowsPaneBreak = terminalManager.usesClientResize
-        // warm slot 的 TerminalManager 各自保存字体状态：切回时沿用当前字号，
+        // scene 的 TerminalManager 各自保存字体状态：切回时沿用当前字号，
         // 避免旧 slot 还是切换前的小字体。字号没变就不要 resetFont，那会清选区。
         terminalManager.setFont(
             family: terminalFontSettings.family,
             size: terminalFontSettings.size,
             container: content.paneLayout
         )
-        // warm slot 的视图沿用当前主题 palette（终端跟随主题）。
+        // scene 的视图沿用当前主题 palette（终端跟随主题）。
         terminalManager.applyPalette(MuxtermTerminalColors.activePalette)
         lastSnapshot = slot.lastSnapshot
         // 切连接后旧 status bar 属于上一个 tmux：先清掉，等新快照到达再显示。
@@ -2356,43 +2146,22 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         needsLayoutReload = WorkspaceSwitchPaintPolicy.needsLayoutReload(
             restoredParkedTree: restoredParkedTree
         )
-        let activation = PendingForegroundActivation(
-            slot: slot,
-            oldBridge: oldBridge,
-            restoredParkedTree: restoredParkedTree,
-            hasPendingSurfaceCatchUp: hasPendingSurfaceCatchUp,
-            created: created,
-            generation: generation,
-            startedAt: startedAt,
-            wasDeferred: !bridgeReady
-        )
-
         NSLog(
-            "muxterm: workspace activation begin target=%@ ready=%@ restored=%@",
+            "muxterm: workspace activation target=%@ restored=%@",
             slot.targetConfig.name,
-            bridgeReady ? "true" : "false",
             restoredParkedTree ? "true" : "false"
         )
-        // 无论 bridgeLock 当前是否空闲，都先交付缓存画面，再把权威拓扑
-        // 读取放到后台。这样“可见切换”和“远端校准”不再绑在同一帧。
-        pendingForegroundActivation = activation
         paintCachedForegroundActivation(slot, restoredParkedTree: restoredParkedTree)
-        if slot.usesSharedCore {
-            // Shared-core scenes already receive topology continuously from
-            // the single workspace event pump.  There is no second
-            // foreground authority read, and no background FFI race to
-            // serialize here.
-            pendingForegroundActivation = nil
-            completeForegroundActivation(activation)
-            return
-        }
-        scheduleForegroundAuthorityRefresh()
+        completeWorkspaceActivation(
+            slot: slot,
+            hasPendingSurfaceCatchUp: hasPendingSurfaceCatchUp,
+            created: created
+        )
     }
 
-    /// 用 warm slot 的缓存完成最小视觉切换。snapshot 可能随后被权威
-    /// bridge 修正，但用户不应在 SSH 查询期间看到旧 Workspace 卡住。
+    /// 用 scene 的 ViewStore 完成最小视觉切换；切换不调用 Core。
     private func paintCachedForegroundActivation(
-        _ slot: WarmConnectionSlot,
+        _ slot: WorkspaceScene,
         restoredParkedTree: Bool
     ) {
         let snapshot = slot.lastSnapshot
@@ -2426,131 +2195,20 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         refreshWorkspaceSidebar()
     }
 
-    private static func captureForegroundAuthority(
-        from bridge: CoreBridge
-    ) -> ForegroundAuthoritySnapshot {
-        let frame = bridge.snapshot()
-        var allPanes: [Pane] = []
-        var tabIdsByPane: [UInt32: UInt32] = [:]
-        var tabNumbersByPane: [UInt32: Int] = [:]
-        for (index, tab) in frame.tabs.enumerated() {
-            let panes = bridge.getPanes(tabId: tab.id)
-            allPanes.append(contentsOf: panes)
-            for pane in panes {
-                tabIdsByPane[pane.id] = tab.id
-                tabNumbersByPane[pane.id] = index + 1
-            }
-        }
-        return ForegroundAuthoritySnapshot(
-            frame: frame,
-            allPanes: allPanes,
-            tabIdsByPane: tabIdsByPane,
-            tabNumbersByPane: tabNumbersByPane
-        )
-    }
-
-    /// 在后台锁内读取目标 Workspace 的权威拓扑。即使远端 capture/pause
-    /// 需要数百毫秒，也只占 utility 队列，主线程已经在显示 warm cache。
-    private func scheduleForegroundAuthorityRefresh() {
-        guard let activation = pendingForegroundActivation,
-              !isClosing
-        else {
-            return
-        }
-        let generation = activation.generation
-        guard foregroundAuthorityRefreshGeneration != generation else { return }
-        foregroundAuthorityRefreshGeneration = generation
-        backgroundPollQueue.async { [weak self] in
-            let result = activation.slot.withBridge { candidate in
-                Self.captureForegroundAuthority(from: candidate)
-            }
-            DispatchQueue.main.async { [weak self] in
-                guard let self,
-                      let pending = self.pendingForegroundActivation,
-                      pending.generation == generation,
-                      generation == self.foregroundActivationGeneration,
-                      self.foregroundAuthorityRefreshGeneration == generation,
-                      !self.isClosing
-                else {
-                    return
-                }
-                self.foregroundAuthorityRefreshGeneration = nil
-                self.pendingForegroundActivation = nil
-                if let result {
-                    self.applyForegroundAuthoritySnapshot(result)
-                }
-                self.completeForegroundActivation(activation)
-                let actions = self.pendingForegroundActions.filter {
-                    $0.slot === activation.slot
-                }
-                self.pendingForegroundActions.removeAll {
-                    $0.slot === activation.slot
-                }
-                for action in actions {
-                    action.action()
-                }
-            }
-        }
-    }
-
-    /// 只在主线程应用后台已经取回的值类型快照；这里不调用 CoreBridge。
-    private func applyForegroundAuthoritySnapshot(
-        _ authority: ForegroundAuthoritySnapshot
-    ) {
-        let snap = authority.frame
-        tabSwitchGate.onSnapshot(tabs: snap.tabs.map(\.id))
-        guard tabSwitchGate.isReleased() else { return }
-        lastSnapshot = snap
-        terminalManager.updatePaneSizes(authority.allPanes.isEmpty ? snap.panes : authority.allPanes)
-        content.updateTabs(snap.tabs)
-        if needsLayoutReload {
-            if content.paneLayout.apply(
-                layout: snap.layout,
-                panes: snap.panes,
-                tabId: snap.activeTab
-            ) {
-                needsLayoutReload = false
-                content.statusBar.clearLayoutSyncError()
-            } else {
-                content.statusBar.showLayoutSyncing()
-            }
-        }
-        content.paneLayout.pruneTabs(keeping: Set(snap.tabs.map(\.id)))
-        content.statusBar.updateDebugSnapshot(snap)
-        content.statusBar.updateOutputSnippet(terminalManager.recentOutputSnippet)
-        if let activePane = snap.panes.first(where: \.isActive)?.id ?? snap.panes.first?.id {
-            terminalManager.focusTarget = terminalManager.view(for: activePane)
-            content.paneLayout.markActivePane(activePane)
-            restoreTerminalFocusIfAllowed()
-        }
-        cacheActiveSlotSnapshot(
-            tabIdsByPane: authority.tabIdsByPane,
-            tabNumbersByPane: authority.tabNumbersByPane
-        )
-    }
-
-    private func completeForegroundActivation(
-        _ activation: PendingForegroundActivation
+    private func completeWorkspaceActivation(
+        slot: WorkspaceScene,
+        hasPendingSurfaceCatchUp: Bool,
+        created: Bool
     ) {
         guard !isClosing,
-              activation.generation == foregroundActivationGeneration,
-              activation.slot.lifecycle == .active,
-              bridge === activation.slot.bridge
-        else {
-            return
-        }
-
-        let elapsedMilliseconds =
-            (ProcessInfo.processInfo.systemUptime - activation.startedAt) * 1000
+              slot.visibility == .visible,
+              bridge === slot.bridge
+        else { return }
         NSLog(
-            "muxterm: workspace activation ready target=%@ deferred=%@ elapsed_ms=%.1f",
-            activation.slot.targetConfig.name,
-            activation.wasDeferred ? "true" : "false",
-            elapsedMilliseconds
+            "muxterm: workspace activation ready target=%@",
+            slot.targetConfig.name
         )
 
-        // 缓存/权威快照已经完成绘制；从这一刻起恢复正常 bridge 查询，
-        // 但几何同步仍走下一拍，避免把恢复动作重新塞回点击栈。
         terminalManager.setBridgeQueriesEnabled(true)
         content.paneLayout.resumeGeometrySync()
         focusActiveTerminal()
@@ -2560,52 +2218,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // 这一拍只读后台缓存；下一个正常 poll 再做 active bridge 的
         // attention acknowledge/snapshot，避免再次把远端查询放回点击栈。
         refreshAttentionChrome(allowBridgeQueries: false)
-        // 后台 metadata 可能在 lifecycle 切换为 active 的竞态窗口内完成。
-        // 这些通知不能再由 background poll 留到下一次切换才消费。
-        postAttentionNotifications(
-            activation.slot.takePendingAttentionNotifications()
-        )
+        // 后台 metadata 可能在 visibility 切换为 active 的竞态窗口内完成。
+        // 这些通知直接由 event pump 交给当前 scene 的 ViewStore 消费。
+        postAttentionNotifications(slot.takePendingAttentionNotifications())
         refreshWorkspaceSidebar()
         unifiedPanel.refreshData()
-        if activation.hasPendingSurfaceCatchUp || activation.slot.hasPendingSurfaceWork {
-            enqueueSurfaceCatchUp(activation.slot)
+        if hasPendingSurfaceCatchUp || slot.hasPendingSurfaceWork {
+            enqueueSurfaceCatchUp(slot)
         }
-        // 若旧 bridge 不在 pool（初始连接或非 pool 路径），切走后直接回收；
-        // pool 内的旧 slot 由 acquire 降为 background，保持 warm。
-        let oldIsPooled = connectionPool.slots.values.contains {
-            $0.bridge === activation.oldBridge
-        }
-        if !oldIsPooled, activation.oldBridge !== activation.slot.bridge {
-            DispatchQueue.global(qos: .utility).async {
-                activation.oldBridge.shutdown()
-            }
-        }
-        if activation.created {
+        reportPaneColoursIfNeeded(lastSnapshot.panes)
+        if created {
             presentWorkspaceCapacityWarningIfNeeded()
-        }
-
-        // 颜色查询应答很重要，但不影响 Workspace 首帧；放到后台锁内
-        // 上报，完成后下一轮输出即可使用新的 OSC 颜色。
-        if !activation.slot.usesSharedCore,
-           WorkspaceSwitchPaintPolicy.shouldReportColours(
-            restoredParkedTree: activation.restoredParkedTree
-        ) {
-            let osc = ColorContrast.oscColors(
-                fg: MuxtermTerminalColors.activePalette.fg,
-                bg: MuxtermTerminalColors.activePalette.bg
-            )
-            backgroundPollQueue.async { [weak self] in
-                _ = activation.slot.withBridge { candidate in
-                    candidate.reportAllPaneColours(fgHex: osc.fg, bgHex: osc.bg)
-                }
-                DispatchQueue.main.async { [weak self] in
-                    guard let self,
-                          self.foregroundActivationGeneration == activation.generation,
-                          self.bridge === activation.slot.bridge
-                    else { return }
-                    self.reportedColourPanes.removeAll()
-                }
-            }
         }
     }
 
@@ -2653,10 +2276,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let snap: FrameSnapshot
         if !lastSnapshot.panes.isEmpty {
             snap = lastSnapshot
-        } else if pendingForegroundActivation == nil {
-            snap = bridge.snapshot()
         } else {
-            return
+            snap = bridge.snapshot()
         }
         guard let activePane = snap.panes.first(where: \.isActive)?.id ?? snap.panes.first?.id else {
             return
@@ -2689,12 +2310,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func requestSwitchTab(_ tabId: UInt32) {
-        if pendingForegroundActivation != nil {
-            performWhenForegroundReady { [weak self] in
-                self?.requestSwitchTab(tabId)
-            }
-            return
-        }
         guard tabId != lastSnapshot.activeTab else { return }
         // AppKit can deliver a button action twice before the next poll updates
         // lastSnapshot. The gate is the single in-flight command for a target;
@@ -2790,12 +2405,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func splitActivePane(horizontal: Bool) {
-        if pendingForegroundActivation != nil {
-            performWhenForegroundReady { [weak self] in
-                self?.splitActivePane(horizontal: horizontal)
-            }
-            return
-        }
         guard let pane = lastSnapshot.panes.first(where: \.isActive)?.id ?? lastSnapshot.panes.first?.id else {
             return
         }
@@ -2812,15 +2421,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 从全局 active 状态推断。这样 tab 切换后 Cmd+[ / Cmd+] 的行为只
     /// 依赖当前 tab 快照，不会因为旧 staticlib 或焦点事件顺序回到首 tab。
     private func movePane(offset: Int) {
-        if pendingForegroundActivation != nil {
-            performWhenForegroundReady { [weak self] in
-                self?.movePane(offset: offset)
-            }
-            return
-        }
-        // `lastSnapshot` is maintained by the active poll and by the
-        // background authority cache. Reading CoreBridge here would make a
-        // keyboard shortcut wait for a remote tmux pause/capture round-trip.
+        // `lastSnapshot` is maintained by the active scene ViewStore and the
+        // single event pump. Reading CoreBridge here would make a keyboard
+        // shortcut wait for a remote tmux pause/capture round-trip.
         let snap = lastSnapshot
         let snapshotPaneIDs = snap.panes.map(\.id)
         let paneIDs = PaneNavigation.navigationPaneIDs(
@@ -3483,8 +3086,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         )
     }
 
-    /// 前台 Workspace：每个 pane 的 PTY 都进 Surface，不按活动 tab 过滤。
-    /// 后台 Workspace 由 WarmConnectionSlot 关掉 viewCreationEnabled。
+    /// 可见 Workspace：每个 pane 的 PTY 都进 Surface，不按活动 tab 过滤。
     private func shouldHandleSurfaceEvent(paneId: UInt32) -> Bool {
         SurfaceEventPolicy.shouldDeliver(
             viewCreationEnabled: true,
@@ -3492,13 +3094,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         )
     }
 
-    /// Drain each shared Core handle once and route its owned events by
-    /// WorkspaceId.  Isolated legacy slots keep their existing compatibility
-    /// poll path; shared scenes never call `pollEvents` independently.
+    /// Drain the Core handle once and route its owned events by WorkspaceId.
+    /// Every Workspace scene is fed by this one main-thread event pump.
     private func pollSharedWorkspaceEvents(
-        activeSlot: WarmConnectionSlot?
+        activeSlot: WorkspaceScene?
     ) -> [StateChange] {
-        var sharedSlots = connectionPool.slots.values.filter(\.usesSharedCore)
+        var sharedSlots = Array(sceneStack.scenes.values)
         guard !sharedSlots.isEmpty else { return [] }
 
         var activeEvents: [StateChange] = []
@@ -3506,8 +3107,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         while let slot = sharedSlots.popLast() {
             let bridgeID = ObjectIdentifier(slot.bridge)
             guard polledBridges.insert(bridgeID).inserted else { continue }
-            let bridgeSlots = connectionPool.slots.values.filter {
-                $0.usesSharedCore && $0.bridge === slot.bridge
+            let bridgeSlots = sceneStack.scenes.values.filter {
+                $0.bridge === slot.bridge
             }
             let events = slot.bridge.pollWorkspaceEvents()
             var byWorkspace: [String: [StateChange]] = [:]
@@ -3541,27 +3142,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     func pollOnce() {
         guard !isClosing else { return }
         guard !sharedCoreOperationInFlight else { return }
-        if pendingForegroundActivation != nil {
-            // 目标 bridge 还可能被切换前的后台批次占用。只追赶已经
-            // 排队的 Surface，并继续轮询其它 background slot；任何 active
-            // bridge 的 FFI 都要等 retry 成功后再恢复。
-            if let activeKey = connectionPool.activeKey,
-               let slot = connectionPool.slots[activeKey],
-               slot.lifecycle == .active
-            {
-                if slot.applyPendingSurfaceEvents() {
-                    enqueueSurfaceCatchUp(slot)
-                }
-            }
-            scheduleBackgroundSlotPoll()
-            scheduleForegroundAuthorityRefresh()
-            refreshWorkspaceSidebar()
-            return
-        }
         // 后台排空的事件必须先于 active bridge 的新事件交付。否则切回
         // Workspace 后，新的 PaneOutput 可能越过尚未应用的旧队列。
         if flushActiveSurfaceCatchUpBeforePoll() {
-            scheduleBackgroundSlotPoll()
             // 积压 Surface 只推迟新的 pollEvents，不能把已经生效的
             // SwitchPane/面板跳转一起饿死。
             if needsLayoutReload {
@@ -3573,16 +3156,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         terminalManager.beginEventBatch()
         defer { terminalManager.endEventBatch() }
         resolvePendingLastSeen()
-        scheduleBackgroundSlotPoll()
-        let activeSlot = connectionPool.activeKey.flatMap { connectionPool.slots[$0] }
-        let events: [StateChange]
-        if activeSlot?.usesSharedCore == true {
-            events = pollSharedWorkspaceEvents(activeSlot: activeSlot)
-        } else {
-            events = bridge.pollEvents()
-        }
+        let activeSlot = sceneStack.activeKey.flatMap { sceneStack.scenes[$0] }
+        let events = pollSharedWorkspaceEvents(activeSlot: activeSlot)
         if events.contains(where: { Self.tabNumberTopologyEvents.contains($0.type) }),
-           let activeSlot = connectionPool.activeKey.flatMap({ connectionPool.slots[$0] })
+           let activeSlot = sceneStack.activeKey.flatMap({ sceneStack.scenes[$0] })
         {
             activeSlot.invalidateTabNumbers()
         }
@@ -3830,38 +3407,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    /// 后台只排空 FFI。Surface feed 必须 hop 回主线程，交给那个 Workspace
-    /// 自己的 TerminalManager；主线程每次只处理一个很小的时间片。
-    private func scheduleBackgroundSlotPoll() {
-        guard !backgroundPollInFlight else { return }
-        let slots = connectionPool.slots.values.filter {
-            $0.lifecycle == .background && !$0.usesSharedCore
-        }
-        guard !slots.isEmpty else { return }
-        backgroundPollInFlight = true
-        backgroundPollQueue.async { [weak self] in
-            var dirty: [WarmConnectionSlot] = []
-            for slot in slots {
-                if slot.drainBackgroundEvents() {
-                    dirty.append(slot)
-                }
-            }
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                self.backgroundPollInFlight = false
-                guard !self.isClosing else { return }
-                self.enqueueSurfaceCatchUp(dirty)
-                self.refreshWorkspaceSidebar()
-            }
-        }
-    }
-
     /// 激活后先处理当前 Workspace 的旧 Surface 队列，再 poll 新事件，保持
     /// Runtime 输出顺序。返回 true 表示本轮仍有积压，调用方应暂缓 poll。
     private func flushActiveSurfaceCatchUpBeforePoll() -> Bool {
-        guard let activeKey = connectionPool.activeKey,
-              let slot = connectionPool.slots[activeKey],
-              slot.lifecycle == .active,
+        guard let activeKey = sceneStack.activeKey,
+              let slot = sceneStack.scenes[activeKey],
+              slot.visibility == .visible,
               slot.hasPendingSurfaceWork
         else {
             return false
@@ -3873,15 +3424,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         return hasPending
     }
 
-    private func enqueueSurfaceCatchUp(_ slot: WarmConnectionSlot) {
+    private func enqueueSurfaceCatchUp(_ slot: WorkspaceScene) {
         enqueueSurfaceCatchUp([slot])
     }
 
-    private func enqueueSurfaceCatchUp(_ slots: [WarmConnectionSlot]) {
+    private func enqueueSurfaceCatchUp(_ slots: [WorkspaceScene]) {
         guard !isClosing else { return }
-        for slot in slots where slot.lifecycle != .evicting {
-            if !surfaceCatchUpSlots.contains(where: { $0 === slot }) {
-                surfaceCatchUpSlots.append(slot)
+        for slot in slots where slot.visibility != .closed {
+            if !surfaceCatchUpScenes.contains(where: { $0 === slot }) {
+                surfaceCatchUpScenes.append(slot)
             }
         }
         scheduleSurfaceCatchUp()
@@ -3890,7 +3441,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private func scheduleSurfaceCatchUp() {
         guard !isClosing,
               surfaceCatchUpWorkItem == nil,
-              !surfaceCatchUpSlots.isEmpty
+              !surfaceCatchUpScenes.isEmpty
         else {
             return
         }
@@ -3907,12 +3458,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 在一个全局主线程预算内轮转所有 warm Workspace，active 优先。
     private func flushSurfaceCatchUpPass() {
         guard !isClosing else {
-            surfaceCatchUpSlots.removeAll()
+            surfaceCatchUpScenes.removeAll()
             return
         }
 
-        let activeKey = connectionPool.activeKey
-        let slots = surfaceCatchUpSlots.sorted { lhs, rhs in
+        let activeKey = sceneStack.activeKey
+        let slots = surfaceCatchUpScenes.sorted { lhs, rhs in
             let lhsActive = lhs.key == activeKey
             let rhsActive = rhs.key == activeKey
             if lhsActive != rhsActive {
@@ -3920,22 +3471,22 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             }
             return lhs.openedOrder < rhs.openedOrder
         }
-        surfaceCatchUpSlots.removeAll()
+        surfaceCatchUpScenes.removeAll()
 
         let started = ProcessInfo.processInfo.systemUptime
-        for slot in slots where slot.lifecycle != .evicting {
+        for slot in slots where slot.visibility != .closed {
             guard slot.hasPendingSurfaceWork else { continue }
             let elapsed = ProcessInfo.processInfo.systemUptime - started
             let remainingBudget = SurfaceEventBatchPolicy.timeBudget - elapsed
             guard remainingBudget > 0 else {
-                surfaceCatchUpSlots.append(slot)
+                surfaceCatchUpScenes.append(slot)
                 continue
             }
             if slot.applyPendingSurfaceEvents(
                 maxEvents: SurfaceEventBatchPolicy.maxEventsPerPass,
                 timeBudget: remainingBudget
             ) {
-                surfaceCatchUpSlots.append(slot)
+                surfaceCatchUpScenes.append(slot)
             }
         }
         scheduleSurfaceCatchUp()
@@ -3943,7 +3494,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     /// 注意力引擎：更新状态栏红点 + 弹出 blocked/done 通知。
     private func refreshAttentionChrome(allowBridgeQueries: Bool = true) {
-        guard !isClosing, pendingForegroundActivation == nil else { return }
+        guard !isClosing else { return }
         // 前台 pane 输出视为已看见：CommandDone 清成 Idle（Linux 同款），
         // 前台 `sleep && echo` 不弹完成通知。
         let activePane = lastSnapshot.panes.first(where: \.isActive)?.id
@@ -3951,33 +3502,20 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         if allowBridgeQueries, let activePane {
             _ = bridge.attentionOnBecameVisible(paneId: activePane)
         }
-        // 红点与系统通知覆盖所有 warm Workspace；后台 bridge 仍在 core
-        // 中维护 Attention 状态，不能只看当前窗口这一条连接。后台 slot
-        // 的快照/通知已经由 utility poll 缓存，主线程只消费值类型副本。
+        // Core 返回的是整个 WorkspacePool 的 attention 快照；EventPump 每拍
+        // 把它按 WorkspaceId 分发给各 scene 的 ViewStore，隐藏 scene 也持续更新。
+        if allowBridgeQueries, let snapshot = attentionSnapshot(from: bridge) {
+            updateSceneAttentionStores(
+                snapshot: snapshot,
+                agents: bridge.structuredAgentSnapshot()
+            )
+        }
         var blockedCount = 0
-        let activeSnapshot: AttentionSnapshot?
-        if allowBridgeQueries {
-            activeSnapshot = attentionSnapshot(from: bridge)
-        } else {
-            activeSnapshot = connectionPool.activeKey
-                .flatMap { connectionPool.slots[$0]?.cachedAttentionSnapshot }
-        }
-        if let activeSlot = connectionPool.activeKey.flatMap({ connectionPool.slots[$0] }) {
-            if let activeSnapshot {
-                activeSlot.cacheAttentionSnapshot(activeSnapshot)
-            }
-            if allowBridgeQueries {
-                activeSlot.cacheStructuredAgents(bridge.structuredAgentSnapshot())
-            }
-        }
-        if let activeSnapshot {
-            blockedCount += activeSnapshot.blockedCount
-        }
         if allowBridgeQueries {
             drainAttentionNotifications(from: bridge)
         }
-        for slot in connectionPool.slots.values
-            where slot.bridge !== bridge && slot.lifecycle != .evicting
+        for slot in sceneStack.scenes.values
+            where slot.visibility != .closed
         {
             if let snapshot = attentionSnapshot(for: slot) {
                 blockedCount += snapshot.blockedCount
@@ -3986,6 +3524,30 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         content.statusBar.setAttention(StatusBarAttention(count: blockedCount))
         refreshWorkspaceSidebar()
+    }
+
+    private func updateSceneAttentionStores(
+        snapshot: AttentionSnapshot,
+        agents: [StructuredPaneAgent]
+    ) {
+        for scene in sceneStack.scenes.values where scene.visibility != .closed {
+            let workspaceID = workspaceReplicaID(for: scene)
+            let workspaces = snapshot.workspaces.filter {
+                $0.workspaceId == workspaceID
+            }
+            let blockedCount = workspaces.reduce(into: 0) { count, workspace in
+                count += workspace.blocked
+            }
+            scene.cacheAttentionSnapshot(
+                AttentionSnapshot(blockedCount: blockedCount, workspaces: workspaces)
+            )
+            let paneIDs = Set(scene.cachedTabIdsByPane?.map(\.key) ?? [])
+            if paneIDs.isEmpty {
+                scene.cacheStructuredAgents(agents)
+            } else {
+                scene.cacheStructuredAgents(agents.filter { paneIDs.contains($0.paneId) })
+            }
+        }
     }
 
     private func drainAttentionNotifications(from candidate: CoreBridge) {
@@ -4024,7 +3586,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func refreshUI() {
-        guard pendingForegroundActivation == nil else { return }
         let snap = bridge.snapshot()
         tabSwitchGate.onSnapshot(tabs: snap.tabs.map(\.id))
         if !tabSwitchGate.isReleased() {
@@ -4090,8 +3651,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         tabIdsByPane: [UInt32: UInt32]? = nil,
         tabNumbersByPane: [UInt32: Int]? = nil
     ) {
-        guard let activeKey = connectionPool.activeKey,
-              let slot = connectionPool.slots[activeKey],
+        guard let activeKey = sceneStack.activeKey,
+              let slot = sceneStack.scenes[activeKey],
               slot.bridge === bridge
         else {
             return
@@ -4107,8 +3668,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     /// 每拍只预热一个还没点过的 tab，第一次点击就能走缓存树。
     private func scheduleTabTreeWarmup() {
-        guard pendingForegroundActivation == nil,
-              TabWarmupPolicy.canStart(
+        guard TabWarmupPolicy.canStart(
             activeSurfaceReady: activeSurfaceReadyForTabWarmup()
         ) else {
             return
@@ -4120,8 +3680,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         ) { [weak self] in
             guard let self else { return }
             self.tabWarmupScheduled = false
-            guard self.pendingForegroundActivation == nil,
-                  TabWarmupPolicy.canStart(
+            guard TabWarmupPolicy.canStart(
                 activeSurfaceReady: self.activeSurfaceReadyForTabWarmup()
             ) else {
                 return
@@ -4140,8 +3699,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func warmNextBackgroundTab() {
-        guard pendingForegroundActivation == nil,
-              activeSurfaceReadyForTabWarmup()
+        guard activeSurfaceReadyForTabWarmup()
         else { return }
         let current = lastSnapshot.activeTab
         for tab in lastSnapshot.tabs where tab.id != current {
@@ -4163,8 +3721,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     /// 切 tab/pane 完成后：按 seq 喂历史帧，并用 SwiftTerm findNext 高亮 query。
     private func applyPendingSearchJumpIfReady() {
-        guard pendingForegroundActivation == nil,
-              let jump = pendingSearchJump
+        guard let jump = pendingSearchJump
         else { return }
         guard tabSwitchGate.isReleased() else { return }
         guard lastSnapshot.panes.contains(where: { $0.id == jump.paneId }) else { return }
@@ -4246,7 +3803,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func refreshHistoryChrome(for paneId: UInt32) {
-        guard pendingForegroundActivation == nil, paneId == activePaneID else { return }
+        guard paneId == activePaneID else { return }
         let latest = bridge.paneLatestLineSeq(paneId: paneId)
         let seen = lastSeenLineSeq[paneId]
         let rawOffset = seen.map {
@@ -4366,55 +3923,27 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         content.applyStatusBar(updated)
     }
 
-    /// 抓取并应用 tmux status bar 快照（只读查询，后台执行）。
+    /// 抓取并应用 tmux status bar 快照。所有 Core 访问都在主线程事件泵
+    /// 上顺序执行，不再与 poll 竞争同一个 handle。
     private func refreshStatusBar(force: Bool) {
-        guard terminalManager.usesClientResize,
-              pendingForegroundActivation == nil
+        guard terminalManager.usesClientResize
         else { return }
         if !force, Date().timeIntervalSince(lastStatusFetchAt) < 2 {
             return
         }
         lastStatusFetchAt = Date()
-        let bridge = self.bridge
-        let slot = connectionPool.slots.values.first { $0.bridge === bridge }
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            let result: (json: String?, subscriptions: Bool)?
-            if let slot {
-                result = slot.withBridge { candidate in
-                    (
-                        json: candidate.statusBarSnapshotJSON(),
-                        subscriptions: candidate.statusSubscriptionActive()
-                    )
-                }
-            } else {
-                result = (
-                    json: bridge.statusBarSnapshotJSON(),
-                    subscriptions: bridge.statusSubscriptionActive()
-                )
-            }
-            guard let result,
-                  let json = result.json,
-                  let data = json.data(using: .utf8),
-                  let response = try? JSONDecoder().decode(StatusBarResponse.self, from: data),
-                  response.ok,
-                  let snapshot = response.status
-            else {
-                return
-            }
-            DispatchQueue.main.async {
-                guard let self else { return }
-                // 查询期间用户可能已经切走连接：旧连接的快照不能覆盖新连接。
-                guard self.bridge === bridge,
-                      self.pendingForegroundActivation == nil
-                else { return }
-                self.statusBarSnapshot = snapshot
-                self.content.applyStatusBar(snapshot)
-                // 文档 §B+：tmux ≥3.2 用 refresh-client -B 订阅推送（零轮询）；
-                // 只有老版本才保留 status-interval 轮询定时器。
-                if !result.subscriptions {
-                    self.scheduleStatusRefresh(snapshot)
-                }
-            }
+        guard let json = bridge.statusBarSnapshotJSON(),
+              let data = json.data(using: .utf8),
+              let response = try? JSONDecoder().decode(StatusBarResponse.self, from: data),
+              response.ok,
+              let snapshot = response.status
+        else { return }
+        statusBarSnapshot = snapshot
+        content.applyStatusBar(snapshot)
+        // 文档 §B+：tmux ≥3.2 用 refresh-client -B 订阅推送（零轮询）；
+        // 只有老版本才保留 status-interval 轮询定时器。
+        if !bridge.statusSubscriptionActive() {
+            scheduleStatusRefresh(snapshot)
         }
     }
 
@@ -4466,8 +3995,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         statusRefreshWorkItem?.cancel()
         statusRefreshWorkItem = nil
         cancelSurfaceCatchUp()
-        backgroundPollQueue.sync {}
-        connectionPool.shutdownAll()
+        sceneStack.shutdownAll()
         bridge.shutdown()
         window?.close()
     }
@@ -4486,8 +4014,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         statusRefreshWorkItem?.cancel()
         statusRefreshWorkItem = nil
         cancelSurfaceCatchUp()
-        backgroundPollQueue.sync {}
-        connectionPool.shutdownAll()
+        sceneStack.shutdownAll()
         bridge.shutdown()
         window?.close()
     }
@@ -4734,8 +4261,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             statusRefreshWorkItem?.cancel()
             statusRefreshWorkItem = nil
             cancelSurfaceCatchUp()
-            backgroundPollQueue.sync {}
-            connectionPool.shutdownAll()
+            sceneStack.shutdownAll()
             bridge.shutdown()
         }
     }
@@ -4743,7 +4269,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private func cancelSurfaceCatchUp() {
         surfaceCatchUpWorkItem?.cancel()
         surfaceCatchUpWorkItem = nil
-        surfaceCatchUpSlots.removeAll()
+        surfaceCatchUpScenes.removeAll()
     }
 
     private func removeKeyMonitor() {
