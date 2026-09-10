@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context, Result};
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 
-use crate::{Transport, TransportError, TransportResult, TransportSignal};
+use crate::{ProcessTransport, TransportError, TransportResult, TransportSignal};
 
 /// 把字节块渲染成可读的 debug 字符串（可打印字符保留，控制字节转义）。
 /// 用于 debug 模式把 SSH 原始收发数据落盘，方便排查远端 tmux 渲染/输入问题。
@@ -271,7 +271,7 @@ impl SshProcessTransport {
     }
 }
 
-impl Transport for SshProcessTransport {
+impl ProcessTransport for SshProcessTransport {
     fn spawn_exec(
         &mut self,
         program: &str,

@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use crate::local::LocalProcessTransport;
 use crate::ssh::{build_ssh_command, SshProcessTransport};
 use crate::{
-    ByteChannel, ChannelRequest, CommandOutput, TargetConnection, Transport, TransportResult,
+    ByteChannel, ChannelRequest, CommandOutput, ProcessTransport, TargetConnection, TransportResult,
 };
 
 /// A reusable target connection for local or SSH target context.
@@ -228,7 +228,7 @@ impl Connect {
 
 /// Adapt one transport-owned process lifetime to the Runtime-facing channel.
 struct ProcessByteChannel {
-    transport: Box<dyn Transport>,
+    transport: Box<dyn ProcessTransport>,
 }
 
 impl ByteChannel for ProcessByteChannel {

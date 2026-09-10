@@ -185,17 +185,18 @@ impl From<anyhow::Error> for TransportError {
     }
 }
 
-/// Result alias for the Transport library boundary.
+/// Result alias for the transport library boundary.
 pub type TransportResult<T> = std::result::Result<T, TransportError>;
 
-/// Transport trait：在本地或远程执行一个长驻命令，提供双向字节流。
+/// Spawned process lifetime used internally to build a [`ByteChannel`].
 ///
-/// 一个 Transport 实例 = 一次进程生命周期（spawn → read/write → exit）。
-/// 不理解 pane/session/tmux，只管字节流 + PTY 控制。
+/// A process transport owns one local or remote process (spawn → read/write →
+/// exit). It does not understand pane, session, or tmux semantics. Runtime
+/// code receives the narrower [`ByteChannel`] through [`TargetConnection`].
 ///
-/// 同步接口（内部可 spawn 后台线程做 async→sync 桥接），
-/// 与 `Runtime::execute` 同步签名一致。
-pub trait Transport: Send {
+/// The synchronous methods are used by the transport adapters and their
+/// background reader threads.
+pub trait ProcessTransport: Send {
     /// 在远端（或本地）以 PTY 模式启动一个长驻命令。
     ///
     /// `program` 在 local 为 shell/tmux 路径，在 ssh 为经 SSH 执行的命令。
@@ -210,7 +211,7 @@ pub trait Transport: Send {
     /// Spawn a PTY process with target-side working directory and environment.
     ///
     /// Existing callers that only need the basic process contract can keep
-    /// using [`Transport::spawn_exec`]. Providers that expose an
+    /// using [`ProcessTransport::spawn_exec`]. Providers that expose an
     /// `Exec` [`ChannelRequest`] should override this method when the
     /// underlying process supports these options.
     fn spawn_exec_with_options(

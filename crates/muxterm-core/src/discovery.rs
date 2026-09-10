@@ -258,7 +258,7 @@ pub fn list_ssh_tmux_panes(
     timeout: std::time::Duration,
 ) -> anyhow::Result<Vec<SshPaneInfo>> {
     use crate::transport::ssh::{build_ssh_command, SshProcessTransport};
-    use crate::transport::{PtySize, Transport, TransportSignal};
+    use crate::transport::{ProcessTransport, PtySize, TransportSignal};
     use std::sync::mpsc as std_mpsc;
     use std::sync::{Arc, Mutex};
     use std::time::Instant;

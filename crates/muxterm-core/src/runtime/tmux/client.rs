@@ -650,7 +650,7 @@ impl TmuxClient {
         config: TmuxClientConfig,
     ) -> Result<(TmuxClientHandle, TmuxEventReceiver)> {
         use crate::transport::ssh::{build_ssh_command, SshProcessTransport};
-        use crate::transport::Transport;
+        use crate::transport::ProcessTransport;
 
         let alias = config
             .ssh_alias
