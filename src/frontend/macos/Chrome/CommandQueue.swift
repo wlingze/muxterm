@@ -44,6 +44,7 @@ public enum QueuedMuxOperation: Equatable, Sendable {
     case closeWorkspace
     case colours(QueuedMuxColours)
     case config(QueuedMuxConfig)
+    case search(QueuedMuxSearch)
 
     private var coalescingKey: CoalescingKey? {
         switch self {
@@ -69,7 +70,7 @@ public enum QueuedMuxOperation: Equatable, Sendable {
             case .acknowledge, .mute:
                 return nil
             }
-        case .task, .input, .closeWorkspace, .config:
+        case .task, .input, .closeWorkspace, .config, .search:
             return nil
         }
     }
@@ -140,6 +141,17 @@ public struct QueuedMuxConfig: Equatable, Sendable {
 
     public init(operationsJSON: String, requestID: UInt64? = nil) {
         self.operationsJSON = operationsJSON
+        self.requestID = requestID
+    }
+}
+
+/// A Core index search waiting for the event-pump boundary.
+public struct QueuedMuxSearch: Equatable, Sendable {
+    public let query: String
+    public let requestID: UInt64
+
+    public init(query: String, requestID: UInt64) {
+        self.query = query
         self.requestID = requestID
     }
 }
@@ -253,6 +265,21 @@ public struct QueuedMuxCommand: Equatable, Sendable {
             workspaceID: nil,
             operation: .config(QueuedMuxConfig(
                 operationsJSON: operationsJSON,
+                requestID: requestID
+            )),
+            failureMessage: failureMessage
+        )
+    }
+
+    public static func search(
+        query: String,
+        requestID: UInt64,
+        failureMessage: String = ""
+    ) -> QueuedMuxCommand {
+        QueuedMuxCommand(
+            workspaceID: nil,
+            operation: .search(QueuedMuxSearch(
+                query: query,
                 requestID: requestID
             )),
             failureMessage: failureMessage

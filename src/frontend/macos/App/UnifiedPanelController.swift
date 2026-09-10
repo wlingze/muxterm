@@ -6,6 +6,12 @@ private enum UnifiedWorkspaceNavigation: Equatable {
     case existingConnections
 }
 
+struct UnifiedPanelSearchRequest {
+    let query: String
+    let scope: SearchScope
+    let completion: ([SearchHit]) -> Void
+}
+
 private enum UnifiedWorkspaceItem {
     case existingConnections
     case target(
@@ -116,6 +122,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     private var sshAliasesLoading = false
     private var workspaceNavigation = UnifiedWorkspaceNavigation.root
     private var existingRequestGeneration: UInt64 = 0
+    private var searchRequestGeneration: UInt64 = 0
     private var hits: [SearchHit] = []
     private var rows: [AttentionRow] = []
     private var model = PanelModel.open(.workspaces)
@@ -125,7 +132,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     private let snapshot: () -> AttentionSnapshot?
     private let paneOutput: (UInt32) -> Data
     private let sendInput: (UInt32, Data) -> Void
-    private let search: (String, SearchScope) -> [SearchHit]
+    private let search: (UnifiedPanelSearchRequest) -> Void
     private let workspaceIndex: (TargetConfig) -> Int?
     /// MainWindow supplies every currently pooled Workspace so direct panel
     /// search does not depend on a separate Existing discovery round trip.
@@ -137,7 +144,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         snapshot: @escaping () -> AttentionSnapshot?,
         paneOutput: @escaping (UInt32) -> Data,
         sendInput: @escaping (UInt32, Data) -> Void,
-        search: @escaping (String, SearchScope) -> [SearchHit],
+        search: @escaping (UnifiedPanelSearchRequest) -> Void,
         workspaceIndex: @escaping (TargetConfig) -> Int? = { _ in nil },
         connectedWorkspaces: (() -> [TargetConfig])? = nil
     ) {
@@ -196,6 +203,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         rootExistingLoaded = false
         rootExistingLoading = false
         existingRequestGeneration &+= 1
+        searchRequestGeneration &+= 1
         reload()
         loadSSHAliasesIfNeeded()
         guard let window else { return }
@@ -241,6 +249,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
 
     func dismiss() {
         existingRequestGeneration &+= 1
+        searchRequestGeneration &+= 1
         window?.orderOut(nil)
         ownerWindow?.makeKeyAndOrderFront(nil)
         onDismissed?()
@@ -264,8 +273,39 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
             model.tab,
             queryIsEmpty: model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         ) {
-            hits = search(model.query, model.scope)
+            hits = []
+            searchRequestGeneration &+= 1
+            let generation = searchRequestGeneration
+            let query = model.query
+            let scope = model.scope
+            let request = UnifiedPanelSearchRequest(
+                query: query,
+                scope: scope,
+                completion: { [weak self] hits in
+                    guard let self,
+                          generation == self.searchRequestGeneration,
+                          self.model.tab == .search,
+                          self.model.query == query,
+                          self.model.scope == scope
+                    else {
+                        return
+                    }
+                    self.hits = hits
+                    self.table.reloadData()
+                    if !hits.isEmpty {
+                        self.table.selectRowIndexes(
+                            IndexSet(integer: 0),
+                            byExtendingSelection: false
+                        )
+                        self.table.scrollRowToVisible(0)
+                    }
+                    self.updateEmptyState()
+                    QuickConnectTableLayout.fit(self.table)
+                }
+            )
+            search(request)
         } else {
+            searchRequestGeneration &+= 1
             hits = []
         }
         if model.tab == .workspaces {

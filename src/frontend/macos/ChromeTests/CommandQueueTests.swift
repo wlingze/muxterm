@@ -292,6 +292,24 @@ final class MacCommandQueueTests: XCTestCase {
         XCTAssertTrue(second.operationsJSON.contains("/theme/name"))
     }
 
+    func testSearchRequestsRemainOrderedAndCarryRequestIdentity() {
+        var queue = MacCommandQueue()
+        queue.enqueue(.search(query: "first", requestID: 11))
+        queue.enqueue(.search(query: "second", requestID: 12))
+
+        XCTAssertEqual(queue.count, 2)
+        let commands = queue.drain()
+        guard case .search(let first) = commands[0].operation,
+              case .search(let second) = commands[1].operation
+        else {
+            return XCTFail("expected ordered search requests")
+        }
+        XCTAssertEqual(first.query, "first")
+        XCTAssertEqual(first.requestID, 11)
+        XCTAssertEqual(second.query, "second")
+        XCTAssertEqual(second.requestID, 12)
+    }
+
     func testRepeatedVisibilityAcknowledgeForOnePaneCoalesces() {
         var queue = MacCommandQueue()
         queue.enqueue(.attention(

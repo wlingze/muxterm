@@ -124,7 +124,7 @@ final class QuickConnectE2ETests: XCTestCase {
             snapshot: { nil },
             paneOutput: { _ in Data() },
             sendInput: { _, _ in },
-            search: { _, _ in [] }
+            search: { _ in }
         )
         panel.present()
         AppE2E.pump(80)

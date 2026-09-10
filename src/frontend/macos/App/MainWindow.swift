@@ -140,6 +140,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// Core has accepted its draft.
     private var nextConfigRequestID: UInt64 = 1
     private var pendingConfigCompletions: [UInt64: (Result<Void, Error>) -> Void] = [:]
+    /// Search completions are delivered by the event pump so panel text input
+    /// never calls the Core index synchronously.
+    private var nextSearchRequestID: UInt64 = 1
+    private var pendingSearchCompletions: [UInt64: ([SearchHit]) -> Void] = [:]
     /// Core work needed after a cached scene switch.  It is deliberately
     /// resumed by `pollOnce()`, never from the click/activation stack.
     private var pendingActivationCoreWork: WorkspaceScene?
@@ -336,8 +340,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     _ = self.enqueueCoreInput(paneId: paneId, data: data)
                 }
             },
-            search: { [weak self] query, scope in
-                self?.searchHitsForPanel(query: query, scope: scope) ?? []
+            search: { [weak self] request in
+                guard let self else {
+                    request.completion([])
+                    return
+                }
+                self.requestSearchHitsForPanel(
+                    query: request.query,
+                    scope: request.scope,
+                    completion: request.completion
+                )
             },
             workspaceIndex: { [weak self] config in
                 self?.workspaceShortcutIndex(for: config)
@@ -1057,13 +1069,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         unifiedPanel.show(tab: .attention)
     }
 
-    /// 统一面板的实时查询范围覆盖当前 Core handle 管理的 Workspace；
-    /// Core 已经返回带 WorkspaceId 的聚合结果，不再为每个场景重复触碰 handle。
-    private func forEachPanelBridge(_ body: (CoreBridge, WorkspaceScene?) -> Void) {
-        let activeSlot = sceneStack.activeKey.flatMap { sceneStack.scenes[$0] }
-        body(bridge, activeSlot)
-    }
-
     private func attentionSnapshot(from candidate: CoreBridge) -> AttentionSnapshot? {
         guard let json = candidate.attentionSnapshotJSON() else { return nil }
         return AttentionSnapshot.decode(Data(json.utf8))
@@ -1078,11 +1083,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             return "\(name):\(identityPath)@\(transport)"
         }
         return "\(name)@\(transport)"
-    }
-
-    private func workspaceReplicaID(from candidate: CoreBridge, target: TargetConfig) -> String {
-        attentionSnapshot(from: candidate)?.workspaces.first?.workspaceId
-            ?? fallbackReplicaID(for: target)
     }
 
     private func workspaceReplicaID(for slot: WorkspaceScene) -> String {
@@ -1102,7 +1102,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         {
             return workspaceReplicaID(for: slot)
         }
-        return workspaceReplicaID(from: bridge, target: target)
+        return fallbackReplicaID(for: target)
     }
 
     /// UI 命令在同一主线程事件泵上顺序进入 Core；场景切换本身不需要等待
@@ -1239,6 +1239,75 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             return
         }
         completion(result)
+    }
+
+    /// Enqueue a Core index search and return immediately to AppKit. The
+    /// result is filtered against the current owned scene topology when the
+    /// event-pump command completes.
+    private func requestSearchHitsForPanel(
+        query: String,
+        scope: SearchScope,
+        completion: @escaping ([SearchHit]) -> Void
+    ) {
+        let requestID = nextSearchRequestID
+        nextSearchRequestID += 1
+        pendingSearchCompletions[requestID] = { [weak self] hits in
+            guard let self else { return }
+            self.cacheActiveWorkspaceIdentity(from: hits)
+            var uniqueHits: [SearchHit] = []
+            var seen = Set<String>()
+            for hit in hits {
+                let key = "\(hit.workspaceId)\u{1F}\(hit.tabId)\u{1F}\(hit.paneId)\u{1F}\(hit.seq)"
+                if seen.insert(key).inserted {
+                    uniqueHits.append(hit)
+                }
+            }
+            completion(scope.filter(
+                uniqueHits,
+                activePane: self.activePaneID,
+                workspaceId: self.activeWorkspaceReplicaID,
+                workspacePaneIDs: self.cachedWorkspacePaneIDs()
+            ))
+        }
+        let accepted = enqueueCoreCommand(.search(
+            query: query,
+            requestID: requestID
+        ))
+        if !accepted {
+            pendingSearchCompletions.removeValue(forKey: requestID)
+            completion([])
+        }
+    }
+
+    private func cacheActiveWorkspaceIdentity(from hits: [SearchHit]) {
+        guard let activeKey = sceneStack.activeKey,
+              let activeScene = sceneStack.scenes[activeKey]
+        else {
+            return
+        }
+        var activePaneIDs = Set(lastSnapshot.panes.map(\.id))
+        if let cachedPaneIDs = activeScene.cachedTabIdsByPane?.keys {
+            activePaneIDs.formUnion(cachedPaneIDs)
+        }
+        guard let workspaceID = hits.first(where: { activePaneIDs.contains($0.paneId) })?.workspaceId
+        else {
+            return
+        }
+        activeScene.cacheWorkspaceReplicaID(workspaceID)
+    }
+
+    private func finishSearchRequest(_ requestID: UInt64, hits: [SearchHit]) {
+        pendingSearchCompletions.removeValue(forKey: requestID)?(hits)
+    }
+
+    private func cachedWorkspacePaneIDs() -> Set<UInt32> {
+        var paneIDs = Set(lastSnapshot.panes.map(\.id))
+        for scene in sceneStack.scenes.values where scene.visibility != .closed {
+            if let scenePaneIDs = scene.cachedTabIdsByPane?.keys {
+                paneIDs.formUnion(scenePaneIDs)
+            }
+        }
+        return paneIDs
     }
 
     /// Dispatch queued commands at the same serialized boundary that drains
@@ -1440,6 +1509,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     finishConfigRequest(config.requestID, result: .failure(error))
                     result = -1
                 }
+            case .search(let search):
+                var hits: [SearchHit] = []
+                if let json = bridge.searchAllJSON(query: search.query),
+                   let data = json.data(using: .utf8),
+                   let snapshot = SearchSnapshot.decode(data)
+                {
+                    hits = snapshot.hits
+                }
+                finishSearchRequest(search.requestID, hits: hits)
+                result = 0
             }
             if result != 0 {
                 switch command.operation {
@@ -1477,23 +1556,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 }
                 return lhs.key.session < rhs.key.session
         }
-    }
-
-    /// Build the sidebar's pane navigation cache in one topology walk. Core
-    /// keeps both the stable TabId and the user-facing 1-based order
-    /// authoritative.
-    private static func tabTargetsByPane(
-        from candidate: CoreBridge
-    ) -> (tabIdsByPane: [UInt32: UInt32], tabNumbersByPane: [UInt32: Int]) {
-        var tabIdsByPane: [UInt32: UInt32] = [:]
-        var tabNumbersByPane: [UInt32: Int] = [:]
-        for (index, tab) in candidate.getTabs().enumerated() {
-            for pane in candidate.getPanes(tabId: tab.id) {
-                tabIdsByPane[pane.id] = tab.id
-                tabNumbersByPane[pane.id] = index + 1
-            }
-        }
-        return (tabIdsByPane, tabNumbersByPane)
     }
 
     private func tabTargetsByPane(
@@ -1595,45 +1657,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             if workspace.blocked > 0 { count += 1 }
         }
         return AttentionSnapshot(blockedCount: blockedCount, workspaces: workspaces)
-    }
-
-    private func searchHitsForPanel(query: String, scope: SearchScope) -> [SearchHit] {
-        var allHits: [SearchHit] = []
-        var seen = Set<String>()
-        let consume: (CoreBridge, WorkspaceScene?) -> Void = { candidate, slot in
-            guard let json = candidate.searchAllJSON(query: query),
-                  let snapshot = SearchSnapshot.decode(Data(json.utf8))
-            else {
-                return
-            }
-            // 搜索结果本身也携带稳定 Workspace ID。后台 attention 尚未
-            // 首轮到达时先把它写入 slot，后续点击搜索命中无需再做同步
-            // FFI 身份探测。
-            if let workspaceID = snapshot.hits.first?.workspaceId {
-                slot?.cacheWorkspaceReplicaID(workspaceID)
-            }
-            for hit in snapshot.hits {
-                let key = "\(hit.workspaceId)\u{1F}\(hit.tabId)\u{1F}\(hit.paneId)\u{1F}\(hit.seq)"
-                if seen.insert(key).inserted {
-                    allHits.append(hit)
-                }
-            }
-        }
-        if scope == .all {
-            forEachPanelBridge(consume)
-        } else {
-            let activeSlot = sceneStack.activeKey.flatMap { sceneStack.scenes[$0] }
-            consume(bridge, activeSlot)
-        }
-        let workspacePaneIDs = Set(
-            bridge.getTabs().flatMap { bridge.getPanes(tabId: $0.id).map(\.id) }
-        )
-        return scope.filter(
-            allHits,
-            activePane: activePaneID,
-            workspaceId: activeWorkspaceReplicaID,
-            workspacePaneIDs: workspacePaneIDs
-        )
     }
 
     /// 测试用：按 Workspace 读取 Core 的 attention 快照。
