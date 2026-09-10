@@ -426,11 +426,10 @@ mod tests {
             activation.contains("show_workspace_scene(s, id, false)"),
             "{activation}"
         );
-        assert!(!activation.contains("activate_workspace"), "{activation}");
-        assert!(!activation.contains("sync_view_store"), "{activation}");
+        assert_scene_navigation_body_is_local(activation);
 
         let scene = fn_src(src, "show_workspace_scene");
-        assert!(!scene.contains("event_pump"), "{scene}");
+        assert_scene_navigation_body_is_local(scene);
         assert!(!scene.contains("seed_unseeded_pane_for"), "{scene}");
     }
 
@@ -442,16 +441,11 @@ mod tests {
             activation.contains("show_tab_scene(s, tab_id)"),
             "{activation}"
         );
-        assert!(
-            !activation.contains("ClientTask::SwitchTab"),
-            "{activation}"
-        );
-        assert!(!activation.contains("command_queue"), "{activation}");
+        assert_scene_navigation_body_is_local(activation);
 
         let scene = fn_src(src, "show_tab_scene");
         assert!(scene.contains("layout.show_tab(tab_id)"), "{scene}");
-        assert!(!scene.contains("event_pump"), "{scene}");
-        assert!(!scene.contains("execute_active_task"), "{scene}");
+        assert_scene_navigation_body_is_local(scene);
     }
 
     #[test]
@@ -703,6 +697,23 @@ mod tests {
             }
         }
         &rest[..sig.len() + rel]
+    }
+
+    fn assert_scene_navigation_body_is_local(body: &str) {
+        for forbidden in [
+            "event_pump",
+            "command_queue",
+            "ClientTask",
+            "execute_active_task",
+            "activate_workspace",
+            "poll_event_store",
+            "sync_view_store",
+            "flush_command_queue",
+            "Mutex",
+            ".lock(",
+        ] {
+            assert!(!body.contains(forbidden), "{forbidden} in {body}");
+        }
     }
 
     /// C7：SSH 已有连接探测必须并发，禁止一个 spawn 里串行 map 每个 alias。

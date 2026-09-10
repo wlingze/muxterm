@@ -146,6 +146,26 @@ impl AppWindow {
         self._state.borrow().font.size
     }
 
+    /// 测试用：通过当前 EventPump 的 Core 配置服务提交一个字段修改。
+    /// 提交只产生 `ConfigChanged`；调用方必须再走 `test_poll_once` 验证热应用。
+    pub fn test_commit_config_path(
+        &self,
+        dotted: &str,
+        value: serde_json::Value,
+    ) -> anyhow::Result<()> {
+        self._state
+            .borrow()
+            .event_pump
+            .client()
+            .config_apply_path(dotted, value)
+            .map(|_| ())
+    }
+
+    /// 测试用：读取当前前端已应用的主题名，而不是重新查询 Core。
+    pub fn test_theme_name(&self) -> String {
+        self._state.borrow().theme_name.clone()
+    }
+
     /// 测试用：当前激活 pane 的核心输出快照。
     pub fn test_active_pane_output(&self) -> Vec<u8> {
         let s = self._state.borrow();
@@ -581,6 +601,11 @@ impl AppWindow {
     /// 测试用：当前 blocked 工作区数（红点 N）。
     pub fn test_attention_blocked_workspaces(&self) -> usize {
         activity_snapshot(&self._state.borrow()).blocked_count
+    }
+
+    /// 测试用：读取当前 Core activity 快照，诊断跨 workspace 的注意力状态。
+    pub fn test_attention_snapshot(&self) -> crate::frontend::ffi_client::ClientActivitySnapshot {
+        activity_snapshot(&self._state.borrow())
     }
 
     /// 测试用：窗口标题（M3.4 接红点前缀，当前返回原始标题）。
