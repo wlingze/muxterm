@@ -11,5 +11,4 @@ pub mod options;
 pub mod project_flow;
 pub mod status_style;
 pub mod store;
-pub mod tab_gate;
 pub use existing::{ExistingEntry, ExistingRuntime, ExistingTransport};
