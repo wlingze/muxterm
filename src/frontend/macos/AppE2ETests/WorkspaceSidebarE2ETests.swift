@@ -340,7 +340,7 @@ final class WorkspaceSidebarE2ETests: XCTestCase {
         XCTAssertEqual(
             app.testActiveWorkspaceSession(),
             first.session,
-            "关闭当前 Workspace 后应切到下一个 warm Workspace"
+            "关闭当前 Workspace 后应切到下一个已打开 Workspace"
         )
         XCTAssertEqual(app.testWorkspaceCount(), 1)
         XCTAssertTrue(
@@ -389,7 +389,7 @@ final class WorkspaceSidebarE2ETests: XCTestCase {
         XCTAssertLessThan(
             elapsed,
             0.12,
-            "侧边栏切回 warm Workspace 不应有可感知卡顿，实际 \(elapsed)s"
+            "侧边栏切回已打开 Workspace 不应有可感知卡顿，实际 \(elapsed)s"
         )
         XCTAssertEqual(app.testActiveWorkspaceSession(), first.session)
     }

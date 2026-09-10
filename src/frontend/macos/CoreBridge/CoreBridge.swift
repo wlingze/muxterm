@@ -1504,8 +1504,9 @@ final class CoreBridge {
 
     /// 非阻塞拉取事件（内部拷贝 data/name，指针在返回后即可失效）。
     ///
-    /// 后台 warm Workspace 可以用较小的批次，避免一次高流量远端输出
-    /// 长时间占用它的 CoreBridge。默认值保持前台原有批量。
+    /// Shared event draining can use smaller batches so one high-volume remote
+    /// output does not monopolize the CoreBridge. The default preserves the
+    /// foreground throughput used by existing callers.
     func pollEvents(maxCount: Int = 64) -> [StateChange] {
         let count = min(max(maxCount, 1), 64)
         var events = pendingWorkspaceEvents.prefix(count).map(\.event)

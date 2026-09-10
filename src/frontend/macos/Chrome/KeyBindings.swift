@@ -112,7 +112,7 @@ public enum KeyBindings {
         if chord.command, !chord.shift, !chord.option, key == "r" {
             return .attention
         }
-        // Cmd+F：当前 Workspace；Cmd+Shift+F：所有 warm Workspace。
+        // Cmd+F：当前 Workspace；Cmd+Shift+F：所有已打开 Workspace。
         if chord.command, !chord.shift, !chord.option, key == "f" {
             return .searchWorkspace
         }
