@@ -15,8 +15,8 @@ use gtk4::gdk;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{
-    ApplicationWindow, Box, Button, CheckButton, CssProvider, EventControllerKey, HeaderBar, Label,
-    Orientation, Paned, Window,
+    ApplicationWindow, Box, Button, CheckButton, CssProvider, EventControllerKey, Label,
+    Orientation, Window,
 };
 use vte4::prelude::*;
 
@@ -32,6 +32,7 @@ use crate::frontend::ffi_client::{
     FfiClient,
 };
 use crate::frontend::i18n::{self, Key};
+use crate::frontend::linux::app_shell::AppShell;
 use crate::frontend::linux::attention_compat::CompatibilityActivity;
 use crate::frontend::linux::attention_ui::{window_title, GioSink, NotificationSink};
 use crate::frontend::linux::command_palette::{parse_palette_action, PaletteAction};
@@ -196,8 +197,6 @@ struct UiState {
     reconnect_attempts: u32,
     /// 终端区 Overlay：常驻 workspace scene stack 是主 child，覆盖层浮在上面。
     overlay: OverlayLayer,
-    /// 窗口根容器（挂载当前工作区的 LayoutHost.root_box）。
-    root_box: gtk4::Box,
     /// 上次看到这里（W18g）：(workspace, pane) → 离开时的最后一行文本。
     last_seen: std::collections::HashMap<(String, u32), String>,
     /// VTE scrollback 行数（新建 LayoutHost 时用）。
@@ -669,12 +668,6 @@ impl AppWindow {
             startup_sockets.insert(startup_id.clone(), socket.clone());
         }
 
-        let root = Box::builder()
-            .orientation(Orientation::Vertical)
-            .spacing(0)
-            .build();
-        root.add_css_class("muxterm-root");
-
         let theme_name = cfg.theme.name.clone().to_ascii_lowercase();
         apply_chrome_css(&theme);
         let config_font_size = cfg.font.size;
@@ -684,26 +677,6 @@ impl AppWindow {
             fallback: cfg.font.fallback.clone(),
         };
         let status_mode = StatusBarMode::from_toml(Some(&cfg.statusbar.mode));
-        let sidebar = WorkspaceSidebar::new();
-
-        let header = HeaderBar::new();
-        header.set_widget_name("muxterm-header-bar");
-        header.pack_start(&sidebar.toggle);
-        let quick_connect_button = Button::with_label("⚡");
-        quick_connect_button.set_widget_name("muxterm-quick-connect-button");
-        quick_connect_button.set_has_frame(false);
-        quick_connect_button.set_can_focus(false);
-        header.pack_start(&quick_connect_button);
-        let settings_button = Button::with_label("⚙");
-        settings_button.set_widget_name("muxterm-settings-button");
-        settings_button.set_has_frame(false);
-        settings_button.set_can_focus(false);
-        header.pack_end(&settings_button);
-        let title_label = Label::new(Some("muxterm"));
-        title_label.set_widget_name("muxterm-title-label");
-        header.set_title_widget(Some(&title_label));
-        window.set_titlebar(Some(&header));
-
         let uses_tmux = view_store
             .workspace(startup_key)
             .and_then(|view| view.workspace.as_ref())
@@ -712,41 +685,14 @@ impl AppWindow {
             });
         let layout = LayoutHost::new(theme.clone(), font.clone(), uses_tmux, cfg.scrollback.lines);
         let scenes = WorkspaceScenes::new(startup_id.clone(), layout);
-        let status = StatusBar::new(status_mode, theme.clone());
-        status.container.add_css_class("status-bar");
-
-        // 唯一 chrome：一条 status bar（LINUX-PLAN §3），没有第二条 TabBar。
-        // 终端区包一层 Overlay：回底按钮浮在 VTE 右下角（W16a）。
         let scene_stack_widget = scenes.widget();
-        let overlay = OverlayLayer::new(&scene_stack_widget);
-        // 左侧栏与右侧终端 chrome 是同一个水平 Paned 的两列。Tab/status
-        // chrome 属于右列，不能延伸到侧栏下方；Paned 的 handle 同时提供
-        // 用户可调宽度，避免用一个 hexpand 空壳制造中间空白。
-        let terminal_column = Box::builder()
-            .orientation(Orientation::Vertical)
-            .spacing(0)
-            .hexpand(true)
-            .vexpand(true)
-            .build();
-        terminal_column.set_widget_name("muxterm-terminal-column");
-        terminal_column.append(&overlay.container);
-        terminal_column.append(&status.container);
-
-        let content = Paned::new(Orientation::Horizontal);
-        content.set_widget_name("muxterm-content");
-        content.add_css_class("muxterm-main-split");
-        content.set_hexpand(true);
-        content.set_vexpand(true);
-        content.set_wide_handle(false);
-        content.set_resize_start_child(false);
-        content.set_shrink_start_child(false);
-        content.set_resize_end_child(true);
-        content.set_shrink_end_child(true);
-        content.set_start_child(Some(&sidebar.container));
-        content.set_end_child(Some(&terminal_column));
-        content.set_position(280);
-        root.append(&content);
-        window.set_child(Some(&root));
+        let AppShell {
+            sidebar,
+            status,
+            overlay,
+            quick_connect_button,
+            settings_button,
+        } = AppShell::new(&window, &scene_stack_widget, status_mode, theme.clone());
 
         let keymap = KeyMap::from_bindings(&keybindings);
         let qc_store = QuickConnectStore::from_project_documents(&projects);
@@ -809,7 +755,6 @@ impl AppWindow {
             reconnect_retry_at: None,
             reconnect_attempts: 0,
             overlay,
-            root_box: root.clone(),
             last_seen: std::collections::HashMap::new(),
             scrollback_lines: cfg.scrollback.lines,
             default_socket: socket.clone(),
