@@ -3,6 +3,9 @@
 //! Core ownership, initial ViewStore synchronization, the resident Scene
 //! tree, and the single GTK EventPump loop are assembled here.
 
+use super::window_actions::{
+    handle_action, handle_pane_menu_action, prepare_core_tab_mutation, report_all_pane_colours,
+};
 use super::*;
 
 impl AppWindow {

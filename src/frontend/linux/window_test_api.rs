@@ -3,6 +3,7 @@
 //! The runtime window orchestration stays in `window`; this module keeps
 //! the stable production paths exposed to GTK/e2e tests in one boundary.
 
+use super::window_actions::{adjust_font, handle_action, paste_active_pane};
 use super::*;
 
 impl AppWindow {
