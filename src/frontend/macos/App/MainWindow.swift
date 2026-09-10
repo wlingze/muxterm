@@ -119,6 +119,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private var trafficMonitorTimer: Timer?
     private var trafficRateSampler = TrafficRateSampler()
     private var activeProjectFlow: ProjectConnectFlowBox?
+    /// UI tasks are owned until the single main-thread event pump dispatches
+    /// them to Core.  The queue stores the workspace identity so a fast scene
+    /// switch cannot retarget a command that was already clicked.
+    private var commandQueue = MacCommandQueue()
     /// A shared Core handle is temporarily owned by a catalog open operation;
     /// the main-thread event pump pauses until the owned result is installed.
     private var sharedCoreOperationInFlight = false
@@ -409,11 +413,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             self.performWhenForegroundReady { [weak self] in
                 guard let self else { return }
                 self.focusPaneTerminal(paneId)
-                if self.bridge.execute(task: MuxTask.switchPane(paneId)) != 0 {
-                    self.reportStatusError(
-                        MuxtermI18n.shared.tr(.errorSwitchPane, arguments: ["id": "\(paneId)"])
+                _ = self.enqueueCoreTask(
+                    MuxTask.switchPane(paneId),
+                    failureMessage: MuxtermI18n.shared.tr(
+                        .errorSwitchPane,
+                        arguments: ["id": "\(paneId)"]
                     )
-                }
+                )
             }
         }
         content.paneLayout.onSurfaceBecameReady = { [weak self] paneId, ready in
@@ -532,7 +538,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     // MARK: - 公开动作（菜单 / 快捷键）
 
     @objc func newTab() {
-        guard bridge.execute(task: MuxTask.newTab()) == 0 else {
+        guard enqueueCoreTask(
+            MuxTask.newTab(),
+            failureMessage: MuxtermI18n.shared.tr(.errorNewTab)
+        ) else {
             reportStatusError(MuxtermI18n.shared.tr(.errorNewTab))
             return
         }
@@ -559,21 +568,20 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     func renameTab(_ tabId: UInt32, to name: String) -> Bool {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return false }
-        guard bridge.execute(task: MuxTask.renameTab(tabId, name: name)) == 0 else {
-            reportStatusError(MuxtermI18n.shared.tr(.errorCommandFailed))
-            return false
-        }
-        return true
+        return enqueueCoreTask(
+            MuxTask.renameTab(tabId, name: name),
+            failureMessage: MuxtermI18n.shared.tr(.errorCommandFailed)
+        )
     }
 
     @discardableResult
     func renameWorkspace(to name: String) -> Bool {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return false }
-        guard bridge.execute(task: MuxTask.renameWorkspace(name)) == 0 else {
-            reportStatusError(MuxtermI18n.shared.tr(.errorCommandFailed))
-            return false
-        }
+        guard enqueueCoreTask(
+            MuxTask.renameWorkspace(name),
+            failureMessage: MuxtermI18n.shared.tr(.errorCommandFailed)
+        ) else { return false }
         applyWorkspaceRename(name)
         return true
     }
@@ -621,12 +629,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     @discardableResult
     func moveTab(from: UInt32, target: UInt32, before: Bool) -> Bool {
         guard terminalManager.usesClientResize, from != target else { return false }
-        guard bridge.execute(
-            task: MuxTask.moveTab(from: from, target: target, before: before)
-        ) == 0 else {
-            reportStatusError(MuxtermI18n.shared.tr(.errorCommandFailed))
-            return false
-        }
+        guard enqueueCoreTask(
+            MuxTask.moveTab(from: from, target: target, before: before),
+            failureMessage: MuxtermI18n.shared.tr(.errorCommandFailed)
+        ) else { return false }
         needsLayoutReload = true
         scheduleStatusBarRefresh()
         return true
@@ -663,10 +669,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
               lastSnapshot.panes.count > 1,
               lastSnapshot.panes.contains(where: { $0.id == paneId })
         else { return false }
-        guard bridge.execute(task: MuxTask.breakPane(paneId)) == 0 else {
-            reportStatusError(MuxtermI18n.shared.tr(.errorCommandFailed))
-            return false
-        }
+        guard enqueueCoreTask(
+            MuxTask.breakPane(paneId),
+            failureMessage: MuxtermI18n.shared.tr(.errorCommandFailed)
+        ) else { return false }
         needsLayoutReload = true
         scheduleStatusBarRefresh()
         return true
@@ -677,10 +683,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             return
         }
         // 唯一 pane 时关 pane 会触发后端关 window；UI 侧随后收到 Exited 再关窗口。
-        guard bridge.execute(task: MuxTask.closePane(pane)) == 0 else {
-            reportStatusError(MuxtermI18n.shared.tr(.errorClosePane, arguments: ["id": "\(pane)"]))
-            return
-        }
+        _ = enqueueCoreTask(
+            MuxTask.closePane(pane),
+            failureMessage: MuxtermI18n.shared.tr(
+                .errorClosePane,
+                arguments: ["id": "\(pane)"]
+            )
+        )
         needsLayoutReload = true
     }
 
@@ -756,11 +765,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             return
         }
         if terminalManager.usesClientResize {
-            if bridge.execute(task: MuxTask.togglePaneFullscreen(pane)) != 0 {
-                reportStatusError(
-                    MuxtermI18n.shared.tr(.errorCommandFailed)
-                )
-            }
+            _ = enqueueCoreTask(
+                MuxTask.togglePaneFullscreen(pane),
+                failureMessage: MuxtermI18n.shared.tr(.errorCommandFailed)
+            )
         } else {
             content.paneLayout.toggleFullscreen(paneId: pane)
         }
@@ -1073,6 +1081,64 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     func performWhenForegroundReady(_ action: @escaping () -> Void) {
         guard !isClosing else { return }
         action()
+    }
+
+    private var activeSceneWorkspaceID: String? {
+        guard let activeKey = sceneStack.activeKey,
+              let scene = sceneStack.scenes[activeKey]
+        else {
+            return nil
+        }
+        return scene.workspaceID
+    }
+
+    /// Enqueue a UI task without synchronously touching the Core handle.
+    /// `pollOnce()` is the only consumer of this queue.
+    @discardableResult
+    private func enqueueCoreTask(
+        _ task: MuxTask,
+        failureMessage: String
+    ) -> Bool {
+        guard !isClosing else { return false }
+        commandQueue.enqueue(QueuedMuxCommand(
+            workspaceID: activeSceneWorkspaceID,
+            task: QueuedMuxTask(
+                type: task.type,
+                targetPane: task.targetPane,
+                targetTab: task.targetTab,
+                dir: task.dir,
+                name: task.name,
+                coalescing: task.type == TASK_SWITCH_TAB ? .switchTab : .none
+            ),
+            failureMessage: failureMessage
+        ))
+        return true
+    }
+
+    /// Dispatch queued commands at the same serialized boundary that drains
+    /// workspace events.  Explicit workspace dispatch keeps a queued command
+    /// attached to its originating scene after a subsequent scene switch.
+    private func flushCoreCommandQueue() {
+        let commands = commandQueue.drain()
+        guard !commands.isEmpty else { return }
+        for command in commands {
+            let task = MuxTask(
+                type: command.task.type,
+                targetPane: command.task.targetPane,
+                targetTab: command.task.targetTab,
+                dir: command.task.dir,
+                name: command.task.name
+            )
+            let result: Int32
+            if let workspaceID = command.workspaceID {
+                result = bridge.execute(task: task, workspaceID: workspaceID)
+            } else {
+                result = bridge.execute(task: task)
+            }
+            if result != 0 {
+                reportStatusError(command.failureMessage)
+            }
+        }
     }
 
     var foregroundActivationIsPending: Bool {
@@ -1537,12 +1603,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         if let resolvedTab {
             requestSwitchTab(resolvedTab)
         }
-        if bridge.execute(task: MuxTask.switchPane(paneId)) != 0 {
-            reportStatusError(
-                MuxtermI18n.shared.tr(.errorSwitchPane, arguments: ["id": "\(paneId)"])
+        _ = enqueueCoreTask(
+            MuxTask.switchPane(paneId),
+            failureMessage: MuxtermI18n.shared.tr(
+                .errorSwitchPane,
+                arguments: ["id": "\(paneId)"]
             )
-            return
-        }
+        )
         // select-pane 的状态事件可能被 Surface catch-up 推迟；先乐观
         // 更新快照和焦点，与 nextPane 同语义。权威 snapshot 下一轮校准。
         lastSnapshot.activePane = paneId
@@ -2319,9 +2386,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             return
         }
         let departingPane = activePaneID
-        let departingLatest = departingPane.map {
-            bridge.paneLatestLineSeq(paneId: $0)
-        }
         tabSwitchGate.request(tab: tabId)
         content.statusBar.markCurrentWindow(tabId)
         let cachedTargetPane: UInt32?
@@ -2332,9 +2396,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             cachedTargetPane = nil
             needsLayoutReload = true
         }
-        guard bridge.execute(task: MuxTask.switchTab(tabId)) == 0 else {
+        guard enqueueCoreTask(
+            MuxTask.switchTab(tabId),
+            failureMessage: MuxtermI18n.shared.tr(
+                .errorSwitchTab,
+                arguments: ["id": "\(tabId)"]
+            )
+        ) else {
             tabSwitchGate = TabSwitchGate()
-            reportStatusError(MuxtermI18n.shared.tr(.errorSwitchTab, arguments: ["id": "\(tabId)"]))
             return
         }
         // A tab switch with no cached tree has no pane to select yet. Clear
@@ -2346,7 +2415,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             paneId: cachedTargetPane
         )
         if let departingPane {
-            recordLastSeen(for: departingPane, latest: departingLatest)
+            markLastSeenPending(for: departingPane)
         }
         // 等 STATE_ACTIVE_TAB_CHANGED 到达后再用权威 snapshot 对齐；
         // 缓存命中时画面已经切过去了。
@@ -2356,7 +2425,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 返回 true 表示第一次进入且本地 layout 还没齐，需要走全量 refreshUI。
     @discardableResult
     private func applyCachedTabSwitch(_ tabId: UInt32) -> Bool {
-        // requestSwitchTab 已在命令成功后记录了离开基线；同一个
+        // requestSwitchTab 已在命令入队时登记待解析的离开基线；同一个
         // STATE_ACTIVE_TAB_CHANGED 只是确认事件，不能再次用事件到达时
         // 更晚的 latest 覆盖原始离开位置。
         let isRequestedSwitch = tabSwitchGate.pendingTab == tabId
@@ -2408,10 +2477,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         guard let pane = lastSnapshot.panes.first(where: \.isActive)?.id ?? lastSnapshot.panes.first?.id else {
             return
         }
-        guard bridge.execute(task: MuxTask.splitPane(targetPane: pane, horizontal: horizontal)) == 0 else {
-            reportStatusError(MuxtermI18n.shared.tr(.errorSplitPane, arguments: ["id": "\(pane)"]))
-            return
-        }
+        _ = enqueueCoreTask(
+            MuxTask.splitPane(targetPane: pane, horizontal: horizontal),
+            failureMessage: MuxtermI18n.shared.tr(
+                .errorSplitPane,
+                arguments: ["id": "\(pane)"]
+            )
+        )
         needsLayoutReload = true
     }
 
@@ -2436,10 +2508,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             offset: offset
         ) else { return }
 
-        guard bridge.execute(task: MuxTask.switchPane(target)) == 0 else {
-            reportStatusError(MuxtermI18n.shared.tr(.errorSwitchPane, arguments: ["id": "\(target)"]))
-            return
-        }
+        _ = enqueueCoreTask(
+            MuxTask.switchPane(target),
+            failureMessage: MuxtermI18n.shared.tr(
+                .errorSwitchPane,
+                arguments: ["id": "\(target)"]
+            )
+        )
 
         // tmux 选择另一个 pane 会自动退出 zoom；重新对目标 pane 执行
         // `resize-pane -Z`，让“切换的是另一个 pane 的全屏状态”成立。
@@ -2448,11 +2523,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 layoutPaneIDs: snap.layout?.leafPaneIDs() ?? [],
                 paneIDs: snapshotPaneIDs
             ) != nil
-            if wasZoomed,
-               bridge.execute(task: MuxTask.togglePaneFullscreen(target)) != 0
-            {
-                reportStatusError(
-                    MuxtermI18n.shared.tr(.errorCommandFailed)
+            if wasZoomed {
+                _ = enqueueCoreTask(
+                    MuxTask.togglePaneFullscreen(target),
+                    failureMessage: MuxtermI18n.shared.tr(.errorCommandFailed)
                 )
             }
             if wasZoomed {
@@ -3035,10 +3109,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func closeTab(_ tabId: UInt32) {
-        guard bridge.execute(task: MuxTask.closeTab(tabId)) == 0 else {
-            reportStatusError(MuxtermI18n.shared.tr(.errorCloseTab, arguments: ["id": "\(tabId)"]))
-            return
-        }
+        _ = enqueueCoreTask(
+            MuxTask.closeTab(tabId),
+            failureMessage: MuxtermI18n.shared.tr(
+                .errorCloseTab,
+                arguments: ["id": "\(tabId)"]
+            )
+        )
         // 等 TabClosed / ActiveTabChanged。点击当拍不要拆当前树。
     }
 
@@ -3142,6 +3219,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     func pollOnce() {
         guard !isClosing else { return }
         guard !sharedCoreOperationInFlight else { return }
+        // UI actions only enqueue.  This is the single command boundary next
+        // to the single workspace-event drain, so Core never races a click
+        // handler or needs a frontend lock.
+        flushCoreCommandQueue()
         // 后台排空的事件必须先于 active bridge 的新事件交付。否则切回
         // Workspace 后，新的 PaneOutput 可能越过尚未应用的旧队列。
         if flushActiveSurfaceCatchUpBeforePoll() {
@@ -3748,6 +3829,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         unifiedPanel.refreshLocalization()
         content.refreshLocalization()
         refreshUI()
+    }
+
+    /// Mark a departing pane without querying Core from the tab click path.
+    /// The event pump resolves the sequence at the next safe drain boundary.
+    private func markLastSeenPending(for paneId: UInt32) {
+        guard lastSeenLineSeq[paneId] == nil else { return }
+        pendingLastSeenPanes.insert(paneId)
     }
 
     /// 记录离开 pane 时最后一条稳定终端行；回到该 pane 后若 seq 前进，
