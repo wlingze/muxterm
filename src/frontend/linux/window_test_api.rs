@@ -603,6 +603,11 @@ impl AppWindow {
         activity_snapshot(&self._state.borrow()).blocked_count
     }
 
+    /// 测试用：读取当前 Core activity 快照，诊断跨 workspace 的注意力状态。
+    pub fn test_attention_snapshot(&self) -> crate::frontend::ffi_client::ClientActivitySnapshot {
+        activity_snapshot(&self._state.borrow())
+    }
+
     /// 测试用：窗口标题（M3.4 接红点前缀，当前返回原始标题）。
     pub fn test_window_title(&self) -> String {
         self.window
