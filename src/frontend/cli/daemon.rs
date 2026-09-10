@@ -331,6 +331,7 @@ fn handle_connection(
     let mut writer = &stream;
 
     let mut should_kill = false;
+    let mut first_request = true;
     for line in reader.lines() {
         // 客户端发完一个请求后即关闭连接；连接关闭导致的读错误不应让 daemon 退出。
         let line = match line {
@@ -358,7 +359,8 @@ fn handle_connection(
             should_kill = true;
         }
 
-        let resp = execute_request(&req, state);
+        let resp = execute_request(&req, state, first_request);
+        first_request = false;
 
         let resp_json = serde_json::to_string(&resp)
             .unwrap_or_else(|_| serde_json::to_string(&Response::err("响应序列化失败")).unwrap());
@@ -374,8 +376,11 @@ fn handle_connection(
 }
 
 /// 执行单个请求，返回 Response。
-fn execute_request(req: &Request, state: &mut DaemonState) -> Response {
-    let mut events = match state.drain_events(false) {
+fn execute_request(req: &Request, state: &mut DaemonState, first_request: bool) -> Response {
+    // Each short-lived daemon client needs a control baseline.  The daemon
+    // owns one event queue, so a later client cannot reconstruct its tabs and
+    // panes from deltas consumed by an earlier client.
+    let mut events = match state.drain_events(first_request) {
         Ok(events) => events,
         Err(error) => return Response::err(format!("轮询 daemon 事件失败: {error}")),
     };
@@ -385,6 +390,24 @@ fn execute_request(req: &Request, state: &mut DaemonState) -> Response {
     match state.drain_events(false) {
         Ok(after) => events.extend(after),
         Err(error) => return Response::err(format!("轮询 daemon 事件失败: {error}")),
+    }
+
+    // A short-lived client may have consumed the live output event in an
+    // earlier request.  A capture request doubles as the explicit render
+    // baseline barrier: return the current raw bytes as a pane_snapshot so
+    // the next client can reconstruct the pane without relying on the
+    // formatted query string.
+    if let CliCommand::CapturePane { target, .. } = &req.command {
+        let pane_id = target.map(|pane| pane.0).or_else(|| state.active_pane_id());
+        if let Some(pane_id) = pane_id {
+            events.push(serde_json::json!({
+                "kind": "pane_snapshot",
+                "pane_id": pane_id,
+                "data": state
+                    .client
+                    .get_workspace_pane_output(&state.workspace_id, pane_id),
+            }));
+        }
     }
 
     let output = if is_query(&req.command) {
