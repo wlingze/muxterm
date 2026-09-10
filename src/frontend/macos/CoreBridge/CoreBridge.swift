@@ -64,6 +64,15 @@ struct StateChange: Equatable {
     var isPoolChanged: Bool { type == STATE_POOL_CHANGED }
 }
 
+/// 从 workspace-event FFI 复制出的带身份事件。
+///
+/// WorkspaceId 在 Core 事件边界保留，前端事件泵不需要依赖当前激活的
+/// bridge 或重新猜测事件属于哪个场景。
+struct WorkspaceStateChange: Equatable {
+    let workspaceID: String
+    let event: StateChange
+}
+
 /// Runtime-neutral payload carried by `STATE_PANE_AGENT_CHANGED`.
 private struct CorePaneAgentEvent: Decodable {
     let agent: CorePaneAgentPayload?
@@ -218,7 +227,36 @@ private struct WorkspaceCandidatesResponse: Decodable {
     let workspaces: [CoreWorkspaceCandidate]?
 }
 
-private struct CoreCanonicalTarget: Decodable {
+/// Core-owned live workspace descriptor.  The workspace id remains the
+/// routing key for all scene and command operations; the frontend never
+/// derives it from a connection key or a runtime name.
+struct CoreWorkspaceInfo: Decodable, Equatable {
+    let id: String
+    let name: String
+    let runtime: String
+    let active: Bool
+    let resolvedTarget: CoreResolvedTarget?
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, runtime, active
+        case resolvedTarget = "resolved_target"
+    }
+}
+
+/// Result of opening a workspace in an existing Core handle.
+struct CoreWorkspaceOpenResult: Equatable {
+    let id: String
+    let name: String
+    let target: TargetConfig
+}
+
+private struct WorkspaceListResponse: Decodable {
+    let ok: Bool
+    let error: String?
+    let workspaces: [CoreWorkspaceInfo]?
+}
+
+struct CoreCanonicalTarget: Decodable, Equatable {
     let name: String
     let runtime: String
     let transport: String
@@ -250,7 +288,7 @@ private struct CoreCanonicalTarget: Decodable {
     }
 }
 
-private struct CoreResolvedTarget: Decodable {
+struct CoreResolvedTarget: Decodable, Equatable {
     let canonical: CoreCanonicalTarget
 }
 
@@ -458,6 +496,10 @@ struct FrameSnapshot {
 /// 与 TUI 的共享 `FfiClient`/view-model 路径保持同一套 FFI 语义。
 final class CoreBridge {
     private var handle: OpaquePointer?
+    /// Frontend routing context for legacy-shaped convenience methods.  It is
+    /// not a Core activation call; workspace-scoped C functions remain the
+    /// source of truth and switching this value is local and synchronous.
+    private(set) var activeWorkspaceID: String?
     /// 当前连接的后端类型；tmux/ssh 都通过控制 client 同步整体尺寸。
     let backendType: String
     /// tmux `-L` socket 名（可选）。
@@ -477,6 +519,8 @@ final class CoreBridge {
     /// connect 后先排空的 bootstrap 事件。agent registry 可立即拿到初始
     /// 状态，但 Surface/拓扑事件仍按原顺序交给正常轮询消费者。
     private var pendingEvents: [StateChange] = []
+    /// 连接 bootstrap 阶段复制出的带 WorkspaceId 事件。
+    private var pendingWorkspaceEvents: [WorkspaceStateChange] = []
     /// Core has already normalized these snapshots; the platform only keeps a
     /// pane-indexed registry so read agents remain visible in the sidebar.
     private var structuredAgents = StructuredAgentRegistry()
@@ -672,6 +716,7 @@ final class CoreBridge {
         self.session = session
         self.startDirectory = startDirectory
         self.resolvedTargetConfig = resolvedTargetConfig
+        self.activeWorkspaceID = resolvedTargetConfig?.workspaceID
     }
 
     /// 创建 handle 并 connect。
@@ -873,6 +918,12 @@ final class CoreBridge {
     @discardableResult
     func attentionOnBecameVisible(paneId: UInt32) -> Int32 {
         guard let handle else { return -1 }
+        if let activeWorkspaceID {
+            return attentionOnBecameVisible(
+                workspaceID: activeWorkspaceID,
+                paneId: paneId
+            )
+        }
         return muxterm_attention_on_became_visible(handle, paneId)
     }
 
@@ -880,6 +931,9 @@ final class CoreBridge {
     @discardableResult
     func attentionAcknowledge(paneId: UInt32) -> Int32 {
         guard let handle else { return -1 }
+        if let activeWorkspaceID {
+            return attentionAcknowledge(workspaceID: activeWorkspaceID, paneId: paneId)
+        }
         return muxterm_attention_acknowledge(handle, paneId)
     }
 
@@ -887,6 +941,13 @@ final class CoreBridge {
     @discardableResult
     func attentionSetProcessName(paneId: UInt32, name: String?) -> Int32 {
         guard let handle else { return -1 }
+        if let activeWorkspaceID {
+            return attentionSetProcessName(
+                workspaceID: activeWorkspaceID,
+                paneId: paneId,
+                name: name
+            )
+        }
         return Self.withOptionalCString(name) { namePtr in
             muxterm_attention_set_process_name(handle, paneId, namePtr)
         }
@@ -896,12 +957,69 @@ final class CoreBridge {
     @discardableResult
     func attentionMute(paneId: UInt32, seconds: UInt64) -> Int32 {
         guard let handle else { return -1 }
+        if let activeWorkspaceID {
+            return attentionMute(
+                workspaceID: activeWorkspaceID,
+                paneId: paneId,
+                seconds: seconds
+            )
+        }
         return muxterm_attention_mute(handle, paneId, seconds)
+    }
+
+    /// 标记指定 Workspace 的 pane 成为前台可见。
+    @discardableResult
+    func attentionOnBecameVisible(workspaceID: String, paneId: UInt32) -> Int32 {
+        guard let handle else { return -1 }
+        return workspaceID.withCString { workspace in
+            muxterm_workspace_attention_on_became_visible(handle, workspace, paneId)
+        }
+    }
+
+    /// 显式确认指定 Workspace 的 pane 通知已读。
+    @discardableResult
+    func attentionAcknowledge(workspaceID: String, paneId: UInt32) -> Int32 {
+        guard let handle else { return -1 }
+        return workspaceID.withCString { workspace in
+            muxterm_workspace_attention_acknowledge(handle, workspace, paneId)
+        }
+    }
+
+    /// 更新指定 Workspace 的 pane 进程名。
+    @discardableResult
+    func attentionSetProcessName(
+        workspaceID: String,
+        paneId: UInt32,
+        name: String?
+    ) -> Int32 {
+        guard let handle else { return -1 }
+        return workspaceID.withCString { workspace in
+            Self.withOptionalCString(name) { namePtr in
+                muxterm_workspace_attention_set_process_name(
+                    handle,
+                    workspace,
+                    paneId,
+                    namePtr
+                )
+            }
+        }
+    }
+
+    /// 静音指定 Workspace 的 pane 一段时间（秒）。
+    @discardableResult
+    func attentionMute(workspaceID: String, paneId: UInt32, seconds: UInt64) -> Int32 {
+        guard let handle else { return -1 }
+        return workspaceID.withCString { workspace in
+            muxterm_workspace_attention_mute(handle, workspace, paneId, seconds)
+        }
     }
 
     /// 读取某 pane 的 viewport 滚动偏移（0 = 底部/最新）。
     func paneViewport(paneId: UInt32) -> Int32 {
         guard let handle else { return -1 }
+        if let activeWorkspaceID {
+            return paneViewport(workspaceID: activeWorkspaceID, paneId: paneId)
+        }
         return muxterm_pane_viewport(handle, paneId)
     }
 
@@ -909,21 +1027,79 @@ final class CoreBridge {
     @discardableResult
     func setPaneViewport(paneId: UInt32, offset: UInt32) -> Int32 {
         guard let handle else { return -1 }
+        if let activeWorkspaceID {
+            return setPaneViewport(
+                workspaceID: activeWorkspaceID,
+                paneId: paneId,
+                offset: offset
+            )
+        }
         return muxterm_set_pane_viewport(handle, paneId, offset)
     }
 
     /// 还能往历史上滚的最大 offset（0 = 没有离屏历史；<0 = err）。
     func paneHistoryMaxOffset(paneId: UInt32, rows: UInt32) -> Int32 {
         guard let handle else { return -1 }
+        if let activeWorkspaceID {
+            return paneHistoryMaxOffset(
+                workspaceID: activeWorkspaceID,
+                paneId: paneId,
+                rows: rows
+            )
+        }
         return muxterm_pane_history_max_offset(handle, paneId, rows)
+    }
+
+    /// 读取指定 Workspace 的 pane viewport 滚动偏移。
+    func paneViewport(workspaceID: String, paneId: UInt32) -> Int32 {
+        guard let handle else { return -1 }
+        return workspaceID.withCString { workspace in
+            muxterm_workspace_pane_viewport(handle, workspace, paneId)
+        }
+    }
+
+    /// 设置指定 Workspace 的 pane viewport 滚动偏移。
+    @discardableResult
+    func setPaneViewport(workspaceID: String, paneId: UInt32, offset: UInt32) -> Int32 {
+        guard let handle else { return -1 }
+        return workspaceID.withCString { workspace in
+            muxterm_workspace_set_pane_viewport(handle, workspace, paneId, offset)
+        }
+    }
+
+    /// 读取指定 Workspace 的 pane 最大历史 offset。
+    func paneHistoryMaxOffset(workspaceID: String, paneId: UInt32, rows: UInt32) -> Int32 {
+        guard let handle else { return -1 }
+        return workspaceID.withCString { workspace in
+            muxterm_workspace_pane_history_max_offset(handle, workspace, paneId, rows)
+        }
     }
 
     /// 读取 OSC 133 命令刻度 JSON。
     func paneCommandMarksJSON(paneId: UInt32) -> String? {
         guard let handle else { return nil }
+        if let activeWorkspaceID {
+            return paneCommandMarksJSON(workspaceID: activeWorkspaceID, paneId: paneId)
+        }
         guard let p = muxterm_pane_command_marks_json(handle, paneId) else { return nil }
         defer { muxterm_free_string(p) }
         return String(cString: p)
+    }
+
+    /// 读取指定 Workspace 的 OSC 133 命令刻度 JSON。
+    func paneCommandMarksJSON(workspaceID: String, paneId: UInt32) -> String? {
+        guard let handle else { return nil }
+        return workspaceID.withCString { workspace in
+            guard let p = muxterm_workspace_pane_command_marks_json(
+                handle,
+                workspace,
+                paneId
+            ) else {
+                return nil
+            }
+            defer { muxterm_free_string(p) }
+            return String(cString: p)
+        }
     }
 
     /// 读取 OSC 133 命令时间线；已淘汰的刻度由 core 直接移除，
@@ -939,16 +1115,58 @@ final class CoreBridge {
         return response.marks ?? []
     }
 
+    /// 读取指定 Workspace 的 OSC 133 命令时间线。
+    func paneCommandMarks(workspaceID: String, paneId: UInt32) -> [CoreCommandMark] {
+        guard let json = paneCommandMarksJSON(workspaceID: workspaceID, paneId: paneId),
+              let data = json.data(using: .utf8),
+              let response = try? JSONDecoder().decode(CoreCommandMarksResponse.self, from: data),
+              response.ok
+        else {
+            return []
+        }
+        return response.marks ?? []
+    }
+
     /// 读取某 pane 最新稳定行 ID。
     func paneLatestLineSeq(paneId: UInt32) -> Int64 {
         guard let handle else { return -1 }
+        if let activeWorkspaceID {
+            return paneLatestLineSeq(workspaceID: activeWorkspaceID, paneId: paneId)
+        }
         return muxterm_pane_latest_line_seq(handle, paneId)
+    }
+
+    /// 读取指定 Workspace 的 pane 最新稳定行 ID。
+    func paneLatestLineSeq(workspaceID: String, paneId: UInt32) -> Int64 {
+        guard let handle else { return -1 }
+        return workspaceID.withCString { workspace in
+            muxterm_workspace_pane_latest_line_seq(handle, workspace, paneId)
+        }
     }
 
     /// 搜索命中 seq 对应的 viewport 偏移（0 = 可见屏 / 未找到；-1 = err）。
     func paneViewportOffsetForSeq(paneId: UInt32, seq: UInt64) -> Int32 {
         guard let handle else { return -1 }
+        if let activeWorkspaceID {
+            return paneViewportOffsetForSeq(
+                workspaceID: activeWorkspaceID,
+                paneId: paneId,
+                seq: seq
+            )
+        }
         return muxterm_pane_viewport_for_seq(handle, paneId, seq)
+    }
+
+    /// 读取指定 Workspace 的 seq 对应 viewport 偏移。
+    func paneViewportOffsetForSeq(
+        workspaceID: String,
+        paneId: UInt32,
+        seq: UInt64
+    ) -> Int32 {
+        guard let handle else { return -1 }
+        return workspaceID.withCString { workspace in
+            muxterm_workspace_pane_viewport_for_seq(handle, workspace, paneId, seq)
+        }
     }
 
     /// 按 pane id 反查所在 tab（注意力跳转没有带 tab_id 时用）。
@@ -961,12 +1179,43 @@ final class CoreBridge {
         return nil
     }
 
+    /// 按 pane id 反查指定 Workspace 的 tab。
+    func tabId(workspaceID: String, containingPane paneId: UInt32) -> UInt32? {
+        for tab in getTabs(workspaceID: workspaceID) {
+            if getPanes(workspaceID: workspaceID, tabId: tab.id)
+                .contains(where: { $0.id == paneId })
+            {
+                return tab.id
+            }
+        }
+        return nil
+    }
+
     /// 读取某 pane 最近 n 行文本 JSON（`muxterm_pane_last_n_lines`）。
     func paneLastNLinesJSON(paneId: UInt32, n: UInt32) -> String? {
         guard let handle else { return nil }
+        if let activeWorkspaceID {
+            return paneLastNLinesJSON(
+                workspaceID: activeWorkspaceID,
+                paneId: paneId,
+                n: n
+            )
+        }
         guard let p = muxterm_pane_last_n_lines(handle, paneId, n) else { return nil }
         defer { muxterm_free_string(p) }
         return String(cString: p)
+    }
+
+    /// 读取指定 Workspace 的 pane 最近 n 行文本 JSON。
+    func paneLastNLinesJSON(workspaceID: String, paneId: UInt32, n: UInt32) -> String? {
+        guard let handle else { return nil }
+        return workspaceID.withCString { workspace in
+            guard let p = muxterm_workspace_pane_last_n_lines(handle, workspace, paneId, n) else {
+                return nil
+            }
+            defer { muxterm_free_string(p) }
+            return String(cString: p)
+        }
     }
 
     // MARK: - Core configuration transactions
@@ -1027,8 +1276,96 @@ final class CoreBridge {
     @discardableResult
     func execute(task: MuxTask) -> Int32 {
         guard let handle else { return -1 }
+        if let activeWorkspaceID {
+            return execute(task: task, workspaceID: activeWorkspaceID)
+        }
         return withCTask(task) { cTask in
             muxterm_execute(handle, cTask)
+        }
+    }
+
+    /// Change only the frontend's routing context for convenience methods.
+    /// This does not activate or query Core, so scene switching remains local.
+    func selectWorkspace(_ workspaceID: String?) {
+        activeWorkspaceID = workspaceID
+    }
+
+    /// List all live workspaces without changing Core's active workspace.
+    /// The response is decoded into owned values before the C string is freed.
+    func workspaceList() -> [CoreWorkspaceInfo] {
+        guard let handle else { return [] }
+        do {
+            let response: WorkspaceListResponse = try Self.decodeDiscoveryJSON(
+                muxterm_workspace_list(handle)
+            )
+            guard response.ok else { return [] }
+            return response.workspaces ?? []
+        } catch {
+            pendingError = error.localizedDescription
+            return []
+        }
+    }
+
+    /// Open a target in this handle's WorkspacePool.  New workspaces share the
+    /// existing Core event stream; the frontend does not create another C
+    /// handle for a second scene.
+    func openWorkspace(
+        target: TargetConfig,
+        intent: CoreTargetOpenIntent
+    ) throws -> CoreWorkspaceOpenResult {
+        guard let handle else {
+            throw CoreBridgeDiscoveryError.message("Core handle unavailable")
+        }
+        let data = try JSONEncoder().encode(CoreTargetRequest(target))
+        guard let json = String(data: data, encoding: .utf8) else {
+            throw CoreBridgeDiscoveryError.message(
+                MuxtermI18n.shared.tr(.errorCoreDiscoveryInvalidUtf8)
+            )
+        }
+        let pointer = json.withCString { targetPtr in
+            intent.rawValue.withCString { intentPtr in
+                muxterm_workspace_open_target_json(handle, targetPtr, intentPtr)
+            }
+        }
+        let response: OpenTargetResponse = try Self.decodeDiscoveryJSON(pointer)
+        guard response.ok else {
+            throw CoreBridgeDiscoveryError.message(
+                response.error ?? MuxtermI18n.shared.tr(.errorCoreDiscoveryNoResponse)
+            )
+        }
+        guard let id = response.id, !id.isEmpty else {
+            throw CoreBridgeDiscoveryError.message("Core did not return a workspace id")
+        }
+        var resolved = response.resolvedTarget?.canonical.targetConfig ?? target
+        if resolved.workspaceID == nil {
+            resolved.workspaceID = id
+        }
+        return CoreWorkspaceOpenResult(
+            id: id,
+            name: response.name ?? resolved.name,
+            target: resolved
+        )
+    }
+
+    /// Close one workspace in the Core-owned pool without shutting down the
+    /// shared product handle.
+    @discardableResult
+    func closeWorkspace(workspaceID: String) -> Int32 {
+        guard let handle else { return -1 }
+        return workspaceID.withCString { workspace in
+            muxterm_workspace_close(handle, workspace)
+        }
+    }
+
+    /// Execute a task against a specific workspace without changing the
+    /// Core-owned active workspace.
+    @discardableResult
+    func execute(task: MuxTask, workspaceID: String) -> Int32 {
+        guard let handle else { return -1 }
+        return workspaceID.withCString { workspace in
+            withCTask(task) { cTask in
+                muxterm_execute_workspace(handle, workspace, cTask)
+            }
         }
     }
 
@@ -1037,9 +1374,9 @@ final class CoreBridge {
     private func primeInitialEvents(maxPasses: Int = 4) {
         guard handle != nil else { return }
         for _ in 0..<maxPasses {
-            let events = pollFFIEvents(maxCount: 64)
+            let events = pollWorkspaceFFIEvents(maxCount: 64)
             guard !events.isEmpty else { break }
-            pendingEvents.append(contentsOf: events)
+            pendingWorkspaceEvents.append(contentsOf: events)
             if events.count < 64 { break }
         }
     }
@@ -1060,27 +1397,58 @@ final class CoreBridge {
         }
         guard n > 0 else { return [] }
 
-        let events = buf.prefix(Int(n)).map { c in
-            if c.type_ == STATE_BACKEND_STATUS {
-                lastStatus = c.pane_id
-            }
-            let data: Data
-            if c.data != nil && c.data_len > 0 {
-                data = Data(bytes: c.data, count: c.data_len)
-            } else {
-                data = Data()
-            }
-            return StateChange(
-                type: c.type_,
-                paneId: c.pane_id,
-                tabId: c.tab_id,
-                windowId: c.window_id,
-                data: data,
-                name: Self.string(from: c.name)
-            )
+        let events = buf.prefix(Int(n)).map(Self.decodeStateChange)
+        if let status = events.last(where: \.isBackendStatus) {
+            lastStatus = status.paneId
         }
         updateStructuredAgents(with: events)
         return events
+    }
+
+    /// 从 workspace-event FFI 复制一批带 WorkspaceId 的 owned 事件。
+    private func pollWorkspaceFFIEvents(maxCount: Int) -> [WorkspaceStateChange] {
+        guard let handle else { return [] }
+        let count = min(max(maxCount, 1), 64)
+        var buf = Array(repeating: CWorkspaceStateChange(), count: count)
+        let n = muxterm_poll_workspace_events(handle, &buf, Int32(buf.count))
+        if n < 0 {
+            if !pollFailureReported {
+                pendingError = MuxtermI18n.shared.tr(.errorCorePoll)
+                pollFailureReported = true
+            }
+            return []
+        }
+        guard n > 0 else { return [] }
+
+        let events = buf.prefix(Int(n)).map { c in
+            WorkspaceStateChange(
+                workspaceID: Self.string(from: c.workspace_id),
+                event: Self.decodeStateChange(c.event)
+            )
+        }
+        if let status = events.last(where: { $0.event.isBackendStatus }) {
+            lastStatus = status.event.paneId
+        }
+        updateStructuredAgents(with: events.map(\.event))
+        return events
+    }
+
+    /// 将 CStateChange 的 borrowed 指针复制为 Swift owned DTO。
+    private static func decodeStateChange(_ c: CStateChange) -> StateChange {
+        let data: Data
+        if c.data != nil && c.data_len > 0 {
+            data = Data(bytes: c.data, count: c.data_len)
+        } else {
+            data = Data()
+        }
+        return StateChange(
+            type: c.type_,
+            paneId: c.pane_id,
+            tabId: c.tab_id,
+            windowId: c.window_id,
+            data: data,
+            name: Self.string(from: c.name)
+        )
     }
 
     private func updateStructuredAgents(with events: [StateChange]) {
@@ -1108,13 +1476,34 @@ final class CoreBridge {
     /// 长时间占用它的 CoreBridge。默认值保持前台原有批量。
     func pollEvents(maxCount: Int = 64) -> [StateChange] {
         let count = min(max(maxCount, 1), 64)
-        var events = Array(pendingEvents.prefix(count))
+        var events = pendingWorkspaceEvents.prefix(count).map(\.event)
         if !events.isEmpty {
-            pendingEvents.removeFirst(events.count)
+            pendingWorkspaceEvents.removeFirst(events.count)
+        }
+        if events.count < count {
+            let legacy = pendingEvents.prefix(count - events.count)
+            events.append(contentsOf: legacy)
+            if !legacy.isEmpty {
+                pendingEvents.removeFirst(legacy.count)
+            }
         }
         let remaining = count - events.count
         if remaining > 0 {
             events.append(contentsOf: pollFFIEvents(maxCount: remaining))
+        }
+        return events
+    }
+
+    /// 唯一的 workspace-event 消费入口；所有事件在返回前已复制成 owned DTO。
+    func pollWorkspaceEvents(maxCount: Int = 64) -> [WorkspaceStateChange] {
+        let count = min(max(maxCount, 1), 64)
+        var events = Array(pendingWorkspaceEvents.prefix(count))
+        if !events.isEmpty {
+            pendingWorkspaceEvents.removeFirst(events.count)
+        }
+        let remaining = count - events.count
+        if remaining > 0 {
+            events.append(contentsOf: pollWorkspaceFFIEvents(maxCount: remaining))
         }
         return events
     }
@@ -1134,6 +1523,13 @@ final class CoreBridge {
     @discardableResult
     func sendInput(paneId: UInt32, data: Data) -> Int32 {
         guard let handle, !data.isEmpty else { return 0 }
+        if let activeWorkspaceID {
+            return sendInput(
+                workspaceID: activeWorkspaceID,
+                paneId: paneId,
+                data: data
+            )
+        }
         return data.withUnsafeBytes { raw in
             let ptr = raw.bindMemory(to: UInt8.self).baseAddress
             return muxterm_send_input(handle, paneId, ptr, raw.count)
@@ -1144,9 +1540,52 @@ final class CoreBridge {
     @discardableResult
     func sendInputQuiet(paneId: UInt32, data: Data) -> Int32 {
         guard let handle, !data.isEmpty else { return 0 }
+        if let activeWorkspaceID {
+            return sendInputQuiet(
+                workspaceID: activeWorkspaceID,
+                paneId: paneId,
+                data: data
+            )
+        }
         return data.withUnsafeBytes { raw in
             let ptr = raw.bindMemory(to: UInt8.self).baseAddress
             return muxterm_send_input_quiet(handle, paneId, ptr, raw.count)
+        }
+    }
+
+    /// 向指定 Workspace 的 pane 发送原始输入，不改变 Core 的 active workspace。
+    @discardableResult
+    func sendInput(workspaceID: String, paneId: UInt32, data: Data) -> Int32 {
+        guard let handle, !data.isEmpty else { return 0 }
+        return workspaceID.withCString { workspace in
+            data.withUnsafeBytes { raw in
+                let ptr = raw.bindMemory(to: UInt8.self).baseAddress
+                return muxterm_workspace_send_input(
+                    handle,
+                    workspace,
+                    paneId,
+                    ptr,
+                    raw.count
+                )
+            }
+        }
+    }
+
+    /// 向指定 Workspace 的 pane 发送静默输入，不触发 attention on_user_input。
+    @discardableResult
+    func sendInputQuiet(workspaceID: String, paneId: UInt32, data: Data) -> Int32 {
+        guard let handle, !data.isEmpty else { return 0 }
+        return workspaceID.withCString { workspace in
+            data.withUnsafeBytes { raw in
+                let ptr = raw.bindMemory(to: UInt8.self).baseAddress
+                return muxterm_workspace_send_input_quiet(
+                    handle,
+                    workspace,
+                    paneId,
+                    ptr,
+                    raw.count
+                )
+            }
         }
     }
 
@@ -1176,6 +1615,14 @@ final class CoreBridge {
     @discardableResult
     func resizePane(paneId: UInt32, cols: UInt16, rows: UInt16) -> Int32 {
         guard let handle, cols > 0, rows > 0 else { return -1 }
+        if let activeWorkspaceID {
+            return resizePane(
+                workspaceID: activeWorkspaceID,
+                paneId: paneId,
+                cols: cols,
+                rows: rows
+            )
+        }
         return muxterm_resize_pane(handle, paneId, cols, rows)
     }
 
@@ -1183,6 +1630,9 @@ final class CoreBridge {
     @discardableResult
     func resizeClient(cols: UInt16, rows: UInt16) -> Int32 {
         guard let handle, cols > 0, rows > 0 else { return -1 }
+        if let activeWorkspaceID {
+            return resizeClient(workspaceID: activeWorkspaceID, cols: cols, rows: rows)
+        }
         return muxterm_resize_client(handle, cols, rows)
     }
 
@@ -1190,12 +1640,61 @@ final class CoreBridge {
     @discardableResult
     func resizePaneAxis(paneId: UInt32, horizontal: Bool, size: UInt16) -> Int32 {
         guard let handle, size > 0 else { return -1 }
+        if let activeWorkspaceID {
+            return resizePaneAxis(
+                workspaceID: activeWorkspaceID,
+                paneId: paneId,
+                horizontal: horizontal,
+                size: size
+            )
+        }
         let axis = horizontal ? DIR_HORIZONTAL : DIR_VERTICAL
         return muxterm_resize_pane_axis(handle, paneId, axis, size)
     }
 
+    /// 调整指定 Workspace 的 pane 尺寸，不改变 Core 的 active workspace。
+    @discardableResult
+    func resizePane(
+        workspaceID: String,
+        paneId: UInt32,
+        cols: UInt16,
+        rows: UInt16
+    ) -> Int32 {
+        guard let handle, cols > 0, rows > 0 else { return -1 }
+        return workspaceID.withCString { workspace in
+            muxterm_workspace_resize_pane(handle, workspace, paneId, cols, rows)
+        }
+    }
+
+    /// 调整指定 Workspace 的控制 client 尺寸。
+    @discardableResult
+    func resizeClient(workspaceID: String, cols: UInt16, rows: UInt16) -> Int32 {
+        guard let handle, cols > 0, rows > 0 else { return -1 }
+        return workspaceID.withCString { workspace in
+            muxterm_workspace_resize_client(handle, workspace, cols, rows)
+        }
+    }
+
+    /// 调整指定 Workspace 的 pane 单一轴尺寸。
+    @discardableResult
+    func resizePaneAxis(
+        workspaceID: String,
+        paneId: UInt32,
+        horizontal: Bool,
+        size: UInt16
+    ) -> Int32 {
+        guard let handle, size > 0 else { return -1 }
+        let axis = horizontal ? DIR_HORIZONTAL : DIR_VERTICAL
+        return workspaceID.withCString { workspace in
+            muxterm_workspace_resize_pane_axis(handle, workspace, paneId, axis, size)
+        }
+    }
+
     func getTabs() -> [Tab] {
         guard let handle else { return [] }
+        if let activeWorkspaceID {
+            return getTabs(workspaceID: activeWorkspaceID)
+        }
         var buf = Array(repeating: CTab(), count: 32)
         let n = muxterm_get_tabs(handle, &buf, Int32(buf.count))
         guard n > 0 else { return [] }
@@ -1206,6 +1705,9 @@ final class CoreBridge {
 
     func getPanes(tabId: UInt32) -> [Pane] {
         guard let handle else { return [] }
+        if let activeWorkspaceID {
+            return getPanes(workspaceID: activeWorkspaceID, tabId: tabId)
+        }
         var buf = Array(repeating: CPane(), count: 64)
         let n = muxterm_get_panes(handle, tabId, &buf, Int32(buf.count))
         guard n > 0 else { return [] }
@@ -1216,6 +1718,9 @@ final class CoreBridge {
 
     func getLayout(tabId: UInt32) -> LayoutNode? {
         guard let handle else { return nil }
+        if let activeWorkspaceID {
+            return getLayout(workspaceID: activeWorkspaceID, tabId: tabId)
+        }
         var root = CLayoutNode()
         let rc = muxterm_get_layout(handle, tabId, &root)
         guard rc == 0 else { return nil }
@@ -1224,19 +1729,111 @@ final class CoreBridge {
 
     func getPaneOutput(paneId: UInt32) -> Data {
         guard let handle else { return Data() }
+        if let activeWorkspaceID {
+            return getPaneOutput(workspaceID: activeWorkspaceID, paneId: paneId)
+        }
         var buf = [UInt8](repeating: 0, count: 256 * 1024)
         let n = muxterm_get_pane_output(handle, paneId, &buf, buf.count)
         guard n > 0 else { return Data() }
         return Data(buf.prefix(Int(n)))
     }
 
+    /// Read tabs from a specific Workspace without changing Core activation.
+    func getTabs(workspaceID: String) -> [Tab] {
+        guard let handle else { return [] }
+        return workspaceID.withCString { workspace in
+            var buf = Array(repeating: CTab(), count: 32)
+            let n = muxterm_workspace_get_tabs(handle, workspace, &buf, Int32(buf.count))
+            guard n > 0 else { return [] }
+            return buf.prefix(Int(n)).map { tab in
+                Tab(
+                    id: tab.id,
+                    name: Self.string(from: tab.name),
+                    isActive: tab.is_active != 0
+                )
+            }
+        }
+    }
+
+    /// Read panes from a specific Workspace without changing Core activation.
+    func getPanes(workspaceID: String, tabId: UInt32) -> [Pane] {
+        guard let handle else { return [] }
+        return workspaceID.withCString { workspace in
+            var buf = Array(repeating: CPane(), count: 64)
+            let n = muxterm_workspace_get_panes(
+                handle,
+                workspace,
+                tabId,
+                &buf,
+                Int32(buf.count)
+            )
+            guard n > 0 else { return [] }
+            return buf.prefix(Int(n)).map { pane in
+                Pane(
+                    id: pane.id,
+                    cols: pane.cols,
+                    rows: pane.rows,
+                    isActive: pane.is_active != 0
+                )
+            }
+        }
+    }
+
+    /// Read a tab layout from a specific Workspace without changing Core activation.
+    func getLayout(workspaceID: String, tabId: UInt32) -> LayoutNode? {
+        guard let handle else { return nil }
+        return workspaceID.withCString { workspace in
+            var root = CLayoutNode()
+            let rc = muxterm_workspace_get_layout(handle, workspace, tabId, &root)
+            guard rc == 0 else { return nil }
+            return Self.cloneLayout(root)
+        }
+    }
+
+    /// Read accumulated pane output from a specific Workspace.
+    func getPaneOutput(workspaceID: String, paneId: UInt32) -> Data {
+        guard let handle else { return Data() }
+        return workspaceID.withCString { workspace in
+            var buf = [UInt8](repeating: 0, count: 256 * 1024)
+            let n = muxterm_workspace_get_pane_output(
+                handle,
+                workspace,
+                paneId,
+                &buf,
+                buf.count
+            )
+            guard n > 0 else { return Data() }
+            return Data(buf.prefix(Int(n)))
+        }
+    }
+
     /// 拉取完整渲染快照。
     func snapshot() -> FrameSnapshot {
+        if let activeWorkspaceID {
+            return snapshot(workspaceID: activeWorkspaceID)
+        }
         let tabs = getTabs()
         let activeTab = tabs.first(where: \.isActive)?.id ?? tabs.first?.id ?? 0
         let panes = getPanes(tabId: activeTab)
         let activePane = panes.first(where: \.isActive)?.id ?? panes.first?.id ?? 0
         let layout = getLayout(tabId: activeTab)
+        return FrameSnapshot(
+            tabs: tabs,
+            panes: panes,
+            layout: layout,
+            status: Self.statusLabel(lastStatus),
+            activeTab: activeTab,
+            activePane: activePane
+        )
+    }
+
+    /// 拉取指定 Workspace 的完整控制快照，不改变 Core 的 active workspace。
+    func snapshot(workspaceID: String) -> FrameSnapshot {
+        let tabs = getTabs(workspaceID: workspaceID)
+        let activeTab = tabs.first(where: \.isActive)?.id ?? tabs.first?.id ?? 0
+        let panes = getPanes(workspaceID: workspaceID, tabId: activeTab)
+        let activePane = panes.first(where: \.isActive)?.id ?? panes.first?.id ?? 0
+        let layout = getLayout(workspaceID: workspaceID, tabId: activeTab)
         return FrameSnapshot(
             tabs: tabs,
             panes: panes,

@@ -192,7 +192,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             let bridge = try CoreBridge(backendType: backend, socket: socket, session: session)
             if socket != nil {
                 Thread.sleep(forTimeInterval: 0.3)
-                _ = bridge.pollEvents()
+                _ = bridge.pollWorkspaceEvents()
             }
             let wc = MainWindowController(bridge: bridge, debug: options.debug)
             mainWindow = wc
