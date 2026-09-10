@@ -30,6 +30,7 @@ use super::window_sidebar::{
 use super::window_status::{
     maybe_refresh_status, refresh_attention_chrome, refresh_connection_summary,
 };
+use super::window_worktree::show_worktree_create_dialog;
 use super::*;
 
 impl AppWindow {

@@ -388,11 +388,6 @@ enum ExistingProbeMsg {
 /// W20：SSH 已有连接探测结果（alias → 该 host 的 tmux/Herdr 行）。
 type ExistingSshProbeResult = Vec<(String, Vec<ExistingEntry>)>;
 
-/// worktree 创建对话框：分支 + 路径，Create 后后台建 checkout 并开新格。
-fn show_worktree_create_dialog(state: &Rc<RefCell<UiState>>, parent: &gtk4::Window) {
-    window_worktree::show_worktree_create_dialog(state, parent);
-}
-
 pub(crate) fn chrome_css(theme: &Theme) -> String {
     window_chrome::chrome_css(theme)
 }
