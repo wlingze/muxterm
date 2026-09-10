@@ -346,14 +346,6 @@ fn resident_pane_view(
         .and_then(|layout| layout.pane(pane).cloned())
 }
 
-fn refresh_ui(s: &mut UiState) {
-    window_layout::refresh_ui(s);
-}
-
-fn refresh_workspace_layout(s: &mut UiState, wid: &WorkspaceId, seed_from_core: bool) {
-    window_layout::refresh_workspace_layout(s, wid, seed_from_core);
-}
-
 /// 窗口关闭意图：非 Quit 动作 → 隐藏并保持轮询；Quit → 真正关闭。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CloseIntent {
@@ -386,53 +378,6 @@ pub fn should_poll_status(
     interval: Duration,
 ) -> bool {
     !sub_active && now.duration_since(last) >= interval
-}
-
-fn sync_pane_outputs(s: &mut UiState) {
-    window_render::sync_pane_outputs(s);
-}
-
-fn refresh_event_workspaces(s: &mut UiState, events: &[ClientWorkspaceEvent]) {
-    window_render::refresh_event_workspaces(s, events);
-}
-
-fn repair_visible_workspace(s: &mut UiState) {
-    window_render::repair_visible_workspace(s);
-}
-
-fn apply_attention_visibility_events(s: &UiState, events: &[ClientWorkspaceEvent]) {
-    window_render::apply_attention_visibility_events(s, events);
-}
-
-fn mark_active_attention_visible(s: &UiState) {
-    window_render::mark_active_attention_visible(s);
-}
-
-/// 把 core 里已就绪的 attach 快照播种进尚未播种的 VTE。
-///
-/// 窗口 present/realize 前 feed 会被 VTE 丢弃（白屏），所以只在 widget
-/// 已 realized 时播种；未 realized 的 pane 保持 unseeded，等布局挂载后
-/// 由下一次 refresh_ui / sync_pane_outputs 补种。
-fn sync_pane_grid_size(s: &UiState, pane_id: u32) {
-    window_render::sync_pane_grid_size(s, pane_id);
-}
-
-/// 按 `(WorkspaceId, PaneId)` 对齐字符格（hidden tab / background 也适用）。
-fn sync_pane_grid_size_for(s: &UiState, wid: &WorkspaceId, pane_id: u32) {
-    window_render::sync_pane_grid_size_for(s, wid, pane_id);
-}
-
-fn forward_parser_replies(s: &mut UiState, pane_id: u32) {
-    window_render::forward_parser_replies(s, pane_id);
-}
-
-/// 按 WorkspaceId 转发 parser replies（background workspace 也 flush）。
-fn forward_parser_replies_for(s: &mut UiState, wid: &WorkspaceId, pane_id: u32) {
-    window_render::forward_parser_replies_for(s, wid, pane_id);
-}
-
-fn forward_parser_replies_for_key(s: &mut UiState, workspace_id: &str, pane_id: u32) {
-    window_render::forward_parser_replies_for_key(s, workspace_id, pane_id);
 }
 
 /// 把窗口内容区的新字符格尺寸同步给 Runtime。
