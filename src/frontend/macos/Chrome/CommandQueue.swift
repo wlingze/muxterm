@@ -45,6 +45,7 @@ public enum QueuedMuxOperation: Equatable, Sendable {
     case colours(QueuedMuxColours)
     case config(QueuedMuxConfig)
     case search(QueuedMuxSearch)
+    case paneOutput(QueuedMuxPaneOutput)
 
     private var coalescingKey: CoalescingKey? {
         switch self {
@@ -70,7 +71,7 @@ public enum QueuedMuxOperation: Equatable, Sendable {
             case .acknowledge, .mute:
                 return nil
             }
-        case .task, .input, .closeWorkspace, .config, .search:
+        case .task, .input, .closeWorkspace, .config, .search, .paneOutput:
             return nil
         }
     }
@@ -152,6 +153,18 @@ public struct QueuedMuxSearch: Equatable, Sendable {
 
     public init(query: String, requestID: UInt64) {
         self.query = query
+        self.requestID = requestID
+    }
+}
+
+/// A pane-output snapshot waiting for the main-thread event-pump boundary.
+/// The request identity lets a late read be discarded when its overlay closes.
+public struct QueuedMuxPaneOutput: Equatable, Sendable {
+    public let paneID: UInt32
+    public let requestID: UInt64
+
+    public init(paneID: UInt32, requestID: UInt64) {
+        self.paneID = paneID
         self.requestID = requestID
     }
 }
@@ -280,6 +293,22 @@ public struct QueuedMuxCommand: Equatable, Sendable {
             workspaceID: nil,
             operation: .search(QueuedMuxSearch(
                 query: query,
+                requestID: requestID
+            )),
+            failureMessage: failureMessage
+        )
+    }
+
+    public static func paneOutput(
+        workspaceID: String?,
+        paneID: UInt32,
+        requestID: UInt64,
+        failureMessage: String = ""
+    ) -> QueuedMuxCommand {
+        QueuedMuxCommand(
+            workspaceID: workspaceID,
+            operation: .paneOutput(QueuedMuxPaneOutput(
+                paneID: paneID,
                 requestID: requestID
             )),
             failureMessage: failureMessage

@@ -66,6 +66,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 注意力 Cmd-Enter 的 replica overlay（W19-E）。
     private var replyOverlayView: MuxTerminalView?
     var replyOverlayPaneId: UInt32?
+    private var replyOverlayWorkspaceID: String?
     /// 搜索跳转：切 tab 完成后再滚到命中行。
     private var pendingSearchJump: PendingSearchJump?
     /// 面板行可能在后台 Workspace 的身份缓存到达前被选中。保留最后一次
@@ -155,6 +156,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// never calls the Core index synchronously.
     private var nextSearchRequestID: UInt64 = 1
     private var pendingSearchCompletions: [UInt64: ([SearchHit]) -> Void] = [:]
+    /// Pane-output snapshots are read only by the event pump and delivered to
+    /// the overlay only if that exact overlay is still mounted.
+    private var nextPaneOutputRequestID: UInt64 = 1
+    private var pendingPaneOutputCompletions: [UInt64: (Data) -> Void] = [:]
     /// Core work needed after a cached scene switch.  It is deliberately
     /// resumed by `pollOnce()`, never from the click/activation stack.
     private var pendingActivationCoreWork: WorkspaceScene?
@@ -338,12 +343,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             ownerWindow: window,
             snapshot: { [weak self] in
                 self?.attentionSnapshotForPanel()
-            },
-            paneOutput: { [weak self] paneId in
-                guard let self else {
-                    return Data()
-                }
-                return self.bridge.getPaneOutput(paneId: paneId)
             },
             sendInput: { [weak self] paneId, data in
                 guard let self else { return }
@@ -1311,6 +1310,34 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         pendingSearchCompletions.removeValue(forKey: requestID)?(hits)
     }
 
+    /// Enqueue a pane-output snapshot without touching the Core handle from a
+    /// panel or overlay action.
+    @discardableResult
+    private func enqueuePaneOutput(
+        workspaceID: String?,
+        paneID: UInt32,
+        completion: @escaping (Data) -> Void
+    ) -> Bool {
+        guard !isClosing else { return false }
+        let requestID = nextPaneOutputRequestID
+        nextPaneOutputRequestID += 1
+        pendingPaneOutputCompletions[requestID] = completion
+        let accepted = enqueueCoreCommand(.paneOutput(
+            workspaceID: workspaceID,
+            paneID: paneID,
+            requestID: requestID
+        ))
+        if !accepted {
+            pendingPaneOutputCompletions.removeValue(forKey: requestID)
+            completion(Data())
+        }
+        return accepted
+    }
+
+    private func finishPaneOutputRequest(_ requestID: UInt64, data: Data) {
+        pendingPaneOutputCompletions.removeValue(forKey: requestID)?(data)
+    }
+
     private func cachedWorkspacePaneIDs() -> Set<UInt32> {
         var paneIDs = Set(lastSnapshot.panes.map(\.id))
         for scene in sceneStack.scenes.values where scene.visibility != .closed {
@@ -1529,6 +1556,18 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     hits = snapshot.hits
                 }
                 finishSearchRequest(search.requestID, hits: hits)
+                result = 0
+            case .paneOutput(let request):
+                let data: Data
+                if let workspaceID = command.workspaceID {
+                    data = bridge.getPaneOutput(
+                        workspaceID: workspaceID,
+                        paneId: request.paneID
+                    )
+                } else {
+                    data = bridge.getPaneOutput(paneId: request.paneID)
+                }
+                finishPaneOutputRequest(request.requestID, data: data)
                 result = 0
             }
             if result != 0 {
@@ -2014,6 +2053,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             overlay.removeFromSuperview()
             replyOverlayView = nil
             replyOverlayPaneId = nil
+            replyOverlayWorkspaceID = nil
             content.replyOverlayContainer.isHidden = true
             content.replyOverlayContainer.setAccessibilityValue("0")
             return
@@ -2036,6 +2076,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         ])
         replyOverlayView = overlay
         replyOverlayPaneId = targetPaneId
+        let workspaceID = activeSceneWorkspaceID
+        replyOverlayWorkspaceID = workspaceID
         content.replyOverlayContainer.isHidden = false
         // 手动布局（不依赖容器 Auto Layout，headless 下容器高度可能为 0）。
         window?.layoutIfNeeded()
@@ -2045,10 +2087,23 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         overlay.frame = content.replyOverlayContainer.bounds
         overlay.layoutSubtreeIfNeeded()
         _ = overlay.syncSizeToPty(notifyResize: false)
-        let raw = bridge.getPaneOutput(paneId: targetPaneId)
-        let data = PanePaintPolicy.lastScreen(raw, visibleRows: 24)
-        if !data.isEmpty {
-            overlay.feedOutput(data, isSnapshot: true)
+        _ = enqueuePaneOutput(
+            workspaceID: workspaceID,
+            paneID: targetPaneId
+        ) { [weak self, weak overlay] raw in
+            guard let self,
+                  let overlay,
+                  self.replyOverlayView === overlay,
+                  self.replyOverlayPaneId == targetPaneId,
+                  self.replyOverlayWorkspaceID == workspaceID,
+                  !self.content.replyOverlayContainer.isHidden
+            else {
+                return
+            }
+            let data = PanePaintPolicy.lastScreen(raw, visibleRows: 24)
+            if !data.isEmpty {
+                overlay.feedOutput(data, isSnapshot: true)
+            }
         }
         content.replyOverlayContainer.setAccessibilityValue("1")
     }

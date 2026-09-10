@@ -134,7 +134,6 @@ final class UnifiedPanelExistingConnectionsE2ETests: XCTestCase {
             store: QuickConnectStore(),
             ownerWindow: nil,
             snapshot: { nil },
-            paneOutput: { _ in Data() },
             sendInput: { _, _ in },
             search: { _ in },
             connectedWorkspaces: { [connected] }
@@ -182,7 +181,6 @@ final class UnifiedPanelExistingConnectionsE2ETests: XCTestCase {
             store: QuickConnectStore(),
             ownerWindow: nil,
             snapshot: { nil },
-            paneOutput: { _ in Data() },
             sendInput: { _, _ in },
             search: { _ in },
             connectedWorkspaces: { [connected] }
@@ -261,7 +259,6 @@ final class UnifiedPanelExistingConnectionsE2ETests: XCTestCase {
             store: QuickConnectStore(),
             ownerWindow: nil,
             snapshot: { nil },
-            paneOutput: { _ in Data() },
             sendInput: { _, _ in },
             search: { _ in }
         )

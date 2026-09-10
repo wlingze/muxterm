@@ -122,7 +122,6 @@ final class QuickConnectE2ETests: XCTestCase {
             store: store,
             ownerWindow: nil,
             snapshot: { nil },
-            paneOutput: { _ in Data() },
             sendInput: { _, _ in },
             search: { _ in }
         )

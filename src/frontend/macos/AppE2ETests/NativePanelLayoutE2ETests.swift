@@ -61,7 +61,6 @@ final class NativePanelLayoutE2ETests: XCTestCase {
             store: store,
             ownerWindow: nil,
             snapshot: { AttentionSnapshot(blockedCount: 0, workspaces: []) },
-            paneOutput: { _ in Data() },
             sendInput: { _, _ in },
             search: { _ in }
         )

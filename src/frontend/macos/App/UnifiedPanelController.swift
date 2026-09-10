@@ -130,7 +130,6 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     private var keyMonitor: Any?
     private weak var ownerWindow: NSWindow?
     private let snapshot: () -> AttentionSnapshot?
-    private let paneOutput: (UInt32) -> Data
     private let sendInput: (UInt32, Data) -> Void
     private let search: (UnifiedPanelSearchRequest) -> Void
     private let workspaceIndex: (TargetConfig) -> Int?
@@ -142,7 +141,6 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         store: QuickConnectStore,
         ownerWindow: NSWindow?,
         snapshot: @escaping () -> AttentionSnapshot?,
-        paneOutput: @escaping (UInt32) -> Data,
         sendInput: @escaping (UInt32, Data) -> Void,
         search: @escaping (UnifiedPanelSearchRequest) -> Void,
         workspaceIndex: @escaping (TargetConfig) -> Int? = { _ in nil },
@@ -151,7 +149,6 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         self.store = store
         self.ownerWindow = ownerWindow
         self.snapshot = snapshot
-        self.paneOutput = paneOutput
         self.sendInput = sendInput
         self.search = search
         self.workspaceIndex = workspaceIndex

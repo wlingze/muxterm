@@ -310,6 +310,33 @@ final class MacCommandQueueTests: XCTestCase {
         XCTAssertEqual(second.requestID, 12)
     }
 
+    func testPaneOutputRequestsRemainScopedAndCarryRequestIdentity() {
+        var queue = MacCommandQueue()
+        queue.enqueue(.paneOutput(
+            workspaceID: "one",
+            paneID: 3,
+            requestID: 17
+        ))
+        queue.enqueue(.paneOutput(
+            workspaceID: "two",
+            paneID: 3,
+            requestID: 18
+        ))
+
+        XCTAssertEqual(queue.count, 2)
+        let commands = queue.drain()
+        XCTAssertEqual(commands.map { $0.workspaceID ?? "" }, ["one", "two"])
+        guard case .paneOutput(let first) = commands[0].operation,
+              case .paneOutput(let second) = commands[1].operation
+        else {
+            return XCTFail("expected ordered pane-output requests")
+        }
+        XCTAssertEqual(first.paneID, 3)
+        XCTAssertEqual(first.requestID, 17)
+        XCTAssertEqual(second.paneID, 3)
+        XCTAssertEqual(second.requestID, 18)
+    }
+
     func testRepeatedVisibilityAcknowledgeForOnePaneCoalesces() {
         var queue = MacCommandQueue()
         queue.enqueue(.attention(
