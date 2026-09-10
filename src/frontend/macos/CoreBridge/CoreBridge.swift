@@ -243,6 +243,13 @@ struct CoreWorkspaceInfo: Decodable, Equatable {
     }
 }
 
+/// Result of opening a workspace in an existing Core handle.
+struct CoreWorkspaceOpenResult: Equatable {
+    let id: String
+    let name: String
+    let target: TargetConfig
+}
+
 private struct WorkspaceListResponse: Decodable {
     let ok: Bool
     let error: String?
@@ -1223,6 +1230,47 @@ final class CoreBridge {
             pendingError = error.localizedDescription
             return []
         }
+    }
+
+    /// Open a target in this handle's WorkspacePool.  New workspaces share the
+    /// existing Core event stream; the frontend does not create another C
+    /// handle for a second scene.
+    func openWorkspace(
+        target: TargetConfig,
+        intent: CoreTargetOpenIntent
+    ) throws -> CoreWorkspaceOpenResult {
+        guard let handle else {
+            throw CoreBridgeDiscoveryError.message("Core handle unavailable")
+        }
+        let data = try JSONEncoder().encode(CoreTargetRequest(target))
+        guard let json = String(data: data, encoding: .utf8) else {
+            throw CoreBridgeDiscoveryError.message(
+                MuxtermI18n.shared.tr(.errorCoreDiscoveryInvalidUtf8)
+            )
+        }
+        let pointer = json.withCString { targetPtr in
+            intent.rawValue.withCString { intentPtr in
+                muxterm_workspace_open_target_json(handle, targetPtr, intentPtr)
+            }
+        }
+        let response: OpenTargetResponse = try Self.decodeDiscoveryJSON(pointer)
+        guard response.ok else {
+            throw CoreBridgeDiscoveryError.message(
+                response.error ?? MuxtermI18n.shared.tr(.errorCoreDiscoveryNoResponse)
+            )
+        }
+        guard let id = response.id, !id.isEmpty else {
+            throw CoreBridgeDiscoveryError.message("Core did not return a workspace id")
+        }
+        var resolved = response.resolvedTarget?.canonical.targetConfig ?? target
+        if resolved.workspaceID == nil {
+            resolved.workspaceID = id
+        }
+        return CoreWorkspaceOpenResult(
+            id: id,
+            name: response.name ?? resolved.name,
+            target: resolved
+        )
     }
 
     /// Execute a task against a specific workspace without changing the
