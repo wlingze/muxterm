@@ -349,6 +349,40 @@ pub struct ClientConfigSnapshot {
     pub effective_keybindings: Vec<ClientKeyBinding>,
 }
 
+/// Owned configuration event copied across the public FFI boundary.
+///
+/// The Core settings service emits preview, commit, reload, diagnostic, and
+/// rollback events.  Frontends consume this enum instead of inspecting the
+/// Core configuration service or retaining borrowed JSON buffers.
+#[derive(Debug, Clone, serde::Deserialize, PartialEq)]
+pub enum ClientConfigEvent {
+    PreviewChanged {
+        transaction: String,
+        values: serde_json::Value,
+    },
+    Committed {
+        revision: String,
+        values: serde_json::Value,
+    },
+    Reloaded {
+        revision: String,
+        values: serde_json::Value,
+    },
+    DiagnosticsChanged {
+        diagnostics: Vec<String>,
+    },
+    RolledBack {
+        transaction: String,
+    },
+}
+
+impl ClientConfigEvent {
+    /// Whether this event changes committed values that a frontend can hot-apply.
+    pub fn changes_values(&self) -> bool {
+        matches!(self, Self::Committed { .. } | Self::Reloaded { .. })
+    }
+}
+
 /// RFC 6902-style patch operation accepted by the Core configuration ABI.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct ClientJsonPatchOperation {
@@ -1186,8 +1220,8 @@ impl FfiClient {
             .ok_or_else(|| anyhow::anyhow!("Core config reload returned no revision"))
     }
 
-    /// Drain Core-owned configuration events as owned JSON values.
-    pub fn config_events(&self) -> anyhow::Result<Vec<serde_json::Value>> {
+    /// Drain Core-owned configuration events as owned frontend DTOs.
+    pub fn config_events(&self) -> anyhow::Result<Vec<ClientConfigEvent>> {
         let value = Self::discovery_json(|| unsafe {
             ffi::muxterm_config_events_json(self.handle.as_ptr())
         })?;
@@ -2561,6 +2595,29 @@ mod tests {
             config.behavior.on_program_exit_abnormal,
             ClientOnProgramExitAbnormal::Keep
         );
+    }
+
+    #[test]
+    fn config_events_decode_to_owned_frontend_events() {
+        let events: Vec<ClientConfigEvent> = serde_json::from_value(serde_json::json!([
+            {
+                "Committed": {
+                    "revision": "rev-2",
+                    "values": {"theme": {"name": "black"}}
+                }
+            },
+            {"DiagnosticsChanged": {"diagnostics": ["warning"]}},
+            {"RolledBack": {"transaction": "config-1"}}
+        ]))
+        .expect("config events decode");
+
+        assert!(events[0].changes_values());
+        assert!(!events[1].changes_values());
+        assert!(!events[2].changes_values());
+        assert!(matches!(
+            &events[0],
+            ClientConfigEvent::Committed { revision, .. } if revision == "rev-2"
+        ));
     }
 
     #[test]

@@ -4,7 +4,7 @@
 //! poll。这样后续 GTK 的主线程桥可以把同一批带身份事件写入 `ViewStore`，
 //! 而不会再出现多个 frontend 路径分别读取同一个 Core handle。
 
-use crate::frontend::ffi_client::{ClientWorkspaceEvent, FfiClient};
+use crate::frontend::ffi_client::{ClientConfigEvent, ClientWorkspaceEvent, FfiClient};
 
 #[cfg(feature = "gtk")]
 use crate::frontend::linux::view_store::ViewStore;
@@ -23,6 +23,18 @@ impl EventPump {
     /// every event.  Callers must not poll the client directly.
     pub fn poll(&self) -> Vec<ClientWorkspaceEvent> {
         self.client.poll_workspace_events()
+    }
+
+    /// Drain the Core configuration lane through the same single frontend
+    /// event consumer.  Values are copied into owned DTOs by `FfiClient`.
+    pub fn poll_config_events(&self) -> Vec<ClientConfigEvent> {
+        match self.client.config_events() {
+            Ok(events) => events,
+            Err(error) => {
+                tracing::warn!(target = "muxterm::config", %error, "configuration event poll failed");
+                Vec::new()
+            }
+        }
     }
 
     /// Drain one FFI batch into the frontend-owned view store. Topology events
