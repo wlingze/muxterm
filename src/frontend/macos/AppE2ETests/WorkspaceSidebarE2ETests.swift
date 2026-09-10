@@ -394,7 +394,7 @@ final class WorkspaceSidebarE2ETests: XCTestCase {
         XCTAssertEqual(app.testActiveWorkspaceSession(), first.session)
     }
 
-    func testSidebarWorkspaceSwitchPaintsTargetBeforeAuthorityRefresh() throws {
+    func testSidebarWorkspaceSwitchPaintsTargetBeforeNextEventPump() throws {
         let first = OnePaneCat(label: "switch-paint-first")
         let second = OnePaneCat(label: "switch-paint-second")
         let app = try AppE2E.attachWindow(socket: first.socket, session: first.session)
@@ -417,42 +417,7 @@ final class WorkspaceSidebarE2ETests: XCTestCase {
         )
     }
 
-    func testPendingSidebarActionSurvivesRepeatedWorkspaceSelection() throws {
-        let first = OnePaneCat(label: "switch-action-first")
-        let second = OnePaneCat(label: "switch-action-second")
-        let app = try AppE2E.attachWindow(socket: first.socket, session: first.session)
-        defer { app.testShutdown() }
-        XCTAssertTrue(app.waitReady(minLeaves: 1))
-
-        let secondBridge = try CoreBridge(
-            backendType: "tmux",
-            socket: second.socket,
-            session: second.session
-        )
-        app.testActivateWorkspaceBridge(secondBridge, session: second.session)
-        XCTAssertTrue(AppE2E.wait(timeout: AppE2E.attachTimeout) {
-            app.testPollOnce()
-            return app.testActiveWorkspaceSession() == second.session
-        })
-
-        app.testSwitchToWorkspaceAtFixedIndex(1)
-        XCTAssertFalse(app.testForegroundActivationPending())
-
-        var actionExecuted = false
-        app.testPerformWhenForegroundReady {
-            actionExecuted = true
-        }
-
-        // 重复点击同一 Workspace 不应丢掉已经排队的 pane 跳转动作。
-        app.testSwitchToWorkspaceAtFixedIndex(1)
-        XCTAssertTrue(AppE2E.wait(timeout: 2) {
-            app.testPollOnce()
-            return !app.testForegroundActivationPending()
-        })
-        XCTAssertTrue(actionExecuted, "重复选择 Workspace 后待执行动作仍必须重放")
-    }
-
-    func testRapidWorkspaceSwitchIgnoresStaleAuthorityRefresh() throws {
+    func testRapidWorkspaceSwitchKeepsLatestSelection() throws {
         let first = OnePaneCat(label: "switch-stale-first")
         let second = OnePaneCat(label: "switch-stale-second")
         let app = try AppE2E.attachWindow(socket: first.socket, session: first.session)
@@ -475,12 +440,11 @@ final class WorkspaceSidebarE2ETests: XCTestCase {
 
         XCTAssertTrue(AppE2E.wait(timeout: 2) {
             app.testPollOnce()
-            return !app.testForegroundActivationPending()
-                && app.testActiveWorkspaceSession() == second.session
-        }, "旧 Workspace 的权威回调不得抢回用户最新选择")
+            return app.testActiveWorkspaceSession() == second.session
+        }, "旧 Workspace 的事件不得抢回用户最新选择")
     }
 
-    func testSidebarWorkspaceSwitchDoesNotWaitForCoreRefresh() throws {
+    func testSidebarWorkspaceSwitchDoesNotWaitForEventPump() throws {
         let first = OnePaneCat(label: "switch-lock-first")
         let second = OnePaneCat(label: "switch-lock-second")
         let app = try AppE2E.attachWindow(socket: first.socket, session: first.session)
@@ -506,10 +470,9 @@ final class WorkspaceSidebarE2ETests: XCTestCase {
         XCTAssertLessThan(
             elapsed,
             0.12,
-            "Workspace 激活不能等待后台 bridge 锁，实际 \(elapsed)s"
+            "Workspace 激活不能等待事件泵工作，实际 \(elapsed)s"
         )
         XCTAssertEqual(app.testActiveWorkspaceSession(), first.session)
-        XCTAssertFalse(app.testForegroundActivationPending())
     }
 
     func testCmdBTogglesSidebarThroughProductionKeyRouter() throws {

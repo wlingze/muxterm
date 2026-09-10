@@ -173,7 +173,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private var pendingPaneOutputCompletions: [UInt64: (Data) -> Void] = [:]
     /// Core work needed after a cached scene switch.  It is deliberately
     /// resumed by `pollOnce()`, never from the click/activation stack.
-    private var pendingActivationCoreWork: WorkspaceScene?
+    private var deferredBridgeWorkScene: WorkspaceScene?
     /// 后台 poll 只把 Surface 事件交回主线程；主线程按小批次追赶，避免
     /// 一个高流量远端 pane 把切换、输入和窗口事件挤出 run loop。
     private var surfaceCatchUpScenes: [WorkspaceScene] = []
@@ -324,7 +324,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         workspaceSidebar.onAgentActivate = { [weak self] workspaceId, tabId, paneId in
             guard let self, self.activateWorkspaceIfAvailable(workspaceId) else { return }
-            self.performWhenForegroundReady { [weak self] in
+            self.performIfWindowOpen { [weak self] in
                 guard let self else { return }
                 _ = self.enqueueCoreAttention(
                     workspaceID: self.activeSceneWorkspaceID,
@@ -335,7 +335,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         workspaceSidebar.onCommandActivate = { [weak self] workspaceId, tabId, paneId in
             guard let self, self.activateWorkspaceIfAvailable(workspaceId) else { return }
-            self.performWhenForegroundReady { [weak self] in
+            self.performIfWindowOpen { [weak self] in
                 guard let self else { return }
                 _ = self.enqueueCoreAttention(
                     workspaceID: self.activeSceneWorkspaceID,
@@ -357,7 +357,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             },
             sendInput: { [weak self] paneId, data in
                 guard let self else { return }
-                self.performWhenForegroundReady {
+                self.performIfWindowOpen {
                     _ = self.enqueueCoreInput(paneId: paneId, data: data)
                 }
             },
@@ -419,7 +419,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         unifiedPanel.onPreview = { [weak self] workspaceId, paneId in
             guard let self, self.activateWorkspaceIfAvailable(workspaceId) else { return }
-            self.performWhenForegroundReady { [weak self] in
+            self.performIfWindowOpen { [weak self] in
                 self?.toggleReplyOverlay(paneId: paneId)
             }
         }
@@ -465,7 +465,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         content.statusBar.allowsTabReordering = terminalManager.usesClientResize
         content.paneLayout.onActivatePane = { [weak self] paneId in
             guard let self else { return }
-            self.performWhenForegroundReady { [weak self] in
+            self.performIfWindowOpen { [weak self] in
                 guard let self else { return }
                 self.focusPaneTerminal(paneId)
                 _ = self.enqueueCoreTask(
@@ -572,7 +572,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     deinit {
         pollTimer?.invalidate()
         trafficMonitorTimer?.invalidate()
-        pendingActivationCoreWork = nil
+        deferredBridgeWorkScene = nil
         surfaceCatchUpWorkItem?.cancel()
         surfaceCatchUpWorkItem = nil
         surfaceCatchUpScenes.removeAll()
@@ -1122,9 +1122,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         return fallbackReplicaID(for: target)
     }
 
-    /// UI 命令在同一主线程事件泵上顺序进入 Core；场景切换本身不需要等待
-    /// 任何后台 FFI，也不再保留待重放动作。
-    func performWhenForegroundReady(_ action: @escaping () -> Void) {
+    /// UI 命令在同一主线程事件泵上顺序进入 Core；场景切换本身只执行本地
+    /// Scene 操作，不需要等待任何后台 FFI。
+    func performIfWindowOpen(_ action: @escaping () -> Void) {
         guard !isClosing else { return }
         action()
     }
@@ -1613,10 +1613,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    var foregroundActivationIsPending: Bool {
-        false
-    }
-
     func workspaceSidebarScenes() -> [WorkspaceScene] {
         sceneStack.scenes.values
             .filter { $0.visibility != .closed }
@@ -1954,7 +1950,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             // Workspace 且目标 slot 尚未 ready 才排队等下一轮 poll。
             if cachedWorkspacePaneIDs().contains(paneId) {
                 pendingPanelJump = nil
-                performWhenForegroundReady { [weak self] in
+                performIfWindowOpen { [weak self] in
                     self?.jumpToPane(tabId: tabId, paneId: paneId, seq: seq, query: query)
                 }
                 return
@@ -1969,7 +1965,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             return
         }
         pendingPanelJump = nil
-        performWhenForegroundReady { [weak self] in
+        performIfWindowOpen { [weak self] in
             self?.jumpToPane(tabId: tabId, paneId: paneId, seq: seq, query: query)
         }
     }
@@ -1982,7 +1978,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             return
         }
         pendingPanelJump = nil
-        performWhenForegroundReady { [weak self] in
+        performIfWindowOpen { [weak self] in
             self?.jumpToPane(
                 tabId: jump.tabId,
                 paneId: jump.paneId,
@@ -1993,7 +1989,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func acknowledgeWorkspacePane(workspaceId: String, paneId: UInt32) {
-        performWhenForegroundReady { [weak self] in
+        performIfWindowOpen { [weak self] in
             guard let self else { return }
             guard let scene = self.sceneStack.scenes.values.first(where: {
                 self.workspaceReplicaID(for: $0) == workspaceId
@@ -2011,7 +2007,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         paneId: UInt32,
         seconds: UInt64
     ) {
-        performWhenForegroundReady { [weak self] in
+        performIfWindowOpen { [weak self] in
             guard let self else { return }
             guard let scene = self.sceneStack.scenes.values.first(where: {
                 self.workspaceReplicaID(for: $0) == workspaceId
@@ -2041,7 +2037,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             )
         )
         // select-pane 的状态事件可能被 Surface catch-up 推迟；先乐观
-        // 更新快照和焦点，与 nextPane 同语义。权威 snapshot 下一轮校准。
+        // 更新快照和焦点，与 nextPane 同语义。Core snapshot 在下一轮事件泵对齐。
         lastSnapshot.activePane = paneId
         lastSnapshot.panes = lastSnapshot.panes.map { pane in
             Pane(
@@ -2737,7 +2733,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         terminalManager.setBridgeQueriesEnabled(false)
         content.paneLayout.resumeGeometrySync()
         focusActiveTerminal()
-        pendingActivationCoreWork = slot
+        deferredBridgeWorkScene = slot
         statusBarNeedsRefresh = true
         // 切连接后立即更新 SSH 状态 + 流量监控显示。
         updateTrafficMonitor()
@@ -3673,10 +3669,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// Resume bridge-backed work after the cached scene is already visible.
-    /// This is part of the serialized event-pump boundary, not activation.
-    private func resumePendingActivationCoreWork() {
-        guard let slot = pendingActivationCoreWork else { return }
-        pendingActivationCoreWork = nil
+    /// This runs at the serialized event-pump boundary after local painting.
+    private func flushDeferredSceneBridgeWork() {
+        guard let slot = deferredBridgeWorkScene else { return }
+        deferredBridgeWorkScene = nil
         guard !isClosing,
               slot.visibility == .visible,
               bridge === slot.bridge
@@ -3693,7 +3689,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // UI actions only enqueue.  This is the single command boundary next
         // to the single workspace-event drain, so Core never races a click
         // handler or needs a frontend lock.
-        resumePendingActivationCoreWork()
+        flushDeferredSceneBridgeWork()
         // Resuming a scene may enqueue deferred input/resize work collected
         // while bridge queries were paused, so flush after the resume as well.
         flushCoreCommandQueue()
@@ -4861,7 +4857,7 @@ extension MainWindowController: TerminalInputHandler {
         let paneId = replyOverlayPaneId ?? view.paneId
         let payload = Data(data)
         // W19-E：overlay 快速回复不清 Blocked（注意力行保留，Enter 仍可跳转）。
-        performWhenForegroundReady { [weak self] in
+        performIfWindowOpen { [weak self] in
             _ = self?.enqueueCoreInput(
                 paneId: paneId,
                 data: payload,

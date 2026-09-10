@@ -18,7 +18,7 @@ final class TerminalManager: TerminalInputHandler {
     /// view。已有 view 继续 feed PTY。
     private var viewCreationEnabled = true
     /// Workspace 切换的缓存绘制阶段禁止触碰远端 bridge。远端查询/写入
-    /// 由后台 authority refresh 在锁内完成，主线程只处理本地 Surface。
+    /// 在串行 EventPump 边界恢复，切换栈只处理本地 Surface。
     private var bridgeQueriesEnabled = true
     /// 已经完成过 Runtime seed 或首批 live PTY 的 pane。
     private var swiftTermSeeded = Set<UInt32>()
@@ -60,8 +60,8 @@ final class TerminalManager: TerminalInputHandler {
     private var seedingPanes = Set<UInt32>()
     /// 后台 Workspace 关掉 viewCreation 时仍把快照留着，第一次建 Surface 立刻种。
     private var pendingSnapshots: [UInt32: Data] = [:]
-    /// 后台 Workspace 关掉 viewCreation 时保留最新完整 frame；它必须在
-    /// foreground 后替换当前屏幕，不能降级成普通 output 追加。
+    /// 隐藏 Workspace 关掉 viewCreation 时保留最新完整 frame；它必须在
+    /// scene 可见后替换当前屏幕，不能降级成普通 output 追加。
     private var pendingFrames: [UInt32: Data] = [:]
     /// 快照之后、建 view 之前到达的 live 字节。有上限，避免后台 TUI 把内存撑爆。
     private var pendingBackgroundOutput: [UInt32: Data] = [:]
