@@ -104,6 +104,19 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let paneID: UInt32
     }
     private var commandMarksCache: [CommandMarksKey: [CoreCommandMark]] = [:]
+    private struct PaneHistoryKey: Hashable {
+        let workspaceID: String?
+        let paneID: UInt32
+    }
+    private struct PaneHistoryOffsetKey: Hashable {
+        let workspaceID: String?
+        let paneID: UInt32
+        let seq: UInt64
+    }
+    /// Event-pump snapshots used by last-seen UI and test diagnostics. UI
+    /// callbacks must not re-enter the Core index for these values.
+    private var paneLatestLineSeqCache: [PaneHistoryKey: Int64] = [:]
+    private var paneViewportOffsetForSeqCache: [PaneHistoryOffsetKey: Int32] = [:]
     /// Native scroll callbacks already carry the local viewport offset. Keep
     /// it for UI-only unseen-line updates; the event pump refreshes it from
     /// Core when the authoritative snapshot changes.
@@ -2041,7 +2054,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         restoreTerminalFocusIfAllowed()
         if seq > 0 || !query.isEmpty {
             pendingSearchJump = PendingSearchJump(paneId: paneId, seq: seq, query: query)
-            applyPendingSearchJumpIfReady()
         }
     }
 
@@ -2621,6 +2633,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         commandTimelineCursor.removeAll()
         commandNavigationPanes.removeAll()
         viewportOffsets.removeAll()
+        paneLatestLineSeqCache.removeAll()
+        paneViewportOffsetForSeqCache.removeAll()
         wireTerminalManagerCallbacks()
         let restoredParkedTree = content.paneLayout.replaceTerminalManager(slot.terminalManager)
         content.paneLayout.dropParked(
@@ -3954,8 +3968,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         retryPendingPanelJump()
         refreshAttentionChrome()
         if let activePane = activePaneID {
-            refreshHistoryChrome(for: activePane)
+            refreshHistoryChromeFromCore(for: activePane)
         }
+        applyPendingSearchJumpIfReady()
     }
 
     /// 激活后先处理当前 Workspace 的旧 Surface 队列，再 poll 新事件，保持
@@ -4195,7 +4210,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             content.paneLayout.markActivePane(activePane)
             restoreTerminalFocusIfAllowed()
         }
-        applyPendingSearchJumpIfReady()
         scheduleTabTreeWarmup()
         cacheActiveSlotSnapshot(
             tabIdsByPane: snap.tabs.isEmpty ? nil : tabIdsByPane,
@@ -4325,9 +4339,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             }
             return
         }
-        guard let seq = LastSeenNavigation.baselineSequence(
-            latest: latest ?? bridge.paneLatestLineSeq(paneId: paneId)
-        ) else {
+        let latest = latest ?? paneLatestLineSeqCache[PaneHistoryKey(
+            workspaceID: activeSceneWorkspaceID,
+            paneID: paneId
+        )] ?? -1
+        guard let seq = LastSeenNavigation.baselineSequence(latest: latest) else {
             pendingLastSeenPanes.insert(paneId)
             return
         }
@@ -4346,7 +4362,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private func resolvePendingLastSeen() {
         guard !pendingLastSeenPanes.isEmpty else { return }
         for paneId in Array(pendingLastSeenPanes) {
-            recordLastSeen(for: paneId)
+            let key = PaneHistoryKey(
+                workspaceID: activeSceneWorkspaceID,
+                paneID: paneId
+            )
+            let latest = bridge.paneLatestLineSeq(paneId: paneId)
+            paneLatestLineSeqCache[key] = latest
+            recordLastSeen(for: paneId, latest: latest)
         }
     }
 
@@ -4356,20 +4378,38 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     /// 测试用：last-seen 状态机的三个输入，便于 E2E 失败定位。
     func testLastSeenDiagnostics(paneId: UInt32) -> String {
-        let latest = bridge.paneLatestLineSeq(paneId: paneId)
+        let workspaceID = activeSceneWorkspaceID
+        let latest = paneLatestLineSeqCache[PaneHistoryKey(
+            workspaceID: workspaceID,
+            paneID: paneId
+        )] ?? -1
         let seen = lastSeenLineSeq[paneId]
         let rawOffset = seen
-            .map { bridge.paneViewportOffsetForSeq(paneId: paneId, seq: $0) }
+            .map { seq in
+                paneViewportOffsetForSeqCache[PaneHistoryOffsetKey(
+                    workspaceID: workspaceID,
+                    paneID: paneId,
+                    seq: seq
+                )] ?? -1
+            }
             ?? -1
         return "latest=\(latest) seen=\(seen.map(String.init) ?? "nil") rawOffset=\(rawOffset)"
     }
 
     private func refreshHistoryChrome(for paneId: UInt32) {
         guard paneId == activePaneID else { return }
-        let latest = bridge.paneLatestLineSeq(paneId: paneId)
+        let workspaceID = activeSceneWorkspaceID
+        let latest = paneLatestLineSeqCache[PaneHistoryKey(
+            workspaceID: workspaceID,
+            paneID: paneId
+        )] ?? -1
         let seen = lastSeenLineSeq[paneId]
         let rawOffset = seen.map {
-            bridge.paneViewportOffsetForSeq(paneId: paneId, seq: $0)
+            paneViewportOffsetForSeqCache[PaneHistoryOffsetKey(
+                workspaceID: workspaceID,
+                paneID: paneId,
+                seq: $0
+            )] ?? -1
         } ?? -1
         if let offset = LastSeenNavigation.targetOffset(
             latest: latest,
@@ -4406,12 +4446,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             setLastSeenVisible(false, paneId: paneId)
         }
 
-        let marks = bridge.paneCommandMarks(paneId: paneId)
-            .filter { $0.exitCode != nil && $0.historyOffset != nil }
-        commandMarksCache[CommandMarksKey(
-            workspaceID: activeSceneWorkspaceID,
+        let marks = commandMarksCache[CommandMarksKey(
+            workspaceID: workspaceID,
             paneID: paneId
-        )] = marks
+        )] ?? []
         var ok: (command: String, exitCode: Int, offset: UInt32)?
         var fail: (command: String, exitCode: Int, offset: UInt32)?
         for mark in marks.reversed() {
@@ -4426,6 +4464,30 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             if ok != nil, fail != nil { break }
         }
         content.setCommandMarks(ok: ok, fail: fail)
+    }
+
+    /// Refresh history/index values at the EventPump boundary, then render
+    /// from the owned caches so AppKit callbacks remain Core-free.
+    private func refreshHistoryChromeFromCore(for paneId: UInt32) {
+        guard paneId == activePaneID else { return }
+        let workspaceID = activeSceneWorkspaceID
+        let historyKey = PaneHistoryKey(workspaceID: workspaceID, paneID: paneId)
+        let latest = bridge.paneLatestLineSeq(paneId: paneId)
+        paneLatestLineSeqCache[historyKey] = latest
+        if let seen = lastSeenLineSeq[paneId] {
+            paneViewportOffsetForSeqCache[PaneHistoryOffsetKey(
+                workspaceID: workspaceID,
+                paneID: paneId,
+                seq: seen
+            )] = bridge.paneViewportOffsetForSeq(paneId: paneId, seq: seen)
+        }
+        let marks = bridge.paneCommandMarks(paneId: paneId)
+            .filter { $0.exitCode != nil && $0.historyOffset != nil }
+        commandMarksCache[CommandMarksKey(
+            workspaceID: workspaceID,
+            paneID: paneId
+        )] = marks
+        refreshHistoryChrome(for: paneId)
     }
 
     private func setLastSeenVisible(_ visible: Bool, paneId: UInt32) {
