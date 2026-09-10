@@ -7,6 +7,9 @@ use super::window_actions::{adjust_font, handle_action, paste_active_pane};
 use super::window_activity::{
     drain_attention_notifications, update_command_marks, update_jump_latest,
 };
+use super::window_discovery::{
+    drain_existing_ssh, drain_local_existing, drain_ssh_probes, maybe_schedule_reconnect,
+};
 use super::window_event_pump::{
     activity_snapshot, drain_surface_input, enqueue_workspace_input, flush_command_queue,
     poll_event_store, sync_view_store,

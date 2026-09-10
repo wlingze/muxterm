@@ -7,10 +7,13 @@ use std::time::{Duration, Instant};
 
 use gtk4::prelude::*;
 
+use crate::frontend::linux::quickconnect::existing::{ExistingEntry, ExistingTransport};
+use crate::frontend::linux::quickconnect_panel::{ExistingPanelState, PanelItem};
+use crate::frontend::ssh_probe::{classify_ssh_probe, ssh_probe_args, SshReach};
+
 use super::{
-    classify_ssh_probe, ssh_probe_args, ClientRuntimeCapability, ExistingEntry, ExistingPanelState,
-    ExistingProbeMsg, ExistingSshProbeResult, ExistingTransport, FfiClient, PanelItem, SshReach,
-    TargetTransport, UiState,
+    ClientRuntimeCapability, ExistingProbeMsg, ExistingSshProbeResult, FfiClient, TargetTransport,
+    UiState,
 };
 
 /// SSH 可达性缓存 TTL（W15d：面板打开时后台探测，TTL 内复用）。

@@ -35,14 +35,14 @@ use crate::frontend::linux::lifecycle::{should_close_window, OnLastPaneExit};
 use crate::frontend::linux::overlay::OverlayLayer;
 use crate::frontend::linux::pane_view::{PaneMenuAction, PaneSurface};
 use crate::frontend::linux::panel_model::PanelTab;
-use crate::frontend::linux::quickconnect::existing::{ExistingEntry, ExistingTransport};
+use crate::frontend::linux::quickconnect::existing::ExistingEntry;
 use crate::frontend::linux::quickconnect::font::FontSettings;
 use crate::frontend::linux::quickconnect::model::{TargetConfig, TargetTransport};
 use crate::frontend::linux::quickconnect::project_flow::ProjectConnectIntent;
 use crate::frontend::linux::quickconnect::status_style::StatusBarMode;
 use crate::frontend::linux::quickconnect::store::QuickConnectStore;
 use crate::frontend::linux::quickconnect_panel::{
-    build_root_items, build_search_items, ExistingNav, ExistingPanelState, PanelItem,
+    build_root_items, build_search_items, ExistingNav, ExistingPanelState,
 };
 use crate::frontend::linux::status_bar::StatusBar;
 #[cfg(test)]
@@ -52,7 +52,7 @@ use crate::frontend::linux::view_store::ViewStore;
 use crate::frontend::linux::window_input::{connect_close_handler, connect_key_handler};
 use crate::frontend::linux::workspace_scenes::WorkspaceScenes;
 use crate::frontend::linux::workspace_sidebar::{AgentSidebarItem, WorkspaceSidebar};
-use crate::frontend::ssh_probe::{classify_ssh_probe, ssh_probe_args, SshReach};
+use crate::frontend::ssh_probe::SshReach;
 #[cfg(test)]
 use muxterm_protocol::state::StateChange;
 use muxterm_protocol::task::TaskOutcome;
@@ -380,78 +380,11 @@ pub fn should_poll_status(
     !sub_active && now.duration_since(last) >= interval
 }
 
-fn spawn_ssh_probe(s: &mut UiState, alias: String) {
-    window_discovery::spawn_ssh_probe(s, alias);
-}
-
-/// 面板打开时收集 SSH 灯：TTL 内用缓存，否则 Unknown 并后台探测。
-fn collect_ssh_reach(s: &mut UiState, workspaces: &[PanelItem]) -> HashMap<String, SshReach> {
-    window_discovery::collect_ssh_reach(s, workspaces)
-}
-
-/// 收编后台 SSH 探测结果（16ms poll 与 test_poll_once 共用）。
-fn drain_ssh_probes(state: &Rc<RefCell<UiState>>) {
-    window_discovery::drain_ssh_probes(state);
-}
-
-fn existing_entries(
-    candidates: Vec<crate::frontend::ffi_client::ExistingCandidate>,
-) -> Vec<ExistingEntry> {
-    window_discovery::existing_entries(candidates)
-}
-
 /// 已有的连接探测增量：先推 local 行，SSH 完成后再推；Done 才清 inflight。
 enum ExistingProbeMsg {
     Aliases(Vec<String>),
     Rows(Vec<ExistingEntry>),
     Done,
-}
-
-fn merge_existing_entries(ex: &mut ExistingPanelState, entries: Vec<ExistingEntry>) {
-    window_discovery::merge_existing_entries(ex, entries);
-}
-
-fn append_unique_existing_entries(target: &mut Vec<ExistingEntry>, entries: Vec<ExistingEntry>) {
-    window_discovery::append_unique_existing_entries(target, entries);
-}
-
-/// C7/C9：已有的连接探测。先 `discover_existing("local")` 立刻推表，
-/// 再按 SSH host 最多 4 路并发。禁止等 `all` 串完才刷新（archmini 上 cd/mac 会冻 Loading）。
-fn spawn_local_existing_probe(s: &mut UiState) {
-    window_discovery::spawn_local_existing_probe(s);
-}
-
-/// 收编已有连接探测结果（16ms poll 与 test_poll_once 共用）。
-fn drain_local_existing(state: &Rc<RefCell<UiState>>) {
-    window_discovery::drain_local_existing(state);
-}
-
-/// W20：SSH 已有的连接探测（tmux + Herdr），后台线程，最多 4 路并发。
-fn spawn_existing_ssh_probe(state: &Rc<RefCell<UiState>>) {
-    window_discovery::spawn_existing_ssh_probe(state);
-}
-
-/// 收编 SSH 已有连接探测结果（16ms poll 与 test_poll_once 共用）。
-fn drain_existing_ssh(state: &Rc<RefCell<UiState>>) {
-    window_discovery::drain_existing_ssh(state);
-}
-
-/// W17a：tmux 控制 client 掉线后自动重连。
-///
-/// 只重连声明 `SharedClientResize` 的 Runtime；Core 负责所有 live
-/// Workspace 的 reconnect，GTK 只提交一次产品级 reconnect 请求。
-fn maybe_schedule_reconnect(state: &Rc<RefCell<UiState>>) {
-    window_discovery::maybe_schedule_reconnect(state);
-}
-
-/// 重连成功：换 Runtime、隐藏水印；断线期间的 BEL 重新推导成 Blocked。
-///
-/// 只对「仍处于断线状态」的工作区生效：若断线期间用户已重新 attach
-/// （新 Runtime 已插入且 Connected），旧重连结果必须丢弃——否则会换掉
-/// 更新的 Runtime，并丢失其尚未消费的 capture 事件（PaneBuf 空、搜索
-/// 不到断线前 token）。
-fn handle_reconnect_success(state: &Rc<RefCell<UiState>>) {
-    window_discovery::handle_reconnect_success(state);
 }
 
 /// 打开当前 pane 内查找条（W18f：Ctrl+F 与 test_open_pane_find 共用）。
