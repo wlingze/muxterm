@@ -108,8 +108,8 @@ fn live_attach_vte_nonempty_and_prompt_not_collapsed(app: &AppWindow, socket: &s
     assert!(ok, "5s 内 VTE 应非空且底行含 PROMPT_BOTTOM");
 }
 
-/// S13b：点 status tab 真的切 window（tmux 侧确认）。
-fn click_status_tab_switches_real_window(app: &AppWindow, socket: &str) {
+/// S13b：点 status tab 只切 frontend scene，不改 Core/tmux active window。
+fn click_status_tab_switches_frontend_scene(app: &AppWindow, socket: &str) {
     // 先建第二个 window。
     let _ = std::process::Command::new("tmux")
         .args(["-L", socket, "new-window", "-d", "-t", "s", "-n", "other"])
@@ -133,6 +133,11 @@ fn click_status_tab_switches_real_window(app: &AppWindow, socket: &str) {
         .copied()
         .find(|t| *t != current)
         .expect("应有非当前 tab");
+    let before = std::process::Command::new("tmux")
+        .args(["-L", socket, "display-message", "-p", "#{window_id}"])
+        .output()
+        .expect("display-message 失败");
+    let before = String::from_utf8_lossy(&before.stdout).trim().to_string();
     let btn = find_by_name(&app.test_window(), &format!("muxterm-status-tab-{target}"))
         .expect("status tab 按钮应存在")
         .downcast::<gtk4::Button>()
@@ -149,12 +154,15 @@ fn click_status_tab_switches_real_window(app: &AppWindow, socket: &str) {
             .output()
             .expect("display-message 失败");
         let wid = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if wid == format!("@{}", target) && app.test_active_tab_id() == target {
+        if wid == before && app.test_active_tab_id() == target {
             ok = true;
             break;
         }
     }
-    assert!(ok, "点击后 tmux window 应切到 @{target}");
+    assert!(
+        ok,
+        "点击后应只切 frontend tab @{target}，Core/tmux window 必须保持 {before}"
+    );
 }
 
 /// F1/F4：隔离 tmux 逐字打字（走 AppWindow 输入 → send-keys -H）——
@@ -285,7 +293,7 @@ fn live_e2e_s8_s9_s13b() {
         isolated_tmux_echo_reaches_replica_and_vte(&app, &socket);
         isolated_tmux_cup_script_lands_on_last_frame(&app, &socket);
         live_attach_vte_nonempty_and_prompt_not_collapsed(&app, &socket);
-        click_status_tab_switches_real_window(&app, &socket);
+        click_status_tab_switches_frontend_scene(&app, &socket);
         isolated_tmux_typing_token_appears_once(&app, &socket);
         isolated_tmux_switch_tab_resets_bounded(&app, &socket);
 
@@ -322,14 +330,17 @@ fn live_e2e_s8_s9_s13b() {
         }
         assert!(a_ok, "工作区 A 的 token 应出现在 VTE");
 
-        app.test_connect_target(TargetConfig::tmux_session("b", TargetTransport::Local));
+        let mut b_target = TargetConfig::tmux_session("b", TargetTransport::Local);
+        b_target.socket = Some(socket.clone());
+        b_target.session = Some("b".into());
+        app.test_connect_target(b_target);
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut b_ok = false;
         while Instant::now() < deadline {
             app.test_poll_once();
             pump_main_loop(30);
             if app
-                .test_active_pane_vte_text()
+                .test_pane_vte_buffer_text(app.test_active_pane_id())
                 .contains("WORKSPACE_B_TOKEN")
             {
                 b_ok = true;
@@ -339,13 +350,16 @@ fn live_e2e_s8_s9_s13b() {
         }
         assert!(b_ok, "工作区 B 的 token 应出现在 VTE");
 
-        app.test_connect_target(TargetConfig::tmux_session("s", TargetTransport::Local));
+        let mut s_target = TargetConfig::tmux_session("s", TargetTransport::Local);
+        s_target.socket = Some(socket.clone());
+        s_target.session = Some("s".into());
+        app.test_connect_target(s_target);
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut back_ok = false;
         while Instant::now() < deadline {
             app.test_poll_once();
             pump_main_loop(30);
-            let vte = app.test_active_pane_vte_text();
+            let vte = app.test_pane_vte_buffer_text(app.test_active_pane_id());
             if vte.contains("WORKSPACE_A_TOKEN") {
                 back_ok = true;
                 break;

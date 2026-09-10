@@ -26,9 +26,9 @@ use crate::frontend::command_queue::{ClientCommand, CommandQueue};
 use crate::frontend::event_pump::EventPump;
 use crate::frontend::ffi_client::{
     ClientActivitySnapshot, ClientAttentionPane, ClientAttentionStatus, ClientCandidateRef,
-    ClientConfig, ClientEventKind, ClientKeyBinding, ClientOpenIntent, ClientOpenRequest,
-    ClientOpenedWorkspace, ClientRuntimeCapability, ClientRuntimeInfo, ClientTarget, ClientTask,
-    ClientWorkspaceAttention, ClientWorkspaceEvent, FfiClient,
+    ClientConfig, ClientEventKind, ClientKeyBinding, ClientLayout, ClientOpenIntent,
+    ClientOpenRequest, ClientOpenedWorkspace, ClientRuntimeCapability, ClientRuntimeInfo,
+    ClientTarget, ClientTask, ClientWorkspaceAttention, ClientWorkspaceEvent, FfiClient,
 };
 use crate::frontend::i18n::{self, Key};
 use crate::frontend::linux::attention_compat::CompatibilityActivity;
@@ -51,7 +51,6 @@ use crate::frontend::linux::quickconnect::model::{
 use crate::frontend::linux::quickconnect::project_flow::ProjectConnectIntent;
 use crate::frontend::linux::quickconnect::status_style::{StatusBarMode, StatusBarSnapshot};
 use crate::frontend::linux::quickconnect::store::QuickConnectStore;
-use crate::frontend::linux::quickconnect::tab_gate::TabSwitchGate;
 use crate::frontend::linux::quickconnect_panel::{
     build_root_items, build_search_items, ExistingNav, ExistingPanelState, PanelItem,
 };
@@ -124,6 +123,10 @@ struct UiState {
     last_status_at: Instant,
     status_interval: Duration,
     keymap: KeyMap,
+    /// 每个 workspace 当前由 frontend 显示的 tab；不等同于 Core 的 active 标记。
+    visible_tabs: HashMap<String, u32>,
+    /// 用户点击 tab 后的 frontend override；Core 的迟到 active 事件不能覆盖它。
+    local_tab_overrides: HashSet<String>,
     active_tab: u32,
     active_pane: u32,
     /// 最近一次同步给后端/PTY 的尺寸。
@@ -141,7 +144,6 @@ struct UiState {
     /// 避免 map 时 106→284→142 连发 -C（dogfood 2152）。
     pending_client_size: Option<(u16, u16)>,
     pending_client_hits: u8,
-    tab_gate: TabSwitchGate,
     on_last_pane_exit: OnLastPaneExit,
     /// 事件分发里不能同步 `window.close()`（可能正握着 RefCell）。
     pending_close: bool,
@@ -281,6 +283,28 @@ impl UiState {
         self.pixel_cache
             .get_mut(&id)
             .expect("active workspace 必须有 layout")
+    }
+
+    /// Return the tab currently shown by the frontend for one workspace.
+    ///
+    /// Core's `ClientTab::is_active` remains the fallback for startup and for
+    /// mutations that Core performs itself.  Once the frontend has shown a
+    /// tab, its choice wins until that tab disappears or Core reports a new
+    /// active-tab mutation.
+    fn visible_tab_id(&self, workspace_key: &str) -> Option<u32> {
+        let view = self.view_store.workspace(workspace_key)?;
+        self.visible_tabs
+            .get(workspace_key)
+            .copied()
+            .filter(|tab_id| view.tabs.iter().any(|tab| tab.id == *tab_id))
+            .or_else(|| view.tabs.iter().find(|tab| tab.is_active).map(|tab| tab.id))
+            .or_else(|| view.tabs.first().map(|tab| tab.id))
+    }
+
+    fn active_tab_id(&self) -> u32 {
+        let workspace_key = self.active_workspace_key();
+        self.visible_tab_id(&workspace_key)
+            .unwrap_or(self.active_tab)
     }
 
     /// 当前前台是否 tmux/SSH 控制 client（local shell 不支持 detach）。
@@ -838,6 +862,8 @@ impl AppWindow {
                 .unwrap_or_else(Instant::now),
             status_interval: Duration::from_secs(1),
             keymap,
+            visible_tabs: HashMap::new(),
+            local_tab_overrides: HashSet::new(),
             active_tab: 0,
             active_pane: 0,
             last_client_size: None,
@@ -845,7 +871,6 @@ impl AppWindow {
             hold_pane_resize_until: None,
             pending_client_size: None,
             pending_client_hits: 0,
-            tab_gate: TabSwitchGate::new(Duration::from_millis(1500)),
             on_last_pane_exit: cfg.behavior.on_last_pane_exit,
             pending_close: false,
             compatibility_activity: CompatibilityActivity::new(cfg.attention.clone()),
@@ -977,7 +1002,7 @@ impl AppWindow {
             s.sidebar.set_commands(&commands);
         }
 
-        // status bar 中区 tab 按钮 → SwitchTab(id)
+        // status bar 中区 tab 按钮 → 切换 frontend-visible scene
         {
             let st = state.clone();
             state
@@ -1097,7 +1122,8 @@ impl AppWindow {
         {
             let st = state.clone();
             state.borrow().status.connect_new_tab(move || {
-                let s = st.borrow();
+                let mut s = st.borrow_mut();
+                prepare_core_tab_mutation(&mut s, &ClientTask::NewTab);
                 let _ = s.execute_active_task(ClientTask::NewTab);
                 // Accepted 不得手工 refresh：等 LayoutChanged/MutationSettled。
             });
@@ -1474,12 +1500,7 @@ impl AppWindow {
         let Some(view) = s.view_store.workspace(&workspace_id) else {
             return Vec::new();
         };
-        let active_tab = view
-            .tabs
-            .iter()
-            .find(|tab| tab.is_active)
-            .map(|tab| tab.id)
-            .unwrap_or(s.active_tab);
+        let active_tab = s.visible_tab_id(&workspace_id).unwrap_or(s.active_tab);
         let Some(layout) = view.layouts.get(&active_tab) else {
             return Vec::new();
         };
@@ -1659,12 +1680,7 @@ impl AppWindow {
             return (0, 0);
         };
         let n_tabs = view.tabs.len();
-        let active_tab = view
-            .tabs
-            .iter()
-            .find(|tab| tab.is_active)
-            .map(|tab| tab.id)
-            .unwrap_or(s.active_tab);
+        let active_tab = s.visible_tab_id(&workspace_id).unwrap_or(s.active_tab);
         let n_panes = view.panes.get(&active_tab).map_or(0, Vec::len);
         (n_tabs, n_panes)
     }
@@ -2025,9 +2041,26 @@ impl AppWindow {
     }
 }
 
+/// A Core tab mutation is allowed to change the authoritative active tab.
+/// Drop a local display override before dispatching it so the resulting
+/// `ActiveTabChanged` event can select the new Core tab.
+fn prepare_core_tab_mutation(s: &mut UiState, task: &ClientTask) {
+    let clear = match task {
+        ClientTask::NewTab => true,
+        ClientTask::CloseTab { tab_id } => *tab_id == s.active_tab,
+        _ => false,
+    };
+    if clear {
+        let workspace_key = s.active_workspace_key();
+        s.visible_tabs.remove(&workspace_key);
+        s.local_tab_overrides.remove(&workspace_key);
+    }
+}
+
 fn handle_action(s: &mut UiState, action: Action, window: &Window, state: &Rc<RefCell<UiState>>) {
     match action {
         Action::NewTab | Action::NewWindow => {
+            prepare_core_tab_mutation(s, &ClientTask::NewTab);
             let _ = s.execute_active_task(ClientTask::NewTab);
             // Accepted 不得手工 refresh：等 16ms 批里 LayoutChanged/MutationSettled。
             return;
@@ -2195,7 +2228,8 @@ fn run_palette_command(state: &Rc<RefCell<UiState>>, window: &Window, parent: &W
             request_quit_close(state, window);
         }
         PaletteAction::NewTab => {
-            let s = state.borrow();
+            let mut s = state.borrow_mut();
+            prepare_core_tab_mutation(&mut s, &ClientTask::NewTab);
             let _ = s.execute_active_task(ClientTask::NewTab);
             // Accepted 不得手工 refresh：等 LayoutChanged/MutationSettled。
         }
@@ -2224,7 +2258,9 @@ fn run_palette_command(state: &Rc<RefCell<UiState>>, window: &Window, parent: &W
         PaletteAction::CloseTab => {
             let mut s = state.borrow_mut();
             let tab = s.active_tab;
-            let _ = s.execute_active_task(ClientTask::CloseTab { tab_id: tab });
+            let task = ClientTask::CloseTab { tab_id: tab };
+            prepare_core_tab_mutation(&mut s, &task);
+            let _ = s.execute_active_task(task);
             refresh_ui(&mut s);
         }
         PaletteAction::CloseWindow => window.close(),
@@ -2489,12 +2525,70 @@ fn switch_workspace_n(s: &mut UiState, n: usize) {
     }
 }
 
+/// 切 tab 只显示已经常驻的 GTK Stack page，不通知 Core。
+fn show_tab_scene(s: &mut UiState, tab_id: u32) -> bool {
+    let workspace_id = s.active_ws_id();
+    let workspace_key = workspace_id.as_str();
+    let active_pane = s
+        .view_store
+        .workspace(&workspace_key)
+        .and_then(|view| view.panes.get(&tab_id))
+        .and_then(|panes| {
+            panes
+                .iter()
+                .find(|pane| pane.is_active)
+                .or_else(|| panes.first())
+        })
+        .map(|pane| pane.id);
+
+    if s.view_store
+        .workspace(&workspace_key)
+        .is_none_or(|view| !view.tabs.iter().any(|tab| tab.id == tab_id))
+    {
+        return false;
+    }
+
+    s.visible_tabs.insert(workspace_key, tab_id);
+    s.local_tab_overrides
+        .insert(workspace_id.as_str().to_owned());
+    s.active_tab = tab_id;
+    if let Some(pane) = active_pane {
+        s.active_pane = pane;
+    }
+    s.last_client_size = None;
+    s.last_pane_sizes.clear();
+    s.pending_client_size = None;
+    s.pending_client_hits = 0;
+    let shown = s
+        .pixel_cache
+        .get_mut(&workspace_id)
+        .is_some_and(|layout| layout.show_tab(tab_id));
+    if !shown {
+        // A topology event can expose the tab in ViewStore one GTK tick
+        // before its resident root has been built.  Build from the owned
+        // snapshot and retry; this still does not touch Core.  The visible
+        // selection above remains pending if the layout is not available yet.
+        refresh_workspace_layout(s, &workspace_id, false);
+    }
+    let shown = s
+        .pixel_cache
+        .get_mut(&workspace_id)
+        .is_some_and(|layout| layout.show_tab(tab_id));
+    if shown && s.panel_open.is_none() && !s.pane_find.is_visible() {
+        if let Some(pane) = active_pane.and_then(|pane| s.active_layout().pane(pane).cloned()) {
+            pane.grab_focus();
+        }
+    }
+    maybe_refresh_status(s, true);
+    sync_chrome_visibility(s);
+    true
+}
+
 fn request_switch_tab(s: &mut UiState, tab_id: u32) {
     if tab_id == s.active_tab {
         return;
     }
-    s.tab_gate.request(tab_id);
-    let _ = s.execute_active_task(ClientTask::SwitchTab { tab_id });
+    let _ = show_tab_scene(s, tab_id);
 }
 
 /// 与 macOS `movePane` 对齐：用当前 tab 快照算目标，发 SwitchPane。
@@ -2814,11 +2908,13 @@ fn refresh_workspace_layout(s: &mut UiState, wid: &WorkspaceId, seed_from_core: 
         return;
     };
     let tab_ids: Vec<u32> = view.tabs.iter().map(|tab| tab.id).collect();
-    let active_tab = view
-        .tabs
-        .iter()
-        .find(|tab| tab.is_active)
-        .map(|tab| tab.id)
+    let stored_tab = s.visible_tabs.get(&workspace_key).copied();
+    if stored_tab.is_some_and(|tab_id| !tab_ids.contains(&tab_id)) {
+        s.visible_tabs.remove(&workspace_key);
+        s.local_tab_overrides.remove(&workspace_key);
+    }
+    let active_tab = s
+        .visible_tab_id(&workspace_key)
         .or_else(|| tab_ids.first().copied());
     // W4：topology sync 必须为**所有** tab 的 leaves 建立常驻 PaneView，
     // 不能只建 active tab；hidden tab 的 frame/output 隐藏期间继续 feed。
@@ -2828,6 +2924,12 @@ fn refresh_workspace_layout(s: &mut UiState, wid: &WorkspaceId, seed_from_core: 
             view.layouts
                 .get(tab_id)
                 .cloned()
+                .or_else(|| {
+                    view.panes
+                        .get(tab_id)
+                        .and_then(|panes| panes.first())
+                        .map(|pane| ClientLayout::Leaf { pane_id: pane.id })
+                })
                 .map(|layout| (*tab_id, layout))
         })
         .collect::<Vec<_>>();
@@ -2844,14 +2946,11 @@ fn refresh_workspace_layout(s: &mut UiState, wid: &WorkspaceId, seed_from_core: 
     s.scene_stack.ensure(&workspace_key);
 
     if is_active {
-        // tab 列表由 status bar 中区渲染（apply 时按签名重建），这里只维护门禁。
-        s.tab_gate.on_snapshot(&tab_ids);
+        // tab 列表由 status bar 中区渲染（apply 时按签名重建），这里只维护
+        // 当前 frontend-visible tab 的兼容缓存。
         if let Some(active) = active_tab {
             s.active_tab = active;
-        }
-        if !s.tab_gate.is_released() {
-            sync_chrome_visibility(s);
-            return;
+            s.visible_tabs.insert(workspace_key.to_owned(), active);
         }
     }
 
@@ -2928,14 +3027,14 @@ fn maybe_refresh_status(s: &mut UiState, force: bool) {
     let active_tab = view
         .tabs
         .iter()
-        .find(|tab| tab.is_active)
+        .find(|tab| tab.id == s.active_tab_id())
         .map(|tab| tab.id)
         .unwrap_or(s.active_tab);
     let npanes = view.panes.get(&active_tab).map(Vec::len).unwrap_or(0);
     let rows: Vec<(u32, String, bool)> = view
         .tabs
         .iter()
-        .map(|tab| (tab.id, tab.name.clone(), tab.is_active))
+        .map(|tab| (tab.id, tab.name.clone(), tab.id == active_tab))
         .collect();
     let mut snap = if s.uses_tmux() {
         crate::frontend::linux::quickconnect::status_style::snapshot_from_tabs(
@@ -3066,6 +3165,29 @@ fn sync_pane_outputs(s: &mut UiState) {
 }
 
 fn refresh_event_workspaces(s: &mut UiState, events: &[ClientWorkspaceEvent]) {
+    // A Core task (for example NewTab/CloseTab) may change its authoritative
+    // active tab.  This is distinct from the status-bar click path, which
+    // never emits an event because it never calls Core.
+    let core_active_tab_workspaces: HashSet<String> = events
+        .iter()
+        .filter(|event| event.event.type_ == crate::ffi::types::STATE_ACTIVE_TAB_CHANGED)
+        .map(|event| event.workspace_id.clone())
+        .collect();
+    for workspace_key in core_active_tab_workspaces {
+        if s.local_tab_overrides.contains(&workspace_key) {
+            continue;
+        }
+        let active = s
+            .view_store
+            .workspace(&workspace_key)
+            .and_then(|view| view.tabs.iter().find(|tab| tab.is_active).map(|tab| tab.id));
+        if let Some(active) = active {
+            s.visible_tabs.insert(workspace_key, active);
+        } else {
+            s.visible_tabs.remove(&workspace_key);
+        }
+    }
+
     let workspace_ids: Vec<WorkspaceId> = events
         .iter()
         .filter(|event| event.event.is_topology())
@@ -3234,11 +3356,7 @@ fn sync_pane_grid_size(s: &UiState, pane_id: u32) {
         return;
     };
     let workspace_key = s.active_ws_id().as_str();
-    let active_tab = s
-        .view_store
-        .workspace(&workspace_key)
-        .and_then(|view| view.tabs.iter().find(|tab| tab.is_active).map(|tab| tab.id))
-        .unwrap_or(s.active_tab);
+    let active_tab = s.active_tab_id();
     let Some(pane) = s
         .view_store
         .workspace(&workspace_key)
@@ -3330,11 +3448,7 @@ fn sync_window_size(s: &mut UiState) {
     }
     let allocated = term.width() > 0 && term.height() > 0;
     let workspace_key = s.active_ws_id().as_str();
-    let active_tab = s
-        .view_store
-        .workspace(&workspace_key)
-        .and_then(|view| view.tabs.iter().find(|tab| tab.is_active).map(|tab| tab.id))
-        .unwrap_or(s.active_tab);
+    let active_tab = s.active_tab_id();
     let multi_pane = s
         .view_store
         .workspace(&workspace_key)
@@ -3380,11 +3494,7 @@ fn sync_visible_pane_sizes(s: &mut UiState) {
     }
     s.hold_pane_resize_until = None;
     let workspace_key = s.active_ws_id().as_str();
-    let active_tab = s
-        .view_store
-        .workspace(&workspace_key)
-        .and_then(|view| view.tabs.iter().find(|tab| tab.is_active).map(|tab| tab.id))
-        .unwrap_or(s.active_tab);
+    let active_tab = s.active_tab_id();
     let pane_ids: Vec<u32> = s
         .view_store
         .workspace(&workspace_key)
@@ -4636,6 +4746,8 @@ fn close_sidebar_workspace(s: &mut UiState, id: &WorkspaceId) {
         .retain(|input| &input.workspace != id);
     s.scene_stack.remove(&workspace_key);
     s.view_store.remove_workspace(&workspace_key);
+    s.visible_tabs.remove(&workspace_key);
+    s.local_tab_overrides.remove(&workspace_key);
     remove_scene_page(s, &workspace_key);
     if s.mounted_ws.as_ref() == Some(id) {
         s.mounted_ws = None;
@@ -4838,7 +4950,6 @@ fn show_workspace_scene(s: &mut UiState, id: WorkspaceId, seed_from_core: bool) 
         s.scene_stack_view.set_visible_child_name(&id.as_str());
         s.mounted_ws = Some(id.clone());
     }
-    s.tab_gate = TabSwitchGate::new(Duration::from_millis(1500));
     if switching && had_cache && !s.uses_tmux() {
         s.hold_pane_resize_until = Some(Instant::now() + Duration::from_millis(400));
     } else {
@@ -5469,6 +5580,26 @@ mod tests {
         let scene = fn_src(src, "show_workspace_scene");
         assert!(!scene.contains("event_pump"), "{scene}");
         assert!(!scene.contains("seed_unseeded_pane_for"), "{scene}");
+    }
+
+    #[test]
+    fn existing_tab_activation_is_scene_only() {
+        let src = include_str!("window.rs");
+        let activation = fn_src(src, "request_switch_tab");
+        assert!(
+            activation.contains("show_tab_scene(s, tab_id)"),
+            "{activation}"
+        );
+        assert!(
+            !activation.contains("ClientTask::SwitchTab"),
+            "{activation}"
+        );
+        assert!(!activation.contains("command_queue"), "{activation}");
+
+        let scene = fn_src(src, "show_tab_scene");
+        assert!(scene.contains("layout.show_tab(tab_id)"), "{scene}");
+        assert!(!scene.contains("event_pump"), "{scene}");
+        assert!(!scene.contains("execute_active_task"), "{scene}");
     }
 
     #[test]
