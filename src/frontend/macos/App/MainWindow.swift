@@ -120,7 +120,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// Native scroll callbacks already carry the local viewport offset. Keep
     /// it for UI-only unseen-line updates; the event pump refreshes it from
     /// Core when the authoritative snapshot changes.
-    private var viewportOffsets: [UInt32: UInt32] = [:]
+    private(set) var viewportOffsets: [UInt32: UInt32] = [:]
     /// 程序化命令跳转触发 native scroll callback 时保留游标一次。
     private var commandNavigationPanes = Set<UInt32>()
     /// 最近一次 poll 的 PaneOutput 条数（W13 洪水上限）。
@@ -477,7 +477,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 )
             }
         }
-        content.paneLayout.onSurfaceBecameReady = { [weak self] paneId, _ in
+        content.paneLayout.onSurfaceBecameReady = { [weak self] paneId, ready in
             guard let self else { return }
             let active = self.lastSnapshot.panes.first(where: \.isActive)?.id
                 ?? self.lastSnapshot.panes.first?.id
@@ -4194,8 +4194,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         content.statusBar.updateDebugSnapshot(snap)
         content.statusBar.updateOutputSnippet(terminalManager.recentOutputSnippet)
         if let activePane = snap.panes.first(where: \.isActive)?.id ?? snap.panes.first?.id {
-            let viewport = bridge.paneViewport(paneId: activePane)
-            viewportOffsets[activePane] = max(0, viewport)
+            let viewport = UInt32(max(0, bridge.paneViewport(paneId: activePane)))
+            viewportOffsets[activePane] = viewport
             content.setJumpLatestVisible(
                 viewport > 0,
                 unseenLines: terminalManager.unseenLineCount(paneId: activePane)

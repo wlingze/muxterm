@@ -79,7 +79,7 @@ let package = Package(
         .target(
             name: "CMuxterm",
             path: "CoreBridge",
-            exclude: ["CoreBridge.swift", "muxterm.h"],
+            exclude: ["CoreBridge.swift"],
             publicHeadersPath: "include"
         ),
         // AppKit 会话层：给 in-process e2e 用（对标 Linux AppWindow）。

@@ -563,7 +563,7 @@ final class TerminalManager: TerminalInputHandler {
     /// 可能保留的空尾行；输出继续增长时在 flush 前再次扩容。只扩不缩，
     /// 因此不会因为 core 快照暂时变短而破坏用户当前历史视口。
     private func syncHistoryCapacity(paneId: UInt32, view: MuxTerminalView) {
-        guard bridgeQueriesEnabled, let bridge else { return }
+        guard bridgeQueriesEnabled, bridge != nil else { return }
         let rows = UInt32(max(1, expectedPaneSizes[paneId]?.rows ?? view.getTerminal().rows))
         let rawMax = paneHistoryMaxOffset(paneId: paneId, rows: rows)
         guard rawMax >= 0 else { return }
@@ -842,7 +842,7 @@ final class TerminalManager: TerminalInputHandler {
         pendingFeeds.removeValue(forKey: paneId)
         pendingViewportOffsets.removeValue(forKey: paneId)
         pendingPtySizes.removeValue(forKey: paneId)
-        pendingInputs.removeValue(forKey: paneId)
+        pendingInputs.removeAll { $0.paneId == paneId }
         pendingSeeds.removeValue(forKey: paneId)
         seedingPanes.remove(paneId)
         pendingSnapshots.removeValue(forKey: paneId)
@@ -981,7 +981,7 @@ final class TerminalManager: TerminalInputHandler {
         guard enqueueCoreOperation(
             .resize(.paneAxis(paneID: paneId, horizontal: horizontal, size: size)),
             failureMessage: failureMessage
-        else {
+        ) else {
             onError?(failureMessage)
             return -1
         }
