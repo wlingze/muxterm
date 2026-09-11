@@ -185,21 +185,17 @@ pub unsafe extern "C" fn muxterm_poll_events(
         }
         let handle = &mut *h;
         handle.clear_event_bufs();
-        for (ws_id, events) in handle.pool_mut().poll_background() {
-            handle.apply_attention_for_events(&ws_id, &events);
-            for ev in events {
-                handle.defer_event(ws_id.clone(), ev);
-            }
+        for (ws_id, batch) in handle.pool_mut().poll_background_batches() {
+            handle.apply_attention_for_batch(&ws_id, &batch);
+            handle.defer_batch(ws_id, batch);
         }
         let active_id = handle.pool().active_id().cloned();
-        if let Some(ws) = handle.active_workspace_mut() {
-            let events = ws.refresh();
-            if let Some(ws_id) = &active_id {
-                handle.apply_attention_for_events(ws_id, &events);
-                for ev in events {
-                    handle.defer_event(ws_id.clone(), ev);
-                }
-            }
+        let active_batch = handle
+            .active_workspace_mut()
+            .map(|workspace| workspace.refresh_batch());
+        if let (Some(ws_id), Some(batch)) = (active_id.as_ref(), active_batch) {
+            handle.apply_attention_for_batch(ws_id, &batch);
+            handle.defer_batch(ws_id.clone(), batch);
         }
         let ready: Vec<(WorkspaceId, StateChange)> = handle
             .deferred_events
@@ -256,21 +252,17 @@ pub unsafe extern "C" fn muxterm_poll_workspace_events(
         }
         let handle = &mut *h;
         handle.clear_event_bufs();
-        for (ws_id, events) in handle.pool_mut().poll_background() {
-            handle.apply_attention_for_events(&ws_id, &events);
-            for ev in events {
-                handle.defer_event(ws_id.clone(), ev);
-            }
+        for (ws_id, batch) in handle.pool_mut().poll_background_batches() {
+            handle.apply_attention_for_batch(&ws_id, &batch);
+            handle.defer_batch(ws_id, batch);
         }
         let active_id = handle.pool().active_id().cloned();
-        if let Some(ws) = handle.active_workspace_mut() {
-            let events = ws.refresh();
-            if let Some(ws_id) = &active_id {
-                handle.apply_attention_for_events(ws_id, &events);
-                for ev in events {
-                    handle.defer_event(ws_id.clone(), ev);
-                }
-            }
+        let active_batch = handle
+            .active_workspace_mut()
+            .map(|workspace| workspace.refresh_batch());
+        if let (Some(ws_id), Some(batch)) = (active_id.as_ref(), active_batch) {
+            handle.apply_attention_for_batch(ws_id, &batch);
+            handle.defer_batch(ws_id.clone(), batch);
         }
         let n = handle.deferred_events.len().min(max_count as usize);
         let slice = std::slice::from_raw_parts_mut(out, n);
