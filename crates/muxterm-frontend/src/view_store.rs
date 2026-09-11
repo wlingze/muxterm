@@ -8,8 +8,12 @@
 use std::collections::{HashMap, VecDeque};
 
 use crate::ffi_client::{
-    ClientEvent, ClientEventKind, ClientLayout, ClientPane, ClientTab, ClientWorkspace,
-    ClientWorkspaceEvent,
+    ClientActivityEvent, ClientActivityRecord, ClientActivityWorkspaceEvent, ClientEvent,
+    ClientEventKind, ClientLayout, ClientPane, ClientTab, ClientWorkspace, ClientWorkspaceEvent,
+};
+#[cfg(test)]
+use crate::ffi_client::{
+    ClientActivityLocation, ClientActivityRecordStatus, ClientActivityWorkspaceId,
 };
 
 const RENDER_MAILBOX_CAPACITY: usize = 128;
@@ -47,6 +51,8 @@ pub struct WorkspaceView {
 pub struct ViewStore {
     workspaces: HashMap<String, WorkspaceView>,
     order: Vec<String>,
+    activities: HashMap<String, ClientActivityRecord>,
+    activity_tombstones: HashMap<String, u64>,
 }
 
 impl ViewStore {
@@ -90,6 +96,59 @@ impl ViewStore {
                 .is_some_and(|workspace| workspace.active)
                 .then_some(workspace_id)
         })
+    }
+
+    /// Replace the owned Activity snapshot used to seed a frontend store.
+    pub fn replace_activity_records(&mut self, records: Vec<ClientActivityRecord>) {
+        self.activities.clear();
+        self.activity_tombstones.clear();
+        for record in records {
+            let id = record.id.clone();
+            let replace = self
+                .activities
+                .get(&id)
+                .is_none_or(|current| record.revision > current.revision);
+            if replace {
+                self.activities.insert(id, record);
+            }
+        }
+    }
+
+    /// Apply one revisioned Activity event. Older upserts/removes cannot
+    /// overwrite a newer record or resurrect a tombstoned id.
+    pub fn apply_activity_event(&mut self, event: ClientActivityWorkspaceEvent) -> bool {
+        let event = event.event;
+        let id = event.id().to_owned();
+        let revision = event.revision();
+        let current_revision = self
+            .activities
+            .get(&id)
+            .map(|record| record.revision)
+            .into_iter()
+            .chain(self.activity_tombstones.get(&id).copied())
+            .max();
+        if current_revision.is_some_and(|current| revision <= current) {
+            return false;
+        }
+        match event {
+            ClientActivityEvent::Upsert(record) => {
+                self.activity_tombstones.remove(&id);
+                self.activities.insert(id, *record);
+            }
+            ClientActivityEvent::Remove { .. } => {
+                self.activities.remove(&id);
+                self.activity_tombstones.insert(id, revision);
+            }
+        }
+        true
+    }
+
+    pub fn activity_records(&self) -> impl Iterator<Item = &ClientActivityRecord> {
+        self.activities.values()
+    }
+
+    pub fn activity_record(&self, id: &str) -> Option<&ClientActivityRecord> {
+        self.activities.get(id)
     }
 
     pub fn replace_topology(
@@ -288,6 +347,8 @@ fn push_paused(mailbox: &mut VecDeque<ClientEvent>, event: ClientEvent) {
 #[cfg(test)]
 mod tests {
     use super::{
+        ClientActivityEvent, ClientActivityLocation, ClientActivityRecord,
+        ClientActivityRecordStatus, ClientActivityWorkspaceEvent, ClientActivityWorkspaceId,
         ClientEvent, ClientEventKind, ClientLayout, ClientPane, ClientTab, ClientWorkspace,
         PaneRenderPolicy, ViewStore, RENDER_MAILBOX_CAPACITY,
     };
@@ -525,6 +586,73 @@ mod tests {
         assert_eq!(
             store.pane_render_policy("local//one/shell/", 7),
             PaneRenderPolicy::Live
+        );
+    }
+
+    #[test]
+    fn activity_events_apply_by_revision_and_keep_tombstones() {
+        let mut store = ViewStore::default();
+        let record = |name: &str, revision: u64| ClientActivityRecord {
+            id: "command:local//demo/shell/:1".into(),
+            kind: "command".into(),
+            name: name.into(),
+            status: ClientActivityRecordStatus::Running,
+            location: ClientActivityLocation {
+                workspace: ClientActivityWorkspaceId {
+                    transport: "local".into(),
+                    alias: None,
+                    session: "demo".into(),
+                    runtime: "shell".into(),
+                    path: "/tmp/demo".into(),
+                },
+                tab: 1,
+                pane: 1,
+            },
+            cwd: Some("/tmp/demo".into()),
+            workspace_name: "demo".into(),
+            runtime_name: "shell".into(),
+            transport_name: "local".into(),
+            started_at: Some(1),
+            updated_at: revision,
+            revision,
+        };
+        let envelope = |event| ClientActivityWorkspaceEvent {
+            workspace_id: "local//demo/shell//tmp/demo".into(),
+            event,
+        };
+
+        assert!(
+            store.apply_activity_event(envelope(ClientActivityEvent::Upsert(Box::new(record(
+                "running", 2
+            )),)))
+        );
+        assert!(
+            !store.apply_activity_event(envelope(ClientActivityEvent::Upsert(Box::new(record(
+                "stale", 1
+            )),)))
+        );
+        assert_eq!(
+            store
+                .activity_record("command:local//demo/shell/:1")
+                .unwrap()
+                .name,
+            "running"
+        );
+
+        assert!(
+            store.apply_activity_event(envelope(ClientActivityEvent::Remove {
+                id: "command:local//demo/shell/:1".into(),
+                revision: 3,
+            }))
+        );
+        assert!(store
+            .activity_record("command:local//demo/shell/:1")
+            .is_none());
+        assert!(
+            !store.apply_activity_event(envelope(ClientActivityEvent::Upsert(Box::new(record(
+                "resurrect",
+                2
+            )),)))
         );
     }
 }
