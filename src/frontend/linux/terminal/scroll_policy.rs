@@ -50,9 +50,21 @@ pub fn wheel_action(
     }
 }
 
+/// 距底 ≤ page/6 且正在向下滚时吸附到最新。
+pub fn snap_history_to_latest(distance_from_bottom: i32, page: i32, scrolling_down: bool) -> bool {
+    scrolling_down && page > 0 && distance_from_bottom <= page / 6
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snap_history_to_latest_only_near_bottom_when_scrolling_down() {
+        assert!(snap_history_to_latest(2, 24, true));
+        assert!(!snap_history_to_latest(20, 24, true));
+        assert!(!snap_history_to_latest(2, 24, false));
+    }
 
     /// W21a：主屏向上滚 = ScrollHistory 3 行。
     #[test]

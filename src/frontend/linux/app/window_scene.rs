@@ -29,12 +29,19 @@ pub(super) fn switch_tab_n(s: &mut UiState, n: usize) {
 }
 
 pub(super) fn switch_workspace_n(s: &mut UiState, n: usize) {
-    let target = s
-        .view_store
-        .workspaces()
-        .nth(n.saturating_sub(1))
-        .and_then(|(_, view)| view.workspace.as_ref())
-        .and_then(|workspace| parse_workspace_id(&workspace.id));
+    let target = if n == 0 {
+        s.view_store
+            .workspaces()
+            .last()
+            .and_then(|(_, view)| view.workspace.as_ref())
+            .and_then(|workspace| parse_workspace_id(&workspace.id))
+    } else {
+        s.view_store
+            .workspaces()
+            .nth(n.saturating_sub(1))
+            .and_then(|(_, view)| view.workspace.as_ref())
+            .and_then(|workspace| parse_workspace_id(&workspace.id))
+    };
     if let Some(target) = target {
         if s.active_ws_id() != target {
             activate_existing(s, target);

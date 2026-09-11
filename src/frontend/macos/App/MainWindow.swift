@@ -797,9 +797,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// Cmd+Ctrl+N：按固定打开顺序切换 Workspace，不随最近使用重排。
     /// 与 Linux Ctrl+Alt+N 使用同一组 `switch_workspace_N` 语义。
     func switchToWorkspaceAtFixedIndex(_ oneBased: Int) {
-        guard (1...5).contains(oneBased) else { return }
         let ordered = workspaceSidebarScenes()
-        guard ordered.indices.contains(oneBased - 1) else { return }
+        guard !ordered.isEmpty else { return }
+        if oneBased == 0 {
+            activate(slot: ordered[ordered.count - 1])
+            return
+        }
+        guard (1...9).contains(oneBased), ordered.indices.contains(oneBased - 1) else { return }
         activate(slot: ordered[oneBased - 1])
     }
 

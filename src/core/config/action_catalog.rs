@@ -259,6 +259,8 @@ mod tests {
             "switch_tab_last",
             "switch_workspace_1",
             "switch_workspace_5",
+            "switch_workspace_9",
+            "switch_workspace_last",
             "switch_pane_prev",
             "switch_pane_next",
             "search",

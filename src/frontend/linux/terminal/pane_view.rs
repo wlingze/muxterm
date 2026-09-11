@@ -17,7 +17,7 @@ use vte4::Terminal;
 
 use crate::frontend::linux::pane_input_state::PaneInputState;
 use crate::frontend::linux::quickconnect::font::FontSettings;
-use crate::frontend::linux::scroll_policy::{wheel_action, WheelAction};
+use crate::frontend::linux::scroll_policy::{snap_history_to_latest, wheel_action, WheelAction};
 use crate::frontend::linux::theme::{Rgb, Theme};
 use crate::frontend::mirror::{
     should_forward_mixed_input, should_forward_parser_response, DISABLE_MOUSE_TRACKING,
@@ -397,7 +397,17 @@ impl PaneSurface {
                     let target = adj.value() + lines as f64 * step;
                     let lower = adj.lower();
                     let upper = (adj.upper() - adj.page_size()).max(lower);
-                    adj.set_value(target.clamp(lower, upper));
+                    let page = adj.page_size().max(1.0);
+                    let distance = (upper - target).max(0.0);
+                    if snap_history_to_latest(
+                        distance.round() as i32,
+                        page.round() as i32,
+                        lines > 0,
+                    ) {
+                        adj.set_value(upper);
+                    } else {
+                        adj.set_value(target.clamp(lower, upper));
+                    }
                 }
             }
             WheelAction::SendToApp { bytes } => {

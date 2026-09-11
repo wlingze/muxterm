@@ -751,6 +751,15 @@ key_path = "~/.ssh/id_rsa"
             Action::from_str("switch_workspace_5"),
             Action::SwitchWorkspace5
         );
+        assert_eq!(
+            Action::from_str("switch_workspace_last"),
+            Action::SwitchWorkspaceLast
+        );
+        assert_eq!(Action::SwitchWorkspace9.switch_workspace_index(), Some(9));
+        assert_eq!(
+            Action::SwitchWorkspaceLast.switch_workspace_index(),
+            Some(0)
+        );
         assert_eq!(Action::from_str("quick_connect"), Action::QuickConnect);
         assert_eq!(Action::from_str("quit"), Action::Quit);
         assert_eq!(Action::from_str("copy"), Action::Copy);

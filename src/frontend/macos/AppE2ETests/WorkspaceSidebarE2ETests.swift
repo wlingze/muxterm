@@ -65,6 +65,13 @@ final class WorkspaceSidebarE2ETests: XCTestCase {
         )
         XCTAssertTrue(app.testDispatchKeyEvent(secondEvent), "Cmd-Ctrl-2 必须被窗口快捷键消费")
         XCTAssertEqual(app.testActiveWorkspaceSession(), second.session)
+
+        let lastEvent = try XCTUnwrap(
+            app.testMakeKeyEvent(key: "0", keyCode: 29, command: true, control: true),
+            "必须能构造 Cmd-Ctrl-0"
+        )
+        XCTAssertTrue(app.testDispatchKeyEvent(lastEvent), "Cmd-Ctrl-0 必须切最后一个 Workspace")
+        XCTAssertEqual(app.testActiveWorkspaceSession(), second.session)
     }
 
     func testSidebarWorkspaceRowClickUsesProductionActivationPath() throws {

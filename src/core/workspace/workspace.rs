@@ -149,7 +149,35 @@ impl Workspace {
 
     /// 执行一个 Task（NewTab / SplitPane / SendKeys / …）。
     pub fn execute(&mut self, task: Task) -> anyhow::Result<TaskOutcome> {
-        self.model.execute(task)
+        self.model.execute(self.apply_workspace_defaults(task))
+    }
+
+    /// 未指定 workdir 的 NewTab 使用 Workspace 项目路径；pane split 仍由
+    /// Runtime 继承当前 pane cwd。
+    fn apply_workspace_defaults(&self, task: Task) -> Task {
+        match task {
+            Task::NewTab {
+                name,
+                command,
+                workdir: None,
+            } => {
+                let workdir = self
+                    .resolved_target
+                    .as_ref()
+                    .map(|target| target.canonical.path.trim().to_string())
+                    .filter(|path| !path.is_empty())
+                    .or_else(|| {
+                        let path = self.id.path.trim();
+                        (!path.is_empty()).then(|| path.to_string())
+                    });
+                Task::NewTab {
+                    name,
+                    command,
+                    workdir,
+                }
+            }
+            other => other,
+        }
     }
 
     /// 建立连接（spawn tmux / 启动本地 shell）。
@@ -664,6 +692,75 @@ mod tests {
     use crate::workspace::template::{
         PaneTemplate, TabTemplate, TemplateLayout, TemplateName, WorkspaceTemplate,
     };
+
+    #[test]
+    fn new_tab_without_workdir_uses_workspace_project_path() {
+        use std::sync::{Arc, Mutex};
+
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut runtime = MockRuntime::with_single_pane();
+        runtime.executed_log = Some(log.clone());
+        let id = WorkspaceId::new("local", None, "demo", "tmux", "");
+        let mut workspace = Workspace::new(id, "demo".into(), Box::new(runtime));
+        let mut spec = WorkspaceSpec::local_tmux(Some("demo".into()), None);
+        spec.path = "/tmp/a".into();
+        workspace.set_resolved_target(ResolvedTarget {
+            spec,
+            canonical: ResolvedTargetDescriptor::new(
+                "demo",
+                TargetRuntime::Tmux,
+                TargetTransport::Local,
+                "/tmp/a",
+            ),
+        });
+        workspace
+            .execute(Task::NewTab {
+                name: None,
+                command: None,
+                workdir: None,
+            })
+            .unwrap();
+        let executed = log.lock().unwrap().clone();
+        assert!(
+            executed.iter().any(|task| matches!(
+                task,
+                Task::NewTab {
+                    workdir: Some(path),
+                    ..
+                } if path == "/tmp/a"
+            )),
+            "NewTab 必须带上 workspace path，实际 {executed:?}"
+        );
+    }
+
+    #[test]
+    fn new_tab_without_resolved_target_uses_workspace_id_path() {
+        use std::sync::{Arc, Mutex};
+
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut runtime = MockRuntime::with_single_pane();
+        runtime.executed_log = Some(log.clone());
+        let id = WorkspaceId::new("local", None, "demo", "tmux", "/tmp/from-id");
+        let mut workspace = Workspace::new(id, "demo".into(), Box::new(runtime));
+        workspace
+            .execute(Task::NewTab {
+                name: None,
+                command: None,
+                workdir: None,
+            })
+            .unwrap();
+        let executed = log.lock().unwrap().clone();
+        assert!(
+            executed.iter().any(|task| matches!(
+                task,
+                Task::NewTab {
+                    workdir: Some(path),
+                    ..
+                } if path == "/tmp/from-id"
+            )),
+            "没有 resolved_target 时退回 WorkspaceId.path，实际 {executed:?}"
+        );
+    }
 
     fn workspace(name: &str) -> Workspace {
         let id = WorkspaceId::new("local", None, name, "tmux", "");

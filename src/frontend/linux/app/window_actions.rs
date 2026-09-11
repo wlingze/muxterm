@@ -80,6 +80,11 @@ pub(super) fn handle_action(
         Action::SwitchWorkspace3 => switch_workspace_n(s, 3),
         Action::SwitchWorkspace4 => switch_workspace_n(s, 4),
         Action::SwitchWorkspace5 => switch_workspace_n(s, 5),
+        Action::SwitchWorkspace6 => switch_workspace_n(s, 6),
+        Action::SwitchWorkspace7 => switch_workspace_n(s, 7),
+        Action::SwitchWorkspace8 => switch_workspace_n(s, 8),
+        Action::SwitchWorkspace9 => switch_workspace_n(s, 9),
+        Action::SwitchWorkspaceLast => switch_workspace_n(s, 0),
         Action::SwitchPaneNext | Action::SwitchPanePrev => {
             switch_pane_offset(s, matches!(action, Action::SwitchPaneNext));
         }

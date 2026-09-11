@@ -36,6 +36,11 @@ pub enum Action {
     SwitchWorkspace3,
     SwitchWorkspace4,
     SwitchWorkspace5,
+    SwitchWorkspace6,
+    SwitchWorkspace7,
+    SwitchWorkspace8,
+    SwitchWorkspace9,
+    SwitchWorkspaceLast,
     SwitchPanePrev,
     SwitchPaneNext,
     Search,
@@ -75,6 +80,11 @@ impl Action {
             "switch_workspace_3" => Action::SwitchWorkspace3,
             "switch_workspace_4" => Action::SwitchWorkspace4,
             "switch_workspace_5" => Action::SwitchWorkspace5,
+            "switch_workspace_6" => Action::SwitchWorkspace6,
+            "switch_workspace_7" => Action::SwitchWorkspace7,
+            "switch_workspace_8" => Action::SwitchWorkspace8,
+            "switch_workspace_9" => Action::SwitchWorkspace9,
+            "switch_workspace_last" => Action::SwitchWorkspaceLast,
             "switch_pane_prev" => Action::SwitchPanePrev,
             "switch_pane_next" => Action::SwitchPaneNext,
             "search" => Action::Search,
@@ -88,6 +98,23 @@ impl Action {
             "copy" => Action::Copy,
             "paste" => Action::Paste,
             _ => Action::Unknown,
+        }
+    }
+
+    /// 1–9 是侧栏固定打开顺序；`0` 永远是最后一个。
+    pub fn switch_workspace_index(self) -> Option<usize> {
+        match self {
+            Action::SwitchWorkspace1 => Some(1),
+            Action::SwitchWorkspace2 => Some(2),
+            Action::SwitchWorkspace3 => Some(3),
+            Action::SwitchWorkspace4 => Some(4),
+            Action::SwitchWorkspace5 => Some(5),
+            Action::SwitchWorkspace6 => Some(6),
+            Action::SwitchWorkspace7 => Some(7),
+            Action::SwitchWorkspace8 => Some(8),
+            Action::SwitchWorkspace9 => Some(9),
+            Action::SwitchWorkspaceLast => Some(0),
+            _ => None,
         }
     }
 }
@@ -117,6 +144,11 @@ pub fn default_keybindings() -> Vec<KeyBinding> {
         kb("3", &["control", "alt"], "switch_workspace_3"),
         kb("4", &["control", "alt"], "switch_workspace_4"),
         kb("5", &["control", "alt"], "switch_workspace_5"),
+        kb("6", &["control", "alt"], "switch_workspace_6"),
+        kb("7", &["control", "alt"], "switch_workspace_7"),
+        kb("8", &["control", "alt"], "switch_workspace_8"),
+        kb("9", &["control", "alt"], "switch_workspace_9"),
+        kb("0", &["control", "alt"], "switch_workspace_last"),
         kb("[", &["alt"], "switch_pane_prev"),
         kb("]", &["alt"], "switch_pane_next"),
         kb("r", &["alt"], "search"),

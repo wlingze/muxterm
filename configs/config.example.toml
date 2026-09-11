@@ -185,6 +185,31 @@ mods = ["control", "alt"]
 action = "switch_workspace_5"
 
 [[keybindings]]
+key = "6"
+mods = ["control", "alt"]
+action = "switch_workspace_6"
+
+[[keybindings]]
+key = "7"
+mods = ["control", "alt"]
+action = "switch_workspace_7"
+
+[[keybindings]]
+key = "8"
+mods = ["control", "alt"]
+action = "switch_workspace_8"
+
+[[keybindings]]
+key = "9"
+mods = ["control", "alt"]
+action = "switch_workspace_9"
+
+[[keybindings]]
+key = "0"
+mods = ["control", "alt"]
+action = "switch_workspace_last"
+
+[[keybindings]]
 key = "["
 mods = ["alt"]
 action = "switch_pane_prev"

@@ -19,7 +19,7 @@ pub struct WorkspaceSidebarItem {
     pub runtime: String,
     pub transport: String,
     pub active: bool,
-    /// Ctrl+Alt+N 快捷编号；目前只暴露固定顺序的前五个 workspace。
+    /// Ctrl+Alt+N 快捷编号；固定顺序的前九个 workspace。0 永远是最后一个。
     pub shortcut: Option<u8>,
 }
 
@@ -49,7 +49,7 @@ impl WorkspaceSidebarItem {
                     runtime: workspace.runtime.clone(),
                     transport: transport_label(&workspace.id),
                     active: active_id == Some(workspace.id.as_str()),
-                    shortcut: (index < 5).then_some((index + 1) as u8),
+                    shortcut: (index < 9).then_some((index + 1) as u8),
                 })
             })
             .collect()

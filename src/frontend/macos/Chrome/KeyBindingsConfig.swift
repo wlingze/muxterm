@@ -33,9 +33,12 @@ public enum KeyBindingsConfig {
         case "switch_tab_last": return .switchLastTab
         case "toggle_sidebar": return .toggleSidebar
         default:
+            if name == "switch_workspace_last" {
+                return .switchWorkspace(0)
+            }
             if name.hasPrefix("switch_workspace_"),
                let n = Int(name.dropFirst("switch_workspace_".count)),
-               (1...5).contains(n)
+               (1...9).contains(n)
             {
                 return .switchWorkspace(n)
             }

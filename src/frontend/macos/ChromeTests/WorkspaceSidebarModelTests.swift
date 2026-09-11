@@ -2,8 +2,8 @@ import XCTest
 @testable import MuxtermChrome
 
 final class WorkspaceSidebarModelTests: XCTestCase {
-    func testWorkspaceShortcutIndexesUseOpenedOrderAndStopAtFive() {
-        let ids = ["one", "two", "three", "four", "five", "six"]
+    func testWorkspaceShortcutIndexesUseOpenedOrderAndStopAtNine() {
+        let ids = ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"]
 
         XCTAssertEqual(
             WorkspaceShortcutIndex.byWorkspaceID(ids),
@@ -13,9 +13,28 @@ final class WorkspaceSidebarModelTests: XCTestCase {
                 "three": 3,
                 "four": 4,
                 "five": 5,
+                "six": 6,
+                "seven": 7,
+                "eight": 8,
+                "nine": 9,
             ]
         )
-        XCTAssertNil(WorkspaceShortcutIndex.byWorkspaceID(ids)["six"])
+        XCTAssertNil(WorkspaceShortcutIndex.byWorkspaceID(ids)["ten"])
+    }
+
+    func testCmdCtrlZeroSwitchesLastWorkspaceAndCmdZeroResetsFont() {
+        XCTAssertEqual(
+            KeyBindings.action(for: KeyChord(command: true, control: true, key: "0")),
+            .switchWorkspace(0)
+        )
+        XCTAssertEqual(
+            KeyBindings.action(for: KeyChord(command: true, control: true, key: "9")),
+            .switchWorkspace(9)
+        )
+        XCTAssertEqual(
+            KeyBindings.action(for: KeyChord(command: true, key: "0")),
+            .resetFontSize
+        )
     }
 
     func testStructuredAgentRegistryKeepsReadIdentityUntilPaneCloses() {

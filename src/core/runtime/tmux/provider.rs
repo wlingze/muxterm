@@ -110,6 +110,7 @@ impl RuntimeProvider for TmuxDriver {
             (!spec.path.is_empty()).then_some(spec.path.as_str()),
         );
         rt.set_scrollback_lines(spec.scrollback_lines);
+        rt.set_workspace_workdir(spec.path.clone());
         Ok(Box::new(rt))
     }
 

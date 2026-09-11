@@ -25,7 +25,7 @@ public enum KeyAction: Equatable, Sendable {
     case resetFontSize
     case togglePaneFullscreen
     case toggleSidebar
-    case switchWorkspace(Int) // 1-based, fixed opened order
+    case switchWorkspace(Int) // 1-based opened order; 0 is always last
 }
 
 /// 修饰键 + 主键（大小写无关）的纯数据描述。
@@ -127,7 +127,7 @@ public enum KeyBindings {
             if key == "-" {
                 return .decreaseFontSize
             }
-            if key == "0" {
+            if key == "0", !chord.control {
                 return .resetFontSize
             }
         }
@@ -159,11 +159,15 @@ public enum KeyBindings {
             return .toggleSidebar
         }
 
-        // Cmd+Ctrl+1..5 切换固定打开顺序的 Workspace（与 Linux Ctrl+Alt+N 对齐）。
-        if chord.command, chord.control, !chord.shift, !chord.option,
-           let n = Int(key), (1...5).contains(n)
-        {
-            return .switchWorkspace(n)
+        // Cmd+Ctrl+1..9 固定打开顺序；Cmd+Ctrl+0 永远最后一个。
+        // Cmd+0 仍是重置字体，不得变成切 Workspace。
+        if chord.command, chord.control, !chord.shift, !chord.option {
+            if key == "0" {
+                return .switchWorkspace(0)
+            }
+            if let n = Int(key), (1...9).contains(n) {
+                return .switchWorkspace(n)
+            }
         }
 
         // Ctrl+Q 退出。Ctrl+D 不属于窗口快捷键：它必须作为 EOF

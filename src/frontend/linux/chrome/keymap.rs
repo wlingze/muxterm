@@ -31,6 +31,11 @@ pub enum Action {
     SwitchWorkspace3,
     SwitchWorkspace4,
     SwitchWorkspace5,
+    SwitchWorkspace6,
+    SwitchWorkspace7,
+    SwitchWorkspace8,
+    SwitchWorkspace9,
+    SwitchWorkspaceLast,
     SwitchPanePrev,
     SwitchPaneNext,
     Search,
@@ -69,6 +74,11 @@ impl Action {
             "switch_workspace_3" => Self::SwitchWorkspace3,
             "switch_workspace_4" => Self::SwitchWorkspace4,
             "switch_workspace_5" => Self::SwitchWorkspace5,
+            "switch_workspace_6" => Self::SwitchWorkspace6,
+            "switch_workspace_7" => Self::SwitchWorkspace7,
+            "switch_workspace_8" => Self::SwitchWorkspace8,
+            "switch_workspace_9" => Self::SwitchWorkspace9,
+            "switch_workspace_last" => Self::SwitchWorkspaceLast,
             "switch_pane_prev" => Self::SwitchPanePrev,
             "switch_pane_next" => Self::SwitchPaneNext,
             "search" => Self::Search,
@@ -171,6 +181,11 @@ pub fn default_keybindings() -> Vec<KeyBinding> {
         binding("3", &["control", "alt"], "switch_workspace_3"),
         binding("4", &["control", "alt"], "switch_workspace_4"),
         binding("5", &["control", "alt"], "switch_workspace_5"),
+        binding("6", &["control", "alt"], "switch_workspace_6"),
+        binding("7", &["control", "alt"], "switch_workspace_7"),
+        binding("8", &["control", "alt"], "switch_workspace_8"),
+        binding("9", &["control", "alt"], "switch_workspace_9"),
+        binding("0", &["control", "alt"], "switch_workspace_last"),
         binding("[", &["alt"], "switch_pane_prev"),
         binding("]", &["alt"], "switch_pane_next"),
         binding("r", &["alt"], "search"),
@@ -365,6 +380,14 @@ mod tests {
         assert_eq!(
             km.lookup_str("5", &["control", "alt"]),
             Some(Action::SwitchWorkspace5)
+        );
+        assert_eq!(
+            km.lookup_str("9", &["control", "alt"]),
+            Some(Action::SwitchWorkspace9)
+        );
+        assert_eq!(
+            km.lookup_str("0", &["control", "alt"]),
+            Some(Action::SwitchWorkspaceLast)
         );
     }
 
