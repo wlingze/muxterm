@@ -1,10 +1,9 @@
 //! TerminalModel：Terminal 层的纯逻辑核心。
 //!
 //! 持有一个 [`Runtime`]，提供：
-//! - `execute(Task)`：把任务派发给 backend，并聚合产生的 `StateChange` 事件
+//! - `execute(Task)`：把任务派发给 backend，并聚合产生的 `RuntimeBatch`
 //! - `current_state()`：只读访问当前状态快照（`&dyn State`）
-//! - `take_events()` / `poll_events()`：拉取尚未派发的事件（供前端轮询）
-//! - `subscribe(callback)`：注册状态变更回调（同步，事件到来时调用）
+//! - `take_batch()` / `poll_batch()`：拉取尚未派发的三路 lane 批次
 //! - undo/redo 历史（基于 Task 序列，可选）
 //!
 //! **纯逻辑，无 I/O、无 GUI 依赖**。所有测试用 MockRuntime，`cargo test` 即可跑。
@@ -12,13 +11,16 @@
 //! 设计要点：
 //! - TerminalModel 不直接改 state，state 由 backend 维护；model 只做编排 + 事件聚合
 //! - 需要当前激活 pane 的 Task（`needs_active_pane()`），model 从 state 查询后填入
-//! - 回调在 `poll_events()` 时同步触发（不在 backend execute 时触发），保证单线程确定性
+//! - 兼容测试回调只在 `poll_events()` 时同步触发，保证单线程确定性
 use crate::config::Rgb;
-use crate::protocol::state::{State, StateChange};
+use crate::protocol::state::State;
+#[cfg(test)]
+use crate::protocol::state::StateChange;
 use crate::protocol::task::{Task, TaskOutcome};
 use crate::runtime::{Runtime, RuntimeBatch};
 use muxterm_protocol::PaneId;
 /// 状态变更回调类型。
+#[cfg(test)]
 pub type StateChangeCallback = Box<dyn Fn(&StateChange) + Send + Sync>;
 
 /// Terminal 层纯逻辑模型。
@@ -29,6 +31,7 @@ pub struct TerminalModel {
     /// 待派发的三路 Runtime 批次；旧 `StateChange` 视图只在兼容方法中生成。
     pending_events: RuntimeBatch,
     /// 订阅者回调列表。
+    #[cfg(test)]
     subscribers: Vec<StateChangeCallback>,
     /// 已执行的 Task 历史（用于 undo / 调试）。
     history: Vec<Task>,
@@ -42,6 +45,7 @@ impl TerminalModel {
         Self {
             runtime,
             pending_events: RuntimeBatch::default(),
+            #[cfg(test)]
             subscribers: Vec::new(),
             history: Vec::new(),
             record_history: true,
@@ -87,8 +91,8 @@ impl TerminalModel {
     /// 执行一个 Task。
     ///
     /// 若 task 需要「当前激活 pane」（`needs_active_pane`），从 state 查询填入。
-    /// 执行后从 backend 拉取事件，放入 pending_events（不立即触发回调，
-    /// 等 `take_events` 或 `poll_events` 时统一触发，保证确定性）。
+    /// 执行后从 backend 拉取事件，放入 pending_events；生产调用方通过
+    /// `take_batch` / `poll_batch` 统一消费三条 lane。
     pub fn execute(&mut self, task: Task) -> anyhow::Result<TaskOutcome> {
         // 补全 needs_active_pane 的 task 的 target
         let resolved = self.resolve_active_pane(task);
@@ -174,31 +178,29 @@ impl TerminalModel {
         }
     }
 
-    /// 非阻塞拉取所有 pending 事件，并同步触发订阅者回调。
-    /// 返回事件列表（副本），供前端处理。
+    /// Legacy mixed-event polling retained for in-crate compatibility tests.
+    #[cfg(test)]
     pub fn poll_events(&mut self) -> Vec<StateChange> {
         self.poll_batch().into_state_changes()
     }
 
-    /// Poll pending lane events, invoke subscribers in product delivery order,
-    /// and retain the batch separation for the caller.
+    /// Poll pending lane events while retaining the batch separation.
     pub fn poll_batch(&mut self) -> RuntimeBatch {
         let batch = self.take_batch();
-        let events = batch.clone().into_state_changes();
-        for ev in &events {
-            for cb in &self.subscribers {
-                cb(ev);
+        #[cfg(test)]
+        {
+            let events = batch.clone().into_state_changes();
+            for ev in &events {
+                for cb in &self.subscribers {
+                    cb(ev);
+                }
             }
         }
         batch
     }
 
-    /// 刷新事件流：先从 backend 拉取最新事件（如 pty 输出）放入 pending，
-    /// 再 `poll_events()` 派发给订阅者。
-    ///
-    /// TUI 等前端在没有新键盘事件时，需要周期性调用此方法以读取 shell 输出；
-    /// 否则 `execute()` 之外的 pty 产出（如敲完回车后 shell 的回显/命令输出）
-    /// 会一直堆积在 backend 内部缓冲里，永远显示不出来。
+    /// Legacy mixed-event refresh retained for in-crate compatibility tests.
+    #[cfg(test)]
     pub fn refresh(&mut self) -> Vec<StateChange> {
         self.enqueue_runtime_batch();
         self.poll_events()
@@ -210,7 +212,8 @@ impl TerminalModel {
         self.poll_batch()
     }
 
-    /// 拉取 pending 事件但不触发回调（供前端自己处理事件分发）。
+    /// Legacy mixed-event take retained for in-crate compatibility tests.
+    #[cfg(test)]
     pub fn take_events(&mut self) -> Vec<StateChange> {
         self.take_batch().into_state_changes()
     }
@@ -221,8 +224,8 @@ impl TerminalModel {
         std::mem::take(&mut self.pending_events)
     }
 
-    /// 订阅状态变更。回调在 `poll_events` 时同步调用。
-    /// 返回订阅 id（用于 `unsubscribe`）。
+    /// Legacy mixed-event subscription retained for in-crate compatibility tests.
+    #[cfg(test)]
     pub fn subscribe(&mut self, cb: StateChangeCallback) -> usize {
         let id = self.subscribers.len();
         self.subscribers.push(cb);
@@ -230,6 +233,7 @@ impl TerminalModel {
     }
 
     /// 取消订阅。
+    #[cfg(test)]
     #[allow(unused_must_use)]
     pub fn unsubscribe(&mut self, id: usize) {
         if id < self.subscribers.len() {
