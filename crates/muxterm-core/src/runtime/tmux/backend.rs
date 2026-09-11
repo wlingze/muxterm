@@ -10,7 +10,7 @@
 //!   `StateChange` 事件入队；命令响应正文由 reader 聚合成 block 后按边界处理
 //! - `execute(Task)`：把 Task 映射成 `TmuxCommand`，通过命令 channel 发给
 //!   后台 sender task 异步 `send_command`（execute 本身是同步 fn）
-//! - `take_events()`：drain 内部事件队列
+//! - `drain_events()`：drain 内部 lane batch 队列
 //! - State 视图从内部 state 读
 //!
 //! 与 ShellRuntime 不同：状态变化由 tmux 推送的事件驱动，execute 只发命令，
@@ -25,7 +25,9 @@ use tokio::sync::mpsc;
 
 use crate::buffer_cap::{append_capped, MAX_PANE_OUTPUT_BYTES, MAX_STATE_EVENTS};
 use crate::protocol::layout::{LayoutNode, SplitDir, TabLayout};
-use crate::protocol::state::{BackendStatus, PaneInfo, State, StateChange, TabInfo};
+#[cfg(test)]
+use crate::protocol::state::StateChange;
+use crate::protocol::state::{BackendStatus, PaneInfo, State, TabInfo};
 use crate::protocol::task::{Task, TaskOutcome};
 use crate::runtime::tmux::client::{
     ConnectMode, TmuxClient, TmuxClientConfig, TmuxClientHandle, TmuxEvent, TmuxEventReceiver,
@@ -4468,12 +4470,6 @@ impl Runtime for TmuxRuntime {
         }
     }
 
-    fn take_events(&mut self) -> Vec<StateChange> {
-        let mut batch = RuntimeBatch::default();
-        self.drain_events(&mut batch);
-        batch.into_state_changes()
-    }
-
     async fn shutdown(&mut self) -> muxterm_runtime::RuntimeResult<()> {
         // 已经由显式 Task::Detach 关闭 channel 时，不再重复发送命令。
         if self.cmd_tx.is_some() {
@@ -4718,6 +4714,15 @@ fn key_event_to_tmux_key(ev: &crate::protocol::terminal::input::KeyEvent) -> cmd
             ArrowDir::Left => cmd::Key::left(),
             ArrowDir::Right => cmd::Key::right(),
         },
+    }
+}
+
+#[cfg(test)]
+impl TmuxRuntime {
+    fn take_events(&mut self) -> Vec<StateChange> {
+        let mut batch = RuntimeBatch::default();
+        self.drain_events(&mut batch);
+        batch.into_state_changes()
     }
 }
 

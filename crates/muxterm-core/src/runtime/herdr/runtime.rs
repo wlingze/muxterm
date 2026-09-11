@@ -14,9 +14,11 @@ use async_trait::async_trait;
 
 use crate::buffer_cap::{append_capped, MAX_PANE_OUTPUT_BYTES};
 use crate::protocol::layout::{LayoutNode, SplitDir, TabLayout};
+#[cfg(test)]
+use crate::protocol::state::StateChange;
 use crate::protocol::state::{
     AgentVersion, BackendStatus, MutationKind, MutationResult, MutationStage, PaneAgentInfo,
-    PaneAgentSession, PaneAgentSessionKind, PaneAgentStatus, PaneInfo, State, StateChange, TabInfo,
+    PaneAgentSession, PaneAgentSessionKind, PaneAgentStatus, PaneInfo, State, TabInfo,
 };
 use crate::protocol::task::{Task, TaskOutcome};
 use crate::protocol::terminal::input::KeyEvent;
@@ -3284,12 +3286,6 @@ impl Runtime for HerdrRuntime {
         for batch in self.events.drain(..) {
             out.append(batch);
         }
-    }
-
-    fn take_events(&mut self) -> Vec<StateChange> {
-        let mut batch = RuntimeBatch::default();
-        self.drain_events(&mut batch);
-        batch.into_state_changes()
     }
 
     async fn shutdown(&mut self) -> muxterm_runtime::RuntimeResult<()> {

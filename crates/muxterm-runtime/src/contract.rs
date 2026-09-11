@@ -5,7 +5,7 @@
 //! instead of defining the trait inside the Core module tree.
 
 use async_trait::async_trait;
-use muxterm_protocol::state::{BackendStatus, State, StateChange};
+use muxterm_protocol::state::{BackendStatus, State};
 use muxterm_protocol::task::{Task, TaskOutcome};
 use muxterm_protocol::WorkspaceId;
 
@@ -60,17 +60,12 @@ pub trait Runtime: State + Send {
     /// Execute one product task synchronously.
     fn execute(&mut self, task: &Task) -> RuntimeResult<TaskOutcome>;
 
-    /// Non-blocking FIFO drain of pending state changes.
-    fn take_events(&mut self) -> Vec<StateChange>;
-
     /// Non-blocking drain into the three product lanes.
     ///
-    /// Implementations can override this while migrating their parser.  The
-    /// default keeps the compatibility queue working and classifies it once at
-    /// the Runtime boundary.
-    fn drain_events(&mut self, out: &mut RuntimeBatch) {
-        out.append(RuntimeBatch::from_state_changes(self.take_events()));
-    }
+    /// Runtime implementations own wire parsing and must deliver a
+    /// lane-separated batch. Legacy `StateChange` conversion belongs outside
+    /// this contract, at compatibility boundaries such as FFI.
+    fn drain_events(&mut self, out: &mut RuntimeBatch);
 
     /// Convenience alias for the state status.
     fn runtime_status(&self) -> BackendStatus {
