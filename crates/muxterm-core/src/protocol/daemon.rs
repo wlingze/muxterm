@@ -4,9 +4,9 @@
 //! adapters.  This module owns only the values that cross that boundary, so
 //! Core and the CLI cannot accidentally grow two incompatible wire contracts.
 
-use crate::command::CliCommand;
-use crate::layout::TabLayout;
-use crate::state::{PaneInfo, TabInfo};
+use crate::protocol::command::CliCommand;
+use crate::protocol::layout::TabLayout;
+use crate::protocol::state::{PaneInfo, TabInfo};
 
 /// Return the default Unix socket path shared by the daemon host and clients.
 ///
@@ -116,7 +116,7 @@ mod tests {
         let request = Request {
             command: CliCommand::SplitPane {
                 horizontal: true,
-                target: Some(crate::PaneId(1)),
+                target: Some(crate::protocol::PaneId(1)),
                 size: None,
             },
             format: OutputFormat::Json,
@@ -128,7 +128,7 @@ mod tests {
             decoded.command,
             CliCommand::SplitPane {
                 horizontal: true,
-                target: Some(crate::PaneId(1)),
+                target: Some(crate::protocol::PaneId(1)),
                 ..
             }
         ));

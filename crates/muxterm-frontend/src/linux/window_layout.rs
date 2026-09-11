@@ -6,7 +6,7 @@
 
 use gtk4::prelude::*;
 
-use muxterm_protocol::{PaneId, WorkspaceId};
+use muxterm_core::protocol::{PaneId, WorkspaceId};
 
 use super::window_status::{maybe_refresh_status, sync_chrome_visibility};
 use super::window_surface::seed_unseeded_pane_for;

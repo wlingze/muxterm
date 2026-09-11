@@ -14,7 +14,7 @@ use crate::linux::quickconnect::font::FontSettings;
 use crate::linux::theme::Rgb;
 use crate::linux::theme::Theme;
 
-use muxterm_protocol::layout::{LayoutNode, SplitDir};
+use muxterm_core::protocol::layout::{LayoutNode, SplitDir};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum LayoutTree {
@@ -568,7 +568,7 @@ fn layout_structure_signature(layout: &LayoutTree) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use muxterm_protocol::PaneId;
+    use muxterm_core::protocol::PaneId;
 
     #[test]
     fn split_position_uses_ratio_not_one_pixel() {

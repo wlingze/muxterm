@@ -7,7 +7,7 @@
 use std::time::{Duration, Instant};
 
 use gtk4::prelude::*;
-use muxterm_protocol::WorkspaceId;
+use muxterm_core::protocol::WorkspaceId;
 
 use super::window_actions::{handle_pane_menu_action, report_all_pane_colours};
 use super::window_connection::recent_workspaces;

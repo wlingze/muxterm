@@ -18,7 +18,7 @@ use tracing::{info, warn};
 use crate::cli::format_ffi_output;
 use crate::cli::CliCommand;
 use crate::ffi_client::{ClientOpenIntent, ClientResizeAxis, ClientTarget, ClientTask, FfiClient};
-use muxterm_protocol::daemon::{Request, Response};
+use muxterm_core::protocol::daemon::{Request, Response};
 
 /// daemon 共享状态：一个 Core FFI handle 与其 workspace identity。
 struct DaemonState {

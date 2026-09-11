@@ -3,11 +3,11 @@
 //! 不依赖 serde_json（避免增加依赖），手写 JSON 序列化。
 
 use crate::ffi_client::{ClientLayout, ClientPane, ClientTab, ClientWorkspace, FfiClient};
-use muxterm_protocol::layout::{LayoutNode, SplitDir};
-use muxterm_protocol::state::State;
-use muxterm_protocol::{PaneId, TabId};
+use muxterm_core::protocol::layout::{LayoutNode, SplitDir};
+use muxterm_core::protocol::state::State;
+use muxterm_core::protocol::{PaneId, TabId};
 
-pub use muxterm_protocol::daemon::OutputFormat;
+pub use muxterm_core::protocol::daemon::OutputFormat;
 
 /// 格式化查询结果输出。
 pub fn format_output(state: &dyn State, cmd: &super::CliCommand, format: OutputFormat) -> String {
@@ -612,8 +612,8 @@ fn json_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use muxterm_core::protocol::command::CliCommand;
     use muxterm_core::runtime::mock::MockRuntime;
-    use muxterm_protocol::command::CliCommand;
 
     fn mock_with_pane() -> MockRuntime {
         MockRuntime::with_single_pane()

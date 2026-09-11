@@ -12,8 +12,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::activity::attention::clock::RealClock;
 use crate::activity::attention::engine::AttentionEngine;
 use crate::config::AttentionConfig;
-use muxterm_protocol::state::{PaneAgentInfo, PaneAgentStatus};
-use muxterm_protocol::{ActivityId, PaneId, TabId, WorkspaceId};
+use crate::protocol::state::{PaneAgentInfo, PaneAgentStatus};
+use crate::protocol::{ActivityId, PaneId, TabId, WorkspaceId};
 use record::{ActivityEvent, ActivityKind, ActivityRecord, ActivityStatus, ActivityStore, PaneRef};
 
 /// Product metadata needed to place one Runtime signal in the Activity lane.

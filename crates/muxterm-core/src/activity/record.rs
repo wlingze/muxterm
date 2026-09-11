@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use muxterm_protocol::{ActivityId, PaneId, TabId, WorkspaceId};
+use crate::protocol::{ActivityId, PaneId, TabId, WorkspaceId};
 use serde::{Deserialize, Serialize};
 
 /// The product-level source represented by an activity record.

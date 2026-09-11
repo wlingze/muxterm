@@ -9,7 +9,6 @@ license = "MIT"
 [workspace]
 resolver = "2"
 members = [
-    "crates/muxterm-protocol",
     "crates/muxterm-core",
     "crates/muxterm-frontend",
 ]
@@ -49,7 +48,6 @@ clap = { version = "4", features = ["derive"] }
 async-channel = "2"
 async-trait = "0.1"
 async-ssh2-tokio = "0.13"
-muxterm-protocol = { path = "crates/muxterm-protocol" }
 muxterm-core = { path = "crates/muxterm-core", features = ["ffi"] }
 muxterm-frontend = { path = "crates/muxterm-frontend" }
 

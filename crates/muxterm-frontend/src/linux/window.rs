@@ -52,12 +52,12 @@ use crate::linux::workspace_scenes::WorkspaceScenes;
 use crate::linux::workspace_sidebar::{AgentSidebarItem, WorkspaceSidebar};
 use crate::ssh_probe::SshReach;
 #[cfg(test)]
-use muxterm_protocol::state::StateChange;
-use muxterm_protocol::task::TaskOutcome;
-use muxterm_protocol::PaneId;
+use muxterm_core::protocol::state::StateChange;
+use muxterm_core::protocol::task::TaskOutcome;
+use muxterm_core::protocol::PaneId;
 #[cfg(test)]
-use muxterm_protocol::TabId;
-use muxterm_protocol::WorkspaceId;
+use muxterm_core::protocol::TabId;
+use muxterm_core::protocol::WorkspaceId;
 
 #[path = "window_actions.rs"]
 mod window_actions;
@@ -571,9 +571,9 @@ mod tests {
             },
             "layout" => StateChange::LayoutChanged {
                 tab: TabId(1),
-                layout: muxterm_protocol::layout::TabLayout {
+                layout: muxterm_core::protocol::layout::TabLayout {
                     tab: TabId(1),
-                    tree: muxterm_protocol::layout::LayoutNode::leaf(PaneId(1)),
+                    tree: muxterm_core::protocol::layout::LayoutNode::leaf(PaneId(1)),
                     active: PaneId(1),
                 },
             },

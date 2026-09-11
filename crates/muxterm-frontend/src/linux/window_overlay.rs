@@ -6,7 +6,7 @@ use std::rc::Rc;
 use gtk4::prelude::*;
 use gtk4::Window;
 
-use muxterm_protocol::WorkspaceId;
+use muxterm_core::protocol::WorkspaceId;
 
 use super::window_config::open_target_config;
 use super::window_connection::{

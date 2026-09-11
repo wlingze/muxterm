@@ -662,12 +662,12 @@ mod tests {
                     content,
                     ..
                 }) => {
-                    assert_eq!(pane, muxterm_protocol::PaneId(7));
+                    assert_eq!(pane, crate::protocol::PaneId(7));
                     output_events += 1;
                     actual.extend_from_slice(&content);
                 }
                 TmuxEvent::OutputGap { pane } => {
-                    assert_eq!(pane, muxterm_protocol::PaneId(7));
+                    assert_eq!(pane, crate::protocol::PaneId(7));
                     saw_gap = true;
                 }
                 TmuxEvent::Exit { .. } => {}

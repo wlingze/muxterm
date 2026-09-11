@@ -4,7 +4,7 @@ use crate::command_queue::ClientCommand;
 use crate::ffi_client::{ClientRuntimeCapability, ClientTask};
 use crate::linux::layout_host::LayoutHost;
 
-use muxterm_protocol::WorkspaceId;
+use muxterm_core::protocol::WorkspaceId;
 
 use super::UiState;
 

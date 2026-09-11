@@ -1,7 +1,7 @@
 //! Workspace event conversion and polling C ABI functions.
 
 use crate::protocol::state::StateChange;
-use muxterm_protocol::WorkspaceId;
+use crate::protocol::WorkspaceId;
 
 use super::super::types::{
     CStateChange, CWorkspaceStateChange, BACKEND_STATUS_CONNECTED, BACKEND_STATUS_CONNECTING,

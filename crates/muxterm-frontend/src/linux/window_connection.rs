@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use gtk4::Window;
 
-use muxterm_protocol::WorkspaceId;
+use muxterm_core::protocol::WorkspaceId;
 
 use crate::ffi_client::{
     ClientCandidateRef, ClientOpenIntent, ClientOpenRequest, ClientOpenedWorkspace, ClientTarget,

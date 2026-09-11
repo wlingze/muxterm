@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use crate::command_queue::ClientCommand;
 use crate::ffi_client::ClientTask;
 use crate::linux::view_store::PaneRenderPolicy;
-use muxterm_protocol::WorkspaceId;
+use muxterm_core::protocol::WorkspaceId;
 
 use super::super::view_store::WorkspaceView;
 use super::window_event_pump::enqueue_workspace_input;

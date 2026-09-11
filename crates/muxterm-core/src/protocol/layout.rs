@@ -5,7 +5,7 @@
 //!
 //! 嵌套模型（非平铺）：每次分割只替换当前激活的叶子 pane，不重排其他 pane。
 //! 参考 `ARCHITECTURE.md` §2.4。
-use crate::{PaneId, TabId};
+use crate::protocol::{PaneId, TabId};
 
 /// 分割方向。
 ///

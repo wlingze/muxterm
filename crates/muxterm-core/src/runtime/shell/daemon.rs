@@ -11,8 +11,8 @@ use crate::protocol::state::State;
 use crate::protocol::task::Task;
 use crate::protocol::terminal::input::KeyEvent;
 
-pub use muxterm_protocol::command::CliCommand;
-pub use muxterm_protocol::daemon::{OutputFormat, Request, Response, TopologySnapshot};
+pub use crate::protocol::command::CliCommand;
+pub use crate::protocol::daemon::{OutputFormat, Request, Response, TopologySnapshot};
 
 /// Map a daemon wire command to a shell-runtime Task.
 ///
@@ -123,9 +123,9 @@ mod tests {
     use super::*;
     use crate::protocol::layout::SplitDir;
     use crate::protocol::task::Task;
+    use crate::protocol::PaneId;
     use crate::runtime::mock::MockRuntime;
     use crate::workspace::terminal_model::TerminalModel;
-    use muxterm_protocol::PaneId;
 
     fn make_model() -> TerminalModel {
         TerminalModel::new(Box::new(MockRuntime::with_single_pane()))

@@ -1,6 +1,6 @@
 //! PaneSurface baseline seeding and deferred render-mailbox projection.
 
-use muxterm_protocol::WorkspaceId;
+use muxterm_core::protocol::WorkspaceId;
 
 use super::{ClientEventKind, PaneSurface, UiState};
 
