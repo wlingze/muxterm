@@ -18,7 +18,9 @@ use crate::projects::ProjectsService;
 use crate::protocol::candidate::{OpenRequest, ResolveIntent};
 use crate::protocol::state::{PaneAgentInfo, StateChange};
 use crate::runtime::registry::RuntimeRegistry;
-use crate::runtime::{runtime_supports_channels, Runtime};
+use crate::runtime::{
+    runtime_supports_channels, ControlEvent, RenderEvent, Runtime, RuntimeBatch, RuntimeSignal,
+};
 use crate::workspace::pool::WorkspacePool;
 use crate::workspace::spec::WorkspaceSpec;
 use crate::workspace::template::TemplateRegistry;
@@ -406,30 +408,40 @@ impl Muxterm {
         }
     }
 
-    /// Apply runtime signals to the cross-workspace attention projection.
-    pub(crate) fn apply_attention_for_events(
+    pub(crate) fn defer_batch(
+        &mut self,
+        workspace_id: muxterm_protocol::WorkspaceId,
+        batch: RuntimeBatch,
+    ) {
+        for event in batch.into_state_changes() {
+            self.defer_event(workspace_id.clone(), event);
+        }
+    }
+
+    /// Apply one lane-separated runtime batch to the cross-workspace Activity projection.
+    pub(crate) fn apply_attention_for_batch(
         &mut self,
         ws_id: &muxterm_protocol::WorkspaceId,
-        events: &[StateChange],
+        batch: &RuntimeBatch,
     ) {
         let mut pending: Vec<PendingAttentionUpdate> = Vec::new();
         let mut pending_process_names: Vec<(u32, Option<String>, bool)> = Vec::new();
         let mut pending_agents: Vec<(u32, Option<PaneAgentInfo>)> = Vec::new();
         let mut pending_commands: Vec<PendingCommandActivity> = Vec::new();
         let mut removed_panes = Vec::new();
+        let mut attention_panes = Vec::new();
         {
             let Some(ws) = self.pool_mut().get_mut(ws_id) else {
                 return;
             };
-            for event in events {
-                if let StateChange::PaneOutput { pane, .. }
-                | StateChange::PaneSnapshot { pane, .. }
-                | StateChange::PaneFrame { pane, .. }
-                | StateChange::PaneIndexSnapshot { pane, .. }
-                | StateChange::PaneHistory { pane, .. }
-                | StateChange::PaneAgentChanged { pane, .. } = event
-                {
-                    if let StateChange::PaneAgentChanged { agent, .. } = event {
+            for event in &batch.control {
+                if let ControlEvent::PaneClosed { pane } = event {
+                    removed_panes.push(pane.0);
+                }
+            }
+            for event in &batch.signals {
+                match event {
+                    RuntimeSignal::PaneAgentChanged { pane, agent, .. } => {
                         pending_agents.push((pane.0, agent.as_deref().cloned()));
                         let process_name = agent.as_deref().and_then(|agent| {
                             [
@@ -444,56 +456,76 @@ impl Muxterm {
                             .map(str::to_string)
                         });
                         pending_process_names.push((pane.0, process_name, true));
+                        attention_panes.push(*pane);
                     }
-                    let signals = ws.take_attention_signals(*pane);
-                    let (last_line, seq) = ws.pane_last_line_seq(*pane);
-                    let command_name = ws
-                        .pane_command_marks(*pane)
-                        .last()
-                        .map(|mark| mark.command.clone());
-                    let command_started = signals
-                        .iter()
-                        .any(|signal| matches!(signal, AttentionSignal::CommandStart));
-                    if command_started {
-                        pending_commands.push((
-                            pane.0,
-                            command_name.clone(),
-                            CommandActivityPhase::Start,
-                        ));
-                    }
-                    for exit_code in signals.iter().filter_map(|signal| match signal {
-                        AttentionSignal::CommandDone { exit_code } => Some(*exit_code),
-                        _ => None,
-                    }) {
-                        pending_commands.push((
-                            pane.0,
-                            command_name.clone(),
-                            CommandActivityPhase::Done(exit_code),
-                        ));
-                    }
-                    pending.push((
-                        pane.0,
-                        signals,
-                        last_line,
-                        seq,
-                        command_started.then_some(command_name).flatten(),
-                    ));
-                } else if let StateChange::PaneClosed { pane } = event {
-                    removed_panes.push(pane.0);
-                } else if let StateChange::StatusBarSubscription {
-                    name,
-                    value,
-                    pane: Some(pane),
-                } = event
-                {
-                    if name.starts_with("muxterm.pane-cmd") {
+                    RuntimeSignal::StatusBarSubscription {
+                        name,
+                        value,
+                        pane: Some(pane),
+                    } if name.starts_with("muxterm.pane-cmd") => {
                         pending_process_names.push((
                             pane.0,
                             (!value.is_empty()).then(|| value.clone()),
                             false,
                         ));
                     }
+                    RuntimeSignal::StatusBarSubscription { .. } => {}
                 }
+            }
+            for event in batch
+                .render
+                .iter()
+                .filter(|event| !matches!(event, RenderEvent::PaneOutput { .. }))
+                .chain(
+                    batch
+                        .render
+                        .iter()
+                        .filter(|event| matches!(event, RenderEvent::PaneOutput { .. })),
+                )
+            {
+                let pane = match event {
+                    RenderEvent::PaneOutput { pane, .. }
+                    | RenderEvent::PaneSnapshot { pane, .. }
+                    | RenderEvent::PaneFrame { pane, .. }
+                    | RenderEvent::PaneIndexSnapshot { pane, .. }
+                    | RenderEvent::PaneHistory { pane, .. } => *pane,
+                };
+                attention_panes.push(pane);
+            }
+            for pane in attention_panes {
+                let signals = ws.take_attention_signals(pane);
+                let (last_line, seq) = ws.pane_last_line_seq(pane);
+                let command_name = ws
+                    .pane_command_marks(pane)
+                    .last()
+                    .map(|mark| mark.command.clone());
+                let command_started = signals
+                    .iter()
+                    .any(|signal| matches!(signal, AttentionSignal::CommandStart));
+                if command_started {
+                    pending_commands.push((
+                        pane.0,
+                        command_name.clone(),
+                        CommandActivityPhase::Start,
+                    ));
+                }
+                for exit_code in signals.iter().filter_map(|signal| match signal {
+                    AttentionSignal::CommandDone { exit_code } => Some(*exit_code),
+                    _ => None,
+                }) {
+                    pending_commands.push((
+                        pane.0,
+                        command_name.clone(),
+                        CommandActivityPhase::Done(exit_code),
+                    ));
+                }
+                pending.push((
+                    pane.0,
+                    signals,
+                    last_line,
+                    seq,
+                    command_started.then_some(command_name).flatten(),
+                ));
             }
         }
         let ws_name = ws_id.replica_id();
@@ -547,6 +579,16 @@ impl Muxterm {
                     .push_back((ws_id.clone(), event));
             }
         }
+    }
+
+    /// Compatibility adapter for callers that still provide the mixed event enum.
+    pub(crate) fn apply_attention_for_events(
+        &mut self,
+        ws_id: &muxterm_protocol::WorkspaceId,
+        events: &[StateChange],
+    ) {
+        let batch = RuntimeBatch::from_state_changes(events.iter().cloned());
+        self.apply_attention_for_batch(ws_id, &batch);
     }
 
     fn activity_context(
