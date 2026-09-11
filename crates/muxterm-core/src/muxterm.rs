@@ -399,6 +399,7 @@ impl Muxterm {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn defer_event(
         &mut self,
         workspace_id: muxterm_protocol::WorkspaceId,
@@ -633,6 +634,7 @@ impl Muxterm {
     }
 
     /// Compatibility adapter for callers that still provide the mixed event enum.
+    #[cfg(test)]
     pub(crate) fn apply_attention_for_events(
         &mut self,
         ws_id: &muxterm_protocol::WorkspaceId,
@@ -680,6 +682,7 @@ fn runtime_open_error(spec: &WorkspaceSpec, error: anyhow::Error) -> anyhow::Err
     })
 }
 
+#[cfg(test)]
 pub(crate) fn should_export_state_change(event: &StateChange) -> bool {
     !matches!(event, StateChange::PaneIndexSnapshot { .. })
 }
