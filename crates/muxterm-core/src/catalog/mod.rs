@@ -25,10 +25,10 @@ use muxterm_protocol::WorkspaceId;
 pub use crate::protocol::candidate::ExistingCandidate;
 pub use crate::protocol::candidate::{OpenRequest, ResolveIntent};
 pub use crate::runtime::{RuntimeInfo, RuntimeProvider};
+pub use crate::transport::provider::{TargetInfo, TransportInfo, TransportProvider};
+pub use crate::transport::Connect;
 #[allow(unused_imports)] // 给 FFI / 测试用的公开类型
 pub use inventory::{Inventory, InventorySnapshot, Reach};
-pub use muxterm_transport::provider::{TargetInfo, TransportInfo, TransportProvider};
-pub use muxterm_transport::Connect;
 pub use resolver::{
     config_to_spec, descriptor_to_spec, ResolveError, ResolveErrorStage, ResolvedTarget,
     ResolvedTargetDescriptor,

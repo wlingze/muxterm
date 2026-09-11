@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::{TargetConnection, TransportResult};
+use crate::transport::{TargetConnection, TransportResult};
 
 /// One reusable connection per `(transport_id, target)` identity.
 #[derive(Default)]
@@ -61,7 +61,7 @@ impl ConnectionRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ByteChannel, ChannelRequest, CommandOutput};
+    use crate::transport::{ByteChannel, ChannelRequest, CommandOutput};
 
     struct MockConnection {
         transport_id: &'static str,
@@ -78,13 +78,13 @@ mod tests {
         }
 
         fn open_channel(&self, _request: ChannelRequest) -> TransportResult<Box<dyn ByteChannel>> {
-            Err(crate::TransportError::message(
+            Err(crate::transport::TransportError::message(
                 "channel not used by registry test",
             ))
         }
 
         fn exec_command(&self, _request: ChannelRequest) -> TransportResult<CommandOutput> {
-            Err(crate::TransportError::message(
+            Err(crate::transport::TransportError::message(
                 "command not used by registry test",
             ))
         }

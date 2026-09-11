@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context, Result};
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 
-use crate::{ProcessTransport, TransportError, TransportResult, TransportSignal};
+use crate::transport::{ProcessTransport, TransportError, TransportResult, TransportSignal};
 
 /// Local PTY process transport.
 pub struct LocalProcessTransport {
@@ -49,7 +49,7 @@ impl LocalProcessTransport {
         &mut self,
         program: &str,
         cmd: CommandBuilder,
-        pty_size: crate::PtySize,
+        pty_size: crate::transport::PtySize,
     ) -> Result<()> {
         let pty_system = NativePtySystem::default();
         let pair = pty_system
@@ -104,7 +104,7 @@ impl ProcessTransport for LocalProcessTransport {
         &mut self,
         program: &str,
         args: &[&str],
-        pty_size: crate::PtySize,
+        pty_size: crate::transport::PtySize,
     ) -> TransportResult<()> {
         let mut cmd = CommandBuilder::new(program);
         for arg in args {
@@ -117,7 +117,7 @@ impl ProcessTransport for LocalProcessTransport {
         &mut self,
         program: &str,
         args: &[&str],
-        pty_size: crate::PtySize,
+        pty_size: crate::transport::PtySize,
         cwd: Option<&Path>,
         env: &[(String, String)],
     ) -> TransportResult<()> {
@@ -249,7 +249,7 @@ mod tests {
     fn local_transport_spawn_true_and_read_exit() {
         let mut transport = LocalProcessTransport::new();
         transport
-            .spawn_exec("true", &[], crate::PtySize::new(40, 12))
+            .spawn_exec("true", &[], crate::transport::PtySize::new(40, 12))
             .expect("spawn true");
 
         let mut exited_code = None;
@@ -267,7 +267,7 @@ mod tests {
     fn local_transport_spawn_sleep_and_kill() {
         let mut transport = LocalProcessTransport::new();
         transport
-            .spawn_exec("sleep", &["30"], crate::PtySize::new(40, 12))
+            .spawn_exec("sleep", &["30"], crate::transport::PtySize::new(40, 12))
             .expect("spawn sleep");
         assert!(transport.try_wait().unwrap().is_none(), "sleep 应仍在运行");
         transport.kill(TransportSignal::Term).expect("kill sleep");

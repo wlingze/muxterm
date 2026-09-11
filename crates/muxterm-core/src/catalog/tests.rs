@@ -10,15 +10,15 @@ use crate::protocol::candidate::{CandidateRef, ExistingCandidate, ExistingCandid
 use crate::runtime::mock::MockRuntime;
 use crate::runtime::RuntimeProvider;
 use crate::runtime::{Runtime, RuntimeCapability, RuntimeResult};
+use crate::transport::provider::{TargetInfo, TransportProvider};
 use crate::transport::registry::ConnectionRegistry;
+use crate::transport::Connect;
 use crate::transport::{ChannelKind, TargetConnection, TransportResult};
 use crate::workspace::pool::WorkspacePool;
 use crate::workspace::spec::WorkspaceSpec;
 use crate::workspace::template::{
     PaneTemplate, TabTemplate, TemplateLayout, TemplateName, TemplateRegistry, WorkspaceTemplate,
 };
-use muxterm_transport::provider::{TargetInfo, TransportProvider};
-use muxterm_transport::Connect;
 
 struct MockDriver {
     id: &'static str,
