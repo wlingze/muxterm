@@ -43,9 +43,23 @@ check_absent \
     '^[[:space:]]*mod (core|platform)[[:space:]]*;' \
     src/main.rs
 check_absent \
-    "core must not import the frontend platform compatibility module" \
+    "core must not import the frontend module" \
+    'crate::frontend' \
+    src/core
+check_absent \
+    "core must not import the retired platform module" \
     'crate::platform' \
     src/core
+check_absent \
+    "tests must not use the retired platform test facade" \
+    'test_support::platform' \
+    tests src docs
+
+checks=$((checks + 1))
+if [[ -e src/platform ]]; then
+    echo "architecture: FAIL: leftover src/platform directory must stay gone" >&2
+    failures=$((failures + 1))
+fi
 check_absent \
     "frontend must not import Core internals directly" \
     'crate::(core|muxterm_core)' \

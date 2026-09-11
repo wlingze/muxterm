@@ -1,6 +1,6 @@
 //! Catalog resolver：target descriptor → ResolvedTarget 的唯一入口（W6 §11.2）。
 //!
-//! Project/Recent/Existing 三路都走 [`resolve_target`]；platform 不得复制
+//! Project/Recent/Existing 三路都走 [`resolve_target`]；frontend 不得复制
 //! 第二套 resolver。identity key 只由身份字段构成（transport target /
 //! runtime / session / target-side socket / workspace_id），name/path 是
 //! 显示/项目元数据，不参与身份。旧 TargetConfig 仅在兼容 API 边界转换。

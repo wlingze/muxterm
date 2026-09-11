@@ -15,7 +15,7 @@ use support::tmux_test_support::tmux_available;
 
 use muxterm::test_support::core::config::Config;
 use muxterm::test_support::core::workspace::WorkspaceSpec;
-use muxterm::test_support::platform::linux::window::AppWindow;
+use muxterm::test_support::frontend::linux::window::AppWindow;
 
 /// 滚出可见区的 token：搜索能命中，滚到顶 VTE 能看见，点回底回到尾标。
 #[test]

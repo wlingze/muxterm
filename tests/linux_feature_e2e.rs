@@ -14,7 +14,7 @@ use support::linux_gtk::*;
 use support::tmux_test_support::{tmux_available, wait_capture_contains};
 
 use muxterm::test_support::core::config::Config;
-use muxterm::test_support::platform::linux::window::AppWindow;
+use muxterm::test_support::frontend::linux::window::AppWindow;
 
 fn wait_vte_contains(app: &AppWindow, pane: u32, needle: &str, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;

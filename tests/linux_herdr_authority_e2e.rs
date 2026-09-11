@@ -18,8 +18,8 @@ use gtk4::prelude::*;
 use muxterm::test_support::core::config::Config;
 use muxterm::test_support::core::runtime::herdr::HerdrSession;
 use muxterm::test_support::core::workspace::WorkspaceSpec;
-use muxterm::test_support::platform::linux::keymap::Action;
-use muxterm::test_support::platform::linux::window::AppWindow;
+use muxterm::test_support::frontend::linux::keymap::Action;
+use muxterm::test_support::frontend::linux::window::AppWindow;
 use support::herdr_test_support::{herdr_available, IsolatedHerdr};
 use support::linux_gtk::{
     gtk_test_framework_smoke, load_theme, pump_main_loop, skip_no_display, AppWindowTestExt,

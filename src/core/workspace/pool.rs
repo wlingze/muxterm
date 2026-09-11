@@ -2,7 +2,7 @@
 //!
 //! 池负责 open / list / activate / 后台 `refresh_batch` 喂 PaneBuf / 回收
 //! （tmux Detach、shell Shutdown）。容量提醒、TTL、按 `WorkspaceId` 复用。
-//! platform 不得再实现第二套淘汰/复用。
+//! frontend 不得再实现第二套淘汰/复用。
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};

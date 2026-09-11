@@ -15,7 +15,7 @@ use support::tmux_test_support::tmux_available;
 
 use muxterm::test_support::core::config::Config;
 use muxterm::test_support::core::workspace::WorkspaceSpec;
-use muxterm::test_support::platform::linux::window::AppWindow;
+use muxterm::test_support::frontend::linux::window::AppWindow;
 
 fn wait_ready(app: &AppWindow) -> bool {
     let deadline = Instant::now() + SSH_TIMEOUT;

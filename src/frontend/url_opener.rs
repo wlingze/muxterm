@@ -1,7 +1,7 @@
 //! Frontend-owned URL opening出口。
 //!
 //! Core 只负责 URL 文本和 OSC 8 链接的解析；真正的打开动作以及测试替身
-//! 属于 frontend/platform，不应让 Core 持有 UI side effect trait。
+//! 属于 frontend，不应让 Core 持有 UI side effect trait。
 
 use std::cell::RefCell;
 use std::rc::Rc;

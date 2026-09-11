@@ -15,9 +15,9 @@ use gtk4::prelude::*;
 use gtk4::{EventControllerKey, Paned, ToggleButton, Widget};
 
 use muxterm::test_support::core::workspace::WorkspaceSpec;
-use muxterm::test_support::platform::linux::theme::{fallback_theme, Theme};
-use muxterm::test_support::platform::linux::window::AppWindow;
-use muxterm::test_support::platform::utils::corebridge::ClientTarget;
+use muxterm::test_support::frontend::linux::theme::{fallback_theme, Theme};
+use muxterm::test_support::frontend::linux::window::AppWindow;
+use muxterm::test_support::frontend::utils::corebridge::ClientTarget;
 
 /// Test-only adapter from the legacy Core spec fixture to the frontend FFI DTO.
 pub trait AppWindowTestExt {

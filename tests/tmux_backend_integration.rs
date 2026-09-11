@@ -16,7 +16,7 @@ use muxterm::test_support::core::protocol::{PaneId, TabId};
 use muxterm::test_support::core::runtime::shell::daemon::cli_command_to_task;
 use muxterm::test_support::core::runtime::tmux::backend::TmuxRuntime;
 use muxterm::test_support::core::workspace::TerminalModel;
-use muxterm::test_support::platform::cli::parse_cli_command;
+use muxterm::test_support::frontend::cli::parse_cli_command;
 use std::process::Command;
 use std::time::{Duration, Instant};
 

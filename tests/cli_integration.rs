@@ -13,7 +13,7 @@ use muxterm::test_support::core::protocol::{PaneId, TabId};
 use muxterm::test_support::core::runtime::shell::daemon::cli_command_to_task;
 use muxterm::test_support::core::runtime::shell::ShellRuntime;
 use muxterm::test_support::core::workspace::TerminalModel;
-use muxterm::test_support::platform::cli::{
+use muxterm::test_support::frontend::cli::{
     format_output, parse_cli_command, CliCommand, OutputFormat,
 };
 
@@ -681,7 +681,7 @@ mod daemon_tests {
     use super::*;
     use muxterm::test_support::core::protocol::PaneId;
     use muxterm::test_support::core::runtime::shell::daemon_client::send_command;
-    use muxterm::test_support::platform::cli::session::session_socket_path;
+    use muxterm::test_support::frontend::cli::session::session_socket_path;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 

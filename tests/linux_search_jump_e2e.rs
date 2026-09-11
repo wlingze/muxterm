@@ -14,7 +14,7 @@ use support::tmux_test_support::tmux_available;
 use support::workspace_attach_contract::{build_painted_2tab_3pane, ATTACH_TIMEOUT};
 
 use muxterm::test_support::core::config::Config;
-use muxterm::test_support::platform::linux::window::AppWindow;
+use muxterm::test_support::frontend::linux::window::AppWindow;
 
 fn wait_ready(app: &AppWindow) -> bool {
     let deadline = Instant::now() + ATTACH_TIMEOUT;

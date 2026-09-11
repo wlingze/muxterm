@@ -20,10 +20,10 @@ use support::tmux_test_support::{kill_server, list_pane_ids, tmux_available, uni
 
 use muxterm::test_support::core::config::Config;
 use muxterm::test_support::core::workspace::WorkspaceSpec;
-use muxterm::test_support::platform::linux::pane_view::PaneView;
-use muxterm::test_support::platform::linux::quickconnect::font::FontSettings;
-use muxterm::test_support::platform::linux::window::AppWindow;
-use muxterm::test_support::platform::mirror::encode_clipboard_paste;
+use muxterm::test_support::frontend::linux::pane_view::PaneView;
+use muxterm::test_support::frontend::linux::quickconnect::font::FontSettings;
+use muxterm::test_support::frontend::linux::window::AppWindow;
+use muxterm::test_support::frontend::mirror::encode_clipboard_paste;
 
 fn mouse_tui_script() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/scripts/mouse_tui.py")

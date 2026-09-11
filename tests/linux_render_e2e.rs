@@ -11,9 +11,9 @@ use gtk4::prelude::*;
 use support::linux_gtk::*;
 use vte4::prelude::*;
 
-use muxterm::test_support::platform::linux::pane_view::PaneView;
-use muxterm::test_support::platform::linux::quickconnect::font::FontSettings;
-use muxterm::test_support::platform::linux::theme::Theme;
+use muxterm::test_support::frontend::linux::pane_view::PaneView;
+use muxterm::test_support::frontend::linux::quickconnect::font::FontSettings;
+use muxterm::test_support::frontend::linux::theme::Theme;
 
 fn theme() -> Theme {
     load_theme()
@@ -75,7 +75,7 @@ fn first_paint_keeps_prompt_on_last_row(view: &PaneView) {
 
 /// S11：OSC 8 包着的 URL，Recording opener 收到一次（不真开浏览器）。
 fn url_click_records_https_uri(view: &PaneView) {
-    use muxterm::test_support::platform::url_opener::RecordingOpener;
+    use muxterm::test_support::frontend::url_opener::RecordingOpener;
     use std::rc::Rc;
 
     let opener = Rc::new(RecordingOpener::new());

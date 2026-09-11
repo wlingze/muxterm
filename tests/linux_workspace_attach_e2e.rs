@@ -17,8 +17,8 @@ use support::workspace_attach_contract::{
 };
 
 use muxterm::test_support::core::config::Config;
-use muxterm::test_support::platform::linux::theme::Theme;
-use muxterm::test_support::platform::linux::window::AppWindow;
+use muxterm::test_support::frontend::linux::theme::Theme;
+use muxterm::test_support::frontend::linux::window::AppWindow;
 
 fn theme() -> Theme {
     load_theme()

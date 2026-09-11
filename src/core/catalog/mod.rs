@@ -282,7 +282,7 @@ impl Catalog {
 
     /// 唯一 resolver descriptor→ResolvedTarget 入口（W6 §11.2）。
     ///
-    /// Project/Recent/Existing 三路都走这里；platform 不得复制第二套。
+    /// Project/Recent/Existing 三路都走这里；frontend 不得复制第二套。
     /// 只做身份解析（含 Herdr workspace 存在性检查），不建 Runtime。
     fn resolve_descriptor(
         &self,

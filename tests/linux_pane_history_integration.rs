@@ -11,8 +11,8 @@ mod support;
 use gtk4::prelude::*;
 use gtk4::Widget;
 
-use muxterm::test_support::platform::linux::pane_view::PaneView;
-use muxterm::test_support::platform::linux::quickconnect::font::FontSettings;
+use muxterm::test_support::frontend::linux::pane_view::PaneView;
+use muxterm::test_support::frontend::linux::quickconnect::font::FontSettings;
 
 use support::linux_gtk::*;
 

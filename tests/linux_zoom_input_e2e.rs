@@ -13,7 +13,7 @@ use support::linux_gtk::*;
 use support::tmux_test_support::{create_session, kill_server, tmux_available, unique_socket};
 
 use muxterm::test_support::core::config::Config;
-use muxterm::test_support::platform::linux::window::AppWindow;
+use muxterm::test_support::frontend::linux::window::AppWindow;
 
 const ATTACH_TIMEOUT: Duration = Duration::from_secs(8);
 

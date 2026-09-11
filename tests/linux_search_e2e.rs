@@ -16,8 +16,8 @@ use muxterm::test_support::core::protocol::PaneId;
 use muxterm::test_support::core::protocol::WorkspaceId;
 use muxterm::test_support::core::runtime::mock::MockRuntime;
 use muxterm::test_support::core::workspace::Workspace;
-use muxterm::test_support::platform::linux::panel_model::{PanelTab, SearchRow};
-use muxterm::test_support::platform::linux::quickconnect_panel::{show, PanelShowArgs};
+use muxterm::test_support::frontend::linux::panel_model::{PanelTab, SearchRow};
+use muxterm::test_support::frontend::linux::quickconnect_panel::{show, PanelShowArgs};
 
 #[test]
 fn search_tab_finds_replica_hits_and_jumps() {
@@ -79,7 +79,7 @@ fn search_tab_finds_replica_hits_and_jumps() {
                 on_close: Box::new(|| {}),
                 ssh_reach: std::collections::HashMap::new(),
                 existing: std::rc::Rc::new(std::cell::RefCell::new(
-                    muxterm::test_support::platform::linux::quickconnect_panel::ExistingPanelState::default(),
+                    muxterm::test_support::frontend::linux::quickconnect_panel::ExistingPanelState::default(),
                 )),
                 on_existing_nav: Box::new(|_| {}),
             },

@@ -13,11 +13,11 @@ use std::rc::Rc;
 use gtk4::prelude::*;
 use support::linux_gtk::*;
 
-use muxterm::test_support::platform::linux::quickconnect::status_style::{
+use muxterm::test_support::frontend::linux::quickconnect::status_style::{
     StatusBarMode, StatusBarSnapshot, StatusBarWindow,
 };
-use muxterm::test_support::platform::linux::status_bar::StatusBar;
-use muxterm::test_support::platform::linux::theme::Theme;
+use muxterm::test_support::frontend::linux::status_bar::StatusBar;
+use muxterm::test_support::frontend::linux::theme::Theme;
 
 fn theme() -> Theme {
     load_theme()
@@ -170,7 +170,7 @@ fn click_status_tab_invokes_switch_with_window_id(bar: &StatusBar, win: &gtk4::W
 
 /// S7（C8.4）：点状态点（emit clicked）打开 popover，SSH 摘要 + 真实颜色。
 fn status_dot_click_opens_popover_with_ssh_summary(bar: &StatusBar, win: &gtk4::Window) {
-    use muxterm::test_support::platform::linux::status_bar::ConnectionSummary;
+    use muxterm::test_support::frontend::linux::status_bar::ConnectionSummary;
     bar.set_connection_summary(&ConnectionSummary {
         kind: "ssh".into(),
         host: Some("127.0.0.1".into()),
@@ -218,7 +218,7 @@ fn status_dot_click_opens_popover_with_ssh_summary(bar: &StatusBar, win: &gtk4::
     popover.popdown();
 
     // CSS 数据必须含真实颜色（status-ok 绿）。
-    let css = muxterm::test_support::platform::linux::status_bar::status_dot_css();
+    let css = muxterm::test_support::frontend::linux::status_bar::status_dot_css();
     assert!(css.contains("#27ae60"), "status-ok 应有绿色: {css}");
     assert!(css.contains("#f39c12"), "status-warn 应有黄色: {css}");
     assert!(css.contains("#c0392b"), "status-err 应有红色: {css}");

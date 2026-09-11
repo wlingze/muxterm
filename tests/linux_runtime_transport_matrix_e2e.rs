@@ -31,9 +31,9 @@ use muxterm::test_support::core::projects::{
 use muxterm::test_support::core::protocol::task::TaskOutcome;
 use muxterm::test_support::core::transport::registry::ConnectionRegistry;
 use muxterm::test_support::core::workspace::WorkspacePool;
-use muxterm::test_support::platform::linux::keymap::Action;
-use muxterm::test_support::platform::linux::window::AppWindow;
-use muxterm::test_support::platform::utils::corebridge::ClientRuntimeCapability;
+use muxterm::test_support::frontend::linux::keymap::Action;
+use muxterm::test_support::frontend::linux::window::AppWindow;
+use muxterm::test_support::frontend::utils::corebridge::ClientRuntimeCapability;
 
 use support::herdr_test_support::herdr_available;
 use support::linux_gtk::{
@@ -2039,7 +2039,7 @@ fn scenario_project_existing_parity(
     );
 
     // 3) 真实 Existing 行 click（面板 → 已有的连接 → 扁平 herdr 行）。
-    muxterm::test_support::platform::linux::quickconnect_panel::close_current();
+    muxterm::test_support::frontend::linux::quickconnect_panel::close_current();
     pump_main_loop(40);
     app.test_open_panel(0);
     pump_main_loop(80);

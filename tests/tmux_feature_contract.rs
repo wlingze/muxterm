@@ -184,10 +184,19 @@ fn debug_log_targets_exist_in_source() {
     let required = [
         ("src/core/runtime/tmux/backend.rs", "muxterm::tmux::seed"),
         ("src/core/runtime/tmux/backend.rs", "muxterm::tmux::pause"),
-        ("src/platform/linux/layout_host.rs", "muxterm::layout"),
-        ("src/platform/linux/pane_view.rs", "muxterm::surface"),
+        (
+            "src/frontend/linux/terminal/layout_host.rs",
+            "muxterm::layout",
+        ),
+        (
+            "src/frontend/linux/terminal/pane_view.rs",
+            "muxterm::surface",
+        ),
         ("src/core/workspace/workspace.rs", "muxterm::search"),
-        ("src/platform/linux/window.rs", "muxterm::notify"),
+        (
+            "src/frontend/linux/app/window_activity.rs",
+            "muxterm::notify",
+        ),
     ];
     for (rel, needle) in required {
         let text = std::fs::read_to_string(root.join(rel)).unwrap_or_default();

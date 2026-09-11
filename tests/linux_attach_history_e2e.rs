@@ -14,7 +14,7 @@ use support::linux_gtk::*;
 use support::tmux_test_support::tmux_available;
 
 use muxterm::test_support::core::config::Config;
-use muxterm::test_support::platform::linux::window::AppWindow;
+use muxterm::test_support::frontend::linux::window::AppWindow;
 
 fn wait_search(app: &AppWindow, token: &str) -> Vec<(String, u32, String)> {
     let deadline = Instant::now() + HISTORY_TIMEOUT;

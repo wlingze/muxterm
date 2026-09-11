@@ -12,8 +12,8 @@ use gtk4::{ListBox, ListBoxRow, Stack};
 use support::linux_gtk::*;
 
 use muxterm::test_support::core::config::parse_config_toml;
-use muxterm::test_support::platform::linux::preferences_window::{show, ConfigApi};
-use muxterm::test_support::platform::utils::corebridge::FfiClient;
+use muxterm::test_support::frontend::linux::preferences_window::{show, ConfigApi};
+use muxterm::test_support::frontend::utils::corebridge::FfiClient;
 
 /// S10：Ctrl+= 增大字号并写 config.toml（不新建 preferences.toml）。
 /// 纯逻辑测试，不需要 GTK 窗口（避免本机 xvfb/Mesa 多窗口崩溃）。
@@ -28,7 +28,7 @@ fn ctrl_equal_increases_font_and_writes_config_toml() {
 
     // 与生产 adjust_font 相同的持久化路径。
     let client = FfiClient::new_catalog().expect("catalog FFI handle");
-    muxterm::test_support::platform::linux::window::persist_config(
+    muxterm::test_support::frontend::linux::window::persist_config(
         &client,
         "font.size",
         serde_json::json!(13.0f64),

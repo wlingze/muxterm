@@ -14,7 +14,7 @@ use support::linux_gtk::*;
 use support::tmux_test_support::{send_keys_line, tmux_available};
 
 use muxterm::test_support::core::config::Config;
-use muxterm::test_support::platform::linux::window::AppWindow;
+use muxterm::test_support::frontend::linux::window::AppWindow;
 
 fn wait_blocked(app: &AppWindow, min: usize) -> bool {
     let deadline = Instant::now() + FEATURE_TIMEOUT;

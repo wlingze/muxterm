@@ -15,7 +15,7 @@ use support::linux_gtk::*;
 use support::tmux_test_support::{tmux_available, tmux_ok};
 
 use muxterm::test_support::core::config::Config;
-use muxterm::test_support::platform::linux::window::AppWindow;
+use muxterm::test_support::frontend::linux::window::AppWindow;
 
 fn send_rounds(socket: &str, pane: &str, suffix: &str) {
     let py = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/scripts/osc133_rounds.py");

@@ -145,8 +145,8 @@ Rust 要点：`tests/*.rs` 是独立 crate，**看不到** `pub(crate)`，也看
 
 1. 测协议/后端的测试，搬进 `src/core/runtime/{tmux,herdr,shell}/` 当单元测试。
 2. 测产品行为的测试，只经 `ffi` / `frontend::utils::corebridge`。
-3. Linux E2E 需要 `AppWindow`：留一个**窄**的 `test_support::platform`，只导
-   平台测试夹具，不导 `TmuxRuntime`。
+3. Linux E2E 需要 `AppWindow`：留一个**窄**的 `test_support::frontend`，只导
+   前端测试夹具，不导 `TmuxRuntime`。
 4. 禁止靠「把 tmux 模块重新 pub」来喂 `tests/`。
 
 ### 2.4 frontend 现在越界的 Core 引用
@@ -491,7 +491,7 @@ config 去掉 glob。
 ### Wave 5 — Linux 四层
 
 按 §5.2 搬家。`linux/mod.rs` 只声明 `app/chrome/terminal/ui`。
-E2E 经窄 `test_support::platform::linux`。
+E2E 经窄 `test_support::frontend::linux`。
 
 每波结束：`cargo fmt`、`cargo test --lib --features tui`、对应 `tests/`、
 `scripts/check-architecture.sh`。

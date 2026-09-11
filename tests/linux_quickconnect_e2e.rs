@@ -8,16 +8,16 @@
 use std::process::Command;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use muxterm::test_support::platform::linux::pane_view::should_forward_replies;
-use muxterm::test_support::platform::linux::quickconnect::font::FontSettings;
-use muxterm::test_support::platform::linux::quickconnect::model::{
+use muxterm::test_support::frontend::linux::pane_view::should_forward_replies;
+use muxterm::test_support::frontend::linux::quickconnect::font::FontSettings;
+use muxterm::test_support::frontend::linux::quickconnect::model::{
     TargetConfigDraft, TargetRuntime, TargetTransport,
 };
-use muxterm::test_support::platform::linux::quickconnect::project_flow::{
+use muxterm::test_support::frontend::linux::quickconnect::project_flow::{
     ProjectConnectFlow, ProjectConnectState,
 };
-use muxterm::test_support::platform::linux::quickconnect::status_style::StatusBarSnapshot;
-use muxterm::test_support::platform::utils::corebridge::{ClientTask, FfiClient};
+use muxterm::test_support::frontend::linux::quickconnect::status_style::StatusBarSnapshot;
+use muxterm::test_support::frontend::utils::corebridge::{ClientTask, FfiClient};
 
 fn unique_socket(label: &str) -> String {
     let nanos = SystemTime::now()

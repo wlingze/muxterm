@@ -102,7 +102,7 @@ impl Workspace {
         self.provenance = provenance;
     }
 
-    /// 保存规范化目标（仅 Catalog::open_resolved 调用；platform 不得复制第二份）。
+    /// 保存规范化目标（仅 Catalog::open_resolved 调用；frontend 不得复制第二份）。
     pub fn set_resolved_target(&mut self, resolved: crate::catalog::ResolvedTarget) {
         self.name = resolved.display_name();
         self.provenance = resolved.spec.provenance.clone();

@@ -289,7 +289,7 @@ fn split_real_binary_increases_pane_count() {
 /// ── Layer 2: CLI parse → Task::SplitPane 映射 ──
 #[test]
 fn split_cli_parse_produces_correct_command() {
-    use muxterm::test_support::platform::cli::tmux_cli::{
+    use muxterm::test_support::frontend::cli::tmux_cli::{
         parse_tmux_cli, PaneCmd, SplitDirection, Target, TmuxCliCommand,
     };
 

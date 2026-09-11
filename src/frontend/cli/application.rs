@@ -57,7 +57,7 @@ struct Cli {
 /// All subcommands.
 ///
 /// CLI commands pass their raw arguments through to
-/// `platform::cli::routing::run_cli` via `trailing_var_arg` +
+/// `frontend::cli::routing::run_cli` via `trailing_var_arg` +
 /// `allow_hyphen_values` (reusing the existing hand-written parser), so short
 /// flags such as `split-pane -h` (horizontal) are not swallowed by clap.
 /// `disable_help_flag` keeps `-h` from conflicting with help.

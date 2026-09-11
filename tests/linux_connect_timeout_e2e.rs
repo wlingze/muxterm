@@ -12,10 +12,10 @@ use gtk4::prelude::*;
 use support::linux_gtk::*;
 
 use muxterm::test_support::core::config::Config;
-use muxterm::test_support::platform::linux::quickconnect::model::{
+use muxterm::test_support::frontend::linux::quickconnect::model::{
     TargetConfigDraft, TargetRuntime, TargetTransport,
 };
-use muxterm::test_support::platform::linux::window::AppWindow;
+use muxterm::test_support::frontend::linux::window::AppWindow;
 
 #[test]
 fn unreachable_ssh_does_not_block_gtk_thread() {

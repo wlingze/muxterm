@@ -68,7 +68,7 @@ pub mod test_support {
         };
     }
 
-    pub mod platform {
+    pub mod frontend {
         pub use crate::frontend::*;
     }
 }

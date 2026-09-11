@@ -29,7 +29,7 @@ Muxterm library（src/lib.rs 是唯一 Core module root）
                     └── Index（ANSI 内容：搜索 / OSC 133 / BEL）
 ```
 
-依赖方向：**frontend → FFI → Core**。Core 不得 `use crate::frontend`（现状的 `platform`）。frontend 不得 `use` Runtime concrete type、WorkspacePool、discovery、VT emulate。
+依赖方向：**frontend → FFI → Core**。Core 不得 `use crate::frontend`。frontend 不得 `use` Runtime concrete type、WorkspacePool、discovery、VT emulate。
 
 唯一 binary：薄 `src/main.rs`，无 `mod` 声明，只调用 lib 的 frontend 启动函数。Cargo 惯例：默认可执行文件是 `src/main.rs`（[Cargo Book: Package Layout](https://doc.rust-lang.org/cargo/guide/project-layout.html)）。
 

@@ -14,11 +14,11 @@ use support::linux_gtk::*;
 use support::tmux_test_support::*;
 
 use muxterm::test_support::core::config::Config;
-use muxterm::test_support::platform::linux::quickconnect::model::{
+use muxterm::test_support::frontend::linux::quickconnect::model::{
     TargetConfigDraft, TargetTransport,
 };
-use muxterm::test_support::platform::linux::theme::Theme;
-use muxterm::test_support::platform::linux::window::AppWindow;
+use muxterm::test_support::frontend::linux::theme::Theme;
+use muxterm::test_support::frontend::linux::window::AppWindow;
 
 fn theme() -> Theme {
     load_theme()

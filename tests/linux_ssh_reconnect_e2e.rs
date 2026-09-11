@@ -15,7 +15,7 @@ use support::tmux_test_support::tmux_available;
 
 use muxterm::test_support::core::config::Config;
 use muxterm::test_support::core::workspace::WorkspaceSpec;
-use muxterm::test_support::platform::linux::window::AppWindow;
+use muxterm::test_support::frontend::linux::window::AppWindow;
 
 fn overlay_visible(app: &AppWindow) -> bool {
     find_by_name(&app.test_window(), "muxterm-disconnect-overlay").is_some_and(|w| w.is_visible())
