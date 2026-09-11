@@ -22,7 +22,7 @@ if [[ ! -f "$BIN" ]]; then
   echo "ERROR: 未找到编译产物 $BIN" >&2
   exit 1
 fi
-cp -f "$BIN" "$OUT_DIR/$(binary_name)"
-chmod +x "$OUT_DIR/$(binary_name)"
+install_executable "$BIN" "$OUT_DIR/$(binary_name)"
+smoke_cli_help "$OUT_DIR/$(binary_name)"
 echo "==> done"
 echo "    产物: $OUT_DIR/$(binary_name)"

@@ -8,7 +8,9 @@
 #
 # 用法：`source scripts/build-common.sh` 后调用：
 #   build_os_dir()      -> 输出 ROOT/build/<os> 路径
-#   copy_binary <src>   -> 把 <src> 复制到 OUT_DIR 并改名
+#   install_executable <src> <dst>
+#       把可执行文件装到 dst。macOS 必须换 inode 再 ad-hoc 签名，
+#       禁止对已有 Mach-O 原地 `cp -f`（内核缓存旧签名 → `zsh: killed`）。
 set -euo pipefail
 
 # 解析 release 标志（支持 --release 或 PROFILE=release）
@@ -83,4 +85,52 @@ cargo_bin_path() {
   local td
   td="$(cargo_target_dir)"
   echo "$td/$profile/$(binary_name)"
+}
+
+# 安装可执行文件到 dst。
+#
+# macOS / Apple Silicon：对已有 Mach-O 原地 `cp -f` 不会换 inode，内核继续
+# 用旧代码签名页校验新内容，启动即 SIGKILL（zsh: killed / Code Signature
+# Invalid）。必须先写到新文件，ad-hoc 签名，再 `mv` 换上。
+install_executable() {
+  local src="$1"
+  local dst="$2"
+  local tmp
+  if [[ ! -f "$src" ]]; then
+    echo "ERROR: install_executable: source missing: $src" >&2
+    return 1
+  fi
+  mkdir -p "$(dirname "$dst")"
+  tmp="${dst}.new.$$"
+  rm -f "$tmp"
+  cp "$src" "$tmp"
+  chmod +x "$tmp"
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    xattr -cr "$tmp" 2>/dev/null || true
+    # `-` = ad-hoc；debug CLI 不启用 hardened runtime。
+    codesign --force --sign - --identifier "dev.muxterm.cli" "$tmp"
+  fi
+  mv -f "$tmp" "$dst"
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    codesign --verify "$dst"
+  fi
+}
+
+# 构建结束后必须能跑 `--help`。失败（含 SIGKILL=137）则让整个打包失败。
+smoke_cli_help() {
+  local bin="$1"
+  echo "==> smoke: $bin --help"
+  if [[ ! -x "$bin" ]]; then
+    echo "ERROR: CLI is not executable: $bin" >&2
+    return 1
+  fi
+  if ! "$bin" --help >/dev/null; then
+    local status=$?
+    echo "ERROR: $bin --help failed (exit $status; 137 = SIGKILL / invalid signature)" >&2
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+      codesign -dv --verbose=4 "$bin" >&2 || true
+      codesign --verify --verbose=4 "$bin" >&2 || true
+    fi
+    return 1
+  fi
 }
