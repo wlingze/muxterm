@@ -142,7 +142,7 @@ mod tests {
         ClientWorkspaceAttention,
     };
     use crate::frontend::linux::view_store::ViewStore;
-    use muxterm_core::protocol::WorkspaceId;
+    use crate::protocol::WorkspaceId;
 
     fn workspace_id(
         transport: &str,

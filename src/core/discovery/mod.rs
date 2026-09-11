@@ -564,7 +564,7 @@ mod tests {
     /// C7：list_ssh_tmux_sessions 必须走 discovery 命令，禁止 attach PTY transport。
     #[test]
     fn list_ssh_tmux_sessions_must_not_use_attach_transport() {
-        let src = include_str!("discovery.rs");
+        let src = include_str!("mod.rs");
         let body = fn_src(src, "list_ssh_tmux_sessions");
         assert!(
             body.contains("build_ssh_command_for_discovery"),
@@ -584,7 +584,7 @@ mod tests {
     /// C7：SSH pane discovery 同样必须走无 PTY 的短命 discovery 命令。
     #[test]
     fn list_ssh_tmux_panes_must_not_use_attach_transport() {
-        let src = include_str!("discovery.rs");
+        let src = include_str!("mod.rs");
         let body = fn_src(src, "list_ssh_tmux_panes");
         assert!(
             body.contains("build_ssh_command_for_discovery"),
@@ -603,7 +603,7 @@ mod tests {
     /// C7: discovery short commands must not allocate a PTY.
     #[test]
     fn run_ssh_discovery_command_must_not_use_pty() {
-        let src = include_str!("discovery.rs");
+        let src = include_str!("mod.rs");
         let body = fn_src(src, "run_ssh_discovery_command");
         assert!(
             !body.contains("SshProcessTransport"),

@@ -203,7 +203,7 @@ impl AppWindow {
             quit_requested: false,
             capacity_limit: cfg.pool.max_slots.max(1) as usize,
             capacity_warning_presented_for_slot_count: None,
-            runtime_status: muxterm_core::protocol::ffi::types::BACKEND_STATUS_CONNECTED,
+            runtime_status: crate::protocol::ffi::types::BACKEND_STATUS_CONNECTED,
             status_left: None,
             status_right: None,
             workspace_sockets: startup_sockets,

@@ -418,7 +418,7 @@ pub(super) fn maybe_schedule_reconnect(state: &Rc<RefCell<UiState>>) {
     let should_retry = {
         let mut s = state.borrow_mut();
         if s.reconnecting
-            || s.runtime_status == muxterm_core::protocol::ffi::types::BACKEND_STATUS_CONNECTED
+            || s.runtime_status == crate::protocol::ffi::types::BACKEND_STATUS_CONNECTED
         {
             return;
         }

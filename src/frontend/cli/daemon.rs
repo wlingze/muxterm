@@ -20,7 +20,7 @@ use crate::frontend::cli::CliCommand;
 use crate::frontend::ffi_client::{
     ClientOpenIntent, ClientResizeAxis, ClientTarget, ClientTask, FfiClient,
 };
-use muxterm_core::protocol::daemon::{Request, Response};
+use crate::protocol::daemon::{Request, Response};
 
 /// daemon 共享状态：一个 Core FFI handle 与其 workspace identity。
 struct DaemonState {

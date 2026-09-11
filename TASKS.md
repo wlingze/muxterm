@@ -143,8 +143,7 @@ CI 跑 [`docs/TESTING.md`](docs/TESTING.md) 的结构门禁。
 
 现有历史 commit 保持不动。后续每个可独立验证的任务一个 commit，粒度中等。
 
-1. 收回 workspace crate：先把 protocol / runtime / transport 折回 core，再迁到
-   `src/core` + `src/frontend`，根 package 只留一个 `muxterm`。
+1. ~~收回 workspace crate 到 `src/core` + `src/frontend`。~~
 2. 迁完旧 QuickConnect / `pane_scroll_ansi` fixture，根 `cargo test --features tui --no-run` 可编译。
 3. Phase 6 收尾：生产路径已是 `RuntimeBatch`；再收 mixed-event 兼容层与 C ABI 摊平。
 4. Phase 8：空目录、过期文档、把 TESTING.md 里还没进脚本的门禁补进

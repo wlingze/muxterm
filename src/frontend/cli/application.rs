@@ -262,13 +262,13 @@ pub fn run() -> anyhow::Result<()> {
             cli.log_file.clone(),
         ),
     };
-    let cfg = muxterm_core::logging::resolve_config(cli_level, cli_log_file);
+    let cfg = crate::logging::resolve_config(cli_level, cli_log_file);
     let is_macos_gui_launcher =
         cfg!(target_os = "macos") && matches!(&cli.cmd, Some(CliSubcommand::Gui { .. }));
     if !is_macos_gui_launcher {
-        muxterm_core::logging::init_logging(cfg)?;
+        crate::logging::init_logging(cfg)?;
         // W19d：日志就绪后装 panic hook，未接住的 panic 也进 --log-file。
-        muxterm_core::fault::install_hook();
+        crate::fault::install_hook();
     }
     // macOS 的 `muxterm gui` 只是启动器：Swift app 进程会自己 init 同一个
     // log-file；CLI 再 init 会两个进程同时写文件造成日志双写。

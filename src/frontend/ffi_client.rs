@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::ffi::{CStr, CString};
 use std::ptr::{self, NonNull};
 
-use muxterm_core::protocol::ffi::{
+use crate::protocol::ffi::{
     self, CLayoutNode, CPane, CStateChange, CTab, CTask, CWorkspaceStateChange,
     BACKEND_STATUS_CONNECTED, BACKEND_STATUS_CONNECTING, BACKEND_STATUS_DISCONNECTED,
     BACKEND_STATUS_ERROR, BACKEND_STATUS_EXITED, LAYOUT_LEAF, LAYOUT_SPLIT_H, LAYOUT_SPLIT_V,

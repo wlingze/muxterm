@@ -10,8 +10,8 @@ use std::rc::Rc;
 use gtk4::prelude::*;
 use gtk4::{Align, Box as GtkBox, Button, Label, Orientation, Window};
 
+use crate::fault;
 use crate::frontend::i18n::{self, TextKey};
-use muxterm_core::fault;
 
 /// 全局「已弹过对话框」标记（同时最多一个）。
 static DIALOG_SHOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);

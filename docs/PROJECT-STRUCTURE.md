@@ -40,8 +40,6 @@ src/
 边界靠 `ffi_client` 与 [`../scripts/check-architecture.sh`](../scripts/check-architecture.sh)，
 不按 protocol / runtime / transport 再拆 Cargo workspace crate。
 
-当前代码仍有一部分住在 `crates/muxterm-*`。按 [`../TASKS.md`](../TASKS.md) 收回上表。
-
 ## 不要
 
 - 产品 Session、虚拟 Window
