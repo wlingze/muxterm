@@ -7,7 +7,6 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-#[cfg(test)]
 use crate::protocol::state::StateChange;
 use crate::protocol::task::Task;
 use crate::protocol::terminal::emulate::DEFAULT_SCROLLBACK_LINES;
@@ -408,7 +407,7 @@ impl WorkspacePool {
     }
 
     /// 拉取全部后台工作区的事件，并喂进各自 PaneBuf。
-    #[cfg(test)]
+    #[doc(hidden)]
     pub fn poll_background(&mut self) -> Vec<(WorkspaceId, Vec<StateChange>)> {
         self.poll_background_batches()
             .into_iter()

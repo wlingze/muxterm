@@ -13,9 +13,7 @@
 //! - 需要当前激活 pane 的 Task（`needs_active_pane()`），model 从 state 查询后填入
 //! - 兼容测试回调只在 `poll_events()` 时同步触发，保证单线程确定性
 use crate::config::Rgb;
-use crate::protocol::state::State;
-#[cfg(test)]
-use crate::protocol::state::StateChange;
+use crate::protocol::state::{State, StateChange};
 use crate::protocol::task::{Task, TaskOutcome};
 use crate::runtime::{Runtime, RuntimeBatch};
 use muxterm_protocol::PaneId;
@@ -178,8 +176,8 @@ impl TerminalModel {
         }
     }
 
-    /// Legacy mixed-event polling retained for in-crate compatibility tests.
-    #[cfg(test)]
+    /// Legacy mixed-event polling retained for compatibility fixtures.
+    #[doc(hidden)]
     pub fn poll_events(&mut self) -> Vec<StateChange> {
         self.poll_batch().into_state_changes()
     }
@@ -199,8 +197,8 @@ impl TerminalModel {
         batch
     }
 
-    /// Legacy mixed-event refresh retained for in-crate compatibility tests.
-    #[cfg(test)]
+    /// Legacy mixed-event refresh retained for compatibility fixtures.
+    #[doc(hidden)]
     pub fn refresh(&mut self) -> Vec<StateChange> {
         self.enqueue_runtime_batch();
         self.poll_events()
@@ -212,8 +210,8 @@ impl TerminalModel {
         self.poll_batch()
     }
 
-    /// Legacy mixed-event take retained for in-crate compatibility tests.
-    #[cfg(test)]
+    /// Legacy mixed-event take retained for compatibility fixtures.
+    #[doc(hidden)]
     pub fn take_events(&mut self) -> Vec<StateChange> {
         self.take_batch().into_state_changes()
     }
