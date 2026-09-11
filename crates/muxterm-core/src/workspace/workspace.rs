@@ -8,9 +8,7 @@ use std::collections::HashMap;
 
 use crate::activity::attention::signal::AttentionSignal;
 use crate::activity::attention::state::PaneStatus;
-#[cfg(test)]
-use crate::protocol::state::StateChange;
-use crate::protocol::state::{PaneAgentInfo, PaneAgentStatus, State};
+use crate::protocol::state::{PaneAgentInfo, PaneAgentStatus, State, StateChange};
 use crate::protocol::task::{Task, TaskOutcome};
 use crate::protocol::terminal::emulate::DEFAULT_SCROLLBACK_LINES;
 use crate::runtime::{ControlEvent, RenderEvent, Runtime, RuntimeBatch, RuntimeSignal};
@@ -196,13 +194,13 @@ impl Workspace {
     }
 
     /// 拉取尚未消费的状态变更事件，并把 `PaneOutput` 喂进本工作区 pane 文本。
-    #[cfg(test)]
+    #[doc(hidden)]
     pub fn take_events(&mut self) -> Vec<StateChange> {
         self.take_batch().into_state_changes()
     }
 
     /// 先从 Runtime 拉取最新事件（异步输出），再取走并喂进本工作区副本。
-    #[cfg(test)]
+    #[doc(hidden)]
     pub fn refresh(&mut self) -> Vec<StateChange> {
         self.refresh_batch().into_state_changes()
     }
