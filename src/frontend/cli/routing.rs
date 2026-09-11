@@ -3,7 +3,9 @@
 use std::time::{Duration, Instant};
 
 use crate::frontend::cli::{format_ffi_output, parse_cli_command, CliCommand, OutputFormat};
-use crate::frontend::ffi_client::{ClientEventKind, ClientResizeAxis, ClientTask, FfiClient};
+use crate::frontend::utils::corebridge::{
+    ClientEventKind, ClientResizeAxis, ClientTask, FfiClient,
+};
 
 /// CLI 命令模式入口：解析命令 → 路由 → 执行 → 输出。
 pub fn run_cli(args: &[String]) -> anyhow::Result<()> {

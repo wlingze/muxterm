@@ -18,11 +18,6 @@ use gtk4::Window;
 
 use crate::frontend::command_queue::CommandQueue;
 use crate::frontend::event_pump::EventPump;
-use crate::frontend::ffi_client::{
-    ClientAttentionStatus, ClientConfig, ClientConfigSnapshot, ClientEventKind, ClientKeyBinding,
-    ClientLayout, ClientRuntimeCapability, ClientRuntimeInfo, ClientTask, ClientWorkspaceEvent,
-    FfiClient,
-};
 use crate::frontend::linux::app_shell::{AppShell, HeaderActions};
 use crate::frontend::linux::attention_compat::CompatibilityActivity;
 use crate::frontend::linux::attention_ui::{GioSink, NotificationSink};
@@ -51,6 +46,11 @@ use crate::frontend::linux::window_input::{connect_close_handler, connect_key_ha
 use crate::frontend::linux::workspace_scenes::WorkspaceScenes;
 use crate::frontend::linux::workspace_sidebar::{AgentSidebarItem, WorkspaceSidebar};
 use crate::frontend::ssh_probe::SshReach;
+use crate::frontend::utils::corebridge::{
+    ClientAttentionStatus, ClientConfig, ClientConfigSnapshot, ClientEventKind, ClientKeyBinding,
+    ClientLayout, ClientRuntimeCapability, ClientRuntimeInfo, ClientTask, ClientWorkspaceEvent,
+    FfiClient,
+};
 #[cfg(test)]
 use crate::protocol::state::StateChange;
 use crate::protocol::task::TaskOutcome;

@@ -3,7 +3,9 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::frontend::ffi_client::{ClientConfigSnapshot, ClientJsonPatchOperation, FfiClient};
+use crate::frontend::utils::corebridge::{
+    ClientConfigSnapshot, ClientJsonPatchOperation, FfiClient,
+};
 
 /// FFI-backed configuration operations used by the GTK settings views.
 ///

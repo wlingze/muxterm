@@ -18,8 +18,6 @@ use gtk4::{
     Window,
 };
 
-use crate::frontend::ffi_client::{ClientAttentionStatus, ClientOpenRequest};
-use crate::frontend::i18n::{self, Key as TextKey};
 use crate::frontend::linux::panel_model::{
     filter_attention_panel_rows, filter_workspace_rows, search_rows, PanelModel, PanelTab,
     SearchScope,
@@ -27,6 +25,8 @@ use crate::frontend::linux::panel_model::{
 use crate::frontend::linux::quick_pick;
 use crate::frontend::linux::quickconnect::existing::ExistingRuntime;
 use crate::frontend::linux::quickconnect::model::{QuickConnect, TargetTransport, WorkspaceQuery};
+use crate::frontend::utils::corebridge::{ClientAttentionStatus, ClientOpenRequest};
+use crate::frontend::utils::i18n::{self, Key as TextKey};
 
 use super::quickconnect_panel_view::{
     attention_panel_row, ensure_overlay, existing_connect_name, existing_row, reachability_dot,

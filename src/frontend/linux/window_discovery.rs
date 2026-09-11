@@ -103,7 +103,7 @@ pub(super) fn drain_ssh_probes(state: &Rc<RefCell<UiState>>) {
 }
 
 pub(super) fn existing_entries(
-    candidates: Vec<crate::frontend::ffi_client::ExistingCandidate>,
+    candidates: Vec<crate::frontend::utils::corebridge::ExistingCandidate>,
 ) -> Vec<ExistingEntry> {
     candidates
         .into_iter()

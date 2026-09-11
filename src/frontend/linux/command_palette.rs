@@ -44,8 +44,9 @@ pub fn show_for_runtime<F>(
             })
             .collect();
 
-    let placeholder =
-        crate::frontend::i18n::tr(crate::frontend::i18n::Key::CommandPalettePlaceholder);
+    let placeholder = crate::frontend::utils::i18n::tr(
+        crate::frontend::utils::i18n::Key::CommandPalettePlaceholder,
+    );
     quick_pick::show(parent, &placeholder, items, move |picked| {
         if let Some(item) = picked {
             on_run(&item.id);
@@ -56,41 +57,48 @@ pub fn show_for_runtime<F>(
 /// 弹出语言选择器。语言切换由调用方设置 core 的当前语言并刷新窗口。
 pub fn show_language<F>(parent: &impl IsA<Window>, on_run: F)
 where
-    F: Fn(crate::frontend::i18n::Language) + 'static,
+    F: Fn(crate::frontend::utils::i18n::Language) + 'static,
 {
-    let current = crate::frontend::i18n::current_language();
-    let items: Vec<QuickPickItem> = crate::frontend::i18n::Language::ALL
+    let current = crate::frontend::utils::i18n::current_language();
+    let items: Vec<QuickPickItem> = crate::frontend::utils::i18n::Language::ALL
         .into_iter()
         .map(|language| QuickPickItem {
             id: language.tag().into(),
             label: match language {
-                crate::frontend::i18n::Language::System => crate::frontend::i18n::tr_in(
-                    language,
-                    crate::frontend::i18n::Key::LanguageSystem,
-                ),
-                crate::frontend::i18n::Language::English => crate::frontend::i18n::tr_in(
-                    language,
-                    crate::frontend::i18n::Key::LanguageEnglish,
-                ),
-                crate::frontend::i18n::Language::SimplifiedChinese => crate::frontend::i18n::tr_in(
-                    language,
-                    crate::frontend::i18n::Key::LanguageSimplifiedChinese,
-                ),
+                crate::frontend::utils::i18n::Language::System => {
+                    crate::frontend::utils::i18n::tr_in(
+                        language,
+                        crate::frontend::utils::i18n::Key::LanguageSystem,
+                    )
+                }
+                crate::frontend::utils::i18n::Language::English => {
+                    crate::frontend::utils::i18n::tr_in(
+                        language,
+                        crate::frontend::utils::i18n::Key::LanguageEnglish,
+                    )
+                }
+                crate::frontend::utils::i18n::Language::SimplifiedChinese => {
+                    crate::frontend::utils::i18n::tr_in(
+                        language,
+                        crate::frontend::utils::i18n::Key::LanguageSimplifiedChinese,
+                    )
+                }
             },
-            detail: (current == language)
-                .then(|| crate::frontend::i18n::tr(crate::frontend::i18n::Key::LanguageCurrent)),
+            detail: (current == language).then(|| {
+                crate::frontend::utils::i18n::tr(crate::frontend::utils::i18n::Key::LanguageCurrent)
+            }),
         })
         .collect();
     quick_pick::show(
         parent,
-        &crate::frontend::i18n::tr(crate::frontend::i18n::Key::Language),
+        &crate::frontend::utils::i18n::tr(crate::frontend::utils::i18n::Key::Language),
         items,
         move |picked| {
             if let Some(item) = picked {
                 let language = match item.id.as_str() {
-                    "system" => crate::frontend::i18n::Language::System,
-                    "zh-CN" => crate::frontend::i18n::Language::SimplifiedChinese,
-                    _ => crate::frontend::i18n::Language::English,
+                    "system" => crate::frontend::utils::i18n::Language::System,
+                    "zh-CN" => crate::frontend::utils::i18n::Language::SimplifiedChinese,
+                    _ => crate::frontend::utils::i18n::Language::English,
                 };
                 on_run(language);
             }

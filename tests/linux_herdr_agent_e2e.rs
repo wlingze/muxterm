@@ -20,9 +20,9 @@ use muxterm::test_support::core::config::Config;
 use muxterm::test_support::core::protocol::task::TaskOutcome;
 use muxterm::test_support::core::runtime::herdr::session::{HerdrAgentStatus, HerdrSession};
 use muxterm::test_support::core::workspace::WorkspaceSpec;
-use muxterm::test_support::platform::ffi_client::ClientRuntimeCapability;
 use muxterm::test_support::platform::linux::keymap::Action;
 use muxterm::test_support::platform::linux::window::AppWindow;
+use muxterm::test_support::platform::utils::corebridge::ClientRuntimeCapability;
 use support::herdr_test_support::{herdr_available, IsolatedHerdr, TempAgentCommand};
 use support::linux_gtk::{
     gtk_test_framework_smoke, load_theme, pump_main_loop, skip_no_display, AppWindowTestExt,

@@ -6,7 +6,6 @@
 use gtk4::prelude::*;
 use gtk4::{Align, Box as GtkBox, Label, Orientation, Overlay, Window};
 
-use crate::frontend::i18n::{self, Key as TextKey};
 use crate::frontend::linux::panel_model::AttentionPanelRow;
 use crate::frontend::linux::quickconnect::existing::{ExistingEntry, ExistingTransport};
 use crate::frontend::linux::quickconnect::model::{
@@ -14,6 +13,7 @@ use crate::frontend::linux::quickconnect::model::{
 };
 use crate::frontend::linux::workspace_sidebar::ActivityIndicator;
 use crate::frontend::ssh_probe::{ssh_dot_css_class, ssh_dot_widget_name, SshReach};
+use crate::frontend::utils::i18n::{self, Key as TextKey};
 
 pub(super) fn attention_panel_row(item: &AttentionPanelRow) -> GtkBox {
     let content = GtkBox::builder()

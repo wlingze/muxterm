@@ -12,8 +12,8 @@ use gtk4::{ListBox, ListBoxRow, Stack};
 use support::linux_gtk::*;
 
 use muxterm::test_support::core::config::parse_config_toml;
-use muxterm::test_support::platform::ffi_client::FfiClient;
 use muxterm::test_support::platform::linux::preferences_window::{show, ConfigApi};
+use muxterm::test_support::platform::utils::corebridge::FfiClient;
 
 /// S10：Ctrl+= 增大字号并写 config.toml（不新建 preferences.toml）。
 /// 纯逻辑测试，不需要 GTK 窗口（避免本机 xvfb/Mesa 多窗口崩溃）。

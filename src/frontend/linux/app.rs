@@ -5,11 +5,11 @@
 use gtk4::prelude::*;
 use gtk4::Application;
 
-use crate::frontend::ffi_client::{ClientConfig, FfiClient};
 use crate::frontend::linux::keymap::default_keybindings;
 use crate::frontend::linux::theme::fallback_theme;
 #[cfg(test)]
 use crate::frontend::linux::theme::Rgb;
+use crate::frontend::utils::corebridge::{ClientConfig, FfiClient};
 
 pub const APP_ID: &str = "io.muxterm.Muxterm";
 

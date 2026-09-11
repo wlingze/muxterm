@@ -2,7 +2,7 @@
 //!
 //! 不依赖 serde_json（避免增加依赖），手写 JSON 序列化。
 
-use crate::frontend::ffi_client::{
+use crate::frontend::utils::corebridge::{
     ClientLayout, ClientPane, ClientTab, ClientWorkspace, FfiClient,
 };
 use crate::protocol::layout::{LayoutNode, SplitDir};

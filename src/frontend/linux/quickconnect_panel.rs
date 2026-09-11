@@ -62,12 +62,12 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
 mod tests {
     use super::quickconnect_panel_ui::{visible_action_for_item, VisibleAction};
     use super::*;
-    use crate::frontend::ffi_client::{ClientCandidateRef, ClientOpenIntent};
     use crate::frontend::linux::quickconnect::existing::{ExistingEntry, ExistingRuntime};
     use crate::frontend::linux::quickconnect::model::{
         QuickBadge, QuickConnectEntry, TargetRuntime, TargetTransport,
     };
     use crate::frontend::linux::quickconnect::store::QuickConnectStore;
+    use crate::frontend::utils::corebridge::{ClientCandidateRef, ClientOpenIntent};
 
     fn cfg(name: &str) -> TargetConfigDraft {
         TargetConfigDraft::new(name, TargetRuntime::Tmux, TargetTransport::Local, "~/x")
@@ -355,9 +355,10 @@ mod tests {
         .open_request();
         assert_eq!(
             tmux.intent,
-            crate::frontend::ffi_client::ClientOpenIntent::AttachOnly
+            crate::frontend::utils::corebridge::ClientOpenIntent::AttachOnly
         );
-        let crate::frontend::ffi_client::ClientCandidateRef::Existing { identity } = tmux.candidate
+        let crate::frontend::utils::corebridge::ClientCandidateRef::Existing { identity } =
+            tmux.candidate
         else {
             panic!("tmux row must produce an Existing candidate reference");
         };
@@ -379,7 +380,7 @@ mod tests {
             herdr_socket: Some("/tmp/herdr.sock".into()),
         }
         .open_request();
-        let crate::frontend::ffi_client::ClientCandidateRef::Existing { identity } =
+        let crate::frontend::utils::corebridge::ClientCandidateRef::Existing { identity } =
             herdr.candidate
         else {
             panic!("Herdr row must produce an Existing candidate reference");

@@ -1,6 +1,7 @@
-//! Shared safe wrapper around the public `muxterm` C ABI.
+//! Shared safe wrapper around the public `muxterm` C ABI (CoreBridge).
 //!
-//! Locked filename: `ffi_client.rs` (not `client.rs`). Unsafe FFI stays here.
+//! Unsafe FFI stays here. Frontends should import this module rather than
+//! `crate::protocol::ffi`.
 //!
 //! Frontends own this client instead of borrowing `MuxtermHandle` directly or
 //! repeating raw-pointer copying logic.  The wrapper deliberately returns
@@ -1116,12 +1117,15 @@ pub enum ClientResizeAxis {
 }
 
 /// Safe ownership boundary for one Core FFI handle.
-pub struct FfiClient {
+pub struct CoreBridge {
     handle: NonNull<ffi::MuxtermHandle>,
     last_status: Cell<u32>,
 }
 
-impl FfiClient {
+/// Compatibility alias while platforms switch to [`CoreBridge`].
+pub type FfiClient = CoreBridge;
+
+impl CoreBridge {
     /// Create a handle for catalog-only queries without opening a workspace.
     pub fn new_catalog() -> anyhow::Result<Self> {
         Self::from_raw(ffi::muxterm_catalog_new())
@@ -2473,7 +2477,7 @@ impl FfiClient {
     }
 }
 
-impl Drop for FfiClient {
+impl Drop for CoreBridge {
     fn drop(&mut self) {
         unsafe { ffi::muxterm_free(self.handle.as_ptr()) };
     }

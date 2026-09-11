@@ -33,7 +33,6 @@ use gtk4::prelude::*;
 use gtk4::{Orientation, Widget};
 
 use muxterm::test_support::core::config::Config;
-use muxterm::test_support::platform::ffi_client::{FfiClient, SshHostEntry};
 use muxterm::test_support::platform::linux::keymap::{default_keybindings, Action, KeyMap};
 use muxterm::test_support::platform::linux::layout_host::LayoutHost;
 use muxterm::test_support::platform::linux::quickconnect::font::FontSettings;
@@ -41,6 +40,7 @@ use muxterm::test_support::platform::linux::quickconnect::model::TargetRuntime;
 use muxterm::test_support::platform::linux::quickconnect::store::QuickConnectStore;
 use muxterm::test_support::platform::linux::target_config_window;
 use muxterm::test_support::platform::linux::window::AppWindow;
+use muxterm::test_support::platform::utils::corebridge::{FfiClient, SshHostEntry};
 
 use support::linux_gtk::*;
 

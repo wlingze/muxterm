@@ -137,11 +137,11 @@ mod tests {
         assert_eq!(sidebar_split_position(false, true, 0, 260, 64), 260);
     }
 
-    use crate::frontend::ffi_client::{
+    use crate::frontend::linux::view_store::ViewStore;
+    use crate::frontend::utils::corebridge::{
         ClientActivitySnapshot, ClientAttentionPane, ClientPane, ClientTab, ClientWorkspace,
         ClientWorkspaceAttention,
     };
-    use crate::frontend::linux::view_store::ViewStore;
     use crate::protocol::WorkspaceId;
 
     fn workspace_id(

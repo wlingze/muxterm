@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use regex::Regex;
 
-use crate::frontend::ffi_client::{
+use crate::frontend::utils::corebridge::{
     ClientActivityNotification, ClientAttentionConfig, ClientAttentionPane, ClientAttentionStatus,
     ClientWorkspaceAttention,
 };

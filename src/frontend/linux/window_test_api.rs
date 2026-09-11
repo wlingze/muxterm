@@ -25,8 +25,8 @@ use super::window_status::{
 };
 use super::*;
 
-use crate::frontend::ffi_client::{ClientOpenIntent, ClientTarget};
 use crate::frontend::linux::quickconnect::model::TargetConfigDraft;
+use crate::frontend::utils::corebridge::{ClientOpenIntent, ClientTarget};
 
 impl AppWindow {
     /// W21 测试钩子：向指定 pane 的生产滚轮路径发一次滚动。
@@ -256,10 +256,14 @@ impl AppWindow {
         let Some(layout) = view.layouts.get(&active_tab) else {
             return Vec::new();
         };
-        fn leaves(layout: &crate::frontend::ffi_client::ClientLayout, out: &mut Vec<u32>) {
+        fn leaves(layout: &crate::frontend::utils::corebridge::ClientLayout, out: &mut Vec<u32>) {
             match layout {
-                crate::frontend::ffi_client::ClientLayout::Leaf { pane_id } => out.push(*pane_id),
-                crate::frontend::ffi_client::ClientLayout::Split { first, second, .. } => {
+                crate::frontend::utils::corebridge::ClientLayout::Leaf { pane_id } => {
+                    out.push(*pane_id)
+                }
+                crate::frontend::utils::corebridge::ClientLayout::Split {
+                    first, second, ..
+                } => {
                     leaves(first, out);
                     leaves(second, out);
                 }
@@ -604,7 +608,9 @@ impl AppWindow {
     }
 
     /// 测试用：读取当前 Core activity 快照，诊断跨 workspace 的注意力状态。
-    pub fn test_attention_snapshot(&self) -> crate::frontend::ffi_client::ClientActivitySnapshot {
+    pub fn test_attention_snapshot(
+        &self,
+    ) -> crate::frontend::utils::corebridge::ClientActivitySnapshot {
         activity_snapshot(&self._state.borrow())
     }
 

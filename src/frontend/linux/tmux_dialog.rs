@@ -10,9 +10,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use gtk4::prelude::*;
 use gtk4::Window;
 
-use crate::frontend::ffi_client::{ExistingCandidate, FfiClient, SshHostEntry};
 use crate::frontend::linux::pane_switcher;
 use crate::frontend::linux::quick_pick::{self, QuickPickItem};
+use crate::frontend::utils::corebridge::{ExistingCandidate, FfiClient, SshHostEntry};
 
 /// 工作区集成动作结果。
 #[derive(Debug, Clone)]
@@ -65,16 +65,16 @@ pub fn tmux_session_pick_items(sessions: &[ExistingCandidate]) -> Vec<QuickPickI
     let mut items = Vec::with_capacity(sessions.len() + 1);
     items.push(QuickPickItem {
         id: CREATE_ID.into(),
-        label: crate::frontend::i18n::tr(crate::frontend::i18n::Key::TmuxCreateNew),
-        detail: Some(crate::frontend::i18n::tr(
-            crate::frontend::i18n::Key::TmuxCreateDetail,
+        label: crate::frontend::utils::i18n::tr(crate::frontend::utils::i18n::Key::TmuxCreateNew),
+        detail: Some(crate::frontend::utils::i18n::tr(
+            crate::frontend::utils::i18n::Key::TmuxCreateDetail,
         )),
     });
     for s in sessions {
         let attached = if s.attached {
             format!(
                 " · {}",
-                crate::frontend::i18n::tr(crate::frontend::i18n::Key::TmuxAttached)
+                crate::frontend::utils::i18n::tr(crate::frontend::utils::i18n::Key::TmuxAttached)
             )
         } else {
             String::new()
@@ -84,8 +84,8 @@ pub fn tmux_session_pick_items(sessions: &[ExistingCandidate]) -> Vec<QuickPickI
             label: s.name.clone(),
             detail: Some(format!(
                 "{}{attached}",
-                crate::frontend::i18n::tr_args(
-                    crate::frontend::i18n::Key::TmuxWindows,
+                crate::frontend::utils::i18n::tr_args(
+                    crate::frontend::utils::i18n::Key::TmuxWindows,
                     &[("count", &s.windows.to_string())],
                 )
             )),
@@ -102,9 +102,9 @@ pub fn connect_session_pick_items(
     let mut items = Vec::with_capacity(sessions.len() + 1);
     items.push(QuickPickItem {
         id: CREATE_ID.into(),
-        label: crate::frontend::i18n::tr(crate::frontend::i18n::Key::TmuxCreateNew),
-        detail: Some(crate::frontend::i18n::tr(
-            crate::frontend::i18n::Key::TmuxCreateDetail,
+        label: crate::frontend::utils::i18n::tr(crate::frontend::utils::i18n::Key::TmuxCreateNew),
+        detail: Some(crate::frontend::utils::i18n::tr(
+            crate::frontend::utils::i18n::Key::TmuxCreateDetail,
         )),
     });
     for s in sessions {
@@ -133,9 +133,9 @@ where
     let mut items = Vec::with_capacity(sessions.len() + 1);
     items.push(QuickPickItem {
         id: CREATE_ID.into(),
-        label: crate::frontend::i18n::tr(crate::frontend::i18n::Key::TmuxCreateNew),
-        detail: Some(crate::frontend::i18n::tr(
-            crate::frontend::i18n::Key::TmuxCreateDetail,
+        label: crate::frontend::utils::i18n::tr(crate::frontend::utils::i18n::Key::TmuxCreateNew),
+        detail: Some(crate::frontend::utils::i18n::tr(
+            crate::frontend::utils::i18n::Key::TmuxCreateDetail,
         )),
     });
     for s in &sessions {
@@ -152,7 +152,7 @@ where
 
     quick_pick::show(
         &parent_win,
-        &crate::frontend::i18n::tr(crate::frontend::i18n::Key::TmuxAttachPlaceholder),
+        &crate::frontend::utils::i18n::tr(crate::frontend::utils::i18n::Key::TmuxAttachPlaceholder),
         items,
         move |picked| {
             let Some(item) = picked else {
@@ -198,13 +198,14 @@ fn format_session_detail(s: &WorkspaceInfo) -> String {
     let age = s
         .created
         .map(|ts| relative_age_label(ts, now_secs()))
-        .unwrap_or_else(|| crate::frontend::i18n::tr(crate::frontend::i18n::Key::TmuxUnknown));
-    let wins = s
-        .windows
-        .map(|n| n.to_string())
-        .unwrap_or_else(|| crate::frontend::i18n::tr(crate::frontend::i18n::Key::TmuxUnknown));
-    crate::frontend::i18n::tr_args(
-        crate::frontend::i18n::Key::TmuxSessionDetail,
+        .unwrap_or_else(|| {
+            crate::frontend::utils::i18n::tr(crate::frontend::utils::i18n::Key::TmuxUnknown)
+        });
+    let wins = s.windows.map(|n| n.to_string()).unwrap_or_else(|| {
+        crate::frontend::utils::i18n::tr(crate::frontend::utils::i18n::Key::TmuxUnknown)
+    });
+    crate::frontend::utils::i18n::tr_args(
+        crate::frontend::utils::i18n::Key::TmuxSessionDetail,
         &[("age", &age), ("count", &wins)],
     )
 }
@@ -212,22 +213,22 @@ fn format_session_detail(s: &WorkspaceInfo) -> String {
 fn relative_age_label(created_secs: u64, now: u64) -> String {
     let ago = now.saturating_sub(created_secs);
     let (key, count) = if ago < 60 {
-        (crate::frontend::i18n::Key::TmuxSecondsAgo, ago)
+        (crate::frontend::utils::i18n::Key::TmuxSecondsAgo, ago)
     } else {
         let mins = ago / 60;
         if mins < 60 {
-            (crate::frontend::i18n::Key::TmuxMinutesAgo, mins)
+            (crate::frontend::utils::i18n::Key::TmuxMinutesAgo, mins)
         } else {
             let hours = mins / 60;
             if hours < 48 {
-                (crate::frontend::i18n::Key::TmuxHoursAgo, hours)
+                (crate::frontend::utils::i18n::Key::TmuxHoursAgo, hours)
             } else {
-                (crate::frontend::i18n::Key::TmuxDaysAgo, hours / 24)
+                (crate::frontend::utils::i18n::Key::TmuxDaysAgo, hours / 24)
             }
         }
     };
     let count = count.to_string();
-    crate::frontend::i18n::tr_args(key, &[("count", &count)])
+    crate::frontend::utils::i18n::tr_args(key, &[("count", &count)])
 }
 
 fn default_new_session_name() -> String {
@@ -282,8 +283,8 @@ mod tests {
         };
         let d = format_session_detail(&s);
         assert!(d.contains("3"), "{d}");
-        let age = crate::frontend::i18n::tr_args(
-            crate::frontend::i18n::Key::TmuxHoursAgo,
+        let age = crate::frontend::utils::i18n::tr_args(
+            crate::frontend::utils::i18n::Key::TmuxHoursAgo,
             &[("count", "2")],
         );
         assert!(d.contains(&age) || d.contains("h"), "{d}");

@@ -3,8 +3,8 @@
 //! The model is GTK-free. The window module only renders these commands and
 //! forwards the selected stable action id to the caller.
 
-use crate::frontend::i18n::{self, Key as TextKey};
 use crate::frontend::linux::quick_pick::fuzzy_match;
+use crate::frontend::utils::i18n::{self, Key as TextKey};
 
 pub const TMUX_DETACH_COMMAND: &str = "tmux_detach";
 

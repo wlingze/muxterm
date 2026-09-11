@@ -20,7 +20,8 @@ where
     let items = pane_entries_to_items(&panes);
 
     let panes = std::rc::Rc::new(panes);
-    let placeholder = crate::frontend::i18n::tr(crate::frontend::i18n::Key::PaneSearchPlaceholder);
+    let placeholder =
+        crate::frontend::utils::i18n::tr(crate::frontend::utils::i18n::Key::PaneSearchPlaceholder);
     quick_pick::show(parent, &placeholder, items, move |picked| {
         if let Some(item) = picked {
             if let Ok(i) = item.id.parse::<usize>() {
@@ -38,18 +39,22 @@ where
     F: Fn(String) + 'static,
 {
     let dlg = Dialog::with_buttons(
-        Some(&crate::frontend::i18n::tr(
-            crate::frontend::i18n::Key::PaneRenameTitle,
+        Some(&crate::frontend::utils::i18n::tr(
+            crate::frontend::utils::i18n::Key::PaneRenameTitle,
         )),
         Some(parent),
         gtk4::DialogFlags::MODAL,
         &[
             (
-                &crate::frontend::i18n::tr(crate::frontend::i18n::Key::PaneRenameCancel),
+                &crate::frontend::utils::i18n::tr(
+                    crate::frontend::utils::i18n::Key::PaneRenameCancel,
+                ),
                 gtk4::ResponseType::Cancel,
             ),
             (
-                &crate::frontend::i18n::tr(crate::frontend::i18n::Key::PaneRenameAction),
+                &crate::frontend::utils::i18n::tr(
+                    crate::frontend::utils::i18n::Key::PaneRenameAction,
+                ),
                 gtk4::ResponseType::Accept,
             ),
         ],
@@ -63,8 +68,8 @@ where
     content.set_margin_bottom(8);
 
     let hint = Label::builder()
-        .label(crate::frontend::i18n::tr(
-            crate::frontend::i18n::Key::PaneRenameHint,
+        .label(crate::frontend::utils::i18n::tr(
+            crate::frontend::utils::i18n::Key::PaneRenameHint,
         ))
         .halign(Align::Start)
         .build();

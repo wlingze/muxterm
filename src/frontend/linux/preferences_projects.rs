@@ -10,9 +10,9 @@ use std::rc::Rc;
 use gtk4::prelude::*;
 use gtk4::{Align, Box as GtkBox, Button, Label, ListBox, Orientation, ScrolledWindow, Window};
 
-use crate::frontend::ffi_client::{ClientConfigSnapshot, ClientRuntimeInfo, SshHostEntry};
 use crate::frontend::linux::quickconnect::model::ProjectDocument;
 use crate::frontend::linux::quickconnect::store::QuickConnectStore;
+use crate::frontend::utils::corebridge::{ClientConfigSnapshot, ClientRuntimeInfo, SshHostEntry};
 
 use super::{install_preferences_css, replace, subwindow_header, ConfigApi};
 

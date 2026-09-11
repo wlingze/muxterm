@@ -5,8 +5,10 @@
 
 use std::collections::HashMap;
 
-use crate::frontend::ffi_client::{ClientActivitySnapshot, ClientAttentionPane, ClientWorkspace};
 use crate::frontend::linux::view_store::ViewStore;
+use crate::frontend::utils::corebridge::{
+    ClientActivitySnapshot, ClientAttentionPane, ClientWorkspace,
+};
 use crate::protocol::WorkspaceId;
 
 /// A workspace row in the sidebar.

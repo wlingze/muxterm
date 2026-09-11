@@ -7,12 +7,12 @@ use std::rc::Rc;
 use gtk4::prelude::*;
 use gtk4::{Orientation, Paned, Widget};
 
-use crate::frontend::ffi_client::ClientLayout;
 use crate::frontend::linux::pane_view::{PaneMenuAction, PaneSurface};
 use crate::frontend::linux::quickconnect::font::FontSettings;
 #[cfg(test)]
 use crate::frontend::linux::theme::Rgb;
 use crate::frontend::linux::theme::Theme;
+use crate::frontend::utils::corebridge::ClientLayout;
 
 use crate::protocol::layout::{LayoutNode, SplitDir};
 

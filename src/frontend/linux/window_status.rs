@@ -5,10 +5,10 @@ use std::time::Instant;
 use gtk4::prelude::*;
 use gtk4::Window;
 
-use crate::frontend::i18n::{self, Key};
 use crate::frontend::linux::attention_ui::window_title;
 use crate::frontend::linux::quickconnect::status_style::StatusBarSnapshot;
 use crate::frontend::linux::status_bar::ConnectionSummary;
+use crate::frontend::utils::i18n::{self, Key};
 
 use super::window_event_pump::activity_snapshot;
 use super::{parse_workspace_id, ClientRuntimeCapability, UiState};

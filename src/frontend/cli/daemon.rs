@@ -17,7 +17,7 @@ use tracing::{info, warn};
 
 use crate::frontend::cli::format_ffi_output;
 use crate::frontend::cli::CliCommand;
-use crate::frontend::ffi_client::{
+use crate::frontend::utils::corebridge::{
     ClientOpenIntent, ClientResizeAxis, ClientTarget, ClientTask, FfiClient,
 };
 use crate::protocol::daemon::{Request, Response};

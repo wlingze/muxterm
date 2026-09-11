@@ -6,7 +6,7 @@
 
 use std::collections::VecDeque;
 
-use crate::frontend::ffi_client::{ClientTask, FfiClient};
+use crate::frontend::utils::corebridge::{ClientTask, FfiClient};
 
 /// One command waiting for the next frontend flush.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,7 +143,7 @@ fn dispatch(client: &FfiClient, command: ClientCommand) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::{ClientCommand, CommandQueue};
-    use crate::frontend::ffi_client::{ClientTask, FfiClient};
+    use crate::frontend::utils::corebridge::{ClientTask, FfiClient};
 
     #[test]
     fn consecutive_switches_keep_only_the_last_target() {

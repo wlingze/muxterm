@@ -8,10 +8,6 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Duration;
 
-use crate::frontend::ffi_client::{
-    ClientAttentionPane, ClientAttentionStatus, ClientOpenRequest, ClientSearchHit,
-};
-use crate::frontend::i18n::{self, Key as TextKey};
 use crate::frontend::linux::quickconnect::existing::ExistingEntry;
 use crate::frontend::linux::quickconnect::model::{
     QuickBadge, QuickConnect, QuickConnectEntry, TargetConfigDraft, WorkspaceQuery,
@@ -19,6 +15,10 @@ use crate::frontend::linux::quickconnect::model::{
 use crate::frontend::linux::quickconnect::store::QuickConnectStore;
 use crate::frontend::linux::workspace_sidebar::{ActivityIndicator, AgentSidebarItem};
 use crate::frontend::ssh_probe::SshReach;
+use crate::frontend::utils::corebridge::{
+    ClientAttentionPane, ClientAttentionStatus, ClientOpenRequest, ClientSearchHit,
+};
+use crate::frontend::utils::i18n::{self, Key as TextKey};
 
 /// QuickConnect 面板的候选项。
 ///

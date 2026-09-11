@@ -13,8 +13,8 @@ use gtk4::{
     RevealerTransitionType, ScrolledWindow, SelectionMode, ToggleButton, Widget,
 };
 
-use crate::frontend::ffi_client::ClientActivitySnapshot;
 use crate::frontend::linux::view_store::ViewStore;
+use crate::frontend::utils::corebridge::ClientActivitySnapshot;
 use crate::protocol::WorkspaceId;
 
 use super::{

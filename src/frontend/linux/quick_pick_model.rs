@@ -2,7 +2,7 @@
 //!
 //! 这里不依赖 GTK；Overlay 只负责把模型渲染成列表并转发用户手势。
 
-use crate::frontend::i18n::{self, Key as TextKey};
+use crate::frontend::utils::i18n::{self, Key as TextKey};
 
 pub const ENTRY_HEIGHT: i32 = 36;
 
