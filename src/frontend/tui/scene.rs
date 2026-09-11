@@ -5,8 +5,8 @@
 
 use std::collections::HashMap;
 
-use crate::frontend::ffi_client::{ClientEvent, ClientEventKind, ClientWorkspaceEvent};
 use crate::frontend::tui::terminal::TerminalManager;
+use crate::frontend::utils::corebridge::{ClientEvent, ClientEventKind, ClientWorkspaceEvent};
 use crate::frontend::view_store::{ViewStore, WorkspaceView};
 
 /// 一个已打开 Workspace 的 TUI 场景：常驻 VT + 本地可见 tab。
@@ -149,7 +149,7 @@ pub fn drain_store_into_scenes(store: &mut ViewStore, scenes: &mut SceneStack) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::frontend::ffi_client::{ClientEvent, ClientPane, ClientTab, ClientWorkspace};
+    use crate::frontend::utils::corebridge::{ClientEvent, ClientPane, ClientTab, ClientWorkspace};
     use crate::frontend::view_store::ViewStore;
     use crate::protocol::ffi::types;
 

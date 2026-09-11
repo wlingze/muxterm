@@ -18,9 +18,6 @@ use gtk4::{gdk, glib};
 use support::linux_gtk::*;
 
 use muxterm::test_support::core::protocol::WorkspaceId;
-use muxterm::test_support::platform::ffi_client::{
-    ClientAttentionPane, ClientAttentionStatus, ClientCandidateRef,
-};
 use muxterm::test_support::platform::linux::panel_model::{PanelTab, SearchRow};
 use muxterm::test_support::platform::linux::quickconnect::model::{
     QuickBadge, QuickConnect, QuickConnectEntry, TargetConfigDraft, TargetRuntime, TargetTransport,
@@ -30,6 +27,9 @@ use muxterm::test_support::platform::linux::workspace_sidebar::{
     ActivityIndicator, AgentSidebarItem,
 };
 use muxterm::test_support::platform::ssh_probe::SshReach;
+use muxterm::test_support::platform::utils::corebridge::{
+    ClientAttentionPane, ClientAttentionStatus, ClientCandidateRef,
+};
 
 fn attention(
     ws: &str,

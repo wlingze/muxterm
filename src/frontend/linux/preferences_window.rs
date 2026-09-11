@@ -14,12 +14,12 @@ use gtk4::prelude::*;
 use gtk4::{Align, Box as GtkBox, CssProvider, Label, Orientation, Window};
 use serde_json::Value;
 
+pub use crate::frontend::linux::settings_model::ConfigApi;
 #[cfg(test)]
-use crate::frontend::ffi_client::FfiClient;
-use crate::frontend::ffi_client::{
+use crate::frontend::utils::corebridge::FfiClient;
+use crate::frontend::utils::corebridge::{
     ClientConfigSnapshot, ClientJsonPatchOperation, ClientRuntimeInfo,
 };
-pub use crate::frontend::linux::settings_model::ConfigApi;
 #[cfg(test)]
 use gtk4::SpinButton;
 
@@ -52,7 +52,7 @@ pub fn show(
     on_saved: Box<dyn Fn() + 'static>,
     project_editor: Option<(
         Vec<ClientRuntimeInfo>,
-        Vec<crate::frontend::ffi_client::SshHostEntry>,
+        Vec<crate::frontend::utils::corebridge::SshHostEntry>,
     )>,
 ) -> Window {
     preferences_window_ui::show(
@@ -78,7 +78,7 @@ fn show_project_manager(
     config_path: PathBuf,
     config: ConfigApi,
     runtimes: Vec<ClientRuntimeInfo>,
-    hosts: Vec<crate::frontend::ffi_client::SshHostEntry>,
+    hosts: Vec<crate::frontend::utils::corebridge::SshHostEntry>,
     on_changed: Rc<Box<dyn Fn() + 'static>>,
 ) {
     preferences_projects::show_project_manager(

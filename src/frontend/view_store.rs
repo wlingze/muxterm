@@ -7,12 +7,12 @@
 
 use std::collections::{HashMap, VecDeque};
 
-use crate::frontend::ffi_client::{
+use crate::frontend::utils::corebridge::{
     ClientActivityEvent, ClientActivityRecord, ClientActivityWorkspaceEvent, ClientEvent,
     ClientEventKind, ClientLayout, ClientPane, ClientTab, ClientWorkspace, ClientWorkspaceEvent,
 };
 #[cfg(test)]
-use crate::frontend::ffi_client::{
+use crate::frontend::utils::corebridge::{
     ClientActivityLocation, ClientActivityRecordStatus, ClientActivityWorkspaceId,
 };
 

@@ -15,10 +15,10 @@ use gtk4::{
 };
 use serde_json::Value;
 
-use crate::frontend::ffi_client::{
+use crate::frontend::utils::corebridge::{
     ClientConfigSnapshot, ClientJsonPatchOperation, ClientRuntimeInfo,
 };
-use crate::frontend::i18n::{self, Key as TextKey};
+use crate::frontend::utils::i18n::{self, Key as TextKey};
 
 use super::{
     control_row, field_description, field_title, install_preferences_css, option_label, pointer,
@@ -214,7 +214,7 @@ pub(super) fn show(
     on_saved: Box<dyn Fn() + 'static>,
     project_editor: Option<(
         Vec<ClientRuntimeInfo>,
-        Vec<crate::frontend::ffi_client::SshHostEntry>,
+        Vec<crate::frontend::utils::corebridge::SshHostEntry>,
     )>,
 ) -> Window {
     install_preferences_css();

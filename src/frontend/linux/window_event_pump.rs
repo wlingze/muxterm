@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 
 use crate::frontend::command_queue::ClientCommand;
-use crate::frontend::ffi_client::{
+use crate::frontend::utils::corebridge::{
     ClientActivitySnapshot, ClientAttentionPane, ClientWorkspaceAttention, ClientWorkspaceEvent,
 };
 

@@ -1,6 +1,6 @@
 //! Pane / tab 生命周期纯决策（不依赖 GTK），便于单测防回归。
 
-pub use crate::frontend::ffi_client::{
+pub use crate::frontend::utils::corebridge::{
     ClientOnLastPaneExit as OnLastPaneExit, ClientOnProgramExitAbnormal as OnProgramExitAbnormal,
 };
 

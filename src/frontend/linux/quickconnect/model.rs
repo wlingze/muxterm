@@ -6,7 +6,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::frontend::ffi_client::{
+use crate::frontend::utils::corebridge::{
     ClientCandidate, ClientCandidateKind, ClientCandidateRef, ClientOpenIntent, ClientOpenRequest,
 };
 

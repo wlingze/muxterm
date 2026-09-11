@@ -5,7 +5,7 @@
 //! 主题 DTO 由统一 `ffi_client` 从 Core 拥有的配置服务取得；这里的代码只
 //! 负责 GTK 显示层的纯颜色映射，不读取配置文件或主题资源。
 
-pub use crate::frontend::ffi_client::{ClientRgb as Rgb, ClientTheme as Theme};
+pub use crate::frontend::utils::corebridge::{ClientRgb as Rgb, ClientTheme as Theme};
 
 /// Core 配置不可用时使用的安全浅色回退主题。
 pub fn fallback_theme() -> Theme {

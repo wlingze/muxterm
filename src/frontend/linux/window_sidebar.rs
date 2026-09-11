@@ -12,8 +12,8 @@ use gtk4::{Box, Button, CheckButton, Label, Orientation, Window};
 
 use crate::protocol::WorkspaceId;
 
-use crate::frontend::ffi_client::{ClientOpenIntent, ClientTarget, ClientTask};
-use crate::frontend::i18n::{self, Key};
+use crate::frontend::utils::corebridge::{ClientOpenIntent, ClientTarget, ClientTask};
+use crate::frontend::utils::i18n::{self, Key};
 
 use super::window_connection::recent_workspaces;
 use super::window_event_pump::{activity_snapshot, sync_view_store};

@@ -11,7 +11,7 @@ use crate::frontend::cli::tmux_cli::{
     parse_tmux_cli, CliEnvelope, PaneCmd, SessionCmd, SplitDirection, TabCmd, Target,
     TmuxCliCommand,
 };
-use crate::frontend::ffi_client::{ClientEventKind, ClientTask, FfiClient};
+use crate::frontend::utils::corebridge::{ClientEventKind, ClientTask, FfiClient};
 
 /// tmux CLI 命令执行超时（硬限制）。
 const EXEC_TIMEOUT: Duration = Duration::from_secs(15);
@@ -67,15 +67,15 @@ impl FfiTmuxClient {
         let _ = self.client.poll_workspace_events();
     }
 
-    fn tabs(&self) -> Vec<crate::frontend::ffi_client::ClientTab> {
+    fn tabs(&self) -> Vec<crate::frontend::utils::corebridge::ClientTab> {
         self.client.get_workspace_tabs(&self.workspace_id)
     }
 
-    fn panes(&self, tab_id: u32) -> Vec<crate::frontend::ffi_client::ClientPane> {
+    fn panes(&self, tab_id: u32) -> Vec<crate::frontend::utils::corebridge::ClientPane> {
         self.client.get_workspace_panes(&self.workspace_id, tab_id)
     }
 
-    fn active_tab(&self) -> Option<crate::frontend::ffi_client::ClientTab> {
+    fn active_tab(&self) -> Option<crate::frontend::utils::corebridge::ClientTab> {
         self.tabs().into_iter().find(|tab| tab.is_active)
     }
 

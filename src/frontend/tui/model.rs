@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::frontend::ffi_client::{ClientLayout, ClientPane, ClientTab};
+use crate::frontend::utils::corebridge::{ClientLayout, ClientPane, ClientTab};
 use crate::frontend::view_store::WorkspaceView;
 
 pub type TuiLayout = ClientLayout;
@@ -70,7 +70,7 @@ pub(crate) fn status_label(code: u32) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::frontend::ffi_client::{ClientPane, ClientTab, ClientWorkspace};
+    use crate::frontend::utils::corebridge::{ClientPane, ClientTab, ClientWorkspace};
     use crate::frontend::view_store::ViewStore;
 
     #[test]

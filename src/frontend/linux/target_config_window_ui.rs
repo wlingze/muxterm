@@ -15,8 +15,6 @@ use gtk4::{
     ToggleButton, Window,
 };
 
-use crate::frontend::ffi_client::{ClientRuntimeInfo, FfiClient, SshHostEntry};
-use crate::frontend::i18n::{self, Key};
 use crate::frontend::linux::quickconnect::directory::{
     DirectoryListingResponse, DirectorySuggestionController,
 };
@@ -28,6 +26,8 @@ use crate::frontend::linux::quickconnect::store::QuickConnectStore;
 use crate::frontend::ssh_probe::{
     classify_ssh_probe, ssh_dot_css_class, ssh_dot_widget_name, ssh_probe_args, SshReach,
 };
+use crate::frontend::utils::corebridge::{ClientRuntimeInfo, FfiClient, SshHostEntry};
+use crate::frontend::utils::i18n::{self, Key};
 
 use super::{should_skip_directory_listing, ListingDebounce};
 

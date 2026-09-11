@@ -4,7 +4,7 @@
 //! poll。这样后续 GTK 的主线程桥可以把同一批带身份事件写入 `ViewStore`，
 //! 而不会再出现多个 frontend 路径分别读取同一个 Core handle。
 
-use crate::frontend::ffi_client::{
+use crate::frontend::utils::corebridge::{
     ClientActivityWorkspaceEvent, ClientConfigEvent, ClientWorkspaceEvent, FfiClient,
 };
 
@@ -135,7 +135,7 @@ impl EventPump {
     fn replace_workspace(
         &self,
         store: &mut ViewStore,
-        workspace: crate::frontend::ffi_client::ClientWorkspace,
+        workspace: crate::frontend::utils::corebridge::ClientWorkspace,
     ) {
         let workspace_id = workspace.id.clone();
         let tabs = self.client.get_workspace_tabs(&workspace.id);
@@ -164,7 +164,7 @@ impl EventPump {
 #[cfg(test)]
 mod tests {
     use super::EventPump;
-    use crate::frontend::ffi_client::{ClientEvent, ClientWorkspaceEvent, FfiClient};
+    use crate::frontend::utils::corebridge::{ClientEvent, ClientWorkspaceEvent, FfiClient};
     use crate::frontend::view_store::ViewStore;
 
     #[test]

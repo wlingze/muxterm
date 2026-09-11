@@ -8,11 +8,6 @@ use gtk4::Window;
 
 use crate::protocol::WorkspaceId;
 
-use crate::frontend::ffi_client::{
-    ClientCandidateRef, ClientOpenIntent, ClientOpenRequest, ClientOpenedWorkspace, ClientTarget,
-    FfiClient,
-};
-use crate::frontend::i18n::{self, Key};
 use crate::frontend::linux::quickconnect::existing::{ExistingEntry, ExistingTransport};
 use crate::frontend::linux::quickconnect::model::{
     QuickConnect, RecentWorkspaceDescriptor, TargetConfigDraft, TargetRuntime, TargetTransport,
@@ -20,6 +15,11 @@ use crate::frontend::linux::quickconnect::model::{
 use crate::frontend::linux::quickconnect::project_flow::ProjectConnectIntent;
 use crate::frontend::linux::tmux_dialog::{self, TmuxAction};
 use crate::frontend::linux::view_store::ViewStore;
+use crate::frontend::utils::corebridge::{
+    ClientCandidateRef, ClientOpenIntent, ClientOpenRequest, ClientOpenedWorkspace, ClientTarget,
+    FfiClient,
+};
+use crate::frontend::utils::i18n::{self, Key};
 
 use super::window_event_pump::sync_view_store;
 use super::window_scene::after_activate;
@@ -169,7 +169,7 @@ pub(super) fn recent_workspaces(
     workspace_sockets: &HashMap<WorkspaceId, Option<String>>,
     limit: usize,
 ) -> Vec<RecentWorkspaceDescriptor> {
-    let mut workspaces: Vec<&crate::frontend::ffi_client::ClientWorkspace> = view_store
+    let mut workspaces: Vec<&crate::frontend::utils::corebridge::ClientWorkspace> = view_store
         .workspaces()
         .filter_map(|(_, view)| view.workspace.as_ref())
         .collect();
@@ -193,7 +193,7 @@ pub(super) fn recent_workspaces(
 /// 读 `resolved_target().canonical`（Catalog 打开时保存）；无 descriptor 时
 /// 从 WorkspaceId 推导（测试 mock/CLI 直开路径）。
 pub(super) fn workspace_to_draft_config(
-    workspace: &crate::frontend::ffi_client::ClientWorkspace,
+    workspace: &crate::frontend::utils::corebridge::ClientWorkspace,
     tmux_socket: Option<&str>,
 ) -> TargetConfigDraft {
     if let Some(canonical) = workspace

@@ -3,8 +3,8 @@
 use std::collections::HashSet;
 
 use crate::frontend::command_queue::ClientCommand;
-use crate::frontend::ffi_client::ClientTask;
 use crate::frontend::linux::view_store::PaneRenderPolicy;
+use crate::frontend::utils::corebridge::ClientTask;
 use crate::protocol::WorkspaceId;
 
 use super::super::view_store::WorkspaceView;
@@ -269,8 +269,8 @@ pub(super) fn forward_parser_replies_for_key(s: &mut UiState, workspace_id: &str
 #[cfg(test)]
 mod tests {
     use super::hidden_render_policy;
-    use crate::frontend::ffi_client::ClientWorkspace;
     use crate::frontend::linux::view_store::{PaneRenderPolicy, WorkspaceView};
+    use crate::frontend::utils::corebridge::ClientWorkspace;
 
     fn workspace_with_transport(transport: &str) -> WorkspaceView {
         let mut view = WorkspaceView::default();

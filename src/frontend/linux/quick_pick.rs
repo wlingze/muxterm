@@ -487,8 +487,8 @@ pub fn show_freeform<F>(
                         finish(Some(QuickPickItem {
                             id: FREEFORM_ID.into(),
                             label: t,
-                            detail: Some(crate::frontend::i18n::tr(
-                                crate::frontend::i18n::Key::FreeformUseTypedTarget,
+                            detail: Some(crate::frontend::utils::i18n::tr(
+                                crate::frontend::utils::i18n::Key::FreeformUseTypedTarget,
                             )),
                         }));
                     }

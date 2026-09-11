@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use gtk4::gdk;
 
-use crate::frontend::ffi_client::ClientKeyBinding;
+use crate::frontend::utils::corebridge::ClientKeyBinding;
 
 pub type KeyBinding = ClientKeyBinding;
 

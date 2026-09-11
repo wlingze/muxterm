@@ -8,9 +8,9 @@ use std::cell::Cell;
 use gtk4::prelude::IsA;
 use gtk4::Window;
 
-use crate::frontend::ffi_client::{ClientRuntimeInfo, SshHostEntry};
 use crate::frontend::linux::quickconnect::model::TargetConfigDraft;
 use crate::frontend::linux::quickconnect::store::QuickConnectStore;
+use crate::frontend::utils::corebridge::{ClientRuntimeInfo, SshHostEntry};
 
 #[cfg(test)]
 use crate::frontend::linux::quickconnect::model::TargetTransport;

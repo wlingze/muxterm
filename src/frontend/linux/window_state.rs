@@ -1,8 +1,8 @@
 //! GTK 主窗口 UiState 的 ViewStore / CommandQueue 查询边界。
 
 use crate::frontend::command_queue::ClientCommand;
-use crate::frontend::ffi_client::{ClientRuntimeCapability, ClientTask};
 use crate::frontend::linux::layout_host::LayoutHost;
+use crate::frontend::utils::corebridge::{ClientRuntimeCapability, ClientTask};
 
 use crate::protocol::WorkspaceId;
 
