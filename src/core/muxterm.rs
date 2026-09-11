@@ -428,6 +428,11 @@ impl Muxterm {
 
     /// Convert only the batches selected for one legacy C ABI poll.
     ///
+    /// The public C ABI remains a mixed `StateChange` stream so Swift and
+    /// existing `ffi_client` callers stay source-compatible. Core production
+    /// paths keep `RuntimeBatch` until a later ABI revision. Product order is
+    /// still topology → activity → frame → output via `into_state_changes`.
+    ///
     /// `workspace_id = Some(id)` selects the active workspace for
     /// `muxterm_poll_events`; `None` drains all workspaces for the
     /// workspace-tagged poll. A partially consumed batch is requeued at the

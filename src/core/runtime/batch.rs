@@ -344,6 +344,7 @@ mod tests {
         assert_eq!(batch.render.len(), 2);
 
         let ordered = batch.into_state_changes();
+        // Product poll order: topology → activity/signals → frame → output.
         assert!(matches!(ordered[0], StateChange::TabOrderChanged));
         assert!(matches!(
             ordered[1],
