@@ -18,8 +18,6 @@ use crate::protocol::state::{State, StateChange};
 use crate::protocol::task::{Task, TaskOutcome};
 use crate::runtime::{Runtime, RuntimeBatch};
 use muxterm_protocol::PaneId;
-use std::collections::VecDeque;
-
 /// 状态变更回调类型。
 pub type StateChangeCallback = Box<dyn Fn(&StateChange) + Send + Sync>;
 
@@ -28,8 +26,8 @@ pub type StateChangeCallback = Box<dyn Fn(&StateChange) + Send + Sync>;
 /// 持有一个 backend，编排 task → backend → state → 事件流 → 订阅者。
 pub struct TerminalModel {
     runtime: Box<dyn Runtime>,
-    /// 待派发给订阅者的事件队列（从 backend take_events 拉来）。
-    pending_events: VecDeque<StateChange>,
+    /// 待派发的三路 Runtime 批次；旧 `StateChange` 视图只在兼容方法中生成。
+    pending_events: RuntimeBatch,
     /// 订阅者回调列表。
     subscribers: Vec<StateChangeCallback>,
     /// 已执行的 Task 历史（用于 undo / 调试）。
@@ -43,7 +41,7 @@ impl TerminalModel {
     pub fn new(runtime: Box<dyn Runtime>) -> Self {
         Self {
             runtime,
-            pending_events: VecDeque::new(),
+            pending_events: RuntimeBatch::default(),
             subscribers: Vec::new(),
             history: Vec::new(),
             record_history: true,
@@ -63,7 +61,7 @@ impl TerminalModel {
     /// 换掉底层 Runtime（W17a 自动重连：新 client 接管，PaneBuf 在 Workspace 侧不受影响）。
     pub fn swap_runtime(&mut self, runtime: Box<dyn Runtime>) {
         self.runtime = runtime;
-        self.pending_events.clear();
+        self.pending_events = RuntimeBatch::default();
     }
 
     /// 只读访问当前状态（`&dyn State`）。
@@ -179,13 +177,20 @@ impl TerminalModel {
     /// 非阻塞拉取所有 pending 事件，并同步触发订阅者回调。
     /// 返回事件列表（副本），供前端处理。
     pub fn poll_events(&mut self) -> Vec<StateChange> {
-        let events: Vec<StateChange> = self.pending_events.drain(..).collect();
+        self.poll_batch().into_state_changes()
+    }
+
+    /// Poll pending lane events, invoke subscribers in product delivery order,
+    /// and retain the batch separation for the caller.
+    pub fn poll_batch(&mut self) -> RuntimeBatch {
+        let batch = self.take_batch();
+        let events = batch.clone().into_state_changes();
         for ev in &events {
             for cb in &self.subscribers {
                 cb(ev);
             }
         }
-        events
+        batch
     }
 
     /// 刷新事件流：先从 backend 拉取最新事件（如 pty 输出）放入 pending，
@@ -207,18 +212,13 @@ impl TerminalModel {
 
     /// 拉取 pending 事件但不触发回调（供前端自己处理事件分发）。
     pub fn take_events(&mut self) -> Vec<StateChange> {
-        self.pending_events.drain(..).collect()
+        self.take_batch().into_state_changes()
     }
 
     /// Take pending events without invoking callbacks, retaining lane
     /// separation for Workspace and Pool migration callers.
     pub fn take_batch(&mut self) -> RuntimeBatch {
-        RuntimeBatch::from_state_changes(self.pending_events.drain(..))
-    }
-
-    /// Poll pending events, invoke callbacks, and return the lane batch.
-    pub fn poll_batch(&mut self) -> RuntimeBatch {
-        RuntimeBatch::from_state_changes(self.poll_events())
+        std::mem::take(&mut self.pending_events)
     }
 
     /// 订阅状态变更。回调在 `poll_events` 时同步调用。
@@ -264,7 +264,7 @@ impl TerminalModel {
     fn enqueue_runtime_batch(&mut self) {
         let mut batch = RuntimeBatch::default();
         self.runtime.drain_events(&mut batch);
-        self.pending_events.extend(batch.into_state_changes());
+        self.pending_events.append(batch);
     }
 
     /// 当前激活 pane id（便捷方法）。
@@ -355,6 +355,34 @@ mod tests {
         assert!(matches!(events[2], StateChange::ActivePaneChanged { .. }));
         // 再次 poll 应为空
         assert!(m.poll_events().is_empty());
+    }
+
+    #[test]
+    fn refresh_batch_keeps_runtime_lanes_separate_until_compatibility_poll() {
+        let mut runtime = MockRuntime::with_single_pane();
+        runtime.events_mut().extend([
+            StateChange::PaneOutput {
+                pane: PaneId(1),
+                data: b"output".to_vec(),
+            },
+            StateChange::TabOrderChanged,
+        ]);
+        let mut model = TerminalModel::new(Box::new(runtime));
+
+        let batch = model.refresh_batch();
+
+        assert!(matches!(
+            batch.control.as_slice(),
+            [crate::runtime::ControlEvent::TabOrderChanged]
+        ));
+        assert!(matches!(
+            batch.render.as_slice(),
+            [crate::runtime::RenderEvent::PaneOutput {
+                pane: PaneId(1),
+                data
+            }] if data == b"output"
+        ));
+        assert!(batch.signals.is_empty());
     }
 
     #[test]

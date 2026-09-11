@@ -155,7 +155,7 @@ impl Workspace {
     /// 建立连接（spawn tmux / 启动本地 shell）。
     pub async fn connect(&mut self) -> anyhow::Result<()> {
         self.model.connect().await?;
-        self.advance_template_application(&[]);
+        self.advance_template_application_for_batch(&RuntimeBatch::default());
         Ok(())
     }
 
@@ -179,7 +179,7 @@ impl Workspace {
         let mut application = TemplateApplication::new(template)?;
         application.bootstrap(self.model.state());
         self.template_application = Some(application);
-        self.advance_template_application(&[]);
+        self.advance_template_application_for_batch(&RuntimeBatch::default());
         Ok(())
     }
 
@@ -220,18 +220,11 @@ impl Workspace {
     }
 
     fn advance_template_application_for_batch(&mut self, batch: &RuntimeBatch) {
-        if self.template_application.is_some() {
-            let events = batch.clone().into_state_changes();
-            self.advance_template_application(&events);
-        }
-    }
-
-    fn advance_template_application(&mut self, events: &[StateChange]) {
         let Some(mut application) = self.template_application.take() else {
             return;
         };
         let capabilities = self.model.runtime().support();
-        application.observe(self.model.state(), events);
+        application.observe_batch(self.model.state(), batch);
         loop {
             let Some(task) = application.next_task(self.model.state(), capabilities) else {
                 break;

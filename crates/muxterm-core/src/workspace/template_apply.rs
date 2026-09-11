@@ -12,7 +12,7 @@ use crate::executable::parse_command_argv;
 use crate::protocol::state::{MutationKind, MutationResult, State, StateChange};
 use crate::protocol::task::{Task, TaskOutcome};
 use crate::protocol::terminal::input::KeyEvent;
-use crate::runtime::RuntimeCapability;
+use crate::runtime::{ControlEvent, RuntimeBatch, RuntimeCapability};
 use crate::workspace::template::{PaneTemplate, TemplateLayout, TemplateName, WorkspaceTemplate};
 use muxterm_protocol::{PaneId, TabId};
 
@@ -137,16 +137,23 @@ impl TemplateApplication {
         self.adopt_initial_topology(state);
     }
 
-    /// Consume topology and mutation events without waiting for I/O.
-    pub(crate) fn observe(&mut self, state: &dyn State, events: &[StateChange]) {
+    /// Consume the control lane without waiting for I/O.
+    pub(crate) fn observe_batch(&mut self, state: &dyn State, batch: &RuntimeBatch) {
         if self.report.completed {
             return;
         }
-        for event in events {
+        for event in &batch.control {
             self.observe_event(event);
         }
         self.adopt_initial_topology(state);
         self.finish_pending_if_ready();
+    }
+
+    /// Compatibility adapter for tests and callers that still hold the mixed
+    /// state-change view.
+    pub(crate) fn observe(&mut self, state: &dyn State, events: &[StateChange]) {
+        let batch = RuntimeBatch::from_state_changes(events.iter().cloned());
+        self.observe_batch(state, &batch);
     }
 
     /// Return at most one Runtime Task. A structural task installs a pending
@@ -314,9 +321,9 @@ impl TemplateApplication {
         self.fail(format!("template task failed: {error:#}"));
     }
 
-    fn observe_event(&mut self, event: &StateChange) {
+    fn observe_event(&mut self, event: &ControlEvent) {
         match event {
-            StateChange::TabAdded { tab } => {
+            ControlEvent::TabAdded { tab } => {
                 let is_new = !self.known_tabs.contains(tab);
                 if is_new {
                     match self.pending.as_mut() {
@@ -333,7 +340,7 @@ impl TemplateApplication {
                 }
                 self.known_tabs.insert(*tab);
             }
-            StateChange::PaneAdded { pane, tab } => {
+            ControlEvent::PaneAdded { pane, tab } => {
                 let is_new = !self.known_panes.contains(pane);
                 if is_new {
                     match self.pending.as_mut() {
@@ -362,7 +369,7 @@ impl TemplateApplication {
                 }
                 self.known_panes.insert(*pane);
             }
-            StateChange::MutationSettled {
+            ControlEvent::MutationSettled {
                 operation_id,
                 kind,
                 result,
