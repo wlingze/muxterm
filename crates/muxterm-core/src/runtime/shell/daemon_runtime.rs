@@ -15,13 +15,14 @@ use async_trait::async_trait;
 use crate::buffer_cap::{append_capped, MAX_PANE_OUTPUT_BYTES};
 use crate::protocol::layout::{SplitDir, TabLayout};
 use crate::protocol::state::{
-    BackendStatus, MutationKind, MutationResult, PaneAgentInfo, PaneInfo, State, StateChange,
-    TabInfo,
+    BackendStatus, MutationKind, MutationResult, PaneAgentInfo, PaneInfo, State, TabInfo,
 };
 use crate::protocol::task::{Task, TaskOutcome};
 use crate::protocol::terminal::input::encode;
 use crate::runtime::shell::daemon_client::send_command;
-use crate::runtime::{Runtime, RuntimeBatch, RuntimeCapability};
+use crate::runtime::{
+    ControlEvent, RenderEvent, Runtime, RuntimeBatch, RuntimeCapability, RuntimeSignal,
+};
 use muxterm_protocol::command::CliCommand;
 use muxterm_protocol::daemon::{OutputFormat, TopologySnapshot};
 use muxterm_protocol::{PaneId, TabId};
@@ -59,8 +60,14 @@ impl DaemonRuntime {
         }
     }
 
-    fn push_event(&mut self, event: StateChange) {
-        self.events.push_back(RuntimeBatch::from(event));
+    fn push_batch(&mut self, batch: RuntimeBatch) {
+        if !batch.is_empty() {
+            self.events.push_back(batch);
+        }
+    }
+
+    fn push_control(&mut self, event: ControlEvent) {
+        self.push_batch(control_batch(event));
     }
 
     fn poll_from_daemon(&mut self) -> Result<()> {
@@ -142,17 +149,17 @@ impl DaemonRuntime {
     /// Decode the semantic daemon event wire at the Core runtime boundary.
     ///
     /// The daemon response deliberately carries JSON values instead of Core
-    /// `StateChange` values: the CLI host owns the FFI DTOs, while this client
-    /// owns the product event vocabulary. Unknown events are ignored so a
-    /// newer FFI producer can still be consumed by an older daemon client.
+    /// lane events: the CLI host owns the FFI DTOs, while this client owns the
+    /// product event vocabulary. Unknown events are ignored so a newer FFI
+    /// producer can still be consumed by an older daemon client.
     fn enqueue_wire_events(&mut self, events: impl IntoIterator<Item = serde_json::Value>) {
         for value in events {
             if self.apply_topology_event(&value) {
                 continue;
             }
             self.apply_render_cache(&value);
-            if let Some(event) = self.decode_wire_event(&value) {
-                self.push_event(event);
+            if let Some(batch) = self.decode_wire_event(&value) {
+                self.push_batch(batch);
             } else {
                 tracing::debug!(
                     target = "muxterm::daemon",
@@ -163,61 +170,65 @@ impl DaemonRuntime {
         }
     }
 
-    fn decode_wire_event(&self, value: &serde_json::Value) -> Option<StateChange> {
+    fn decode_wire_event(&self, value: &serde_json::Value) -> Option<RuntimeBatch> {
         let kind = value.get("kind")?.as_str()?;
         match kind {
-            "pane_output" => Some(StateChange::PaneOutput {
+            "pane_output" => Some(render_batch(RenderEvent::PaneOutput {
                 pane: PaneId(wire_u32(value, "pane_id")?),
                 data: wire_bytes(value)?,
-            }),
-            "pane_frame" => Some(StateChange::PaneFrame {
+            })),
+            "pane_frame" => Some(render_batch(RenderEvent::PaneFrame {
                 pane: PaneId(wire_u32(value, "pane_id")?),
                 data: wire_bytes(value)?,
-            }),
-            "pane_snapshot" => Some(StateChange::PaneSnapshot {
+            })),
+            "pane_snapshot" => Some(render_batch(RenderEvent::PaneSnapshot {
                 pane: PaneId(wire_u32(value, "pane_id")?),
                 data: wire_bytes(value)?,
-            }),
-            "pane_history" => Some(StateChange::PaneHistory {
+            })),
+            "pane_history" => Some(render_batch(RenderEvent::PaneHistory {
                 pane: PaneId(wire_u32(value, "pane_id")?),
                 data: wire_bytes(value)?,
-            }),
-            "tab_added" => Some(StateChange::TabAdded {
+            })),
+            "tab_added" => Some(control_batch(ControlEvent::TabAdded {
                 tab: TabId(wire_u32(value, "tab_id")?),
-            }),
-            "tab_closed" => Some(StateChange::TabClosed {
+            })),
+            "tab_closed" => Some(control_batch(ControlEvent::TabClosed {
                 tab: TabId(wire_u32(value, "tab_id")?),
-            }),
+            })),
             "layout_changed" => {
                 let tab = TabId(wire_u32(value, "tab_id")?);
                 self.layouts
                     .get(&tab)
                     .cloned()
-                    .map(|layout| StateChange::LayoutChanged { tab, layout })
+                    .map(|layout| control_batch(ControlEvent::LayoutChanged { tab, layout }))
             }
-            "pane_added" => Some(StateChange::PaneAdded {
+            "pane_added" => Some(control_batch(ControlEvent::PaneAdded {
                 pane: PaneId(wire_u32(value, "pane_id")?),
                 tab: TabId(wire_u32(value, "tab_id")?),
-            }),
-            "pane_closed" => Some(StateChange::PaneClosed {
+            })),
+            "pane_closed" => Some(control_batch(ControlEvent::PaneClosed {
                 pane: PaneId(wire_u32(value, "pane_id")?),
-            }),
-            "active_tab_changed" => Some(StateChange::ActiveTabChanged {
+            })),
+            "active_tab_changed" => Some(control_batch(ControlEvent::ActiveTabChanged {
                 tab: TabId(wire_u32(value, "tab_id")?),
-            }),
-            "active_pane_changed" => Some(StateChange::ActivePaneChanged {
+            })),
+            "active_pane_changed" => Some(control_batch(ControlEvent::ActivePaneChanged {
                 tab: TabId(wire_u32(value, "tab_id")?),
                 pane: PaneId(wire_u32(value, "pane_id")?),
-            }),
-            "tab_renamed" => Some(StateChange::TabRenamed {
+            })),
+            "tab_renamed" => Some(control_batch(ControlEvent::TabRenamed {
                 tab: TabId(wire_u32(value, "tab_id")?),
                 name: wire_string(value, "name")?,
-            }),
-            "tab_order_changed" => Some(StateChange::TabOrderChanged),
+            })),
+            "tab_order_changed" => Some(control_batch(ControlEvent::TabOrderChanged)),
             "pane_resized" => {
                 let pane = PaneId(wire_u32(value, "pane_id")?);
                 let (cols, rows) = wire_resize(value)?;
-                Some(StateChange::PaneResized { pane, cols, rows })
+                Some(control_batch(ControlEvent::PaneResized {
+                    pane,
+                    cols,
+                    rows,
+                }))
             }
             "pane_agent_changed" => {
                 let payload = wire_payload(value)?;
@@ -232,13 +243,13 @@ impl DaemonRuntime {
                         serde_json::from_value::<Option<Box<PaneAgentInfo>>>(agent).ok()
                     })
                     .flatten();
-                Some(StateChange::PaneAgentChanged {
+                Some(signal_batch(RuntimeSignal::PaneAgentChanged {
                     pane: PaneId(wire_u32(value, "pane_id")?),
                     agent,
                     initial,
-                })
+                }))
             }
-            "status_subscription" => Some(StateChange::StatusBarSubscription {
+            "status_subscription" => Some(signal_batch(RuntimeSignal::StatusBarSubscription {
                 name: wire_string(value, "name")?,
                 value: value
                     .get("value")
@@ -246,17 +257,17 @@ impl DaemonRuntime {
                     .unwrap_or_default()
                     .to_string(),
                 pane: nonzero_pane(value, "pane_id"),
-            }),
-            "workspace_renamed" => Some(StateChange::WorkspaceRenamed {
+            })),
+            "workspace_renamed" => Some(control_batch(ControlEvent::WorkspaceRenamed {
                 name: wire_string(value, "name")?,
-            }),
-            "pool_changed" => Some(StateChange::PoolChanged),
-            "backend_status" => Some(StateChange::BackendStatusChanged(wire_backend_status(
-                value,
-            )?)),
+            })),
+            "pool_changed" => Some(control_batch(ControlEvent::PoolChanged)),
+            "backend_status" => Some(control_batch(ControlEvent::BackendStatusChanged(
+                wire_backend_status(value)?,
+            ))),
             "mutation_settled" => {
                 let payload = wire_payload(value)?;
-                Some(StateChange::MutationSettled {
+                Some(control_batch(ControlEvent::MutationSettled {
                     operation_id: payload.get("operation_id")?.as_u64()?,
                     kind: serde_json::from_value::<MutationKind>(payload.get("kind")?.clone())
                         .ok()?,
@@ -264,7 +275,7 @@ impl DaemonRuntime {
                         payload.get("result")?.clone(),
                     )
                     .ok()?,
-                })
+                }))
             }
             // `STATE_OTHER` is used by the C ABI for PaneTitleChanged.  The
             // only other producer, PaneIndexSnapshot, is filtered before FFI
@@ -272,10 +283,10 @@ impl DaemonRuntime {
             "other"
                 if wire_u32(value, "pane_id").is_some() && wire_string(value, "name").is_some() =>
             {
-                Some(StateChange::PaneTitleChanged {
+                Some(control_batch(ControlEvent::PaneTitleChanged {
                     pane: PaneId(wire_u32(value, "pane_id")?),
                     title: wire_string(value, "name")?,
-                })
+                }))
             }
             _ => None,
         }
@@ -366,6 +377,27 @@ impl DaemonRuntime {
                 lines: None,
             }),
         }
+    }
+}
+
+fn control_batch(event: ControlEvent) -> RuntimeBatch {
+    RuntimeBatch {
+        control: vec![event],
+        ..RuntimeBatch::default()
+    }
+}
+
+fn render_batch(event: RenderEvent) -> RuntimeBatch {
+    RuntimeBatch {
+        render: vec![event],
+        ..RuntimeBatch::default()
+    }
+}
+
+fn signal_batch(event: RuntimeSignal) -> RuntimeBatch {
+    RuntimeBatch {
+        signals: vec![event],
+        ..RuntimeBatch::default()
     }
 }
 
@@ -529,7 +561,7 @@ impl Runtime for DaemonRuntime {
         }
         self.poll_from_daemon()?;
         self.status = BackendStatus::Connected;
-        self.push_event(StateChange::BackendStatusChanged(BackendStatus::Connected));
+        self.push_control(ControlEvent::BackendStatusChanged(BackendStatus::Connected));
         Ok(())
     }
 
@@ -537,7 +569,7 @@ impl Runtime for DaemonRuntime {
         if matches!(task, Task::Detach) {
             // detach：不向 daemon 发 KillSession
             self.status = BackendStatus::Disconnected;
-            self.push_event(StateChange::BackendStatusChanged(
+            self.push_control(ControlEvent::BackendStatusChanged(
                 BackendStatus::Disconnected,
             ));
             return Ok(TaskOutcome::Done);
@@ -550,7 +582,7 @@ impl Runtime for DaemonRuntime {
         tracing::debug!(target = "muxterm::daemon", task = ?task, cli = ?cmd, "daemon execute");
         self.send_cli(cmd)?;
         if matches!(task, Task::Shutdown) {
-            self.push_event(StateChange::BackendStatusChanged(
+            self.push_control(ControlEvent::BackendStatusChanged(
                 BackendStatus::Disconnected,
             ));
         }
@@ -580,6 +612,7 @@ mod tests {
     use super::*;
     use crate::protocol::terminal::input::KeyEvent;
     use crate::runtime::{ControlEvent, RenderEvent, RuntimeSignal};
+    use muxterm_protocol::state::StateChange;
 
     #[test]
     fn task_send_keys_maps_to_write_raw() {
