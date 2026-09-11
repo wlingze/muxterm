@@ -39,7 +39,8 @@ Herdr 测试只用 named session `muxterm-test-*`。不要对默认 server 执�
 3. macOS `muxterm gui` 唤起 `Muxterm.app` bundle（`open`；`--debug`/`--log-file` 前台
    exec）。不把 Swift UI 嵌进 CLI 进程。
 4. windows frontend 不在本重构落地，只保留 `src/frontend/windows` 占位。
-5. 文件名锁定为 `frontend/ffi_client.rs`。
+5. Rust FFI wrapper 路径为 `frontend/utils/corebridge`（类型名 `CoreBridge`；
+   `FfiClient` 是过渡别名）。C 符号仍是 `muxterm_*`。
 6. Recent / last-used 是进程内 `WorkspacePool` 状态，不写 `config.toml`，也不另开
    sidecar。Recent 候选来自 live pool。
 7. 模板新建 tab/split 走 Runtime 原生 `NewTab`/`SplitPane` 的 command/cwd/env；
@@ -156,6 +157,9 @@ CI 跑 [`docs/TESTING.md`](docs/TESTING.md) 的结构门禁。
 4. ~~Phase 8：空目录、过期文档、TESTING.md 门禁补进 `scripts/check-architecture.sh`。~~
 5. ~~Phase 9 TUI：per-workspace Scene buffer 组；切 workspace/tab 不走 FFI 拉帧。~~
 6. ~~原「实现时再定」十项已拍板（见上文）。~~
+7. ~~第二轮：provider 子模块默认 `mod`；Catalog/FFI 走 trait；
+   `frontend/utils/{corebridge,i18n}`；Linux `app/chrome/terminal/ui`。~~
+   见 [`docs/MODULE-SURFACE.md`](docs/MODULE-SURFACE.md)。
 
 ## 非目标
 
