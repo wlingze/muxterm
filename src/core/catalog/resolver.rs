@@ -6,7 +6,7 @@
 //! 显示/项目元数据，不参与身份。旧 TargetConfig 仅在兼容 API 边界转换。
 
 use crate::projects::{ProjectTarget, TargetConfig, TargetRuntime, TargetTransport};
-use crate::workspace::spec::WorkspaceSpec;
+use crate::workspace::WorkspaceSpec;
 
 pub use crate::protocol::candidate::{OpenRequest, ResolveIntent};
 

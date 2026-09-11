@@ -5,8 +5,8 @@
 //! `trait Runtime` 只表示已经 attach 的格子。Catalog 保留 provider 视图、
 //! Inventory 和 resolver；可复用连接由组合根通过显式 registry 提供。
 
-pub mod inventory;
-pub mod resolver;
+mod inventory;
+mod resolver;
 
 use std::sync::Arc;
 use std::thread;
@@ -19,8 +19,8 @@ use crate::runtime::runtime_supports_channels;
 use crate::transport::registry::ConnectionRegistry;
 use crate::transport::registry::TransportRegistry;
 use crate::transport::{ChannelKind, TargetConnection};
-use crate::workspace::pool::WorkspacePool;
-use crate::workspace::template::TemplateName;
+use crate::workspace::TemplateName;
+use crate::workspace::WorkspacePool;
 
 pub use crate::protocol::candidate::ExistingCandidate;
 pub use crate::protocol::candidate::{OpenRequest, ResolveIntent};

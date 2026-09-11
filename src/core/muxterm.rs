@@ -21,10 +21,10 @@ use crate::runtime::registry::RuntimeRegistry;
 use crate::runtime::{
     runtime_supports_channels, ControlEvent, RenderEvent, Runtime, RuntimeBatch, RuntimeSignal,
 };
-use crate::workspace::pool::WorkspacePool;
-use crate::workspace::spec::WorkspaceSpec;
-use crate::workspace::template::TemplateRegistry;
-use crate::workspace::workspace::Workspace;
+use crate::workspace::TemplateRegistry;
+use crate::workspace::Workspace;
+use crate::workspace::WorkspacePool;
+use crate::workspace::WorkspaceSpec;
 
 use crate::activity::record::ActivityEvent;
 use crate::protocol::ffi::callbacks::FfiCallbacks;
@@ -290,8 +290,8 @@ impl Muxterm {
         pool: &mut WorkspacePool,
         source: &crate::protocol::WorkspaceId,
         worktree: &crate::runtime::WorktreeCreateSpec,
-        provenance: Option<crate::workspace::provenance::WorkspaceProvenance>,
-        template: Option<crate::workspace::template::TemplateName>,
+        provenance: Option<crate::workspace::WorkspaceProvenance>,
+        template: Option<crate::workspace::TemplateName>,
     ) -> anyhow::Result<crate::protocol::WorkspaceId> {
         let mut spec = {
             let workspace = pool

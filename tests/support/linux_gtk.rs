@@ -14,7 +14,7 @@ use gtk4::glib::translate::IntoGlib;
 use gtk4::prelude::*;
 use gtk4::{EventControllerKey, Paned, ToggleButton, Widget};
 
-use muxterm::test_support::core::workspace::spec::WorkspaceSpec;
+use muxterm::test_support::core::workspace::WorkspaceSpec;
 use muxterm::test_support::platform::ffi_client::ClientTarget;
 use muxterm::test_support::platform::linux::theme::{fallback_theme, Theme};
 use muxterm::test_support::platform::linux::window::AppWindow;

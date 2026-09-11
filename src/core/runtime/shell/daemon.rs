@@ -125,7 +125,7 @@ mod tests {
     use crate::protocol::task::Task;
     use crate::protocol::PaneId;
     use crate::runtime::MockRuntime;
-    use crate::workspace::terminal_model::TerminalModel;
+    use crate::workspace::TerminalModel;
 
     fn make_model() -> TerminalModel {
         TerminalModel::new(Box::new(MockRuntime::with_single_pane()))

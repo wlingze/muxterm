@@ -119,7 +119,7 @@ fn backend_send_keys_text_plus_enter_native_capture_has_marker() {
     use muxterm::test_support::core::protocol::task::Task;
     use muxterm::test_support::core::protocol::terminal::input::KeyEvent;
     use muxterm::test_support::core::runtime::tmux::backend::TmuxRuntime;
-    use muxterm::test_support::core::workspace::terminal_model::TerminalModel;
+    use muxterm::test_support::core::workspace::TerminalModel;
 
     let socket = unique_socket("backend-sk");
     let session = format!("sk-test-{}", rand_suffix());

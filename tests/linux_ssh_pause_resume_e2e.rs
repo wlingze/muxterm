@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use gtk4::prelude::*;
 
 use muxterm::test_support::core::config::Config;
-use muxterm::test_support::core::workspace::spec::WorkspaceSpec;
+use muxterm::test_support::core::workspace::WorkspaceSpec;
 use muxterm::test_support::platform::linux::window::AppWindow;
 
 use support::linux_gtk::*;

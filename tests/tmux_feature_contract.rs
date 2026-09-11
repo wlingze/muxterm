@@ -10,7 +10,7 @@ use muxterm::test_support::core::activity::attention::signal::AttentionSignal;
 use muxterm::test_support::core::protocol::PaneId;
 use muxterm::test_support::core::protocol::WorkspaceId;
 use muxterm::test_support::core::runtime::tmux::backend::TmuxRuntime;
-use muxterm::test_support::core::workspace::workspace::Workspace;
+use muxterm::test_support::core::workspace::Workspace;
 use support::feature_e2e_contract::*;
 use support::tmux_test_support::{tmux_available, wait_capture_contains};
 

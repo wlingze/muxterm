@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use muxterm::test_support::core::protocol::state::StateChange;
 use muxterm::test_support::core::runtime::tmux::backend::TmuxRuntime;
-use muxterm::test_support::core::workspace::terminal_model::TerminalModel;
+use muxterm::test_support::core::workspace::TerminalModel;
 use support::tmux_test_support::{
     create_session, kill_server, list_pane_ids, send_keys_line, tmux_available, unique_socket,
 };

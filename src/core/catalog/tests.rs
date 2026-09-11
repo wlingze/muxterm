@@ -14,9 +14,9 @@ use crate::transport::provider::{TargetInfo, TransportProvider};
 use crate::transport::registry::ConnectionRegistry;
 use crate::transport::Connect;
 use crate::transport::{ChannelKind, TargetConnection, TransportResult};
-use crate::workspace::pool::WorkspacePool;
-use crate::workspace::spec::WorkspaceSpec;
-use crate::workspace::template::{
+use crate::workspace::WorkspacePool;
+use crate::workspace::WorkspaceSpec;
+use crate::workspace::{
     PaneTemplate, TabTemplate, TemplateLayout, TemplateName, TemplateRegistry, WorkspaceTemplate,
 };
 
@@ -160,7 +160,7 @@ async fn open_in_pool<'a>(
     templates: &TemplateRegistry,
     pool: &'a mut WorkspacePool,
     spec: &WorkspaceSpec,
-) -> anyhow::Result<&'a mut crate::workspace::workspace::Workspace> {
+) -> anyhow::Result<&'a mut crate::workspace::Workspace> {
     let runtime_registry = catalog.runtime_registry();
     let transport_registry = catalog.transport_registry();
     Muxterm::open_spec_parts(
@@ -756,7 +756,7 @@ async fn incompatible_channel_requirements_are_rejected_without_fallback() {
 #[test]
 fn candidate_resolver_maps_project_and_worktree_provenance() {
     use crate::projects::{ProjectTarget, TargetRuntime, TargetTransport};
-    use crate::workspace::template::TemplateName;
+    use crate::workspace::TemplateName;
 
     let mut project = Project::new(
         "project-a",
@@ -1080,7 +1080,7 @@ async fn candidate_resolver_rehydrates_recent_from_core_descriptor() {
 #[tokio::test]
 async fn catalog_candidates_aggregates_four_kinds_and_marks_pool_membership() {
     use crate::projects::{ProjectTarget, TargetRuntime, TargetTransport};
-    use crate::workspace::provenance::WorkspaceProvenance;
+    use crate::workspace::WorkspaceProvenance;
 
     let mut project = Project::new(
         "project-a",

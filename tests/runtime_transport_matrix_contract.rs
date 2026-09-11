@@ -16,8 +16,8 @@ use muxterm::test_support::core::catalog::Catalog;
 use muxterm::test_support::core::muxterm::Muxterm;
 use muxterm::test_support::core::protocol::task::{Task, TaskOutcome};
 use muxterm::test_support::core::transport::registry::ConnectionRegistry;
-use muxterm::test_support::core::workspace::pool::WorkspacePool;
-use muxterm::test_support::core::workspace::spec::WorkspaceSpec;
+use muxterm::test_support::core::workspace::WorkspacePool;
+use muxterm::test_support::core::workspace::WorkspaceSpec;
 use support::herdr_test_support::herdr_available;
 use support::runtime_transport_matrix::{
     build_2tab3pane, verify_after_attach, verify_after_pool_switch, verify_fresh_workspace,

@@ -412,7 +412,7 @@ fn backend_split_actually_creates_pane_in_tmux() {
     use muxterm::test_support::core::protocol::layout::SplitDir;
     use muxterm::test_support::core::protocol::task::Task;
     use muxterm::test_support::core::runtime::tmux::backend::TmuxRuntime;
-    use muxterm::test_support::core::workspace::terminal_model::TerminalModel;
+    use muxterm::test_support::core::workspace::TerminalModel;
 
     let socket = unique_socket("layer4");
     let session = format!("backend-split-{}", rand_suffix());
@@ -520,7 +520,7 @@ fn backend_split_new_tab_targets_its_pane_with_second_session_present() {
     use muxterm::test_support::core::protocol::layout::SplitDir;
     use muxterm::test_support::core::protocol::task::Task;
     use muxterm::test_support::core::runtime::tmux::backend::TmuxRuntime;
-    use muxterm::test_support::core::workspace::terminal_model::TerminalModel;
+    use muxterm::test_support::core::workspace::TerminalModel;
 
     let _ = tracing_subscriber::fmt()
         .with_env_filter("muxterm::tmux=debug")

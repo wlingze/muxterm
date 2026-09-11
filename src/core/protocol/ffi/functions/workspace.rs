@@ -7,7 +7,7 @@ use std::ptr;
 use crate::muxterm::Muxterm;
 use crate::protocol::layout::{LayoutNode, SplitDir};
 use crate::protocol::TabId;
-use crate::workspace::spec::WorkspaceSpec;
+use crate::workspace::WorkspaceSpec;
 
 use super::super::types::{CLayoutNode, CPane, CTab, LAYOUT_LEAF, LAYOUT_SPLIT_H, LAYOUT_SPLIT_V};
 use super::catalog::resolved_target_json;

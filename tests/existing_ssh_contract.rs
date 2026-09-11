@@ -25,7 +25,7 @@ use muxterm::test_support::core::protocol::WorkspaceId;
 use muxterm::test_support::core::runtime::herdr::session::HerdrAgentStatus;
 use muxterm::test_support::core::runtime::herdr::HerdrRuntime;
 use muxterm::test_support::core::transport::registry::ConnectionRegistry;
-use muxterm::test_support::core::workspace::workspace::Workspace;
+use muxterm::test_support::core::workspace::Workspace;
 use support::herdr_test_support::{herdr_available, IsolatedHerdr, TempAgentCommand};
 use support::sshd_test_support::{loopback_sshd_available, LoopbackSshd};
 use support::tmux_test_support::{create_session, kill_server, tmux_available, unique_socket};

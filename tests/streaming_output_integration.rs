@@ -15,7 +15,7 @@ use muxterm::test_support::core::protocol::task::Task;
 use muxterm::test_support::core::protocol::terminal::input::KeyEvent;
 use muxterm::test_support::core::protocol::PaneId;
 use muxterm::test_support::core::runtime::tmux::backend::TmuxRuntime;
-use muxterm::test_support::core::workspace::terminal_model::TerminalModel;
+use muxterm::test_support::core::workspace::TerminalModel;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};

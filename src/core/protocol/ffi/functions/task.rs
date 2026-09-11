@@ -7,7 +7,7 @@ use crate::config::parse_hex;
 use crate::protocol::layout::SplitDir;
 use crate::protocol::task::{Task, TaskOutcome};
 use crate::protocol::{PaneId, TabId};
-use crate::workspace::workspace::Workspace;
+use crate::workspace::Workspace;
 
 use super::super::types::{
     CTask, DIR_HORIZONTAL, DIR_VERTICAL, TAB_MOVE_BEFORE, TASK_BREAK_PANE, TASK_CLOSE_PANE,

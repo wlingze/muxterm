@@ -19,9 +19,9 @@ use crate::protocol::task::{Task, TaskOutcome};
 use crate::protocol::terminal::emulate::DEFAULT_SCROLLBACK_LINES;
 use crate::protocol::WorkspaceId;
 use crate::protocol::{PaneId, TabId};
-use crate::workspace::pool::{WorkspacePool, WorkspacePoolPolicy};
-use crate::workspace::terminal_model::TerminalModel;
-use crate::workspace::workspace::Workspace;
+use crate::workspace::TerminalModel;
+use crate::workspace::Workspace;
+use crate::workspace::{WorkspacePool, WorkspacePoolPolicy};
 
 use super::*;
 use crate::muxterm::should_export_state_change;

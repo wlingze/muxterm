@@ -21,9 +21,9 @@ use muxterm::test_support::core::protocol::task::{Task, TaskOutcome};
 use muxterm::test_support::core::protocol::{PaneId, TabId};
 use muxterm::test_support::core::runtime::herdr::HerdrRuntime;
 use muxterm::test_support::core::transport::registry::ConnectionRegistry;
-use muxterm::test_support::core::workspace::pool::WorkspacePool;
-use muxterm::test_support::core::workspace::spec::WorkspaceSpec;
-use muxterm::test_support::core::workspace::workspace::Workspace;
+use muxterm::test_support::core::workspace::Workspace;
+use muxterm::test_support::core::workspace::WorkspacePool;
+use muxterm::test_support::core::workspace::WorkspaceSpec;
 use support::herdr_test_support::{herdr_available, IsolatedHerdr};
 use support::sshd_test_support::{loopback_sshd_available, LoopbackSshd};
 

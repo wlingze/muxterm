@@ -11,8 +11,8 @@ use crate::protocol::WorkspaceId;
 use crate::runtime::WorktreeCreateSpec;
 use crate::transport::registry::ConnectionRegistry;
 use crate::transport::ChannelRequest;
-use crate::workspace::pool::WorkspacePool;
-use crate::workspace::template::{TemplateName, TemplateRegistry};
+use crate::workspace::WorkspacePool;
+use crate::workspace::{TemplateName, TemplateRegistry};
 
 use super::{git_worktree_add_argv, Project, ProjectId, ProjectStore, Worktree, WorktreeId};
 

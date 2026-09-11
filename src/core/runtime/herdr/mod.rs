@@ -17,5 +17,7 @@ pub mod session;
 pub mod wire;
 
 pub(super) use provider::HerdrDriver;
+#[allow(unused_imports)]
 pub use runtime::HerdrRuntime;
+#[allow(unused_imports)]
 pub use session::HerdrSession;

@@ -9,8 +9,8 @@ use muxterm::test_support::core::muxterm::Muxterm;
 use muxterm::test_support::core::protocol::TabId;
 use muxterm::test_support::core::runtime::WorktreeCreateSpec;
 use muxterm::test_support::core::transport::registry::ConnectionRegistry;
-use muxterm::test_support::core::workspace::pool::{WorkspacePool, WorkspacePoolPolicy};
-use muxterm::test_support::core::workspace::spec::WorkspaceSpec;
+use muxterm::test_support::core::workspace::WorkspaceSpec;
+use muxterm::test_support::core::workspace::{WorkspacePool, WorkspacePoolPolicy};
 use support::herdr_test_support::{herdr_available, IsolatedHerdr, TempGitRepo};
 
 /// 同一测试里 list/create/open 全走一遍。

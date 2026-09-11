@@ -13,9 +13,9 @@ use crate::protocol::task::Task;
 use crate::protocol::terminal::emulate::DEFAULT_SCROLLBACK_LINES;
 use crate::protocol::WorkspaceId;
 use crate::transport::registry::ConnectionRegistry;
-use crate::workspace::pool::WorkspacePool;
-use crate::workspace::spec::WorkspaceSpec;
-use crate::workspace::template::{TemplateRegistry, WorkspaceTemplate};
+use crate::workspace::WorkspacePool;
+use crate::workspace::WorkspaceSpec;
+use crate::workspace::{TemplateRegistry, WorkspaceTemplate};
 
 use super::super::callbacks::FfiCallbacks;
 use super::support::{cstr_opt, MuxtermHandle};

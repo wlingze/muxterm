@@ -14,7 +14,7 @@ use support::ssh_tmux_contract::{build_remote_one_pane, ssh_tmux_available, SSH_
 use support::tmux_test_support::tmux_available;
 
 use muxterm::test_support::core::config::Config;
-use muxterm::test_support::core::workspace::spec::WorkspaceSpec;
+use muxterm::test_support::core::workspace::WorkspaceSpec;
 use muxterm::test_support::platform::linux::window::AppWindow;
 
 fn overlay_visible(app: &AppWindow) -> bool {

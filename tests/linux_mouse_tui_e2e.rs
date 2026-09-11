@@ -19,7 +19,7 @@ use support::linux_gtk::*;
 use support::tmux_test_support::{kill_server, list_pane_ids, tmux_available, unique_socket};
 
 use muxterm::test_support::core::config::Config;
-use muxterm::test_support::core::workspace::spec::WorkspaceSpec;
+use muxterm::test_support::core::workspace::WorkspaceSpec;
 use muxterm::test_support::platform::linux::pane_view::PaneView;
 use muxterm::test_support::platform::linux::quickconnect::font::FontSettings;
 use muxterm::test_support::platform::linux::window::AppWindow;
