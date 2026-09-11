@@ -589,8 +589,7 @@ impl Muxterm {
         for (pane, agent) in pending_agents {
             if let Some(context) = self.activity_context(ws_id, pane) {
                 let event = self.activity.apply_agent_signal(context, agent.as_ref());
-                self.deferred_activity_events
-                    .push_back((ws_id.clone(), event));
+                self.push_activity_event(ws_id.clone(), event);
             }
         }
         for (pane, name, phase) in pending_commands {
@@ -601,8 +600,7 @@ impl Muxterm {
                         self.activity.apply_command_done(context, name, exit_code)
                     }
                 };
-                self.deferred_activity_events
-                    .push_back((ws_id.clone(), event));
+                self.push_activity_event(ws_id.clone(), event);
             }
         }
         for (pane, name, is_agent) in pending_process_names {
@@ -635,6 +633,18 @@ impl Muxterm {
                 self.deferred_activity_events
                     .push_back((ws_id.clone(), event));
             }
+        }
+    }
+
+    fn push_activity_event(
+        &mut self,
+        workspace_id: crate::protocol::WorkspaceId,
+        event: ActivityEvent,
+    ) {
+        self.deferred_activity_events
+            .push_back((workspace_id, event));
+        for eviction in self.activity.records.evict_terminal_overflow() {
+            self.deferred_activity_events.push_back(eviction);
         }
     }
 

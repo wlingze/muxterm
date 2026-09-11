@@ -27,7 +27,9 @@ impl EventPump {
     }
 
     /// Drain Activity lane events after the workspace batch has normalized the
-    /// corresponding runtime facts. Values are already owned by FfiClient.
+    /// corresponding runtime facts. Activity stays on its own FFI poll
+    /// (`muxterm_activity_take_events_json`) because records are cross-workspace;
+    /// EventPump sequences it after topology, it is not mixed into pane events.
     pub fn poll_activity(&self) -> Vec<ClientActivityWorkspaceEvent> {
         match self.client.take_activity_events() {
             Ok(events) => events,

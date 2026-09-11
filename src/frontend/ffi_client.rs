@@ -1,5 +1,7 @@
 //! Shared safe wrapper around the public `muxterm` C ABI.
 //!
+//! Locked filename: `ffi_client.rs` (not `client.rs`). Unsafe FFI stays here.
+//!
 //! Frontends own this client instead of borrowing `MuxtermHandle` directly or
 //! repeating raw-pointer copying logic.  The wrapper deliberately returns
 //! owned Rust values: pointers returned by the C ABI are only valid until the

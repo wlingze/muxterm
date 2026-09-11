@@ -550,6 +550,8 @@ fn set_pending_settled(pending: &mut PendingMutation, settled: bool) {
     }
 }
 
+/// Native pane start for a newly created tab/split: argv + cwd go on the Task.
+/// Env is prefixed with `env KEY=VAL` so the runtime spawn path can consume it.
 fn pane_creation_args(layout: &TemplateLayout) -> (Option<Vec<String>>, Option<String>) {
     let TemplateLayout::Pane(pane) = layout else {
         return (None, None);
@@ -565,6 +567,8 @@ fn pane_creation_args(layout: &TemplateLayout) -> (Option<Vec<String>>, Option<S
     ((!command.is_empty()).then_some(command), pane.cwd.clone())
 }
 
+/// SendKeys fallback for a pane that already exists (create-time root pane).
+/// Newly created tabs/splits must use [`pane_creation_args`] on NewTab/SplitPane.
 fn pane_input_task(pane: PaneId, template: &PaneTemplate) -> Option<Task> {
     let mut command = String::new();
     if let Some(cwd) = &template.cwd {
@@ -670,10 +674,18 @@ mod tests {
     #[test]
     fn accepted_new_tab_waits_for_tab_pane_and_settlement() {
         let runtime = MockRuntime::with_single_pane();
-        let leaf = || {
+        let empty_leaf = || {
             TemplateLayout::Pane(PaneTemplate {
                 command: None,
                 cwd: None,
+                env: Default::default(),
+                focus: false,
+            })
+        };
+        let command_leaf = || {
+            TemplateLayout::Pane(PaneTemplate {
+                command: Some("htop".into()),
+                cwd: Some("/tmp".into()),
                 env: Default::default(),
                 focus: false,
             })
@@ -684,12 +696,12 @@ mod tests {
                 crate::workspace::template::TabTemplate {
                     name: None,
                     active: true,
-                    layout: leaf(),
+                    layout: empty_leaf(),
                 },
                 crate::workspace::template::TabTemplate {
                     name: Some("second".into()),
                     active: false,
-                    layout: leaf(),
+                    layout: command_leaf(),
                 },
             ],
         };
@@ -699,7 +711,15 @@ mod tests {
         let task = app
             .next_task(&runtime, &[])
             .expect("template should create tab");
-        assert!(matches!(task, Task::NewTab { .. }));
+        match task {
+            Task::NewTab {
+                command, workdir, ..
+            } => {
+                assert_eq!(command.as_deref(), Some(["htop".to_string()].as_slice()));
+                assert_eq!(workdir.as_deref(), Some("/tmp"));
+            }
+            other => panic!("expected native NewTab, got {other:?}"),
+        }
         app.on_task_outcome(TaskOutcome::Accepted { operation_id: 9 });
         assert!(
             app.next_task(&runtime, &[]).is_none(),

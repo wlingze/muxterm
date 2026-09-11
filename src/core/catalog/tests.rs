@@ -836,6 +836,50 @@ fn candidate_resolver_maps_project_and_worktree_provenance() {
 }
 
 #[test]
+fn tmux_generic_worktree_session_is_project_slash_worktree() {
+    use crate::projects::{ProjectTarget, TargetRuntime, TargetTransport};
+
+    assert_eq!(
+        super::tmux_worktree_session("muxterm", "feature/a"),
+        "muxterm/feature-a"
+    );
+
+    let mut project = Project::new(
+        "muxterm",
+        "Muxterm",
+        ProjectTarget::new(TargetRuntime::Tmux, TargetTransport::Local, "/repo"),
+    );
+    project
+        .add_worktree(Worktree::new(
+            "feature/a",
+            "/repo-wt",
+            "feature/a",
+            "/repo",
+            true,
+        ))
+        .unwrap();
+    let catalog = Catalog::new();
+    let mut connections = ConnectionRegistry::new();
+    let resolved = catalog
+        .resolve_open_request(
+            &mut connections,
+            &OpenRequest {
+                candidate: CandidateRef::Worktree {
+                    project_id: "muxterm".into(),
+                    worktree_id: "feature/a".into(),
+                },
+                intent: ResolveIntent::CreateIfMissing,
+                template: None,
+                activate: true,
+            },
+            &[project],
+        )
+        .unwrap();
+    assert_eq!(resolved.spec.session, "muxterm/feature-a");
+    assert!(resolved.spec.create);
+}
+
+#[test]
 fn candidate_resolver_rehydrates_existing_identity_without_display_fields() {
     let mut catalog = Catalog::new();
     let mut connections = ConnectionRegistry::new();

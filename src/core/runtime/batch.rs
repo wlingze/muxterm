@@ -276,6 +276,10 @@ impl RenderEvent {
 }
 
 /// Runtime facts consumed by Core's Activity/attention normalization.
+///
+/// Locked set: agent authority (`PaneAgentChanged`) and status-bar / OSC 133
+/// subscriptions. Pane title belongs on Control; command exit codes are
+/// derived in `core/activity/` from Index, not as extra RuntimeSignal variants.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RuntimeSignal {
     PaneAgentChanged {
