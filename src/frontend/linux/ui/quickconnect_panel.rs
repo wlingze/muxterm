@@ -443,7 +443,7 @@ mod tests {
     /// C7：探测结束后空 host 表必须是 Empty，不能继续 Loading。
     #[test]
     fn ssh_hosts_empty_after_probe_must_not_stay_loading() {
-        let src = include_str!("panel_model.rs");
+        let src = include_str!("../chrome/panel_model.rs");
         let start = src
             .find("pub struct ExistingPanelState")
             .expect("ExistingPanelState 应存在");

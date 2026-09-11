@@ -7,7 +7,6 @@ use crate::frontend::linux::view_store::PaneRenderPolicy;
 use crate::frontend::utils::corebridge::ClientTask;
 use crate::protocol::WorkspaceId;
 
-use super::super::view_store::WorkspaceView;
 use super::window_event_pump::enqueue_workspace_input;
 use super::window_layout::refresh_workspace_layout;
 use super::window_scene::show_workspace_scene;
@@ -16,6 +15,7 @@ use super::{
     active_workspace_key, parse_workspace_id, resident_pane_view, ClientRuntimeCapability,
     ClientWorkspaceEvent, UiState,
 };
+use crate::frontend::view_store::WorkspaceView;
 
 /// Consume every opened scene's render mailbox without recapturing hidden
 /// workspaces. Resident surfaces keep feeding while their scene is hidden.
