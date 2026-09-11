@@ -6,13 +6,18 @@ enum SidebarTestSection {
 }
 
 /// Native main-window sidebar with four compact, independently collapsible sections.
-final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate {
+final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSSplitViewDelegate {
     var onWorkspaceActivate: ((String) -> Void)?
     var onWorkspaceClose: ((String) -> Void)?
+    var onWorkspaceReorder: (([String]) -> Void)?
     var onAgentActivate: ((String, UInt32?, UInt32) -> Void)?
     var onCommandActivate: ((String, UInt32?, UInt32) -> Void)?
+    private static let workspaceDragType = NSPasteboard.PasteboardType("muxterm.sidebar.workspace")
 
-    private let sections = NSStackView()
+    private let sections = NSSplitView()
+    private var expandedSections: [ObjectIdentifier: Bool] = [:]
+    private var agentReloadCount = 0
+    private var commandReloadCount = 0
     private let workspaceTable = NSTableView()
     private let agentTable = NSTableView()
     private let commandTable = NSTableView()
@@ -44,7 +49,8 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
         configureTable(
             workspaceTable,
             scroll: workspaceScroll,
-            identifier: "muxterm.sidebar.workspaces"
+            identifier: "muxterm.sidebar.workspaces",
+            allowsReorder: true
         )
         configureTable(
             agentTable,
@@ -99,14 +105,13 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
         ]
 
         sections.translatesAutoresizingMaskIntoConstraints = false
-        sections.orientation = .vertical
-        sections.alignment = .leading
-        sections.spacing = 0
-        sections.distribution = .fill
+        sections.isVertical = false
+        sections.dividerStyle = .thin
+        sections.autosaveName = "muxterm.sidebar.sectionSplit.v2"
+        sections.delegate = self
         for view in [workspaceSection, agentSection, commandSection, hiddenCommandSection] {
-            view.translatesAutoresizingMaskIntoConstraints = false
+            view.translatesAutoresizingMaskIntoConstraints = true
             sections.addArrangedSubview(view)
-            sections.trailingAnchor.constraint(equalTo: view.trailingAnchor).isActive = true
         }
         setSection(workspaceScroll, expanded: true)
         setSection(agentScroll, expanded: true)
@@ -166,8 +171,25 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
 
     func setAgents(_ items: [AgentSidebarItem]) {
         guard agents != items else { return }
+        let previous = agents
+        let identityChanged = previous.map(agentIdentity) != items.map(agentIdentity)
+            || previous.count != items.count
         agents = items
-        agentTable.reloadData()
+        if identityChanged {
+            agentReloadCount += 1
+            agentTable.reloadData()
+        } else {
+            for row in items.indices {
+                guard let cell = agentTable.view(
+                    atColumn: 0,
+                    row: row,
+                    makeIfNecessary: false
+                ) as? WorkspaceSidebarCellView else {
+                    continue
+                }
+                configureAgentCell(cell, item: items[row])
+            }
+        }
         updateSectionHeaderTitles()
     }
 
@@ -178,9 +200,50 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
             updateSectionHeaderTitles()
             return
         }
+        let previousVisible = visibleCommands.map(commandIdentity)
+        let previousHidden = hiddenCommands.map(commandIdentity)
+        isReloadingSelection = true
+        defer { isReloadingSelection = false }
         commands = items
-        commandTable.reloadData()
-        hiddenCommandTable.reloadData()
+        let nextVisible = visibleCommands
+        let nextHidden = hiddenCommands
+        if previousVisible != nextVisible.map(commandIdentity)
+            || commandTable.numberOfRows != nextVisible.count
+        {
+            commandReloadCount += 1
+            commandTable.reloadData()
+        } else {
+            for row in nextVisible.indices {
+                guard row < commandTable.numberOfRows,
+                      let cell = commandTable.view(
+                        atColumn: 0,
+                        row: row,
+                        makeIfNecessary: false
+                      ) as? WorkspaceSidebarCellView
+                else {
+                    continue
+                }
+                configureCommandCell(cell, item: nextVisible[row], visible: true)
+            }
+        }
+        if previousHidden != nextHidden.map(commandIdentity)
+            || hiddenCommandTable.numberOfRows != nextHidden.count
+        {
+            hiddenCommandTable.reloadData()
+        } else {
+            for row in nextHidden.indices {
+                guard row < hiddenCommandTable.numberOfRows,
+                      let cell = hiddenCommandTable.view(
+                        atColumn: 0,
+                        row: row,
+                        makeIfNecessary: false
+                      ) as? WorkspaceSidebarCellView
+                else {
+                    continue
+                }
+                configureCommandCell(cell, item: nextHidden[row], visible: false)
+            }
+        }
         updateSectionHeaderTitles()
     }
 
@@ -329,6 +392,53 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
         return cell
     }
 
+    private func agentIdentity(_ item: AgentSidebarItem) -> String {
+        "\(item.workspaceId).\(item.paneId)"
+    }
+
+    private func commandIdentity(_ item: CommandSidebarItem) -> String {
+        "\(item.workspaceId).\(item.paneId)"
+    }
+
+    private func configureAgentCell(
+        _ cell: WorkspaceSidebarCellView,
+        item: AgentSidebarItem
+    ) {
+        cell.set(
+            marker: "●",
+            markerColor: indicatorColor(item.indicator),
+            title: item.title,
+            detail: item.detail
+        )
+        cell.setAccessibilityIdentifier(
+            "muxterm.sidebar.agent.\(safeID(item.workspaceId)).\(item.paneId)"
+        )
+    }
+
+    private func configureCommandCell(
+        _ cell: WorkspaceSidebarCellView,
+        item: CommandSidebarItem,
+        visible: Bool
+    ) {
+        let key = CommandVisibilityKey(item)
+        cell.set(
+            marker: "●",
+            markerColor: indicatorColor(item.indicator),
+            title: item.title,
+            detail: item.detail,
+            trailingSymbol: visible ? "eye.slash" : "eye",
+            trailingTooltip: visible ? "Hide command" : "Show command",
+            trailingAccessibilityID: "muxterm.sidebar.command.visibility.\(safeID(item.workspaceId)).\(item.paneId)",
+            trailingShowsOnHover: false,
+            trailingAction: { [weak self] in
+                self?.toggleCommandVisibility(key)
+            }
+        )
+        cell.setAccessibilityIdentifier(
+            "muxterm.sidebar.\(visible ? "command" : "hiddenCommand").\(safeID(item.workspaceId)).\(item.paneId)"
+        )
+    }
+
     private func configureWorkspaceCell(
         _ cell: WorkspaceSidebarCellView,
         item: WorkspaceSidebarItem
@@ -389,6 +499,47 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
         }
     }
 
+    func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
+        guard tableView === workspaceTable, workspaces.indices.contains(row) else {
+            return nil
+        }
+        let item = NSPasteboardItem()
+        item.setString(workspaces[row].workspaceId, forType: Self.workspaceDragType)
+        return item
+    }
+
+    func tableView(
+        _ tableView: NSTableView,
+        validateDrop info: NSDraggingInfo,
+        proposedRow row: Int,
+        proposedDropOperation dropOperation: NSTableView.DropOperation
+    ) -> NSDragOperation {
+        guard tableView === workspaceTable, dropOperation == .above else { return [] }
+        return .move
+    }
+
+    func tableView(
+        _ tableView: NSTableView,
+        acceptDrop info: NSDraggingInfo,
+        row: Int,
+        dropOperation: NSTableView.DropOperation
+    ) -> Bool {
+        guard tableView === workspaceTable,
+              dropOperation == .above,
+              let dragged = info.draggingPasteboard.string(forType: Self.workspaceDragType),
+              let from = workspaces.firstIndex(where: { $0.workspaceId == dragged })
+        else {
+            return false
+        }
+        var ids = workspaces.map(\.workspaceId)
+        ids.remove(at: from)
+        let destination = from < row ? row - 1 : row
+        let clamped = min(max(destination, 0), ids.count)
+        ids.insert(dragged, at: clamped)
+        onWorkspaceReorder?(ids)
+        return true
+    }
+
     @objc private func toggleWorkspaceSection() {
         setSection(workspaceScroll, expanded: workspaceHeader.state == .on)
     }
@@ -408,7 +559,8 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
     private func configureTable(
         _ table: NSTableView,
         scroll: NSScrollView,
-        identifier: String
+        identifier: String,
+        allowsReorder: Bool = false
     ) {
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("main"))
         table.addTableColumn(column)
@@ -418,7 +570,12 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
         table.intercellSpacing = NSSize(width: 0, height: 1)
         table.dataSource = self
         table.delegate = self
+        table.allowsEmptySelection = true
         table.setAccessibilityIdentifier(identifier + ".list")
+        if allowsReorder {
+            table.registerForDraggedTypes([Self.workspaceDragType])
+            table.setDraggingSourceOperationMask(.move, forLocal: true)
+        }
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
         scroll.documentView = table
@@ -465,7 +622,8 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
     }
 
     private func setSection(_ scroll: NSScrollView, expanded: Bool) {
-        scroll.isHidden = !expanded
+        expandedSections[ObjectIdentifier(scroll)] = expanded
+        scroll.isHidden = false
         let header: NSButton
         let section: SidebarTestSection
         if scroll === workspaceScroll {
@@ -586,25 +744,61 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
             (commandScroll, commandHeader.state == .on),
             (hiddenCommandScroll, hiddenCommandHeader.state == .on),
         ]
-        let expandedCount = ordered.filter(\.expanded).count
-        for (scroll, expanded) in ordered {
-            guard let view = sectionViews[scroll] else { continue }
-            let constraint: NSLayoutConstraint
-            if expanded {
-                constraint = view.heightAnchor.constraint(
-                    greaterThanOrEqualToConstant: 120
-                )
-                constraint.priority = .required
-            } else {
-                constraint = view.heightAnchor.constraint(equalToConstant: 26)
-            }
-            constraint.isActive = true
-            sectionHeightConstraints[scroll] = constraint
+        for (index, item) in ordered.enumerated() {
+            sections.setHoldingPriority(
+                item.expanded ? .defaultLow : .required,
+                forSubviewAt: index
+            )
         }
-        sections.distribution = expandedCount == 0 ? .fill : .fillEqually
-        // Equal distribution applies only to expanded sections; manually pinned
-        // collapsed sections are excluded by their exact height constraints.
+        sections.needsLayout = true
         needsLayout = true
+        splitView(sections, resizeSubviewsWithOldSize: sections.bounds.size)
+    }
+
+    func splitView(_ splitView: NSSplitView, resizeSubviewsWithOldSize oldSize: NSSize) {
+        let ordered: [NSScrollView] = [
+            workspaceScroll, agentScroll, commandScroll, hiddenCommandScroll,
+        ]
+        let expanded = ordered.map { expandedSections[ObjectIdentifier($0)] ?? true }
+        let current = splitView.arrangedSubviews.map(\.frame.height)
+        let frames: [CGRect]
+        if let heights = SidebarSectionSplitLayout.heights(
+            boundsHeight: splitView.bounds.height,
+            dividerThickness: splitView.dividerThickness,
+            expanded: expanded,
+            currentHeights: current
+        ) {
+            frames = SidebarSectionSplitLayout.frames(
+                bounds: splitView.bounds.size,
+                dividerThickness: splitView.dividerThickness,
+                heights: heights,
+                flipped: splitView.isFlipped
+            )
+        } else {
+            frames = SidebarSectionSplitLayout.degenerateFrames(
+                count: ordered.count,
+                width: splitView.bounds.width
+            )
+        }
+        for (view, frame) in zip(splitView.arrangedSubviews, frames) {
+            view.frame = frame
+        }
+    }
+
+    func splitView(
+        _ splitView: NSSplitView,
+        constrainMinCoordinate proposedMinimumPosition: CGFloat,
+        ofSubviewAt dividerIndex: Int
+    ) -> CGFloat {
+        proposedMinimumPosition
+    }
+
+    func splitView(
+        _ splitView: NSSplitView,
+        constrainMaxCoordinate proposedMaximumPosition: CGFloat,
+        ofSubviewAt dividerIndex: Int
+    ) -> CGFloat {
+        proposedMaximumPosition
     }
 
     private func sidebarCell(
@@ -659,6 +853,14 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
         layoutSubtreeIfNeeded()
     }
 
+    func testSectionsAreResizable() -> Bool {
+        !sections.isVertical && sections.arrangedSubviews.count == 4
+    }
+
+    func testArrangedSectionFrames() -> [NSRect] {
+        sections.arrangedSubviews.map(\.frame)
+    }
+
     func testSectionFrames() -> [SidebarTestSection: NSRect] {
         [
             .workspaces: workspaceScroll.superview?.frame ?? .zero,
@@ -680,7 +882,12 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
         )
     }
     func testWorkspaceReloadCount() -> Int { workspaceReloadCount }
+    func testAgentReloadCount() -> Int { agentReloadCount }
+    func testCommandReloadCount() -> Int { commandReloadCount }
     func testWorkspaceSelectionMutationCount() -> Int { workspaceSelectionMutationCount }
+    func testReorderWorkspaces(_ ids: [String]) {
+        onWorkspaceReorder?(ids)
+    }
     func testSelectedWorkspaceID() -> String? {
         let row = workspaceTable.selectedRow
         return workspaces.indices.contains(row) ? workspaces[row].workspaceId : nil

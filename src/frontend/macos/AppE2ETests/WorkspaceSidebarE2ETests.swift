@@ -274,6 +274,41 @@ final class WorkspaceSidebarE2ETests: XCTestCase {
         XCTAssertEqual(sidebar.testSelectedWorkspaceID(), secondID)
     }
 
+    func testAgentStatusRefreshDoesNotReloadOrDropSelection() {
+        let workspaceID = "local@@dev@tmux@dev"
+        let sidebar = WorkspaceSidebarView(frame: NSRect(x: 0, y: 0, width: 240, height: 640))
+        let first = AgentSidebarItem(
+            workspaceId: workspaceID,
+            tabId: 42,
+            paneId: 4,
+            title: "dev",
+            detail: "Working · Codex · Tab 2",
+            indicator: .running,
+            agentName: "Codex",
+            tabNumber: 2
+        )
+        sidebar.setAgents([first])
+        sidebar.setActiveTarget(workspaceId: workspaceID, tabId: 42, paneId: 4)
+        let reloads = sidebar.testAgentReloadCount()
+        let updated = AgentSidebarItem(
+            workspaceId: workspaceID,
+            tabId: 42,
+            paneId: 4,
+            title: "dev",
+            detail: "Done · Codex · Tab 2",
+            indicator: .done,
+            agentName: "Codex",
+            tabNumber: 2
+        )
+        sidebar.setAgents([updated])
+        XCTAssertEqual(
+            sidebar.testAgentReloadCount(),
+            reloads,
+            "只更新 agent 状态不应重载 Agents 表"
+        )
+        XCTAssertEqual(sidebar.testSelectedAgentPaneID(), 4)
+    }
+
     func testRepeatedWorkspaceTargetSelectionIsIdempotent() {
         let workspaceID = "local@@dev@tmux@dev"
         let sidebar = WorkspaceSidebarView(frame: NSRect(x: 0, y: 0, width: 240, height: 640))
@@ -298,24 +333,63 @@ final class WorkspaceSidebarE2ETests: XCTestCase {
         )
     }
 
-    func testCollapsedSectionsPackAgainstNearestBoundary() {
-        let sidebar = WorkspaceSidebarView(frame: NSRect(x: 0, y: 0, width: 240, height: 640))
-        sidebar.testSetSectionExpanded(.hiddenCommands, false)
+    func testZeroHeightSidebarKeepsArrangedSubviewWidth() {
+        let sidebar = WorkspaceSidebarView(frame: NSRect(x: 0, y: 0, width: 240, height: 0))
+        sidebar.layoutSubtreeIfNeeded()
+        let frames = sidebar.testArrangedSectionFrames()
+        XCTAssertEqual(frames.count, 4)
+        for frame in frames {
+            XCTAssertEqual(frame.width, 240, accuracy: 1.5)
+            XCTAssertEqual(frame.height, 0, accuracy: 1.5)
+        }
+    }
 
-        // All-collapsed packs to the top; expanded sections absorb all slack.
+    func testCollapsedSectionsKeepHeaderHeightAndExpandedSectionsStayResizable() {
+        let sidebar = WorkspaceSidebarView(frame: NSRect(x: 0, y: 0, width: 240, height: 640))
+        sidebar.layoutSubtreeIfNeeded()
+        XCTAssertTrue(sidebar.testSectionsAreResizable())
+        let initial = sidebar.testSectionFrames()
+        XCTAssertGreaterThan(
+            initial[.workspaces]?.height ?? 0,
+            80,
+            "默认展开时 WORKSPACES 不能是 0 高，否则侧栏看起来像消失了"
+        )
+        XCTAssertGreaterThan(initial[.agents]?.height ?? 0, 80)
+        XCTAssertGreaterThan(initial[.commands]?.height ?? 0, 80)
+
+        sidebar.testSetSectionExpanded(.hiddenCommands, false)
         sidebar.testSetSectionExpanded(.workspaces, false)
         sidebar.testSetSectionExpanded(.agents, false)
         sidebar.testSetSectionExpanded(.commands, false)
+        sidebar.layoutSubtreeIfNeeded()
         let allCollapsed = sidebar.testSectionFrames()
-        XCTAssertEqual(allCollapsed[.workspaces]?.maxY ?? 0, 104, accuracy: 0.5)
-        XCTAssertEqual(allCollapsed[.agents]?.minY ?? 0, 52, accuracy: 0.5)
-        XCTAssertEqual(allCollapsed[.hiddenCommands]?.maxY ?? 0, 26, accuracy: 0.5)
+        XCTAssertEqual(allCollapsed[.workspaces]?.height ?? 0, 26, accuracy: 1.5)
+        XCTAssertEqual(allCollapsed[.agents]?.height ?? 0, 26, accuracy: 1.5)
+        XCTAssertEqual(allCollapsed[.commands]?.height ?? 0, 26, accuracy: 1.5)
+        XCTAssertGreaterThan(
+            allCollapsed[.hiddenCommands]?.height ?? 0,
+            80,
+            "全部收起时多余高度必须落在最后一栏，不能把四栏都压成 0"
+        )
 
         sidebar.testSetSectionExpanded(.agents, true)
-        let expandedMiddle = sidebar.testSectionFrames()
-        XCTAssertEqual(expandedMiddle[.workspaces]?.maxY ?? 0, 640, accuracy: 0.5)
-        XCTAssertEqual(expandedMiddle[.commands]?.maxY ?? 0, 52, accuracy: 0.5)
-        XCTAssertEqual(expandedMiddle[.hiddenCommands]?.maxY ?? 0, 26, accuracy: 0.5)
+        sidebar.testSetSectionExpanded(.workspaces, true)
+        sidebar.testSetSectionExpanded(.commands, true)
+        sidebar.layoutSubtreeIfNeeded()
+        let expanded = sidebar.testSectionFrames()
+        XCTAssertGreaterThan(expanded[.workspaces]?.height ?? 0, 80)
+        XCTAssertGreaterThan(expanded[.agents]?.height ?? 0, 80)
+        XCTAssertGreaterThan(expanded[.commands]?.height ?? 0, 80)
+        XCTAssertEqual(expanded[.hiddenCommands]?.height ?? 0, 26, accuracy: 1.5)
+        let workspaceHeight = expanded[.workspaces]?.height ?? 0
+        let agentHeight = expanded[.agents]?.height ?? 0
+        let commandHeight = expanded[.commands]?.height ?? 0
+        let hiddenHeight = expanded[.hiddenCommands]?.height ?? 0
+        XCTAssertGreaterThan(
+            workspaceHeight + agentHeight + commandHeight + hiddenHeight,
+            400,
+            "展开后分区必须填满侧栏，不能高度全是 0"
+        )
     }
 
     func testWorkspaceCloseButtonRemovesWorkspaceAndFallsForward() throws {

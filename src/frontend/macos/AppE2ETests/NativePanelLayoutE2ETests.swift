@@ -83,6 +83,46 @@ final class NativePanelLayoutE2ETests: XCTestCase {
         XCTAssertFalse(panel.testEmptyStateText().isEmpty)
     }
 
+    func testAttentionRowUsesColorBlockAndNormalText() {
+        AppE2E.ensureApp()
+        let store = QuickConnectStore()
+        let snapshot = AttentionSnapshot(
+            blockedCount: 0,
+            workspaces: [
+                WorkspaceAttention(
+                    workspaceId: "muxterm@local",
+                    name: "muxterm",
+                    transport: "local",
+                    path: "/tmp/muxterm",
+                    blocked: 0,
+                    done: 0,
+                    working: 1,
+                    panes: [
+                        PaneAttention(
+                            paneId: 4,
+                            status: .working,
+                            lastLine: "running",
+                            seq: 1,
+                            processName: "codex"
+                        ),
+                    ]
+                ),
+            ]
+        )
+        let panel = UnifiedPanelController(
+            store: store,
+            ownerWindow: nil,
+            snapshot: { snapshot },
+            sendInput: { _, _ in },
+            search: { _ in }
+        )
+        panel.present(initial: .attention)
+        defer { panel.dismiss() }
+        AppE2E.pump(40)
+        XCTAssertEqual(panel.testAttentionRowTitle(0).split(separator: "\n").first.map(String.init), "muxterm")
+        XCTAssertTrue(panel.testAttentionRowUsesNormalTextColor(0))
+    }
+
     /// 设置 `MUXTERM_UI_SNAPSHOT_DIR` 时输出 AppKit 位图，供人工视觉 QA；
     /// 默认测试只做内存布局验证，不写文件。
     private func writeSnapshot(_ window: NSWindow?, name: String) throws {

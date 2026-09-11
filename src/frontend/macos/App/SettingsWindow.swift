@@ -317,15 +317,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
                 operations: operations,
                 completion: { result in
                     if case .failure(let error) = result {
-                        NSLog(
-                            "muxterm: failed to persist projects from settings: %@",
-                            error.localizedDescription
+                        CoreBridge.log(
+                            "failed to persist projects from settings: \(error.localizedDescription)",
+                            level: "error"
                         )
                     }
                 }
             ))
             if !accepted {
-                NSLog("muxterm: config transaction was not accepted")
+                CoreBridge.log("config transaction was not accepted", level: "error")
             }
         }
     }

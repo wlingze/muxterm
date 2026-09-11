@@ -133,6 +133,114 @@ final class AttentionListTests: XCTestCase {
         XCTAssertEqual(AttentionList.rows(from: snap, query: "confirm").count, 1)
         XCTAssertEqual(AttentionList.rows(from: snap, query: "missing").count, 0)
     }
+
+    func testAttentionTitleMatchesSidebarWorkspaceAgentAndTab() {
+        let snap = AttentionSnapshot(
+            blockedCount: 0,
+            workspaces: [
+                WorkspaceAttention(
+                    workspaceId: "muxterm@ryzen",
+                    name: "muxterm",
+                    transport: "ryzen",
+                    path: "~/Developer/self/muxterm",
+                    blocked: 0,
+                    done: 0,
+                    working: 1,
+                    panes: [
+                        PaneAttention(
+                            paneId: 4,
+                            status: .working,
+                            lastLine: "running",
+                            seq: 1,
+                            processName: "codex",
+                            agentName: "Codex"
+                        ),
+                    ]
+                ),
+            ]
+        )
+        let chrome = WorkspaceSidebarItem(
+            workspaceId: "muxterm@ryzen",
+            name: "muxterm",
+            runtime: "tmux",
+            transport: "ryzen",
+            isActive: true,
+            structuredAgents: [
+                StructuredPaneAgent(
+                    paneId: 4,
+                    displayName: "Codex",
+                    title: nil,
+                    name: "codex",
+                    kind: "codex",
+                    status: .working
+                ),
+            ],
+            tabNumberByPane: [4: 2]
+        )
+        let rows = AttentionList.rows(from: snap, workspaces: [chrome], query: "")
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0].title, "muxterm")
+        XCTAssertEqual(rows[0].detail, "Working · Codex · Tab 2")
+        XCTAssertEqual(rows[0].indicator, .running)
+        XCTAssertFalse(rows[0].title.contains("local"))
+        XCTAssertFalse(rows[0].title.contains("~"))
+        XCTAssertEqual(
+            AttentionRowLabel.sidebarAligned(
+                workspaceName: "muxterm",
+                status: .working,
+                agentName: "Codex",
+                tabNumber: 2
+            ),
+            "muxterm · Working · Codex · Tab 2"
+        )
+    }
+
+    func testUnreadBlockedAndDoneUseDoneIndicator() {
+        let snap = snapshot(panes: [
+            (1, .blocked, 1, "ask?"),
+            (2, .done, 2, "complete"),
+        ])
+        let rows = AttentionList.rows(from: snap, query: "")
+        XCTAssertEqual(rows.map(\.indicator), [.done, .done])
+        XCTAssertEqual(rows[0].detail, "Blocked · cat")
+        XCTAssertEqual(rows[1].detail, "Done · cat")
+    }
+
+    func testDecodeIncludesWorkspaceNameTransportAndPath() throws {
+        let json = """
+        {
+          "ok": true,
+          "blocked_count": 0,
+          "workspaces": [
+            {
+              "workspace_id": "muxterm@ryzen",
+              "name": "muxterm",
+              "transport": "ryzen",
+              "path": "~/Developer/self/muxterm",
+              "blocked": 0,
+              "done": 0,
+              "working": 1,
+              "panes": [
+                {
+                  "pane_id": 4,
+                  "status": "working",
+                  "acknowledged": false,
+                  "last_line": "running",
+                  "seq": 1,
+                  "process_name": "codex",
+                  "agent_name": "Codex"
+                }
+              ]
+            }
+          ]
+        }
+        """
+        let snapshot = try XCTUnwrap(AttentionSnapshot.decode(Data(json.utf8)))
+        XCTAssertEqual(snapshot.workspaces[0].name, "muxterm")
+        XCTAssertEqual(snapshot.workspaces[0].transport, "ryzen")
+        XCTAssertEqual(snapshot.workspaces[0].path, "~/Developer/self/muxterm")
+        XCTAssertEqual(snapshot.workspaces[0].panes[0].agentName, "Codex")
+    }
 }
 
 final class AttentionNotificationsDecodeTests: XCTestCase {
