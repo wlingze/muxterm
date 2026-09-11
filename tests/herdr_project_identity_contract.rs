@@ -13,10 +13,10 @@
 mod support;
 
 use muxterm::test_support::core::catalog::ResolveIntent;
-use muxterm::test_support::core::protocol::WorkspaceId;
-use muxterm::test_support::core::quickconnect::model::{
-    TargetConfig, TargetRuntime, TargetTransport,
+use muxterm::test_support::core::projects::{
+    Project, ProjectStore, ProjectTarget, TargetConfig, TargetRuntime, TargetTransport,
 };
+use muxterm::test_support::core::protocol::WorkspaceId;
 use muxterm::test_support::core::transport::registry::ConnectionRegistry;
 use support::herdr_test_support::{herdr_available, IsolatedHerdr};
 use support::sshd_test_support::{loopback_sshd_available, LoopbackSshd};
@@ -43,16 +43,22 @@ fn local_project_reload_matches_existing_identity() {
     };
 
     // 内存态 store 足够验证 Project identity；持久化由 ConfigService 测试覆盖。
-    let mut store =
-        muxterm::test_support::core::quickconnect::store::QuickConnectStore::in_memory();
-    store.upsert_project(&existing);
-    assert_eq!(store.projects.len(), 1);
-    let project = store.projects[0].clone();
+    let mut store = ProjectStore::in_memory();
+    store
+        .upsert(Project::new(
+            existing.identity_key(),
+            existing.name.clone(),
+            ProjectTarget::from_target_config(&existing),
+        ))
+        .expect("upsert project");
+    assert_eq!(store.projects().len(), 1);
+    let project = store.projects()[0].clone();
+    let saved = project.target.to_target_config(project.name.clone());
 
     // identity key / spec 身份字段 / WorkspaceId 一致。
-    assert_eq!(existing.identity_key(), project.identity_key());
+    assert_eq!(existing.identity_key(), saved.identity_key());
     let spec_a = muxterm::test_support::core::catalog::config_to_spec(&existing);
-    let spec_b = muxterm::test_support::core::catalog::config_to_spec(&project);
+    let spec_b = muxterm::test_support::core::catalog::config_to_spec(&saved);
     assert_eq!(spec_a.id(), spec_b.id());
 
     // Catalog::resolve_target：AttachOnly 命中（不创建）。

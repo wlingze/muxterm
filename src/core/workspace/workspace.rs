@@ -395,7 +395,10 @@ impl Workspace {
     }
 
     /// 某 pane 的滚动窗口 ANSI。
-    pub(crate) fn pane_scroll_ansi(&self, pane: PaneId, offset: u32, rows: u32) -> Vec<u8> {
+    ///
+    /// 只给 history 合同测试用；live Surface 禁止走 dump。
+    #[doc(hidden)]
+    pub fn pane_scroll_ansi(&self, pane: PaneId, offset: u32, rows: u32) -> Vec<u8> {
         self.panes
             .get(&pane)
             .map(|t| t.scroll_ansi(offset, rows))

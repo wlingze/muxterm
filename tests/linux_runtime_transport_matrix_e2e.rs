@@ -25,8 +25,10 @@ use gtk4::prelude::*;
 use muxterm::test_support::core::catalog::Catalog;
 use muxterm::test_support::core::config::Config;
 use muxterm::test_support::core::muxterm::Muxterm;
+use muxterm::test_support::core::projects::{
+    Project, ProjectStore, ProjectTarget, TargetConfig, TargetRuntime, TargetTransport,
+};
 use muxterm::test_support::core::protocol::task::TaskOutcome;
-use muxterm::test_support::core::quickconnect::model::{QuickConnect, TargetConfig};
 use muxterm::test_support::core::transport::registry::ConnectionRegistry;
 use muxterm::test_support::core::workspace::pool::WorkspacePool;
 use muxterm::test_support::platform::ffi_client::ClientRuntimeCapability;
@@ -1923,13 +1925,13 @@ fn seed_project_store_if_needed(
     }
     let config = TargetConfig {
         name: format!("parity-{transport}"),
-        runtime: muxterm::test_support::core::quickconnect::model::TargetRuntime::Herdr,
+        runtime: TargetRuntime::Herdr,
         transport: if transport == "ssh" {
-            muxterm::test_support::core::quickconnect::model::TargetTransport::Ssh {
+            TargetTransport::Ssh {
                 name: fixture.spec.alias.clone().unwrap_or_default(),
             }
         } else {
-            muxterm::test_support::core::quickconnect::model::TargetTransport::Local
+            TargetTransport::Local
         },
         path: "/tmp".into(),
         socket: fixture.spec.socket.clone(),
@@ -1945,10 +1947,14 @@ fn seed_project_store_if_needed(
     let store_path = muxterm::test_support::core::config::Config::user_config_path()
         .expect("临时 XDG_CONFIG_HOME 下必有 config 路径");
     let mut store =
-        muxterm::test_support::core::quickconnect::store::QuickConnectStore::new_unified(Some(
-            store_path,
-        ));
-    store.upsert_project(&config);
+        ProjectStore::new_unified(Some(store_path)).expect("open isolated project store");
+    store
+        .upsert(Project::new(
+            config.identity_key(),
+            config.name.clone(),
+            ProjectTarget::from_target_config(&config),
+        ))
+        .expect("upsert project");
     Some(restore)
 }
 
@@ -1979,7 +1985,7 @@ fn scenario_project_existing_parity(
     app.test_open_panel(0);
     pump_main_loop(80);
     let config = project_target_config(fixture, transport)?;
-    let project_name = QuickConnect::unique_id(&config);
+    let project_name = config.identity_key();
     let list = find_by_name(&app.test_window(), "muxterm-panel-list")
         .context("面板列表应存在")?
         .downcast::<gtk4::ListBox>()
@@ -1999,26 +2005,32 @@ fn scenario_project_existing_parity(
     );
 
     // 2) 内存态 identity：identity key、attach spec identity、id/workspace 相同。
-    let mut store =
-        muxterm::test_support::core::quickconnect::store::QuickConnectStore::in_memory();
-    store.upsert_project(&config);
-    assert_eq!(store.projects.len(), 1);
-    let saved = store.projects[0].clone();
+    let mut store = ProjectStore::in_memory();
+    store
+        .upsert(Project::new(
+            config.identity_key(),
+            config.name.clone(),
+            ProjectTarget::from_target_config(&config),
+        ))
+        .expect("upsert project");
+    assert_eq!(store.projects().len(), 1);
+    let saved = store.projects()[0].clone();
+    let saved_cfg = saved.target.to_target_config(saved.name.clone());
     ensure!(
-        store.projects.len() == 1,
+        store.projects().len() == 1,
         "保存后应有 1 个 Project: {}",
-        store.projects.len()
+        store.projects().len()
     );
     ensure!(
-        saved.identity_key() == config.identity_key(),
+        saved_cfg.identity_key() == config.identity_key(),
         "保存/重载后 identity key 必须相同"
     );
     ensure!(
-        saved.workspace_id == config.workspace_id && saved.socket == config.socket,
-        "保存/重载后 path/socket/workspace_id 必须保留: saved={saved:?}"
+        saved_cfg.workspace_id == config.workspace_id && saved_cfg.socket == config.socket,
+        "保存/重载后 path/socket/workspace_id 必须保留: saved={saved_cfg:?}"
     );
     let spec_before = muxterm::test_support::core::catalog::config_to_spec(&config);
-    let spec_after = muxterm::test_support::core::catalog::config_to_spec(&saved);
+    let spec_after = muxterm::test_support::core::catalog::config_to_spec(&saved_cfg);
     ensure!(
         spec_before.id() == spec_after.id(),
         "attach spec identity 必须相同: before={:?}, after={:?}",
@@ -2131,13 +2143,13 @@ fn find_row_by_prefix(list: &gtk4::ListBox, prefix: &str) -> Option<gtk4::ListBo
 fn project_target_config(fixture: &MatrixFixture, transport: &str) -> Result<TargetConfig> {
     Ok(TargetConfig {
         name: format!("parity-{transport}"),
-        runtime: muxterm::test_support::core::quickconnect::model::TargetRuntime::Herdr,
+        runtime: TargetRuntime::Herdr,
         transport: if transport == "ssh" {
-            muxterm::test_support::core::quickconnect::model::TargetTransport::Ssh {
+            TargetTransport::Ssh {
                 name: fixture.spec.alias.clone().unwrap_or_default(),
             }
         } else {
-            muxterm::test_support::core::quickconnect::model::TargetTransport::Local
+            TargetTransport::Local
         },
         path: "/tmp".into(),
         socket: fixture.spec.socket.clone(),
