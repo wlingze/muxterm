@@ -12,7 +12,7 @@ use muxterm::test_support::platform::ffi_client::{ClientTask, FfiClient};
 use muxterm::test_support::platform::linux::pane_view::should_forward_replies;
 use muxterm::test_support::platform::linux::quickconnect::font::FontSettings;
 use muxterm::test_support::platform::linux::quickconnect::model::{
-    TargetConfig, TargetRuntime, TargetTransport,
+    TargetConfigDraft, TargetRuntime, TargetTransport,
 };
 use muxterm::test_support::platform::linux::quickconnect::project_flow::{
     ProjectConnectFlow, ProjectConnectState,
@@ -127,7 +127,7 @@ fn project_flow_attach_existing_then_create_then_attach() {
     assert!(tmux.new_session("existing"));
     assert!(tmux.has_session("existing"));
 
-    let cfg = TargetConfig::new("existing", TargetRuntime::Tmux, TargetTransport::Local, dir);
+    let cfg = TargetConfigDraft::new("existing", TargetRuntime::Tmux, TargetTransport::Local, dir);
     let mut flow = ProjectConnectFlow::new(&cfg);
     assert!(matches!(
         flow.state,
@@ -153,7 +153,8 @@ fn project_flow_attach_existing_then_create_then_attach() {
         "drop control client 不得杀掉 session"
     );
 
-    let created = TargetConfig::new("created", TargetRuntime::Tmux, TargetTransport::Local, dir);
+    let created =
+        TargetConfigDraft::new("created", TargetRuntime::Tmux, TargetTransport::Local, dir);
     let mut create_flow = ProjectConnectFlow::new(&created);
     create_flow.attach_existing_failed("no session");
     assert!(matches!(

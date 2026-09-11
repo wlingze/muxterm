@@ -16,12 +16,12 @@ use muxterm::test_support::core::catalog::Catalog;
 use muxterm::test_support::core::discovery::existing::{
     discover_local_herdr, discover_ssh_herdr, discover_ssh_tmux,
 };
+use muxterm::test_support::core::projects::TargetRuntime;
 use muxterm::test_support::core::protocol::state::{
     PaneAgentSessionKind, PaneAgentStatus, StateChange,
 };
 use muxterm::test_support::core::protocol::task::Task;
 use muxterm::test_support::core::protocol::WorkspaceId;
-use muxterm::test_support::core::quickconnect::model::TargetRuntime;
 use muxterm::test_support::core::runtime::herdr::session::HerdrAgentStatus;
 use muxterm::test_support::core::runtime::herdr::HerdrRuntime;
 use muxterm::test_support::core::transport::registry::ConnectionRegistry;

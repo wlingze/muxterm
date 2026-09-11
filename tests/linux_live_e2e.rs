@@ -14,7 +14,9 @@ use support::linux_gtk::*;
 use support::tmux_test_support::*;
 
 use muxterm::test_support::core::config::Config;
-use muxterm::test_support::platform::linux::quickconnect::model::{TargetConfig, TargetTransport};
+use muxterm::test_support::platform::linux::quickconnect::model::{
+    TargetConfigDraft, TargetTransport,
+};
 use muxterm::test_support::platform::linux::theme::Theme;
 use muxterm::test_support::platform::linux::window::AppWindow;
 
@@ -330,7 +332,7 @@ fn live_e2e_s8_s9_s13b() {
         }
         assert!(a_ok, "工作区 A 的 token 应出现在 VTE");
 
-        let mut b_target = TargetConfig::tmux_session("b", TargetTransport::Local);
+        let mut b_target = TargetConfigDraft::tmux_session("b", TargetTransport::Local);
         b_target.socket = Some(socket.clone());
         b_target.session = Some("b".into());
         app.test_connect_target(b_target);
@@ -350,7 +352,7 @@ fn live_e2e_s8_s9_s13b() {
         }
         assert!(b_ok, "工作区 B 的 token 应出现在 VTE");
 
-        let mut s_target = TargetConfig::tmux_session("s", TargetTransport::Local);
+        let mut s_target = TargetConfigDraft::tmux_session("s", TargetTransport::Local);
         s_target.socket = Some(socket.clone());
         s_target.session = Some("s".into());
         app.test_connect_target(s_target);

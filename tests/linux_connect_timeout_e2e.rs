@@ -13,7 +13,7 @@ use support::linux_gtk::*;
 
 use muxterm::test_support::core::config::Config;
 use muxterm::test_support::platform::linux::quickconnect::model::{
-    TargetConfig, TargetRuntime, TargetTransport,
+    TargetConfigDraft, TargetRuntime, TargetTransport,
 };
 use muxterm::test_support::platform::linux::window::AppWindow;
 
@@ -31,7 +31,7 @@ fn unreachable_ssh_does_not_block_gtk_thread() {
         gtk4::test_widget_wait_for_draw(&app.window);
         pump_main_loop(120);
 
-        let target = TargetConfig::new(
+        let target = TargetConfigDraft::new(
             "w15-blackhole",
             TargetRuntime::Tmux,
             TargetTransport::Ssh {

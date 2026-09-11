@@ -23,7 +23,7 @@ use muxterm::test_support::platform::ffi_client::{
 };
 use muxterm::test_support::platform::linux::panel_model::{PanelTab, SearchRow};
 use muxterm::test_support::platform::linux::quickconnect::model::{
-    QuickBadge, QuickConnect, QuickConnectEntry, TargetConfig, TargetRuntime, TargetTransport,
+    QuickBadge, QuickConnect, QuickConnectEntry, TargetConfigDraft, TargetRuntime, TargetTransport,
 };
 use muxterm::test_support::platform::linux::quickconnect_panel::{show, PanelItem, PanelShowArgs};
 use muxterm::test_support::platform::linux::workspace_sidebar::{
@@ -82,7 +82,7 @@ fn agent(
 fn target(name: &str) -> PanelItem {
     PanelItem::Target(
         QuickConnectEntry::new(
-            TargetConfig::new(name, TargetRuntime::Tmux, TargetTransport::Local, "~/x"),
+            TargetConfigDraft::new(name, TargetRuntime::Tmux, TargetTransport::Local, "~/x"),
             vec![QuickBadge::Project],
         ),
         false,
@@ -92,7 +92,7 @@ fn target(name: &str) -> PanelItem {
 fn ssh_target(alias: &str) -> PanelItem {
     PanelItem::Target(
         QuickConnectEntry::new(
-            TargetConfig::new(
+            TargetConfigDraft::new(
                 alias,
                 TargetRuntime::Tmux,
                 TargetTransport::Ssh { name: alias.into() },
@@ -105,7 +105,7 @@ fn ssh_target(alias: &str) -> PanelItem {
 }
 
 fn recent_key(name: &str) -> String {
-    QuickConnect::unique_id(&TargetConfig::new(
+    QuickConnect::unique_id(&TargetConfigDraft::new(
         name,
         TargetRuntime::Tmux,
         TargetTransport::Local,
@@ -861,7 +861,7 @@ fn row_activate_ignores_pending_rebuild() {
             );
             pump_main_loop(80);
 
-            let muxterm_id = QuickConnect::unique_id(&TargetConfig::new(
+            let muxterm_id = QuickConnect::unique_id(&TargetConfigDraft::new(
                 "muxterm",
                 TargetRuntime::Tmux,
                 TargetTransport::Local,
