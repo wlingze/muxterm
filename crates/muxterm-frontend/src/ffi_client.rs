@@ -842,6 +842,97 @@ pub struct ClientActivitySnapshot {
     pub workspaces: Vec<ClientWorkspaceAttention>,
 }
 
+/// Owned workspace identity embedded in an ActivityRecord location.
+#[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
+pub struct ClientActivityWorkspaceId {
+    pub transport: String,
+    #[serde(default)]
+    pub alias: Option<String>,
+    pub session: String,
+    pub runtime: String,
+    pub path: String,
+}
+
+impl ClientActivityWorkspaceId {
+    pub fn as_key(&self) -> String {
+        format!(
+            "{}/{}/{}/{}/{}",
+            self.transport,
+            self.alias.as_deref().unwrap_or_default(),
+            self.session,
+            self.runtime,
+            self.path
+        )
+    }
+}
+
+/// Owned ActivityRecord location copied across the FFI boundary.
+#[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
+pub struct ClientActivityLocation {
+    pub workspace: ClientActivityWorkspaceId,
+    pub tab: u32,
+    pub pane: u32,
+}
+
+/// Lifecycle state for one owned activity record.
+#[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", tag = "state")]
+pub enum ClientActivityRecordStatus {
+    Running,
+    Waiting,
+    Done { exit_code: Option<i32> },
+    Failed,
+}
+
+/// Complete frontend-owned command or agent ActivityRecord.
+#[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
+pub struct ClientActivityRecord {
+    pub id: String,
+    pub kind: String,
+    pub name: String,
+    pub status: ClientActivityRecordStatus,
+    pub location: ClientActivityLocation,
+    #[serde(default)]
+    pub cwd: Option<String>,
+    pub workspace_name: String,
+    pub runtime_name: String,
+    pub transport_name: String,
+    #[serde(default)]
+    pub started_at: Option<u64>,
+    pub updated_at: u64,
+    pub revision: u64,
+}
+
+/// One revisioned Activity lane event copied from Core.
+#[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
+pub enum ClientActivityEvent {
+    Upsert(Box<ClientActivityRecord>),
+    Remove { id: String, revision: u64 },
+}
+
+impl ClientActivityEvent {
+    pub fn id(&self) -> &str {
+        match self {
+            Self::Upsert(record) => &record.id,
+            Self::Remove { id, .. } => id,
+        }
+    }
+
+    pub fn revision(&self) -> u64 {
+        match self {
+            Self::Upsert(record) => record.revision,
+            Self::Remove { revision, .. } => *revision,
+        }
+    }
+}
+
+/// One Activity event with its owning workspace identity.
+#[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
+pub struct ClientActivityWorkspaceEvent {
+    pub workspace_id: String,
+    pub event: ClientActivityEvent,
+}
+
 /// Owned Herdr stream diagnostics used by the Linux E2E watchdog.
 #[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
 pub struct ClientHerdrProbe {
@@ -2127,27 +2218,27 @@ impl FfiClient {
     }
 
     /// Read the revisioned Core Activity records after a workspace poll.
-    pub fn activity_records(&self) -> anyhow::Result<Vec<serde_json::Value>> {
+    pub fn activity_records(&self) -> anyhow::Result<Vec<ClientActivityRecord>> {
         let value = Self::discovery_json(|| unsafe {
             ffi::muxterm_activity_snapshot_json(self.handle.as_ptr())
         })?;
-        Ok(value
+        let records = value
             .get("records")
-            .and_then(serde_json::Value::as_array)
             .cloned()
-            .unwrap_or_default())
+            .unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
+        Ok(serde_json::from_value(records)?)
     }
 
-    /// Drain Core Activity lane events into owned JSON values.
-    pub fn take_activity_events(&self) -> anyhow::Result<Vec<serde_json::Value>> {
+    /// Drain Core Activity lane events into owned DTOs.
+    pub fn take_activity_events(&self) -> anyhow::Result<Vec<ClientActivityWorkspaceEvent>> {
         let value = Self::discovery_json(|| unsafe {
             ffi::muxterm_activity_take_events_json(self.handle.as_ptr())
         })?;
-        Ok(value
+        let events = value
             .get("events")
-            .and_then(serde_json::Value::as_array)
             .cloned()
-            .unwrap_or_default())
+            .unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
+        Ok(serde_json::from_value(events)?)
     }
 
     pub fn workspace_attention_on_became_visible(&self, workspace_id: &str, pane_id: u32) -> i32 {
@@ -2509,6 +2600,55 @@ fn dotted_config_pointer(path: &str) -> anyhow::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn activity_lane_json_decodes_as_owned_revisioned_dtos() {
+        let event: ClientActivityWorkspaceEvent = serde_json::from_value(serde_json::json!({
+            "workspace_id": "local//demo/shell//tmp/demo",
+            "event": {
+                "Upsert": {
+                    "id": "command:local//demo/shell/:1",
+                    "kind": "command",
+                    "name": "cargo test",
+                    "status": {"state": "done", "exit_code": 0},
+                    "location": {
+                        "workspace": {
+                            "transport": "local",
+                            "alias": null,
+                            "session": "demo",
+                            "runtime": "shell",
+                            "path": "/tmp/demo"
+                        },
+                        "tab": 1,
+                        "pane": 1
+                    },
+                    "cwd": "/tmp/demo",
+                    "workspace_name": "demo",
+                    "runtime_name": "shell",
+                    "transport_name": "local",
+                    "started_at": 1,
+                    "updated_at": 2,
+                    "revision": 2
+                }
+            }
+        }))
+        .expect("activity event DTO");
+
+        assert_eq!(event.workspace_id, "local//demo/shell//tmp/demo");
+        assert_eq!(event.event.id(), "command:local//demo/shell/:1");
+        assert_eq!(event.event.revision(), 2);
+        let ClientActivityEvent::Upsert(record) = event.event else {
+            panic!("expected activity upsert");
+        };
+        assert_eq!(
+            record.location.workspace.as_key(),
+            "local//demo/shell//tmp/demo"
+        );
+        assert_eq!(
+            record.status,
+            ClientActivityRecordStatus::Done { exit_code: Some(0) }
+        );
+    }
 
     #[test]
     fn attention_config_serializes_as_public_ffi_shape() {

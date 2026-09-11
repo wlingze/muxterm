@@ -4,7 +4,9 @@
 //! poll。这样后续 GTK 的主线程桥可以把同一批带身份事件写入 `ViewStore`，
 //! 而不会再出现多个 frontend 路径分别读取同一个 Core handle。
 
-use crate::ffi_client::{ClientConfigEvent, ClientWorkspaceEvent, FfiClient};
+use crate::ffi_client::{
+    ClientActivityWorkspaceEvent, ClientConfigEvent, ClientWorkspaceEvent, FfiClient,
+};
 
 use crate::view_store::ViewStore;
 
@@ -22,6 +24,18 @@ impl EventPump {
     /// every event.  Callers must not poll the client directly.
     pub fn poll(&self) -> Vec<ClientWorkspaceEvent> {
         self.client.poll_workspace_events()
+    }
+
+    /// Drain Activity lane events after the workspace batch has normalized the
+    /// corresponding runtime facts. Values are already owned by FfiClient.
+    pub fn poll_activity(&self) -> Vec<ClientActivityWorkspaceEvent> {
+        match self.client.take_activity_events() {
+            Ok(events) => events,
+            Err(error) => {
+                tracing::warn!(target = "muxterm::activity", %error, "activity event poll failed");
+                Vec::new()
+            }
+        }
     }
 
     /// Drain the Core configuration lane through the same single frontend
@@ -53,6 +67,9 @@ impl EventPump {
             }
             Self::apply_workspace_event(store, event.clone());
         }
+        for event in self.poll_activity() {
+            store.apply_activity_event(event);
+        }
         events
     }
 
@@ -83,6 +100,7 @@ impl EventPump {
         for workspace in workspaces {
             self.replace_workspace(store, workspace);
         }
+        store.replace_activity_records(self.client.activity_records()?);
         Ok(count)
     }
 
