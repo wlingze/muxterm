@@ -698,7 +698,7 @@ mod tests {
         );
     }
 
-    /// mock Runtime 推一段 %output 等价事件（WriteRaw → PaneOutput），
+    /// mock Runtime 推一段 Render lane 的 PaneOutput 后，
     /// Workspace 应把字节喂进本工作区 pane 文本。
     #[test]
     fn pane_text_contains_token_after_output_event() {

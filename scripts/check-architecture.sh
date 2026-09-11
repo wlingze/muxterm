@@ -25,7 +25,7 @@ check_absent() {
 
     checks=$((checks + 1))
     local matches
-    if matches="$(rg -n --no-heading "$pattern" "${paths[@]}" 2>/dev/null)"; then
+    if matches="$(rg -n --no-heading -e "$pattern" "${paths[@]}" 2>/dev/null)"; then
         echo "architecture: FAIL: $label" >&2
         printf '%s\n' "$matches" | head -50 >&2 || true
         failures=$((failures + 1))
@@ -98,6 +98,22 @@ check_absent \
     "ANSI dump FFI must not cross the public frontend boundary" \
     'muxterm_(workspace_)?pane_(scroll|surface_seed)_ansi' \
     src/frontend src/core tests
+check_absent \
+    "runtime must not own ActivityRecord" \
+    'ActivityRecord' \
+    src/core/runtime
+check_absent \
+    "workspace must not mention runtime wire tokens" \
+    '%output|terminal\.frame' \
+    src/core/workspace
+check_absent \
+    "root must not grow a second frontend binary" \
+    '.' \
+    src/bin
+check_absent \
+    "runtime and transport trait files must not use anyhow in signatures" \
+    '-> anyhow::Result' \
+    src/core/runtime/contract.rs src/core/transport/mod.rs src/core/runtime/provider.rs src/core/transport/provider.rs
 
 if [[ "$failures" -ne 0 ]]; then
     echo "architecture: $failures check(s) failed" >&2
