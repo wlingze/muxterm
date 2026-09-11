@@ -6,7 +6,7 @@ use std::ptr;
 
 use crate::activity::ActivityState;
 use crate::config::SettingsService;
-use crate::logging::{init_logging, LoggingConfig};
+use crate::logging::{init_logging, log_message, LoggingConfig};
 use crate::muxterm::Muxterm;
 use crate::projects::{ProjectStore, ProjectsService};
 use crate::protocol::task::Task;
@@ -409,6 +409,18 @@ pub extern "C" fn muxterm_init_logging(log_file: *const c_char, level: *const c_
         }
     }))
     .unwrap_or(-1)
+}
+
+/// 把一行 UI 诊断写入 tracing（与 `--log-file` 同一文件）。
+#[no_mangle]
+pub extern "C" fn muxterm_log_message(level: *const c_char, message: *const c_char) {
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        let level = cstr_opt(level).unwrap_or_else(|| "debug".into());
+        let message = cstr_opt(message).unwrap_or_default();
+        if !message.is_empty() {
+            log_message(&level, &message);
+        }
+    }));
 }
 
 /// 释放 discovery API 返回的 JSON 字符串。

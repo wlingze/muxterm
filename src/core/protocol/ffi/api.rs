@@ -22,8 +22,8 @@ pub use super::functions::config::{
 };
 pub use super::functions::events::{muxterm_poll_events, muxterm_poll_workspace_events};
 pub use super::functions::handle::{
-    muxterm_catalog_new, muxterm_free, muxterm_free_string, muxterm_init_logging, muxterm_new,
-    muxterm_new_connect, muxterm_new_connect_sized,
+    muxterm_catalog_new, muxterm_free, muxterm_free_string, muxterm_init_logging,
+    muxterm_log_message, muxterm_new, muxterm_new_connect, muxterm_new_connect_sized,
 };
 pub use super::functions::runtime::{
     muxterm_connect, muxterm_detach, muxterm_runtime_list_json, muxterm_shutdown,

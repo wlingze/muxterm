@@ -543,6 +543,15 @@ final class CoreBridge {
 
     // MARK: - 日志
 
+    /// UI 诊断写入 tracing，与 `--log-file` 同一文件。
+    static func log(_ message: String, level: String = "debug") {
+        level.withCString { levelPtr in
+            message.withCString { messagePtr in
+                muxterm_log_message(levelPtr, messagePtr)
+            }
+        }
+    }
+
     /// 初始化 core 的 tracing 日志（debug 级别 + 可选文件）。
     /// 由 CLI `muxterm gui --debug --log-file` 转发参数后调用；返回 0=成功。
     static func initLogging(debug: Bool, logFile: String?) -> Int32 {
