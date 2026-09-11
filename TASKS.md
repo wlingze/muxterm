@@ -30,18 +30,25 @@ Herdr 测试只用 named session `muxterm-test-*`。不要对默认 server 执�
 `ConnectionRegistry` / `core/projects/` / `core/activity/`。C 符号保留 `muxterm_`。
 库层错误用 `thiserror`。`Box<dyn Runtime>` 用 `#[async_trait]`。
 
-## 实现时再定（不阻塞 Phase 1）
+## 已拍板（原「实现时再定」）
 
-1. `ActivityRecord` status 终值与归档策略
-2. Activity FFI 独立 poll 还是并入 workspace poll
-3. `gui` 在 macOS 上：进程内嵌 vs 唤起 app bundle
-4. windows frontend 落地时间
-5. `ffi_client.rs` 最终文件名
-6. Recent / last-used 是否落盘（不能污染手写 `config.toml`）
-7. `PaneTemplate.command`：`SendKeys` 回车 vs runtime 原生启动
-8. generic worktree 在 tmux 上的 session 命名
-9. `RuntimeSignal` 变体清单
-10. ActivityRecord 展示名带 revision 缓存，还是只带 `WorkspaceId` 由前端 join
+1. `ActivityRecord` 终值是 `Done { exit_code }` 与 `Failed`。Running/Waiting 不自动淘汰；
+   终态记录留在 live store，最多 64 条，超了按 `updated_at` 最旧 Remove；不落盘。
+2. Activity FFI 保持独立 `muxterm_activity_take_events_json`。跨工作区 lane 不并入
+   pane poll；EventPump 先 topology 再 drain activity。
+3. macOS `muxterm gui` 唤起 `Muxterm.app` bundle（`open`；`--debug`/`--log-file` 前台
+   exec）。不把 Swift UI 嵌进 CLI 进程。
+4. windows frontend 不在本重构落地，只保留 `src/frontend/windows` 占位。
+5. 文件名锁定为 `frontend/ffi_client.rs`。
+6. Recent / last-used 是进程内 `WorkspacePool` 状态，不写 `config.toml`，也不另开
+   sidecar。Recent 候选来自 live pool。
+7. 模板新建 tab/split 走 Runtime 原生 `NewTab`/`SplitPane` 的 command/cwd/env；
+   已存在的 create-time 根 pane 才 `SendKeys` + Enter。
+8. generic tmux worktree session = `{project_id}/{worktree_id}`（组件内 `/` 等换成 `-`）。
+9. `RuntimeSignal` 只保留 `PaneAgentChanged` 与 `StatusBarSubscription`。标题在 Control；
+   命令退出码由 Index/Activity 归一化，不加新 signal。
+10. `workspace_name` / `runtime_name` / `transport_name` 作为带 revision 的展示缓存
+    写在 record 上；前端不 join WorkspacePool 来画 Activity。
 
 ## Phase 1 — 一棵 Core module tree + 单一 binary
 
@@ -148,6 +155,7 @@ CI 跑 [`docs/TESTING.md`](docs/TESTING.md) 的结构门禁。
 3. ~~Phase 6 收尾：生产路径已是 `RuntimeBatch`；C ABI 在边界摊平并冻结。~~
 4. ~~Phase 8：空目录、过期文档、TESTING.md 门禁补进 `scripts/check-architecture.sh`。~~
 5. ~~Phase 9 TUI：per-workspace Scene buffer 组；切 workspace/tab 不走 FFI 拉帧。~~
+6. ~~原「实现时再定」十项已拍板（见上文）。~~
 
 ## 非目标
 
