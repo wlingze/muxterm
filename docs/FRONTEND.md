@@ -5,8 +5,8 @@
 施工：[`../TASKS.md`](../TASKS.md) Phase 7 / 9。
 
 **一句话：** 所有 frontend（cli / tui / linux / macos / windows）只经 C FFI + 统一
-`ffi_client` 使用 Core。已打开的 Workspace 各有一棵常驻 Scene；切换 = 换可见场景，
-点击路径零 Core 调用、零锁等待。
+`frontend/utils/corebridge`（CoreBridge）使用 Core。已打开的 Workspace 各有一棵常驻
+Scene；切换 = 换可见场景，点击路径零 Core 调用、零锁等待。
 
 页面结构是平台无关的。差异只剩语言、widget 树、主线程桥、平台集成。
 
@@ -14,9 +14,9 @@
 
 ## 1. 硬约束
 
-1. 只走 C FFI。Rust frontend 用共享安全 wrapper `frontend/ffi_client`（handle 所有权、
-   DTO、borrowed bytes 复制、error envelope）。禁止散装 `ffi_bridge`，禁止
-   `use crate::core::...`。
+1. 只走 C FFI。Rust frontend 用共享安全 wrapper `frontend/utils/corebridge`
+   （handle 所有权、DTO、borrowed bytes 复制、error envelope）。文案走
+   `frontend/utils/i18n`。禁止散装 `ffi_bridge`，禁止 `use crate::core::...`。
 2. frontend 只见 `Candidate` / `OpenRequest`。永不构造 `WorkspaceSpec`。
 3. 问能力用 `support()`，禁止 `if runtime == "herdr"`。
 4. 一个已打开 Workspace = 一棵 Scene；每 pane 恰好一个常驻 `PaneSurface`。
@@ -125,7 +125,7 @@ Linux Scene 容器是 `GtkStack`：一次只显示一个子 widget，子页面�
 | Settings | `AdwPreferencesWindow`（schema-driven） | SwiftUI Settings scene | 待定 | `$EDITOR` | 无 |
 | 平台集成 | libnotify、xdg | NSNotification、bundle、菜单栏 | 通知 / 任务栏 | 无 | 无 |
 | 输入编码 | keymap → SendKeys 字节 | TerminalInputEncoding → SendKeys | 待定 | crossterm → 字节 | 参数直译 |
-| FFI 口 | `ffi_client` | CoreBridge（唯一 FFI 口，DTO 解码） | 待定 | `ffi_client` | `ffi_client` |
+| FFI 口 | `utils/corebridge` | Swift CoreBridge（同一 C ABI） | 待定 | `utils/corebridge` | `utils/corebridge` |
 
 cli 不受渲染契约约束：命令直译 Core 调用。windows 框架选型到实现期再定，必须实现 §2 词汇表。
 
@@ -145,15 +145,15 @@ frontend **不直接读写文件**。读 = FFI 配置快照；写 = draft transa
 
 ## 5. 各前端落地
 
-目录：`src/frontend/{cli,tui,linux,macos,windows}` + `ffi_client.rs`。
+目录：`src/frontend/{cli,tui,linux,macos,windows}` + `utils/{corebridge,i18n}`。
 共享 FFI、EventPump、i18n 与各平台 frontend 都在 `src/frontend/`。linux / macOS 已是常驻
 Scene；TUI 用 per-workspace buffer 组。按 [`../TASKS.md`](../TASKS.md) 验收。
 
 **linux（GTK4）：**
 
-- 删除散装 `ffi_bridge.rs`，改走 `ffi_client`。
-- 按 §2.3 把 `window.rs` / `preferences_window.rs` / `quickconnect_panel.rs` 拆成
-  AppShell / Sidebar / SceneStack / StatusBar / Overlay。
+- 删除散装 `ffi_bridge.rs`，改走 `utils/corebridge`。
+- 目录分层：`app/` `chrome/` `terminal/` `ui/`（对标 macOS）。
+- 按 §2.3 把主窗拆成 AppShell / Sidebar / SceneStack / StatusBar / Overlay。
 - `notebook.rs` → SceneStack（GtkStack）。`layout_host.rs` 不得 `retain` 丢掉不可见 pane 的 widget。
 - `pane_view.rs` / `renderer.rs` 收成 PaneSurface（VT + damage 渲染）。
 - `theme.rs` / `keymap.rs` 消费 `ConfigChanged`。

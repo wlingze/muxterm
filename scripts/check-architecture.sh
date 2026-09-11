@@ -75,9 +75,13 @@ check_absent \
     'crate::config' \
     src/core/runtime src/core/transport
 check_absent \
-    "frontend must use the shared ffi_client instead of ffi_bridge" \
+    "frontend must use the shared CoreBridge instead of ffi_bridge" \
     'ffi_bridge' \
     src src/core
+check_absent \
+    "legacy ffi_client path must not return" \
+    'frontend/ffi_client' \
+    src/frontend
 check_absent \
     "macOS frontend must not retain legacy scene lifecycle coordination" \
     'bridgeLock|backgroundPollQueue|WarmConnectionSlot|ForegroundAuthority' \

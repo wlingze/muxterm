@@ -14,12 +14,13 @@ src/
 ├── lib.rs                         # 唯一 Core library root
 ├── main.rs                        # 唯一 binary（薄；无 mod 声明）
 ├── frontend/
-│   ├── ffi_client.rs              # 统一安全 FFI wrapper
-│   ├── app_shell.rs               # Scene / ViewStore / EventPump 接口
+│   ├── utils/corebridge.rs        # 统一安全 FFI wrapper（CoreBridge）
+│   ├── utils/i18n/                # 唯一文案 catalog
+│   ├── event_pump.rs / command_queue.rs / view_store.rs
 │   ├── cli/
 │   ├── tui/
-│   ├── linux/
-│   ├── macos/
+│   ├── linux/{app,chrome,terminal,ui}/
+│   ├── macos/                     # App / Chrome / CoreBridge / Terminal / UI
 │   └── windows/                   # 占位
 └── core/
     ├── muxterm.rs                 # 组合根
@@ -71,3 +72,4 @@ src/
 | [`HERDR-TESTING.md`](HERDR-TESTING.md) | Herdr 专项门禁 |
 | [`TRANSPORT-PROTOCOL-ARCHITECTURE.md`](TRANSPORT-PROTOCOL-ARCHITECTURE.md) | Transport 三层 |
 | [`RENDERING-OPTIMIZATION.md`](RENDERING-OPTIMIZATION.md) | Linux Surface 渲染 |
+| [`MODULE-SURFACE.md`](MODULE-SURFACE.md) | 模块可见性：默认 `mod`、对外接口、CoreBridge/i18n |

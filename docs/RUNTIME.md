@@ -77,15 +77,12 @@ compatible(runtime, transport) :=
 local 支持 `Exec` + `UnixSocket`；ssh 支持 `Exec`（远端命令）+ `UnixSocket`（转发）。
 新增 Transport 只要声明 `supported_channels`，所有 Runtime 自动可组合。
 
-具体类型不对外导出。允许：
+具体类型不对外导出。生产构建里 `runtime/{tmux,herdr,shell}` 是 `mod` 不是
+`pub mod`。组合根只在 `RuntimeRegistry::with_builtins` 点名 Driver。
+Catalog / Workspace / FFI 只调 `RuntimeProvider` / `dyn Runtime`。
+集成测试若仍要构造具体类型，打开 `test-harness` feature（`scripts/test.sh` 已加）。
 
-```text
-runtime::tmux::register(registry)
-runtime::shell::register(registry)
-runtime::herdr::register(registry)
-```
-
-禁止 `pub use tmux::TmuxRuntime`。Catalog 只读 registry，不实现 `TmuxRuntime::new()`。
+禁止 Catalog 实现 `TmuxRuntime::new()`。可见性细则见 [`MODULE-SURFACE.md`](MODULE-SURFACE.md)。
 
 ---
 

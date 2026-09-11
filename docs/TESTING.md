@@ -22,7 +22,7 @@
 禁止 Catalog builtin concrete constructors
 禁止 visible_ansi dump 进入 Surface frontend
 禁止 RuntimeDriver / TargetTransportProvider / ByteTransport 旧命名
-禁止 frontend 散装 ffi_bridge（统一 ffi_client）
+禁止 frontend 散装 ffi_bridge（统一 `frontend/utils/corebridge`）
 禁止 frontend 构造 / 引用 WorkspaceSpec（只见 Candidate / OpenRequest）
 禁止 core::config 引用 runtime / workspace / projects 领域类型
 禁止 runtime / transport 读取 config
@@ -117,7 +117,7 @@ tmux / Herdr 安全红线见 §3.3 与 [`HERDR-TESTING.md`](HERDR-TESTING.md)。
 cargo fmt --all -- --check
 cargo check --features gtk
 cargo clippy --all-targets -- -D warnings
-cargo test --no-default-features --features tui
+cargo test --no-default-features --features tui,test-harness
 cargo test --features gtk --lib quickconnect -- --test-threads=1
 xvfb-run -a cargo test --features gtk --test linux_gtk_integration -- --test-threads=1
 xvfb-run -a cargo test --features gtk --test linux_quickconnect_e2e -- --test-threads=1
