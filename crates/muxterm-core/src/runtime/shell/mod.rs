@@ -809,7 +809,7 @@ impl Runtime for ShellRuntime {
         &[RuntimeCapability::MultiTab, RuntimeCapability::SplitPane]
     }
 
-    async fn connect(&mut self) -> muxterm_runtime::RuntimeResult<()> {
+    async fn connect(&mut self) -> crate::runtime::RuntimeResult<()> {
         if self.status == BackendStatus::Connected {
             return Ok(());
         }
@@ -845,7 +845,7 @@ impl Runtime for ShellRuntime {
         }
     }
 
-    fn execute(&mut self, task: &Task) -> muxterm_runtime::RuntimeResult<TaskOutcome> {
+    fn execute(&mut self, task: &Task) -> crate::runtime::RuntimeResult<TaskOutcome> {
         let outcome = match task {
             Task::SplitPane {
                 target,
@@ -1204,7 +1204,7 @@ impl Runtime for ShellRuntime {
         }
     }
 
-    async fn shutdown(&mut self) -> muxterm_runtime::RuntimeResult<()> {
+    async fn shutdown(&mut self) -> crate::runtime::RuntimeResult<()> {
         self.execute(&Task::Shutdown)?;
         Ok(())
     }

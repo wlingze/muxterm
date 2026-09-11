@@ -5,11 +5,11 @@
 //! topology/control, render data, and runtime facts are kept separate before
 //! Core turns them into product events.
 
-use muxterm_protocol::layout::TabLayout;
-use muxterm_protocol::state::{
+use crate::protocol::layout::TabLayout;
+use crate::protocol::state::{
     BackendStatus, MutationKind, MutationResult, PaneAgentInfo, StateChange,
 };
-use muxterm_protocol::{PaneId, TabId};
+use crate::protocol::{PaneId, TabId};
 use serde::{Deserialize, Serialize};
 
 /// One non-blocking drain from a Runtime instance.

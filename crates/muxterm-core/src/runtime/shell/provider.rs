@@ -5,9 +5,9 @@ use std::sync::Arc;
 use crate::protocol::candidate::ExistingCandidate;
 use crate::runtime::shell::ShellRuntime;
 use crate::runtime::RuntimeProvider;
+use crate::runtime::RuntimeSpec;
 use crate::runtime::{Runtime, RuntimeCapability};
 use crate::transport::TargetConnection;
-use muxterm_runtime::RuntimeSpec;
 
 /// shell 插件：transport 差异由 TargetConnection 在 Runtime 内归一化。
 pub struct ShellDriver;
@@ -29,7 +29,7 @@ impl RuntimeProvider for ShellDriver {
         &self,
         _connect: &dyn TargetConnection,
         _namespace: Option<&str>,
-    ) -> muxterm_runtime::RuntimeResult<Vec<ExistingCandidate>> {
+    ) -> crate::runtime::RuntimeResult<Vec<ExistingCandidate>> {
         Ok(Vec::new())
     }
 
@@ -37,7 +37,7 @@ impl RuntimeProvider for ShellDriver {
         &self,
         connect: Arc<dyn TargetConnection>,
         spec: &RuntimeSpec,
-    ) -> muxterm_runtime::RuntimeResult<Box<dyn Runtime>> {
+    ) -> crate::runtime::RuntimeResult<Box<dyn Runtime>> {
         Ok(Box::new(ShellRuntime::new_with_connection(
             connect, "$SHELL", &spec.path,
         )))

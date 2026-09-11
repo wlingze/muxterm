@@ -9,9 +9,9 @@ use crate::protocol::candidate::ExistingCandidate;
 use crate::runtime::herdr::runtime::HerdrRuntime;
 use crate::runtime::herdr::session::HerdrSession;
 use crate::runtime::RuntimeProvider;
+use crate::runtime::RuntimeSpec;
 use crate::runtime::{Runtime, RuntimeCapability};
 use crate::transport::{ChannelKind, TargetConnection};
-use muxterm_runtime::RuntimeSpec;
 
 /// herdr 插件（local / ssh）。
 pub struct HerdrDriver;
@@ -45,7 +45,7 @@ impl RuntimeProvider for HerdrDriver {
         &self,
         connect: &dyn TargetConnection,
         namespace: Option<&str>,
-    ) -> muxterm_runtime::RuntimeResult<Vec<ExistingCandidate>> {
+    ) -> crate::runtime::RuntimeResult<Vec<ExistingCandidate>> {
         if connect.transport_id() == "ssh" {
             let entries = crate::discovery::existing::discover_ssh_herdr(
                 connect.target(),
@@ -95,7 +95,7 @@ impl RuntimeProvider for HerdrDriver {
     fn namespaces(
         &self,
         connect: &dyn TargetConnection,
-    ) -> muxterm_runtime::RuntimeResult<Vec<String>> {
+    ) -> crate::runtime::RuntimeResult<Vec<String>> {
         if connect.transport_id() == "ssh" {
             return Ok(Vec::new());
         }
@@ -122,7 +122,7 @@ impl RuntimeProvider for HerdrDriver {
         &self,
         connect: Arc<dyn TargetConnection>,
         spec: &RuntimeSpec,
-    ) -> muxterm_runtime::RuntimeResult<Box<dyn Runtime>> {
+    ) -> crate::runtime::RuntimeResult<Box<dyn Runtime>> {
         let session_name = if spec.session.is_empty() {
             "default"
         } else {

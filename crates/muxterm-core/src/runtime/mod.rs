@@ -5,19 +5,22 @@
 //! Runtime 不关心 Transport 是 local 还是 SSH；Transport 不理解 shell/tmux 语义。
 //! tmux 的 `%pane` / `@window` 等真实 ID 只能在 `runtime/tmux` 内部。
 
-pub use muxterm_runtime::batch;
-pub use muxterm_runtime::capability;
+pub mod batch;
+pub mod capability;
+pub mod contract;
+pub mod error;
 pub mod herdr;
 pub mod mock;
+pub mod provider;
 pub mod registry;
 pub mod shell;
 pub mod tmux;
 
-pub use muxterm_runtime::{
-    runtime_supports_channels, ControlEvent, RenderEvent, Runtime, RuntimeBatch, RuntimeCapability,
-    RuntimeError, RuntimeInfo, RuntimeProvider, RuntimeResult, RuntimeSignal, WorktreeCreateSpec,
-    WorktreeInfo,
-};
+pub use batch::{ControlEvent, RenderEvent, RuntimeBatch, RuntimeSignal};
+pub use capability::RuntimeCapability;
+pub use contract::{Runtime, RuntimeSpec, WorktreeCreateSpec, WorktreeInfo};
+pub use error::{RuntimeError, RuntimeResult};
+pub use provider::{runtime_supports_channels, RuntimeInfo, RuntimeProvider};
 
 #[cfg(test)]
 mod tests {

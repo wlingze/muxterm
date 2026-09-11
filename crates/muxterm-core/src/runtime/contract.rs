@@ -1,15 +1,14 @@
 //! Runtime instance contract shared by Core and runtime implementations.
 //!
-//! This crate owns the behavior of one attached Runtime instance.  Runtime
-//! implementations live in Core for now, but they depend on this contract
-//! instead of defining the trait inside the Core module tree.
+//! Core owns the behavior of one attached Runtime instance.  Implementations
+//! depend on this contract instead of leaking wire types into Workspace.
 
+use crate::protocol::state::{BackendStatus, State};
+use crate::protocol::task::{Task, TaskOutcome};
+use crate::protocol::WorkspaceId;
 use async_trait::async_trait;
-use muxterm_protocol::state::{BackendStatus, State};
-use muxterm_protocol::task::{Task, TaskOutcome};
-use muxterm_protocol::WorkspaceId;
 
-use crate::{RuntimeBatch, RuntimeCapability, RuntimeError, RuntimeResult};
+use super::{RuntimeBatch, RuntimeCapability, RuntimeError, RuntimeResult};
 
 /// Runtime-facing fields needed to construct or reopen one instance.
 ///

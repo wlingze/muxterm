@@ -2909,7 +2909,7 @@ impl Runtime for HerdrRuntime {
         self.reconcile_stream_modes();
     }
 
-    async fn connect(&mut self) -> muxterm_runtime::RuntimeResult<()> {
+    async fn connect(&mut self) -> crate::runtime::RuntimeResult<()> {
         if self.status == BackendStatus::Connected {
             return Ok(());
         }
@@ -2956,7 +2956,7 @@ impl Runtime for HerdrRuntime {
         Ok(())
     }
 
-    fn execute(&mut self, task: &Task) -> muxterm_runtime::RuntimeResult<TaskOutcome> {
+    fn execute(&mut self, task: &Task) -> crate::runtime::RuntimeResult<TaskOutcome> {
         if self.status != BackendStatus::Connected {
             return Ok(TaskOutcome::Rejected {
                 reason: "Herdr 未连接".into(),
@@ -3288,7 +3288,7 @@ impl Runtime for HerdrRuntime {
         }
     }
 
-    async fn shutdown(&mut self) -> muxterm_runtime::RuntimeResult<()> {
+    async fn shutdown(&mut self) -> crate::runtime::RuntimeResult<()> {
         self.event_stream = None;
         self.event_tx = None;
         self.event_rx = None;
@@ -3301,21 +3301,21 @@ impl Runtime for HerdrRuntime {
         );
         Ok(())
     }
-    fn list_worktrees(&self) -> muxterm_runtime::RuntimeResult<Vec<crate::runtime::WorktreeInfo>> {
+    fn list_worktrees(&self) -> crate::runtime::RuntimeResult<Vec<crate::runtime::WorktreeInfo>> {
         Ok(self.worktrees()?)
     }
 
     fn create_worktree_spec(
         &self,
         spec: &crate::runtime::WorktreeCreateSpec,
-    ) -> muxterm_runtime::RuntimeResult<muxterm_runtime::RuntimeSpec> {
+    ) -> crate::runtime::RuntimeResult<crate::runtime::RuntimeSpec> {
         Ok(self.create_worktree(spec)?.runtime_spec())
     }
 
     fn open_worktree_spec(
         &self,
         path: &str,
-    ) -> muxterm_runtime::RuntimeResult<muxterm_runtime::RuntimeSpec> {
+    ) -> crate::runtime::RuntimeResult<crate::runtime::RuntimeSpec> {
         Ok(self.open_worktree(path)?.runtime_spec())
     }
 }
