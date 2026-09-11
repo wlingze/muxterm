@@ -47,6 +47,8 @@ pub mod daemon_client;
 pub mod daemon_runtime;
 pub mod provider;
 
+pub(super) use provider::ShellDriver;
+
 /// 默认字符格尺寸。
 const DEFAULT_COLS: u16 = 80;
 const DEFAULT_ROWS: u16 = 24;
@@ -801,10 +803,6 @@ impl State for ShellRuntime {
 
 #[async_trait]
 impl Runtime for ShellRuntime {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
     fn support(&self) -> &'static [RuntimeCapability] {
         &[RuntimeCapability::MultiTab, RuntimeCapability::SplitPane]
     }

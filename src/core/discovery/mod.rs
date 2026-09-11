@@ -11,7 +11,7 @@
 
 pub mod existing;
 
-pub use crate::transport::ssh::config::{list_ssh_hosts, parse_ssh_config, SshHostEntry};
+pub use crate::transport::{list_ssh_hosts, parse_ssh_config, SshHostEntry};
 
 /// tmux session 信息。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

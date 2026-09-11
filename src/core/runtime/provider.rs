@@ -9,7 +9,7 @@ use std::sync::Arc;
 use crate::protocol::candidate::ExistingCandidate;
 use crate::transport::{ChannelKind, TargetConnection};
 
-use super::{Runtime, RuntimeCapability, RuntimeResult, RuntimeSpec};
+use super::{Runtime, RuntimeCapability, RuntimeError, RuntimeResult, RuntimeSpec};
 
 /// Static provider information used by Catalog and frontend-facing lists.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,6 +51,42 @@ pub trait RuntimeProvider: Send + Sync {
         connection: Arc<dyn TargetConnection>,
         spec: &RuntimeSpec,
     ) -> RuntimeResult<Box<dyn Runtime>>;
+
+    /// Create a missing attachable identity on this target.
+    ///
+    /// `label` is the user-visible name (Herdr workspace label, for example).
+    /// `spec.path` is the create-time cwd. Successful implementations return a
+    /// spec whose `path` is the created identity (Herdr workspace id).
+    fn create_identity(
+        &self,
+        connection: &dyn TargetConnection,
+        spec: &RuntimeSpec,
+        label: Option<&str>,
+    ) -> RuntimeResult<RuntimeSpec> {
+        let _ = (connection, spec, label);
+        Err(RuntimeError::Unsupported {
+            operation: "CreateIdentity",
+        })
+    }
+
+    /// Provider-level status snapshot (no live Workspace required).
+    fn status_snapshot(
+        &self,
+        connection: &dyn TargetConnection,
+        session: &str,
+        socket: Option<&str>,
+    ) -> RuntimeResult<serde_json::Value> {
+        let _ = (connection, session, socket);
+        Err(RuntimeError::Unsupported {
+            operation: "StatusSnapshot",
+        })
+    }
+
+    /// Optional session-name policy for a project worktree.
+    fn worktree_session_name(&self, project_id: &str, worktree_id: &str) -> Option<String> {
+        let _ = (project_id, worktree_id);
+        None
+    }
 }
 
 /// Whether a transport can provide every channel required by a Runtime.

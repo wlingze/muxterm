@@ -657,7 +657,7 @@ mod tests {
     use crate::catalog::resolver::{ResolvedTarget, ResolvedTargetDescriptor};
     use crate::projects::{TargetRuntime, TargetTransport};
     use crate::protocol::task::Task;
-    use crate::runtime::mock::MockRuntime;
+    use crate::runtime::MockRuntime;
     use crate::runtime::RuntimeCapability;
     use crate::workspace::provenance::WorkspaceProvenance;
     use crate::workspace::spec::WorkspaceSpec;

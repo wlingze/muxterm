@@ -9,25 +9,67 @@ pub mod batch;
 pub mod capability;
 pub mod contract;
 pub mod error;
-pub mod herdr;
-pub mod mock;
+mod herdr;
+mod mock;
 pub mod provider;
 pub mod registry;
-pub mod shell;
-pub mod tmux;
+mod shell;
+mod tmux;
 
 pub use batch::{ControlEvent, RenderEvent, RuntimeBatch, RuntimeSignal};
 pub use capability::RuntimeCapability;
 pub use contract::{Runtime, RuntimeSpec, WorktreeCreateSpec, WorktreeInfo};
 pub use error::{RuntimeError, RuntimeResult};
+#[cfg(test)]
+pub(crate) use mock::MockRuntime;
 pub use provider::{runtime_supports_channels, RuntimeInfo, RuntimeProvider};
+pub use registry::RuntimeRegistry;
+
+/// Legacy C constructor helper. Lives here so FFI does not name TmuxDriver.
+pub(crate) fn legacy_ssh_alias_and_tmux_socket(
+    socket: Option<&str>,
+    alias: Option<&str>,
+) -> Option<(String, Option<String>)> {
+    tmux::backend::TmuxRuntime::ssh_alias_and_tmux_socket(socket, alias)
+}
+
+/// Host-side daemon adapter. Daemon is a shell form, not a fourth provider.
+pub(crate) fn new_daemon_runtime(path: std::path::PathBuf, name: String) -> Box<dyn Runtime> {
+    Box::new(shell::daemon_runtime::DaemonRuntime::new(path, name))
+}
+
+/// One Herdr workspace discovered on a named session socket.
+pub(crate) struct HerdrWorkspaceProbe {
+    pub workspace_id: String,
+    pub label: String,
+}
+
+/// Probe a Herdr named session without exposing `HerdrSession`.
+pub(crate) fn list_herdr_workspaces_at(
+    session_name: &str,
+    socket: &std::path::Path,
+) -> Option<Vec<HerdrWorkspaceProbe>> {
+    let session = herdr::session::HerdrSession::new(session_name, socket);
+    if session.ping().is_err() {
+        return None;
+    }
+    let list = session.workspace_list().ok()?;
+    Some(
+        list.into_iter()
+            .map(|ws| HerdrWorkspaceProbe {
+                workspace_id: ws.workspace_id,
+                label: ws.label,
+            })
+            .collect(),
+    )
+}
 
 #[cfg(test)]
 mod tests {
+    use super::herdr::runtime::HerdrRuntime;
+    use super::shell::ShellRuntime;
+    use super::tmux::backend::TmuxRuntime;
     use super::*;
-    use crate::runtime::herdr::HerdrRuntime;
-    use crate::runtime::shell::ShellRuntime;
-    use crate::runtime::tmux::backend::TmuxRuntime;
 
     const WORKTREE_CAPS: [RuntimeCapability; 4] = [
         RuntimeCapability::WorktreeList,

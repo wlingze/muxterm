@@ -615,10 +615,76 @@ fn json_escape(s: &str) -> String {
 mod tests {
     use super::*;
     use crate::protocol::command::CliCommand;
-    use crate::runtime::mock::MockRuntime;
+    use crate::protocol::layout::TabLayout;
+    use crate::protocol::state::{BackendStatus, PaneInfo, TabInfo};
 
-    fn mock_with_pane() -> MockRuntime {
-        MockRuntime::with_single_pane()
+    struct FormatFixture {
+        name: String,
+        runtime: String,
+        tabs: Vec<TabInfo>,
+        panes: Vec<PaneInfo>,
+        layouts: Vec<TabLayout>,
+    }
+
+    impl State for FormatFixture {
+        fn workspace_name(&self) -> &str {
+            &self.name
+        }
+        fn workspace_runtime(&self) -> &str {
+            &self.runtime
+        }
+        fn active_tab(&self) -> Option<&TabInfo> {
+            self.tabs.iter().find(|tab| tab.active)
+        }
+        fn active_pane(&self) -> Option<&PaneInfo> {
+            self.panes.iter().find(|pane| pane.active)
+        }
+        fn tabs(&self) -> Vec<&TabInfo> {
+            self.tabs.iter().collect()
+        }
+        fn tab(&self, tab: &TabId) -> Option<&TabInfo> {
+            self.tabs.iter().find(|item| item.id == *tab)
+        }
+        fn layout(&self, tab: &TabId) -> Option<&TabLayout> {
+            self.layouts.iter().find(|item| item.tab == *tab)
+        }
+        fn panes(&self, tab: &TabId) -> Vec<&PaneInfo> {
+            self.panes.iter().filter(|pane| pane.tab == *tab).collect()
+        }
+        fn pane(&self, pane: &PaneId) -> Option<&PaneInfo> {
+            self.panes.iter().find(|item| item.id == *pane)
+        }
+        fn pane_output(&self, _pane: &PaneId) -> Option<&[u8]> {
+            None
+        }
+        fn status(&self) -> BackendStatus {
+            BackendStatus::Connected
+        }
+    }
+
+    fn mock_with_pane() -> FormatFixture {
+        FormatFixture {
+            name: "mock".into(),
+            runtime: "tmux".into(),
+            tabs: vec![TabInfo {
+                id: TabId(1),
+                name: "t1".into(),
+                active: true,
+            }],
+            panes: vec![PaneInfo {
+                id: PaneId(1),
+                tab: TabId(1),
+                active: true,
+                title: "bash".into(),
+                cols: 80,
+                rows: 24,
+            }],
+            layouts: vec![TabLayout {
+                tab: TabId(1),
+                tree: LayoutNode::leaf(PaneId(1)),
+                active: PaneId(1),
+            }],
+        }
     }
 
     #[test]

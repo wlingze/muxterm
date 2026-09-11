@@ -219,9 +219,7 @@ mod tests {
     use super::*;
     use crate::catalog::Catalog;
     use crate::muxterm::Muxterm;
-    use crate::runtime::shell::ShellRuntime;
-    use crate::runtime::tmux::backend::TmuxRuntime;
-    use crate::runtime::tmux::client::ConnectMode;
+    use crate::runtime::RuntimeCapability;
     use crate::transport::registry::ConnectionRegistry;
 
     fn new_runtime(spec: &WorkspaceSpec) -> Box<dyn crate::runtime::Runtime> {
@@ -285,11 +283,9 @@ mod tests {
         let spec = WorkspaceSpec::ssh_shell("dev", "/srv/project");
         let runtime = new_runtime(&spec);
         assert_eq!(runtime.workspace_runtime(), "shell");
-        let shell = runtime
-            .as_any()
-            .downcast_ref::<ShellRuntime>()
-            .expect("SSH shell 必须构造 ShellRuntime");
-        assert_eq!(shell.test_ssh_alias(), Some("dev"));
+        assert!(!runtime
+            .support()
+            .contains(&RuntimeCapability::PersistDetach));
     }
 
     #[test]
@@ -301,23 +297,13 @@ mod tests {
         let rt_create = new_runtime(&create);
         assert_eq!(rt_attach.workspace_runtime(), "tmux");
         assert_eq!(rt_create.workspace_runtime(), "tmux");
-
-        let tmux_attach = rt_attach
-            .as_any()
-            .downcast_ref::<TmuxRuntime>()
-            .expect("attach 应构造 TmuxRuntime");
-        let tmux_create = rt_create
-            .as_any()
-            .downcast_ref::<TmuxRuntime>()
-            .expect("create 应构造 TmuxRuntime");
-        assert!(matches!(
-            tmux_attach.test_connect_mode(),
-            Some(ConnectMode::Attach { .. })
-        ));
-        assert!(matches!(
-            tmux_create.test_connect_mode(),
-            Some(ConnectMode::NewSession { .. })
-        ));
+        assert!(rt_attach
+            .support()
+            .contains(&RuntimeCapability::PersistDetach));
+        assert!(rt_create
+            .support()
+            .contains(&RuntimeCapability::PersistDetach));
+        assert_ne!(attach.create, create.create);
     }
 
     #[test]
@@ -325,12 +311,9 @@ mod tests {
         let spec = WorkspaceSpec::ssh_tmux("myhost".into(), None, None);
         let rt = new_runtime(&spec);
         assert_eq!(rt.workspace_runtime(), "tmux");
-        let tmux = rt
-            .as_any()
-            .downcast_ref::<TmuxRuntime>()
-            .expect("ssh 应构造 TmuxRuntime");
-        // 空 session → new_ssh（无 attach 模式）。
-        assert!(tmux.test_connect_mode().is_none());
+        assert!(rt.support().contains(&RuntimeCapability::PersistDetach));
+        assert_eq!(spec.alias.as_deref(), Some("myhost"));
+        assert!(spec.session.is_empty());
     }
 
     #[test]

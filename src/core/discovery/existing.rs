@@ -9,7 +9,6 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use crate::projects::{TargetRuntime, TargetTransport};
-use crate::runtime::herdr::session::HerdrSession;
 
 use super::{list_local_tmux_sessions, list_ssh_tmux_sessions, TmuxSessionInfo};
 
@@ -141,11 +140,7 @@ fn scan_sockets(sockets: Vec<PathBuf>, default: Option<PathBuf>) -> Vec<Existing
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_default()
         };
-        let session = HerdrSession::new(&session_name, &socket);
-        if session.ping().is_err() {
-            continue;
-        }
-        let Ok(list) = session.workspace_list() else {
+        let Some(list) = crate::runtime::list_herdr_workspaces_at(&session_name, &socket) else {
             continue;
         };
         for ws in list {

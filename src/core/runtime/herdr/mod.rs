@@ -16,5 +16,4 @@ pub mod runtime;
 pub mod session;
 pub mod wire;
 
-pub use runtime::HerdrRuntime;
-pub use session::HerdrSession;
+pub(super) use provider::HerdrDriver;

@@ -7,10 +7,10 @@
 
 pub mod connection;
 pub mod connection_registry;
-pub mod local;
+mod local;
 pub mod provider;
 pub mod registry;
-pub mod ssh;
+mod ssh;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -20,6 +20,7 @@ pub use connection::Connect;
 pub use connection_registry::ConnectionRegistry;
 pub use provider::{TargetInfo, TransportInfo, TransportProvider};
 pub use registry::{with_builtins, TransportRegistry};
+pub use ssh::config::{list_ssh_hosts, parse_ssh_config, SshHostEntry};
 
 /// Channel kinds are the only transport capability a Runtime provider needs
 /// to resolve a Runtime × Transport combination.

@@ -19,9 +19,6 @@ use crate::protocol::task::{Task, TaskOutcome};
 use crate::protocol::terminal::emulate::DEFAULT_SCROLLBACK_LINES;
 use crate::protocol::WorkspaceId;
 use crate::protocol::{PaneId, TabId};
-use crate::runtime::shell::daemon_runtime::DaemonRuntime;
-use crate::runtime::shell::ShellRuntime;
-use crate::runtime::tmux::backend::TmuxRuntime;
 use crate::workspace::pool::{WorkspacePool, WorkspacePoolPolicy};
 use crate::workspace::terminal_model::TerminalModel;
 use crate::workspace::workspace::Workspace;
@@ -38,7 +35,7 @@ use crate::protocol::ffi::types::DIR_HORIZONTAL;
 use crate::protocol::state::{
     PaneAgentInfo, PaneAgentSession, PaneAgentSessionKind, PaneAgentStatus,
 };
-use crate::runtime::mock::MockRuntime;
+use crate::runtime::MockRuntime;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1259,8 +1256,7 @@ fn ffi_workspace_poll_keeps_workspace_identity() {
         let open_result = {
             let (rt, pool) = (&handle.rt, &mut handle.pool);
             rt.block_on(pool.open(id2.clone(), "second".into(), |_| {
-                let rt = crate::runtime::shell::ShellRuntime::new("$SHELL", "");
-                Box::new(rt)
+                Box::new(crate::runtime::MockRuntime::with_single_pane())
             }))
         };
         assert!(open_result.is_ok(), "第二个 shell workspace 应能打开");

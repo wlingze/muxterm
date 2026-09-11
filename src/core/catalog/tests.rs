@@ -7,7 +7,7 @@ use super::{Catalog, OpenRequest, Reach, ResolveIntent, ResolvedTarget, Resolved
 use crate::muxterm::Muxterm;
 use crate::projects::{Project, Worktree};
 use crate::protocol::candidate::{CandidateRef, ExistingCandidate, ExistingCandidateRef};
-use crate::runtime::mock::MockRuntime;
+use crate::runtime::MockRuntime;
 use crate::runtime::RuntimeProvider;
 use crate::runtime::{Runtime, RuntimeCapability, RuntimeResult};
 use crate::transport::provider::{TargetInfo, TransportProvider};
@@ -840,8 +840,11 @@ fn tmux_generic_worktree_session_is_project_slash_worktree() {
     use crate::projects::{ProjectTarget, TargetRuntime, TargetTransport};
 
     assert_eq!(
-        super::tmux_worktree_session("muxterm", "feature/a"),
-        "muxterm/feature-a"
+        Catalog::with_builtins()
+            .runtime("tmux")
+            .and_then(|provider| provider.worktree_session_name("muxterm", "feature/a"))
+            .as_deref(),
+        Some("muxterm/feature-a")
     );
 
     let mut project = Project::new(
@@ -858,7 +861,7 @@ fn tmux_generic_worktree_session_is_project_slash_worktree() {
             true,
         ))
         .unwrap();
-    let catalog = Catalog::new();
+    let catalog = Catalog::with_builtins();
     let mut connections = ConnectionRegistry::new();
     let resolved = catalog
         .resolve_open_request(

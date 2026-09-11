@@ -5,7 +5,7 @@
 
 use crate::protocol::state::{BackendStatus, State};
 use crate::protocol::task::{Task, TaskOutcome};
-use crate::protocol::WorkspaceId;
+use crate::protocol::{PaneId, WorkspaceId};
 use async_trait::async_trait;
 
 use super::{RuntimeBatch, RuntimeCapability, RuntimeError, RuntimeResult};
@@ -50,9 +50,6 @@ pub struct WorktreeCreateSpec {
 /// Behavior of one connected Runtime instance.
 #[async_trait]
 pub trait Runtime: State + Send {
-    /// Type-erased access retained for Core diagnostics and contract tests.
-    fn as_any(&self) -> &dyn std::any::Any;
-
     /// Establish the Runtime connection.
     async fn connect(&mut self) -> RuntimeResult<()>;
 
@@ -108,6 +105,12 @@ pub trait Runtime: State + Send {
     /// Current `(down, up)` byte counters.
     fn traffic_bytes(&self) -> (u64, u64) {
         (0, 0)
+    }
+
+    /// Opaque diagnostics for FFI / E2E probes. Default is none.
+    fn diagnostics(&self, pane: PaneId) -> Option<serde_json::Value> {
+        let _ = pane;
+        None
     }
 
     /// Shut down the Runtime and release its resources.

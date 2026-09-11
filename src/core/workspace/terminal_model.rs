@@ -309,7 +309,7 @@ mod tests {
     use crate::protocol::state::BackendStatus;
     use crate::protocol::terminal::input::KeyEvent;
     use crate::protocol::{PaneId, TabId};
-    use crate::runtime::mock::MockRuntime;
+    use crate::runtime::MockRuntime;
 
     use std::sync::{Arc, Mutex};
 

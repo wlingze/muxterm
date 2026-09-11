@@ -124,7 +124,7 @@ mod tests {
     use crate::protocol::layout::SplitDir;
     use crate::protocol::task::Task;
     use crate::protocol::PaneId;
-    use crate::runtime::mock::MockRuntime;
+    use crate::runtime::MockRuntime;
     use crate::workspace::terminal_model::TerminalModel;
 
     fn make_model() -> TerminalModel {
