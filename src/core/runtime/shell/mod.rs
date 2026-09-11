@@ -803,6 +803,11 @@ impl State for ShellRuntime {
 
 #[async_trait]
 impl Runtime for ShellRuntime {
+    #[cfg(feature = "test-harness")]
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn support(&self) -> &'static [RuntimeCapability] {
         &[RuntimeCapability::MultiTab, RuntimeCapability::SplitPane]
     }

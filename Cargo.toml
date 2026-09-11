@@ -14,6 +14,9 @@ gtk = ["dep:gtk4", "dep:vte4", "ffi"]
 tui = ["dep:crossterm", "dep:ratatui", "ffi"]
 # C ABI 导出（不依赖任何 GUI）。
 ffi = []
+# Integration tests that still construct provider types. Production builds
+# keep runtime/{tmux,herdr,shell} crate-private.
+test-harness = []
 
 [lib]
 name = "muxterm"

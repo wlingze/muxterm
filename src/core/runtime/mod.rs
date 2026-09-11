@@ -9,18 +9,30 @@ pub mod batch;
 pub mod capability;
 pub mod contract;
 pub mod error;
+#[cfg(feature = "test-harness")]
+pub mod herdr;
+#[cfg(not(feature = "test-harness"))]
 mod herdr;
+#[cfg(feature = "test-harness")]
+pub mod mock;
+#[cfg(not(feature = "test-harness"))]
 mod mock;
 pub mod provider;
 pub mod registry;
+#[cfg(feature = "test-harness")]
+pub mod shell;
+#[cfg(not(feature = "test-harness"))]
 mod shell;
+#[cfg(feature = "test-harness")]
+pub mod tmux;
+#[cfg(not(feature = "test-harness"))]
 mod tmux;
 
 pub use batch::{ControlEvent, RenderEvent, RuntimeBatch, RuntimeSignal};
 pub use capability::RuntimeCapability;
 pub use contract::{Runtime, RuntimeSpec, WorktreeCreateSpec, WorktreeInfo};
 pub use error::{RuntimeError, RuntimeResult};
-#[cfg(test)]
+#[cfg(any(test, feature = "test-harness"))]
 pub(crate) use mock::MockRuntime;
 pub use provider::{runtime_supports_channels, RuntimeInfo, RuntimeProvider};
 pub use registry::RuntimeRegistry;

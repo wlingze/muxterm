@@ -50,6 +50,10 @@ pub struct WorktreeCreateSpec {
 /// Behavior of one connected Runtime instance.
 #[async_trait]
 pub trait Runtime: State + Send {
+    /// Test-only type erasure for integration harnesses.
+    #[cfg(feature = "test-harness")]
+    fn as_any(&self) -> &dyn std::any::Any;
+
     /// Establish the Runtime connection.
     async fn connect(&mut self) -> RuntimeResult<()>;
 

@@ -53,12 +53,12 @@ usage() {
 run_core() {
     run_architecture
     cargo fmt --all -- --check
-    cargo clippy --no-default-features --features tui -- -D warnings
+    cargo clippy --no-default-features --features tui,test-harness -- -D warnings
 
     # 一次编译、一起跑：lib/bins + 全部集成测试 target。
-    cargo test --no-default-features --features tui --lib --bins \
+    cargo test --no-default-features --features tui,test-harness --lib --bins \
         -- --test-threads="$THREADS"
-    cargo test --no-default-features --features tui \
+    cargo test --no-default-features --features tui,test-harness \
         --test cli_integration \
         --test tmux_backend_integration \
         --test tui_integration \
@@ -72,7 +72,7 @@ run_core() {
         --test runtime_transport_matrix_contract \
         -- --test-threads="$THREADS"
 
-    cargo test --no-default-features --features ffi \
+    cargo test --no-default-features --features ffi,test-harness \
         --test sendkeys_regression \
         --test split_regression \
         --test tui_split_ffi_regression \
@@ -85,14 +85,14 @@ run_core() {
         -- --test-threads="$THREADS"
 
     # four-mode SSH 两个 case 是 #[ignore]（需 sshd）。
-    cargo test --no-default-features --features ffi \
+    cargo test --no-default-features --features ffi,test-harness \
         --test four_mode_integration -- --ignored --test-threads="$THREADS"
 }
 
 run_linux() {
     run_architecture
-    cargo clippy --features gtk -- -D warnings
-    cargo check --features gtk
+    cargo clippy --features gtk,test-harness -- -D warnings
+    cargo check --features gtk,test-harness
 
     # 一次编译、一起跑：全部 GTK e2e target（xvfb 下 --test-threads=1）。
     # GDK_DISABLE：禁用 GDK GL API，规避 xvfb/Mesa 下连续建窗销毁的
@@ -110,7 +110,7 @@ run_linux() {
         xvfb_opts=-a
     fi
     set +e
-    xvfb-run "$xvfb_opts" env GTK_A11Y=none GDK_DISABLE=gl-api,gles-api cargo test --features gtk --jobs 1 \
+    xvfb-run "$xvfb_opts" env GTK_A11Y=none GDK_DISABLE=gl-api,gles-api cargo test --features gtk,test-harness --jobs 1 \
         --test linux_gtk_integration \
         --test linux_herdr_e2e \
         --test linux_herdr_switch_e2e \
@@ -146,11 +146,11 @@ run_macos() {
     run_architecture
     # macOS 发布物包含跨平台 TUI；必须在 macOS target 上实际解析并编译
     # crossterm / ratatui，避免依赖误落入 Linux-only 表后直到发布才失败。
-    cargo check --no-default-features --features tui
-    cargo build --release --no-default-features --features ffi
-    cargo test --no-default-features --features ffi \
+    cargo check --no-default-features --features tui,test-harness
+    cargo build --release --no-default-features --features ffi,test-harness
+    cargo test --no-default-features --features ffi,test-harness \
         --test macos_integration -- --test-threads="$THREADS"
-    cargo test --no-default-features --features ffi \
+    cargo test --no-default-features --features ffi,test-harness \
         --test macos_e2e -- --test-threads="$THREADS"
 
     # Swift 侧（headless unit tests），需 macOS + Xcode。
