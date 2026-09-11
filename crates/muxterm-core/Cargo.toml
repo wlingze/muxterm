@@ -15,7 +15,7 @@ async-ssh2-tokio = "0.13"
 async-trait = "0.1"
 bincode = { version = "2", features = ["serde"] }
 futures = "0.3"
-muxterm-protocol = { path = "../muxterm-protocol" }
+
 regex = "1"
 schemars = "1.2"
 serde = { version = "1", features = ["derive"] }

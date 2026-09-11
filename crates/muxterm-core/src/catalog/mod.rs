@@ -13,6 +13,7 @@ use std::thread;
 
 use crate::projects::Project;
 use crate::protocol::candidate::{Candidate, CandidateRef, ExistingCandidateRef};
+use crate::protocol::WorkspaceId;
 use crate::runtime::registry::RuntimeRegistry;
 use crate::runtime::runtime_supports_channels;
 use crate::transport::registry::ConnectionRegistry;
@@ -20,7 +21,6 @@ use crate::transport::registry::TransportRegistry;
 use crate::transport::{ChannelKind, TargetConnection};
 use crate::workspace::pool::WorkspacePool;
 use crate::workspace::template::TemplateName;
-use muxterm_protocol::WorkspaceId;
 
 pub use crate::protocol::candidate::ExistingCandidate;
 pub use crate::protocol::candidate::{OpenRequest, ResolveIntent};

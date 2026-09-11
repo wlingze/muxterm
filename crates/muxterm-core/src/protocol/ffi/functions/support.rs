@@ -4,9 +4,9 @@ use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::ptr;
 
+use crate::protocol::PaneId;
+use crate::protocol::WorkspaceId;
 use crate::workspace::workspace::Workspace;
-use muxterm_protocol::PaneId;
-use muxterm_protocol::WorkspaceId;
 
 /// The C handle is one composed product session, not a runtime instance.
 pub type MuxtermHandle = crate::muxterm::Muxterm;

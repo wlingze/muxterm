@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use crate::ffi_client::{ClientActivitySnapshot, ClientAttentionPane, ClientWorkspace};
 use crate::linux::view_store::ViewStore;
-use muxterm_protocol::WorkspaceId;
+use muxterm_core::protocol::WorkspaceId;
 
 /// A workspace row in the sidebar.
 #[derive(Debug, Clone, PartialEq, Eq)]

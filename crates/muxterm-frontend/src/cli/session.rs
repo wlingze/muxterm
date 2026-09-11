@@ -19,7 +19,7 @@ fn socket_dir() -> PathBuf {
 ///
 /// `/tmp/muxterm-<name>.sock` 或 `$XDG_RUNTIME_DIR/muxterm-<name>.sock`
 pub fn session_socket_path(name: &str) -> PathBuf {
-    muxterm_protocol::daemon::default_socket_path(name)
+    muxterm_core::protocol::daemon::default_socket_path(name)
 }
 
 /// 列出所有活跃 session 的 socket 路径。

@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::path::Path;
 
-pub use muxterm_protocol::Rgb;
+pub use crate::protocol::Rgb;
 
 // ============================================================================
 // 主题

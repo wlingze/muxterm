@@ -15,7 +15,7 @@ use gtk4::{
 
 use crate::ffi_client::ClientActivitySnapshot;
 use crate::linux::view_store::ViewStore;
-use muxterm_protocol::WorkspaceId;
+use muxterm_core::protocol::WorkspaceId;
 
 use super::{
     apply_sidebar_split, persist_sidebar_divider, widget_id, ActivityIndicator, AgentSidebarItem,

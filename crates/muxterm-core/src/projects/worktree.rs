@@ -1,7 +1,7 @@
 //! Project-owned git checkout records.
 
 use crate::config::WorktreeDocument;
-use muxterm_protocol::WorkspaceId;
+use crate::protocol::WorkspaceId;
 
 use super::WorktreeId;
 

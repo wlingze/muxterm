@@ -10,9 +10,9 @@ use std::time::{Duration, Instant};
 use crate::protocol::state::StateChange;
 use crate::protocol::task::Task;
 use crate::protocol::terminal::emulate::DEFAULT_SCROLLBACK_LINES;
+use crate::protocol::WorkspaceId;
 use crate::runtime::{Runtime, RuntimeBatch, RuntimeCapability, WorktreeCreateSpec, WorktreeInfo};
 use crate::workspace::workspace::Workspace;
-use muxterm_protocol::WorkspaceId;
 
 /// 池里一个工作区的生命周期。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -559,8 +559,8 @@ fn release_runtime(workspace: &mut Workspace, id: &WorkspaceId) {
 mod tests {
     use super::*;
     use crate::protocol::task::Task;
+    use crate::protocol::{PaneId, TabId};
     use crate::runtime::mock::MockRuntime;
-    use muxterm_protocol::{PaneId, TabId};
     use std::sync::{Arc, Mutex};
 
     fn id(name: &str, runtime: &str) -> WorkspaceId {

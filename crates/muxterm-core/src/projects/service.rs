@@ -7,12 +7,12 @@ use crate::executable::expand_config_value;
 use crate::muxterm::Muxterm;
 use crate::projects::{TargetRuntime, TargetTransport};
 use crate::protocol::candidate::{CandidateRef, OpenRequest, ResolveIntent};
+use crate::protocol::WorkspaceId;
 use crate::runtime::WorktreeCreateSpec;
 use crate::transport::registry::ConnectionRegistry;
 use crate::transport::ChannelRequest;
 use crate::workspace::pool::WorkspacePool;
 use crate::workspace::template::{TemplateName, TemplateRegistry};
-use muxterm_protocol::WorkspaceId;
 
 use super::{git_worktree_add_argv, Project, ProjectId, ProjectStore, Worktree, WorktreeId};
 

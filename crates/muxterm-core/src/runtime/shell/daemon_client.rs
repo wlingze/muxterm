@@ -8,8 +8,8 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use muxterm_protocol::command::CliCommand;
-use muxterm_protocol::daemon::{OutputFormat, Request, Response};
+use crate::protocol::command::CliCommand;
+use crate::protocol::daemon::{OutputFormat, Request, Response};
 
 /// 连接到 daemon socket，发送命令，返回响应。
 ///

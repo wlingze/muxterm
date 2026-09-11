@@ -8,7 +8,7 @@
 use crate::projects::{ProjectTarget, TargetConfig, TargetRuntime, TargetTransport};
 use crate::workspace::spec::WorkspaceSpec;
 
-pub use muxterm_protocol::candidate::{OpenRequest, ResolveIntent};
+pub use crate::protocol::candidate::{OpenRequest, ResolveIntent};
 
 /// 解析失败阶段（用户通知显示阶段 + 身份摘要）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -243,7 +243,7 @@ pub struct ResolvedTarget {
 
 impl ResolvedTarget {
     /// 稳定 WorkspaceId（由 spec 的五段身份字段构成）。
-    pub fn workspace_id(&self) -> muxterm_protocol::WorkspaceId {
+    pub fn workspace_id(&self) -> crate::protocol::WorkspaceId {
         self.spec.id()
     }
 
@@ -347,7 +347,7 @@ pub fn herdr_candidate_to_config(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use muxterm_protocol::candidate::CandidateRef;
+    use crate::protocol::candidate::CandidateRef;
 
     #[test]
     fn open_request_round_trips_typed_reference_and_defaults_activation() {

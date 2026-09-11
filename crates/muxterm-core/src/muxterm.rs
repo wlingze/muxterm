@@ -77,9 +77,9 @@ pub struct Muxterm {
     pub(crate) tab_names: Vec<CString>,
     pub(crate) layout_nodes: Vec<CLayoutNode>,
     /// Lane-separated batches waiting for the legacy C ABI conversion.
-    pub(crate) deferred_batches: VecDeque<(muxterm_protocol::WorkspaceId, RuntimeBatch)>,
+    pub(crate) deferred_batches: VecDeque<(crate::protocol::WorkspaceId, RuntimeBatch)>,
     /// Product Activity lane events waiting for the Activity FFI poll.
-    pub(crate) deferred_activity_events: VecDeque<(muxterm_protocol::WorkspaceId, ActivityEvent)>,
+    pub(crate) deferred_activity_events: VecDeque<(crate::protocol::WorkspaceId, ActivityEvent)>,
     pub(crate) workspace_ids: Vec<CString>,
 }
 
@@ -288,11 +288,11 @@ impl Muxterm {
         connections: &mut ConnectionRegistry,
         templates: &TemplateRegistry,
         pool: &mut WorkspacePool,
-        source: &muxterm_protocol::WorkspaceId,
+        source: &crate::protocol::WorkspaceId,
         worktree: &crate::runtime::WorktreeCreateSpec,
         provenance: Option<crate::workspace::provenance::WorkspaceProvenance>,
         template: Option<crate::workspace::template::TemplateName>,
-    ) -> anyhow::Result<muxterm_protocol::WorkspaceId> {
+    ) -> anyhow::Result<crate::protocol::WorkspaceId> {
         let mut spec = {
             let workspace = pool
                 .get(source)
@@ -402,7 +402,7 @@ impl Muxterm {
     #[cfg(test)]
     pub(crate) fn defer_event(
         &mut self,
-        workspace_id: muxterm_protocol::WorkspaceId,
+        workspace_id: crate::protocol::WorkspaceId,
         event: StateChange,
     ) {
         if should_export_state_change(&event) {
@@ -412,7 +412,7 @@ impl Muxterm {
 
     pub(crate) fn defer_batch(
         &mut self,
-        workspace_id: muxterm_protocol::WorkspaceId,
+        workspace_id: crate::protocol::WorkspaceId,
         mut batch: RuntimeBatch,
     ) {
         // PaneIndexSnapshot is consumed by Core's Index and must never cross
@@ -434,9 +434,9 @@ impl Muxterm {
     /// same position so `max_count` never drops the remaining lane events.
     pub(crate) fn take_deferred_events(
         &mut self,
-        workspace_id: Option<&muxterm_protocol::WorkspaceId>,
+        workspace_id: Option<&crate::protocol::WorkspaceId>,
         max_count: usize,
-    ) -> Vec<(muxterm_protocol::WorkspaceId, StateChange)> {
+    ) -> Vec<(crate::protocol::WorkspaceId, StateChange)> {
         if max_count == 0 {
             return Vec::new();
         }
@@ -473,7 +473,7 @@ impl Muxterm {
     /// Apply one lane-separated runtime batch to the cross-workspace Activity projection.
     pub(crate) fn apply_attention_for_batch(
         &mut self,
-        ws_id: &muxterm_protocol::WorkspaceId,
+        ws_id: &crate::protocol::WorkspaceId,
         batch: &RuntimeBatch,
     ) {
         let mut pending: Vec<PendingAttentionUpdate> = Vec::new();
@@ -625,7 +625,7 @@ impl Muxterm {
             self.activity.attention.remove_pane(&ws_name, pane);
             if let Some(event) = self
                 .activity
-                .remove_agent(ws_id, muxterm_protocol::PaneId(pane))
+                .remove_agent(ws_id, crate::protocol::PaneId(pane))
             {
                 self.deferred_activity_events
                     .push_back((ws_id.clone(), event));
@@ -637,7 +637,7 @@ impl Muxterm {
     #[cfg(test)]
     pub(crate) fn apply_attention_for_events(
         &mut self,
-        ws_id: &muxterm_protocol::WorkspaceId,
+        ws_id: &crate::protocol::WorkspaceId,
         events: &[StateChange],
     ) {
         let batch = RuntimeBatch::from_state_changes(events.iter().cloned());
@@ -646,16 +646,16 @@ impl Muxterm {
 
     fn activity_context(
         &self,
-        ws_id: &muxterm_protocol::WorkspaceId,
+        ws_id: &crate::protocol::WorkspaceId,
         pane: u32,
     ) -> Option<ActivityContext> {
         let workspace = self.pool().get(ws_id)?;
-        let pane_id = muxterm_protocol::PaneId(pane);
+        let pane_id = crate::protocol::PaneId(pane);
         let tab = workspace
             .state()
             .pane(&pane_id)
             .map(|info| info.tab)
-            .unwrap_or(muxterm_protocol::TabId(0));
+            .unwrap_or(crate::protocol::TabId(0));
         Some(ActivityContext {
             workspace: ws_id.clone(),
             pane: pane_id,
@@ -668,7 +668,7 @@ impl Muxterm {
 
     pub(crate) fn take_activity_events(
         &mut self,
-    ) -> Vec<(muxterm_protocol::WorkspaceId, ActivityEvent)> {
+    ) -> Vec<(crate::protocol::WorkspaceId, ActivityEvent)> {
         self.deferred_activity_events.drain(..).collect()
     }
 }

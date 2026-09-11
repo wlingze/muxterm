@@ -7,9 +7,9 @@
 
 use std::path::Path;
 
+use crate::protocol::WorkspaceId;
 use crate::workspace::provenance::WorkspaceProvenance;
 use crate::workspace::template::TemplateName;
-use muxterm_protocol::WorkspaceId;
 
 fn default_workspace_name(path: &str) -> String {
     let trimmed = path.trim();

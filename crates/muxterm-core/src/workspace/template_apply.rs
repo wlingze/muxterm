@@ -12,9 +12,9 @@ use crate::executable::parse_command_argv;
 use crate::protocol::state::{MutationKind, MutationResult, State, StateChange};
 use crate::protocol::task::{Task, TaskOutcome};
 use crate::protocol::terminal::input::KeyEvent;
+use crate::protocol::{PaneId, TabId};
 use crate::runtime::{ControlEvent, RuntimeBatch, RuntimeCapability};
 use crate::workspace::template::{PaneTemplate, TemplateLayout, TemplateName, WorkspaceTemplate};
-use muxterm_protocol::{PaneId, TabId};
 
 /// Why a part of a valid template was not materialized.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -599,8 +599,8 @@ mod tests {
     use super::*;
     use crate::protocol::layout::LayoutNode;
     use crate::protocol::layout::SplitDir;
+    use crate::protocol::TabId;
     use crate::runtime::mock::MockRuntime;
-    use muxterm_protocol::TabId;
 
     fn split_template() -> WorkspaceTemplate {
         WorkspaceTemplate {

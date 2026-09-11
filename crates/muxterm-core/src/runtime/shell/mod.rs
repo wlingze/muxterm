@@ -36,11 +36,11 @@ use crate::protocol::state::StateChange;
 use crate::protocol::state::{BackendStatus, PaneInfo, State, TabInfo};
 use crate::protocol::task::{Task, TaskOutcome};
 use crate::protocol::terminal::input::encode;
+use crate::protocol::{PaneId, TabId};
 use crate::runtime::{ControlEvent, RenderEvent, Runtime, RuntimeBatch, RuntimeCapability};
 use crate::transport::{
     ByteChannel, ChannelRequest, Connect, PtySize as TransportPtySize, TargetConnection,
 };
-use muxterm_protocol::{PaneId, TabId};
 
 pub mod daemon;
 pub mod daemon_client;

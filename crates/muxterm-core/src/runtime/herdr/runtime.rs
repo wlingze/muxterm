@@ -22,10 +22,10 @@ use crate::protocol::state::{
 };
 use crate::protocol::task::{Task, TaskOutcome};
 use crate::protocol::terminal::input::KeyEvent;
+use crate::protocol::{PaneId, TabId};
 use crate::runtime::{
     ControlEvent, RenderEvent, Runtime, RuntimeBatch, RuntimeCapability, RuntimeSignal,
 };
-use muxterm_protocol::{PaneId, TabId};
 
 use super::events::{EventStream, EventStreamEvent};
 use super::mutation::{MutationQueue, PendingMutation};

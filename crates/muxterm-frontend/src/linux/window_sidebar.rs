@@ -10,7 +10,7 @@ use std::rc::Rc;
 use gtk4::prelude::*;
 use gtk4::{Box, Button, CheckButton, Label, Orientation, Window};
 
-use muxterm_protocol::WorkspaceId;
+use muxterm_core::protocol::WorkspaceId;
 
 use crate::ffi_client::{ClientOpenIntent, ClientTarget, ClientTask};
 use crate::i18n::{self, Key};

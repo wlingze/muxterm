@@ -601,7 +601,7 @@ mod tests {
     use super::*;
 
     use crate::linux::workspace_sidebar::{ActivityIndicator, AgentSidebarItem};
-    use muxterm_protocol::WorkspaceId;
+    use muxterm_core::protocol::WorkspaceId;
 
     fn attention(
         ws: &str,

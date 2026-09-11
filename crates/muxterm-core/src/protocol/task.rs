@@ -6,9 +6,9 @@
 //!
 //! Task 是 `Copy`/`Clone` 友好的纯数据，可序列化、可记入历史（undo/redo）。
 //! 所有 Task 都针对「当前激活的 pane/window/session」，除非显式指定 target。
-use crate::input::KeyEvent;
-use crate::layout::SplitDir;
-use crate::{PaneId, Rgb, TabId};
+use crate::protocol::input::KeyEvent;
+use crate::protocol::layout::SplitDir;
+use crate::protocol::{PaneId, Rgb, TabId};
 
 /// 所有终端操作任务。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,7 +149,7 @@ pub enum TaskOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::input::ArrowDir;
+    use crate::protocol::input::ArrowDir;
 
     fn pid(n: u32) -> PaneId {
         PaneId(n)

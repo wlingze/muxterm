@@ -15,8 +15,8 @@
 use crate::config::Rgb;
 use crate::protocol::state::{State, StateChange};
 use crate::protocol::task::{Task, TaskOutcome};
+use crate::protocol::PaneId;
 use crate::runtime::{Runtime, RuntimeBatch};
-use muxterm_protocol::PaneId;
 /// 状态变更回调类型。
 #[cfg(test)]
 pub type StateChangeCallback = Box<dyn Fn(&StateChange) + Send + Sync>;
@@ -308,8 +308,8 @@ mod tests {
     use crate::protocol::layout::SplitDir;
     use crate::protocol::state::BackendStatus;
     use crate::protocol::terminal::input::KeyEvent;
+    use crate::protocol::{PaneId, TabId};
     use crate::runtime::mock::MockRuntime;
-    use muxterm_protocol::{PaneId, TabId};
 
     use std::sync::{Arc, Mutex};
 
