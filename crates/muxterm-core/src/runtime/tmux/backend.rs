@@ -35,7 +35,9 @@ use crate::runtime::tmux::pane_process::{resolve_subscription_value, PANE_PROCES
 use crate::runtime::tmux::protocol::{
     parse_layout_tree, LayoutTree, Message, NotificationKind, TmuxSessionId,
 };
-use crate::runtime::{Runtime, RuntimeBatch, RuntimeCapability};
+use crate::runtime::{
+    ControlEvent, RenderEvent, Runtime, RuntimeBatch, RuntimeCapability, RuntimeSignal,
+};
 use crate::transport::{Connect, TargetConnection};
 use muxterm_protocol::{PaneId, Rgb, TabId};
 
@@ -187,7 +189,7 @@ pub struct TmuxRuntime {
     client_size_from_ui: bool,
 
     status: BackendStatus,
-    events: VecDeque<StateChange>,
+    events: VecDeque<RuntimeBatch>,
 
     /// 当前命令响应累积的行（%begin..%end 之间），带 number 标识。
     response_accum: HashMap<i64, Vec<String>>,
@@ -1189,6 +1191,36 @@ impl TmuxRuntime {
         backend
     }
 
+    fn push_control(events: &mut VecDeque<RuntimeBatch>, event: ControlEvent) {
+        events.push_back(RuntimeBatch {
+            control: vec![event],
+            ..RuntimeBatch::default()
+        });
+    }
+
+    fn push_render(events: &mut VecDeque<RuntimeBatch>, event: RenderEvent) {
+        events.push_back(RuntimeBatch {
+            render: vec![event],
+            ..RuntimeBatch::default()
+        });
+    }
+
+    fn push_signal(events: &mut VecDeque<RuntimeBatch>, event: RuntimeSignal) {
+        events.push_back(RuntimeBatch {
+            signals: vec![event],
+            ..RuntimeBatch::default()
+        });
+    }
+
+    #[cfg(test)]
+    fn state_events(&self) -> Vec<StateChange> {
+        let mut batch = RuntimeBatch::default();
+        for queued in &self.events {
+            batch.append(queued.clone());
+        }
+        batch.into_state_changes()
+    }
+
     /// 把指定 tab 标记为 active，并发出 ActiveTabChanged 事件。
     fn mark_tab_active(&mut self, tab_id: TabId) {
         if !self.tabs.iter().any(|t| t.id == tab_id) {
@@ -1216,13 +1248,17 @@ impl TmuxRuntime {
             pane.active = Some(pane.id) == target_pane && pane.tab == tab_id;
         }
         if current_active != Some(tab_id) {
-            self.events
-                .push_back(StateChange::ActiveTabChanged { tab: tab_id });
+            Self::push_control(
+                &mut self.events,
+                ControlEvent::ActiveTabChanged { tab: tab_id },
+            );
         }
         if old_active_pane != target_pane {
             if let Some(pane) = target_pane {
-                self.events
-                    .push_back(StateChange::ActivePaneChanged { tab: tab_id, pane });
+                Self::push_control(
+                    &mut self.events,
+                    ControlEvent::ActivePaneChanged { tab: tab_id, pane },
+                );
             }
         }
     }
@@ -1298,24 +1334,30 @@ impl TmuxRuntime {
     fn trim_event_queue(&mut self) {
         // 第一优先：丢弃最旧的 PaneOutput（体积大、可丢弃、不影响状态机）。
         while self.events.len() > MAX_STATE_EVENTS {
-            let Some(idx) = self
-                .events
-                .iter()
-                .position(|e| matches!(e, StateChange::PaneOutput { .. }))
-            else {
+            let Some(idx) = self.events.iter().position(|batch| {
+                batch
+                    .render
+                    .iter()
+                    .any(|event| matches!(event, RenderEvent::PaneOutput { .. }))
+            }) else {
                 break;
             };
-            if let Some(StateChange::PaneOutput { pane, .. }) = self.events.remove(idx) {
-                self.mark_output_gap(pane, "state-event-queue");
+            if let Some(batch) = self.events.remove(idx) {
+                for event in batch.render {
+                    if let RenderEvent::PaneOutput { pane, .. } = event {
+                        self.mark_output_gap(pane, "state-event-queue");
+                    }
+                }
             }
         }
         // 仍超限：丢弃最旧的 LayoutChanged（可重建，前端只要最新布局）。
         while self.events.len() > MAX_STATE_EVENTS {
-            let Some(idx) = self
-                .events
-                .iter()
-                .position(|e| matches!(e, StateChange::LayoutChanged { .. }))
-            else {
+            let Some(idx) = self.events.iter().position(|batch| {
+                batch
+                    .control
+                    .iter()
+                    .any(|event| matches!(event, ControlEvent::LayoutChanged { .. }))
+            }) else {
                 break;
             };
             self.events.remove(idx);
@@ -1331,10 +1373,16 @@ impl TmuxRuntime {
     fn push_layout_changed(&mut self, layout: TabLayout) {
         let tab = layout.tab;
         self.events.retain(
-            |event| !matches!(event, StateChange::LayoutChanged { tab: old, .. } if *old == tab),
+            |batch| {
+                !batch.control.iter().any(
+                    |event| matches!(event, ControlEvent::LayoutChanged { tab: old, .. } if *old == tab),
+                )
+            },
         );
-        self.events
-            .push_back(StateChange::LayoutChanged { tab, layout });
+        Self::push_control(
+            &mut self.events,
+            ControlEvent::LayoutChanged { tab, layout },
+        );
     }
 
     /// 记录一次 pane 输出。正常情况下原始字节逐块交付；只有事件队列
@@ -1371,8 +1419,7 @@ impl TmuxRuntime {
                 MAX_PANE_OUTPUT_BYTES,
             );
         }
-        self.events
-            .push_back(StateChange::PaneOutput { pane, data });
+        Self::push_render(&mut self.events, RenderEvent::PaneOutput { pane, data });
         self.trim_event_queue();
     }
 
@@ -1603,13 +1650,18 @@ impl TmuxRuntime {
             self.initial_capture_done.insert(pane);
             self.background_capture_only.remove(&pane);
             self.outputs.insert(pane, fallback.clone());
-            self.events.retain(
-                |event| !matches!(event, StateChange::PaneOutput { pane: p, .. } if *p == pane),
-            );
-            self.events.push_back(StateChange::PaneSnapshot {
-                pane,
-                data: fallback,
+            self.events.retain(|batch| {
+                !batch.render.iter().any(
+                    |event| matches!(event, RenderEvent::PaneOutput { pane: p, .. } if *p == pane),
+                )
             });
+            Self::push_render(
+                &mut self.events,
+                RenderEvent::PaneSnapshot {
+                    pane,
+                    data: fallback,
+                },
+            );
             self.trim_event_queue();
         }
         self.paused_panes.remove(&pane);
@@ -1723,7 +1775,7 @@ impl TmuxRuntime {
             // 占位：它通常属于旧 tab，会让 Workspace/UI 把同一 pane 挂进
             // 两个 tab，造成数据串 pane 与 widget parent critical。
             self.layouts.remove(&tab);
-            self.events.push_back(StateChange::TabAdded { tab });
+            Self::push_control(&mut self.events, ControlEvent::TabAdded { tab });
         }
         // 主动查询该 tmux window 的 pane
         self.query_list_panes(tab);
@@ -1747,13 +1799,13 @@ impl TmuxRuntime {
             .collect();
         for id in closed {
             self.forget_pane_capture_grid(id);
-            self.events.push_back(StateChange::PaneClosed { pane: id });
+            Self::push_control(&mut self.events, ControlEvent::PaneClosed { pane: id });
         }
         self.panes.retain(|p| p.tab != tab);
         self.layouts.remove(&tab);
         self.window_indices.remove(&tab);
         self.tabs.retain(|t| t.id != tab);
-        self.events.push_back(StateChange::TabClosed { tab });
+        Self::push_control(&mut self.events, ControlEvent::TabClosed { tab });
     }
 
     fn close_window_tab(&mut self, tab: TabId) {
@@ -1797,7 +1849,7 @@ impl TmuxRuntime {
         if let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) {
             t.name = name.clone();
         }
-        self.events.push_back(StateChange::TabRenamed { tab, name });
+        Self::push_control(&mut self.events, ControlEvent::TabRenamed { tab, name });
     }
 
     /// 处理一条 tmux Message，更新内部 state 并产生 StateChange。
@@ -1980,35 +2032,40 @@ impl TmuxRuntime {
                 if let Some(n) = name {
                     if self.workspace_name != n {
                         self.workspace_name = n.clone();
-                        self.events
-                            .push_back(StateChange::WorkspaceRenamed { name: n });
+                        Self::push_control(
+                            &mut self.events,
+                            ControlEvent::WorkspaceRenamed { name: n },
+                        );
                     }
                 }
             }
             Message::SessionRenamed { session, name } => {
                 if self.active_session == Some(session) && self.workspace_name != name {
                     self.workspace_name = name.clone();
-                    self.events
-                        .push_back(StateChange::WorkspaceRenamed { name });
+                    Self::push_control(&mut self.events, ControlEvent::WorkspaceRenamed { name });
                 }
             }
             Message::SessionsChanged => {
-                self.events.push_back(StateChange::PoolChanged);
+                Self::push_control(&mut self.events, ControlEvent::PoolChanged);
             }
             Message::PaneModeChanged { pane, mode } => {
                 // mode 变化暂用作标题（简化）
                 if let Some(p) = self.panes.iter_mut().find(|p| p.id == pane) {
                     if p.title != mode {
                         p.title = mode.clone();
-                        self.events
-                            .push_back(StateChange::PaneTitleChanged { pane, title: mode });
+                        Self::push_control(
+                            &mut self.events,
+                            ControlEvent::PaneTitleChanged { pane, title: mode },
+                        );
                     }
                 }
             }
             Message::Exit { .. } => {
                 self.status = BackendStatus::Exited;
-                self.events
-                    .push_back(StateChange::BackendStatusChanged(BackendStatus::Exited));
+                Self::push_control(
+                    &mut self.events,
+                    ControlEvent::BackendStatusChanged(BackendStatus::Exited),
+                );
             }
             Message::WindowPaneChanged { window, pane } => {
                 // tmux window 对应 muxterm tab（TabId(window.0)）
@@ -2024,8 +2081,10 @@ impl TmuxRuntime {
                     for candidate in self.panes.iter_mut() {
                         candidate.active = candidate.id == pane && candidate.tab == tab_id;
                     }
-                    self.events
-                        .push_back(StateChange::ActivePaneChanged { tab: tab_id, pane });
+                    Self::push_control(
+                        &mut self.events,
+                        ControlEvent::ActivePaneChanged { tab: tab_id, pane },
+                    );
                 } else {
                     for candidate in self.panes.iter_mut().filter(|p| p.tab == tab_id) {
                         candidate.active = false;
@@ -2071,8 +2130,10 @@ impl TmuxRuntime {
                 } else {
                     value
                 };
-                self.events
-                    .push_back(StateChange::StatusBarSubscription { name, value, pane });
+                Self::push_signal(
+                    &mut self.events,
+                    RuntimeSignal::StatusBarSubscription { name, value, pane },
+                );
             }
             Message::ExtendedOutput { pane, content, .. } => {
                 self.mark_pane_ready(pane);
@@ -2169,8 +2230,10 @@ impl TmuxRuntime {
             let Some(message) = message else { break };
             tracing::error!(target: "muxterm::tmux", "发送 tmux 命令失败: {message}");
             self.status = BackendStatus::Error;
-            self.events
-                .push_back(StateChange::BackendStatusChanged(BackendStatus::Error));
+            Self::push_control(
+                &mut self.events,
+                ControlEvent::BackendStatusChanged(BackendStatus::Error),
+            );
         }
         self.release_deferred_writes();
         self.poll_ready_probes();
@@ -2266,8 +2329,10 @@ impl TmuxRuntime {
                 }
                 TmuxEvent::Exit { .. } => {
                     self.status = BackendStatus::Exited;
-                    self.events
-                        .push_back(StateChange::BackendStatusChanged(BackendStatus::Exited));
+                    Self::push_control(
+                        &mut self.events,
+                        ControlEvent::BackendStatusChanged(BackendStatus::Exited),
+                    );
                 }
             }
         }
@@ -2320,8 +2385,10 @@ impl TmuxRuntime {
                         if let Some(p) = self.panes.iter_mut().find(|p| p.id == pane) {
                             if p.title != title {
                                 p.title = title.clone();
-                                self.events
-                                    .push_back(StateChange::PaneTitleChanged { pane, title });
+                                Self::push_control(
+                                    &mut self.events,
+                                    ControlEvent::PaneTitleChanged { pane, title },
+                                );
                             }
                         }
                     }
@@ -2409,8 +2476,10 @@ impl TmuxRuntime {
                     self.initial_capture_pending.remove(&pane);
                     // Index 的空快照也有意义：它替换旧索引，不能让已经消失
                     // 的 agent 文本继续出现在搜索/attention 中。
-                    self.events
-                        .push_back(StateChange::PaneIndexSnapshot { pane, data });
+                    Self::push_render(
+                        &mut self.events,
+                        RenderEvent::PaneIndexSnapshot { pane, data },
+                    );
                     self.trim_event_queue();
                     // 用户可能在后台索引响应返回前切入了这个 tab；索引
                     // capture 仍不是 Surface seed，此时必须另发前台 seed。
@@ -2470,10 +2539,13 @@ impl TmuxRuntime {
                         self.outputs.insert(pane, snapshot.clone());
                         self.surface_seed_locked.insert(pane);
                         // 空屏也是权威快照：前端才能把 host 从 seeding 里放出来。
-                        self.events.push_back(StateChange::PaneSnapshot {
-                            pane,
-                            data: snapshot,
-                        });
+                        Self::push_render(
+                            &mut self.events,
+                            RenderEvent::PaneSnapshot {
+                                pane,
+                                data: snapshot,
+                            },
+                        );
                         tracing::debug!(
                             target: "muxterm::tmux::seed",
                             pane = pane.0,
@@ -2498,8 +2570,7 @@ impl TmuxRuntime {
                             &data,
                             MAX_PANE_OUTPUT_BYTES,
                         );
-                        self.events
-                            .push_back(StateChange::PaneOutput { pane, data });
+                        Self::push_render(&mut self.events, RenderEvent::PaneOutput { pane, data });
                         self.trim_event_queue();
                     }
                 }
@@ -2525,7 +2596,7 @@ impl TmuxRuntime {
                         }
                     }
                     if changed {
-                        self.events.push_back(StateChange::PoolChanged);
+                        Self::push_control(&mut self.events, ControlEvent::PoolChanged);
                     }
                 }
             }
@@ -2587,13 +2658,19 @@ impl TmuxRuntime {
         if initial {
             self.surface_seed_locked.insert(pane);
         }
-        self.events.retain(
-            |event| !matches!(event, StateChange::PaneOutput { pane: p, .. } if *p == pane),
-        );
-        self.events.push_back(StateChange::PaneSnapshot {
-            pane,
-            data: snapshot,
+        self.events.retain(|batch| {
+            !batch
+                .render
+                .iter()
+                .any(|event| matches!(event, RenderEvent::PaneOutput { pane: p, .. } if *p == pane))
         });
+        Self::push_render(
+            &mut self.events,
+            RenderEvent::PaneSnapshot {
+                pane,
+                data: snapshot,
+            },
+        );
         self.trim_event_queue();
         self.complete_output_gap_recovery(pane, generation);
         if let Some(receiver) = self.event_rx.as_mut() {
@@ -2887,11 +2964,14 @@ impl TmuxRuntime {
                     existing.cols = np.cols;
                     existing.rows = np.rows;
                     existing.active = globally_active;
-                    self.events.push_back(StateChange::PaneResized {
-                        pane: np.id,
-                        cols: np.cols,
-                        rows: np.rows,
-                    });
+                    Self::push_control(
+                        &mut self.events,
+                        ControlEvent::PaneResized {
+                            pane: np.id,
+                            cols: np.cols,
+                            rows: np.rows,
+                        },
+                    );
                 }
             } else {
                 let mut pane = np.clone();
@@ -2900,10 +2980,13 @@ impl TmuxRuntime {
                     self.new_attach_panes.insert(np.id);
                 }
                 self.panes.push(pane);
-                self.events.push_back(StateChange::PaneAdded {
-                    pane: np.id,
-                    tab: tab_id,
-                });
+                Self::push_control(
+                    &mut self.events,
+                    ControlEvent::PaneAdded {
+                        pane: np.id,
+                        tab: tab_id,
+                    },
+                );
                 changed = true;
             }
         }
@@ -2928,7 +3011,7 @@ impl TmuxRuntime {
             self.ready_probe_acknowledged.remove(&pid);
             self.ready_probe_rounds.remove(&pid);
             self.new_attach_panes.remove(&pid);
-            self.events.push_back(StateChange::PaneClosed { pane: pid });
+            Self::push_control(&mut self.events, ControlEvent::PaneClosed { pane: pid });
             changed = true;
         }
         if changed || !new_panes.is_empty() {
@@ -2936,8 +3019,10 @@ impl TmuxRuntime {
         }
         if tab_is_active && old_global_active != authoritative_active {
             if let Some(pane) = authoritative_active {
-                self.events
-                    .push_back(StateChange::ActivePaneChanged { tab: tab_id, pane });
+                Self::push_control(
+                    &mut self.events,
+                    ControlEvent::ActivePaneChanged { tab: tab_id, pane },
+                );
             }
         }
         for pane in size_changed {
@@ -3032,7 +3117,7 @@ impl TmuxRuntime {
                     name: name.clone(),
                     active,
                 });
-                self.events.push_back(StateChange::TabAdded { tab });
+                Self::push_control(&mut self.events, ControlEvent::TabAdded { tab });
             }
 
             // 新建/关闭 tab 会把整表再拉一遍。layout 和 pane 数没变的
@@ -3062,7 +3147,7 @@ impl TmuxRuntime {
         let same_tabs = previous_order.len() == current_order.len()
             && previous_order.iter().all(|tab| current_order.contains(tab));
         if same_tabs && previous_order != current_order {
-            self.events.push_back(StateChange::TabOrderChanged);
+            Self::push_control(&mut self.events, ControlEvent::TabOrderChanged);
         }
         // 权威列表已到：裁决 move-window 等临时 unlink 产生的挂起 close。
         let confirmed_tabs: HashSet<TabId> = order.keys().copied().collect();
@@ -3412,8 +3497,7 @@ impl TmuxRuntime {
         self.history_backfill_done.insert(pane);
         let data = super::pane_history::PaneHistoryPolicy::encode(&lines);
         if !data.is_empty() {
-            self.events
-                .push_back(StateChange::PaneHistory { pane, data });
+            Self::push_render(&mut self.events, RenderEvent::PaneHistory { pane, data });
             self.trim_event_queue();
         }
         if self.history_holds_pause.remove(&pane) {
@@ -3758,8 +3842,10 @@ impl Runtime for TmuxRuntime {
             return Ok(());
         }
         self.status = BackendStatus::Connecting;
-        self.events
-            .push_back(StateChange::BackendStatusChanged(BackendStatus::Connecting));
+        Self::push_control(
+            &mut self.events,
+            ControlEvent::BackendStatusChanged(BackendStatus::Connecting),
+        );
 
         let config = self.config.clone();
         let (handle, rx) = if let Some(connection) = self.target_connection.clone() {
@@ -3838,8 +3924,10 @@ impl Runtime for TmuxRuntime {
 
         if self.active_session.is_none() {
             self.status = BackendStatus::Error;
-            self.events
-                .push_back(StateChange::BackendStatusChanged(BackendStatus::Error));
+            Self::push_control(
+                &mut self.events,
+                ControlEvent::BackendStatusChanged(BackendStatus::Error),
+            );
             return Err(anyhow::anyhow!(
                 "tmux 启动后未收到 session 事件 (mode={}, socket={})",
                 if is_attach { "attach" } else { "new-session" },
@@ -3932,8 +4020,10 @@ impl Runtime for TmuxRuntime {
         }
 
         self.status = BackendStatus::Connected;
-        self.events
-            .push_back(StateChange::BackendStatusChanged(BackendStatus::Connected));
+        Self::push_control(
+            &mut self.events,
+            ControlEvent::BackendStatusChanged(BackendStatus::Connected),
+        );
         Ok(())
     }
 
@@ -4343,9 +4433,10 @@ impl Runtime for TmuxRuntime {
                 // 然后只回收 `tmux -CC` control client，不触碰 session。
                 self.cmd_tx.take();
                 self.status = BackendStatus::Disconnected;
-                self.events.push_back(StateChange::BackendStatusChanged(
-                    BackendStatus::Disconnected,
-                ));
+                Self::push_control(
+                    &mut self.events,
+                    ControlEvent::BackendStatusChanged(BackendStatus::Disconnected),
+                );
                 TaskOutcome::Done
             }
 
@@ -4360,8 +4451,10 @@ impl Runtime for TmuxRuntime {
                 let c = cmd::detach_client(sess);
                 let _ = self.dispatch_tmux_command(&c);
                 self.status = BackendStatus::Exited;
-                self.events
-                    .push_back(StateChange::BackendStatusChanged(BackendStatus::Exited));
+                Self::push_control(
+                    &mut self.events,
+                    ControlEvent::BackendStatusChanged(BackendStatus::Exited),
+                );
                 TaskOutcome::Done
             }
         };
@@ -4370,7 +4463,9 @@ impl Runtime for TmuxRuntime {
 
     fn drain_events(&mut self, out: &mut RuntimeBatch) {
         self.pump_events();
-        out.append(RuntimeBatch::from_state_changes(self.events.drain(..)));
+        for batch in self.events.drain(..) {
+            out.append(batch);
+        }
     }
 
     fn take_events(&mut self) -> Vec<StateChange> {
@@ -4406,8 +4501,10 @@ impl Runtime for TmuxRuntime {
         self.outputs.clear();
         self.events.clear();
         self.status = BackendStatus::Exited;
-        self.events
-            .push_back(StateChange::BackendStatusChanged(BackendStatus::Exited));
+        Self::push_control(
+            &mut self.events,
+            ControlEvent::BackendStatusChanged(BackendStatus::Exited),
+        );
         Ok(())
     }
 }
@@ -4969,7 +5066,7 @@ mod tests {
         assert!(!b.tabs.iter().any(|t| t.id == TabId(1)), "tab1 应被关闭");
         assert!(b.tabs.iter().any(|t| t.id == TabId(0)), "tab0 应保留");
         assert!(b
-            .events
+            .state_events()
             .iter()
             .any(|e| matches!(e, StateChange::TabClosed { tab } if *tab == TabId(1))));
     }
@@ -4999,7 +5096,7 @@ mod tests {
 
         let tab = b.tabs.iter().find(|t| t.id == TabId(0)).unwrap();
         assert_eq!(tab.name, "renamed-tab");
-        assert!(b.events.iter().any(|e| matches!(
+        assert!(b.state_events().iter().any(|e| matches!(
             e,
             StateChange::TabRenamed { tab, name } if *tab == TabId(0) && name == "renamed-tab"
         )));
@@ -5013,7 +5110,7 @@ mod tests {
             value: "#[fg=red]11:50:23 ".into(),
             pane: None,
         });
-        assert!(b.events.iter().any(|event| matches!(
+        assert!(b.state_events().iter().any(|event| matches!(
             event,
             StateChange::StatusBarSubscription { name, value, pane: None }
                 if name == STATUS_LEFT_SUBSCRIPTION && value == "#[fg=red]11:50:23 "
@@ -5078,7 +5175,7 @@ mod tests {
         backend.pump_events();
 
         assert_eq!(backend.status, BackendStatus::Error);
-        assert!(backend.events.iter().any(|event| matches!(
+        assert!(backend.state_events().iter().any(|event| matches!(
             event,
             StateChange::BackendStatusChanged(BackendStatus::Error)
         )));
@@ -5236,7 +5333,7 @@ mod tests {
             ],
         );
         let count = b
-            .events
+            .state_events()
             .iter()
             .filter(
                 |event| matches!(event, StateChange::LayoutChanged { tab, .. } if *tab == TabId(0)),
@@ -5330,7 +5427,7 @@ mod tests {
             b.outputs.get(&pane),
             Some(&b"background-token\r\n".to_vec())
         );
-        assert!(b.events.iter().any(
+        assert!(b.state_events().iter().any(
             |event| matches!(event, StateChange::PaneOutput { pane: p, data } if *p == pane && data == b"background-token\r\n")
         ));
     }
@@ -5348,13 +5445,13 @@ mod tests {
         assert!(!b.initial_capture_done.contains(&pane));
         assert!(!b.surface_seed_locked.contains(&pane));
         assert!(!b.outputs.contains_key(&pane));
-        assert!(b.events.iter().any(|event| matches!(
+        assert!(b.state_events().iter().any(|event| matches!(
             event,
             StateChange::PaneIndexSnapshot { pane: event_pane, data }
                 if *event_pane == pane && data.starts_with(b"PI_STATUS")
         )));
         assert!(!b
-            .events
+            .state_events()
             .iter()
             .any(|event| matches!(event, StateChange::PaneSnapshot { pane: event_pane, .. } if *event_pane == pane)));
     }
@@ -5426,12 +5523,12 @@ mod tests {
         assert!(!b.background_capture_only.contains(&pane));
         assert!(!b.surface_seed_locked.contains(&pane));
         assert_eq!(b.outputs.get(&pane), Some(&b"live-index-fallback".to_vec()));
-        assert!(b.events.iter().any(|event| matches!(
+        assert!(b.state_events().iter().any(|event| matches!(
             event,
             StateChange::PaneOutput { pane: event_pane, data }
                 if *event_pane == pane && data == b"live-index-fallback"
         )));
-        assert!(!b.events.iter().any(|event| matches!(
+        assert!(!b.state_events().iter().any(|event| matches!(
             event,
             StateChange::PaneSnapshot { pane: event_pane, .. }
                 if *event_pane == pane
@@ -5460,7 +5557,7 @@ mod tests {
             b.outputs.get(&pane).unwrap(),
             b"\x1b[32mrestored shell\r\nprompt$"
         );
-        assert!(b.events.iter().any(|event| matches!(
+        assert!(b.state_events().iter().any(|event| matches!(
             event,
             StateChange::PaneOutput { pane: event_pane, data }
                 if *event_pane == pane && data.starts_with(b"\x1b[32mrestored")
@@ -5534,7 +5631,8 @@ mod tests {
 
         b.dispatch_response(1, vec!["index".into()]);
 
-        let event = b.events.iter().find_map(|event| match event {
+        let state_events = b.state_events();
+        let event = state_events.iter().find_map(|event| match event {
             StateChange::PaneIndexSnapshot { pane: p, data } if *p == pane => Some(data.clone()),
             _ => None,
         });
@@ -5579,7 +5677,7 @@ mod tests {
             raw_content: "live\\r\\n".into(),
         });
         assert!(!b.outputs.get(&pane).unwrap().ends_with(b"live\r\n"));
-        assert!(b.events.iter().any(|event| matches!(
+        assert!(b.state_events().iter().any(|event| matches!(
             event,
             StateChange::PaneOutput { pane: event_pane, data }
                 if *event_pane == pane && data == b"live\r\n"
@@ -5710,7 +5808,7 @@ mod tests {
             .get(&pane)
             .unwrap()
             .ends_with(b"after-capture\r\n"));
-        assert!(b.events.iter().any(|event| matches!(
+        assert!(b.state_events().iter().any(|event| matches!(
             event,
             StateChange::PaneOutput { pane: event_pane, data }
                 if *event_pane == pane && data == b"after-capture\r\n"
@@ -5738,8 +5836,8 @@ mod tests {
         b.pending_by_number
             .insert(1, PendingQuery::CapturePane { pane });
         b.dispatch_response(1, vec!["SNAPSHOT_TOKEN".into()]);
-        let events: Vec<&StateChange> = b
-            .events
+        let state_events = b.state_events();
+        let events: Vec<&StateChange> = state_events
             .iter()
             .filter(|e| matches!(e, StateChange::PaneSnapshot { pane: p, .. } if *p == pane))
             .collect();
@@ -5793,7 +5891,7 @@ mod tests {
             .get(&pane)
             .unwrap()
             .ends_with(b"live-after-error\r\n"));
-        assert!(b.events.iter().any(|event| matches!(
+        assert!(b.state_events().iter().any(|event| matches!(
             event,
             StateChange::PaneOutput { pane: ep, data }
                 if *ep == pane && data.ends_with(b"live-after-error\r\n")
@@ -5932,10 +6030,11 @@ mod tests {
         let mut b = TmuxRuntime::new(None);
         b.cmd_tx = Some(tx);
         let pane = PaneId(21);
-        b.events.push_back(StateChange::PaneOutput {
-            pane,
-            data: b"stale-frame".to_vec(),
-        });
+        b.events
+            .push_back(RuntimeBatch::from(StateChange::PaneOutput {
+                pane,
+                data: b"stale-frame".to_vec(),
+            }));
         b.begin_pane_resync(pane, "test");
         b.pending_by_number.insert(
             1,
@@ -5966,11 +6065,11 @@ mod tests {
         b.dispatch_response(2, vec!["tui-grid".into()]);
 
         assert!(!b.resyncs.contains_key(&pane));
-        assert!(b.events.iter().all(|event| {
+        let state_events = b.state_events();
+        assert!(state_events.iter().all(|event| {
             !matches!(event, StateChange::PaneOutput { pane: p, .. } if *p == pane)
         }));
-        let snapshots: Vec<&[u8]> = b
-            .events
+        let snapshots: Vec<&[u8]> = state_events
             .iter()
             .filter_map(|event| match event {
                 StateChange::PaneSnapshot { pane: p, data } if *p == pane => Some(data.as_slice()),
@@ -6004,7 +6103,7 @@ mod tests {
         b.finish_pane_resync(pane);
 
         assert!(b.outputs.get(&pane).is_some_and(Vec::is_empty));
-        assert!(b.events.iter().any(|event| {
+        assert!(b.state_events().iter().any(|event| {
             matches!(
                 event,
                 StateChange::PaneSnapshot { pane: id, data }
@@ -6147,10 +6246,11 @@ mod tests {
         b.cmd_tx = Some(tx);
         let pane = PaneId(41);
         b.initial_capture_done.insert(pane);
-        b.events.push_back(StateChange::PaneOutput {
-            pane,
-            data: b"\x1b[38;2;108;".to_vec(),
-        });
+        b.events
+            .push_back(RuntimeBatch::from(StateChange::PaneOutput {
+                pane,
+                data: b"\x1b[38;2;108;".to_vec(),
+            }));
 
         b.mark_output_gap(pane, "test-partial-sgr");
         b.maybe_start_resyncs();
@@ -6190,11 +6290,11 @@ mod tests {
         b.dispatch_response(2, vec!["\x1b[38;2;36;41;46mCURRENT_FRAME".into()]);
 
         assert!(!b.resyncs.contains_key(&pane));
-        assert!(b.events.iter().all(|event| {
+        let state_events = b.state_events();
+        assert!(state_events.iter().all(|event| {
             !matches!(event, StateChange::PaneOutput { pane: p, .. } if *p == pane)
         }));
-        let snapshots: Vec<&[u8]> = b
-            .events
+        let snapshots: Vec<&[u8]> = state_events
             .iter()
             .filter_map(|event| match event {
                 StateChange::PaneSnapshot { pane: p, data } if *p == pane => Some(data.as_slice()),
@@ -6651,8 +6751,9 @@ mod tests {
         );
         assert!(b.history_backfill_done.contains(&pane));
         assert!(!b.history_backfill_pending.contains(&pane));
-        let Some(StateChange::PaneHistory { pane: p, data }) = b.events.back() else {
-            panic!("expected PaneHistory, got {:?}", b.events.back());
+        let state_events = b.state_events();
+        let Some(StateChange::PaneHistory { pane: p, data }) = state_events.last() else {
+            panic!("expected PaneHistory, got {:?}", state_events.last());
         };
         assert_eq!(*p, pane);
         let text = String::from_utf8_lossy(data);
@@ -6660,7 +6761,7 @@ mod tests {
         assert!(!text.contains('\u{1b}'), "历史事件不得带 SGR: {text}");
         assert!(!text.contains("[2J"));
         assert!(
-            !b.events.iter().any(
+            !state_events.iter().any(
                 |event| matches!(event, StateChange::PaneSnapshot { pane: sp, .. } if *sp == pane)
             ),
             "历史不得再发一份 PaneSnapshot"
@@ -6676,13 +6777,14 @@ mod tests {
         b.initial_capture_pending.insert(pane);
         b.dispatch_response(1, Vec::new());
         assert!(b.initial_capture_done.contains(&pane));
+        let state_events = b.state_events();
         assert!(
-            b.events.iter().any(|event| matches!(
+            state_events.iter().any(|event| matches!(
                 event,
                 StateChange::PaneSnapshot { pane: p, data } if *p == pane && data.is_empty()
             )),
             "空屏也要发 PaneSnapshot，否则 host 会一直藏着: {:?}",
-            b.events.back()
+            state_events.last()
         );
     }
 
@@ -6719,7 +6821,7 @@ mod tests {
             "primary shell 仍应排队历史（unpaused）"
         );
         assert!(b
-            .events
+            .state_events()
             .iter()
             .any(|event| matches!(event, StateChange::PaneSnapshot { pane: p, .. } if *p == pane)));
     }
@@ -7060,7 +7162,7 @@ mod tests {
             Some(b"SNAPSHOT".as_slice()),
             "live 不得污染 seed 缓冲"
         );
-        assert!(b.events.iter().any(
+        assert!(b.state_events().iter().any(
             |event| matches!(event, StateChange::PaneOutput { pane: p, data } if *p == pane && data == b"LIVE")
         ));
     }
@@ -7185,7 +7287,7 @@ mod tests {
         b.handle_list_panes_response(TabId(0), vec!["0: [93x51] %2 (active)".into()]);
 
         assert!(
-            !b.events.iter().any(|event| matches!(
+            !b.state_events().iter().any(|event| matches!(
                 event, StateChange::PaneSnapshot { pane: p, .. } if *p == pane
             )),
             "旧尺寸的 seed 不得当成快照发出，否则 TUI 会按 128 列折到 93 列"
@@ -7257,7 +7359,7 @@ mod tests {
         assert!(!b.resyncs.contains_key(&pane));
         assert!(b.initial_capture_done.contains(&pane));
         assert!(
-            b.events.iter().any(|event| matches!(
+            b.state_events().iter().any(|event| matches!(
                 event,
                 StateChange::PaneSnapshot { pane: p, data }
                     if *p == pane
@@ -7268,7 +7370,7 @@ mod tests {
             "seed 超时必须用 snapshot 解开 Surface 隐藏，不能只追加半截 live"
         );
         assert!(
-            !b.events.iter().any(
+            !b.state_events().iter().any(
                 |event| matches!(event, StateChange::PaneOutput { pane: p, .. } if *p == pane)
             ),
             "首屏超时不得再发 PaneOutput 让半截字节叠在空屏上"
@@ -7302,7 +7404,7 @@ mod tests {
         assert!(!b.resyncs.contains_key(&pane));
         assert!(!b.flow.get(&pane).unwrap().resyncing);
         assert!(b.dropped_output_panes.contains(&pane));
-        assert!(b.events.iter().all(|event| {
+        assert!(b.state_events().iter().all(|event| {
             !matches!(event, StateChange::PaneOutput { pane: p, .. } if *p == pane)
         }));
         assert!(
@@ -7351,7 +7453,7 @@ mod tests {
         );
         b.dispatch_response(102, vec!["stale frame".into()]);
         assert!(b.resyncs.contains_key(&pane));
-        assert!(!b.events.iter().any(|event| {
+        assert!(!b.state_events().iter().any(|event| {
             matches!(event, StateChange::PaneSnapshot { pane: p, .. } if *p == pane)
         }));
     }
@@ -7691,7 +7793,7 @@ mod tests {
             let paint_deadline = Duration::from_millis(1000);
             let mut painted = false;
             while started.elapsed() < paint_deadline {
-                painted = b.events.iter().any(|event| {
+                painted = b.state_events().iter().any(|event| {
                     matches!(
                         event,
                         StateChange::PaneSnapshot { data, .. }
@@ -7975,9 +8077,10 @@ mod tests {
         let mut b = TmuxRuntime::new(None);
         let pane = PaneId(1);
         // 先放一个 ActiveTabChanged（切 tab 的确认事件）
-        b.events.push_back(StateChange::ActiveTabChanged {
-            tab: muxterm_protocol::TabId(14),
-        });
+        b.events
+            .push_back(RuntimeBatch::from(StateChange::ActiveTabChanged {
+                tab: muxterm_protocol::TabId(14),
+            }));
         // 灌入远超上限的 PaneOutput
         let chunk = vec![b'x'; 64 * 1024];
         for _ in 0..200 {
@@ -7989,7 +8092,7 @@ mod tests {
         }
         // ActiveTabChanged 必须仍在队列里（前端靠它放行切 tab）
         assert!(
-            b.events.iter().any(|e| matches!(
+            b.state_events().iter().any(|e| matches!(
                 e,
                 StateChange::ActiveTabChanged { tab: t, .. } if t.0 == 14
             )),
@@ -8039,7 +8142,7 @@ mod tests {
         assert_eq!(out, b"abc", "pause/continue 不应破坏 %output 累积");
         // 事件队列里应有对应数量的 PaneOutput
         let out_events = b
-            .events
+            .state_events()
             .iter()
             .filter(|e| matches!(e, crate::protocol::state::StateChange::PaneOutput { .. }))
             .count();
@@ -8098,7 +8201,7 @@ mod tests {
         assert!(!p1.active, "pane1 应不再 active");
         // 应有 ActivePaneChanged 事件
         assert!(
-            b.events.iter().any(|e| matches!(e, StateChange::ActivePaneChanged { pane, .. } if *pane == muxterm_protocol::PaneId(2))),
+            b.state_events().iter().any(|e| matches!(e, StateChange::ActivePaneChanged { pane, .. } if *pane == muxterm_protocol::PaneId(2))),
             "应有 ActivePaneChanged(pane2)"
         );
     }
@@ -8134,14 +8237,14 @@ mod tests {
         b.handle_message(Message::WindowClose { window: win });
 
         assert!(
-            b.events
+            b.state_events()
                 .iter()
                 .any(|e| matches!(e, StateChange::TabClosed { tab: t } if *t == tab)),
             "应有 TabClosed"
         );
         for id in [5u32, 6] {
             assert!(
-                b.events
+                b.state_events()
                     .iter()
                     .any(|e| matches!(e, StateChange::PaneClosed { pane: p } if p.0 == id)),
                 "应有 PaneClosed(pane {id})"
@@ -8193,7 +8296,7 @@ mod tests {
             "unlinked close 已是权威事实，必须当拍移除 tab"
         );
         assert!(
-            b.events
+            b.state_events()
                 .iter()
                 .any(|event| matches!(event, StateChange::TabClosed { tab } if *tab == TabId(2))),
             "必须当拍发布 TabClosed"
@@ -8267,7 +8370,7 @@ mod tests {
             "权威确认后 pane 必须保留"
         );
         assert!(
-            !b.events
+            !b.state_events()
                 .iter()
                 .any(|e| matches!(e, StateChange::TabClosed { tab: t } if *t == TabId(1))),
             "move-window 的迟到 close 不得产生 TabClosed"
@@ -8345,7 +8448,7 @@ mod tests {
             "Tab 顺序必须跟随 list-windows 返回的 tmux index 顺序"
         );
         assert!(
-            b.events
+            b.state_events()
                 .iter()
                 .any(|event| matches!(event, StateChange::TabOrderChanged)),
             "纯顺序变化也必须通知前端刷新 tab 元数据"
@@ -8474,17 +8577,18 @@ mod tests {
             .insert(1, PendingQuery::CapturePane { pane: PaneId(9) });
         b.dispatch_response(1, vec!["prompt$".into()]);
         assert!(b.initial_capture_done.contains(&PaneId(9)));
+        let state_events = b.state_events();
         assert!(
-            b.events.iter().any(|event| matches!(
+            state_events.iter().any(|event| matches!(
                 event,
                 StateChange::PaneSnapshot { pane, data }
                     if *pane == PaneId(9) && data.windows(7).any(|w| w == b"prompt$")
             )),
             "新建 pane 的可见屏必须变成 PaneSnapshot，否则 host 会一直藏着: {:?}",
-            b.events.back()
+            state_events.last()
         );
         assert!(
-            !b.events.iter().any(
+            !state_events.iter().any(
                 |event| matches!(event, StateChange::PaneHistory { pane, .. } if *pane == PaneId(9))
             ),
             "新建 pane 没有 attach 前历史，不得再发 PaneHistory"
@@ -9122,7 +9226,7 @@ mod tests {
         assert!(!t0.active, "tab0 应不再 active");
         // 应有 ActiveTabChanged 事件
         assert!(
-            b.events.iter().any(|e| matches!(e, StateChange::ActiveTabChanged { tab, .. } if *tab == muxterm_protocol::TabId(1))),
+            b.state_events().iter().any(|e| matches!(e, StateChange::ActiveTabChanged { tab, .. } if *tab == muxterm_protocol::TabId(1))),
             "应有 ActiveTabChanged(tab1)"
         );
     }
@@ -9152,7 +9256,7 @@ mod tests {
 
         assert!(b.tabs[0].active, "其它 session 的通知不应取消当前 tab");
         assert!(
-            !b.events
+            !b.state_events()
                 .iter()
                 .any(|e| matches!(e, StateChange::ActiveTabChanged { .. })),
             "不应为其它 session 发 ActiveTabChanged"
@@ -9236,7 +9340,7 @@ mod tests {
             .unwrap();
         assert!(!t29.active, "@29 应取消 active");
         assert!(
-            b.events.iter().any(|e| matches!(
+            b.state_events().iter().any(|e| matches!(
                 e,
                 StateChange::ActiveTabChanged { tab, .. }
                     if *tab == muxterm_protocol::TabId(21)
@@ -9343,7 +9447,7 @@ mod tests {
         let sent = rx.try_recv().expect("应发送 select-window");
         assert!(sent.starts_with("select-window -t @2"), "命令: {sent}");
         assert!(
-            b.events
+            b.state_events()
                 .iter()
                 .any(|e| matches!(e, StateChange::ActiveTabChanged { tab, .. } if *tab == muxterm_protocol::TabId(2))),
             "乐观切换应立即产生 ActiveTabChanged(tab2)"
