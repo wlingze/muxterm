@@ -305,9 +305,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 _ = self.enqueueConfigTransaction(operations) { result in
                     if case .failure(let error) = result {
                         // 失败时保留内存列表，不覆盖用户文件；下次启动仍读 Core 快照。
-                        NSLog(
-                            "muxterm: failed to persist projects: %@",
-                            error.localizedDescription
+                        CoreBridge.log(
+                            "failed to persist projects: \(error.localizedDescription)",
+                            level: "error"
                         )
                     }
                 }
@@ -324,27 +324,26 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         workspaceSidebar.onWorkspaceClose = { [weak self] workspaceId in
             self?.closeWorkspace(workspaceId)
         }
+        workspaceSidebar.onWorkspaceReorder = { [weak self] ids in
+            self?.reorderWorkspaces(ids)
+        }
         workspaceSidebar.onAgentActivate = { [weak self] workspaceId, tabId, paneId in
-            guard let self, self.activateWorkspaceIfAvailable(workspaceId) else { return }
-            self.performIfWindowOpen { [weak self] in
-                guard let self else { return }
-                _ = self.enqueueCoreAttention(
-                    workspaceID: self.activeSceneWorkspaceID,
-                    .acknowledge(paneID: paneId)
-                )
-                self.jumpToPane(tabId: tabId, paneId: paneId)
-            }
+            self?.routePanelJump(
+                workspaceId: workspaceId,
+                tabId: tabId,
+                paneId: paneId,
+                seq: 0,
+                query: ""
+            )
         }
         workspaceSidebar.onCommandActivate = { [weak self] workspaceId, tabId, paneId in
-            guard let self, self.activateWorkspaceIfAvailable(workspaceId) else { return }
-            self.performIfWindowOpen { [weak self] in
-                guard let self else { return }
-                _ = self.enqueueCoreAttention(
-                    workspaceID: self.activeSceneWorkspaceID,
-                    .acknowledge(paneID: paneId)
-                )
-                self.jumpToPane(tabId: tabId, paneId: paneId)
-            }
+            self?.routePanelJump(
+                workspaceId: workspaceId,
+                tabId: tabId,
+                paneId: paneId,
+                seq: 0,
+                query: ""
+            )
         }
 
         commandPalette = CommandPaletteController(ownerWindow: window)
@@ -379,6 +378,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             },
             connectedWorkspaces: { [weak self] in
                 self?.sceneStack.allRecentTargetConfigs() ?? []
+            },
+            sidebarWorkspaces: { [weak self] in
+                self?.sidebarItems() ?? []
             }
         )
         unifiedPanel.onConnect = { [weak self] config in
@@ -512,10 +514,20 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         content.jumpLatestButton.action = #selector(jumpToLatest)
         content.lastSeenButton.target = self
         content.lastSeenButton.action = #selector(jumpToLastSeen)
-        content.commandMarkOKButton.target = self
-        content.commandMarkOKButton.action = #selector(jumpToLastSuccessfulCommand)
-        content.commandMarkFailButton.target = self
-        content.commandMarkFailButton.action = #selector(jumpToLastFailedCommand)
+        content.commandMarkRail.onSelectMark = { [weak self] mark in
+            guard let self, let pane = self.activePaneID else { return }
+            self.commandTimelineCursor[pane] = mark.seq
+            self.commandNavigationPanes.insert(pane)
+            self.applyPaneViewport(paneId: pane, offset: mark.offset)
+        }
+        content.commandMarkRail.onSelectOffset = { [weak self] offset in
+            guard let self, let pane = self.activePaneID else { return }
+            if offset == 0 {
+                self.jumpToLatest()
+            } else {
+                self.applyPaneViewport(paneId: pane, offset: offset)
+            }
+        }
         terminalManager.onOutputSnippetChanged = { [weak self] snippet in
             self?.content.statusBar.updateOutputSnippet(snippet)
         }
@@ -1619,6 +1631,28 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    private func reorderWorkspaces(_ workspaceIds: [String]) {
+        var next: UInt64 = 1
+        var seen = Set<String>()
+        for workspaceId in workspaceIds {
+            guard seen.insert(workspaceId).inserted else { continue }
+            guard let slot = sceneStack.scenes.values.first(where: {
+                $0.visibility != .closed && workspaceReplicaID(for: $0) == workspaceId
+            }) else { continue }
+            slot.openedOrder = next
+            next += 1
+        }
+        let remaining = workspaceSidebarScenes().filter { slot in
+            !seen.contains(workspaceReplicaID(for: slot))
+        }
+        for slot in remaining {
+            slot.openedOrder = next
+            next += 1
+        }
+        nextWorkspaceOpenedOrder = next
+        refreshWorkspaceSidebar(force: true)
+    }
+
     func workspaceSidebarScenes() -> [WorkspaceScene] {
         sceneStack.scenes.values
             .filter { $0.visibility != .closed }
@@ -2628,6 +2662,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// Core event pump 已经持续维护所有 scene 的快照，因此不存在前台校准。
     func activate(slot: WorkspaceScene) {
         guard !isClosing else { return }
+        if sceneStack.activeKey == slot.key, bridge === slot.bridge, slot.visibility == .visible {
+            return
+        }
 
         let hasPendingSurfaceCatchUp = slot.hasPendingSurfaceWork
         if slot.openedOrder == 0 {
@@ -2678,10 +2715,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         needsLayoutReload = WorkspaceSwitchPaintPolicy.needsLayoutReload(
             restoredParkedTree: restoredParkedTree
         )
-        NSLog(
-            "muxterm: workspace activation target=%@ restored=%@",
-            slot.targetConfig.name,
-            restoredParkedTree ? "true" : "false"
+        CoreBridge.log(
+            "workspace activation target=\(slot.targetConfig.name) restored=\(restoredParkedTree)"
         )
         paintCachedForegroundActivation(slot, restoredParkedTree: restoredParkedTree)
         completeWorkspaceActivation(
@@ -2736,10 +2771,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
               slot.visibility == .visible,
               bridge === slot.bridge
         else { return }
-        NSLog(
-            "muxterm: workspace activation ready target=%@",
-            slot.targetConfig.name
-        )
+        CoreBridge.log("workspace activation ready target=\(slot.targetConfig.name)")
 
         // Cached painting is complete; re-enable bridge-backed geometry only
         // at the next event-pump boundary.
@@ -4404,24 +4436,27 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             setLastSeenVisible(false, paneId: paneId)
         }
 
-        let marks = commandMarksCache[CommandMarksKey(
+        var ticks: [CommandMarkTick] = []
+        for mark in commandMarksCache[CommandMarksKey(
             workspaceID: workspaceID,
             paneID: paneId
-        )] ?? []
-        var ok: (command: String, exitCode: Int, offset: UInt32)?
-        var fail: (command: String, exitCode: Int, offset: UInt32)?
-        for mark in marks.reversed() {
+        )] ?? [] {
             // Core 返回 nil history_offset 时表示 seq 已淘汰；绝不能
             // 回退成 0，否则点击红/绿刻度会错误跳到 live 底部。
-            guard let code = mark.exitCode, let offset = mark.historyOffset else { continue }
-            if code == 0, ok == nil {
-                ok = (mark.command, code, offset)
-            } else if code != 0, fail == nil {
-                fail = (mark.command, code, offset)
-            }
-            if ok != nil, fail != nil { break }
+            guard let offset = mark.historyOffset else { continue }
+            ticks.append(
+                CommandMarkTick(
+                    seq: mark.seq,
+                    command: mark.command,
+                    exitCode: mark.exitCode,
+                    offset: offset
+                )
+            )
         }
-        content.setCommandMarks(ok: ok, fail: fail)
+        let rows = UInt32(max(1, Int(lastSnapshot.panes.first(where: { $0.id == paneId })?.rows ?? 24)))
+        let rawMax = bridge.paneHistoryMaxOffset(paneId: paneId, rows: rows)
+        let maxOffset = rawMax < 0 ? (ticks.map(\.offset).max() ?? 0) : UInt32(rawMax)
+        content.setCommandMarks(ticks, maxOffset: maxOffset)
     }
 
     /// Refresh history/index values at the EventPump boundary, then render

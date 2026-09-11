@@ -76,6 +76,11 @@ final class MuxTerminalView: TerminalView {
     /// 上报也交给 `send(source: Terminal)`；它不能和 pane 输出解析器应答
     /// 走同一条丢弃策略，否则 htop 点击、TUI 滚轮都到不了 tmux。
     private var isSendingUserMouseReport = false
+    /// 上一次双击选词结果，再次双击同一范围时扩一层（标识符 → 词 → 路径）。
+    private var lastWordSelection: (row: Int, result: ProgressiveWordSelection.Result)?
+    /// 这次双击的格子；随后拖选用空白分隔的整词扩展，不按 `/` `-` 切开。
+    private var wordDragPivot: (row: Int, col: Int)?
+    private var pendingSelectionClear: DispatchWorkItem?
     /// 供 XCUITest 读取的可见输出片段（与 feed 同步）。
     private(set) var accessibilityOutput: String = ""
     private(set) var lastScrollWheelRoutedToRuntime = false
@@ -147,6 +152,138 @@ final class MuxTerminalView: TerminalView {
         setAccessibilityValue("")
     }
 
+    private func mouseReportingConsumes(_ event: NSEvent) -> Bool {
+        allowMouseReporting
+            && !event.modifierFlags.contains(.shift)
+            && getTerminal().mouseMode != .off
+    }
+
+    /// 第一次双击选 `0907`，再双击扩成 `dogfood-0907*`，再扩成
+    /// `feature/dogfood-0907*`。括号仍交给 SwiftTerm。
+    @discardableResult
+    private func handleProgressiveWordClick(_ event: NSEvent) -> Bool {
+        if mouseReportingConsumes(event) {
+            pendingSelectionClear?.cancel()
+            pendingSelectionClear = nil
+            lastWordSelection = nil
+            wordDragPivot = nil
+            return false
+        }
+        guard let hit = bufferGridHit(with: event) else { return false }
+        switch event.clickCount {
+        case 1:
+            pendingSelectionClear?.cancel()
+            wordDragPivot = nil
+            if let previous = lastWordSelection, previous.row == hit.row,
+               previous.result.contains(column: hit.col)
+            {
+                let work = DispatchWorkItem { [weak self] in
+                    guard let self else { return }
+                    self.selectNone()
+                    self.lastWordSelection = nil
+                    self.setNeedsDisplay(self.bounds)
+                }
+                pendingSelectionClear = work
+                DispatchQueue.main.asyncAfter(
+                    deadline: .now() + NSEvent.doubleClickInterval,
+                    execute: work
+                )
+                return true
+            }
+            lastWordSelection = nil
+            return false
+        case 2:
+            pendingSelectionClear?.cancel()
+            pendingSelectionClear = nil
+            let cells = lineCells(bufferRow: hit.row)
+            let previous = lastWordSelection?.row == hit.row ? lastWordSelection?.result : nil
+            guard let result = ProgressiveWordSelection.select(
+                cells: cells,
+                column: hit.col,
+                previous: previous
+            ) else {
+                lastWordSelection = nil
+                wordDragPivot = nil
+                return false
+            }
+            setSelectionRange(
+                start: Position(col: result.start, row: hit.row),
+                end: Position(col: result.end, row: hit.row)
+            )
+            lastWordSelection = (hit.row, result)
+            wordDragPivot = (hit.row, hit.col)
+            setNeedsDisplay(bounds)
+            return true
+        default:
+            pendingSelectionClear?.cancel()
+            pendingSelectionClear = nil
+            lastWordSelection = nil
+            wordDragPivot = nil
+            return false
+        }
+    }
+
+    private func applyWordDrag(to hit: (col: Int, row: Int)) {
+        guard let pivot = wordDragPivot else { return }
+        if hit.row == pivot.row {
+            let cells = lineCells(bufferRow: hit.row)
+            guard !cells.isEmpty else { return }
+            let range = ProgressiveWordSelection.dragByTokens(
+                cells: cells,
+                anchorColumn: pivot.col,
+                toColumn: hit.col
+            )
+            setSelectionRange(
+                start: Position(col: range.start, row: hit.row),
+                end: Position(col: range.end, row: hit.row)
+            )
+        } else {
+            let top = hit.row < pivot.row ? hit : (col: pivot.col, row: pivot.row)
+            let bottom = hit.row < pivot.row ? (col: pivot.col, row: pivot.row) : hit
+            let topCells = lineCells(bufferRow: top.row)
+            let bottomCells = lineCells(bufferRow: bottom.row)
+            guard !topCells.isEmpty, !bottomCells.isEmpty else { return }
+            let topToken = ProgressiveWordSelection.tokenSpan(cells: topCells, column: top.col)
+            let bottomToken = ProgressiveWordSelection.tokenSpan(cells: bottomCells, column: bottom.col)
+            setSelectionRange(
+                start: Position(col: topToken.start, row: top.row),
+                end: Position(col: bottomToken.end, row: bottom.row)
+            )
+        }
+        lastWordSelection = nil
+        setNeedsDisplay(bounds)
+    }
+
+    private func bufferGridHit(with event: NSEvent) -> (col: Int, row: Int)? {
+        guard let cell = terminalCellSizeInPoints(), cell.width > 0, cell.height > 0 else {
+            return nil
+        }
+        let point = convert(event.locationInWindow, from: nil)
+        let term = getTerminal()
+        let cols = max(term.cols, 1)
+        let rows = max(term.rows, 1)
+        let col = min(max(Int(point.x / cell.width), 0), cols - 1)
+        let screenRow = min(max(Int((bounds.height - point.y) / cell.height), 0), rows - 1)
+        return (col, screenRow + term.buffer.yDisp)
+    }
+
+    private func lineCells(bufferRow: Int) -> [Character] {
+        let term = getTerminal()
+        let cols = term.cols
+        if let line = term.getScrollInvariantLine(row: bufferRow) {
+            return (0..<cols).map { col in
+                col < line.count ? term.getCharacter(for: line[col]) : " "
+            }
+        }
+        let screenRow = bufferRow - term.buffer.yDisp
+        if let line = term.getLine(row: screenRow) {
+            return (0..<cols).map { col in
+                col < line.count ? term.getCharacter(for: line[col]) : " "
+            }
+        }
+        return []
+    }
+
     /// 用户鼠标走 `send(source: Terminal)`，tmux 镜像默认会丢掉解析器应答。
     /// 在点击/拖拽/滚轮期间打开上报并标记，才能把 CSI 送进 pane。
     private func withUserMouseReporting(_ body: () -> Void) {
@@ -175,18 +312,34 @@ final class MuxTerminalView: TerminalView {
             return
         }
         lastScrollWheelRoutedToRuntime = false
+        let towardLatest = event.scrollingDeltaY < 0
         withUserMouseReporting { super.scrollWheel(with: event) }
+        if towardLatest, JumpLatestCaption.shouldSnapToLatest(scrollPosition: scrollPosition) {
+            scrollToLatest()
+        }
     }
 
     override func mouseDown(with event: NSEvent) {
+        if handleProgressiveWordClick(event) {
+            return
+        }
         withUserMouseReporting { super.mouseDown(with: event) }
     }
 
     override func mouseUp(with event: NSEvent) {
+        wordDragPivot = nil
         withUserMouseReporting { super.mouseUp(with: event) }
     }
 
     override func mouseDragged(with event: NSEvent) {
+        if !mouseReportingConsumes(event),
+           wordDragPivot != nil,
+           let hit = bufferGridHit(with: event)
+        {
+            withUserMouseReporting { super.mouseDragged(with: event) }
+            applyWordDrag(to: hit)
+            return
+        }
         withUserMouseReporting { super.mouseDragged(with: event) }
     }
 
@@ -601,23 +754,16 @@ final class MuxTerminalView: TerminalView {
         )
     }
 
-    /// 用一个完整的 pasteboard item 原子写入 UTF-8 数据。
-    ///
-    /// 先 `clearContents()` 再写入会在大文本写入失败时把用户原来的剪贴板
-    /// 一并清掉；`writeObjects` 也能返回明确的成功/失败结果，避免静默丢失
-    /// 复制内容。某些 macOS pasteboard provider 在已有 owner 时会拒绝这条
-    /// 写入，因此失败后再用已知的同步 `setData` 路径重试。
+    /// 把复制内容写进系统剪贴板，并且必须覆盖而不是追加。
+    /// `NSPasteboard.writeObjects` 在不清空的情况下会再挂一个 item。
     @discardableResult
-    private func writeClipboard(_ data: Data, to pasteboard: NSPasteboard) -> Bool {
-        let item = NSPasteboardItem()
-        guard item.setData(data, forType: .string) else { return false }
-        if pasteboard.writeObjects([item]) {
+    func writeClipboard(_ data: Data, to pasteboard: NSPasteboard) -> Bool {
+        pasteboard.clearContents()
+        if let text = String(data: data, encoding: .utf8),
+           pasteboard.setString(text, forType: .string)
+        {
             return true
         }
-
-        // 只在第一条写入明确失败后清空；正常路径保留系统剪贴板的原子
-        // replacement 行为，失败也不会先把旧内容擦掉。
-        pasteboard.clearContents()
         let written = pasteboard.setData(data, forType: .string)
         if !written {
             tracingClipboardFailure(byteCount: data.count)
@@ -627,7 +773,7 @@ final class MuxTerminalView: TerminalView {
 
     private func tracingClipboardFailure(byteCount: Int) {
         // 复制失败不应打断终端输入；保留轻量诊断信息供日志定位。
-        NSLog("muxterm: clipboard write failed (bytes: %d)", byteCount)
+        CoreBridge.log("clipboard write failed (bytes: \(byteCount))", level: "error")
     }
 
     /// 运行期修改字体（Cmd +/- / Cmd 0）；SwiftTerm 会重算字符格并 resize 模型。

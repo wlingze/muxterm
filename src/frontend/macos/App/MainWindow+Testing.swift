@@ -354,7 +354,7 @@ extension MainWindowController {
     }
 
     func testCommandMarkVisible() -> (ok: Bool, fail: Bool) {
-        (!content.commandMarkOKButton.isHidden, !content.commandMarkFailButton.isHidden)
+        (!content.commandMarkRail.okProxy.isHidden, !content.commandMarkRail.failProxy.isHidden)
     }
 
     /// 测试命令时间线的前后跳转（对应 Cmd+Option+↑/↓ 生产快捷键）。
