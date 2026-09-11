@@ -18,6 +18,9 @@ pub enum ActivityKind {
 }
 
 /// Lifecycle status shared by command and agent projections.
+///
+/// Terminal values are `Done` and `Failed`. They stay in the live store until
+/// pane close or bounded eviction; they are not written to disk.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "state")]
 pub enum ActivityStatus {
@@ -26,6 +29,18 @@ pub enum ActivityStatus {
     Done { exit_code: Option<i32> },
     Failed,
 }
+
+impl ActivityStatus {
+    /// Finished command/agent records that may be archived out of the live map.
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, Self::Done { .. } | Self::Failed)
+    }
+}
+
+/// Maximum Done/Failed records retained in the live Activity map.
+///
+/// Running/Waiting records are never auto-evicted; pane close still Removes.
+pub const MAX_TERMINAL_ACTIVITY_RECORDS: usize = 64;
 
 /// Product location used by frontends to activate the owning pane.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,6 +59,7 @@ pub struct ActivityRecord {
     pub status: ActivityStatus,
     pub location: PaneRef,
     pub cwd: Option<PathBuf>,
+    /// Revisioned display cache. Frontend must not join WorkspacePool to paint.
     pub workspace_name: String,
     pub runtime_name: String,
     pub transport_name: String,
@@ -142,6 +158,36 @@ impl ActivityStore {
         self.next_revision = self.next_revision.saturating_add(1).max(1);
         self.next_revision
     }
+
+    /// Drop oldest terminal records when the live map exceeds the archive cap.
+    ///
+    /// Returns Remove events tagged with each record's owning workspace so FFI
+    /// consumers can drop the same ids.
+    pub fn evict_terminal_overflow(&mut self) -> Vec<(WorkspaceId, ActivityEvent)> {
+        let mut terminal = self
+            .records
+            .values()
+            .filter(|record| record.status.is_terminal())
+            .cloned()
+            .collect::<Vec<_>>();
+        if terminal.len() <= MAX_TERMINAL_ACTIVITY_RECORDS {
+            return Vec::new();
+        }
+        terminal.sort_by(|left, right| {
+            left.updated_at
+                .cmp(&right.updated_at)
+                .then_with(|| left.id.as_str().cmp(right.id.as_str()))
+        });
+        let overflow = terminal.len() - MAX_TERMINAL_ACTIVITY_RECORDS;
+        terminal
+            .into_iter()
+            .take(overflow)
+            .map(|record| {
+                let workspace = record.location.workspace.clone();
+                (workspace, self.remove(record.id))
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -216,5 +262,32 @@ mod tests {
         let json = serde_json::to_value(&event).unwrap();
         let restored: ActivityEvent = serde_json::from_value(json).unwrap();
         assert_eq!(restored, event);
+    }
+
+    #[test]
+    fn terminal_records_are_evicted_oldest_first_and_running_stays() {
+        let mut store = ActivityStore::default();
+        let mut running = record("running", 0);
+        running.status = ActivityStatus::Running;
+        store.upsert(running);
+
+        for index in 0..=MAX_TERMINAL_ACTIVITY_RECORDS {
+            let mut done = record(&format!("done-{index}"), 0);
+            done.status = ActivityStatus::Done { exit_code: Some(0) };
+            done.updated_at = 100 + index as u64;
+            store.upsert(done);
+        }
+
+        let evicted = store.evict_terminal_overflow();
+        assert_eq!(evicted.len(), 1);
+        assert_eq!(evicted[0].1.id().as_str(), "done-0");
+        assert!(store.get(&ActivityId::new("running").unwrap()).is_some());
+        assert_eq!(
+            store
+                .records()
+                .filter(|record| record.status.is_terminal())
+                .count(),
+            MAX_TERMINAL_ACTIVITY_RECORDS
+        );
     }
 }

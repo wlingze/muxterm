@@ -36,6 +36,34 @@ pub use resolver::{
 
 type DiscoveryJob = (String, Option<Arc<dyn TargetConnection>>, Vec<ChannelKind>);
 
+/// tmux session name for a generic Project worktree: `{project}/{worktree}`.
+///
+/// Each component is sanitized so two projects with the same branch do not
+/// collide, and tmux does not see `/` inside a component.
+pub(crate) fn tmux_worktree_session(project_id: &str, worktree_id: &str) -> String {
+    format!(
+        "{}/{}",
+        sanitize_tmux_session_component(project_id),
+        sanitize_tmux_session_component(worktree_id)
+    )
+}
+
+fn sanitize_tmux_session_component(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.') {
+            out.push(ch);
+        } else {
+            out.push('-');
+        }
+    }
+    if out.is_empty() {
+        "worktree".into()
+    } else {
+        out
+    }
+}
+
 fn request_template(request: &OpenRequest) -> Result<Option<TemplateName>, resolver::ResolveError> {
     let Some(name) = request.template.as_deref() else {
         return Ok(None);
@@ -495,7 +523,10 @@ impl Catalog {
                 target.path = worktree.path.clone();
                 target.workspace_id = None;
                 if target.runtime == crate::projects::TargetRuntime::Tmux {
-                    target.session = Some(worktree.id.to_string());
+                    target.session = Some(tmux_worktree_session(
+                        project.id.as_str(),
+                        worktree.id.as_str(),
+                    ));
                 }
 
                 let mut resolved = self.resolve_descriptor(connections, &target, request.intent)?;

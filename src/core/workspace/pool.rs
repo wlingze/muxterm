@@ -61,6 +61,7 @@ pub struct WorkspaceCapacityCandidate {
 struct PooledWorkspace {
     workspace: Workspace,
     lifecycle: WorkspaceLifecycle,
+    /// Process-local recency. Not persisted; Recent rows come from the live pool.
     last_used_at: Instant,
     /// 首次进入池的稳定顺序；activate/status 刷新不得改变。
     opened_order: u64,
