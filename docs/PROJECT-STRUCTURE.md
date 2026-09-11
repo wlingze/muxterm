@@ -36,13 +36,11 @@ src/
     └── logging.rs
 ```
 
-Cargo workspace：`muxterm-protocol` / `muxterm-core` / `muxterm-runtime` /
-`muxterm-transport` / frontend。用编译器守依赖方向。拆分完成前模块边界按这张表画。
+单一 crate。`src/core` 是库模块树，`src/frontend` 是全部 frontend；`src/main.rs` 只做入口。
+边界靠 `ffi_client` 与 [`../scripts/check-architecture.sh`](../scripts/check-architecture.sh)，
+不按 protocol / runtime / transport 再拆 Cargo workspace crate。
 
-当前共享 FFI、CLI、TUI、Linux 和 macOS frontend 已迁入 `src/frontend/`；
-`src/platform/` 仍保留 EventPump、i18n、镜像/探测等兼容 glue，最终 Cargo workspace
-拆分仍未完成。Runtime contract 已在 `src/core/runtime/`，`src/main.rs` 已不声明 Core modules。
-按 [`../TASKS.md`](../TASKS.md) 继续收敛到上表。
+当前代码仍有一部分住在 `crates/muxterm-*`。按 [`../TASKS.md`](../TASKS.md) 收回上表。
 
 ## 不要
 

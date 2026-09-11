@@ -9,7 +9,7 @@
 
 ## 0. 结构门禁
 
-crate 拆分前用 `rg` 兜底；拆分后由编译器守边界。
+用 `rg` 门禁守模块边界；单一 crate，不靠 workspace 成员隔离。
 
 ```text
 禁止根 src/main.rs 声明 Core modules
