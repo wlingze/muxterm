@@ -20,3 +20,4 @@ pub mod ssh_probe;
 pub mod tui;
 pub mod url_opener;
 pub mod view_store;
+pub mod windows;

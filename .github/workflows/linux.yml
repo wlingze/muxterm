@@ -4,10 +4,8 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - "src/platform/linux/**"
+      - "src/frontend/**"
       - "src/core/**"
-      - "src/platform/cli/**"
-      - "src/platform/mod.rs"
       - "src/lib.rs"
       - "src/main.rs"
       - "tests/linux_gtk_integration.rs"

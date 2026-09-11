@@ -5,9 +5,7 @@ on:
     branches: [main]
     paths:
       - "src/core/**"
-      - "src/platform/cli/**"
-      - "src/platform/tui/**"
-      - "src/platform/mod.rs"
+      - "src/frontend/**"
       - "src/lib.rs"
       - "src/main.rs"
       - "tests/cli_integration.rs"
