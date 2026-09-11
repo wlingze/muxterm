@@ -7,9 +7,15 @@
 
 pub mod connection;
 pub mod connection_registry;
+#[cfg(feature = "test-harness")]
+pub mod local;
+#[cfg(not(feature = "test-harness"))]
 mod local;
 pub mod provider;
 pub mod registry;
+#[cfg(feature = "test-harness")]
+pub mod ssh;
+#[cfg(not(feature = "test-harness"))]
 mod ssh;
 
 use std::path::{Path, PathBuf};

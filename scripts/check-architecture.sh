@@ -119,6 +119,18 @@ check_absent \
     'TmuxRuntime|HerdrRuntime|ShellRuntime' \
     src/frontend
 
+# Concrete provider modules must stay inside their directories in production
+# source. test-harness may re-export them for integration tests.
+checks=$((checks + 1))
+if leaked="$(rg -n --no-heading -e 'crate::runtime::(tmux|herdr|shell)::' src --glob '*.rs' \
+    | rg -v 'src/core/runtime/(tmux|herdr|shell)/' \
+    | rg -v 'src/core/runtime/mod.rs' || true)" \
+    && [[ -n "$leaked" ]]; then
+    echo "architecture: FAIL: concrete Runtime types leaked outside provider dirs" >&2
+    printf '%s\n' "$leaked" | head -50 >&2 || true
+    failures=$((failures + 1))
+fi
+
 if [[ "$failures" -ne 0 ]]; then
     echo "architecture: $failures check(s) failed" >&2
     exit 1

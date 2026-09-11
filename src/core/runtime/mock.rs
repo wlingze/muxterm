@@ -139,6 +139,11 @@ impl State for MockRuntime {
 
 #[async_trait]
 impl Runtime for MockRuntime {
+    #[cfg(feature = "test-harness")]
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn support(&self) -> &'static [RuntimeCapability] {
         self.capabilities
     }

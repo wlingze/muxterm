@@ -512,6 +512,11 @@ impl State for DaemonRuntime {
 
 #[async_trait]
 impl Runtime for DaemonRuntime {
+    #[cfg(feature = "test-harness")]
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn support(&self) -> &'static [RuntimeCapability] {
         // IPC 客户端：能力等于背后那个 Runtime；自己绝不谎报 worktree。
         match self.workspace_runtime.as_str() {
