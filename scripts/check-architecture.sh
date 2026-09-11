@@ -53,7 +53,7 @@ check_absent \
 check_absent \
     "frontend must not expose Core workspace specifications" \
     'WorkspaceSpec' \
-    crates/muxterm-frontend/src src/frontend
+    src/frontend
 check_absent \
     "legacy runtime mode/factory names" \
     'RuntimeMode|create_runtime|build_runtime' \

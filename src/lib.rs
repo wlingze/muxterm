@@ -12,11 +12,13 @@ pub mod ffi {
     pub use muxterm_core::protocol::ffi::*;
 }
 
+pub mod frontend;
+
 /// Test-only compatibility exports for the existing integration contract suite.
 ///
-/// Product frontends use `ffi` and `app`; this namespace is intentionally
+/// Product frontends use `ffi` and `frontend`; this namespace is intentionally
 /// separate so the private Core/frontend module trees are not part of the
-/// product API while the contract tests migrate to their owning crates.
+/// product API while the contract tests migrate.
 #[doc(hidden)]
 pub mod test_support {
     pub mod core {
@@ -24,6 +26,6 @@ pub mod test_support {
     }
 
     pub mod platform {
-        pub use muxterm_frontend::*;
+        pub use crate::frontend::*;
     }
 }
