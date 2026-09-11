@@ -76,7 +76,8 @@ pub struct Muxterm {
     pub(crate) event_names: Vec<CString>,
     pub(crate) tab_names: Vec<CString>,
     pub(crate) layout_nodes: Vec<CLayoutNode>,
-    pub(crate) deferred_events: VecDeque<(muxterm_protocol::WorkspaceId, StateChange)>,
+    /// Lane-separated batches waiting for the legacy C ABI conversion.
+    pub(crate) deferred_batches: VecDeque<(muxterm_protocol::WorkspaceId, RuntimeBatch)>,
     /// Product Activity lane events waiting for the Activity FFI poll.
     pub(crate) deferred_activity_events: VecDeque<(muxterm_protocol::WorkspaceId, ActivityEvent)>,
     pub(crate) workspace_ids: Vec<CString>,
@@ -404,18 +405,68 @@ impl Muxterm {
         event: StateChange,
     ) {
         if should_export_state_change(&event) {
-            self.deferred_events.push_back((workspace_id, event));
+            self.defer_batch(workspace_id, RuntimeBatch::from(event));
         }
     }
 
     pub(crate) fn defer_batch(
         &mut self,
         workspace_id: muxterm_protocol::WorkspaceId,
-        batch: RuntimeBatch,
+        mut batch: RuntimeBatch,
     ) {
-        for event in batch.into_state_changes() {
-            self.defer_event(workspace_id.clone(), event);
+        // PaneIndexSnapshot is consumed by Core's Index and must never cross
+        // the frontend Surface/FFI boundary. Keep the other lanes intact
+        // until the C ABI adapter serializes one legacy event at a time.
+        batch
+            .render
+            .retain(|event| !matches!(event, RenderEvent::PaneIndexSnapshot { .. }));
+        if !batch.is_empty() {
+            self.deferred_batches.push_back((workspace_id, batch));
         }
+    }
+
+    /// Convert only the batches selected for one legacy C ABI poll.
+    ///
+    /// `workspace_id = Some(id)` selects the active workspace for
+    /// `muxterm_poll_events`; `None` drains all workspaces for the
+    /// workspace-tagged poll. A partially consumed batch is requeued at the
+    /// same position so `max_count` never drops the remaining lane events.
+    pub(crate) fn take_deferred_events(
+        &mut self,
+        workspace_id: Option<&muxterm_protocol::WorkspaceId>,
+        max_count: usize,
+    ) -> Vec<(muxterm_protocol::WorkspaceId, StateChange)> {
+        if max_count == 0 {
+            return Vec::new();
+        }
+
+        let mut ready = Vec::new();
+        let mut kept = VecDeque::new();
+        for (id, batch) in self.deferred_batches.drain(..) {
+            let selected = workspace_id.is_none_or(|wanted| wanted == &id);
+            if !selected || ready.len() >= max_count {
+                kept.push_back((id, batch));
+                continue;
+            }
+
+            let events = batch.into_state_changes();
+            let remaining = max_count - ready.len();
+            let split = remaining.min(events.len());
+            ready.extend(
+                events[..split]
+                    .iter()
+                    .cloned()
+                    .map(|event| (id.clone(), event)),
+            );
+            if split < events.len() {
+                kept.push_back((
+                    id,
+                    RuntimeBatch::from_state_changes(events[split..].iter().cloned()),
+                ));
+            }
+        }
+        self.deferred_batches = kept;
+        ready
     }
 
     /// Apply one lane-separated runtime batch to the cross-workspace Activity projection.
