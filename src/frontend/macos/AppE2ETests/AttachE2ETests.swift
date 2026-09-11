@@ -5,6 +5,103 @@ import MuxtermChrome
 
 /// W13：attach 已有 2tab/3pane，SwiftTerm 非空、几何 ≥ 40px、切 tab 像素还在、CUP 洪水有上界。
 final class AttachE2ETests: XCTestCase {
+    /// 重构后生产路径是共享 `local` handle + `openWorkspace`，不再走
+    /// `muxterm_new_connect_sized`。未 `ResizeClient` 时 attach seed 会一直
+    /// 推迟，画面全白（test-2026-0911-1709.log）。
+    func testCatalogOpenWorkspaceDefersSeedUntilResizeClient() throws {
+        let fixture = OnePaneCat(label: "catalog-defer-seed")
+        let bridge = try CoreBridge(backendType: "local")
+        defer { bridge.shutdown() }
+
+        let opened = try bridge.openWorkspace(
+            target: TargetConfig(
+                name: fixture.session,
+                runtime: .tmux,
+                transport: .local,
+                path: "",
+                session: fixture.session,
+                socket: fixture.socket
+            ),
+            intent: .attachOnly
+        )
+        XCTAssertNil(opened.appliedClientSize)
+
+        func snapshotHasToken() -> Bool {
+            bridge.pollWorkspaceEvents().contains { change in
+                change.workspaceID == opened.id
+                    && change.event.isPaneSnapshot
+                    && String(decoding: change.event.data, as: UTF8.self)
+                        .contains(fixture.token)
+            }
+        }
+
+        XCTAssertFalse(
+            AppE2E.wait(timeout: 1.2) { snapshotHasToken() },
+            "没有 UI client size 时不得发布 Surface seed，否则会把远端网格先缩小再校准"
+        )
+        XCTAssertEqual(
+            bridge.resizeClient(workspaceID: opened.id, cols: 80, rows: 24),
+            0
+        )
+        XCTAssertTrue(
+            AppE2E.wait(timeout: AppE2E.attachTimeout) { snapshotHasToken() },
+            "ResizeClient 必须释放推迟的 attach seed，否则画面全白"
+        )
+    }
+
+    func testCatalogOpenWorkspaceWithInitialSizePublishesSnapshot() throws {
+        let fixture = OnePaneCat(label: "catalog-sized-seed")
+        let bridge = try CoreBridge(backendType: "local")
+        defer { bridge.shutdown() }
+
+        let opened = try bridge.openWorkspace(
+            target: TargetConfig(
+                name: fixture.session,
+                runtime: .tmux,
+                transport: .local,
+                path: "",
+                session: fixture.session,
+                socket: fixture.socket
+            ),
+            intent: .attachOnly,
+            initialClientSize: (80, 24)
+        )
+        XCTAssertEqual(opened.appliedClientSize?.0, 80)
+        XCTAssertEqual(opened.appliedClientSize?.1, 24)
+
+        let received = AppE2E.wait(timeout: AppE2E.attachTimeout) {
+            bridge.pollWorkspaceEvents().contains { change in
+                change.workspaceID == opened.id
+                    && change.event.isPaneSnapshot
+                    && String(decoding: change.event.data, as: UTF8.self)
+                        .contains(fixture.token)
+            }
+        }
+        XCTAssertTrue(
+            received,
+            "catalog open 带初始尺寸时必须在前端不再 resize 的情况下发布 PaneSnapshot"
+        )
+    }
+
+    func testSharedProductHandleUsesCatalogClientResizeCapability() throws {
+        let bridge = try CoreBridge(backendType: "local")
+        defer { bridge.shutdown() }
+        XCTAssertEqual(bridge.backendType, "local")
+        XCTAssertTrue(bridge.runtimeSupports("tmux", capability: "SharedClientResize"))
+        XCTAssertFalse(bridge.runtimeSupports("shell", capability: "SharedClientResize"))
+
+        let tmux = TerminalManager(bridge: bridge, runtimeID: "tmux")
+        XCTAssertTrue(
+            tmux.usesClientResize,
+            "共享 local handle 上的 tmux scene 必须发 refresh-client -C"
+        )
+        XCTAssertFalse(tmux.isDirectPtyTerminal)
+
+        let shell = TerminalManager(bridge: bridge, runtimeID: "shell")
+        XCTAssertFalse(shell.usesClientResize)
+        XCTAssertTrue(shell.isDirectPtyTerminal)
+    }
+
     func testSizedAttachPublishesSurfaceSnapshotWithoutFrontendResize() throws {
         try assertSizedAttachPublishesSnapshot(
             size: (125, 51),

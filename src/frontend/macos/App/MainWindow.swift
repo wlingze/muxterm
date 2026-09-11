@@ -243,7 +243,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         discovery.attachedRemoteSocket = bridge.sshAlias == nil ? nil : bridge.socket
         // 统一配置：初始值来自 Core 解析后的快照，不再手写解析 TOML 或读 UserDefaults。
         let resolved = Self.resolvedSettings(from: bridge)
-        let initialWorkspaceID = bridge.workspaceList().first?.id
+        let initialWorkspace = bridge.workspaceList().first
+        let initialWorkspaceID = initialWorkspace?.id
         MuxtermTerminalColors.activePalette = MuxtermTheme.from(
             name: resolved.themeName
         ).palette
@@ -256,6 +257,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         self.terminalManager = TerminalManager(
             bridge: bridge,
             workspaceID: initialWorkspaceID,
+            runtimeID: initialWorkspace?.runtime,
             fontFamily: terminalFontSettings.family,
             fontSize: terminalFontSettings.size
         )
@@ -1776,7 +1778,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             socket: nextBridge.socket
         )
         do {
-            let opened = try bridge.openWorkspace(target: target, intent: .attachOnly)
+            let opened = try bridge.openWorkspace(
+                target: target,
+                intent: .attachOnly,
+                initialClientSize: initialTmuxClientSizeHint()
+            )
             nextBridge.shutdown()
             let key = Self.connectionKey(config: opened.target, session: opened.target.session)
             let slot = WorkspaceScene(
@@ -1786,12 +1792,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 terminalManager: TerminalManager(
                     bridge: bridge,
                     workspaceID: opened.id,
+                    runtimeID: opened.target.runtime.rawValue,
                     fontFamily: terminalFontSettings.family,
                     fontSize: terminalFontSettings.size
                 ),
                 targetConfig: opened.target,
                 now: 0
             )
+            if let size = opened.appliedClientSize {
+                slot.terminalManager.noteClientSize(size)
+            }
             activate(slot: slot)
         } catch {
             nextBridge.shutdown()
@@ -2516,9 +2526,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 requested: config
             )
             slot.targetConfig = canonical
-            if let initialClientSize {
-                slot.terminalManager.noteClientSize(initialClientSize)
-            }
             activate(slot: slot)
             completion(.success(CatalogConnection(bridge: slot.bridge, target: canonical)))
             return
@@ -2528,7 +2535,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         sharedCoreOperationInFlight = true
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             do {
-                let opened = try sharedBridge.openWorkspace(target: config, intent: intent)
+                let opened = try sharedBridge.openWorkspace(
+                    target: config,
+                    intent: intent,
+                    initialClientSize: initialClientSize
+                )
                 let resolved = opened.target
                 let key = Self.connectionKey(config: resolved, session: resolved.session)
                 DispatchQueue.main.async {
@@ -2544,9 +2555,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                             requested: resolved
                         )
                         existing.targetConfig = canonical
-                        if let initialClientSize {
-                            existing.terminalManager.noteClientSize(initialClientSize)
-                        }
                         self.activate(slot: existing)
                         completion(.success(CatalogConnection(
                             bridge: existing.bridge,
@@ -2561,14 +2569,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                         terminalManager: TerminalManager(
                             bridge: sharedBridge,
                             workspaceID: opened.id,
+                            runtimeID: resolved.runtime.rawValue,
                             fontFamily: self.terminalFontSettings.family,
                             fontSize: self.terminalFontSettings.size
                         ),
                         targetConfig: resolved,
                         now: 0
                     )
-                    if let initialClientSize {
-                        slot.terminalManager.noteClientSize(initialClientSize)
+                    if let size = opened.appliedClientSize {
+                        slot.terminalManager.noteClientSize(size)
                     }
                     self.activate(slot: slot)
                     completion(.success(CatalogConnection(bridge: sharedBridge, target: resolved)))
@@ -3680,6 +3689,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             return
         }
         terminalManager.setBridgeQueriesEnabled(true)
+        content.paneLayout.resumeGeometrySync()
         reportPaneColoursIfNeeded(lastSnapshot.panes)
     }
 

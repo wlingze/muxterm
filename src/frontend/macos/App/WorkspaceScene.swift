@@ -134,7 +134,8 @@ final class WorkspaceScene: SceneProtocol {
         self.viewStore = WorkspaceViewStore()
         self.terminalManager = terminalManager ?? TerminalManager(
             bridge: bridge,
-            workspaceID: workspaceID
+            workspaceID: workspaceID,
+            runtimeID: (targetConfig ?? key.targetConfig).runtime.rawValue
         )
         // 首帧拓扑和 agent 状态由 MainWindow 的 EventPump 提交；构造 scene
         // 不得绕过 ViewStore 直接查询 Core。首轮 poll 会处理 needsLayoutReload。

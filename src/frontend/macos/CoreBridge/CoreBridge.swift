@@ -248,6 +248,22 @@ struct CoreWorkspaceOpenResult: Equatable {
     let id: String
     let name: String
     let target: TargetConfig
+    /// Set when Core accepted the UI client grid before returning.
+    let appliedClientCols: UInt16?
+    let appliedClientRows: UInt16?
+
+    var appliedClientSize: (UInt16, UInt16)? {
+        guard let appliedClientCols, let appliedClientRows else { return nil }
+        return (appliedClientCols, appliedClientRows)
+    }
+
+    static func == (lhs: CoreWorkspaceOpenResult, rhs: CoreWorkspaceOpenResult) -> Bool {
+        lhs.id == rhs.id
+            && lhs.name == rhs.name
+            && lhs.target == rhs.target
+            && lhs.appliedClientCols == rhs.appliedClientCols
+            && lhs.appliedClientRows == rhs.appliedClientRows
+    }
 }
 
 private struct WorkspaceListResponse: Decodable {
@@ -1322,6 +1338,35 @@ final class CoreBridge {
         activeWorkspaceID = workspaceID
     }
 
+    private var cachedRuntimeInfo: [CoreRuntimeInfo]?
+
+    /// Catalog runtime cards for this live handle. Cached because support()
+    /// does not change for builtin providers during a process.
+    func runtimeList() -> [CoreRuntimeInfo] {
+        if let cachedRuntimeInfo {
+            return cachedRuntimeInfo
+        }
+        guard let handle else { return [] }
+        do {
+            let response: RuntimeListResponse = try Self.decodeDiscoveryJSON(
+                muxterm_runtime_list_json(handle)
+            )
+            guard response.ok else { return [] }
+            let list = response.runtimes ?? []
+            cachedRuntimeInfo = list
+            return list
+        } catch {
+            pendingError = error.localizedDescription
+            return []
+        }
+    }
+
+    /// Ask Catalog support() for a runtime id. Frontends must not branch on
+    /// constructor `backendType` (`local` is the shared product handle).
+    func runtimeSupports(_ runtimeId: String, capability: String) -> Bool {
+        runtimeList().first { $0.id == runtimeId }?.support.contains(capability) ?? false
+    }
+
     /// List all live workspaces without changing Core's active workspace.
     /// The response is decoded into owned values before the C string is freed.
     func workspaceList() -> [CoreWorkspaceInfo] {
@@ -1343,7 +1388,8 @@ final class CoreBridge {
     /// handle for a second scene.
     func openWorkspace(
         target: TargetConfig,
-        intent: CoreTargetOpenIntent
+        intent: CoreTargetOpenIntent,
+        initialClientSize: (UInt16, UInt16)? = nil
     ) throws -> CoreWorkspaceOpenResult {
         guard let handle else {
             throw CoreBridgeDiscoveryError.message("Core handle unavailable")
@@ -1372,10 +1418,27 @@ final class CoreBridge {
         if resolved.workspaceID == nil {
             resolved.workspaceID = id
         }
+        var appliedClientCols: UInt16?
+        var appliedClientRows: UInt16?
+        if let initialClientSize {
+            // Catalog open constructs the Runtime without muxterm_new_connect_sized.
+            // Apply ResizeClient before returning so attach seed is not deferred
+            // until a later layout pass that may never send it.
+            if resizeClient(
+                workspaceID: id,
+                cols: initialClientSize.0,
+                rows: initialClientSize.1
+            ) == 0 {
+                appliedClientCols = initialClientSize.0
+                appliedClientRows = initialClientSize.1
+            }
+        }
         return CoreWorkspaceOpenResult(
             id: id,
             name: response.name ?? resolved.name,
-            target: resolved
+            target: resolved,
+            appliedClientCols: appliedClientCols,
+            appliedClientRows: appliedClientRows
         )
     }
 

@@ -20,6 +20,9 @@ final class TerminalManager: TerminalInputHandler {
     /// Workspace 切换的缓存绘制阶段禁止触碰远端 bridge。远端查询/写入
     /// 在串行 EventPump 边界恢复，切换栈只处理本地 Surface。
     private var bridgeQueriesEnabled = true
+    /// Catalog runtime id for this scene (`tmux` / `shell` / `herdr`).
+    /// Shared product handles keep constructor `backendType == "local"`.
+    private let runtimeID: String?
     /// 已经完成过 Runtime seed 或首批 live PTY 的 pane。
     private var swiftTermSeeded = Set<UInt32>()
     /// 最近喂给终端的 UTF-8 片段（供 UITest / 状态栏无障碍查询）。
@@ -125,11 +128,13 @@ final class TerminalManager: TerminalInputHandler {
     init(
         bridge: CoreBridge,
         workspaceID: String? = nil,
+        runtimeID: String? = nil,
         fontFamily: String = MuxtermTerminalFont.defaultFamily,
         fontSize: CGFloat = MuxtermTerminalFont.defaultSize
     ) {
         self.bridge = bridge
         self.workspaceID = workspaceID
+        self.runtimeID = runtimeID
         self.fontFamily = fontFamily
         self.fontSize = MuxtermTerminalFont.clamp(fontSize)
     }
@@ -863,7 +868,14 @@ final class TerminalManager: TerminalInputHandler {
     }
 
     /// 当前连接是否由 tmux 控制 client 管理尺寸。
+    ///
+    /// 问 Catalog `SharedClientResize`，不要看共享 handle 的 constructor
+    /// `backendType`：产品句柄永远是 `local`，按它判断会永远不发
+    /// `refresh-client -C`，attach seed 被推迟，画面全白。
     var usesClientResize: Bool {
+        if let runtimeID {
+            return bridge?.runtimeSupports(runtimeID, capability: "SharedClientResize") ?? false
+        }
         switch bridge?.backendType {
         case "tmux", "ssh", "tmux-ssh":
             return true
@@ -874,12 +886,14 @@ final class TerminalManager: TerminalInputHandler {
 
     /// 前端是否为 pane PTY 的直接终端模拟器。
     ///
-    /// 仅 `local` 模式是：SwiftTerm 就是该 PTY 的终端模拟器，查询应答写回
-    /// pty 是正确行为。tmux 控制模式（`tmux` / `ssh`）以及 daemon 代理
-    /// （daemon 可能代理 tmux，client 侧无法分辨）都不是，解析器应答
+    /// 仅 shell Runtime 是：SwiftTerm 就是该 PTY 的终端模拟器，查询应答写回
+    /// pty 是正确行为。tmux / herdr 以及 daemon 代理都不是，解析器应答
     /// 必须丢弃，否则经 send-keys 注入会泄漏成 shell 字面命令。
     var isDirectPtyTerminal: Bool {
-        bridge?.backendType == "local"
+        if let runtimeID {
+            return runtimeID == "shell"
+        }
+        return bridge?.backendType == "local"
     }
 
     /// 布局完成后：先更新各个 SwiftTerm 的本地渲染尺寸，再按后端类型同步尺寸。

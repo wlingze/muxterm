@@ -25,7 +25,7 @@ final class MacCommandQueueTests: XCTestCase {
         queue.enqueue(switchCommand(workspaceID: "one", tabID: 0))
 
         XCTAssertEqual(queue.count, 1)
-        XCTAssertEqual(queue.drain().compactMap { operation in
+        XCTAssertEqual(queue.drain().compactMap { operation -> UInt32? in
             guard case .task(let task) = operation.operation else { return nil }
             return task.targetTab
         }, [0])
@@ -40,7 +40,7 @@ final class MacCommandQueueTests: XCTestCase {
         XCTAssertEqual(queue.count, 3)
         let commands = queue.drain()
         XCTAssertEqual(commands.map { $0.workspaceID ?? "" }, ["one", "two", "one"])
-        XCTAssertEqual(commands.compactMap { operation in
+        XCTAssertEqual(commands.compactMap { operation -> UInt32? in
             guard case .task(let task) = operation.operation else { return nil }
             return task.targetTab
         }, [61, 7, 0])

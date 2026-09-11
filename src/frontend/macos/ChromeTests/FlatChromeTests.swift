@@ -1087,6 +1087,10 @@ final class PaneLayoutProjectionTests: XCTestCase {
             ClientGridHysteresis.shouldSend(current: (94, 51), next: (94, 51)),
             "换树仍要 sync SwiftTerm 格子，但 client 外框没变就不要 refresh-client -C"
         )
+        XCTAssertTrue(
+            ClientGridHysteresis.shouldSend(current: nil, next: (94, 51)),
+            "从未把尺寸交给 Core 时必须发送 ResizeClient，否则 attach seed 会一直推迟"
+        )
     }
 
     func testClickingPaneMustFocusTerminalNotHost() {
