@@ -18,9 +18,9 @@ use std::sync::Mutex;
 #[cfg(unix)]
 use std::time::{Duration, Instant};
 
-use crate::local::LocalProcessTransport;
-use crate::ssh::{build_ssh_command, SshProcessTransport};
-use crate::{
+use crate::transport::local::LocalProcessTransport;
+use crate::transport::ssh::{build_ssh_command, SshProcessTransport};
+use crate::transport::{
     ByteChannel, ChannelRequest, CommandOutput, ProcessTransport, TargetConnection, TransportResult,
 };
 
@@ -145,7 +145,7 @@ impl Connect {
         argv: Vec<String>,
         cwd: Option<PathBuf>,
         env: Vec<(String, String)>,
-        pty: Option<crate::PtySize>,
+        pty: Option<crate::transport::PtySize>,
     ) -> anyhow::Result<Box<dyn ByteChannel>> {
         let Some(program) = argv.first() else {
             return Err(anyhow::anyhow!("Exec channel argv 不能为空"));
@@ -542,7 +542,7 @@ mod tests {
                 ],
                 cwd: Some("/tmp".into()),
                 env: vec![("MUXTERM_CHANNEL_TEST".into(), "ready value".into())],
-                pty: Some(crate::PtySize::new(80, 24)),
+                pty: Some(crate::transport::PtySize::new(80, 24)),
             })
             .expect("open local exec channel");
 

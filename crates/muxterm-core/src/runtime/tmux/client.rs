@@ -1454,11 +1454,11 @@ mod tests {
             Ok(data.len())
         }
 
-        fn resize(&mut self, _cols: u16, _rows: u16) -> muxterm_transport::TransportResult<()> {
+        fn resize(&mut self, _cols: u16, _rows: u16) -> crate::transport::TransportResult<()> {
             Ok(())
         }
 
-        fn shutdown(&mut self) -> muxterm_transport::TransportResult<()> {
+        fn shutdown(&mut self) -> crate::transport::TransportResult<()> {
             self.shutdowns.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
@@ -1482,7 +1482,7 @@ mod tests {
         fn open_channel(
             &self,
             request: ChannelRequest,
-        ) -> muxterm_transport::TransportResult<Box<dyn ByteChannel>> {
+        ) -> crate::transport::TransportResult<Box<dyn ByteChannel>> {
             *self.request.lock().unwrap() = Some(request);
             Ok(Box::new(RecordingChannel {
                 writes: Arc::clone(&self.writes),
@@ -1490,7 +1490,7 @@ mod tests {
             }))
         }
 
-        fn probe(&self) -> muxterm_transport::TransportResult<()> {
+        fn probe(&self) -> crate::transport::TransportResult<()> {
             Ok(())
         }
     }

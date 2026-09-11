@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context, Result};
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 
-use crate::{ProcessTransport, TransportError, TransportResult, TransportSignal};
+use crate::transport::{ProcessTransport, TransportError, TransportResult, TransportSignal};
 
 /// 把字节块渲染成可读的 debug 字符串（可打印字符保留，控制字节转义）。
 /// 用于 debug 模式把 SSH 原始收发数据落盘，方便排查远端 tmux 渲染/输入问题。
@@ -60,7 +60,7 @@ pub trait ProcessLauncher: Send {
         &self,
         program: &str,
         args: &[&str],
-        pty_size: crate::PtySize,
+        pty_size: crate::transport::PtySize,
     ) -> Result<LaunchedProcess>;
 }
 
@@ -80,7 +80,7 @@ impl ProcessLauncher for SystemLauncher {
         &self,
         program: &str,
         args: &[&str],
-        pty_size: crate::PtySize,
+        pty_size: crate::transport::PtySize,
     ) -> Result<LaunchedProcess> {
         let pty_system = NativePtySystem::default();
         let pair = pty_system
@@ -157,7 +157,7 @@ pub struct SshProcessTransport {
     last_program: Option<String>,
     last_args: Option<Vec<String>>,
     /// 读写字节计数（SSH 读线程 + PtyWriter 共享）。
-    traffic: Option<crate::TrafficCounters>,
+    traffic: Option<crate::transport::TrafficCounters>,
 }
 
 impl SshProcessTransport {
@@ -190,7 +190,7 @@ impl SshProcessTransport {
     }
 
     /// 注入共享流量计数（spawn_ssh 创建，读线程与 PtyWriter 共用）。
-    pub fn set_traffic(&mut self, traffic: crate::TrafficCounters) {
+    pub fn set_traffic(&mut self, traffic: crate::transport::TrafficCounters) {
         self.traffic = Some(traffic);
     }
 
@@ -276,7 +276,7 @@ impl ProcessTransport for SshProcessTransport {
         &mut self,
         program: &str,
         args: &[&str],
-        pty_size: crate::PtySize,
+        pty_size: crate::transport::PtySize,
     ) -> TransportResult<()> {
         let args_owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
         self.last_program = Some(program.to_string());
@@ -510,7 +510,7 @@ mod tests {
             &self,
             program: &str,
             args: &[&str],
-            _pty_size: crate::PtySize,
+            _pty_size: crate::transport::PtySize,
         ) -> Result<LaunchedProcess> {
             // 记录参数
             *self.program.lock().unwrap() = Some(program.to_string());
@@ -561,7 +561,7 @@ mod tests {
                 &self,
                 program: &str,
                 args: &[&str],
-                pty_size: crate::PtySize,
+                pty_size: crate::transport::PtySize,
             ) -> Result<LaunchedProcess> {
                 *self.program.lock().unwrap() = Some(program.to_string());
                 *self.args.lock().unwrap() = Some(args.iter().map(|s| s.to_string()).collect());
@@ -600,7 +600,7 @@ mod tests {
         let (program, args) = build_ssh_command("test-alias", "echo hello", None);
         let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
         transport
-            .spawn_exec(&program, &args_ref, crate::PtySize::new(80, 24))
+            .spawn_exec(&program, &args_ref, crate::transport::PtySize::new(80, 24))
             .expect("spawn with injected launcher");
 
         assert_eq!(
@@ -634,7 +634,7 @@ mod tests {
         let (program, args) = build_ssh_command("test-alias", "echo hello", None);
         let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
         transport
-            .spawn_exec(&program, &args_ref, crate::PtySize::new(80, 24))
+            .spawn_exec(&program, &args_ref, crate::transport::PtySize::new(80, 24))
             .expect("spawn");
 
         // FakeLauncher 的 reader channel tx 立即 drop → read() 应返回 Err(EOF)
@@ -662,7 +662,7 @@ mod tests {
                 &self,
                 _program: &str,
                 _args: &[&str],
-                pty_size: crate::PtySize,
+                pty_size: crate::transport::PtySize,
             ) -> Result<LaunchedProcess> {
                 let pty_system = NativePtySystem::default();
                 let pair = pty_system
@@ -694,14 +694,14 @@ mod tests {
             tx: Arc::new(Mutex::new(None)),
         };
         let tx_handle = launcher.tx.clone();
-        let traffic = crate::TrafficCounters::new();
+        let traffic = crate::transport::TrafficCounters::new();
         let mut transport = SshProcessTransport::with_launcher(Box::new(launcher));
         transport.set_traffic(traffic.clone());
 
         let (program, args) = build_ssh_command("test-alias", "echo hello", None);
         let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
         transport
-            .spawn_exec(&program, &args_ref, crate::PtySize::new(80, 24))
+            .spawn_exec(&program, &args_ref, crate::transport::PtySize::new(80, 24))
             .expect("spawn");
 
         // 下行：reader channel 注入一块数据，read() 应累加 down。

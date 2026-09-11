@@ -2,9 +2,9 @@
 
 use std::sync::Arc;
 
-use crate::connection::Connect;
-use crate::provider::{TargetInfo, TransportProvider};
-use crate::{ChannelKind, TargetConnection, TransportResult};
+use crate::transport::connection::Connect;
+use crate::transport::provider::{TargetInfo, TransportProvider};
+use crate::transport::{ChannelKind, TargetConnection, TransportResult};
 
 /// Local transport plugin.
 pub struct LocalTransport;

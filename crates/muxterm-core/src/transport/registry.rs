@@ -1,7 +1,7 @@
 //! Reusable target connections.
 
+pub use super::connection_registry::ConnectionRegistry;
 use super::TransportProvider;
-pub use muxterm_transport::ConnectionRegistry;
 
 /// Transport providers owned by the product composition root.
 pub struct TransportRegistry {

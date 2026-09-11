@@ -983,11 +983,11 @@ mod tests {
             Ok(data.len())
         }
 
-        fn resize(&mut self, _cols: u16, _rows: u16) -> muxterm_transport::TransportResult<()> {
+        fn resize(&mut self, _cols: u16, _rows: u16) -> crate::transport::TransportResult<()> {
             Ok(())
         }
 
-        fn shutdown(&mut self) -> muxterm_transport::TransportResult<()> {
+        fn shutdown(&mut self) -> crate::transport::TransportResult<()> {
             Ok(())
         }
     }
@@ -1008,9 +1008,9 @@ mod tests {
         fn open_channel(
             &self,
             request: crate::transport::ChannelRequest,
-        ) -> muxterm_transport::TransportResult<Box<dyn crate::transport::ByteChannel>> {
+        ) -> crate::transport::TransportResult<Box<dyn crate::transport::ByteChannel>> {
             let crate::transport::ChannelRequest::UnixSocket { path } = request else {
-                return Err(muxterm_transport::TransportError::message(
+                return Err(crate::transport::TransportError::message(
                     "Herdr must open a UnixSocket channel",
                 ));
             };
@@ -1020,7 +1020,7 @@ mod tests {
             }))
         }
 
-        fn probe(&self) -> muxterm_transport::TransportResult<()> {
+        fn probe(&self) -> crate::transport::TransportResult<()> {
             Ok(())
         }
     }
