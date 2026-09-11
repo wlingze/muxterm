@@ -164,8 +164,8 @@ impl WorkspaceSpec {
     }
 
     /// Convert the Core-owned product spec to the runtime crate boundary.
-    pub fn runtime_spec(&self) -> muxterm_runtime::RuntimeSpec {
-        muxterm_runtime::RuntimeSpec {
+    pub fn runtime_spec(&self) -> crate::runtime::RuntimeSpec {
+        crate::runtime::RuntimeSpec {
             transport: self.transport.clone(),
             alias: self.alias.clone(),
             session: self.session.clone(),
@@ -178,7 +178,7 @@ impl WorkspaceSpec {
     }
 
     /// Rebuild a product spec returned by a Runtime-native operation.
-    pub fn from_runtime_spec(spec: muxterm_runtime::RuntimeSpec) -> Self {
+    pub fn from_runtime_spec(spec: crate::runtime::RuntimeSpec) -> Self {
         Self {
             transport: spec.transport,
             alias: spec.alias,

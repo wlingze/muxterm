@@ -65,7 +65,7 @@ impl RuntimeProvider for MockDriver {
     fn new_instance(
         &self,
         _connect: Arc<dyn TargetConnection>,
-        spec: &muxterm_runtime::RuntimeSpec,
+        spec: &crate::runtime::RuntimeSpec,
     ) -> RuntimeResult<Box<dyn Runtime>> {
         self.opened.fetch_add(1, Ordering::SeqCst);
         let mut rt = MockRuntime::with_single_pane();
@@ -133,7 +133,7 @@ impl RuntimeProvider for UnixSocketOnlyDriver {
     fn new_instance(
         &self,
         _connect: Arc<dyn TargetConnection>,
-        _spec: &muxterm_runtime::RuntimeSpec,
+        _spec: &crate::runtime::RuntimeSpec,
     ) -> RuntimeResult<Box<dyn Runtime>> {
         Ok(Box::new(MockRuntime::with_single_pane()))
     }
@@ -686,7 +686,7 @@ fn discover_sessions_all_must_fan_out_in_parallel() {
         fn new_instance(
             &self,
             _connect: Arc<dyn TargetConnection>,
-            _spec: &muxterm_runtime::RuntimeSpec,
+            _spec: &crate::runtime::RuntimeSpec,
         ) -> RuntimeResult<Box<dyn Runtime>> {
             Ok(Box::new(MockRuntime::with_single_pane()))
         }

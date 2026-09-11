@@ -542,7 +542,7 @@ impl Runtime for DaemonRuntime {
         }
     }
 
-    async fn connect(&mut self) -> muxterm_runtime::RuntimeResult<()> {
+    async fn connect(&mut self) -> crate::runtime::RuntimeResult<()> {
         self.status = BackendStatus::Connecting;
         tracing::debug!(
             target = "muxterm::daemon",
@@ -552,7 +552,7 @@ impl Runtime for DaemonRuntime {
         );
         if !Path::new(&self.socket_path).exists() {
             tracing::debug!(target = "muxterm::daemon", "daemon socket 不存在");
-            return Err(muxterm_runtime::RuntimeError::message(format!(
+            return Err(crate::runtime::RuntimeError::message(format!(
                 "session '{}' 不存在（socket: {}）。用 `muxterm new-session -s {}` 创建。",
                 self.session_name,
                 self.socket_path.display(),
@@ -565,7 +565,7 @@ impl Runtime for DaemonRuntime {
         Ok(())
     }
 
-    fn execute(&mut self, task: &Task) -> muxterm_runtime::RuntimeResult<TaskOutcome> {
+    fn execute(&mut self, task: &Task) -> crate::runtime::RuntimeResult<TaskOutcome> {
         if matches!(task, Task::Detach) {
             // detach：不向 daemon 发 KillSession
             self.status = BackendStatus::Disconnected;
@@ -600,7 +600,7 @@ impl Runtime for DaemonRuntime {
         }
     }
 
-    async fn shutdown(&mut self) -> muxterm_runtime::RuntimeResult<()> {
+    async fn shutdown(&mut self) -> crate::runtime::RuntimeResult<()> {
         // detach：不断开 daemon
         self.status = BackendStatus::Disconnected;
         Ok(())

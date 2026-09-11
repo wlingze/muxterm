@@ -3839,7 +3839,7 @@ impl Runtime for TmuxRuntime {
             .map(|t| t.snapshot())
             .unwrap_or((0, 0))
     }
-    async fn connect(&mut self) -> muxterm_runtime::RuntimeResult<()> {
+    async fn connect(&mut self) -> crate::runtime::RuntimeResult<()> {
         if self.status == BackendStatus::Connected {
             return Ok(());
         }
@@ -4029,7 +4029,7 @@ impl Runtime for TmuxRuntime {
         Ok(())
     }
 
-    fn execute(&mut self, task: &Task) -> muxterm_runtime::RuntimeResult<TaskOutcome> {
+    fn execute(&mut self, task: &Task) -> crate::runtime::RuntimeResult<TaskOutcome> {
         if self.cmd_tx.is_none() || self.status != BackendStatus::Connected {
             return Ok(TaskOutcome::Rejected {
                 reason: "tmux 未连接".into(),
@@ -4470,7 +4470,7 @@ impl Runtime for TmuxRuntime {
         }
     }
 
-    async fn shutdown(&mut self) -> muxterm_runtime::RuntimeResult<()> {
+    async fn shutdown(&mut self) -> crate::runtime::RuntimeResult<()> {
         // 已经由显式 Task::Detach 关闭 channel 时，不再重复发送命令。
         if self.cmd_tx.is_some() {
             self.execute(&Task::Shutdown)?;

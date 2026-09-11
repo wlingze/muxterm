@@ -154,14 +154,14 @@ impl Runtime for MockRuntime {
         }
     }
 
-    async fn connect(&mut self) -> muxterm_runtime::RuntimeResult<()> {
+    async fn connect(&mut self) -> crate::runtime::RuntimeResult<()> {
         self.status = BackendStatus::Connected;
         self.events
             .push(StateChange::BackendStatusChanged(BackendStatus::Connected));
         Ok(())
     }
 
-    fn execute(&mut self, task: &Task) -> muxterm_runtime::RuntimeResult<TaskOutcome> {
+    fn execute(&mut self, task: &Task) -> crate::runtime::RuntimeResult<TaskOutcome> {
         self.executed.push(task.clone());
         if let Some(log) = &self.executed_log {
             log.lock().unwrap().push(task.clone());
@@ -508,7 +508,7 @@ impl Runtime for MockRuntime {
         out.extend_state_changes(std::mem::take(&mut self.events));
     }
 
-    async fn shutdown(&mut self) -> muxterm_runtime::RuntimeResult<()> {
+    async fn shutdown(&mut self) -> crate::runtime::RuntimeResult<()> {
         self.status = BackendStatus::Exited;
         self.events
             .push(StateChange::BackendStatusChanged(BackendStatus::Exited));

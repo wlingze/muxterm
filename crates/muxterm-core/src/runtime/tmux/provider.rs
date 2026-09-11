@@ -6,9 +6,9 @@ use std::time::Duration;
 use crate::protocol::candidate::ExistingCandidate;
 use crate::runtime::tmux::backend::TmuxRuntime;
 use crate::runtime::RuntimeProvider;
+use crate::runtime::RuntimeSpec;
 use crate::runtime::{Runtime, RuntimeCapability};
 use crate::transport::TargetConnection;
-use muxterm_runtime::RuntimeSpec;
 
 /// tmux 插件（local / ssh）。
 pub struct TmuxDriver;
@@ -54,7 +54,7 @@ impl RuntimeProvider for TmuxDriver {
         &self,
         connect: &dyn TargetConnection,
         _namespace: Option<&str>,
-    ) -> muxterm_runtime::RuntimeResult<Vec<ExistingCandidate>> {
+    ) -> crate::runtime::RuntimeResult<Vec<ExistingCandidate>> {
         let ssh_config = Self::ssh_config();
         let (sessions, socket) = if connect.transport_id() == "ssh" {
             // 测试隔离远端 tmux：MUXTERM_TEST_REMOTE_TMUX_SOCKET（对标
@@ -96,7 +96,7 @@ impl RuntimeProvider for TmuxDriver {
         &self,
         connect: Arc<dyn TargetConnection>,
         spec: &RuntimeSpec,
-    ) -> muxterm_runtime::RuntimeResult<Box<dyn Runtime>> {
+    ) -> crate::runtime::RuntimeResult<Box<dyn Runtime>> {
         let mut rt = TmuxRuntime::new_with_connection_and_cwd(
             connect,
             spec.socket.as_deref(),

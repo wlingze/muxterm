@@ -6,10 +6,10 @@
 
 use std::sync::Arc;
 
-use muxterm_protocol::candidate::ExistingCandidate;
-use muxterm_transport::{ChannelKind, TargetConnection};
+use crate::protocol::candidate::ExistingCandidate;
+use crate::transport::{ChannelKind, TargetConnection};
 
-use crate::{Runtime, RuntimeCapability, RuntimeResult, RuntimeSpec};
+use super::{Runtime, RuntimeCapability, RuntimeResult, RuntimeSpec};
 
 /// Static provider information used by Catalog and frontend-facing lists.
 #[derive(Debug, Clone, PartialEq, Eq)]
