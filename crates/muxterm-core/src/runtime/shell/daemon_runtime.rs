@@ -3,7 +3,7 @@
 //! 生命周期：
 //! - `connect()`：检查 socket 存在，消费 daemon 的初始拓扑/事件批次
 //! - `execute(Task)`：映射为 CliCommand，经 IPC 发给 daemon，再消费事件批次
-//! - `take_events()`：轮询 semantic event wire，不重建累计状态快照
+//! - `drain_events()`：轮询 semantic event wire，不重建累计状态快照
 //! - `shutdown()`：释放 client；显式 `Task::Shutdown` 才终止 daemon 宿主
 
 use std::collections::{HashMap, VecDeque};
@@ -566,12 +566,6 @@ impl Runtime for DaemonRuntime {
         for batch in self.events.drain(..) {
             out.append(batch);
         }
-    }
-
-    fn take_events(&mut self) -> Vec<StateChange> {
-        let mut batch = RuntimeBatch::default();
-        self.drain_events(&mut batch);
-        batch.into_state_changes()
     }
 
     async fn shutdown(&mut self) -> muxterm_runtime::RuntimeResult<()> {

@@ -6,7 +6,7 @@
 //!
 //! 不依赖 tmux，不依赖 GTK；只依赖 `portable-pty`（Unix）做子进程 spawn。
 //! 所有状态操作是同步的（`execute` 内 spawn/kill/resize/write 都很快），
-//! 输出读取走独立线程 + tokio mpsc，`take_events` 非阻塞。
+//! 输出读取走独立线程 + tokio mpsc，`drain_events` 非阻塞。
 //!
 //! 设计要点：
 //! - `connect()` spawn 第一个 window 的第一个 pane（默认 shell）
@@ -14,7 +14,7 @@
 //! - pane 输出累积在 `Vec<u8>`（有界裁剪，上限见 `buffer_cap::MAX_PANE_OUTPUT_BYTES`）
 //! - `execute(Task)` 直接改本地状态 + spawn/kill/resize/write，产生事件入队
 //! - 所有 pane 的后台读线程共用一个 `mpsc::Sender<PtyMsg>`（clone 后传入线程），
-//!   backend 持有唯一的 `mpsc::Receiver`，`take_events` 时 drain
+//!   backend 持有唯一的 `mpsc::Receiver`，`drain_events` 时 drain
 
 use std::collections::{HashSet, VecDeque};
 use std::io::{Read, Write};
@@ -31,7 +31,9 @@ use crate::executable::{
     expand_config_value, parse_command_argv, prepare_pane_argv_for_platform, program_basename,
 };
 use crate::protocol::layout::{LayoutNode, TabLayout};
-use crate::protocol::state::{BackendStatus, PaneInfo, State, StateChange, TabInfo};
+#[cfg(test)]
+use crate::protocol::state::StateChange;
+use crate::protocol::state::{BackendStatus, PaneInfo, State, TabInfo};
 use crate::protocol::task::{Task, TaskOutcome};
 use crate::protocol::terminal::input::encode;
 use crate::runtime::{ControlEvent, RenderEvent, Runtime, RuntimeBatch, RuntimeCapability};
@@ -1202,15 +1204,18 @@ impl Runtime for ShellRuntime {
         }
     }
 
+    async fn shutdown(&mut self) -> muxterm_runtime::RuntimeResult<()> {
+        self.execute(&Task::Shutdown)?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+impl ShellRuntime {
     fn take_events(&mut self) -> Vec<StateChange> {
         let mut batch = RuntimeBatch::default();
         self.drain_events(&mut batch);
         batch.into_state_changes()
-    }
-
-    async fn shutdown(&mut self) -> muxterm_runtime::RuntimeResult<()> {
-        self.execute(&Task::Shutdown)?;
-        Ok(())
     }
 }
 

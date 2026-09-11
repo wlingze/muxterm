@@ -10,7 +10,7 @@
 use crate::protocol::layout::{LayoutNode, SplitDir, TabLayout};
 use crate::protocol::state::{BackendStatus, PaneInfo, State, StateChange, TabInfo};
 use crate::protocol::task::{Task, TaskOutcome};
-use crate::runtime::{Runtime, RuntimeCapability};
+use crate::runtime::{Runtime, RuntimeBatch, RuntimeCapability};
 use async_trait::async_trait;
 use muxterm_protocol::{PaneId, TabId};
 use std::sync::{Arc, Mutex};
@@ -504,8 +504,8 @@ impl Runtime for MockRuntime {
         Ok(outcome)
     }
 
-    fn take_events(&mut self) -> Vec<StateChange> {
-        std::mem::take(&mut self.events)
+    fn drain_events(&mut self, out: &mut RuntimeBatch) {
+        out.extend_state_changes(std::mem::take(&mut self.events));
     }
 
     async fn shutdown(&mut self) -> muxterm_runtime::RuntimeResult<()> {
@@ -513,6 +513,15 @@ impl Runtime for MockRuntime {
         self.events
             .push(StateChange::BackendStatusChanged(BackendStatus::Exited));
         Ok(())
+    }
+}
+
+#[cfg(test)]
+impl MockRuntime {
+    fn take_events(&mut self) -> Vec<StateChange> {
+        let mut batch = RuntimeBatch::default();
+        self.drain_events(&mut batch);
+        batch.into_state_changes()
     }
 }
 
