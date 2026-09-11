@@ -22,16 +22,18 @@ use ratatui::Terminal;
 
 use crate::frontend::command_queue::{ClientCommand, CommandQueue};
 use crate::frontend::event_pump::EventPump;
-use crate::frontend::ffi_client::{ClientEventKind, ClientTask, FfiClient};
+use crate::frontend::ffi_client::{ClientTask, FfiClient};
 use crate::frontend::mirror::should_forward_parser_response;
 use crate::frontend::tui::emulate::Cell;
 use crate::frontend::tui::input::{encode, ArrowDir, KeyEvent as MuxKeyEvent};
-use crate::frontend::tui::model::FrameSnapshot;
+use crate::frontend::tui::model::{status_label, FrameSnapshot};
 use crate::frontend::tui::palette::{
     ConnectAction, ConnectSource, PaletteState, WizardItem, WizardStep,
 };
 use crate::frontend::tui::render::{render_frame, RenderOpts};
+use crate::frontend::tui::scene::{drain_store_into_scenes, SceneStack};
 use crate::frontend::tui::terminal::TerminalManager;
+use crate::frontend::view_store::ViewStore;
 
 /// TUI 启动参数。
 pub struct TuiOpts {
@@ -59,10 +61,20 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
             .context("FfiClient::new")?,
     );
     let mut commands = CommandQueue::default();
+    let mut store = ViewStore::default();
+    let mut scenes = SceneStack::new(is_direct_pty_terminal(runtime_type));
 
     // 连接后给查询响应一点时间，再做一次 poll 让初始状态到达
     std::thread::sleep(Duration::from_millis(300));
-    let _ = bridge.poll();
+    let _ = bridge.sync_view_store(&mut store);
+    let events = bridge.poll_into_with_events(&mut store);
+    drain_store_into_scenes(&mut store, &mut scenes);
+    for event in &events {
+        scenes.apply_workspace_event(event);
+    }
+    if let Some(id) = store.active_workspace_id() {
+        scenes.show(id);
+    }
 
     let terminal_backend = CrosstermBackend::new(&mut *out);
     let mut terminal = Terminal::new(terminal_backend).context("ratatui Terminal::new")?;
@@ -70,54 +82,28 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
     let mut palette = PaletteState::new();
     palette.socket = opts.socket.clone();
     let mut palette_open = false;
-    // 终端渲染状态：每个 pane 一个 TerminalState
-    let mut term_mgr = TerminalManager::new();
-    // tmux 控制模式（tmux / tmux-ssh）拥有 pane 的 PTY 与协议，前端只是渲染
-    // 镜像：解析出的查询应答必须丢弃，不能经 send-keys 回写，否则 `git lg`
-    // 的 `10;rgb:...` / `65;...c` 会泄漏成 shell 里的字面命令。
-    term_mgr.forward_replies = is_direct_pty_terminal(runtime_type);
 
-    // 首帧：立即渲染一次（不依赖事件）
-    let snap = FrameSnapshot::from_client(bridge.client());
-    let replies = sync_terminals(&mut term_mgr, &snap);
-    maybe_send_replies(&mut commands, runtime_type, replies);
+    // 首帧：从常驻 Scene + ViewStore 渲染，不向 Core 拉 pane 输出。
+    let snap = snapshot_from_store(&store, &scenes, bridge.client().status_code());
+    if let Some(scene) = scenes.visible_mut() {
+        let replies = sync_terminals(&mut scene.terminals, &snap);
+        maybe_send_replies(&mut commands, runtime_type, replies);
+    }
     let _ = commands.flush(bridge.client());
-    draw(&mut terminal, &snap, &term_mgr, &palette, palette_open)?;
+    draw_visible(&mut terminal, &snap, &scenes, &palette, palette_open)?;
 
     // 每 50ms 事件轮询；仅当有实际状态变更时（事件非空 / 按键 / resize）才重绘，
     // 避免空轮询也做昂贵 snapshot+draw（拉取全部 pane 输出 + 全屏渲染）。
     loop {
-        let events = bridge.poll();
-        let mut needs_redraw = !events.is_empty();
-        // 事件驱动喂增量：后端 `%output` 的字节顺序天然正确，即使累计缓冲因
-        // 2MB 上限被截断，事件流也从不跳段，终端模拟器不会从 ANSI 序列中间
-        // 开始解析。绝不在这里用累计输出重放历史（重放会重新生成旧查询应答，
-        // 泄漏进 shell，也会在 tab 切换后把截断尾部渲染成乱码）。
-        for workspace_event in &events {
-            let ev = &workspace_event.event;
-            match ev.kind() {
-                ClientEventKind::PaneOutput => {
-                    term_mgr.feed_event(ev.pane_id, &ev.data);
-                }
-                ClientEventKind::PaneFrame => {
-                    term_mgr.feed_frame_event(ev.pane_id, &ev.data);
-                }
-                ClientEventKind::PaneSnapshot => {
-                    term_mgr.replace_snapshot(ev.pane_id, &ev.data);
-                }
-                ClientEventKind::PaneClosed => {
-                    // 只有 pane 真正关闭才移除状态；切 tab 不调用 retain。
-                    term_mgr.remove(ev.pane_id);
-                }
-                ClientEventKind::PaneResized if ev.data.len() >= 4 => {
-                    // data 携带 cols/rows（各 2 字节小端）
-                    let cols = u16::from_le_bytes([ev.data[0], ev.data[1]]);
-                    let rows = u16::from_le_bytes([ev.data[2], ev.data[3]]);
-                    term_mgr.resize_pane(ev.pane_id, cols, rows);
-                }
-                _ => {}
-            }
+        let events = bridge.poll_into_with_events(&mut store);
+        drain_store_into_scenes(&mut store, &mut scenes);
+        for event in &events {
+            scenes.apply_workspace_event(event);
         }
+        if let Some(id) = store.active_workspace_id() {
+            scenes.show(id);
+        }
+        let mut needs_redraw = !events.is_empty();
 
         if poll(Duration::from_millis(50)).context("poll event")? {
             let ev = read().context("read event")?;
@@ -129,7 +115,8 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
                             &key,
                             &mut bridge,
                             &mut runtime_type,
-                            &mut term_mgr,
+                            &mut store,
+                            &mut scenes,
                             &mut palette_open,
                         )? {
                             needs_redraw = true;
@@ -137,8 +124,16 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
                     } else if is_quit(&key) {
                         break;
                     } else {
-                        let snap = FrameSnapshot::from_client(bridge.client());
-                        if handle_key(&mut commands, &key, &snap, &mut palette_open, &mut palette) {
+                        let snap =
+                            snapshot_from_store(&store, &scenes, bridge.client().status_code());
+                        if handle_key(
+                            &mut commands,
+                            &key,
+                            &snap,
+                            &mut scenes,
+                            &mut palette_open,
+                            &mut palette,
+                        ) {
                             needs_redraw = true;
                         }
                     }
@@ -156,15 +151,17 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
                             cols,
                             rows,
                         });
-                    } else if let Some(pane) =
-                        active_pane_id(&FrameSnapshot::from_client(bridge.client()))
-                    {
-                        commands.push(ClientCommand::Resize {
-                            workspace_id: None,
-                            pane_id: Some(pane),
-                            cols,
-                            rows,
-                        });
+                    } else {
+                        let snap =
+                            snapshot_from_store(&store, &scenes, bridge.client().status_code());
+                        if let Some(pane) = active_pane_id(&snap) {
+                            commands.push(ClientCommand::Resize {
+                                workspace_id: None,
+                                pane_id: Some(pane),
+                                cols,
+                                rows,
+                            });
+                        }
                     }
                     needs_redraw = true;
                 }
@@ -176,11 +173,13 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
 
         // 仅在确有变化时重绘
         if needs_redraw {
-            let snap = FrameSnapshot::from_client(bridge.client());
-            let replies = sync_terminals(&mut term_mgr, &snap);
-            maybe_send_replies(&mut commands, runtime_type, replies);
+            let snap = snapshot_from_store(&store, &scenes, bridge.client().status_code());
+            if let Some(scene) = scenes.visible_mut() {
+                let replies = sync_terminals(&mut scene.terminals, &snap);
+                maybe_send_replies(&mut commands, runtime_type, replies);
+            }
             let _ = commands.flush(bridge.client());
-            draw(&mut terminal, &snap, &term_mgr, &palette, palette_open)?;
+            draw_visible(&mut terminal, &snap, &scenes, &palette, palette_open)?;
         }
     }
 
@@ -193,21 +192,37 @@ fn run_inner<W: std::io::Write>(out: &mut W, opts: TuiOpts) -> Result<()> {
     Ok(())
 }
 
+fn snapshot_from_store(store: &ViewStore, scenes: &SceneStack, status_code: u32) -> FrameSnapshot {
+    let Some(id) = scenes.visible_id().or_else(|| store.active_workspace_id()) else {
+        return FrameSnapshot {
+            status: status_label(status_code).to_string(),
+            ..FrameSnapshot::default()
+        };
+    };
+    let Some(view) = store.workspace(id) else {
+        return FrameSnapshot {
+            status: status_label(status_code).to_string(),
+            ..FrameSnapshot::default()
+        };
+    };
+    let visible_tab = scenes.visible().and_then(|scene| scene.visible_tab(view));
+    FrameSnapshot::from_workspace_view(view, status_label(status_code), visible_tab)
+}
+
 /// 根据快照同步各 pane 终端：
-/// - 已有状态的 pane 只调整尺寸（增量一律走 `%output` 事件，不用累计快照
-///   切片：前端快照缓冲小于长运行 pane 的累计输出后只是滑动窗口，按已喂
-///   长度切片会追着陈旧字节，导致冻结/乱码）；
-/// - 首次见到的 pane 才用累计快照（最近字节）播种；
+/// - 已有状态的 pane 只调整尺寸（增量一律走 render 事件）；
+/// - 首次见到的 pane 建空 VT，等 mailbox 播种；
 /// - **不**按激活 tab 清理状态（切 tab 不丢屏幕），也不重放截断的历史。
 fn sync_terminals(term_mgr: &mut TerminalManager, snap: &FrameSnapshot) -> Vec<(u32, Vec<u8>)> {
     for p in &snap.panes {
         let cols = p.cols.max(1);
         let rows = p.rows.max(1);
-        let full = snap.outputs.get(&p.id).cloned().unwrap_or_default();
         if term_mgr.has(p.id) {
             term_mgr.resize_pane(p.id, cols, rows);
+        } else if let Some(full) = snap.outputs.get(&p.id) {
+            term_mgr.seed(p.id, cols, rows, full);
         } else {
-            term_mgr.seed(p.id, cols, rows, &full);
+            term_mgr.ensure(p.id, cols, rows);
         }
     }
     term_mgr.drain_replies()
@@ -257,6 +272,21 @@ fn active_pane_id(snap: &FrameSnapshot) -> Option<u32> {
     } else {
         snap.panes.first().map(|p| p.id)
     }
+}
+
+fn draw_visible<W: std::io::Write>(
+    terminal: &mut Terminal<CrosstermBackend<&mut W>>,
+    snap: &FrameSnapshot,
+    scenes: &SceneStack,
+    palette: &PaletteState,
+    palette_open: bool,
+) -> Result<()> {
+    let empty = TerminalManager::new();
+    let term_mgr = scenes
+        .visible()
+        .map(|scene| &scene.terminals)
+        .unwrap_or(&empty);
+    draw(terminal, snap, term_mgr, palette, palette_open)
 }
 
 fn draw<W: std::io::Write>(
@@ -337,7 +367,8 @@ fn handle_palette_key(
     key: &KeyEvent,
     bridge: &mut EventPump,
     runtime_type: &mut &'static str,
-    term_mgr: &mut TerminalManager,
+    store: &mut ViewStore,
+    scenes: &mut SceneStack,
     palette_open: &mut bool,
 ) -> Result<bool> {
     match key.code {
@@ -351,9 +382,19 @@ fn handle_palette_key(
                     // 向导完成 → 重连（用当前 socket）
                     let sock = palette.socket.clone();
                     reconnect(bridge, runtime_type, &action, sock.as_deref())?;
-                    // 重连后旧 pane 状态全部失效：清空并按新后端重设应答策略。
-                    term_mgr.clear();
-                    term_mgr.forward_replies = is_direct_pty_terminal(runtime_type);
+                    // 重连后旧 Scene 全部失效：清空并按新后端重设应答策略。
+                    *store = ViewStore::default();
+                    scenes.clear();
+                    scenes.set_forward_replies(is_direct_pty_terminal(runtime_type));
+                    let _ = bridge.sync_view_store(store);
+                    let events = bridge.poll_into_with_events(store);
+                    drain_store_into_scenes(store, scenes);
+                    for event in &events {
+                        scenes.apply_workspace_event(event);
+                    }
+                    if let Some(id) = store.active_workspace_id() {
+                        scenes.show(id);
+                    }
                     *palette_open = false;
                     Ok(true)
                 }
@@ -555,6 +596,7 @@ fn handle_key(
     commands: &mut CommandQueue,
     key: &KeyEvent,
     snap: &FrameSnapshot,
+    scenes: &mut SceneStack,
     palette_open: &mut bool,
     palette: &mut PaletteState,
 ) -> bool {
@@ -584,11 +626,13 @@ fn handle_key(
                 '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' => {
                     let n = lower.to_digit(10).unwrap() as usize;
                     if n <= snap.tabs.len() {
+                        let tab_id = snap.tabs[n - 1].id;
+                        if let Some(scene) = scenes.visible_mut() {
+                            scene.set_visible_tab(tab_id);
+                        }
                         commands.push(ClientCommand::Task {
                             workspace_id: None,
-                            task: ClientTask::SwitchTab {
-                                tab_id: snap.tabs[n - 1].id,
-                            },
+                            task: ClientTask::SwitchTab { tab_id },
                         });
                         return true;
                     }

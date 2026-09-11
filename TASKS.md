@@ -145,10 +145,9 @@ CI 跑 [`docs/TESTING.md`](docs/TESTING.md) 的结构门禁。
 
 1. ~~收回 workspace crate 到 `src/core` + `src/frontend`。~~
 2. ~~迁完旧 QuickConnect / `pane_scroll_ansi` fixture，根测试可编译。~~
-3. Phase 6 收尾：生产路径已是 `RuntimeBatch`；再收 mixed-event 兼容层与 C ABI 摊平。
-4. Phase 8：空目录、过期文档、把 TESTING.md 里还没进脚本的门禁补进
-   `scripts/check-architecture.sh`。
-5. Phase 9 TUI：per-workspace Scene buffer 组；切 workspace 不走 FFI 拉帧。
+3. ~~Phase 6 收尾：生产路径已是 `RuntimeBatch`；C ABI 在边界摊平并冻结。~~
+4. ~~Phase 8：空目录、过期文档、TESTING.md 门禁补进 `scripts/check-architecture.sh`。~~
+5. ~~Phase 9 TUI：per-workspace Scene buffer 组；切 workspace/tab 不走 FFI 拉帧。~~
 
 ## 非目标
 

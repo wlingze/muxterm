@@ -46,6 +46,25 @@ pub struct WorkspaceView {
     pending_baselines: std::collections::HashSet<u32>,
 }
 
+impl WorkspaceView {
+    /// Core-marked active tab, else the first tab.
+    pub fn active_tab_id(&self) -> Option<u32> {
+        self.tabs
+            .iter()
+            .find(|tab| tab.is_active)
+            .map(|tab| tab.id)
+            .or_else(|| self.tabs.first().map(|tab| tab.id))
+    }
+
+    pub fn panes_for_tab(&self, tab_id: u32) -> &[ClientPane] {
+        self.panes.get(&tab_id).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    pub fn all_pane_ids(&self) -> impl Iterator<Item = u32> + '_ {
+        self.panes.values().flatten().map(|pane| pane.id)
+    }
+}
+
 /// Owned snapshots and render mailboxes keyed by stable workspace identity.
 #[derive(Debug, Default)]
 pub struct ViewStore {
