@@ -36,34 +36,6 @@ pub use resolver::{
 
 type DiscoveryJob = (String, Option<Arc<dyn TargetConnection>>, Vec<ChannelKind>);
 
-/// tmux session name for a generic Project worktree: `{project}/{worktree}`.
-///
-/// Each component is sanitized so two projects with the same branch do not
-/// collide, and tmux does not see `/` inside a component.
-pub(crate) fn tmux_worktree_session(project_id: &str, worktree_id: &str) -> String {
-    format!(
-        "{}/{}",
-        sanitize_tmux_session_component(project_id),
-        sanitize_tmux_session_component(worktree_id)
-    )
-}
-
-fn sanitize_tmux_session_component(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for ch in value.chars() {
-        if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.') {
-            out.push(ch);
-        } else {
-            out.push('-');
-        }
-    }
-    if out.is_empty() {
-        "worktree".into()
-    } else {
-        out
-    }
-}
-
 fn request_template(request: &OpenRequest) -> Result<Option<TemplateName>, resolver::ResolveError> {
     let Some(name) = request.template.as_deref() else {
         return Ok(None);
@@ -179,7 +151,7 @@ impl Catalog {
             .collect()
     }
 
-    fn runtime(&self, id: &str) -> Option<&dyn RuntimeProvider> {
+    pub(crate) fn runtime(&self, id: &str) -> Option<&dyn RuntimeProvider> {
         self.runtimes.get(id)
     }
 
@@ -393,36 +365,19 @@ impl Catalog {
                                 // 只允许显式 named session/socket 且该 session
                                 // 已运行；未明确或不可达返回 choice-required，
                                 // 禁止偷偷换 default 或启动 server。
-                                let Some(session_name) = descriptor.session.clone() else {
-                                    return Err(resolver::ResolveError::CreateNotAllowed {
-                                        identity,
-                                        reason: "需要显式 named session".to_string(),
-                                    });
-                                };
-                                let Some(socket) = descriptor.socket.clone() else {
-                                    return Err(resolver::ResolveError::CreateNotAllowed {
-                                        identity,
-                                        reason: "需要显式 socket 路径".to_string(),
-                                    });
-                                };
-                                let herdr = crate::runtime::herdr::session::HerdrSession::new(
-                                    &session_name,
-                                    &socket,
-                                );
-                                if herdr.ping().is_err() {
-                                    return Err(resolver::ResolveError::CreateNotAllowed {
-                                        identity,
-                                        reason: "目标 named session 未运行".to_string(),
-                                    });
-                                }
-                                let created = herdr
-                                    .workspace_create(&descriptor.path, &descriptor.name)
+                                let runtime_spec = descriptor_to_spec(descriptor).runtime_spec();
+                                let created = driver
+                                    .create_identity(
+                                        connect.as_ref(),
+                                        &runtime_spec,
+                                        Some(descriptor.name.as_str()),
+                                    )
                                     .map_err(|error| resolver::ResolveError::CreateNotAllowed {
                                         identity: identity.clone(),
-                                        reason: format!("workspace.create 失败: {error:#}"),
+                                        reason: error.to_string(),
                                     })?;
                                 let mut canonical = descriptor.clone();
-                                canonical.workspace_id = Some(created.workspace_id);
+                                canonical.workspace_id = Some(created.path);
                                 let spec = descriptor_to_spec(&canonical);
                                 Ok(ResolvedTarget { canonical, spec })
                             }
@@ -522,11 +477,10 @@ impl Catalog {
                 };
                 target.path = worktree.path.clone();
                 target.workspace_id = None;
-                if target.runtime == crate::projects::TargetRuntime::Tmux {
-                    target.session = Some(tmux_worktree_session(
-                        project.id.as_str(),
-                        worktree.id.as_str(),
-                    ));
+                if let Some(session) = self.runtime(target.runtime.as_str()).and_then(|provider| {
+                    provider.worktree_session_name(project.id.as_str(), worktree.id.as_str())
+                }) {
+                    target.session = Some(session);
                 }
 
                 let mut resolved = self.resolve_descriptor(connections, &target, request.intent)?;

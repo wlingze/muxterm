@@ -3195,58 +3195,6 @@ mod attention_signal_tests {
         assert!(t.take_attention_signals().is_empty());
         assert_eq!(t.title.as_deref(), Some("my-title"));
     }
-
-    #[test]
-    fn fixture_osc_attention_passthrough_decodes_to_signals() {
-        // E1 fixture 的 %output 行经 ControlEscapeDecoder 还原后 feed，
-        // 应产出 OSC 133 C / D 与 BEL/9/777 信号（PASS_THROUGH 三态）。
-        let decoder = crate::runtime::tmux::protocol::ControlEscapeDecoder::new();
-        let raw = include_str!("../../../../tests/samples/osc-attention-tmux3.7b.txt");
-        let mut t = TerminalState::new(80, 24);
-        let mut saw = Vec::new();
-        for line in raw.lines() {
-            if !line.starts_with("%output ") {
-                continue;
-            }
-            // 3.7b 控制模式直接写 `%output %0 <content>`（无引号）；
-            // 取 pane id 之后的内容并解码 C 转义。
-            let rest = &line["%output ".len()..];
-            let Some(space) = rest.find(' ') else {
-                continue;
-            };
-            let content = &rest[space + 1..];
-            let decoded = decoder.decode(content).unwrap_or_default();
-            t.feed(&decoded);
-            saw.extend(t.take_attention_signals());
-        }
-        assert!(
-            saw.contains(&AttentionSignal::CommandStart),
-            "fixture 应含 CommandStart: {saw:?}"
-        );
-        assert!(
-            saw.iter()
-                .any(|s| matches!(s, AttentionSignal::CommandDone { exit_code: Some(0) })),
-            "fixture 应含 CommandDone(0): {saw:?}"
-        );
-        assert!(
-            saw.iter().any(|s| matches!(
-                s,
-                AttentionSignal::AttentionRequest {
-                    source: AttentionSource::Bel
-                }
-            )),
-            "fixture 应含 Bel: {saw:?}"
-        );
-        assert!(
-            saw.iter().any(|s| matches!(
-                s,
-                AttentionSignal::AttentionRequest {
-                    source: AttentionSource::OscNotify
-                }
-            )),
-            "fixture 应含 OscNotify: {saw:?}"
-        );
-    }
 }
 
 /// xterm ctlseqs / Alacritty / VTE 行为一致性测试。

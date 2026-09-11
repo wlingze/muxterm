@@ -102,12 +102,12 @@ pub extern "C" fn muxterm_status_snapshot_json(
             Some(s) if !s.trim().is_empty() => s,
             _ => return json_error("session 为空"),
         };
-        let cfg = crate::runtime::tmux::status::StatusQueryConfig {
-            socket: cstr_opt(socket),
-            ssh_alias,
-            session,
+        let catalog = crate::catalog::Catalog::with_builtins();
+        let Some(driver) = catalog.runtime("tmux") else {
+            return json_error("tmux runtime 未注册");
         };
-        match crate::runtime::tmux::status::fetch_snapshot(&cfg) {
+        let conn = crate::transport::Connect::new(transport, ssh_alias.as_deref().unwrap_or(""));
+        match driver.status_snapshot(conn.as_ref(), &session, cstr_opt(socket).as_deref()) {
             Ok(status) => json_string(serde_json::json!({
                 "ok": true,
                 "status": status,

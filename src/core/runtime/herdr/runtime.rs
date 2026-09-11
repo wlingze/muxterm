@@ -2887,10 +2887,6 @@ impl State for HerdrRuntime {
 
 #[async_trait]
 impl Runtime for HerdrRuntime {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
     fn support(&self) -> &'static [RuntimeCapability] {
         HERDR_CAPABILITIES
     }
@@ -3286,6 +3282,15 @@ impl Runtime for HerdrRuntime {
         for batch in self.events.drain(..) {
             out.append(batch);
         }
+    }
+
+    fn diagnostics(&self, pane: crate::protocol::PaneId) -> Option<serde_json::Value> {
+        Some(serde_json::json!({
+            "stream_starts": self.test_stream_starts(pane),
+            "control_takeover_starts": self.test_control_takeover_starts(pane),
+            "takeover_suppressed": self.test_takeover_suppressed(pane),
+            "actual_mode": format!("{:?}", self.test_actual_mode(pane)),
+        }))
     }
 
     async fn shutdown(&mut self) -> crate::runtime::RuntimeResult<()> {

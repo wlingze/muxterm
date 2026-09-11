@@ -23,9 +23,9 @@ impl RuntimeRegistry {
     /// Construct the built-in RuntimeProvider registry in stable UI order.
     pub fn with_builtins() -> Self {
         let mut registry = Self::new();
-        registry.register(Box::new(super::tmux::provider::TmuxDriver));
-        registry.register(Box::new(super::herdr::provider::HerdrDriver));
-        registry.register(Box::new(super::shell::provider::ShellDriver));
+        registry.register(Box::new(super::tmux::TmuxDriver));
+        registry.register(Box::new(super::herdr::HerdrDriver));
+        registry.register(Box::new(super::shell::ShellDriver));
         registry
     }
 

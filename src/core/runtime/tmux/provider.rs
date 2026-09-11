@@ -5,9 +5,10 @@ use std::time::Duration;
 
 use crate::protocol::candidate::ExistingCandidate;
 use crate::runtime::tmux::backend::TmuxRuntime;
+use crate::runtime::tmux::status::{fetch_snapshot, StatusQueryConfig};
 use crate::runtime::RuntimeProvider;
 use crate::runtime::RuntimeSpec;
-use crate::runtime::{Runtime, RuntimeCapability};
+use crate::runtime::{Runtime, RuntimeCapability, RuntimeError, RuntimeResult};
 use crate::transport::TargetConnection;
 
 /// tmux 插件（local / ssh）。
@@ -17,17 +18,21 @@ impl TmuxDriver {
     fn ssh_config() -> Option<String> {
         std::env::var("MUXTERM_SSH_CONFIG_PATH").ok()
     }
+}
 
-    /// Normalize the legacy ABI's overloaded SSH socket/alias arguments.
-    ///
-    /// New product callers provide `WorkspaceSpec.alias` and `socket`
-    /// separately; this helper exists only while the old C constructor is
-    /// being migrated to the provider path.
-    pub(crate) fn legacy_ssh_alias_and_tmux_socket(
-        socket: Option<&str>,
-        alias: Option<&str>,
-    ) -> Option<(String, Option<String>)> {
-        TmuxRuntime::ssh_alias_and_tmux_socket(socket, alias)
+fn sanitize_session_component(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.') {
+            out.push(ch);
+        } else {
+            out.push('-');
+        }
+    }
+    if out.is_empty() {
+        "worktree".into()
+    } else {
+        out
     }
 }
 
@@ -106,5 +111,33 @@ impl RuntimeProvider for TmuxDriver {
         );
         rt.set_scrollback_lines(spec.scrollback_lines);
         Ok(Box::new(rt))
+    }
+
+    fn status_snapshot(
+        &self,
+        connection: &dyn TargetConnection,
+        session: &str,
+        socket: Option<&str>,
+    ) -> RuntimeResult<serde_json::Value> {
+        let ssh_alias = if connection.transport_id() == "ssh" {
+            Some(connection.target().to_string())
+        } else {
+            None
+        };
+        let cfg = StatusQueryConfig {
+            socket: socket.map(ToOwned::to_owned),
+            ssh_alias,
+            session: session.to_string(),
+        };
+        let status = fetch_snapshot(&cfg).map_err(RuntimeError::message)?;
+        serde_json::to_value(status).map_err(RuntimeError::message)
+    }
+
+    fn worktree_session_name(&self, project_id: &str, worktree_id: &str) -> Option<String> {
+        Some(format!(
+            "{}/{}",
+            sanitize_session_component(project_id),
+            sanitize_session_component(worktree_id)
+        ))
     }
 }

@@ -5,7 +5,6 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use crate::protocol::task::Task;
 use crate::protocol::PaneId;
-use crate::runtime::herdr::HerdrRuntime;
 
 use super::support::{json_error, json_string, parse_workspace_id, MuxtermHandle};
 use super::task::task_result_code;
@@ -116,18 +115,9 @@ pub unsafe extern "C" fn muxterm_workspace_herdr_probe_json(
         let Some(workspace) = handle.pool().get(&workspace_id) else {
             return json_error("workspace 不存在");
         };
-        let Some(runtime) = workspace.runtime().as_any().downcast_ref::<HerdrRuntime>() else {
-            return json_string(serde_json::json!({"ok": true, "probe": null}));
-        };
-        let pane = PaneId(pane_id);
         json_string(serde_json::json!({
             "ok": true,
-            "probe": {
-                "stream_starts": runtime.test_stream_starts(pane),
-                "control_takeover_starts": runtime.test_control_takeover_starts(pane),
-                "takeover_suppressed": runtime.test_takeover_suppressed(pane),
-                "actual_mode": format!("{:?}", runtime.test_actual_mode(pane)),
-            },
+            "probe": workspace.runtime().diagnostics(PaneId(pane_id)),
         }))
     }))
     .unwrap_or_else(|_| json_error("Herdr probe panic"))

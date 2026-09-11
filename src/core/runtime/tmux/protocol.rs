@@ -3009,4 +3009,54 @@ b""#,
             } if keyword == "no-such-thing" && raw == "a b c"
         ));
     }
+
+    #[test]
+    fn fixture_osc_attention_passthrough_decodes_to_signals() {
+        use crate::activity::attention::signal::{AttentionSignal, AttentionSource};
+        use crate::protocol::terminal::emulate::TerminalState;
+
+        let decoder = ControlEscapeDecoder::new();
+        let raw = include_str!("../../../../tests/samples/osc-attention-tmux3.7b.txt");
+        let mut terminal = TerminalState::new(80, 24);
+        let mut saw = Vec::new();
+        for line in raw.lines() {
+            if !line.starts_with("%output ") {
+                continue;
+            }
+            let rest = &line["%output ".len()..];
+            let Some(space) = rest.find(' ') else {
+                continue;
+            };
+            let decoded = decoder.decode(&rest[space + 1..]).unwrap_or_default();
+            terminal.feed(&decoded);
+            saw.extend(terminal.take_attention_signals());
+        }
+        assert!(
+            saw.contains(&AttentionSignal::CommandStart),
+            "fixture 应含 CommandStart: {saw:?}"
+        );
+        assert!(
+            saw.iter()
+                .any(|s| matches!(s, AttentionSignal::CommandDone { exit_code: Some(0) })),
+            "fixture 应含 CommandDone(0): {saw:?}"
+        );
+        assert!(
+            saw.iter().any(|s| matches!(
+                s,
+                AttentionSignal::AttentionRequest {
+                    source: AttentionSource::Bel
+                }
+            )),
+            "fixture 应含 Bel: {saw:?}"
+        );
+        assert!(
+            saw.iter().any(|s| matches!(
+                s,
+                AttentionSignal::AttentionRequest {
+                    source: AttentionSource::OscNotify
+                }
+            )),
+            "fixture 应含 OscNotify: {saw:?}"
+        );
+    }
 }

@@ -561,19 +561,21 @@ mod tests {
     use super::*;
     use crate::protocol::task::Task;
     use crate::protocol::{PaneId, TabId};
-    use crate::runtime::mock::MockRuntime;
+    use crate::runtime::{MockRuntime, Runtime};
     use std::sync::{Arc, Mutex};
 
     fn id(name: &str, runtime: &str) -> WorkspaceId {
         WorkspaceId::new("local", None, name, runtime, "")
     }
 
-    /// 读取某 workspace 的 MockRuntime 收到的 set_foreground 调用序列。
-    fn foreground_calls(pool: &WorkspacePool, id: &WorkspaceId) -> Vec<bool> {
-        pool.get(id)
-            .and_then(|w| w.runtime().as_any().downcast_ref::<MockRuntime>())
-            .map(|rt| rt.foreground_calls.clone())
-            .unwrap_or_default()
+    fn mock_with_fg(log: &Arc<Mutex<Vec<bool>>>) -> Box<dyn Runtime> {
+        let mut runtime = MockRuntime::with_single_pane();
+        runtime.foreground_log = Some(Arc::clone(log));
+        Box::new(runtime)
+    }
+
+    fn read_fg(log: &Arc<Mutex<Vec<bool>>>) -> Vec<bool> {
+        log.lock().unwrap().clone()
     }
 
     /// H0：Mock 只报 WorktreeList（不报 WorktreeCreate）时，create 必须被拒，
@@ -814,12 +816,12 @@ mod tests {
     async fn open_first_workspace_sets_foreground_true() {
         let mut pool = WorkspacePool::new(WorkspacePoolPolicy::new(4));
         let a = id("a", "tmux");
-        pool.open(a.clone(), "a".into(), |_| {
-            Box::new(MockRuntime::with_single_pane())
-        })
-        .await
-        .unwrap();
-        assert_eq!(foreground_calls(&pool, &a), vec![true]);
+        let fg_a = Arc::new(Mutex::new(Vec::new()));
+        let log = Arc::clone(&fg_a);
+        pool.open(a.clone(), "a".into(), move |_| mock_with_fg(&log))
+            .await
+            .unwrap();
+        assert_eq!(read_fg(&fg_a), vec![true]);
     }
 
     /// W1：open/activate 第二个 → 旧 [false]、新 [true]；重复 activate 零新增。
@@ -828,27 +830,27 @@ mod tests {
         let mut pool = WorkspacePool::new(WorkspacePoolPolicy::new(4));
         let a = id("a", "tmux");
         let b = id("b", "tmux");
-        pool.open(a.clone(), "a".into(), |_| {
-            Box::new(MockRuntime::with_single_pane())
-        })
-        .await
-        .unwrap();
-        pool.open(b.clone(), "b".into(), |_| {
-            Box::new(MockRuntime::with_single_pane())
-        })
-        .await
-        .unwrap();
-        assert_eq!(foreground_calls(&pool, &a), vec![true, false]);
-        assert_eq!(foreground_calls(&pool, &b), vec![true]);
+        let fg_a = Arc::new(Mutex::new(Vec::new()));
+        let fg_b = Arc::new(Mutex::new(Vec::new()));
+        let log_a = Arc::clone(&fg_a);
+        let log_b = Arc::clone(&fg_b);
+        pool.open(a.clone(), "a".into(), move |_| mock_with_fg(&log_a))
+            .await
+            .unwrap();
+        pool.open(b.clone(), "b".into(), move |_| mock_with_fg(&log_b))
+            .await
+            .unwrap();
+        assert_eq!(read_fg(&fg_a), vec![true, false]);
+        assert_eq!(read_fg(&fg_b), vec![true]);
 
         pool.activate(&b);
         pool.activate(&b);
-        assert_eq!(foreground_calls(&pool, &a), vec![true, false]);
-        assert_eq!(foreground_calls(&pool, &b), vec![true]);
+        assert_eq!(read_fg(&fg_a), vec![true, false]);
+        assert_eq!(read_fg(&fg_b), vec![true]);
 
         pool.activate(&a);
-        assert_eq!(foreground_calls(&pool, &a), vec![true, false, true]);
-        assert_eq!(foreground_calls(&pool, &b), vec![true, false]);
+        assert_eq!(read_fg(&fg_a), vec![true, false, true]);
+        assert_eq!(read_fg(&fg_b), vec![true, false]);
     }
 
     /// W1：insert_connected 与 activate 同语义（旧 false、新 true）。
@@ -856,21 +858,18 @@ mod tests {
     async fn insert_connected_notifies_foreground_like_activate() {
         let mut pool = WorkspacePool::new(WorkspacePoolPolicy::new(4));
         let a = id("a", "tmux");
-        pool.open(a.clone(), "a".into(), |_| {
-            Box::new(MockRuntime::with_single_pane())
-        })
-        .await
-        .unwrap();
         let b = id("b", "tmux");
-        let workspace = Workspace::new(
-            b.clone(),
-            "b".into(),
-            Box::new(MockRuntime::with_single_pane()),
-        );
+        let fg_a = Arc::new(Mutex::new(Vec::new()));
+        let fg_b = Arc::new(Mutex::new(Vec::new()));
+        let log_a = Arc::clone(&fg_a);
+        pool.open(a.clone(), "a".into(), move |_| mock_with_fg(&log_a))
+            .await
+            .unwrap();
+        let workspace = Workspace::new(b.clone(), "b".into(), mock_with_fg(&fg_b));
         pool.insert_connected(workspace);
         assert_eq!(pool.active_id(), Some(&b));
-        assert_eq!(foreground_calls(&pool, &a), vec![true, false]);
-        assert_eq!(foreground_calls(&pool, &b), vec![true]);
+        assert_eq!(read_fg(&fg_a), vec![true, false]);
+        assert_eq!(read_fg(&fg_b), vec![true]);
     }
 
     /// 侧栏等消费者必须拿到首次打开顺序；激活不能把当前项挪到最前。
@@ -913,7 +912,7 @@ mod tests {
         })
         .await
         .unwrap();
-        assert_eq!(foreground_calls(&pool, &a), vec![true]);
+        assert_eq!(read_fg(&fg), vec![true]);
         assert!(pool.close(&a));
         assert_eq!(
             *fg.lock().unwrap(),

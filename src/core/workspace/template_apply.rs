@@ -604,7 +604,7 @@ mod tests {
     use crate::protocol::layout::LayoutNode;
     use crate::protocol::layout::SplitDir;
     use crate::protocol::TabId;
-    use crate::runtime::mock::MockRuntime;
+    use crate::runtime::MockRuntime;
 
     fn split_template() -> WorkspaceTemplate {
         WorkspaceTemplate {

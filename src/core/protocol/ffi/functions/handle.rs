@@ -12,7 +12,6 @@ use crate::projects::{ProjectStore, ProjectsService};
 use crate::protocol::task::Task;
 use crate::protocol::terminal::emulate::DEFAULT_SCROLLBACK_LINES;
 use crate::protocol::WorkspaceId;
-use crate::runtime::shell::daemon_runtime::DaemonRuntime;
 use crate::transport::registry::ConnectionRegistry;
 use crate::workspace::pool::WorkspacePool;
 use crate::workspace::spec::WorkspaceSpec;
@@ -308,11 +307,10 @@ fn legacy_runtime_spec(
             )
         }
         "ssh" | "tmux-ssh" => {
-            let (alias_name, socket) =
-                crate::runtime::tmux::provider::TmuxDriver::legacy_ssh_alias_and_tmux_socket(
-                    sock.as_deref(),
-                    alias.as_deref(),
-                )?;
+            let (alias_name, socket) = crate::runtime::legacy_ssh_alias_and_tmux_socket(
+                sock.as_deref(),
+                alias.as_deref(),
+            )?;
             let spec = WorkspaceSpec {
                 transport: "ssh".into(),
                 alias: Some(alias_name),
@@ -341,7 +339,7 @@ fn legacy_runtime_spec(
                 .unwrap_or_else(|| crate::protocol::daemon::default_socket_path(&daemon_name));
             (
                 WorkspaceId::new("local", alias.as_deref(), &session, "daemon", ""),
-                LegacyRuntime::Daemon(Box::new(DaemonRuntime::new(path, daemon_name))),
+                LegacyRuntime::Daemon(crate::runtime::new_daemon_runtime(path, daemon_name)),
             )
         }
         _ => {

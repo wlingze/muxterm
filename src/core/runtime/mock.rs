@@ -139,10 +139,6 @@ impl State for MockRuntime {
 
 #[async_trait]
 impl Runtime for MockRuntime {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
     fn support(&self) -> &'static [RuntimeCapability] {
         self.capabilities
     }
