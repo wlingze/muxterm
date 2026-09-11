@@ -48,8 +48,8 @@ pub(super) fn refresh_connection_summary(s: &mut UiState) {
         .clone()
         .or_else(|| (!id.session.is_empty()).then(|| id.session.clone()));
     let status = match s.runtime_status {
-        muxterm_core::protocol::ffi::types::BACKEND_STATUS_CONNECTED => "connected",
-        muxterm_core::protocol::ffi::types::BACKEND_STATUS_CONNECTING => "connecting",
+        crate::protocol::ffi::types::BACKEND_STATUS_CONNECTED => "connected",
+        crate::protocol::ffi::types::BACKEND_STATUS_CONNECTING => "connecting",
         _ => "disconnected",
     };
     let (down, up) = s.event_pump.client().traffic_bytes();

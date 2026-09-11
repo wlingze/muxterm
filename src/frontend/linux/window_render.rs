@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use crate::frontend::command_queue::ClientCommand;
 use crate::frontend::ffi_client::ClientTask;
 use crate::frontend::linux::view_store::PaneRenderPolicy;
-use muxterm_core::protocol::WorkspaceId;
+use crate::protocol::WorkspaceId;
 
 use super::super::view_store::WorkspaceView;
 use super::window_event_pump::enqueue_workspace_input;
@@ -112,9 +112,7 @@ pub(super) fn refresh_event_workspaces(s: &mut UiState, events: &[ClientWorkspac
     // only changes the frontend-visible Scene.
     let core_active_tab_workspaces: HashSet<String> = events
         .iter()
-        .filter(|event| {
-            event.event.type_ == muxterm_core::protocol::ffi::types::STATE_ACTIVE_TAB_CHANGED
-        })
+        .filter(|event| event.event.type_ == crate::protocol::ffi::types::STATE_ACTIVE_TAB_CHANGED)
         .map(|event| event.workspace_id.clone())
         .collect();
     for workspace_key in core_active_tab_workspaces {
@@ -169,15 +167,13 @@ pub(super) fn apply_attention_visibility_events(s: &UiState, events: &[ClientWor
         .filter(|event| event.workspace_id == active_workspace)
     {
         let pane = match event.event.type_ {
-            muxterm_core::protocol::ffi::types::STATE_ACTIVE_PANE_CHANGED => {
-                Some(event.event.pane_id)
-            }
-            muxterm_core::protocol::ffi::types::STATE_PANE_OUTPUT
-            | muxterm_core::protocol::ffi::types::STATE_PANE_FRAME
-            | muxterm_core::protocol::ffi::types::STATE_PANE_SNAPSHOT
-            | muxterm_core::protocol::ffi::types::STATE_PANE_HISTORY
-            | muxterm_core::protocol::ffi::types::STATE_PANE_AGENT_CHANGED
-            | muxterm_core::protocol::ffi::types::STATE_STATUS_SUBSCRIPTION
+            crate::protocol::ffi::types::STATE_ACTIVE_PANE_CHANGED => Some(event.event.pane_id),
+            crate::protocol::ffi::types::STATE_PANE_OUTPUT
+            | crate::protocol::ffi::types::STATE_PANE_FRAME
+            | crate::protocol::ffi::types::STATE_PANE_SNAPSHOT
+            | crate::protocol::ffi::types::STATE_PANE_HISTORY
+            | crate::protocol::ffi::types::STATE_PANE_AGENT_CHANGED
+            | crate::protocol::ffi::types::STATE_STATUS_SUBSCRIPTION
                 if event.event.pane_id == s.active_pane =>
             {
                 Some(event.event.pane_id)

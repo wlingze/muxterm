@@ -1239,9 +1239,8 @@ mod tests {
 
     #[test]
     fn real_tmux_wrapped_codex_argv_is_classified_as_agent() {
-        let fixture = include_str!(
-            "../../../../../tests/samples/tmux-agent-process-observation-2026-0901.txt"
-        );
+        let fixture =
+            include_str!("../../../../tests/samples/tmux-agent-process-observation-2026-0901.txt");
         let argv = fixture
             .lines()
             .find(|line| line.contains("|node|node /usr/bin/codex "))

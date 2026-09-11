@@ -2910,7 +2910,7 @@ mod scrollback_tests {
     /// 往返后网格（含 U+2500）和 `48;2;216;216;216` 都在。
     #[test]
     fn visible_ansi_preserves_box_drawing_and_truecolor() {
-        let raw = include_str!("../../../../../tests/samples/codex-tui-sanitized.txt");
+        let raw = include_str!("../../../../tests/samples/codex-tui-sanitized.txt");
         let payload = raw
             .split_once("PAYLOAD_UTF8_BELOW\n")
             .map(|(_, p)| p)
@@ -3201,7 +3201,7 @@ mod attention_signal_tests {
         // E1 fixture 的 %output 行经 ControlEscapeDecoder 还原后 feed，
         // 应产出 OSC 133 C / D 与 BEL/9/777 信号（PASS_THROUGH 三态）。
         let decoder = crate::runtime::tmux::protocol::ControlEscapeDecoder::new();
-        let raw = include_str!("../../../../../tests/samples/osc-attention-tmux3.7b.txt");
+        let raw = include_str!("../../../../tests/samples/osc-attention-tmux3.7b.txt");
         let mut t = TerminalState::new(80, 24);
         let mut saw = Vec::new();
         for line in raw.lines() {

@@ -2138,7 +2138,7 @@ mod tests {
     fn real_sample_new_session_lines() {
         let raw = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/samples/new-session.txt"
+            "/tests/samples/new-session.txt"
         ));
         // 样本第一行可能是 DCS 包装（P1000p%begin ...），parse_line 只认 % 开头，
         // DCS 前缀的行会被当成非通知返回 None（client 层负责剥 DCS）。
@@ -2166,7 +2166,7 @@ mod tests {
         // 2026-08-15 dogfood 摘录（禁止 include_str 25MB 原日志）。
         let raw = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/samples/dogfood-2026-0815-1326.txt"
+            "/tests/samples/dogfood-2026-0815-1326.txt"
         ));
         let mut parsed = 0usize;
         let mut session_changed = 0usize;
@@ -2216,7 +2216,7 @@ mod tests {
         // OSC 133 C/D、BEL、OSC 9 与 777（无需 allow-passthrough）。
         let raw = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/samples/osc-attention-tmux3.7b.txt"
+            "/tests/samples/osc-attention-tmux3.7b.txt"
         ));
         assert!(
             raw.starts_with("# tmux version: tmux 3.7b"),
@@ -2275,7 +2275,7 @@ mod tests {
     fn real_sample_cmd_response() {
         let raw = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/samples/cmd-response.txt"
+            "/tests/samples/cmd-response.txt"
         ));
         let mut begins = 0;
         let mut ends = 0;
@@ -2310,7 +2310,7 @@ mod tests {
     fn real_sample_output_decodes_ansi() {
         let raw = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/samples/new-session.txt"
+            "/tests/samples/new-session.txt"
         ));
         for line in raw.lines() {
             let stripped = line.strip_prefix("\u{1b}P1000p").unwrap_or(line);
@@ -2332,7 +2332,7 @@ mod tests {
     fn real_sample_htop_so_and_cursor_positioning() {
         let raw = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/samples/real-htop.txt"
+            "/tests/samples/real-htop.txt"
         ));
         for line in raw.lines() {
             let stripped = line.strip_prefix("\u{1b}P1000p").unwrap_or(line);
@@ -2353,7 +2353,7 @@ mod tests {
     fn real_sample_git_lg_backspace_and_crlf() {
         let raw = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/samples/real-git_lg.txt"
+            "/tests/samples/real-git_lg.txt"
         ));
         let mut saw_backspace = false;
         for line in raw.lines() {
@@ -2378,7 +2378,7 @@ mod tests {
     fn real_sample_ls_la_preserves_spaces_and_cursor_back() {
         let raw = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/samples/real-ls_la.txt"
+            "/tests/samples/real-ls_la.txt"
         ));
         for line in raw.lines() {
             let stripped = line.strip_prefix("\u{1b}P1000p").unwrap_or(line);
@@ -2401,7 +2401,7 @@ mod tests {
     fn real_sample_codex_prompt_utf8_and_mode_switches() {
         let raw = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/samples/real-codex.txt"
+            "/tests/samples/real-codex.txt"
         ));
         for line in raw.lines() {
             let stripped = line.strip_prefix("\u{1b}P1000p").unwrap_or(line);
@@ -2428,7 +2428,7 @@ mod tests {
     fn real_sample_git_lg_osc_csi_query_preserves_esc_leaders() {
         let raw = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/samples/real-gitlg-osc-query.txt"
+            "/tests/samples/real-gitlg-osc-query.txt"
         ));
         let mut saw_osc10 = false;
         let mut saw_osc11 = false;
@@ -2456,7 +2456,7 @@ mod tests {
     fn real_sample_2tab_3pane_cc() {
         let raw = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/samples/2tab-3pane-cc.txt"
+            "/tests/samples/2tab-3pane-cc.txt"
         ));
         let mut msgs = Vec::new();
         for line in raw.lines() {
@@ -2515,7 +2515,7 @@ mod tests {
     fn real_sample_attach_cc() {
         let raw = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/samples/attach-cc.txt"
+            "/tests/samples/attach-cc.txt"
         ));
         let mut notifications = Vec::new();
         let mut response_lines = Vec::new();
@@ -2574,7 +2574,7 @@ mod tests {
     fn real_sample_attach_layout_tree() {
         let raw = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/samples/attach-cc.txt"
+            "/tests/samples/attach-cc.txt"
         ));
         // 找到 list-windows 响应行里的 layout 字符串
         for line in raw.lines() {

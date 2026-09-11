@@ -5,10 +5,6 @@ edition = "2021"
 description = "Native UI terminal for tmux control mode (Linux)"
 license = "MIT"
 
-[workspace]
-resolver = "2"
-members = ["crates/muxterm-core"]
-
 [features]
 # 默认编译 GTK4 前端（archmini 等 GTK 机器用）。
 default = ["gtk"]
@@ -17,7 +13,7 @@ gtk = ["dep:gtk4", "dep:vte4", "ffi"]
 # TUI 前端：纯 crossterm + ratatui，经 ffi 调用核心（CI / 无头，跨平台）。
 tui = ["dep:crossterm", "dep:ratatui", "ffi"]
 # C ABI 导出（不依赖任何 GUI）。
-ffi = ["muxterm-core/ffi"]
+ffi = []
 
 [lib]
 name = "muxterm"
@@ -44,7 +40,6 @@ clap = { version = "4", features = ["derive"] }
 async-channel = "2"
 async-trait = "0.1"
 async-ssh2-tokio = "0.13"
-muxterm-core = { path = "crates/muxterm-core", features = ["ffi"] }
 
 # 可选：跨平台 TUI 前端
 crossterm = { version = "0.28", optional = true }

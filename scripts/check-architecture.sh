@@ -45,7 +45,7 @@ check_absent \
 check_absent \
     "core must not import the frontend platform compatibility module" \
     'crate::platform' \
-    crates/muxterm-core/src
+    src/core
 check_absent \
     "frontend must not import Core internals directly" \
     'crate::(core|muxterm_core)' \
@@ -57,27 +57,27 @@ check_absent \
 check_absent \
     "legacy runtime mode/factory names" \
     'RuntimeMode|create_runtime|build_runtime' \
-    crates/muxterm-core/src
+    src/core
 check_absent \
     "legacy runtime and transport provider names" \
     'RuntimeDriver|TargetTransportProvider|ByteTransport' \
-    crates/muxterm-core/src src/frontend
+    src/core src/frontend
 check_absent \
     "legacy catalog builtin path" \
     'catalog/builtin' \
-    crates/muxterm-core/src src
+    src/core src
 check_absent \
     "legacy parallel config module names" \
     'config_service|config_edit' \
-    crates/muxterm-core/src src/frontend
+    src/core src/frontend
 check_absent \
     "runtime and transport must not import the config domain" \
     'crate::config' \
-    crates/muxterm-core/src/runtime crates/muxterm-core/src/transport
+    src/core/runtime src/core/transport
 check_absent \
     "frontend must use the shared ffi_client instead of ffi_bridge" \
     'ffi_bridge' \
-    src crates/muxterm-core/src
+    src src/core
 check_absent \
     "macOS frontend must not retain legacy scene lifecycle coordination" \
     'bridgeLock|backgroundPollQueue|WarmConnectionSlot|ForegroundAuthority' \
@@ -85,11 +85,11 @@ check_absent \
 check_absent \
     "FFI function modules must not depend on the api facade" \
     'super::super::api|crate::protocol::ffi::api' \
-    crates/muxterm-core/src/protocol/ffi/functions
+    src/core/protocol/ffi/functions
 check_absent \
     "frontend must not expose the removed visible-grid FFI" \
     'muxterm_(workspace_)?pane_visible_ansi|paneVisibleANSI|get_workspace_pane_visible_ansi' \
-    src crates/muxterm-core/src
+    src src/core
 check_absent \
     "frontend must not use Index ANSI dumps for Surface rendering" \
     'visible_ansi|surface_seed_ansi|scroll_ansi|paneSurfaceSeedANSI' \
@@ -97,7 +97,7 @@ check_absent \
 check_absent \
     "ANSI dump FFI must not cross the public frontend boundary" \
     'muxterm_(workspace_)?pane_(scroll|surface_seed)_ansi' \
-    src/frontend crates/muxterm-core/src tests
+    src/frontend src/core tests
 
 if [[ "$failures" -ne 0 ]]; then
     echo "architecture: $failures check(s) failed" >&2

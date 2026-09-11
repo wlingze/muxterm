@@ -71,10 +71,10 @@ impl Theme {
     /// 编译期嵌入的 light/dark，不依赖 CWD / 安装前缀。
     pub fn embedded(name: &str) -> Option<&'static str> {
         match name.trim().to_ascii_lowercase().as_str() {
-            "light" => Some(include_str!("../../../../configs/themes/light.toml")),
-            "dark" => Some(include_str!("../../../../configs/themes/dark.toml")),
-            "white" => Some(include_str!("../../../../configs/themes/white.toml")),
-            "black" => Some(include_str!("../../../../configs/themes/black.toml")),
+            "light" => Some(include_str!("../../../configs/themes/light.toml")),
+            "dark" => Some(include_str!("../../../configs/themes/dark.toml")),
+            "white" => Some(include_str!("../../../configs/themes/white.toml")),
+            "black" => Some(include_str!("../../../configs/themes/black.toml")),
             _ => None,
         }
     }

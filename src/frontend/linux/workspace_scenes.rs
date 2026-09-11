@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use gtk4::prelude::*;
 
-use muxterm_core::protocol::WorkspaceId;
+use crate::protocol::WorkspaceId;
 
 use crate::frontend::linux::layout_host::LayoutHost;
 use crate::frontend::linux::scene_stack::SceneStackView;

@@ -5,11 +5,11 @@
 use crate::frontend::ffi_client::{
     ClientLayout, ClientPane, ClientTab, ClientWorkspace, FfiClient,
 };
-use muxterm_core::protocol::layout::{LayoutNode, SplitDir};
-use muxterm_core::protocol::state::State;
-use muxterm_core::protocol::{PaneId, TabId};
+use crate::protocol::layout::{LayoutNode, SplitDir};
+use crate::protocol::state::State;
+use crate::protocol::{PaneId, TabId};
 
-pub use muxterm_core::protocol::daemon::OutputFormat;
+pub use crate::protocol::daemon::OutputFormat;
 
 /// 格式化查询结果输出。
 pub fn format_output(state: &dyn State, cmd: &super::CliCommand, format: OutputFormat) -> String {
@@ -614,8 +614,8 @@ fn json_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use muxterm_core::protocol::command::CliCommand;
-    use muxterm_core::runtime::mock::MockRuntime;
+    use crate::protocol::command::CliCommand;
+    use crate::runtime::mock::MockRuntime;
 
     fn mock_with_pane() -> MockRuntime {
         MockRuntime::with_single_pane()

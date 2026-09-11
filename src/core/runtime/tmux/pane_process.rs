@@ -55,9 +55,8 @@ mod tests {
 
     #[test]
     fn captured_wrapped_codex_uses_full_foreground_argv() {
-        let fixture = include_str!(
-            "../../../../../tests/samples/tmux-agent-process-observation-2026-0901.txt"
-        );
+        let fixture =
+            include_str!("../../../../tests/samples/tmux-agent-process-observation-2026-0901.txt");
         let leader = fixture
             .lines()
             .find(|line| line.contains("|node|node /usr/bin/codex "))

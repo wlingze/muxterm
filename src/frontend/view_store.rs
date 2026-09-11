@@ -352,7 +352,7 @@ mod tests {
         ClientEvent, ClientEventKind, ClientLayout, ClientPane, ClientTab, ClientWorkspace,
         PaneRenderPolicy, ViewStore, RENDER_MAILBOX_CAPACITY,
     };
-    use muxterm_core::protocol::ffi::types;
+    use crate::protocol::ffi::types;
 
     fn event_with_data(type_: u32, pane_id: u32, data: Vec<u8>) -> ClientEvent {
         ClientEvent {
