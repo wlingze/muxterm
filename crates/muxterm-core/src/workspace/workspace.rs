@@ -1,14 +1,16 @@
 //! Workspace：池里一格，包装一个 Runtime。
 //!
 //! 一个 Workspace = 一个 Runtime + 本工作区 pane 文本副本。Runtime 推
-//! `StateChange::PaneOutput` 时，Workspace 把原始字节喂进对应 Pane 的
+//! `RenderEvent::PaneOutput` 时，Workspace 把原始字节喂进对应 Pane 的
 //! `TerminalState`（Index 面，供搜索/提醒；live 显示仍走 Surface 原始字节）。
 
 use std::collections::HashMap;
 
 use crate::activity::attention::signal::AttentionSignal;
 use crate::activity::attention::state::PaneStatus;
-use crate::protocol::state::{PaneAgentInfo, PaneAgentStatus, State, StateChange};
+#[cfg(test)]
+use crate::protocol::state::StateChange;
+use crate::protocol::state::{PaneAgentInfo, PaneAgentStatus, State};
 use crate::protocol::task::{Task, TaskOutcome};
 use crate::protocol::terminal::emulate::DEFAULT_SCROLLBACK_LINES;
 use crate::runtime::{ControlEvent, RenderEvent, Runtime, RuntimeBatch, RuntimeSignal};
@@ -194,11 +196,13 @@ impl Workspace {
     }
 
     /// 拉取尚未消费的状态变更事件，并把 `PaneOutput` 喂进本工作区 pane 文本。
+    #[cfg(test)]
     pub fn take_events(&mut self) -> Vec<StateChange> {
         self.take_batch().into_state_changes()
     }
 
     /// 先从 Runtime 拉取最新事件（异步输出），再取走并喂进本工作区副本。
+    #[cfg(test)]
     pub fn refresh(&mut self) -> Vec<StateChange> {
         self.refresh_batch().into_state_changes()
     }
@@ -629,6 +633,7 @@ impl Workspace {
     }
 
     /// Compatibility helper for tests and old Core callers.
+    #[cfg(test)]
     fn feed_events(&mut self, events: &[StateChange]) {
         let batch = RuntimeBatch::from_state_changes(events.iter().cloned());
         self.feed_batch(&batch);

@@ -1,12 +1,13 @@
 //! WorkspacePool：旧连接池进 core。
 //!
-//! 池负责 open / list / activate / 后台 `take_events` 喂 PaneBuf / 回收
+//! 池负责 open / list / activate / 后台 `refresh_batch` 喂 PaneBuf / 回收
 //! （tmux Detach、shell Shutdown）。容量提醒、TTL、按 `WorkspaceId` 复用。
 //! platform 不得再实现第二套淘汰/复用。
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+#[cfg(test)]
 use crate::protocol::state::StateChange;
 use crate::protocol::task::Task;
 use crate::protocol::terminal::emulate::DEFAULT_SCROLLBACK_LINES;
@@ -407,6 +408,7 @@ impl WorkspacePool {
     }
 
     /// 拉取全部后台工作区的事件，并喂进各自 PaneBuf。
+    #[cfg(test)]
     pub fn poll_background(&mut self) -> Vec<(WorkspaceId, Vec<StateChange>)> {
         self.poll_background_batches()
             .into_iter()
