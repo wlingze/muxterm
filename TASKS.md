@@ -23,7 +23,8 @@ Herdr 测试只用 named session `muxterm-test-*`。不要对默认 server 执�
 10. daemon 是 shell 的 daemon 化形态，不是第四种 Runtime。
 11. WorkspaceTemplate 只在 create 时应用。
 12. 前端常驻 Scene + 单事件泵。没有 warm/cold slot、`bridgeLock`、串行后台队列、前台校准。
-13. Cargo workspace 拆 crate 在 Phase 1–2。
+13. 单一 crate。模块树是 `src/core` + `src/frontend`。边界靠模块 + `ffi_client` +
+    `scripts/check-architecture.sh`，不拆 Cargo workspace crate。
 
 命名：`RuntimeProvider` / `TransportProvider` / `TargetConnection` / `ByteChannel` /
 `ConnectionRegistry` / `core/projects/` / `core/activity/`。C 符号保留 `muxterm_`。
@@ -48,21 +49,20 @@ Herdr 测试只用 named session `muxterm-test-*`。不要对默认 server 执�
 2. `src/lib.rs` = private Core modules + public FFI facade
 3. `src/main.rs` 只做 `fn main` → lib 的 frontend 启动；clap：无 subcommand=CLI，`tui`，`gui`
 4. frontend 暂时原地，只依赖 `muxterm::ffi` 或 `ffi_client`
-5. `Cargo.toml` 预留 workspace；模块边界先按未来 crate 画
+5. 模块边界按 `src/core` 与 `src/frontend` 画，不预留第二套 crate 目录
 
 验收：`src/main.rs` 无 `mod`；`src/bin/` 无第二 binary；`cargo check/build/test`。
 
 第一刀建议：先去掉 `src/main.rs` 的 `mod` 声明，启动函数改走 `muxterm::`。不要在同一
-commit 里搬目录或拆 crate。
+commit 里搬目录。
 
-## Phase 2 — 拆 generic model + 开始拆 crate
+## Phase 2 — 拆 generic model
 
-- Runtime/Capability → `runtime`
-- Workspace/Pool/Spec/Template → `workspace`
-- Project/Worktree → `projects`
-- 稳定 DTO → `protocol`
+- Runtime/Capability → `core/runtime`
+- Workspace/Pool/Spec/Template → `core/workspace`
+- Project/Worktree → `core/projects`
+- 稳定 DTO → `core/protocol`
 - `core/model` 不再作为公共入口
-- Cargo workspace：`muxterm-protocol` / `muxterm-core` / `muxterm-runtime` / `muxterm-transport` / frontend
 
 验收：`mod.rs` 不平铺所有 struct；Core 单测绿。
 
@@ -139,7 +139,20 @@ CI 跑 [`docs/TESTING.md`](docs/TESTING.md) 的结构门禁。
 切换延迟来自 frontend 自己的锁和串行队列，不是 tmux 全局锁。见
 [`docs/FRONTEND.md`](docs/FRONTEND.md) 与 [`docs/SURFACE.md`](docs/SURFACE.md) §9。
 
+## 剩余（本轮）
+
+现有历史 commit 保持不动。后续每个可独立验证的任务一个 commit，粒度中等。
+
+1. 收回 workspace crate：先把 protocol / runtime / transport 折回 core，再迁到
+   `src/core` + `src/frontend`，根 package 只留一个 `muxterm`。
+2. 迁完旧 QuickConnect / `pane_scroll_ansi` fixture，根 `cargo test --features tui --no-run` 可编译。
+3. Phase 6 收尾：生产路径已是 `RuntimeBatch`；再收 mixed-event 兼容层与 C ABI 摊平。
+4. Phase 8：空目录、过期文档、把 TESTING.md 里还没进脚本的门禁补进
+   `scripts/check-architecture.sh`。
+5. Phase 9 TUI：per-workspace Scene buffer 组；切 workspace 不走 FFI 拉帧。
+
 ## 非目标
 
 不重写 tmux 控制协议；不新增 Runtime；不实现 `pause-after`；不实现 windows frontend；
 不为 dump API 保留双 VT；不对默认 tmux/Herdr 做破坏性测试。
+不把 frontend 拆成独立 Cargo crate。

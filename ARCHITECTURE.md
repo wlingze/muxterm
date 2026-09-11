@@ -33,7 +33,8 @@ Muxterm library（src/lib.rs 是唯一 Core module root）
 
 唯一 binary：薄 `src/main.rs`，无 `mod` 声明，只调用 lib 的 frontend 启动函数。Cargo 惯例：默认可执行文件是 `src/main.rs`（[Cargo Book: Package Layout](https://doc.rust-lang.org/cargo/guide/project-layout.html)）。
 
-目标 crate 分层（Phase 1–2）：`muxterm-protocol` / `muxterm-core` / `muxterm-runtime` / `muxterm-transport` / frontend。拆分完成前用 `rg` 门禁兜底。
+单一 crate：`src/core`（库）+ `src/frontend`（cli / tui / linux / macos / windows）。
+依赖方向靠模块边界和 `scripts/check-architecture.sh` 守，不拆 Cargo workspace crate。
 
 ## 2. 硬约束
 
