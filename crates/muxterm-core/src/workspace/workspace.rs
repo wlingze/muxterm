@@ -329,7 +329,7 @@ impl Workspace {
     }
 
     /// 某 pane 的一次性 Surface seed。
-    pub fn pane_surface_seed_ansi(&self, pane: PaneId) -> Vec<u8> {
+    pub(crate) fn pane_surface_seed_ansi(&self, pane: PaneId) -> Vec<u8> {
         self.panes
             .get(&pane)
             .map(|t| t.surface_seed_ansi())
@@ -369,7 +369,7 @@ impl Workspace {
     }
 
     /// 某 pane 的可见网格 ANSI（首屏播种用；禁止当 live 显示）。
-    pub fn pane_visible_ansi(&self, pane: PaneId) -> Vec<u8> {
+    pub(crate) fn pane_visible_ansi(&self, pane: PaneId) -> Vec<u8> {
         self.panes
             .get(&pane)
             .map(|t| t.visible_ansi())
@@ -393,7 +393,7 @@ impl Workspace {
     }
 
     /// 某 pane 的滚动窗口 ANSI。
-    pub fn pane_scroll_ansi(&self, pane: PaneId, offset: u32, rows: u32) -> Vec<u8> {
+    pub(crate) fn pane_scroll_ansi(&self, pane: PaneId, offset: u32, rows: u32) -> Vec<u8> {
         self.panes
             .get(&pane)
             .map(|t| t.scroll_ansi(offset, rows))

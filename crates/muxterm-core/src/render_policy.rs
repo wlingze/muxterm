@@ -2,7 +2,7 @@
 //!
 //! Codex/Cursor 每帧用 `CSI H` + `CSI 2J` 全屏重绘；VTE 若把中间帧全部
 //! 演一遍就是「从顶刷到低」。本模块只保留最后一帧，且首屏永远走
-//! `ReplaceVisible`（调用方用 replica 的 `visible_ansi()` 播种）。
+//! `ReplaceVisible`（调用方用权威 frame bytes 建立基线）。
 
 /// 渲染意图。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

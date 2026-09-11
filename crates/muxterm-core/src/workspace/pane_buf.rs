@@ -167,7 +167,7 @@ impl PaneBuf {
     }
 
     /// 一次性 Surface seed：历史和当前屏进入同一个原生 VT。
-    pub fn surface_seed_ansi(&self) -> Vec<u8> {
+    pub(crate) fn surface_seed_ansi(&self) -> Vec<u8> {
         self.terminal.surface_seed_ansi()
     }
 
@@ -187,7 +187,7 @@ impl PaneBuf {
     }
 
     /// 可见网格 ANSI（首屏播种用；禁止当 live 显示）。
-    pub fn visible_ansi(&self) -> Vec<u8> {
+    pub(crate) fn visible_ansi(&self) -> Vec<u8> {
         self.terminal.visible_ansi()
     }
 
@@ -201,7 +201,7 @@ impl PaneBuf {
     }
 
     /// 滚动窗口的几何 ANSI（offset 行前、rows 行；0=底部直播）。
-    pub fn scroll_ansi(&self, offset: u32, rows: u32) -> Vec<u8> {
+    pub(crate) fn scroll_ansi(&self, offset: u32, rows: u32) -> Vec<u8> {
         let lines = self.terminal.scroll_window(offset, rows as usize);
         if lines.is_empty() {
             return Vec::new();
