@@ -1097,7 +1097,7 @@ impl TerminalState {
     }
 
     /// 滚动窗口：从 scrollback + 可见屏取 `rows` 行，`offset` 行前（0=底部）。
-    pub fn scroll_window(&self, offset: u32, rows: usize) -> Vec<String> {
+    pub(crate) fn scroll_window(&self, offset: u32, rows: usize) -> Vec<String> {
         let mut history: Vec<String> = self.scrollback.iter().map(|l| l.text.clone()).collect();
         history.extend(self.snapshot_trimmed());
         let rows = rows.max(1);
@@ -1113,7 +1113,7 @@ impl TerminalState {
 
     /// 当前 pane 的一次性 Surface seed：历史行先进入 scrollback，随后是当前屏。
     /// 这里故意不带 RIS/CUP 风暴；调用方只在新 VT 上 reset 一次后 feed。
-    pub fn surface_seed_ansi(&self) -> Vec<u8> {
+    pub(crate) fn surface_seed_ansi(&self) -> Vec<u8> {
         let mut out = Vec::new();
         for line in self.scrollback.iter() {
             out.extend_from_slice(&line.ansi);
@@ -1134,7 +1134,7 @@ impl TerminalState {
     }
 
     /// 当前网格覆盖 ANSI；与 `visible_ansi` 不同，不执行 RIS/ED。
-    pub fn visible_overlay_ansi(&self) -> Vec<u8> {
+    pub(crate) fn visible_overlay_ansi(&self) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(b"\x1b[H\x1b[?7l");
         for (row_idx, row) in self.grid.iter().enumerate() {
@@ -1165,7 +1165,7 @@ impl TerminalState {
     /// `ESC[{row};1H` 再输出恰好 `cols` 个单元格（空格保留，**不 trim**）；
     /// 颜色/加粗在变化处插 SGR（0 / 1 / 30-37 / 40-47 / 38;2 / 48;2 / 38;5 / 48;5）。
     /// 全屏 TUI 靠空行/空格撑几何，shell 提示符在底行——skip/trim 会挤碎。
-    pub fn visible_ansi(&self) -> Vec<u8> {
+    pub(crate) fn visible_ansi(&self) -> Vec<u8> {
         let cols = self.cols();
         let rows = self.rows();
         let mut out = Vec::with_capacity(cols * rows * 8);
