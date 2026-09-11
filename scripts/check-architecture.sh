@@ -114,6 +114,10 @@ check_absent \
     "runtime and transport trait files must not use anyhow in signatures" \
     '-> anyhow::Result' \
     src/core/runtime/contract.rs src/core/transport/mod.rs src/core/runtime/provider.rs src/core/transport/provider.rs
+check_absent \
+    "frontend must not name concrete Runtime types" \
+    'TmuxRuntime|HerdrRuntime|ShellRuntime' \
+    src/frontend
 
 if [[ "$failures" -ne 0 ]]; then
     echo "architecture: $failures check(s) failed" >&2

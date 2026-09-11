@@ -80,9 +80,9 @@ impl FfiTmuxClient {
     }
 
     /// Finish the attach baseline for the active pane before issuing a
-    /// short-lived client's next command.  TmuxRuntime deliberately defers
-    /// writes until this snapshot fence is complete; CLI clients have no
-    /// persistent Surface to receive the fence later.
+    /// short-lived client's next command.  The tmux runtime defers writes
+    /// until this snapshot fence is complete; CLI clients have no persistent
+    /// Surface to receive the fence later.
     fn wait_for_pane_snapshot(&self, pane_id: u32, deadline: Instant) -> bool {
         if self.client.execute_workspace_task(
             &self.workspace_id,

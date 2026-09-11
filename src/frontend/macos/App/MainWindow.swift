@@ -765,8 +765,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 返回快捷键/命令面板使用的 tab 顺序。
     ///
     /// Core snapshot 是跨平台 UI 的唯一拓扑事实源；tmux status 只负责
-    /// left/right 文案和样式，不能再提供第二份窗口列表。TmuxRuntime 已
-    /// 按权威 window index 排好 `tabs`，这里保持该顺序并使用稳定 tab id。
+    /// left/right 文案和样式，不能再提供第二份窗口列表。Runtime 已按权威
+    /// window index 排好 `tabs`，这里保持该顺序并使用稳定 tab id。
     private func tabEntriesForSwitching() -> [(index: Int, id: UInt32, name: String)] {
         lastSnapshot.tabs.enumerated().map { position, tab in
             (index: position + 1, id: tab.id, name: tab.name)
