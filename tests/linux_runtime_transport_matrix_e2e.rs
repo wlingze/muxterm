@@ -30,7 +30,7 @@ use muxterm::test_support::core::projects::{
 };
 use muxterm::test_support::core::protocol::task::TaskOutcome;
 use muxterm::test_support::core::transport::registry::ConnectionRegistry;
-use muxterm::test_support::core::workspace::pool::WorkspacePool;
+use muxterm::test_support::core::workspace::WorkspacePool;
 use muxterm::test_support::platform::ffi_client::ClientRuntimeCapability;
 use muxterm::test_support::platform::linux::keymap::Action;
 use muxterm::test_support::platform::linux::window::AppWindow;

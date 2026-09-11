@@ -6,7 +6,7 @@ use std::ptr;
 
 use crate::protocol::PaneId;
 use crate::protocol::WorkspaceId;
-use crate::workspace::workspace::Workspace;
+use crate::workspace::Workspace;
 
 /// The C handle is one composed product session, not a runtime instance.
 pub type MuxtermHandle = crate::muxterm::Muxterm;

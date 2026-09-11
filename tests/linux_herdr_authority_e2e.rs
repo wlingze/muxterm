@@ -17,7 +17,7 @@ use gtk4::prelude::*;
 
 use muxterm::test_support::core::config::Config;
 use muxterm::test_support::core::runtime::herdr::HerdrSession;
-use muxterm::test_support::core::workspace::spec::WorkspaceSpec;
+use muxterm::test_support::core::workspace::WorkspaceSpec;
 use muxterm::test_support::platform::linux::keymap::Action;
 use muxterm::test_support::platform::linux::window::AppWindow;
 use support::herdr_test_support::{herdr_available, IsolatedHerdr};

@@ -3,8 +3,8 @@
 use anyhow::{anyhow, Result};
 
 use crate::config::ProjectDocument;
-use crate::workspace::provenance::WorkspaceProvenance;
-use crate::workspace::template::TemplateName;
+use crate::workspace::TemplateName;
+use crate::workspace::WorkspaceProvenance;
 
 use super::{ProjectId, ProjectTarget, Worktree, WorktreeId};
 

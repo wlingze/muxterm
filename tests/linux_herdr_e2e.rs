@@ -13,7 +13,7 @@ use support::herdr_test_support::{herdr_available, IsolatedHerdr};
 use support::linux_gtk::*;
 
 use muxterm::test_support::core::config::Config;
-use muxterm::test_support::core::workspace::spec::WorkspaceSpec;
+use muxterm::test_support::core::workspace::WorkspaceSpec;
 use muxterm::test_support::platform::linux::window::AppWindow;
 
 const HERDR_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);

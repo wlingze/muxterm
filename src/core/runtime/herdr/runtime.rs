@@ -230,7 +230,7 @@ impl HerdrRuntime {
                 // 产品 WorkspaceId 由 session/socket/workspace_id 确定；池层
                 // 再按 slots 过滤「是否已打开」。
                 open_workspace: w.open_workspace_id.as_deref().map(|wid| {
-                    crate::workspace::spec::WorkspaceSpec::herdr(
+                    crate::workspace::WorkspaceSpec::herdr(
                         self.session.name(),
                         wid,
                         self.session.socket_path().to_string_lossy(),
@@ -246,7 +246,7 @@ impl HerdrRuntime {
     pub fn create_worktree(
         &self,
         spec: &crate::runtime::WorktreeCreateSpec,
-    ) -> anyhow::Result<crate::workspace::spec::WorkspaceSpec> {
+    ) -> anyhow::Result<crate::workspace::WorkspaceSpec> {
         let record = self.session.worktree_create(
             &self.workspace_id,
             &spec.branch,
@@ -257,7 +257,7 @@ impl HerdrRuntime {
         let new_ws = record
             .open_workspace_id
             .ok_or_else(|| anyhow!("worktree.create 未返回 workspace_id"))?;
-        Ok(crate::workspace::spec::WorkspaceSpec::herdr(
+        Ok(crate::workspace::WorkspaceSpec::herdr(
             self.session.name(),
             new_ws,
             self.session.socket_path().to_string_lossy(),
@@ -265,15 +265,12 @@ impl HerdrRuntime {
     }
 
     /// 打开已有 checkout：Herdr 返回已有格 WorkspaceSpec。
-    pub fn open_worktree(
-        &self,
-        path: &str,
-    ) -> anyhow::Result<crate::workspace::spec::WorkspaceSpec> {
+    pub fn open_worktree(&self, path: &str) -> anyhow::Result<crate::workspace::WorkspaceSpec> {
         let record = self.session.worktree_open(&self.workspace_id, path)?;
         let new_ws = record
             .open_workspace_id
             .ok_or_else(|| anyhow!("worktree.open 未返回 workspace_id"))?;
-        Ok(crate::workspace::spec::WorkspaceSpec::herdr(
+        Ok(crate::workspace::WorkspaceSpec::herdr(
             self.session.name(),
             new_ws,
             self.session.socket_path().to_string_lossy(),

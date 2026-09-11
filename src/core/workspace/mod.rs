@@ -3,12 +3,26 @@
 //! W1 先立住「一个 Workspace = 一个 Runtime+ 本工作区
 //! pane 文本副本」。WorkspacePool 在 W2 加入。
 
-pub mod pane_buf;
-pub mod pool;
-pub mod provenance;
-pub mod spec;
-pub mod template;
-pub mod template_apply;
-pub mod terminal_model;
+mod pane_buf;
+mod pool;
+mod provenance;
+mod spec;
+mod template;
+mod template_apply;
+mod terminal_model;
 #[allow(clippy::module_inception)] // 计划目录约定：workspace/workspace.rs 放 Workspace 本体
-pub mod workspace;
+mod workspace;
+
+pub use pane_buf::PaneBuf;
+pub use pool::{
+    WorkspaceCapacityCandidate, WorkspaceEvictionReason, WorkspaceLifecycle, WorkspacePool,
+    WorkspacePoolPolicy,
+};
+pub use provenance::WorkspaceProvenance;
+pub use spec::WorkspaceSpec;
+pub use template::{
+    PaneTemplate, TabTemplate, TemplateLayout, TemplateName, TemplateRegistry, WorkspaceTemplate,
+};
+pub use template_apply::{TemplateApplication, TemplateApplyReport, TemplateSkip};
+pub use terminal_model::TerminalModel;
+pub use workspace::{SearchHit, Workspace};

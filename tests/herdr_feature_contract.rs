@@ -16,7 +16,7 @@ use muxterm::test_support::core::protocol::task::Task;
 use muxterm::test_support::core::protocol::WorkspaceId;
 use muxterm::test_support::core::runtime::herdr::session::{HerdrAgentStatus, HerdrSession};
 use muxterm::test_support::core::runtime::herdr::HerdrRuntime;
-use muxterm::test_support::core::workspace::workspace::Workspace;
+use muxterm::test_support::core::workspace::Workspace;
 use support::herdr_test_support::{herdr_available, IsolatedHerdr, TempAgentCommand};
 
 /// 与 SSH 契约同量级（15s）。

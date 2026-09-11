@@ -18,7 +18,7 @@ use support::tmux_test_support::{
 };
 
 use muxterm::test_support::core::config::Config;
-use muxterm::test_support::core::workspace::spec::WorkspaceSpec;
+use muxterm::test_support::core::workspace::WorkspaceSpec;
 use muxterm::test_support::platform::linux::window::AppWindow;
 
 struct ExtraWs {

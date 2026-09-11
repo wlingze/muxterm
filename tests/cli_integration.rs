@@ -12,7 +12,7 @@ use muxterm::test_support::core::protocol::task::Task;
 use muxterm::test_support::core::protocol::{PaneId, TabId};
 use muxterm::test_support::core::runtime::shell::daemon::cli_command_to_task;
 use muxterm::test_support::core::runtime::shell::ShellRuntime;
-use muxterm::test_support::core::workspace::terminal_model::TerminalModel;
+use muxterm::test_support::core::workspace::TerminalModel;
 use muxterm::test_support::platform::cli::{
     format_output, parse_cli_command, CliCommand, OutputFormat,
 };
@@ -293,7 +293,7 @@ fn cli_send_keys_and_capture() {
 #[test]
 fn cli_capture_pane_with_lines_limit() {
     use muxterm::test_support::core::runtime::mock::MockRuntime;
-    use muxterm::test_support::core::workspace::terminal_model::TerminalModel;
+    use muxterm::test_support::core::workspace::TerminalModel;
     let mut b = MockRuntime::with_single_pane();
     b.outputs[0].1 = b"alpha\nbeta\ngamma\ndelta\n".to_vec();
     let model = TerminalModel::new(Box::new(b));

@@ -15,8 +15,8 @@ use muxterm::test_support::core::protocol::task::{Task, TaskOutcome};
 use muxterm::test_support::core::protocol::terminal::emulate::TerminalState;
 use muxterm::test_support::core::protocol::{PaneId, TabId};
 use muxterm::test_support::core::runtime::RuntimeCapability;
-use muxterm::test_support::core::workspace::spec::WorkspaceSpec;
-use muxterm::test_support::core::workspace::workspace::Workspace;
+use muxterm::test_support::core::workspace::Workspace;
+use muxterm::test_support::core::workspace::WorkspaceSpec;
 
 use super::herdr_test_support::IsolatedHerdr;
 use super::sshd_test_support::LoopbackSshd;

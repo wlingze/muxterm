@@ -16,5 +16,6 @@ pub mod pty;
 pub mod ssh_client;
 pub mod status;
 
+#[allow(unused_imports)]
 pub use backend::TmuxRuntime;
 pub(super) use provider::TmuxDriver;

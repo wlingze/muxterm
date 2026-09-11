@@ -45,7 +45,7 @@ pub struct Workspace {
     runtime_attention: HashMap<PaneId, Vec<AttentionSignal>>,
     /// Catalog 打开时保存的规范化目标（W6 §11.2）。
     /// Recent/重连/高亮只读这份 Core 元数据，禁止从 WorkspaceId 反向猜。
-    resolved_target: Option<crate::catalog::resolver::ResolvedTarget>,
+    resolved_target: Option<crate::catalog::ResolvedTarget>,
     /// 从解析后的打开 spec 复制的 Project/Worktree 归属。
     provenance: Option<WorkspaceProvenance>,
     /// 仅 create Workspace 使用的非阻塞模板应用器。
@@ -88,7 +88,7 @@ impl Workspace {
     }
 
     /// Catalog 打开时保存的规范化目标（Core 唯一所有权；Recent/重连只读它）。
-    pub fn resolved_target(&self) -> Option<&crate::catalog::resolver::ResolvedTarget> {
+    pub fn resolved_target(&self) -> Option<&crate::catalog::ResolvedTarget> {
         self.resolved_target.as_ref()
     }
 
@@ -103,7 +103,7 @@ impl Workspace {
     }
 
     /// 保存规范化目标（仅 Catalog::open_resolved 调用；platform 不得复制第二份）。
-    pub fn set_resolved_target(&mut self, resolved: crate::catalog::resolver::ResolvedTarget) {
+    pub fn set_resolved_target(&mut self, resolved: crate::catalog::ResolvedTarget) {
         self.name = resolved.display_name();
         self.provenance = resolved.spec.provenance.clone();
         self.resolved_target = Some(resolved);
@@ -654,7 +654,7 @@ fn pane_agent_status(status: PaneAgentStatus) -> PaneStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::catalog::resolver::{ResolvedTarget, ResolvedTargetDescriptor};
+    use crate::catalog::{ResolvedTarget, ResolvedTargetDescriptor};
     use crate::projects::{TargetRuntime, TargetTransport};
     use crate::protocol::task::Task;
     use crate::runtime::MockRuntime;

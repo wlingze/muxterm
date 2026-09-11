@@ -11,7 +11,7 @@ use gtk4::prelude::*;
 use gtk4::{Paned, Revealer, ToggleButton, Widget};
 
 use muxterm::test_support::core::config::Config;
-use muxterm::test_support::core::workspace::spec::WorkspaceSpec;
+use muxterm::test_support::core::workspace::WorkspaceSpec;
 use muxterm::test_support::platform::ffi_client::ClientAttentionStatus;
 use muxterm::test_support::platform::linux::window::AppWindow;
 
