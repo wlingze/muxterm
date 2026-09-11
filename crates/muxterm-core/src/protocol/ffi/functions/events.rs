@@ -197,25 +197,8 @@ pub unsafe extern "C" fn muxterm_poll_events(
             handle.apply_attention_for_batch(ws_id, &batch);
             handle.defer_batch(ws_id.clone(), batch);
         }
-        let ready: Vec<(WorkspaceId, StateChange)> = handle
-            .deferred_events
-            .iter()
-            .filter(|(ws_id, _)| active_id.as_ref().is_some_and(|id| id == ws_id))
-            .take(max_count as usize)
-            .cloned()
-            .collect();
+        let ready = handle.take_deferred_events(active_id.as_ref(), max_count as usize);
         let n = ready.len();
-        let mut delivered = 0usize;
-        let mut kept = std::collections::VecDeque::new();
-        for item in handle.deferred_events.drain(..) {
-            let is_active = active_id.as_ref().is_some_and(|id| id == &item.0);
-            if is_active && delivered < n {
-                delivered += 1;
-            } else {
-                kept.push_back(item);
-            }
-        }
-        handle.deferred_events = kept;
         let slice = std::slice::from_raw_parts_mut(out, n);
         for (i, (_ws_id, ev)) in ready.iter().enumerate() {
             let c = state_change_to_c(handle, ev);
@@ -264,9 +247,9 @@ pub unsafe extern "C" fn muxterm_poll_workspace_events(
             handle.apply_attention_for_batch(ws_id, &batch);
             handle.defer_batch(ws_id.clone(), batch);
         }
-        let n = handle.deferred_events.len().min(max_count as usize);
+        let ready = handle.take_deferred_events(None, max_count as usize);
+        let n = ready.len();
         let slice = std::slice::from_raw_parts_mut(out, n);
-        let ready: Vec<(WorkspaceId, StateChange)> = handle.deferred_events.drain(..n).collect();
         for (i, (ws_id, ev)) in ready.iter().enumerate() {
             let c = state_change_to_c(handle, ev);
             let ws_name = handle.push_workspace_id(&ws_id.to_string());
