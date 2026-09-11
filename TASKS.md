@@ -161,6 +161,16 @@ CI 跑 [`docs/TESTING.md`](docs/TESTING.md) 的结构门禁。
    `frontend/utils/{corebridge,i18n}`；Linux `app/chrome/terminal/ui`。~~
    见 [`docs/MODULE-SURFACE.md`](docs/MODULE-SURFACE.md)。
 
+重构合入后不要 rebase `feature/dogfood-0907`。按行为重做，需求在
+[`docs/dogfood-0907-replay.md`](docs/dogfood-0907-replay.md) 与
+[`docs/PRODUCT-1.0-REMAINING.md`](docs/PRODUCT-1.0-REMAINING.md)。
+
+8. 迁 0907 已落地行为（§2–§11；顺序见 dogfood §12）。
+9. B 闭环 + Tab/Pane 状态 + 设置页（同一条状态管道）。
+10. Shells + Cmd-K。
+11. Agents 槽、地标、搜索坐标、图、端口、Cmd-W、选词。
+12. 后做：提升 muxer、两格来回、Window、Tab 视觉。
+
 ## 非目标
 
 不重写 tmux 控制协议；不新增 Runtime；不实现 `pause-after`；不实现 windows frontend；
