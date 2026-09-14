@@ -23,3 +23,8 @@ build/
 .build-tmp/
 *.a
 artifacts/
+
+# Local assistant tooling
+.rtk/
+CLAUDE.md
+
