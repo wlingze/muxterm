@@ -1110,18 +1110,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func fallbackReplicaID(for target: TargetConfig) -> String {
-        let identityPath = target.workspaceID.flatMap { $0.isEmpty ? nil : $0 } ?? target.path
-        let session = target.session?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let name = session.isEmpty ? QuickConnect.defaultName(for: identityPath) : session
-        let transport = target.transport.label
-        if !session.isEmpty, !identityPath.isEmpty {
-            return "\(name):\(identityPath)@\(transport)"
-        }
-        return "\(name)@\(transport)"
+        WorkspaceReplicaID.from(target)
     }
 
     private func workspaceReplicaID(for slot: WorkspaceScene) -> String {
-        slot.cachedWorkspaceReplicaID ?? fallbackReplicaID(for: slot.targetConfig)
+        let computed = fallbackReplicaID(for: slot.targetConfig)
+        if slot.targetConfig.path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           let cached = slot.cachedWorkspaceReplicaID, !cached.isEmpty
+        {
+            return cached
+        }
+        return computed
     }
 
     /// 隐藏 scene 的 Attention 展示只读 ViewStore；侧栏刷新不触碰远端
