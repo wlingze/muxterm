@@ -412,7 +412,7 @@ extension MainWindowController {
     }
 
     func testActiveWorkspaceSession() -> String? {
-        bridge.session
+        activeWorkspaceSession
     }
 
     func testWorkspaceCount() -> Int {

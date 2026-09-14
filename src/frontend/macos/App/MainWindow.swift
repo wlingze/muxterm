@@ -1822,25 +1822,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 initialClientSize: initialTmuxClientSizeHint()
             )
             nextBridge.shutdown()
-            let key = Self.connectionKey(config: opened.target, session: opened.target.session)
-            let slot = WorkspaceScene(
-                key: key,
-                bridge: bridge,
-                workspaceID: opened.id,
-                terminalManager: TerminalManager(
-                    bridge: bridge,
-                    workspaceID: opened.id,
-                    runtimeID: opened.target.runtime.rawValue,
-                    fontFamily: terminalFontSettings.family,
-                    fontSize: terminalFontSettings.size
-                ),
-                targetConfig: opened.target,
-                now: 0
-            )
-            if let size = opened.appliedClientSize {
-                slot.terminalManager.noteClientSize(size)
-            }
-            activate(slot: slot)
+            activate(slot: makeCatalogWorkspaceScene(opened: opened, sharedBridge: bridge))
         } catch {
             nextBridge.shutdown()
             showError(error)
@@ -2600,23 +2582,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                         )))
                         return
                     }
-                    let slot = WorkspaceScene(
-                        key: key,
-                        bridge: sharedBridge,
-                        workspaceID: opened.id,
-                        terminalManager: TerminalManager(
-                            bridge: sharedBridge,
-                            workspaceID: opened.id,
-                            runtimeID: resolved.runtime.rawValue,
-                            fontFamily: self.terminalFontSettings.family,
-                            fontSize: self.terminalFontSettings.size
-                        ),
-                        targetConfig: resolved,
-                        now: 0
+                    let slot = self.makeCatalogWorkspaceScene(
+                        opened: opened,
+                        sharedBridge: sharedBridge
                     )
-                    if let size = opened.appliedClientSize {
-                        slot.terminalManager.noteClientSize(size)
-                    }
                     self.activate(slot: slot)
                     completion(.success(CatalogConnection(bridge: sharedBridge, target: resolved)))
                 }
@@ -2633,6 +2602,60 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         content.setConnectProgress(stage: nil)
         if case .failure(let error) = result {
             showError(error)
+        }
+    }
+
+    /// Catalog 打开后立刻种下拓扑快照，首帧不会短暂画出上一个 Workspace。
+    private func makeCatalogWorkspaceScene(
+        opened: CoreWorkspaceOpenResult,
+        sharedBridge: CoreBridge
+    ) -> WorkspaceScene {
+        let resolved = opened.target
+        let key = Self.connectionKey(config: resolved, session: resolved.session)
+        let slot = WorkspaceScene(
+            key: key,
+            bridge: sharedBridge,
+            workspaceID: opened.id,
+            terminalManager: TerminalManager(
+                bridge: sharedBridge,
+                workspaceID: opened.id,
+                runtimeID: resolved.runtime.rawValue,
+                fontFamily: terminalFontSettings.family,
+                fontSize: terminalFontSettings.size
+            ),
+            targetConfig: resolved,
+            now: 0
+        )
+        if let size = opened.appliedClientSize {
+            slot.terminalManager.noteClientSize(size)
+        }
+        slot.cacheSnapshot(sharedBridge.snapshot(workspaceID: opened.id))
+        return slot
+    }
+
+    /// 可见 scene 才是当前 Workspace；共享 handle 的 `session` 只是遗留字段。
+    var activeWorkspaceSession: String? {
+        if let session = sceneStack.currentTargetConfig?.session, !session.isEmpty {
+            return session
+        }
+        if let key = sceneStack.activeKey,
+           let session = sceneStack.scenes[key]?.key.session,
+           !session.isEmpty
+        {
+            return session
+        }
+        return bridge.session
+    }
+
+    /// 切 scene 时把遗留 identity 字段跟上可见 Workspace，避免测试和状态栏读到旧 session。
+    private func applyVisibleWorkspaceIdentity(_ slot: WorkspaceScene) {
+        if let session = slot.targetConfig.session, !session.isEmpty {
+            bridge.session = session
+        } else if !slot.key.session.isEmpty {
+            bridge.session = slot.key.session
+        }
+        if let socket = slot.targetConfig.socket ?? slot.key.socket, !socket.isEmpty {
+            bridge.socket = socket
         }
     }
 
@@ -2675,6 +2698,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         quickConnectStore.replaceAllRecents(sceneStack.allRecentTargetConfigs())
         bridge = slot.bridge
         bridge.selectWorkspace(slot.workspaceID)
+        applyVisibleWorkspaceIdentity(slot)
         terminalManager = slot.terminalManager
         terminalManager.setBridgeQueriesEnabled(false)
         trafficRateSampler.reset()
