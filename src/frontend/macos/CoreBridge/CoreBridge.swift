@@ -197,15 +197,40 @@ private struct CoreCommandMarksResponse: Decodable {
     let marks: [CoreCommandMark]?
 }
 
+/// Core 的 error 可能是字符串，也可能是 `{code, message, stage}`。
+private struct CoreWireError: Decodable, Equatable {
+    let message: String
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let text = try? container.decode(String.self) {
+            message = text
+            return
+        }
+        struct Object: Decodable {
+            let code: String?
+            let message: String?
+        }
+        let object = try container.decode(Object.self)
+        if let message = object.message?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !message.isEmpty
+        {
+            self.message = message
+        } else {
+            self.message = object.code ?? "request failed"
+        }
+    }
+}
+
 private struct SSHHostsResponse: Decodable {
     let ok: Bool
-    let error: String?
+    let error: CoreWireError?
     let hosts: [CoreSSHHost]?
 }
 
 private struct TmuxSessionsResponse: Decodable {
     let ok: Bool
-    let error: String?
+    let error: CoreWireError?
     let sessions: [CoreTmuxSession]?
     let workspaces: [CoreTmuxSession]?
 
@@ -217,13 +242,13 @@ private struct TmuxSessionsResponse: Decodable {
 
 private struct RuntimeListResponse: Decodable {
     let ok: Bool
-    let error: String?
+    let error: CoreWireError?
     let runtimes: [CoreRuntimeInfo]?
 }
 
 private struct WorkspaceCandidatesResponse: Decodable {
     let ok: Bool
-    let error: String?
+    let error: CoreWireError?
     let workspaces: [CoreWorkspaceCandidate]?
 }
 
@@ -268,7 +293,7 @@ struct CoreWorkspaceOpenResult: Equatable {
 
 private struct WorkspaceListResponse: Decodable {
     let ok: Bool
-    let error: String?
+    let error: CoreWireError?
     let workspaces: [CoreWorkspaceInfo]?
 }
 
@@ -310,7 +335,7 @@ struct CoreResolvedTarget: Decodable, Equatable {
 
 private struct OpenTargetResponse: Decodable {
     let ok: Bool
-    let error: String?
+    let error: CoreWireError?
     let id: String?
     let name: String?
     let resolvedTarget: CoreResolvedTarget?
@@ -361,13 +386,13 @@ enum CoreTargetOpenIntent: String {
 
 private struct CreatedSessionResponse: Decodable {
     let ok: Bool
-    let error: String?
+    let error: CoreWireError?
     let session: String?
 }
 
 private struct ListDirResponse: Decodable {
     let ok: Bool
-    let error: String?
+    let error: CoreWireError?
     let entries: [CoreFsEntry]?
 }
 
@@ -576,7 +601,7 @@ final class CoreBridge {
         )
         guard response.ok else {
             throw CoreBridgeDiscoveryError.message(
-                response.error ?? MuxtermI18n.shared.tr(.errorCoreDiscoveryNoResponse)
+                response.error?.message ?? MuxtermI18n.shared.tr(.errorCoreDiscoveryNoResponse)
             )
         }
         return response.runtimes ?? []
@@ -599,7 +624,7 @@ final class CoreBridge {
         let response: WorkspaceCandidatesResponse = try decodeDiscoveryJSON(pointer)
         guard response.ok else {
             throw CoreBridgeDiscoveryError.message(
-                response.error ?? MuxtermI18n.shared.tr(.errorCoreDiscoveryNoResponse)
+                response.error?.message ?? MuxtermI18n.shared.tr(.errorCoreDiscoveryNoResponse)
             )
         }
         return response.workspaces ?? []
@@ -613,7 +638,7 @@ final class CoreBridge {
         let response: SSHHostsResponse = try decodeDiscoveryJSON(pointer)
         guard response.ok else {
             throw CoreBridgeDiscoveryError.message(
-                response.error ?? MuxtermI18n.shared.tr(.errorSshHostDiscovery)
+                response.error?.message ?? MuxtermI18n.shared.tr(.errorSshHostDiscovery)
             )
         }
         return response.hosts ?? []
@@ -641,7 +666,7 @@ final class CoreBridge {
         let response: ListDirResponse = try decodeDiscoveryJSON(pointer)
         guard response.ok else {
             throw CoreBridgeDiscoveryError.message(
-                response.error ?? MuxtermI18n.shared.tr(.errorCoreDiscoveryNoResponse)
+                response.error?.message ?? MuxtermI18n.shared.tr(.errorCoreDiscoveryNoResponse)
             )
         }
         return response.entries ?? []
@@ -673,7 +698,7 @@ final class CoreBridge {
         let response: TmuxSessionsResponse = try decodeDiscoveryJSON(pointer)
         guard response.ok else {
             throw CoreBridgeDiscoveryError.message(
-                response.error ?? MuxtermI18n.shared.tr(.errorTmuxSessionDiscovery)
+                response.error?.message ?? MuxtermI18n.shared.tr(.errorTmuxSessionDiscovery)
             )
         }
         return response.resolved
@@ -713,7 +738,7 @@ final class CoreBridge {
         let response: CreatedSessionResponse = try decodeDiscoveryJSON(pointer)
         guard response.ok else {
             throw CoreBridgeDiscoveryError.message(
-                response.error ?? MuxtermI18n.shared.tr(.errorTmuxSessionCreation)
+                response.error?.message ?? MuxtermI18n.shared.tr(.errorTmuxSessionCreation)
             )
         }
         return response.session ?? session
@@ -859,7 +884,7 @@ final class CoreBridge {
             let response: OpenTargetResponse = try decodeDiscoveryJSON(pointer)
             guard response.ok else {
                 throw CoreBridgeDiscoveryError.message(
-                    response.error ?? MuxtermI18n.shared.tr(.errorBridgeConnect, arguments: ["code": "-1"])
+                    response.error?.message ?? MuxtermI18n.shared.tr(.errorBridgeConnect, arguments: ["code": "-1"])
                 )
             }
             let resolved = response.resolvedTarget?.canonical.targetConfig ?? target
@@ -1417,7 +1442,7 @@ final class CoreBridge {
         let response: OpenTargetResponse = try Self.decodeDiscoveryJSON(pointer)
         guard response.ok else {
             throw CoreBridgeDiscoveryError.message(
-                response.error ?? MuxtermI18n.shared.tr(.errorCoreDiscoveryNoResponse)
+                response.error?.message ?? MuxtermI18n.shared.tr(.errorCoreDiscoveryNoResponse)
             )
         }
         guard let id = response.id, !id.isEmpty else {

@@ -1074,15 +1074,20 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
     private func collectOperations() -> [[String: Any]] {
         var operations: [[String: Any]] = []
         for (path, view) in controls {
-            guard let value = controlValue(view, baseline: baselines[path]) else { continue }
+            guard let value = controlValue(view, path: path, baseline: baselines[path]) else {
+                continue
+            }
             operations.append(["op": "replace", "path": path, "value": value])
         }
         return operations
     }
 
-    private func controlValue(_ view: NSView, baseline: Any?) -> Any? {
+    private func controlValue(_ view: NSView, path: String, baseline: Any?) -> Any? {
         if let editor = view as? SettingsProjectEditorView {
             return QuickConnectStore.projectJSON(from: editor.projects)
+        }
+        if path == "/shortcuts/overrides" {
+            return nil
         }
         if let popup = view as? NSPopUpButton {
             return popup.selectedItem?.representedObject as? String ?? popup.titleOfSelectedItem
@@ -1091,6 +1096,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
             return checkbox.state == .on
         }
         if let field = view as? NSTextField {
+            if path == "/font/fallback" || path.hasSuffix("/fallback") {
+                return field.stringValue
+                    .split(separator: ",")
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+            }
             if let number = baseline as? NSNumber, let parsed = Double(field.stringValue) {
                 let type = number.objCType.pointee
                 if type == Int8(Character("q").asciiValue!)
@@ -1340,6 +1351,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
 
     func testActiveTargetConfigWindow() -> TargetConfigWindow? {
         activeProjectEditor
+    }
+
+    func testApplySettings() {
+        applySettings()
     }
 }
 

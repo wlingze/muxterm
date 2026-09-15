@@ -169,8 +169,8 @@ impl SettingsService {
         for operation in operations {
             apply_patch_operation(&mut draft, operation)?;
         }
-        let document: ConfigDocument =
-            serde_json::from_value(draft.clone()).context("草稿不符合 ConfigDocument")?;
+        let document: ConfigDocument = serde_json::from_value(draft.clone())
+            .map_err(|error| anyhow!("草稿不符合 ConfigDocument: {error}"))?;
         document.validate()?;
         if let Some(current) = self.transactions.get_mut(transaction) {
             current.draft = draft.clone();
@@ -600,6 +600,60 @@ mod tests {
             "muxterm-config-service-{name}-{}",
             std::process::id()
         ))
+    }
+
+    #[test]
+    #[test]
+    fn patch_rejects_font_fallback_string_and_accepts_array() {
+        let path = temp_path("fallback.toml");
+        let _ = fs::remove_file(&path);
+        let mut service = SettingsService::open(&path).unwrap();
+        let transaction = service.begin();
+        let string_err = service
+            .patch(
+                &transaction,
+                &[JsonPatchOperation {
+                    op: "replace".into(),
+                    path: "/font/fallback".into(),
+                    value: Some(Value::String("Noto Sans Mono, monospace".into())),
+                }],
+            )
+            .expect_err("string fallback must not deserialize as Vec");
+        assert!(
+            format!("{string_err:#}").contains("草稿不符合 ConfigDocument"),
+            "{string_err:#}"
+        );
+        service
+            .patch(
+                &transaction,
+                &[JsonPatchOperation {
+                    op: "replace".into(),
+                    path: "/font/fallback".into(),
+                    value: Some(serde_json::json!(["Noto Sans Mono", "monospace"])),
+                }],
+            )
+            .unwrap();
+        service
+            .patch(
+                &transaction,
+                &[JsonPatchOperation {
+                    op: "replace".into(),
+                    path: "/projects".into(),
+                    value: Some(serde_json::json!([{
+                        "id": "4:tmux|5:local|0:|7:muxterm|0:",
+                        "name": "muxterm",
+                        "path": "~/Developer/self/muxterm",
+                        "runtime": {"id": "tmux"},
+                        "transport": {"id": "local", "target": ""},
+                        "command": [],
+                        "env": {}
+                    }])),
+                }],
+            )
+            .unwrap();
+        service.commit(&transaction).unwrap();
+        assert_eq!(service.document().projects[0].name, "muxterm");
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
