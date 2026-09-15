@@ -5,8 +5,8 @@
 //!   attach spec 身份字段和 WorkspaceId；存在同 identity Project 元数据时
 //!   ResolvedTarget 相同；
 //! - Catalog::resolve_target 是唯一 TargetConfig→ResolvedTarget resolver；
-//! - AttachOnly 无匹配不创建；CreateIfMissing 只在显式 local named session
-//!   已运行时创建，SSH 两意图零创建命令；
+//! - AttachOnly 无匹配不创建；CreateIfMissing 在已运行的 Herdr session
+//!   （local / SSH）上 workspace.create，不偷偷 start server；
 //! - identity key 由 transport target/runtime/session/socket/workspace_id
 //!   构成，name/path 变更不改变身份。
 
@@ -118,7 +118,8 @@ fn local_attach_only_never_creates_and_create_requires_running_session() {
     );
 }
 
-/// SSH：两意图都零创建命令；AttachOnly 无匹配即失败。
+/// SSH：AttachOnly 无匹配即失败（零创建）；CreateIfMissing 在远端 session
+/// 未运行时失败，不得硬拒为「SSH 不允许创建」。
 #[test]
 fn ssh_herdr_attach_only_never_creates() {
     if !herdr_available() || !loopback_sshd_available() {
@@ -148,16 +149,31 @@ fn ssh_herdr_attach_only_never_creates() {
         err.to_string().contains("无匹配") || err.to_string().contains("AttachOnly"),
         "SSH AttachOnly 错误语义: {err}"
     );
+
+    // 无 workspace_id：CreateIfMissing 应尝试 create；loopback 上没有对应
+    // Herdr session 时失败，但原因不能是「SSH 不允许」。
+    let mut create_target = ssh_target.clone();
+    create_target.workspace_id = None;
+    create_target.socket = None;
     let err = catalog
         .resolve_target(
             &mut connections,
-            &ssh_target,
+            &create_target,
             ResolveIntent::CreateIfMissing,
         )
-        .expect_err("SSH CreateIfMissing 必须禁止创建命令");
+        .expect_err("SSH CreateIfMissing 在 session 不可用时必须失败");
+    let text = err.to_string();
     assert!(
-        err.to_string().contains("SSH"),
-        "SSH CreateIfMissing 应报禁止创建: {err}"
+        !text.contains("不允许启动 workspace.create"),
+        "SSH CreateIfMissing 不得再硬拒: {err}"
+    );
+    assert!(
+        text.contains("未运行")
+            || text.contains("socket")
+            || text.contains("session")
+            || text.contains("CreateNotAllowed")
+            || text.contains("forward"),
+        "SSH CreateIfMissing 应说明远端 Herdr 不可用: {err}"
     );
     std::env::remove_var("MUXTERM_SSH_CONFIG_PATH");
 }

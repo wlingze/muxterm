@@ -18,6 +18,20 @@ public enum WorkspaceReplicaID {
     }
 
     public static func from(_ config: TargetConfig) -> String {
-        from(session: config.session, path: config.path, transport: config.transport.label)
+        // Herdr 的 Core replica_id 用 workspace_id（wN），不是 project 目录。
+        let identityPath: String
+        switch config.runtime {
+        case .herdr:
+            let workspaceID = config.workspaceID?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            identityPath = workspaceID.isEmpty ? config.path : workspaceID
+        case .shell, .tmux:
+            identityPath = config.path
+        }
+        return from(
+            session: config.session,
+            path: identityPath,
+            transport: config.transport.label
+        )
     }
 }

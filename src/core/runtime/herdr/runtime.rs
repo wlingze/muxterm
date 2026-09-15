@@ -2242,6 +2242,11 @@ impl HerdrRuntime {
                     params["label"] = serde_json::json!(name);
                 }
                 if let Some(cwd) = &workdir {
+                    let cwd = if self.session.is_ssh() {
+                        cwd.clone()
+                    } else {
+                        crate::executable::expand_config_value(cwd)
+                    };
                     params["cwd"] = serde_json::json!(cwd);
                 }
                 self.session.call("tab.create", params)

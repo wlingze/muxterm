@@ -100,6 +100,10 @@ impl HerdrSession {
         &self.name
     }
 
+    pub fn is_ssh(&self) -> bool {
+        self.connection.transport_id() == "ssh"
+    }
+
     pub fn socket_path(&self) -> &Path {
         &self.socket_path
     }
