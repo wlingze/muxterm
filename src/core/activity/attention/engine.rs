@@ -15,6 +15,21 @@ use super::signal::{is_transient_shell_command, AttentionSignal};
 use super::state::{transition, PaneEvent, PaneStatus};
 use crate::config::AttentionConfig;
 
+/// 普通命令要跑过这么久才进 Commands。pwd/回车/闪过去的 git status 不出现。
+const COMMAND_VISIBLE_AFTER: Duration = Duration::from_millis(1500);
+
+fn listed_command_status(pane: &PaneAttention, now: Instant) -> PaneStatus {
+    if pane.process_is_agent || pane.status != PaneStatus::Working {
+        return pane.status;
+    }
+    match pane.command_started_at {
+        Some(started) if now.saturating_duration_since(started) < COMMAND_VISIBLE_AFTER => {
+            PaneStatus::Idle
+        }
+        _ => pane.status,
+    }
+}
+
 const KNOWN_AGENTS: &[&str] = &[
     "codex", "cursor", "claude", "gemini", "aider", "opencode", "copilot", "cline", "goose", "amp",
     "grok", "windsurf", "kiro", "pi", "hermes", "droid",
@@ -61,6 +76,8 @@ pub struct PaneAttention {
     pub last_regex_eval: Instant,
     /// 最近一次输出/状态活动。非权威 agent 安静超时后从 Working 回到 Idle。
     pub last_activity: Instant,
+    /// 普通命令进入 Working 的时刻；短于 COMMAND_VISIBLE_AFTER 不进 Commands。
+    pub command_started_at: Option<Instant>,
 }
 
 /// 工作区聚合视图。
@@ -154,6 +171,7 @@ impl<C: Clock> AttentionEngine<C> {
                 // 初始化为久远过去，保证第一条输出就参与正则评估。
                 last_regex_eval: now.checked_sub(Duration::from_secs(3600)).unwrap_or(now),
                 last_activity: now,
+                command_started_at: None,
             })
     }
 
@@ -182,13 +200,14 @@ impl<C: Clock> AttentionEngine<C> {
         let now = self.clock.now();
         let key = (ws.to_string(), pane);
         let mut authoritative = self.authoritative_panes.contains(&key);
-        let (mut status, mut acknowledged, line_changed, initial_seed) = {
+        let (mut status, mut acknowledged, line_changed, initial_seed, command_started_at) = {
             let entry = self.entry_mut(ws, pane);
             (
                 entry.status,
                 entry.acknowledged,
                 entry.last_line != last_line || entry.seq != seq,
                 entry.seq == 0 && entry.last_line.is_empty(),
+                entry.command_started_at,
             )
         };
         let live_agent = self
@@ -223,12 +242,21 @@ impl<C: Clock> AttentionEngine<C> {
                     status = transition(status, PaneEvent::CommandStart);
                 }
                 AttentionSignal::CommandDone { exit_code } if !authoritative => {
-                    status = transition(
-                        status,
-                        PaneEvent::CommandDone {
-                            exit_code: *exit_code,
-                        },
-                    );
+                    let short = !live_agent
+                        && command_started_at.is_some_and(|started| {
+                            now.saturating_duration_since(started) < COMMAND_VISIBLE_AFTER
+                        });
+                    if short {
+                        status = PaneStatus::Idle;
+                        acknowledged = true;
+                    } else {
+                        status = transition(
+                            status,
+                            PaneEvent::CommandDone {
+                                exit_code: *exit_code,
+                            },
+                        );
+                    }
                 }
                 AttentionSignal::AttentionRequest { .. } if !authoritative => {
                     status = transition(status, PaneEvent::AttentionRequest);
@@ -281,6 +309,16 @@ impl<C: Clock> AttentionEngine<C> {
             entry.seq = seq;
             if line_changed || status != previous_status {
                 entry.last_activity = now;
+            }
+            if !authoritative
+                && !live_agent
+                && status == PaneStatus::Working
+                && previous_status != PaneStatus::Working
+            {
+                entry.command_started_at = Some(now);
+            }
+            if status != PaneStatus::Working {
+                entry.command_started_at = None;
             }
             entry.status = status;
             if status != previous_status {
@@ -611,6 +649,14 @@ impl<C: Clock> AttentionEngine<C> {
         let mut out: Vec<WorkspaceAttention> = map
             .into_iter()
             .map(|(workspace_id, panes)| {
+                let mut panes: Vec<PaneAttention> = panes
+                    .into_iter()
+                    .cloned()
+                    .map(|mut pane| {
+                        pane.status = listed_command_status(&pane, now);
+                        pane
+                    })
+                    .collect();
                 let blocked = panes
                     .iter()
                     .filter(|p| {
@@ -631,7 +677,6 @@ impl<C: Clock> AttentionEngine<C> {
                     .iter()
                     .filter(|p| p.status == PaneStatus::Working)
                     .count();
-                let mut panes = panes.into_iter().cloned().collect::<Vec<_>>();
                 panes.sort_by_key(|p| (p.pane_id, p.seq));
                 WorkspaceAttention {
                     workspace_id,
@@ -1375,7 +1420,8 @@ mod tests {
 
     #[test]
     fn tmux_non_agent_process_tracks_running_and_done() {
-        let mut e = AttentionEngine::new(AttentionConfig::default(), clock());
+        let c = clock();
+        let mut e = AttentionEngine::new(AttentionConfig::default(), c.clone());
         e.set_process_name("ws", 1, Some("zsh".into()));
 
         e.set_process_name("ws", 1, Some("cargo".into()));
@@ -1383,6 +1429,12 @@ mod tests {
         assert_eq!(pane.process_name.as_deref(), Some("cargo"));
         assert_eq!(
             pane.status,
+            PaneStatus::Idle,
+            "short-lived commands stay hidden until they last"
+        );
+        c.advance(Duration::from_millis(1600));
+        assert_eq!(
+            e.snapshot()[0].panes[0].status,
             PaneStatus::Working,
             "every non-shell command must enter the running lifecycle"
         );
@@ -1404,7 +1456,8 @@ mod tests {
 
     #[test]
     fn login_shell_is_idle_but_shell_command_tracks_running_and_done() {
-        let mut e = AttentionEngine::new(AttentionConfig::default(), clock());
+        let c = clock();
+        let mut e = AttentionEngine::new(AttentionConfig::default(), c.clone());
         e.set_process_name("ws", 1, Some("/bin/zsh -l".into()));
         assert_ne!(
             e.snapshot()[0].panes[0].status,
@@ -1415,7 +1468,8 @@ mod tests {
         e.set_process_name("ws", 1, Some("/bin/bash -c echo-ready".into()));
         let pane = &e.snapshot()[0].panes[0];
         assert_eq!(pane.process_name.as_deref(), Some("bash -c echo-ready"));
-        assert_eq!(pane.status, PaneStatus::Working);
+        c.advance(Duration::from_millis(1600));
+        assert_eq!(e.snapshot()[0].panes[0].status, PaneStatus::Working);
 
         e.set_process_name("ws", 1, Some("/bin/zsh -l".into()));
         assert_eq!(e.snapshot()[0].panes[0].status, PaneStatus::Done);
@@ -1539,10 +1593,30 @@ mod tests {
 
     #[test]
     fn ordinary_command_still_starts_working_from_process_name() {
-        let mut e = AttentionEngine::new(AttentionConfig::default(), clock());
+        let c = clock();
+        let mut e = AttentionEngine::new(AttentionConfig::default(), c.clone());
         e.set_process_name("ws", 81, Some("go".into()));
-        assert_eq!(e.snapshot()[0].panes[0].status, PaneStatus::Working);
         assert!(!e.snapshot()[0].panes[0].process_is_agent);
+        assert_eq!(
+            e.snapshot()[0].panes[0].status,
+            PaneStatus::Idle,
+            "刚启动的命令先不进 Commands"
+        );
+        c.advance(Duration::from_millis(1600));
+        assert_eq!(e.snapshot()[0].panes[0].status, PaneStatus::Working);
+    }
+
+    #[test]
+    fn short_command_never_lists_in_commands() {
+        let mut e = AttentionEngine::new(AttentionConfig::default(), clock());
+        e.set_process_name("ws", 2, Some("zsh".into()));
+        e.set_process_name("ws", 2, Some("go".into()));
+        e.set_process_name("ws", 2, Some("zsh".into()));
+        assert_eq!(
+            e.snapshot()[0].panes[0].status,
+            PaneStatus::Idle,
+            "一闪而过的命令结束也不进 Commands"
+        );
     }
 
     #[test]
