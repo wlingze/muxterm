@@ -176,8 +176,9 @@ impl RuntimeProvider for HerdrDriver {
                 spec.session, socket
             )));
         }
+        let cwd = crate::executable::expand_config_value(&spec.path);
         let created = herdr
-            .workspace_create(&spec.path, label.unwrap_or(&spec.session))
+            .workspace_create(&cwd, label.unwrap_or(&spec.session))
             .map_err(RuntimeError::message)?;
         spec.path = created.workspace_id;
         Ok(spec)
