@@ -107,13 +107,14 @@ fn local_attach_only_never_creates_and_create_requires_running_session() {
         err.to_string().contains("没有匹配"),
         "AttachOnly 错误应说明无匹配: {err}"
     );
-    // CreateIfMissing 无 socket → choice-required，不能偷偷换 default。
+    // 无 socket 时补本地 default sock；该 named session 没跑则失败，不 start server。
     let err = catalog
         .resolve_target(&mut connections, &missing, ResolveIntent::CreateIfMissing)
-        .expect_err("CreateIfMissing 无显式 socket 必须失败");
+        .expect_err("CreateIfMissing 在 session 未运行时必须失败");
+    let text = err.to_string();
     assert!(
-        err.to_string().contains("socket"),
-        "CreateIfMissing 需要显式 socket: {err}"
+        text.contains("未运行") || text.contains("socket") || text.contains("named session"),
+        "CreateIfMissing 应说明 Herdr session 不可用: {err}"
     );
 }
 

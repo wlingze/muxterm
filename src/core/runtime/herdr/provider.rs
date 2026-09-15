@@ -15,6 +15,17 @@ use crate::transport::{ChannelKind, TargetConnection};
 /// herdr 插件（local / ssh）。
 pub struct HerdrDriver;
 
+fn local_herdr_socket() -> String {
+    if let Ok(path) = std::env::var("HERDR_SOCKET_PATH") {
+        let path = path.trim();
+        if !path.is_empty() {
+            return path.to_string();
+        }
+    }
+    let home = std::env::var("HOME").unwrap_or_default();
+    format!("{home}/.config/herdr/herdr.sock")
+}
+
 impl RuntimeProvider for HerdrDriver {
     fn id(&self) -> &'static str {
         "herdr"
@@ -150,21 +161,25 @@ impl RuntimeProvider for HerdrDriver {
                 "SSH target 不允许启动 workspace.create",
             ));
         }
+        let mut spec = spec.clone();
         if spec.session.is_empty() {
-            return Err(RuntimeError::message("需要显式 named session"));
+            spec.session = "default".into();
         }
-        let Some(socket) = spec.socket.as_deref() else {
-            return Err(RuntimeError::message("需要显式 socket 路径"));
-        };
+        if spec.socket.is_none() {
+            spec.socket = Some(local_herdr_socket());
+        }
+        let socket = spec.socket.as_deref().expect("local herdr socket 已补齐");
         let herdr = HerdrSession::new(&spec.session, socket);
         if herdr.ping().is_err() {
-            return Err(RuntimeError::message("目标 named session 未运行"));
+            return Err(RuntimeError::message(format!(
+                "Herdr session `{}` 未运行（{}）。先启动 herdr，或从已有连接里选一个 session",
+                spec.session, socket
+            )));
         }
         let created = herdr
             .workspace_create(&spec.path, label.unwrap_or(&spec.session))
             .map_err(RuntimeError::message)?;
-        let mut out = spec.clone();
-        out.path = created.workspace_id;
-        Ok(out)
+        spec.path = created.workspace_id;
+        Ok(spec)
     }
 }
