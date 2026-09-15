@@ -49,18 +49,19 @@ pub(super) fn attention_panel_row(item: &AttentionPanelRow) -> GtkBox {
         .build();
     detail.set_widget_name("muxterm-attention-detail");
     detail.add_css_class("quick-pick-detail");
+    if let Some(class) = item.indicator.css_class() {
+        detail.add_css_class(class);
+    }
     detail.set_tooltip_text(Some(&item.detail));
     labels.append(&title);
     labels.append(&detail);
-    if item.indicator != ActivityIndicator::None {
-        let dot = Label::new(Some("●"));
+    if let Some(marker) = item.indicator.marker() {
+        let dot = Label::new(Some(marker));
         dot.set_widget_name("muxterm-attention-status-dot");
         dot.add_css_class("muxterm-sidebar-agent-dot");
-        dot.add_css_class(match item.indicator {
-            ActivityIndicator::Running => "running",
-            ActivityIndicator::Done => "done",
-            ActivityIndicator::None => unreachable!("None does not create a status dot"),
-        });
+        if let Some(class) = item.indicator.css_class() {
+            dot.add_css_class(class);
+        }
         content.append(&dot);
     }
     content.append(&labels);

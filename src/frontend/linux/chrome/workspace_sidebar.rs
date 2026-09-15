@@ -254,11 +254,22 @@ mod tests {
         assert_eq!(items[0].workspace_id, id);
         assert_eq!(items[0].pane_id, 1);
         assert_eq!(items[0].title, "Codex");
-        assert_eq!(items[0].detail, "muxterm@herdr@local · /work/muxterm");
-        assert_eq!(items[0].indicator, ActivityIndicator::Running);
+        assert_eq!(
+            items[0].detail,
+            "working · muxterm@herdr@local · /work/muxterm"
+        );
+        assert_eq!(items[0].indicator, ActivityIndicator::Working);
 
         let no_activity = ClientActivitySnapshot::default();
         assert!(AgentSidebarItem::from_views(&store, &no_activity).is_empty());
+
+        let idle = activity(&id, "idle", true, Some("grok"), true, Some("grok"));
+        let items = AgentSidebarItem::from_views(&store, &idle);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].title, "grok");
+        assert_eq!(items[0].indicator, ActivityIndicator::Idle);
+        assert_eq!(items[0].indicator.marker(), Some("○"));
+        assert!(items[0].detail.starts_with("idle · "));
     }
 
     #[test]
@@ -278,7 +289,7 @@ mod tests {
             rows[0].detail,
             "command-workspace@tmux@local · /work/command"
         );
-        assert_eq!(rows[0].indicator, ActivityIndicator::Running);
+        assert_eq!(rows[0].indicator, ActivityIndicator::Working);
 
         let mut done = running.clone();
         done.workspaces[0].panes[0].status = "done".into();

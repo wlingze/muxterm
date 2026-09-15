@@ -45,6 +45,8 @@ pub fn transition(state: PaneStatus, event: PaneEvent) -> PaneStatus {
         (Idle, CommandDone { .. }) => Done,
         (Idle, AttentionRequest) => Blocked,
         (Idle, RegexMatch) => Blocked,
+        (Idle, OutputActivity) => Working,
+        (Unknown, OutputActivity) => Working,
         (Working, CommandStart) => Working,
         (Working, CommandDone { .. }) => Done,
         (Working, AttentionRequest) => Blocked,
@@ -60,7 +62,6 @@ pub fn transition(state: PaneStatus, event: PaneEvent) -> PaneStatus {
         (Blocked, UserInput) => Idle,
         (Blocked, RegexMatch) => Blocked,
         (Blocked, RegexClear) => Idle,
-        (Blocked, OutputActivity) => Working,
         _ => state,
     }
 }
@@ -97,6 +98,8 @@ mod tests {
                     (Idle, CommandDone { .. }) => Done,
                     (Idle, AttentionRequest) => Blocked,
                     (Idle, RegexMatch) => Blocked,
+                    (Idle, OutputActivity) => Working,
+                    (Unknown, OutputActivity) => Working,
                     (Working, CommandStart) => Working,
                     (Working, CommandDone { .. }) => Done,
                     (Working, AttentionRequest) => Blocked,
@@ -112,7 +115,6 @@ mod tests {
                     (Blocked, UserInput) => Idle,
                     (Blocked, RegexMatch) => Blocked,
                     (Blocked, RegexClear) => Idle,
-                    (Blocked, OutputActivity) => Working,
                     _ => state,
                 };
                 assert_eq!(got, want, "state={state:?} event={event:?}");
@@ -141,6 +143,15 @@ mod tests {
         assert_eq!(
             transition(PaneStatus::Blocked, PaneEvent::UserInput),
             PaneStatus::Idle
+        );
+    }
+
+    #[test]
+    fn blocked_survives_output_activity() {
+        assert_eq!(
+            transition(PaneStatus::Blocked, PaneEvent::OutputActivity),
+            PaneStatus::Blocked,
+            "TUI 重绘不能把等待确认的 agent 改成 Working"
         );
     }
 

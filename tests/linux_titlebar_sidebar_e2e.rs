@@ -349,7 +349,7 @@ fn title_bar_actions_and_workspace_sidebar() {
         );
         let command_dot = find_by_name(&running_command, "muxterm-sidebar-command-dot")
             .expect("running command status point");
-        assert!(command_dot.has_css_class("running"));
+        assert!(command_dot.has_css_class("working"));
 
         let hide = find_by_name(&running_command, "muxterm-sidebar-command-hide")
             .expect("command hide action")
@@ -385,8 +385,8 @@ fn title_bar_actions_and_workspace_sidebar() {
         let row = agent_list.row_at_index(0).expect("agent row");
         let dot = find_by_name(&row, "muxterm-sidebar-agent-dot").expect("agent status dot");
         assert!(
-            dot.has_css_class("running"),
-            "running agent must use the yellow running state"
+            dot.has_css_class("working"),
+            "running agent must use the yellow working state"
         );
         assert!(
             command_list.row_at_index(0).is_none(),
@@ -398,15 +398,16 @@ fn title_bar_actions_and_workspace_sidebar() {
         let row = agent_list.row_at_index(0).expect("blocked agent row");
         let dot = find_by_name(&row, "muxterm-sidebar-agent-dot").expect("blocked status dot");
         assert!(
-            dot.has_css_class("done"),
-            "waiting-for-review agent must use the green done state"
+            dot.has_css_class("blocked"),
+            "waiting-for-review agent must use the blocked state"
         );
         row.activate();
         pump_main_loop(100);
         let row = agent_list.row_at_index(0).expect("acknowledged agent row");
+        let dot = find_by_name(&row, "muxterm-sidebar-agent-dot").expect("blocked stays listed");
         assert!(
-            find_by_name(&row, "muxterm-sidebar-agent-dot").is_none(),
-            "read agent must remain listed without creating a status point"
+            dot.has_css_class("blocked"),
+            "blocked agent stays blocked until the runtime clears it"
         );
 
         app.test_set_agent_attention(1, "codex", ClientAttentionStatus::Done);
@@ -415,14 +416,16 @@ fn title_bar_actions_and_workspace_sidebar() {
         let dot = find_by_name(&row, "muxterm-sidebar-agent-dot").expect("finished status dot");
         assert!(
             dot.has_css_class("done"),
-            "finished but unseen agent must be green"
+            "finished but unseen agent must be teal done"
         );
         row.activate();
         pump_main_loop(100);
         let row = agent_list
             .row_at_index(0)
             .expect("viewed finished agent row");
-        assert!(find_by_name(&row, "muxterm-sidebar-agent-dot").is_none());
+        let dot =
+            find_by_name(&row, "muxterm-sidebar-agent-dot").expect("viewed done becomes idle");
+        assert!(dot.has_css_class("idle"));
 
         let content = find_by_name(&app.window, "muxterm-content")
             .expect("main split must exist")
@@ -701,56 +704,33 @@ fn isolated_tmux_pi_agent_lifecycle_reaches_agent_list() {
             wait_until_widget(8_000, || agent_list.row_at_index(0).is_some()),
             "tmux pi must appear in the persistent Agent list"
         );
+        assert!(
+            wait_until_widget(8_000, || {
+                app.test_poll_once();
+                agent_list.row_at_index(0).is_some_and(|row| {
+                    widget_label_texts(&row).iter().any(|text| text == "pi")
+                        && find_by_name(&row, "muxterm-sidebar-agent-dot")
+                            .is_some_and(|dot| dot.has_css_class("idle"))
+                })
+            }),
+            "sitting tmux agent waits for input instead of looking like a running command"
+        );
         let row = agent_list.row_at_index(0).expect("tmux pi row");
-        assert!(
-            widget_label_texts(&row).iter().any(|text| text == "pi"),
-            "Agent title must use the detected tmux process: {:?}",
-            widget_label_texts(&row)
-        );
-        let dot = find_by_name(&row, "muxterm-sidebar-agent-dot").expect("working status dot");
-        assert!(
-            dot.has_css_class("running"),
-            "running tmux agent must use the yellow running state"
-        );
 
-        // A Working tmux agent must remain in Attention even while it is not
-        // Blocked/Done. Enter is the only action and must jump to its pane.
+        // Idle agents stay in the persistent Agents list, not Attention.
         assert_ne!(
             app.test_active_pane_id(),
             pane,
             "fake pi fixture must start in the background"
         );
-        app.test_open_panel(1);
-        pump_main_loop(80);
-        let attention_list = find_by_name(&app.window, "muxterm-panel-list")
-            .expect("Attention list")
-            .downcast::<gtk4::ListBox>()
-            .expect("Attention list type");
-        let attention_row = attention_list
-            .row_at_index(1)
-            .expect("tmux pi Attention row");
-        let attention_labels = widget_label_texts(&attention_row);
-        assert!(
-            attention_labels.iter().any(|text| text == "pi"),
-            "active Working tmux agent must stay in Attention: {attention_labels:?}"
-        );
-        let attention_dot = find_by_name(&attention_row, "muxterm-attention-status-dot")
-            .expect("Attention agent status dot");
-        assert!(attention_dot.has_css_class("running"));
-        assert!(find_by_name(&app.window, "muxterm-attention-peek").is_none());
-        let entry = find_by_name(&app.window, "muxterm-panel-entry")
-            .expect("panel entry")
-            .downcast::<gtk4::Entry>()
-            .expect("panel entry type");
-        entry.emit_activate();
+        row.activate();
         assert!(
             wait_until_widget(8_000, || {
                 app.test_poll_once();
                 app.test_active_pane_id() == pane
             }),
-            "Enter must jump to the background tmux agent pane"
+            "activating the Agents row must jump to the background tmux agent pane"
         );
-        assert!(!app.test_panel_open(), "jump must close Attention");
         assert!(
             app.test_active_terminal_has_focus(),
             "the target terminal must own focus after the async pane switch"
@@ -771,11 +751,13 @@ fn isolated_tmux_pi_agent_lifecycle_reaches_agent_list() {
         assert!(
             wait_until_widget(8_000, || {
                 agent_list.row_at_index(0).is_some_and(|row| {
-                    find_by_name(&row, "muxterm-sidebar-agent-dot")
-                        .is_some_and(|dot| dot.has_css_class("done"))
+                    widget_label_texts(&row).iter().any(|text| text == "pi")
+                        && find_by_name(&row, "muxterm-sidebar-agent-dot").is_some_and(|dot| {
+                            dot.has_css_class("idle") || dot.has_css_class("done")
+                        })
                 })
             }),
-            "finished unseen tmux agent must become green"
+            "exited tmux agent keeps its sidebar identity"
         );
 
         app.shutdown();

@@ -843,15 +843,13 @@ fn activity_row_with_trailing(
         .margin_start(8)
         .margin_end(8)
         .build();
-    if item.indicator() != ActivityIndicator::None {
-        let dot = Label::new(Some("●"));
+    if let Some(marker) = item.indicator().marker() {
+        let dot = Label::new(Some(marker));
         dot.set_widget_name(dot_widget_name);
         dot.add_css_class("muxterm-sidebar-agent-dot");
-        dot.add_css_class(match item.indicator() {
-            ActivityIndicator::Running => "running",
-            ActivityIndicator::Done => "done",
-            ActivityIndicator::None => unreachable!("None does not create a status dot"),
-        });
+        if let Some(class) = item.indicator().css_class() {
+            dot.add_css_class(class);
+        }
         content.append(&dot);
     }
     let labels = GtkBox::builder()
@@ -873,6 +871,9 @@ fn activity_row_with_trailing(
         .ellipsize(gtk4::pango::EllipsizeMode::End)
         .build();
     detail.add_css_class("muxterm-sidebar-row-detail");
+    if let Some(class) = item.indicator().css_class() {
+        detail.add_css_class(class);
+    }
     labels.append(&title);
     labels.append(&detail);
     content.append(&labels);

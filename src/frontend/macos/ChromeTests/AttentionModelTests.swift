@@ -180,8 +180,8 @@ final class AttentionListTests: XCTestCase {
         let rows = AttentionList.rows(from: snap, workspaces: [chrome], query: "")
         XCTAssertEqual(rows.count, 1)
         XCTAssertEqual(rows[0].title, "muxterm  codex  ryzen  ~/Developer/self/muxterm")
-        XCTAssertEqual(rows[0].detail, "Working · Codex · Tab 2")
-        XCTAssertEqual(rows[0].indicator, .running)
+        XCTAssertEqual(rows[0].detail, "working · Codex · Tab 2")
+        XCTAssertEqual(rows[0].indicator, .working)
         XCTAssertTrue(rows[0].title.contains("ryzen"))
         XCTAssertTrue(rows[0].title.contains("~/Developer/self/muxterm"))
         XCTAssertEqual(
@@ -191,7 +191,7 @@ final class AttentionListTests: XCTestCase {
                 agentName: "Codex",
                 tabNumber: 2
             ),
-            "muxterm · Working · Codex · Tab 2"
+            "muxterm · working · Codex · Tab 2"
         )
     }
 
@@ -201,9 +201,9 @@ final class AttentionListTests: XCTestCase {
             (2, .done, 2, "complete"),
         ])
         let rows = AttentionList.rows(from: snap, query: "")
-        XCTAssertEqual(rows.map(\.indicator), [.done, .done])
-        XCTAssertEqual(rows[0].detail, "Blocked · cat")
-        XCTAssertEqual(rows[1].detail, "Done · cat")
+        XCTAssertEqual(rows.map(\.indicator), [.blocked, .done])
+        XCTAssertEqual(rows[0].detail, "blocked · cat")
+        XCTAssertEqual(rows[1].detail, "done · cat")
     }
 
     func testDecodeIncludesWorkspaceNameTransportAndPath() throws {
