@@ -27,6 +27,19 @@ final class WorkspaceReplicaIDTests: XCTestCase {
         )
     }
 
+    func testHerdrReplicaUsesWorkspaceIDNotProjectPath() {
+        let config = TargetConfig(
+            name: "yakit",
+            runtime: .herdr,
+            transport: .local,
+            path: "~/Developer/Yak/yakit",
+            session: "default",
+            workspaceID: "w9"
+        )
+        XCTAssertEqual(WorkspaceReplicaID.from(config), "default:w9@local")
+        XCTAssertFalse(WorkspaceReplicaID.from(config).contains("Yak"))
+    }
+
     func testTargetConfigUsesSessionPathAndSshAlias() {
         let config = TargetConfig(
             name: "muxterm",
