@@ -207,6 +207,33 @@ final class SettingsWindowE2ETests: XCTestCase {
         XCTAssertTrue(projectNames.contains("created"))
     }
 
+    func testApplyWithDefaultManifestDoesNotRejectDraft() throws {
+        AppE2E.ensureApp()
+        let config = try IsolatedMuxtermConfig(
+            label: "settings-apply-default",
+            toml: Self.projectConfig(name: "keep", path: "/tmp/keep")
+        )
+        let bridge = try CoreBridge(backendType: "local")
+        let settings = SettingsWindowController(bridge: bridge)
+        defer {
+            settings.window?.orderOut(nil)
+            bridge.shutdown()
+            config.restore()
+        }
+
+        settings.showWindow(nil)
+        AppE2E.pump(50)
+        settings.testApplySettings()
+        AppE2E.pump(80)
+        XCTAssertEqual(
+            settings.window?.isVisible,
+            false,
+            "Apply 不得因 font/fallback 字符串或 shortcut 占位控件报草稿不符合 ConfigDocument"
+        )
+        let names = try Self.projectNames(in: try XCTUnwrap(bridge.configDescribeJSON()))
+        XCTAssertTrue(names.contains("keep"))
+    }
+
     func testProjectEditorPreservesSSHHostWhenEditing() throws {
         AppE2E.ensureApp()
         let project = TargetConfig(
