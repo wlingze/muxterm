@@ -2628,9 +2628,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    /// Herdr Project 先按普通重连（AttachOnly）解析；只有保存的 Project
-    /// 明确无匹配时才尝试 CreateIfMissing，且 Core 仍要求用户已选择 named
-    /// session/socket，绝不由 macOS 偷选 default server。
+    /// Herdr Project 先 AttachOnly；无匹配再 CreateIfMissing。
+    /// 本地未填 session 时 Core 使用 default + herdr.sock，不在这里偷选。
     private func connectHerdrProject(config: TargetConfig) {
         let isSavedProject = quickConnectStore.projects.contains {
             QuickConnect.uniqueID(for: $0) == QuickConnect.uniqueID(for: config)

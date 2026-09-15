@@ -362,9 +362,8 @@ impl Catalog {
                                     reason: "SSH target 不允许启动 workspace.create".to_string(),
                                 })
                             } else {
-                                // 只允许显式 named session/socket 且该 session
-                                // 已运行；未明确或不可达返回 choice-required，
-                                // 禁止偷偷换 default 或启动 server。
+                                // 本地未填 session 时与 attach 一样走 default +
+                                // herdr.sock；server 没起来就失败，不偷偷 start。
                                 let runtime_spec = descriptor_to_spec(descriptor).runtime_spec();
                                 let created = driver
                                     .create_identity(
@@ -377,7 +376,11 @@ impl Catalog {
                                         reason: error.to_string(),
                                     })?;
                                 let mut canonical = descriptor.clone();
-                                canonical.workspace_id = Some(created.path);
+                                canonical.workspace_id = Some(created.path.clone());
+                                if !created.session.is_empty() {
+                                    canonical.session = Some(created.session.clone());
+                                }
+                                canonical.socket = created.socket.clone();
                                 let spec = descriptor_to_spec(&canonical);
                                 Ok(ResolvedTarget { canonical, spec })
                             }
