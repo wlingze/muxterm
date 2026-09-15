@@ -98,6 +98,15 @@ impl PaneBuf {
         signals
     }
 
+    /// 可见屏 + OSC 标题/进度，给 agent 屏幕规则用。
+    pub fn screen_snapshot(&self) -> crate::activity::attention::screen::ScreenSnapshot {
+        crate::activity::attention::screen::ScreenSnapshot::from_visible(
+            self.terminal.title.clone().unwrap_or_default(),
+            self.terminal.osc_progress.clone().unwrap_or_default(),
+            self.terminal.visible_snapshot(),
+        )
+    }
+
     /// 最近一次 feed 的 seq + 最后非空行（注意力引擎用）。
     pub fn last_line_seq(&self) -> (String, u64) {
         (

@@ -206,7 +206,7 @@ pub unsafe extern "C" fn muxterm_workspace_send_input(
         handle
             .activity
             .attention
-            .on_user_input(&workspace_id.replica_id(), pane.0);
+            .on_user_input_bytes(&workspace_id.replica_id(), pane.0, &bytes);
         let Some(ws) = handle.pool_mut().get_mut(&workspace_id) else {
             return -1;
         };
@@ -562,7 +562,7 @@ pub unsafe extern "C" fn muxterm_send_input(
             handle
                 .activity
                 .attention
-                .on_user_input(&ws_id.replica_id(), pane.0);
+                .on_user_input_bytes(&ws_id.replica_id(), pane.0, &bytes);
         }
         let Some(ws) = handle.active_workspace_mut() else {
             return -1;

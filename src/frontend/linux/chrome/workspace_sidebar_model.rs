@@ -139,6 +139,19 @@ impl AgentSidebarItem {
                 }
             }
         }
+        items.sort_by(|left, right| {
+            let rank = |indicator| match indicator {
+                ActivityIndicator::Done => 0,
+                ActivityIndicator::Blocked => 1,
+                ActivityIndicator::Working => 2,
+                ActivityIndicator::Idle => 3,
+                ActivityIndicator::None => 4,
+            };
+            rank(left.indicator)
+                .cmp(&rank(right.indicator))
+                .then(left.title.cmp(&right.title))
+                .then(left.pane_id.cmp(&right.pane_id))
+        });
         items
     }
 }

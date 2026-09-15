@@ -75,8 +75,8 @@ final class AttentionListTests: XCTestCase {
         ])
         let rows = AttentionList.rows(from: snap, query: "")
         XCTAssertEqual(rows.count, 3)
-        XCTAssertEqual(rows[0].pane.paneId, 1)
-        XCTAssertEqual(rows[1].pane.paneId, 2)
+        XCTAssertEqual(rows[0].pane.paneId, 2)
+        XCTAssertEqual(rows[1].pane.paneId, 1)
         XCTAssertEqual(rows[2].pane.paneId, 3)
     }
 
@@ -106,14 +106,14 @@ final class AttentionListTests: XCTestCase {
         XCTAssertTrue(AttentionList.rows(from: snap, query: "").isEmpty)
     }
 
-    func testBlockedFirstThenNewerSeq() {
+    func testDoneFirstThenNewerBlockedSeq() {
         let snap = snapshot(panes: [
             (1, .done, 1, "old done"),
             (2, .blocked, 2, "ask"),
             (3, .blocked, 3, "ask2"),
         ])
         let rows = AttentionList.rows(from: snap, query: "")
-        XCTAssertEqual(rows.map(\.pane.paneId), [3, 2, 1])
+        XCTAssertEqual(rows.map(\.pane.paneId), [1, 3, 2])
     }
 
     func testQueryFiltersByWorkspaceProcessAndLine() {
@@ -201,9 +201,9 @@ final class AttentionListTests: XCTestCase {
             (2, .done, 2, "complete"),
         ])
         let rows = AttentionList.rows(from: snap, query: "")
-        XCTAssertEqual(rows.map(\.indicator), [.blocked, .done])
-        XCTAssertEqual(rows[0].detail, "blocked · cat")
-        XCTAssertEqual(rows[1].detail, "done · cat")
+        XCTAssertEqual(rows.map(\.indicator), [.done, .blocked])
+        XCTAssertEqual(rows[0].detail, "done · cat")
+        XCTAssertEqual(rows[1].detail, "blocked · cat")
     }
 
     func testDecodeIncludesWorkspaceNameTransportAndPath() throws {

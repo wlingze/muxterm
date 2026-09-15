@@ -351,8 +351,8 @@ public enum WorkspaceSidebarProjection {
         return result.sorted { lhs, rhs in
             let rank: (AgentSidebarIndicator) -> Int = { indicator in
                 switch indicator {
-                case .blocked: 0
-                case .done: 1
+                case .done: 0
+                case .blocked: 1
                 case .working: 2
                 case .idle: 3
                 }

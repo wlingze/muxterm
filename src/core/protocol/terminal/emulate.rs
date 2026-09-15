@@ -170,6 +170,8 @@ pub struct TerminalState {
     pub focus_reporting: bool,
     /// 窗口标题（OSC 0/2）。
     pub title: Option<String>,
+    /// OSC 9;4 进度载荷，例如 `4;1;-1` / `4;0;0`（Grok/Claude working 证据）。
+    pub osc_progress: Option<String>,
     /// 标题栈（OSC 22 push / 23 pop）。
     pub title_stack: Vec<String>,
     /// 光标形状（DECSCUSR / OSC 50）。
@@ -322,6 +324,7 @@ impl TerminalState {
             wrap_pending: false,
             show_cursor: true,
             title: None,
+            osc_progress: None,
             title_stack: Vec::new(),
             cursor_shape: CursorShape::Block,
             cursor_blinking: false,
@@ -721,10 +724,15 @@ impl TerminalState {
                 }
             }
             b"9" => {
-                // OSC 9;4;<state> 是进度协议（pi 等 TUI 会周期性发送），
-                // 不能当成一次新的“需要关注”通知，否则运行中的 agent
-                // 会每秒被加入消息列表。
+                // OSC 9;4;<state> 是进度协议（Grok/Claude/pi）。
+                // 不当成通知；保留载荷给屏幕规则当 working/idle 证据。
                 if params.get(1).is_some_and(|param| *param == b"4") {
+                    let payload = params[1..]
+                        .iter()
+                        .map(|part| String::from_utf8_lossy(part))
+                        .collect::<Vec<_>>()
+                        .join(";");
+                    self.osc_progress = Some(payload);
                     return;
                 }
                 self.signals.push(AttentionSignal::AttentionRequest {
@@ -3186,11 +3194,12 @@ mod attention_signal_tests {
     fn osc9_progress_does_not_emit_osc_notify() {
         let mut t = TerminalState::new(80, 24);
         // OSC 9;4;<state> 是进度状态，不是“需要用户关注”的通知。
-        t.feed(b"\x1b]9;4;3\x07");
+        t.feed(b"\x1b]9;4;1;-1\x07");
         assert!(
             t.take_attention_signals().is_empty(),
             "OSC 9;4 进度帧不能触发消息通知"
         );
+        assert_eq!(t.osc_progress.as_deref(), Some("4;1;-1"));
     }
 
     #[test]

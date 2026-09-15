@@ -398,8 +398,8 @@ public enum AttentionList {
         rows.sort { a, b in
             func rank(_ status: PaneAttentionStatus) -> Int {
                 switch status {
-                case .blocked: 0
-                case .done: 1
+                case .done: 0
+                case .blocked: 1
                 case .working: 2
                 case .unknown, .idle: 3
                 }
