@@ -13,7 +13,9 @@
 
 use std::collections::{HashSet, VecDeque};
 
-use crate::activity::attention::signal::{AttentionSignal, AttentionSource};
+use crate::activity::attention::signal::{
+    is_transient_shell_command, AttentionSignal, AttentionSource,
+};
 use vte::ansi::{
     Attr, CharsetIndex, ClearMode, Color, CursorShape, Handler, KeyboardModes,
     KeyboardModesApplyBehavior, LineClearMode, ModifyOtherKeys, NamedColor, NamedPrivateMode,
@@ -670,19 +672,22 @@ impl TerminalState {
                             .unwrap_or(self.next_seq);
                     }
                     Some(b'C') => {
-                        self.signals.push(AttentionSignal::CommandStart);
                         // B..C 之间的那一行就是命令文本；C 之后清空待收集。
                         self.command_mark_seq = None;
-                        if let Some(cmd) = self.command_pending.take() {
+                        let cmd = self.command_pending.take().map(|cmd| {
                             // 收集时把 C 的 OSC 帧也吞进来了，剥到 `ESC ]` 为止。
-                            let cmd = cmd.split("\x1b]").next().unwrap_or("").trim().to_string();
-                            if !cmd.is_empty() {
-                                self.command_marks.push(CommandMark {
-                                    seq: self.command_start_seq,
-                                    command: cmd,
-                                    exit_code: None,
-                                });
-                                self.command_mark_seq = Some(self.command_start_seq);
+                            cmd.split("\x1b]").next().unwrap_or("").trim().to_string()
+                        });
+                        let cmd = cmd.unwrap_or_default();
+                        if !cmd.is_empty() {
+                            self.command_marks.push(CommandMark {
+                                seq: self.command_start_seq,
+                                command: cmd.clone(),
+                                exit_code: None,
+                            });
+                            self.command_mark_seq = Some(self.command_start_seq);
+                            if !is_transient_shell_command(&cmd) {
+                                self.signals.push(AttentionSignal::CommandStart);
                             }
                         }
                     }
@@ -2974,9 +2979,29 @@ mod attention_signal_tests {
     use super::*;
 
     #[test]
-    fn osc133_c_emits_command_start() {
+    fn osc133_c_without_command_text_is_not_a_listed_command() {
         let mut t = TerminalState::new(80, 24);
         t.feed(b"\x1b]133;C\x07");
+        assert!(
+            t.take_attention_signals().is_empty(),
+            "空回车的 OSC 133 C 不应进 Commands"
+        );
+    }
+
+    #[test]
+    fn osc133_c_skips_flash_commands_like_pwd() {
+        let mut t = TerminalState::new(80, 24);
+        t.feed(b"\x1b]133;B\x07pwd\r\n\x1b]133;C\x07");
+        assert!(
+            t.take_attention_signals().is_empty(),
+            "pwd/ls 这类瞬间命令不应 CommandStart"
+        );
+    }
+
+    #[test]
+    fn osc133_c_emits_command_start_for_real_commands() {
+        let mut t = TerminalState::new(80, 24);
+        t.feed(b"\x1b]133;B\x07cargo test\r\n\x1b]133;C\x07");
         assert_eq!(
             t.take_attention_signals(),
             vec![AttentionSignal::CommandStart]
@@ -3182,9 +3207,9 @@ mod attention_signal_tests {
         t.feed(b"\x1b]133");
         assert!(t.take_attention_signals().is_empty());
         t.feed(b";C\x07");
-        assert_eq!(
-            t.take_attention_signals(),
-            vec![AttentionSignal::CommandStart]
+        assert!(
+            t.take_attention_signals().is_empty(),
+            "跨 feed 拼起来的空 OSC 133 C 仍是空回车，不是 Commands 条目"
         );
     }
 
