@@ -53,6 +53,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 主窗口 local key monitor 的 token；独立 NSPanel 的事件不能进入这里。
     private var keyMonitor: Any?
     var lastSnapshot = FrameSnapshot()
+    /// Core 整池 Attention 快照。侧栏 Agents/Commands 与 Attention 面板共用，
+    /// 避免再按 replica 切片后对不上 herdr 的 wN。
+    private var lastPoolAttentionSnapshot: AttentionSnapshot?
     private var needsLayoutReload = true
     /// tmux tab 切换确认门禁：外部关闭 / 快照缺失 / 超时都会放行。
     private var tabSwitchGate = TabSwitchGate()
@@ -1758,6 +1761,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func attentionSnapshotForPanel(refreshActive: Bool = false) -> AttentionSnapshot? {
+        if refreshActive, let snapshot = attentionSnapshot(from: bridge) {
+            lastPoolAttentionSnapshot = snapshot
+            return snapshot
+        }
+        if let snapshot = lastPoolAttentionSnapshot, !snapshot.workspaces.isEmpty {
+            return snapshot
+        }
         var workspaces: [WorkspaceAttention] = []
         var seen = Set<String>()
         func append(_ snapshot: AttentionSnapshot) {
@@ -1765,22 +1775,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 workspaces.append(workspace)
             }
         }
-        let activeSnapshot: AttentionSnapshot?
-        if refreshActive {
-            // 面板打开/刷新是低频的用户动作。此时读取 active bridge 的
-            // 权威快照，避免上一拍 sidebar cache 让刚完成的 command
-            // 仍显示 process_name=nil；高频侧栏调用默认仍走 cache。
-            activeSnapshot = attentionSnapshot(from: bridge)
-        } else {
-            activeSnapshot = sceneStack.activeKey
-                .flatMap { sceneStack.scenes[$0]?.cachedAttentionSnapshot }
-        }
-        if let snapshot = activeSnapshot {
+        if let snapshot = sceneStack.activeKey
+            .flatMap({ sceneStack.scenes[$0]?.cachedAttentionSnapshot })
+        {
             append(snapshot)
         }
-        for slot in sceneStack.scenes.values
-            where slot.visibility != .closed
-        {
+        for slot in sceneStack.scenes.values where slot.visibility != .closed {
             if let snapshot = attentionSnapshot(for: slot) {
                 append(snapshot)
             }
@@ -2629,21 +2629,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// Herdr Project 先 AttachOnly；无匹配再 CreateIfMissing。
-    /// 本地未填 session 时 Core 使用 default + herdr.sock，不在这里偷选。
+    /// 未填 session 时 Core 补 default；SSH 通过远端 session list 解析 socket，
+    /// 不在这里偷选或 start server。
     private func connectHerdrProject(config: TargetConfig) {
-        let isSavedProject = quickConnectStore.projects.contains {
-            QuickConnect.uniqueID(for: $0) == QuickConnect.uniqueID(for: config)
-        }
         content.setConnectProgress(stage: .attach)
         connectCatalogTarget(config: config, intent: .attachOnly) { [weak self] result in
             guard let self else { return }
             switch result {
             case .success(let connection):
-                if isSavedProject {
-                    self.quickConnectStore.upsertProject(connection.target)
-                }
+                self.quickConnectStore.upsertProject(connection.target)
                 self.finishCatalogConnect(.success(connection))
-            case .failure where isSavedProject:
+            case .failure:
                 self.connectCatalogTarget(config: config, intent: .createIfMissing) { [weak self] createResult in
                     guard let self else { return }
                     if case .success(let connection) = createResult {
@@ -2651,8 +2647,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     }
                     self.finishCatalogConnect(createResult)
                 }
-            case .failure(let error):
-                self.finishCatalogConnect(.failure(error))
             }
         }
     }
@@ -4269,6 +4263,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // Core 返回的是整个 WorkspacePool 的 attention 快照；EventPump 每拍
         // 把它按 WorkspaceId 分发给各 scene 的 ViewStore，隐藏 scene 也持续更新。
         if allowBridgeQueries, let snapshot = attentionSnapshot(from: bridge) {
+            lastPoolAttentionSnapshot = snapshot
             updateSceneAttentionStores(
                 snapshot: snapshot,
                 agents: bridge.structuredAgentSnapshot()
@@ -4646,12 +4641,22 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         content.setLastSeenVisible(visible)
     }
 
-    /// session/window 已空时关闭 NSWindow。
+    /// 当前 Workspace 已空时关掉这一格，切到邻近 Workspace。
+    /// 只有再也没有打开的 Workspace 才关整个窗口。
     private func maybeCloseIfSessionEnded() {
-        let snap = bridge.snapshot()
-        if snap.tabs.isEmpty && snap.panes.isEmpty {
-            closeSessionWindow()
+        let snap = lastSnapshot
+        guard snap.tabs.isEmpty && snap.panes.isEmpty else { return }
+        let current = sceneStack.activeKey.flatMap { sceneStack.scenes[$0] }
+        let others = sceneStack.scenes.values.filter { slot in
+            slot.visibility != .closed
+                && slot !== current
+                && !(slot.lastSnapshot.tabs.isEmpty && slot.lastSnapshot.panes.isEmpty)
         }
+        if let workspaceId = activeWorkspaceReplicaID, !others.isEmpty {
+            closeWorkspace(workspaceId)
+            return
+        }
+        closeSessionWindow()
     }
 
     /// 通过 Core SettingsService 事务写配置；失败只提示，不直接改文件。

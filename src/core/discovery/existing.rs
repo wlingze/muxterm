@@ -245,6 +245,36 @@ pub fn discover_ssh_herdr(
     out
 }
 
+/// 查远端已运行 Herdr named session 的 API socket 路径。
+///
+/// 用于 SSH `workspace.create`：不启动远端 server，只复用已在跑的 session。
+/// `session == "default"` 时匹配名为 default / 空名的条目。
+pub fn ssh_herdr_running_socket(
+    alias: &str,
+    session: &str,
+    ssh_config_path: Option<&str>,
+    timeout: Duration,
+) -> Option<String> {
+    let sessions = ssh_herdr_sessions(alias, ssh_config_path, timeout)?;
+    let want = if session.is_empty() {
+        "default"
+    } else {
+        session
+    };
+    sessions.into_iter().find_map(|(name, socket)| {
+        let name = if name.is_empty() {
+            "default"
+        } else {
+            name.as_str()
+        };
+        if name == want && !socket.is_empty() {
+            Some(socket)
+        } else {
+            None
+        }
+    })
+}
+
 /// `ssh … herdr session list --json` → `(session_name, socket_path)`（running 的）。
 fn ssh_herdr_sessions(
     alias: &str,
