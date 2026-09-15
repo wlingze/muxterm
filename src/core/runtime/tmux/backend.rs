@@ -4489,45 +4489,21 @@ impl Runtime for TmuxRuntime {
                         reason: "tmux 未连接".into(),
                     });
                 };
-                if let Some(dir) = self.new_tab_directory(workdir) {
-                    let c = cmd::new_window_with_directory(
-                        sess,
-                        name.as_deref(),
-                        Some(&dir),
-                        command.as_deref(),
-                    );
-                    if self.dispatch_tmux_command(&c).is_err() {
-                        return Ok(TaskOutcome::Rejected {
-                            reason: "发送命令失败".into(),
-                        });
-                    }
-                } else if self.active_pane().is_some() {
-                    // `-c` 接受 tmux format；让 tmux 在 new-window 同一命令
-                    // 的目标上下文里展开 cwd，避免先 display-message 再等一轮
-                    // 响应。active pane 的存在保证当前 session 有展开上下文。
-                    let c = cmd::new_window_with_directory(
-                        sess,
-                        name.as_deref(),
-                        Some("#{pane_current_path}"),
-                        command.as_deref(),
-                    );
-                    if self.dispatch_tmux_command(&c).is_err() {
-                        return Ok(TaskOutcome::Rejected {
-                            reason: "发送命令失败".into(),
-                        });
-                    }
-                } else {
-                    let c = cmd::new_window_with_directory(
-                        sess,
-                        name.as_deref(),
-                        None,
-                        command.as_deref(),
-                    );
-                    if self.dispatch_tmux_command(&c).is_err() {
-                        return Ok(TaskOutcome::Rejected {
-                            reason: "发送命令失败".into(),
-                        });
-                    }
+                // 有 Project 路径用它；否则让 tmux 展开当前 pane cwd。
+                // 省略 `-c` 会落到 default-path（通常是 $HOME）。
+                let dir = self
+                    .new_tab_directory(workdir)
+                    .unwrap_or_else(|| "#{pane_current_path}".into());
+                let c = cmd::new_window_with_directory(
+                    sess,
+                    name.as_deref(),
+                    Some(&dir),
+                    command.as_deref(),
+                );
+                if self.dispatch_tmux_command(&c).is_err() {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: "发送命令失败".into(),
+                    });
                 }
                 TaskOutcome::Done
             }

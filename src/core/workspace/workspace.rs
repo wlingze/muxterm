@@ -167,8 +167,16 @@ impl Workspace {
                     .map(|target| target.canonical.path.trim().to_string())
                     .filter(|path| !path.is_empty())
                     .or_else(|| {
+                        self.resolved_target.as_ref().and_then(|target| {
+                            let path = target.spec.path.trim();
+                            (!path.is_empty() && !is_herdr_workspace_token(path))
+                                .then(|| path.to_string())
+                        })
+                    })
+                    .or_else(|| {
                         let path = self.id.path.trim();
-                        (!path.is_empty()).then(|| path.to_string())
+                        (!path.is_empty() && !is_herdr_workspace_token(path))
+                            .then(|| path.to_string())
                     });
                 Task::NewTab {
                     name,
@@ -667,6 +675,11 @@ impl Workspace {
         let batch = RuntimeBatch::from_state_changes(events.iter().cloned());
         self.feed_batch(&batch);
     }
+}
+
+fn is_herdr_workspace_token(path: &str) -> bool {
+    let mut chars = path.chars();
+    matches!(chars.next(), Some('w')) && chars.all(|ch| ch.is_ascii_digit()) && path.len() > 1
 }
 
 fn pane_agent_status(status: PaneAgentStatus) -> PaneStatus {
