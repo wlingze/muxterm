@@ -304,20 +304,28 @@ impl<C: Clock> AttentionEngine<C> {
     }
 
     /// 用户输入：Blocked → Idle（输入才算处理）。
+    ///
+    /// 已知 agent 的 idle/working 由屏幕规则决定。鼠标/滚轮不能把 idle
+    /// 打成 working；打字后也要等屏幕出现 working chrome。
     pub fn on_user_input(&mut self, ws: &str, pane: u32) {
+        self.on_user_input_bytes(ws, pane, b"");
+    }
+
+    pub fn on_user_input_bytes(&mut self, ws: &str, pane: u32, data: &[u8]) {
+        if super::input::is_pointer_or_focus_input(data) {
+            return;
+        }
         let now = self.clock.now();
         self.entry_mut(ws, pane).acknowledged = true;
         if self.authoritative_panes.contains(&(ws.to_string(), pane)) {
             return;
         }
         let entry = self.entry_mut(ws, pane);
-        if entry.process_is_agent && entry.status == PaneStatus::Idle {
-            // 用户向等待中的 agent 提交了输入，开始一轮生成。
-            entry.status = PaneStatus::Working;
-            entry.last_activity = now;
-        } else {
-            entry.status = transition(entry.status, PaneEvent::UserInput);
+        if entry.process_is_agent {
+            self.sync_notified(ws, pane, now);
+            return;
         }
+        entry.status = transition(entry.status, PaneEvent::UserInput);
         self.sync_notified(ws, pane, now);
     }
 
@@ -1569,16 +1577,23 @@ mod tests {
     }
 
     #[test]
-    fn idle_agent_user_input_enters_working() {
+    fn idle_agent_stays_idle_on_mouse_and_typed_input() {
         let mut e = AttentionEngine::new(AttentionConfig::default(), clock());
         e.set_process_name("ws", 10, Some("grok".into()));
         assert_eq!(e.snapshot()[0].panes[0].status, PaneStatus::Idle);
 
-        e.on_user_input("ws", 10);
+        e.on_user_input_bytes("ws", 10, b"\x1b[<0;12;34M");
         assert_eq!(
             e.snapshot()[0].panes[0].status,
-            PaneStatus::Working,
-            "向等待中的 agent 提交输入等于开始一轮生成"
+            PaneStatus::Idle,
+            "鼠标点击不能把 idle agent 打成 working"
+        );
+
+        e.on_user_input_bytes("ws", 10, b"hello\r");
+        assert_eq!(
+            e.snapshot()[0].panes[0].status,
+            PaneStatus::Idle,
+            "打字也要等屏幕出现 working chrome，不能抢先标 working"
         );
     }
 

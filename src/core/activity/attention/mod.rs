@@ -8,6 +8,7 @@
 
 pub mod clock;
 pub mod engine;
+pub mod input;
 pub mod screen;
 pub mod signal;
 pub mod state;
