@@ -456,7 +456,7 @@ pub fn filter_workspace_rows(
 }
 
 /// Tab2 过滤：保留运行中的命令和未读 Blocked/Done；已读完成项不再出现。
-/// 未读 blocked/done 先于 running；同状态按 seq 新者优先。
+/// 未读 done、blocked 先于 working；同状态按 seq 新者优先。
 pub fn filter_attention_rows(panes: &[ClientAttentionPane], query: &str) -> Vec<AttentionRow> {
     let q = query.trim().to_lowercase();
     let mut rows: Vec<AttentionRow> = panes
@@ -481,8 +481,8 @@ pub fn filter_attention_rows(panes: &[ClientAttentionPane], query: &str) -> Vec<
         .collect();
     rows.sort_by(|a, b| {
         let rank = |status| match status {
-            ClientAttentionStatus::Blocked => 0,
-            ClientAttentionStatus::Done => 1,
+            ClientAttentionStatus::Done => 0,
+            ClientAttentionStatus::Blocked => 1,
             ClientAttentionStatus::Working => 2,
             ClientAttentionStatus::Unknown | ClientAttentionStatus::Idle => 3,
         };
@@ -661,8 +661,8 @@ mod tests {
             "",
         );
         assert_eq!(rows.len(), 3);
-        assert_eq!(rows[0].attention.workspace_id, "ws-b");
-        assert_eq!(rows[1].attention.workspace_id, "ws-a");
+        assert_eq!(rows[0].attention.workspace_id, "ws-a");
+        assert_eq!(rows[1].attention.workspace_id, "ws-b");
         assert_eq!(rows[2].attention.workspace_id, "ws-c");
     }
 

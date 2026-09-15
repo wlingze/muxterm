@@ -10,13 +10,10 @@ use std::time::{Duration, Instant};
 use regex::Regex;
 
 use super::clock::Clock;
+use super::screen::{classify_agent_screen, ScreenSnapshot};
 use super::signal::{is_transient_shell_command, AttentionSignal};
 use super::state::{transition, PaneEvent, PaneStatus};
 use crate::config::AttentionConfig;
-
-/// 长驻 TUI agent（grok/codex）安静这么久视为等待输入。
-/// 生成过程里常有数秒思考/工具停顿；1.5s 会在 working/idle 之间闪。
-const AGENT_IDLE_AFTER: Duration = Duration::from_secs(20);
 
 const KNOWN_AGENTS: &[&str] = &[
     "codex", "cursor", "claude", "gemini", "aider", "opencode", "copilot", "cline", "goose", "amp",
@@ -169,6 +166,19 @@ impl<C: Clock> AttentionEngine<C> {
         last_line: &str,
         seq: u64,
     ) {
+        self.apply_with_screen(ws, pane, signals, last_line, seq, None);
+    }
+
+    /// 带可见屏快照。tmux 已知 agent 用屏幕规则判定 idle/working/blocked。
+    pub fn apply_with_screen(
+        &mut self,
+        ws: &str,
+        pane: u32,
+        signals: &[AttentionSignal],
+        last_line: &str,
+        seq: u64,
+        screen: Option<&ScreenSnapshot>,
+    ) {
         let now = self.clock.now();
         let key = (ws.to_string(), pane);
         let mut authoritative = self.authoritative_panes.contains(&key);
@@ -234,11 +244,30 @@ impl<C: Clock> AttentionEngine<C> {
                     | AttentionSignal::AuthoritativeStatus { .. }
             )
         });
-        // 只用前台还活着的 agent。zsh 提示符输出不能把已退出的 grok 重新点亮。
-        // 首次播种屏幕（seq 从 0、空行）不是新的生成活动，否则一 attach
-        // 全员 Working，20s 后再掉回 Idle，侧栏会闪。
-        if live_agent && !authoritative && line_changed && !blocked_this_round && !initial_seed {
-            status = transition(status, PaneEvent::OutputActivity);
+        // tmux 已知 agent：屏幕规则是 idle/working/blocked 的权威。
+        // 没有快照时才退回输出启发式（单测 / 旧调用）。
+        if live_agent && !authoritative {
+            if let Some(screen) = screen {
+                let agent = self
+                    .foreground_processes
+                    .get(&key)
+                    .and_then(|name| known_agent_process_name(name))
+                    .unwrap_or("agent");
+                if let Some(next) = classify_agent_screen(agent, screen) {
+                    status = match next {
+                        PaneStatus::Idle
+                            if matches!(status, PaneStatus::Working | PaneStatus::Done) =>
+                        {
+                            PaneStatus::Done
+                        }
+                        other => other,
+                    };
+                }
+            } else {
+                if line_changed && !blocked_this_round && !initial_seed {
+                    status = transition(status, PaneEvent::OutputActivity);
+                }
+            }
         }
 
         if authoritative {
@@ -282,20 +311,28 @@ impl<C: Clock> AttentionEngine<C> {
     }
 
     /// 用户输入：Blocked → Idle（输入才算处理）。
+    ///
+    /// 已知 agent 的 idle/working 由屏幕规则决定。鼠标/滚轮不能把 idle
+    /// 打成 working；打字后也要等屏幕出现 working chrome。
     pub fn on_user_input(&mut self, ws: &str, pane: u32) {
+        self.on_user_input_bytes(ws, pane, b"");
+    }
+
+    pub fn on_user_input_bytes(&mut self, ws: &str, pane: u32, data: &[u8]) {
+        if super::input::is_pointer_or_focus_input(data) {
+            return;
+        }
         let now = self.clock.now();
         self.entry_mut(ws, pane).acknowledged = true;
         if self.authoritative_panes.contains(&(ws.to_string(), pane)) {
             return;
         }
         let entry = self.entry_mut(ws, pane);
-        if entry.process_is_agent && entry.status == PaneStatus::Idle {
-            // 用户向等待中的 agent 提交了输入，开始一轮生成。
-            entry.status = PaneStatus::Working;
-            entry.last_activity = now;
-        } else {
-            entry.status = transition(entry.status, PaneEvent::UserInput);
+        if entry.process_is_agent {
+            self.sync_notified(ws, pane, now);
+            return;
         }
+        entry.status = transition(entry.status, PaneEvent::UserInput);
         self.sync_notified(ws, pane, now);
     }
 
@@ -609,27 +646,9 @@ impl<C: Clock> AttentionEngine<C> {
         out
     }
 
-    /// 非权威（tmux pane-cmd）agent：输出停了就回到等待输入，不像
-    /// cargo 那样变成 Done。Herdr 的 AuthoritativeStatus 不走这条。
+    /// 屏幕规则拥有 idle/working。安静超时不再把 generating TUI 打成 idle。
     pub fn decay_idle_agents(&mut self) {
-        let now = self.clock.now();
-        let keys: Vec<_> = self.panes.keys().cloned().collect();
-        for key in keys {
-            if self.authoritative_panes.contains(&key) {
-                continue;
-            }
-            let Some(pane) = self.panes.get_mut(&key) else {
-                continue;
-            };
-            if !pane.process_is_agent || pane.status != PaneStatus::Working {
-                continue;
-            }
-            if now.saturating_duration_since(pane.last_activity) < AGENT_IDLE_AFTER {
-                continue;
-            }
-            pane.status = PaneStatus::Idle;
-            pane.acknowledged = true;
-        }
+        let _ = self.clock.now();
     }
 
     /// 红点 N：mute 未到期且尚未查看的 blocked **工作区**数。
@@ -1462,30 +1481,46 @@ mod tests {
     }
 
     #[test]
-    fn tmux_agent_process_is_idle_until_output_then_decays() {
+    fn tmux_agent_status_follows_screen_rules_not_silence() {
+        use super::super::screen::ScreenSnapshot;
+
         let c = clock();
         let mut e = AttentionEngine::new(AttentionConfig::default(), c.clone());
         e.set_process_name("ws", 68, Some("grok".into()));
+        let idle = ScreenSnapshot::from_visible(
+            "muxterm - grok",
+            "4;0;0",
+            vec!["Ctrl+.:shortcuts".into()],
+        );
+        e.apply_with_screen("ws", 68, &[], "", 1, Some(&idle));
         assert_eq!(e.snapshot()[0].panes[0].status, PaneStatus::Idle);
-        assert!(e.snapshot()[0].panes[0].process_is_agent);
 
-        e.apply("ws", 68, &[], "prompt", 1);
-        assert_eq!(e.snapshot()[0].panes[0].status, PaneStatus::Idle);
-        e.apply("ws", 68, &[], "generating…", 2);
+        let working = ScreenSnapshot::from_text(
+            "⠧ Waiting on subagent… 2.8s   13s ⇣29.7k [stop]\nEsc:cancel  Ctrl+.:shortcuts",
+        );
+        e.apply_with_screen("ws", 68, &[], "waiting", 2, Some(&working));
         assert_eq!(e.snapshot()[0].panes[0].status, PaneStatus::Working);
 
-        c.advance(Duration::from_secs(5));
+        c.advance(Duration::from_secs(60));
         e.decay_idle_agents();
         assert_eq!(
             e.snapshot()[0].panes[0].status,
             PaneStatus::Working,
-            "生成中的数秒停顿不得掉成 idle"
+            "没有 idle 屏幕就不能因为安静而掉成 idle"
         );
 
-        c.advance(Duration::from_secs(20));
-        e.decay_idle_agents();
-        assert_eq!(e.snapshot()[0].panes[0].status, PaneStatus::Idle);
-        assert!(e.snapshot()[0].panes[0].process_is_agent);
+        e.apply_with_screen("ws", 68, &[], "ready", 3, Some(&idle));
+        assert_eq!(
+            e.snapshot()[0].panes[0].status,
+            PaneStatus::Done,
+            "一轮生成结束先是未读 done"
+        );
+        e.on_became_visible("ws", 68);
+        assert_eq!(
+            e.snapshot()[0].panes[0].status,
+            PaneStatus::Idle,
+            "看过 done 才回到 idle"
+        );
     }
 
     #[test]
@@ -1559,16 +1594,23 @@ mod tests {
     }
 
     #[test]
-    fn idle_agent_user_input_enters_working() {
+    fn idle_agent_stays_idle_on_mouse_and_typed_input() {
         let mut e = AttentionEngine::new(AttentionConfig::default(), clock());
         e.set_process_name("ws", 10, Some("grok".into()));
         assert_eq!(e.snapshot()[0].panes[0].status, PaneStatus::Idle);
 
-        e.on_user_input("ws", 10);
+        e.on_user_input_bytes("ws", 10, b"\x1b[<0;12;34M");
         assert_eq!(
             e.snapshot()[0].panes[0].status,
-            PaneStatus::Working,
-            "向等待中的 agent 提交输入等于开始一轮生成"
+            PaneStatus::Idle,
+            "鼠标点击不能把 idle agent 打成 working"
+        );
+
+        e.on_user_input_bytes("ws", 10, b"hello\r");
+        assert_eq!(
+            e.snapshot()[0].panes[0].status,
+            PaneStatus::Idle,
+            "打字也要等屏幕出现 working chrome，不能抢先标 working"
         );
     }
 
