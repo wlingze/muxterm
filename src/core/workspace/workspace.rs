@@ -489,6 +489,17 @@ impl Workspace {
         signals
     }
 
+    /// 某 pane 的可见屏快照（tmux agent 屏幕规则）。
+    pub fn pane_screen_snapshot(
+        &self,
+        pane: PaneId,
+    ) -> crate::activity::attention::screen::ScreenSnapshot {
+        self.panes
+            .get(&pane)
+            .map(|buf| buf.screen_snapshot())
+            .unwrap_or_default()
+    }
+
     /// 某 pane 最近一次 feed 的 seq + 最后非空行。
     pub fn pane_last_line_seq(&self, pane: PaneId) -> (String, u64) {
         self.panes

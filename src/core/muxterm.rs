@@ -31,7 +31,14 @@ use crate::protocol::ffi::callbacks::FfiCallbacks;
 use crate::protocol::ffi::types::CLayoutNode;
 use crate::transport::registry::{ConnectionRegistry, TransportRegistry};
 
-type PendingAttentionUpdate = (u32, Vec<AttentionSignal>, String, u64, Option<String>);
+type PendingAttentionUpdate = (
+    u32,
+    Vec<AttentionSignal>,
+    String,
+    u64,
+    Option<String>,
+    crate::activity::attention::screen::ScreenSnapshot,
+);
 
 #[derive(Debug, Clone, Copy)]
 enum CommandActivityPhase {
@@ -552,6 +559,7 @@ impl Muxterm {
             for pane in attention_panes {
                 let signals = ws.take_attention_signals(pane);
                 let (last_line, seq) = ws.pane_last_line_seq(pane);
+                let screen = ws.pane_screen_snapshot(pane);
                 let command_name = ws
                     .pane_command_marks(pane)
                     .last()
@@ -582,6 +590,7 @@ impl Muxterm {
                     last_line,
                     seq,
                     command_started.then_some(command_name).flatten(),
+                    screen,
                 ));
             }
         }
@@ -614,15 +623,20 @@ impl Muxterm {
                     .set_process_name(&ws_name, pane, name);
             }
         }
-        for (pane, signals, last_line, seq, command) in pending {
+        for (pane, signals, last_line, seq, command, screen) in pending {
             if let Some(command) = command {
                 self.activity
                     .attention
                     .set_process_name(&ws_name, pane, Some(command));
             }
-            self.activity
-                .attention
-                .apply(&ws_name, pane, &signals, &last_line, seq);
+            self.activity.attention.apply_with_screen(
+                &ws_name,
+                pane,
+                &signals,
+                &last_line,
+                seq,
+                Some(&screen),
+            );
         }
         for pane in removed_panes {
             self.activity.attention.remove_pane(&ws_name, pane);
