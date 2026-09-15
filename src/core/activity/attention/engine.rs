@@ -254,7 +254,14 @@ impl<C: Clock> AttentionEngine<C> {
                     .and_then(|name| known_agent_process_name(name))
                     .unwrap_or("agent");
                 if let Some(next) = classify_agent_screen(agent, screen) {
-                    status = next;
+                    status = match next {
+                        PaneStatus::Idle
+                            if matches!(status, PaneStatus::Working | PaneStatus::Done) =>
+                        {
+                            PaneStatus::Done
+                        }
+                        other => other,
+                    };
                 }
             } else {
                 if line_changed && !blocked_this_round && !initial_seed {
@@ -1503,7 +1510,17 @@ mod tests {
         );
 
         e.apply_with_screen("ws", 68, &[], "ready", 3, Some(&idle));
-        assert_eq!(e.snapshot()[0].panes[0].status, PaneStatus::Idle);
+        assert_eq!(
+            e.snapshot()[0].panes[0].status,
+            PaneStatus::Done,
+            "一轮生成结束先是未读 done"
+        );
+        e.on_became_visible("ws", 68);
+        assert_eq!(
+            e.snapshot()[0].panes[0].status,
+            PaneStatus::Idle,
+            "看过 done 才回到 idle"
+        );
     }
 
     #[test]

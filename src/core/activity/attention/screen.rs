@@ -276,7 +276,7 @@ const RULES: &[Rule] = &[
         contains: EMPTY,
         any_contains: EMPTY,
         line_regex: EMPTY,
-        regex: &[r"\S"],
+        regex: &[r"[\x{2800}-\x{28FF}]"],
         not_contains: EMPTY,
         not_regex: EMPTY,
     },
@@ -488,21 +488,8 @@ const RULES: &[Rule] = &[
         keep: false,
         region: Region::Whole,
         contains: EMPTY,
-        any_contains: &["esc to interrupt", "esc:cancel", "[stop]"],
+        any_contains: &["esc to interrupt", "[stop]"],
         line_regex: EMPTY,
-        regex: EMPTY,
-        not_contains: EMPTY,
-        not_regex: EMPTY,
-    },
-    Rule {
-        agent: "",
-        priority: 60,
-        state: PaneStatus::Working,
-        keep: false,
-        region: Region::Whole,
-        contains: EMPTY,
-        any_contains: EMPTY,
-        line_regex: &[r"^\s*[\x{2801}-\x{28FF}\x{25D0}-\x{25D3}⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]"],
         regex: EMPTY,
         not_contains: EMPTY,
         not_regex: EMPTY,
@@ -600,6 +587,20 @@ mod tests {
         assert_eq!(
             classify_agent_screen("codex", &screen),
             Some(PaneStatus::Working)
+        );
+    }
+
+    #[test]
+    fn grok_prompt_edit_is_idle() {
+        let screen = ScreenSnapshot::from_visible(
+            "review muxterm",
+            "",
+            vec!["type a question".into(), "Ctrl+.:shortcuts".into()],
+        );
+        assert_eq!(
+            classify_agent_screen("grok", &screen),
+            Some(PaneStatus::Idle),
+            "在 prompt 里打字不是 working"
         );
     }
 
