@@ -115,7 +115,7 @@ final class WorkspaceSidebarE2ETests: XCTestCase {
             paneId: 8,
             title: "cargo test",
             detail: "dev · pane 8",
-            indicator: .running
+            indicator: .working
         )
         sidebar.setCommands([item])
 
@@ -133,7 +133,7 @@ final class WorkspaceSidebarE2ETests: XCTestCase {
             paneId: item.paneId,
             title: "npm test",
             detail: item.detail,
-            indicator: .running
+            indicator: .working
         )
         sidebar.setCommands([replacement])
         XCTAssertEqual(sidebar.testCommandTitles(), ["npm test"])
@@ -160,7 +160,7 @@ final class WorkspaceSidebarE2ETests: XCTestCase {
                 paneId: 4,
                 title: "dev",
                 detail: "Working · Codex · Tab 2",
-                indicator: .running,
+                indicator: .working,
                 agentName: "Codex",
                 tabNumber: 2
             ),
@@ -172,7 +172,7 @@ final class WorkspaceSidebarE2ETests: XCTestCase {
                 paneId: 8,
                 title: "cargo test",
                 detail: "dev · Tab 3",
-                indicator: .running
+                indicator: .working
             ),
         ])
 
@@ -283,7 +283,7 @@ final class WorkspaceSidebarE2ETests: XCTestCase {
             paneId: 4,
             title: "dev",
             detail: "Working · Codex · Tab 2",
-            indicator: .running,
+            indicator: .working,
             agentName: "Codex",
             tabNumber: 2
         )

@@ -197,11 +197,16 @@ public struct WorkspaceSidebarItem: Sendable, Equatable {
     }
 }
 
-/// Three persistent sidebar colors: active, completed/unread, and read.
+/// Herdr 同款四态：working / idle / blocked / done。
 public enum AgentSidebarIndicator: Sendable, Equatable {
-    case running
+    case working
+    case idle
+    case blocked
     case done
-    case read
+
+    public var marker: String {
+        self == .idle ? "○" : "●"
+    }
 }
 
 public struct AgentSidebarItem: Sendable, Equatable {
@@ -346,9 +351,10 @@ public enum WorkspaceSidebarProjection {
         return result.sorted { lhs, rhs in
             let rank: (AgentSidebarIndicator) -> Int = { indicator in
                 switch indicator {
-                case .done: 0
-                case .running: 1
-                case .read: 2
+                case .blocked: 0
+                case .done: 1
+                case .working: 2
+                case .idle: 3
                 }
             }
             let lhsRank = rank(lhs.indicator)
@@ -410,7 +416,7 @@ public enum WorkspaceSidebarProjection {
                         paneId: pane.paneId,
                         title: title,
                         detail: detail(workspace: workspace, paneId: pane.paneId),
-                        indicator: .running
+                        indicator: .working
                     ))
                 case .blocked, .done:
                     guard !pane.acknowledged else { continue }
@@ -420,7 +426,7 @@ public enum WorkspaceSidebarProjection {
                         paneId: pane.paneId,
                         title: title,
                         detail: detail(workspace: workspace, paneId: pane.paneId),
-                        indicator: .done
+                        indicator: pane.status == .blocked ? .blocked : .done
                     ))
                 case .unknown, .idle:
                     continue
@@ -490,21 +496,21 @@ public enum WorkspaceSidebarProjection {
             return statusLabel(status: attention.status)
         }
         switch status {
-        case .idle: return "Idle"
-        case .working: return "Working"
-        case .blocked: return "Blocked"
-        case .done: return "Done"
-        case .unknown: return "Unknown"
+        case .idle: return "idle"
+        case .working: return "working"
+        case .blocked: return "blocked"
+        case .done: return "done"
+        case .unknown: return "idle"
         }
     }
 
     private static func statusLabel(status: PaneAttentionStatus) -> String {
         switch status {
-        case .idle: return "Idle"
-        case .working: return "Working"
-        case .blocked: return "Blocked"
-        case .done: return "Done"
-        case .unknown: return "Unknown"
+        case .idle: return "idle"
+        case .working: return "working"
+        case .blocked: return "blocked"
+        case .done: return "done"
+        case .unknown: return "idle"
         }
     }
 
@@ -517,22 +523,26 @@ public enum WorkspaceSidebarProjection {
         }
         switch status {
         case .working:
-            return .running
-        case .blocked, .done:
+            return .working
+        case .blocked:
+            return .blocked
+        case .done:
             return .done
         case .idle, .unknown:
-            return .read
+            return .idle
         }
     }
 
     private static func indicator(attention: PaneAttention) -> AgentSidebarIndicator {
         switch attention.status {
         case .working:
-            return .running
-        case .blocked, .done:
-            return attention.acknowledged ? .read : .done
+            return .working
+        case .blocked:
+            return .blocked
+        case .done:
+            return attention.acknowledged ? .idle : .done
         case .unknown, .idle:
-            return .read
+            return .idle
         }
     }
 }

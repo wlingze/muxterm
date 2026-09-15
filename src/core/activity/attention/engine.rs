@@ -14,6 +14,9 @@ use super::signal::AttentionSignal;
 use super::state::{transition, PaneEvent, PaneStatus};
 use crate::config::AttentionConfig;
 
+/// 长驻 TUI agent（grok/codex）安静这么久视为等待输入，不是命令结束。
+const AGENT_IDLE_AFTER: Duration = Duration::from_millis(1500);
+
 const KNOWN_AGENTS: &[&str] = &[
     "codex", "cursor", "claude", "gemini", "aider", "opencode", "copilot", "cline", "goose", "amp",
     "grok", "windsurf", "kiro", "pi", "hermes", "droid",
@@ -58,6 +61,8 @@ pub struct PaneAttention {
     pub shell_name: Option<String>,
     pub mute_until: Option<Instant>,
     pub last_regex_eval: Instant,
+    /// 最近一次输出/状态活动。非权威 agent 安静超时后从 Working 回到 Idle。
+    pub last_activity: Instant,
 }
 
 /// 工作区聚合视图。
@@ -150,6 +155,7 @@ impl<C: Clock> AttentionEngine<C> {
                 mute_until: None,
                 // 初始化为久远过去，保证第一条输出就参与正则评估。
                 last_regex_eval: now.checked_sub(Duration::from_secs(3600)).unwrap_or(now),
+                last_activity: now,
             })
     }
 
@@ -173,6 +179,10 @@ impl<C: Clock> AttentionEngine<C> {
                 entry.last_line != last_line || entry.seq != seq,
             )
         };
+        let live_agent = self
+            .foreground_processes
+            .get(&key)
+            .is_some_and(|name| known_agent_process_name(name).is_some());
         let previous_status = status;
         let mut initial_status = None;
 
@@ -215,6 +225,18 @@ impl<C: Clock> AttentionEngine<C> {
             }
         }
 
+        let blocked_this_round = signals.iter().any(|sig| {
+            matches!(
+                sig,
+                AttentionSignal::AttentionRequest { .. }
+                    | AttentionSignal::AuthoritativeStatus { .. }
+            )
+        });
+        // 只用前台还活着的 agent。zsh 提示符输出不能把已退出的 grok 重新点亮。
+        if live_agent && !authoritative && line_changed && !blocked_this_round {
+            status = transition(status, PaneEvent::OutputActivity);
+        }
+
         if authoritative {
             self.authoritative_panes.insert(key.clone());
         } else {
@@ -224,6 +246,9 @@ impl<C: Clock> AttentionEngine<C> {
             let entry = self.entry_mut(ws, pane);
             entry.last_line = last_line.to_string();
             entry.seq = seq;
+            if line_changed || status != previous_status {
+                entry.last_activity = now;
+            }
             entry.status = status;
             if status != previous_status {
                 acknowledged = !matches!(status, PaneStatus::Blocked | PaneStatus::Done);
@@ -260,7 +285,13 @@ impl<C: Clock> AttentionEngine<C> {
             return;
         }
         let entry = self.entry_mut(ws, pane);
-        entry.status = transition(entry.status, PaneEvent::UserInput);
+        if entry.process_is_agent && entry.status == PaneStatus::Idle {
+            // 用户向等待中的 agent 提交了输入，开始一轮生成。
+            entry.status = PaneStatus::Working;
+            entry.last_activity = now;
+        } else {
+            entry.status = transition(entry.status, PaneEvent::UserInput);
+        }
         self.sync_notified(ws, pane, now);
     }
 
@@ -398,6 +429,20 @@ impl<C: Clock> AttentionEngine<C> {
         let current_status = self.panes.get(&key).map(|pane| pane.status);
         let initial_observation_follows_attention = previous.is_none()
             && matches!(current_status, Some(PaneStatus::Blocked | PaneStatus::Done));
+        // 长驻 agent（grok/codex TUI）活着 ≠ 正在跑。Herdr 用 agent_status
+        // 区分 idle/working；tmux 只凭 pane-cmd 时先记身份为 Idle，输出再
+        // 把 Idle→Working。cargo/sleep 这类普通命令仍走 CommandStart。
+        if process_is_agent {
+            let entry = self.entry_mut(ws, pane);
+            if !initial_observation_follows_attention
+                && matches!(entry.status, PaneStatus::Unknown | PaneStatus::Done)
+            {
+                entry.status = PaneStatus::Idle;
+                entry.acknowledged = true;
+                entry.last_activity = now;
+            }
+            return;
+        }
         let starts_command = !is_shell
             && !initial_observation_follows_attention
             && (previous_was_shell
@@ -535,6 +580,29 @@ impl<C: Clock> AttentionEngine<C> {
             .collect();
         out.sort_by(|a, b| a.workspace_id.cmp(&b.workspace_id));
         out
+    }
+
+    /// 非权威（tmux pane-cmd）agent：输出停了就回到等待输入，不像
+    /// cargo 那样变成 Done。Herdr 的 AuthoritativeStatus 不走这条。
+    pub fn decay_idle_agents(&mut self) {
+        let now = self.clock.now();
+        let keys: Vec<_> = self.panes.keys().cloned().collect();
+        for key in keys {
+            if self.authoritative_panes.contains(&key) {
+                continue;
+            }
+            let Some(pane) = self.panes.get_mut(&key) else {
+                continue;
+            };
+            if !pane.process_is_agent || pane.status != PaneStatus::Working {
+                continue;
+            }
+            if now.saturating_duration_since(pane.last_activity) < AGENT_IDLE_AFTER {
+                continue;
+            }
+            pane.status = PaneStatus::Idle;
+            pane.acknowledged = true;
+        }
     }
 
     /// 红点 N：mute 未到期且尚未查看的 blocked **工作区**数。
@@ -1184,7 +1252,7 @@ mod tests {
         assert_eq!(pane.process_name.as_deref(), Some("pi"));
         assert!(pane.process_is_agent);
         assert_eq!(pane.agent_name.as_deref(), Some("pi"));
-        assert_eq!(pane.status, PaneStatus::Working);
+        assert_eq!(pane.status, PaneStatus::Idle);
 
         e.apply(
             "ws",
@@ -1217,17 +1285,19 @@ mod tests {
         e.set_process_name("ws", 1, Some("pi".into()));
         assert_eq!(
             e.snapshot()[0].panes[0].status,
-            PaneStatus::Working,
-            "starting the same agent again must enter Working"
+            PaneStatus::Idle,
+            "agent 再次出现仍是等待输入，直到有输出才 Working"
         );
+        e.apply("ws", 1, &[], "generating", 3);
+        assert_eq!(e.snapshot()[0].panes[0].status, PaneStatus::Working);
         e.set_process_name("ws", 1, Some("zsh".into()));
         assert_eq!(e.snapshot()[0].panes[0].status, PaneStatus::Done);
 
         e.set_process_name("ws", 1, Some("pi".into()));
         assert_eq!(
             e.snapshot()[0].panes[0].status,
-            PaneStatus::Working,
-            "a new run must replace the previous Done state"
+            PaneStatus::Idle,
+            "新一轮 agent 先等待输入，不因进程还在就标 Working"
         );
     }
 
@@ -1321,7 +1391,7 @@ mod tests {
         assert_eq!(pane.process_name.as_deref(), Some("codex"));
         assert_eq!(pane.agent_name.as_deref(), Some("codex"));
         assert!(pane.process_is_agent);
-        assert_eq!(pane.status, PaneStatus::Working);
+        assert_eq!(pane.status, PaneStatus::Idle);
     }
 
     #[test]
@@ -1334,10 +1404,14 @@ mod tests {
             9,
             Some("/Applications/Cursor.app/cursor-agent --profile code".into()),
         );
-        assert_eq!(e.snapshot()[0].panes[0].status, PaneStatus::Working);
+        assert_eq!(e.snapshot()[0].panes[0].status, PaneStatus::Idle);
 
         e.set_process_name("ws", 9, Some("zsh".into()));
-        assert_eq!(e.snapshot()[0].panes[0].status, PaneStatus::Done);
+        assert_eq!(
+            e.snapshot()[0].panes[0].status,
+            PaneStatus::Idle,
+            "等待输入的 agent 退出到 shell 不是命令完成"
+        );
 
         e.on_became_visible("ws", 9);
         assert_eq!(e.snapshot()[0].panes[0].status, PaneStatus::Idle);
@@ -1349,9 +1423,107 @@ mod tests {
             Some("/Applications/Cursor.app/cursor-agent --resume".into()),
         );
         let pane = &e.snapshot()[0].panes[0];
-        assert_eq!(pane.status, PaneStatus::Working);
+        assert_eq!(pane.status, PaneStatus::Idle);
         assert!(pane.process_is_agent);
         assert_eq!(pane.agent_name.as_deref(), Some("cursor"));
+    }
+
+    #[test]
+    fn tmux_agent_process_is_idle_until_output_then_decays() {
+        let c = clock();
+        let mut e = AttentionEngine::new(AttentionConfig::default(), c.clone());
+        e.set_process_name("ws", 68, Some("grok".into()));
+        assert_eq!(e.snapshot()[0].panes[0].status, PaneStatus::Idle);
+        assert!(e.snapshot()[0].panes[0].process_is_agent);
+
+        e.apply("ws", 68, &[], "generating…", 2);
+        assert_eq!(e.snapshot()[0].panes[0].status, PaneStatus::Working);
+
+        c.advance(Duration::from_millis(1600));
+        e.decay_idle_agents();
+        assert_eq!(e.snapshot()[0].panes[0].status, PaneStatus::Idle);
+        assert!(e.snapshot()[0].panes[0].process_is_agent);
+    }
+
+    #[test]
+    fn ordinary_command_still_starts_working_from_process_name() {
+        let mut e = AttentionEngine::new(AttentionConfig::default(), clock());
+        e.set_process_name("ws", 81, Some("go".into()));
+        assert_eq!(e.snapshot()[0].panes[0].status, PaneStatus::Working);
+        assert!(!e.snapshot()[0].panes[0].process_is_agent);
+    }
+
+    #[test]
+    fn blocked_agent_keeps_blocked_when_later_output_arrives() {
+        let mut e = AttentionEngine::new(AttentionConfig::default(), clock());
+        e.set_process_name("ws", 68, Some("grok".into()));
+        e.apply(
+            "ws",
+            68,
+            &[AttentionSignal::AttentionRequest {
+                source: AttentionSource::Bel,
+            }],
+            "approval required",
+            2,
+        );
+        assert_eq!(e.snapshot()[0].panes[0].status, PaneStatus::Blocked);
+
+        e.apply("ws", 68, &[], "approval required\n[y/n]", 3);
+        assert_eq!(
+            e.snapshot()[0].panes[0].status,
+            PaneStatus::Blocked,
+            "同一 pane 后续 TUI 输出不能清掉 blocked"
+        );
+    }
+
+    #[test]
+    fn idle_agent_user_input_enters_working() {
+        let mut e = AttentionEngine::new(AttentionConfig::default(), clock());
+        e.set_process_name("ws", 10, Some("grok".into()));
+        assert_eq!(e.snapshot()[0].panes[0].status, PaneStatus::Idle);
+
+        e.on_user_input("ws", 10);
+        assert_eq!(
+            e.snapshot()[0].panes[0].status,
+            PaneStatus::Working,
+            "向等待中的 agent 提交输入等于开始一轮生成"
+        );
+    }
+
+    #[test]
+    fn idle_agent_exit_to_shell_does_not_reenter_working_from_prompt() {
+        let mut e = AttentionEngine::new(AttentionConfig::default(), clock());
+        e.set_process_name("ws", 68, Some("grok".into()));
+        e.set_process_name("ws", 68, Some("zsh".into()));
+        assert_eq!(e.snapshot()[0].panes[0].status, PaneStatus::Idle);
+        assert!(e.snapshot()[0].panes[0].process_is_agent);
+
+        e.apply("ws", 68, &[], "~/muxterm %", 4);
+        assert_eq!(
+            e.snapshot()[0].panes[0].status,
+            PaneStatus::Idle,
+            "agent 已退回 shell 后，提示符输出不是新一轮 working"
+        );
+    }
+
+    #[test]
+    fn herdr_authoritative_working_does_not_decay() {
+        let c = clock();
+        let mut e = AttentionEngine::new(AttentionConfig::default(), c.clone());
+        e.set_agent_process_name("ws", 1, Some("claude".into()));
+        e.apply(
+            "ws",
+            1,
+            &[AttentionSignal::AuthoritativeStatus {
+                status: PaneStatus::Working,
+                initial: false,
+            }],
+            "streaming",
+            3,
+        );
+        c.advance(Duration::from_secs(5));
+        e.decay_idle_agents();
+        assert_eq!(e.snapshot()[0].panes[0].status, PaneStatus::Working);
     }
 
     #[test]
@@ -1360,6 +1532,8 @@ mod tests {
             ("droid droid-agent", Some("droid")),
             ("amp amp-agent", Some("amp")),
             ("/opt/cursor-agent", Some("cursor")),
+            ("grok-1.0.25-mac", Some("grok")),
+            ("grok", Some("grok")),
         ] {
             assert_eq!(known_agent_process_name(argv), agent, "{argv}");
         }

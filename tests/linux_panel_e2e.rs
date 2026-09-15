@@ -178,7 +178,7 @@ fn three_tab_panel_full_flow() {
                             1,
                             "pi",
                             &long_detail,
-                            ActivityIndicator::Running,
+                            ActivityIndicator::Working,
                         ),
                         agent(
                             "muxterm",
@@ -186,7 +186,7 @@ fn three_tab_panel_full_flow() {
                             2,
                             "codex",
                             "/work/muxterm · feature/panel",
-                            ActivityIndicator::None,
+                            ActivityIndicator::Idle,
                         ),
                     ],
                     attention: vec![
@@ -278,8 +278,8 @@ fn three_tab_panel_full_flow() {
             let pi_dot =
                 find_by_name(&pi_row, "muxterm-attention-status-dot").expect("pi status dot");
             assert!(
-                pi_dot.has_css_class("running"),
-                "Working agent 应显示黄色 running 状态 class"
+                pi_dot.has_css_class("working"),
+                "Working agent 应显示黄色 working 状态 class"
             );
             let done_row = list.row_at_index(2).expect("unread done row");
             let done_dot = find_by_name(&done_row, "muxterm-attention-status-dot")
