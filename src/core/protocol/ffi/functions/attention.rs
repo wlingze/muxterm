@@ -55,7 +55,8 @@ pub unsafe extern "C" fn muxterm_attention_snapshot(h: *mut MuxtermHandle) -> *m
         if h.is_null() {
             return json_error("handle 为空");
         }
-        let handle = &*h;
+        let handle = &mut *h;
+        handle.activity.attention.decay_idle_agents();
         let workspaces: Vec<serde_json::Value> = handle
             .activity
             .attention

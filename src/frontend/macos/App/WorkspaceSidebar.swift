@@ -359,10 +359,11 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
                 identifier: visible ? "CommandSidebarCell" : "HiddenCommandSidebarCell"
             )
             cell.set(
-                marker: "●",
+                marker: item.indicator.marker,
                 markerColor: indicatorColor(item.indicator),
                 title: item.title,
                 detail: item.detail,
+                detailColor: indicatorColor(item.indicator),
                 trailingSymbol: visible ? "eye.slash" : "eye",
                 trailingTooltip: visible ? "Hide command" : "Show command",
                 trailingAccessibilityID: "muxterm.sidebar.command.visibility.\(safeID(item.workspaceId)).\(item.paneId)",
@@ -381,10 +382,11 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
         let item = agents[row]
         let cell = sidebarCell(in: tableView, identifier: "AgentSidebarCell")
         cell.set(
-            marker: "●",
+            marker: item.indicator.marker,
             markerColor: indicatorColor(item.indicator),
             title: item.title,
-            detail: item.detail
+            detail: item.detail,
+            detailColor: indicatorColor(item.indicator)
         )
         cell.setAccessibilityIdentifier(
             "muxterm.sidebar.agent.\(safeID(item.workspaceId)).\(item.paneId)"
@@ -405,10 +407,11 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
         item: AgentSidebarItem
     ) {
         cell.set(
-            marker: "●",
+            marker: item.indicator.marker,
             markerColor: indicatorColor(item.indicator),
             title: item.title,
-            detail: item.detail
+            detail: item.detail,
+            detailColor: indicatorColor(item.indicator)
         )
         cell.setAccessibilityIdentifier(
             "muxterm.sidebar.agent.\(safeID(item.workspaceId)).\(item.paneId)"
@@ -422,10 +425,11 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
     ) {
         let key = CommandVisibilityKey(item)
         cell.set(
-            marker: "●",
+            marker: item.indicator.marker,
             markerColor: indicatorColor(item.indicator),
             title: item.title,
             detail: item.detail,
+            detailColor: indicatorColor(item.indicator),
             trailingSymbol: visible ? "eye.slash" : "eye",
             trailingTooltip: visible ? "Hide command" : "Show command",
             trailingAccessibilityID: "muxterm.sidebar.command.visibility.\(safeID(item.workspaceId)).\(item.paneId)",
@@ -461,12 +465,14 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
 
     private func indicatorColor(_ indicator: AgentSidebarIndicator) -> NSColor {
         switch indicator {
-        case .running:
-            .systemGreen
-        case .done:
-            .systemOrange
-        case .read:
+        case .working:
+            .systemYellow
+        case .idle:
             .tertiaryLabelColor
+        case .blocked:
+            .systemPink
+        case .done:
+            .systemTeal
         }
     }
 
@@ -1028,6 +1034,7 @@ private final class WorkspaceSidebarCellView: NSTableCellView {
         markerColor: NSColor,
         title: String,
         detail: String,
+        detailColor: NSColor = .secondaryLabelColor,
         shortcut: Int? = nil,
         closeAction: (() -> Void)? = nil,
         trailingSymbol: String? = nil,
@@ -1041,6 +1048,7 @@ private final class WorkspaceSidebarCellView: NSTableCellView {
         shortcutLabel.stringValue = shortcut.map(String.init) ?? ""
         titleLabel.stringValue = title
         detailLabel.stringValue = detail
+        detailLabel.textColor = detailColor
         // NSTableView reuses cells. Always clear the text before applying an
         // icon so a previous text-button configuration can never leak into a
         // Workspace close control.

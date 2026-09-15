@@ -137,8 +137,18 @@ pub(super) fn chrome_css(theme: &Theme) -> String {
             font-weight: 600;
         }}
         .muxterm-sidebar-agent-dot {{ font-size: 10px; }}
-        .muxterm-sidebar-agent-dot.running {{ color: #40a02b; }}
-        .muxterm-sidebar-agent-dot.done {{ color: #df8e1d; }}
+        .muxterm-sidebar-agent-dot.working, .muxterm-sidebar-agent-dot.running,
+        .muxterm-sidebar-row-detail.working, .quick-pick-detail.working {{ color: #df8e1d; }}
+        .muxterm-sidebar-agent-dot.idle,
+        .muxterm-sidebar-row-detail.idle, .quick-pick-detail.idle {{ color: #6c7086; }}
+        .muxterm-sidebar-agent-dot.blocked,
+        .muxterm-sidebar-row-detail.blocked, .quick-pick-detail.blocked {{ color: #e64553; }}
+        .muxterm-sidebar-agent-dot.done,
+        .muxterm-sidebar-row-detail.done, .quick-pick-detail.done {{ color: #179299; }}
+        .muxterm-sidebar-row-detail.working, .muxterm-sidebar-row-detail.idle,
+        .muxterm-sidebar-row-detail.blocked, .muxterm-sidebar-row-detail.done,
+        .quick-pick-detail.working, .quick-pick-detail.idle,
+        .quick-pick-detail.blocked, .quick-pick-detail.done {{ opacity: 1; }}
         .muxterm-main-split > separator {{
             min-width: 1px;
             background: alpha({fg}, 0.18);

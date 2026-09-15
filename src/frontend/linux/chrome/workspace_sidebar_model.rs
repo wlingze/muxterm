@@ -57,11 +57,35 @@ impl WorkspaceSidebarItem {
 }
 
 /// Agent、Command 与 Attention 共用的状态点语义。
+/// Herdr 同款四态：working / idle / blocked / done。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActivityIndicator {
-    Running,
+    Working,
+    Idle,
+    Blocked,
     Done,
     None,
+}
+
+impl ActivityIndicator {
+    /// 空心圆 = idle（等待输入）；实心圆 = 其余三态。
+    pub fn marker(self) -> Option<&'static str> {
+        match self {
+            Self::Idle => Some("○"),
+            Self::Working | Self::Blocked | Self::Done => Some("●"),
+            Self::None => None,
+        }
+    }
+
+    pub fn css_class(self) -> Option<&'static str> {
+        match self {
+            Self::Working => Some("working"),
+            Self::Idle => Some("idle"),
+            Self::Blocked => Some("blocked"),
+            Self::Done => Some("done"),
+            Self::None => None,
+        }
+    }
 }
 
 /// 跨全部 Workspace 汇总的一条 agent。
@@ -105,7 +129,11 @@ impl AgentSidebarItem {
                         workspace_id: workspace_id.clone(),
                         pane_id: pane.id,
                         title: agent_name.to_string(),
-                        detail: client_activity_detail(workspace, attention),
+                        detail: format!(
+                            "{} · {}",
+                            client_status_label(attention),
+                            client_activity_detail(workspace, attention)
+                        ),
                         indicator: client_attention_indicator(attention),
                     });
                 }
@@ -219,10 +247,21 @@ fn activity_by_pane(
         .collect()
 }
 
+fn client_status_label(attention: &ClientAttentionPane) -> &'static str {
+    match attention.status.as_str() {
+        "working" => "working",
+        "blocked" => "blocked",
+        "done" if !attention.acknowledged => "done",
+        _ => "idle",
+    }
+}
+
 fn client_attention_indicator(attention: &ClientAttentionPane) -> ActivityIndicator {
     match attention.status.as_str() {
-        "working" => ActivityIndicator::Running,
-        "blocked" | "done" if !attention.acknowledged => ActivityIndicator::Done,
+        "working" => ActivityIndicator::Working,
+        "blocked" => ActivityIndicator::Blocked,
+        "done" if !attention.acknowledged => ActivityIndicator::Done,
+        "idle" | "unknown" | "done" => ActivityIndicator::Idle,
         _ => ActivityIndicator::None,
     }
 }

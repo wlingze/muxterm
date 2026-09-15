@@ -511,7 +511,10 @@ pub fn filter_attention_panel_rows(
     let mut rows = Vec::new();
 
     for agent in agents {
-        if agent.indicator == ActivityIndicator::None {
+        if !matches!(
+            agent.indicator,
+            ActivityIndicator::Working | ActivityIndicator::Blocked | ActivityIndicator::Done
+        ) {
             continue;
         }
         let workspace_id = agent.workspace_id.replica_id();
@@ -561,12 +564,11 @@ pub fn filter_attention_panel_rows(
                     format!("{} · {}", attention.workspace_id, attention.last_line)
                 };
                 let indicator = match attention.status_kind() {
-                    ClientAttentionStatus::Working => ActivityIndicator::Running,
-                    ClientAttentionStatus::Blocked | ClientAttentionStatus::Done => {
-                        ActivityIndicator::Done
-                    }
+                    ClientAttentionStatus::Working => ActivityIndicator::Working,
+                    ClientAttentionStatus::Blocked => ActivityIndicator::Blocked,
+                    ClientAttentionStatus::Done => ActivityIndicator::Done,
                     ClientAttentionStatus::Unknown | ClientAttentionStatus::Idle => {
-                        ActivityIndicator::None
+                        ActivityIndicator::Idle
                     }
                 };
                 AttentionPanelRow {
@@ -687,14 +689,14 @@ mod tests {
                 pane_id: 7,
                 title: "pi".into(),
                 detail: "/work/alpha · main".into(),
-                indicator: ActivityIndicator::Running,
+                indicator: ActivityIndicator::Working,
             },
             AgentSidebarItem {
                 workspace_id: second_id.clone(),
                 pane_id: 9,
                 title: "codex".into(),
                 detail: "/work/beta · feature/panel".into(),
-                indicator: ActivityIndicator::None,
+                indicator: ActivityIndicator::Idle,
             },
         ];
         let mut seen_agent = attention(&second_id.replica_id(), 9, ClientAttentionStatus::Done, 2);
@@ -712,7 +714,7 @@ mod tests {
             "read agents leave Attention and panes must not duplicate"
         );
         assert_eq!(rows[0].title, "pi");
-        assert_eq!(rows[0].indicator, ActivityIndicator::Running);
+        assert_eq!(rows[0].indicator, ActivityIndicator::Working);
         assert_eq!(rows[1].workspace_id, "plain@local");
 
         let filtered = filter_attention_panel_rows(&agents, &panes, "feature/panel");

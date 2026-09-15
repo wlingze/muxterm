@@ -186,11 +186,13 @@ public struct AttentionRow: Equatable, Sendable {
     public var indicator: AgentSidebarIndicator {
         switch pane.status {
         case .working:
-            return .running
-        case .blocked, .done:
-            return pane.acknowledged ? .read : .done
+            return .working
+        case .blocked:
+            return .blocked
+        case .done:
+            return pane.acknowledged ? .idle : .done
         case .idle, .unknown:
-            return .read
+            return .idle
         }
     }
 }
@@ -312,11 +314,11 @@ public enum AttentionRowLabel {
     ) -> String {
         let statusText: String
         switch status {
-        case .working: statusText = "Working"
-        case .blocked: statusText = "Blocked"
-        case .done: statusText = "Done"
-        case .idle: statusText = "Idle"
-        case .unknown: statusText = "Unknown"
+        case .working: statusText = "working"
+        case .blocked: statusText = "blocked"
+        case .done: statusText = "done"
+        case .idle: statusText = "idle"
+        case .unknown: statusText = "idle"
         }
         var values = [statusText]
         if !agentName.isEmpty {

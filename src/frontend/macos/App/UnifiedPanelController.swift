@@ -1484,12 +1484,14 @@ private final class AttentionRowCellView: NSTableCellView {
 
     private static func color(for indicator: AgentSidebarIndicator) -> NSColor {
         switch indicator {
-        case .running:
-            return .systemGreen
-        case .done:
-            return .systemOrange
-        case .read:
+        case .working:
+            return .systemYellow
+        case .idle:
             return .tertiaryLabelColor
+        case .blocked:
+            return .systemPink
+        case .done:
+            return .systemTeal
         }
     }
 }

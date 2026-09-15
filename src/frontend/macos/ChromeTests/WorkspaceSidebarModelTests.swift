@@ -69,8 +69,8 @@ final class WorkspaceSidebarModelTests: XCTestCase {
         )
         XCTAssertEqual(projected.count, 1)
         XCTAssertEqual(projected[0].title, "muxterm")
-        XCTAssertEqual(projected[0].detail, "Unknown · Codex")
-        XCTAssertEqual(projected[0].indicator, .read)
+        XCTAssertEqual(projected[0].detail, "idle · Codex")
+        XCTAssertEqual(projected[0].indicator, .idle)
 
         registry.removePane(4)
         XCTAssertTrue(registry.snapshot.isEmpty)
@@ -168,8 +168,8 @@ final class WorkspaceSidebarModelTests: XCTestCase {
                 attention: attention
             ).first
         )
-        XCTAssertEqual(item.detail, "Working · Codex")
-        XCTAssertEqual(item.indicator, .running)
+        XCTAssertEqual(item.detail, "working · Codex")
+        XCTAssertEqual(item.indicator, .working)
     }
 
     func testAgentStatusFollowsAttentionWhenStructuredStaysWorking() {
@@ -217,7 +217,7 @@ final class WorkspaceSidebarModelTests: XCTestCase {
                 attention: attention
             ).first
         )
-        XCTAssertEqual(item.detail, "Done · Codex")
+        XCTAssertEqual(item.detail, "done · Codex")
         XCTAssertEqual(item.indicator, .done)
     }
 
@@ -354,10 +354,10 @@ final class WorkspaceSidebarModelTests: XCTestCase {
 
         XCTAssertEqual(items.map(\.title), ["muxterm", "dev"])
         XCTAssertEqual(items.map(\.detail), [
-            "Working · Codex · Tab 2",
-            "Working · pi · Tab 1",
+            "working · Codex · Tab 2",
+            "working · pi · Tab 1",
         ])
-        XCTAssertEqual(items.map(\.indicator), [.running, .running])
+        XCTAssertEqual(items.map(\.indicator), [.working, .working])
         XCTAssertEqual(items.map(\.workspaceId), [herdr.workspaceId, tmux.workspaceId])
     }
 
@@ -409,10 +409,10 @@ final class WorkspaceSidebarModelTests: XCTestCase {
 
         XCTAssertEqual(agents.count, 1)
         XCTAssertEqual(agents[0].title, "muxterm")
-        XCTAssertEqual(agents[0].detail, "Done · Codex · Tab 2")
+        XCTAssertEqual(agents[0].detail, "done · Codex · Tab 2")
         XCTAssertEqual(agents[0].tabNumber, 2)
         XCTAssertFalse(agents[0].detail.localizedCaseInsensitiveContains("pane"))
-        XCTAssertEqual(agents[0].indicator, .read)
+        XCTAssertEqual(agents[0].indicator, .idle)
         XCTAssertTrue(AttentionList.rows(from: attention, query: "").isEmpty)
     }
 
@@ -478,7 +478,7 @@ final class WorkspaceSidebarModelTests: XCTestCase {
 
         XCTAssertEqual(commands.map(\.title), ["cargo test", "sleep"])
         XCTAssertEqual(commands.map(\.paneId), [1, 2])
-        XCTAssertEqual(commands.map(\.indicator), [.running, .done])
+        XCTAssertEqual(commands.map(\.indicator), [.working, .done])
     }
 
     func testCoreClassifiedWrapperAgentGoesToAgentsNotCommands() {
@@ -523,7 +523,7 @@ final class WorkspaceSidebarModelTests: XCTestCase {
         )
 
         XCTAssertEqual(agents.map(\.title), ["dev"])
-        XCTAssertEqual(agents.map(\.detail), ["Working · cursor · Tab 1"])
+        XCTAssertEqual(agents.map(\.detail), ["working · cursor · Tab 1"])
         XCTAssertTrue(commands.isEmpty)
     }
 
@@ -584,7 +584,7 @@ final class WorkspaceSidebarModelTests: XCTestCase {
 
         XCTAssertEqual(agents.map(\.agentName), ["droid", "codex", "amp"])
         XCTAssertEqual(agents.map(\.title), ["dev", "dev", "dev"])
-        XCTAssertEqual(agents.map(\.indicator), [.done, .running, .read])
+        XCTAssertEqual(agents.map(\.indicator), [.done, .working, .idle])
     }
 
     func testOrdinaryCommandDoesNotBecomePermanentAgent() {

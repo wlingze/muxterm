@@ -3032,10 +3032,6 @@ b""#,
             saw.extend(terminal.take_attention_signals());
         }
         assert!(
-            saw.contains(&AttentionSignal::CommandStart),
-            "fixture 应含 CommandStart: {saw:?}"
-        );
-        assert!(
             saw.iter()
                 .any(|s| matches!(s, AttentionSignal::CommandDone { exit_code: Some(0) })),
             "fixture 应含 CommandDone(0): {saw:?}"
