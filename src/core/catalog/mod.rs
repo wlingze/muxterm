@@ -296,7 +296,8 @@ impl Catalog {
         match descriptor.runtime {
             TargetRuntime::Herdr => {
                 // Herdr：核对 workspace 存在（AttachOnly 无匹配不创建；
-                // CreateIfMissing 且 local 才可创建，SSH 两意图都零创建命令）。
+                // CreateIfMissing 在已运行的 local/SSH session 上 workspace.create，
+                // 不偷偷 start server）。
                 let transport = match &descriptor.transport {
                     TargetTransport::Local => "local",
                     TargetTransport::Ssh { .. } => "ssh",
@@ -356,34 +357,28 @@ impl Catalog {
                             intent: format!("{intent:?}"),
                         }),
                         ResolveIntent::CreateIfMissing => {
-                            if transport == "ssh" {
-                                Err(resolver::ResolveError::CreateNotAllowed {
-                                    identity,
-                                    reason: "SSH target 不允许启动 workspace.create".to_string(),
-                                })
-                            } else {
-                                // 本地未填 session 时与 attach 一样走 default +
-                                // herdr.sock；server 没起来就失败，不偷偷 start。
-                                let runtime_spec = descriptor_to_spec(descriptor).runtime_spec();
-                                let created = driver
-                                    .create_identity(
-                                        connect.as_ref(),
-                                        &runtime_spec,
-                                        Some(descriptor.name.as_str()),
-                                    )
-                                    .map_err(|error| resolver::ResolveError::CreateNotAllowed {
-                                        identity: identity.clone(),
-                                        reason: error.to_string(),
-                                    })?;
-                                let mut canonical = descriptor.clone();
-                                canonical.workspace_id = Some(created.path.clone());
-                                if !created.session.is_empty() {
-                                    canonical.session = Some(created.session.clone());
-                                }
-                                canonical.socket = created.socket.clone();
-                                let spec = descriptor_to_spec(&canonical);
-                                Ok(ResolvedTarget { canonical, spec })
+                            // 未填 session/socket 时与 attach 一样补 default；
+                            // SSH 通过 session list 解析远端 socket。server
+                            // 没起来就失败，不偷偷 start。
+                            let runtime_spec = descriptor_to_spec(descriptor).runtime_spec();
+                            let created = driver
+                                .create_identity(
+                                    connect.as_ref(),
+                                    &runtime_spec,
+                                    Some(descriptor.name.as_str()),
+                                )
+                                .map_err(|error| resolver::ResolveError::CreateNotAllowed {
+                                    identity: identity.clone(),
+                                    reason: error.to_string(),
+                                })?;
+                            let mut canonical = descriptor.clone();
+                            canonical.workspace_id = Some(created.path.clone());
+                            if !created.session.is_empty() {
+                                canonical.session = Some(created.session.clone());
                             }
+                            canonical.socket = created.socket.clone();
+                            let spec = descriptor_to_spec(&canonical);
+                            Ok(ResolvedTarget { canonical, spec })
                         }
                     },
                     [one] => Ok(self.resolved_from_candidate(descriptor, one)),

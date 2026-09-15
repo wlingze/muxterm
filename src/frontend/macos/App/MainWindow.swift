@@ -2629,21 +2629,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// Herdr Project 先 AttachOnly；无匹配再 CreateIfMissing。
-    /// 本地未填 session 时 Core 使用 default + herdr.sock，不在这里偷选。
+    /// 未填 session 时 Core 补 default；SSH 通过远端 session list 解析 socket，
+    /// 不在这里偷选或 start server。
     private func connectHerdrProject(config: TargetConfig) {
-        let isSavedProject = quickConnectStore.projects.contains {
-            QuickConnect.uniqueID(for: $0) == QuickConnect.uniqueID(for: config)
-        }
         content.setConnectProgress(stage: .attach)
         connectCatalogTarget(config: config, intent: .attachOnly) { [weak self] result in
             guard let self else { return }
             switch result {
             case .success(let connection):
-                if isSavedProject {
-                    self.quickConnectStore.upsertProject(connection.target)
-                }
+                self.quickConnectStore.upsertProject(connection.target)
                 self.finishCatalogConnect(.success(connection))
-            case .failure where isSavedProject:
+            case .failure:
                 self.connectCatalogTarget(config: config, intent: .createIfMissing) { [weak self] createResult in
                     guard let self else { return }
                     if case .success(let connection) = createResult {
@@ -2651,8 +2647,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     }
                     self.finishCatalogConnect(createResult)
                 }
-            case .failure(let error):
-                self.finishCatalogConnect(.failure(error))
             }
         }
     }

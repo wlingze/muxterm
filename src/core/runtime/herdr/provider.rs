@@ -10,12 +10,15 @@ use crate::runtime::herdr::runtime::HerdrRuntime;
 use crate::runtime::herdr::session::HerdrSession;
 use crate::runtime::RuntimeProvider;
 use crate::runtime::{Runtime, RuntimeCapability, RuntimeError, RuntimeResult, RuntimeSpec};
-use crate::transport::{ChannelKind, TargetConnection};
+use crate::transport::{ChannelKind, Connect, TargetConnection};
 
 /// herdr 插件（local / ssh）。
 pub struct HerdrDriver;
 
-fn local_herdr_socket() -> String {
+/// 本地 Herdr API socket：default → `~/.config/herdr/herdr.sock`；
+/// named → `~/.config/herdr/sessions/<name>/herdr.sock`。
+/// `HERDR_SOCKET_PATH` 仍可整体覆盖（测试隔离用）。
+fn local_herdr_socket_for(session: &str) -> String {
     if let Ok(path) = std::env::var("HERDR_SOCKET_PATH") {
         let path = path.trim();
         if !path.is_empty() {
@@ -23,7 +26,16 @@ fn local_herdr_socket() -> String {
         }
     }
     let home = std::env::var("HOME").unwrap_or_default();
-    format!("{home}/.config/herdr/herdr.sock")
+    let base = std::path::PathBuf::from(home).join(".config/herdr");
+    if session.is_empty() || session == "default" {
+        base.join("herdr.sock").to_string_lossy().into_owned()
+    } else {
+        base.join("sessions")
+            .join(session)
+            .join("herdr.sock")
+            .to_string_lossy()
+            .into_owned()
+    }
 }
 
 impl RuntimeProvider for HerdrDriver {
@@ -156,27 +168,49 @@ impl RuntimeProvider for HerdrDriver {
         spec: &RuntimeSpec,
         label: Option<&str>,
     ) -> RuntimeResult<RuntimeSpec> {
-        if connection.transport_id() == "ssh" {
-            return Err(RuntimeError::message(
-                "SSH target 不允许启动 workspace.create",
-            ));
-        }
+        let is_ssh = connection.transport_id() == "ssh";
         let mut spec = spec.clone();
         if spec.session.is_empty() {
             spec.session = "default".into();
         }
         if spec.socket.is_none() {
-            spec.socket = Some(local_herdr_socket());
+            if is_ssh {
+                let alias = connection.target();
+                if alias.is_empty() {
+                    return Err(RuntimeError::message("SSH Herdr 缺 target alias"));
+                }
+                let socket = crate::discovery::existing::ssh_herdr_running_socket(
+                    alias,
+                    &spec.session,
+                    std::env::var("MUXTERM_SSH_CONFIG_PATH").ok().as_deref(),
+                    Duration::from_secs(2),
+                )
+                .ok_or_else(|| {
+                    RuntimeError::message(format!(
+                        "SSH Herdr session `{}` 未运行（{}）。先在远端启动 herdr，或从已有连接里选一个 session",
+                        spec.session, alias
+                    ))
+                })?;
+                spec.socket = Some(socket);
+            } else {
+                spec.socket = Some(local_herdr_socket_for(&spec.session));
+            }
         }
-        let socket = spec.socket.as_deref().expect("local herdr socket 已补齐");
-        let herdr = HerdrSession::new(&spec.session, socket);
+        let socket = spec.socket.as_deref().expect("herdr socket 已补齐");
+        let connection = Connect::new(connection.transport_id(), connection.target());
+        let herdr = HerdrSession::with_connection(connection, &spec.session, socket);
         if herdr.ping().is_err() {
             return Err(RuntimeError::message(format!(
                 "Herdr session `{}` 未运行（{}）。先启动 herdr，或从已有连接里选一个 session",
                 spec.session, socket
             )));
         }
-        let cwd = crate::executable::expand_config_value(&spec.path);
+        // SSH cwd 保持远端字面量（含 ~）；本地才展开本机 HOME。
+        let cwd = if is_ssh {
+            spec.path.clone()
+        } else {
+            crate::executable::expand_config_value(&spec.path)
+        };
         let created = herdr
             .workspace_create(&cwd, label.unwrap_or(&spec.session))
             .map_err(RuntimeError::message)?;
