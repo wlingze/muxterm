@@ -122,6 +122,10 @@ check_absent \
     'bridgeLock|backgroundPollQueue|WarmConnectionSlot|ForegroundAuthority' \
     src/frontend/macos
 check_absent \
+    "macOS frontend must not write process observations back into Core" \
+    'setProcessName|attentionSetProcessName' \
+    src/frontend/macos/App src/frontend/macos/Chrome src/frontend/macos/CoreBridge
+check_absent \
     "FFI function modules must not depend on the api facade" \
     'super::super::api|crate::protocol::ffi::api' \
     src/core/protocol/ffi/functions

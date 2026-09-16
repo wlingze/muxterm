@@ -987,22 +987,6 @@ final class CoreBridge {
         return muxterm_attention_acknowledge(handle, paneId)
     }
 
-    /// 更新某 pane 的进程名。
-    @discardableResult
-    func attentionSetProcessName(paneId: UInt32, name: String?) -> Int32 {
-        guard let handle else { return -1 }
-        if let activeWorkspaceID {
-            return attentionSetProcessName(
-                workspaceID: activeWorkspaceID,
-                paneId: paneId,
-                name: name
-            )
-        }
-        return Self.withOptionalCString(name) { namePtr in
-            muxterm_attention_set_process_name(handle, paneId, namePtr)
-        }
-    }
-
     /// 静音某 pane 一段时间（秒）。
     @discardableResult
     func attentionMute(paneId: UInt32, seconds: UInt64) -> Int32 {
@@ -1032,26 +1016,6 @@ final class CoreBridge {
         guard let handle else { return -1 }
         return workspaceID.withCString { workspace in
             muxterm_workspace_attention_acknowledge(handle, workspace, paneId)
-        }
-    }
-
-    /// 更新指定 Workspace 的 pane 进程名。
-    @discardableResult
-    func attentionSetProcessName(
-        workspaceID: String,
-        paneId: UInt32,
-        name: String?
-    ) -> Int32 {
-        guard let handle else { return -1 }
-        return workspaceID.withCString { workspace in
-            Self.withOptionalCString(name) { namePtr in
-                muxterm_workspace_attention_set_process_name(
-                    handle,
-                    workspace,
-                    paneId,
-                    namePtr
-                )
-            }
         }
     }
 

@@ -2,9 +2,7 @@ import AppKit
 import XCTest
 @testable import MuxtermAppLib
 
-/// Linux 把 `muxterm.pane-cmd` 订阅写进 `AttentionEngine.set_process_name`，
-/// 注意力列表才能显示 cat/codex/sleep。macOS poll 到 STATUS_SUBSCRIPTION
-/// 时只更新了 status-left/right，没转 process_name。
+/// Core 独立消费前台进程事实；macOS 不回写 process_name，仍须能显示变化。
 final class PaneCmdE2ETests: XCTestCase {
     func testPaneCommandSubscriptionSetsAttentionProcessName() throws {
         let fx = TwoPaneCat(label: "pane-cmd")

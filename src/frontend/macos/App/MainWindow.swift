@@ -1554,19 +1554,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     } else {
                         result = bridge.attentionOnBecameVisible(paneId: paneID)
                     }
-                case .setProcessName(let paneID, let name):
-                    if let workspaceID = command.workspaceID {
-                        result = bridge.attentionSetProcessName(
-                            workspaceID: workspaceID,
-                            paneId: paneID,
-                            name: name
-                        )
-                    } else {
-                        result = bridge.attentionSetProcessName(
-                            paneId: paneID,
-                            name: name
-                        )
-                    }
                 case .acknowledge(let paneID):
                     if let workspaceID = command.workspaceID {
                         result = bridge.attentionAcknowledge(
@@ -4062,29 +4049,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 uiStateChanged = true
             } else if ev.type == STATE_STATUS_SUBSCRIPTION {
                 // status-left/right 订阅推送（文档 §B+）：零轮询更新原生条。
-                if !ev.name.isEmpty, let value = String(data: ev.data, encoding: .utf8) {
-                    if ev.name.hasPrefix("muxterm.pane-cmd") {
-                        // pane-cmd 订阅 → AttentionEngine.set_process_name（Linux 同款）。
-                        // pane @0 是合法 tmux pane，不能把 0 当作“无 pane”哨兵。
-                        _ = enqueueCoreAttention(
-                            workspaceID: activeSceneWorkspaceID,
-                            .setProcessName(
-                                paneID: ev.paneId,
-                                name: value.isEmpty ? nil : value
-                            ),
-                            refreshPanel: false
-                        )
-                    } else {
-                        content.statusBar.applySubscription(name: ev.name, value: value)
-                        if let snapshot = statusBarSnapshot {
-                            var updated = snapshot
-                            if ev.name == "muxterm.status-left" {
-                                updated.left = value
-                            } else if ev.name == "muxterm.status-right" {
-                                updated.right = value
-                            }
-                            statusBarSnapshot = updated
+                if ev.name == "muxterm.status-left" || ev.name == "muxterm.status-right",
+                   let value = String(data: ev.data, encoding: .utf8) {
+                    content.statusBar.applySubscription(name: ev.name, value: value)
+                    if let snapshot = statusBarSnapshot {
+                        var updated = snapshot
+                        if ev.name == "muxterm.status-left" {
+                            updated.left = value
+                        } else if ev.name == "muxterm.status-right" {
+                            updated.right = value
                         }
+                        statusBarSnapshot = updated
                     }
                 }
             } else if ev.type == STATE_TAB_RENAMED {
