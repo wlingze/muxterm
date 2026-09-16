@@ -181,6 +181,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 一个高流量远端 pane 把切换、输入和窗口事件挤出 run loop。
     private var surfaceCatchUpScenes: [WorkspaceScene] = []
     private var surfaceCatchUpWorkItem: DispatchWorkItem?
+    /// Surface 积压时降低 attention JSON/sidebar 刷新频率。
+    private var lastAttentionChromeRefreshAt: TimeInterval = 0
     /// SceneStack：已打开 Workspace 的 scene 从 open 到 close 常驻；
     /// 隐藏 scene 不参与绘制，容量/TTL/memory pressure 只在明确关闭时回收。
     private let sceneStack: SceneStack<WorkspaceScene>
@@ -3842,7 +3844,34 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     self?.enqueueCoreCommand(command) ?? false
                 }
                 if candidate === activeSlot {
-                    activeEvents.append(contentsOf: workspaceEvents)
+                    if candidate.hasPendingSurfaceWork {
+                        // 前台仍有积压时，新的 Surface 必须排到旧队列后面，
+                        // 不能在 pollOnce 里直接 feed（会越过尚未应用的 Cursor
+                        // redraw）。控制/拓扑事件仍立刻返回给 UI。
+                        var surface: [StateChange] = []
+                        var rest: [StateChange] = []
+                        surface.reserveCapacity(workspaceEvents.count)
+                        rest.reserveCapacity(workspaceEvents.count)
+                        for event in workspaceEvents {
+                            if event.isPaneOutput
+                                || event.isPaneFrame
+                                || event.isPaneSnapshot
+                                || event.isPaneHistory
+                                || event.isPaneClosed
+                            {
+                                surface.append(event)
+                            } else {
+                                rest.append(event)
+                            }
+                        }
+                        if !surface.isEmpty {
+                            candidate.ingestSharedEvents(surface)
+                            enqueueSurfaceCatchUp(candidate)
+                        }
+                        activeEvents.append(contentsOf: rest)
+                    } else {
+                        activeEvents.append(contentsOf: workspaceEvents)
+                    }
                 } else {
                     candidate.ingestSharedEvents(workspaceEvents)
                     if candidate.hasPendingSurfaceWork {
@@ -4154,7 +4183,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // 让“刚切走就还没有 PaneBuf”的首轮时序也能建立基线。
         resolvePendingLastSeen()
         retryPendingPanelJump()
-        refreshAttentionChrome()
+        let surfaceBusy = sceneStack.activeKey
+            .flatMap({ sceneStack.scenes[$0] })?
+            .hasPendingSurfaceWork == true
+            || !surfaceCatchUpScenes.isEmpty
+        refreshAttentionChrome(force: !surfaceBusy)
         if let activePane = activePaneID {
             refreshHistoryChromeFromCore(for: activePane)
         }
@@ -4162,7 +4195,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// 激活后先处理当前 Workspace 的旧 Surface 队列，再 poll 新事件，保持
-    /// Runtime 输出顺序。返回 true 表示本轮仍有积压，调用方应暂缓 poll。
+    /// Runtime 输出顺序。返回值保留兼容：始终 false，积压改由 catch-up
+    /// 异步排空，避免跳过 poll 饿死回显/其它 Workspace，并防止 1ms 忙等打满 CPU。
     private func flushActiveSurfaceCatchUpBeforePoll() -> Bool {
         guard let activeKey = sceneStack.activeKey,
               let slot = sceneStack.scenes[activeKey],
@@ -4171,11 +4205,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         else {
             return false
         }
-        let hasPending = slot.applyPendingSurfaceEvents()
+        let hasPending = slot.applyPendingSurfaceEvents(
+            maxEvents: SurfaceEventBatchPolicy.activeMaxEventsPerPass,
+            timeBudget: SurfaceEventBatchPolicy.activeTimeBudget
+        )
         if hasPending {
             enqueueSurfaceCatchUp(slot)
         }
-        return hasPending
+        return false
     }
 
     private func enqueueSurfaceCatchUp(_ slot: WorkspaceScene) {
@@ -4205,8 +4242,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             self.flushSurfaceCatchUpPass()
         }
         surfaceCatchUpWorkItem = work
-        // 给 AppKit 一个机会先处理鼠标、键盘和绘制，再继续下一小拍。
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.001, execute: work)
+        // 与 EventPump 同频，避免 1ms 忙等把主线程打满（Cursor 积压时 ~100% CPU）。
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + SurfaceEventBatchPolicy.catchUpInterval,
+            execute: work
+        )
     }
 
     /// 在一个全局主线程预算内轮转所有待处理的 Workspace scene，active 优先。
@@ -4228,17 +4268,26 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         surfaceCatchUpScenes.removeAll()
 
         let started = ProcessInfo.processInfo.systemUptime
+        let passBudget = slots.contains(where: { $0.key == activeKey })
+            ? SurfaceEventBatchPolicy.activeTimeBudget
+            : SurfaceEventBatchPolicy.timeBudget
         for slot in slots where slot.visibility != .closed {
             guard slot.hasPendingSurfaceWork else { continue }
             let elapsed = ProcessInfo.processInfo.systemUptime - started
-            let remainingBudget = SurfaceEventBatchPolicy.timeBudget - elapsed
+            let remainingBudget = passBudget - elapsed
             guard remainingBudget > 0 else {
                 surfaceCatchUpScenes.append(slot)
                 continue
             }
+            let slotBudget = slot.key == activeKey
+                ? min(remainingBudget, SurfaceEventBatchPolicy.activeTimeBudget)
+                : remainingBudget
+            let slotMaxEvents = slot.key == activeKey
+                ? SurfaceEventBatchPolicy.activeMaxEventsPerPass
+                : SurfaceEventBatchPolicy.maxEventsPerPass
             if slot.applyPendingSurfaceEvents(
-                maxEvents: SurfaceEventBatchPolicy.maxEventsPerPass,
-                timeBudget: remainingBudget
+                maxEvents: slotMaxEvents,
+                timeBudget: slotBudget
             ) {
                 surfaceCatchUpScenes.append(slot)
             }
@@ -4247,8 +4296,22 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// 注意力引擎：更新状态栏红点 + 弹出 blocked/done 通知。
-    private func refreshAttentionChrome(allowBridgeQueries: Bool = true) {
+    ///
+    /// `force == false` 时在 Surface 积压路径上按间隔节流：Cursor 洪峰下
+    /// 每拍都 decode 全池 attention JSON + 重建 sidebar 会把主线程打满。
+    private func refreshAttentionChrome(
+        allowBridgeQueries: Bool = true,
+        force: Bool = true
+    ) {
         guard !isClosing else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        if !force,
+           now - lastAttentionChromeRefreshAt
+           < SurfaceEventBatchPolicy.attentionRefreshMinInterval
+        {
+            return
+        }
+        lastAttentionChromeRefreshAt = now
         // 前台 pane 输出视为已看见：CommandDone 清成 Idle（Linux 同款），
         // 前台 `sleep && echo` 不弹完成通知。
         let activePane = lastSnapshot.panes.first(where: \.isActive)?.id
@@ -4264,10 +4327,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // 把它按 WorkspaceId 分发给各 scene 的 ViewStore，隐藏 scene 也持续更新。
         if allowBridgeQueries, let snapshot = attentionSnapshot(from: bridge) {
             lastPoolAttentionSnapshot = snapshot
-            updateSceneAttentionStores(
-                snapshot: snapshot,
-                agents: bridge.structuredAgentSnapshot()
-            )
+            updateSceneAttentionStores(snapshot: snapshot)
         }
         var blockedCount = 0
         if allowBridgeQueries {
@@ -4285,10 +4345,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         refreshWorkspaceSidebar()
     }
 
-    private func updateSceneAttentionStores(
-        snapshot: AttentionSnapshot,
-        agents: [StructuredPaneAgent]
-    ) {
+    private func updateSceneAttentionStores(snapshot: AttentionSnapshot) {
         for scene in sceneStack.scenes.values where scene.visibility != .closed {
             let workspaces = snapshot.workspaces.filter {
                 self.scene(scene, matchesWorkspaceId: $0.workspaceId)
@@ -4299,12 +4356,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             scene.cacheAttentionSnapshot(
                 AttentionSnapshot(blockedCount: blockedCount, workspaces: workspaces)
             )
-            let paneIDs = Set(scene.cachedTabIdsByPane?.map(\.key) ?? [])
-            if paneIDs.isEmpty {
-                scene.cacheStructuredAgents(agents)
-            } else {
-                scene.cacheStructuredAgents(agents.filter { paneIDs.contains($0.paneId) })
-            }
+            scene.cacheStructuredAgents(
+                scene.bridge.structuredAgentSnapshot(workspaceId: workspaceID)
+            )
         }
     }
 

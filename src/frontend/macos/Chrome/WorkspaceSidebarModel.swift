@@ -114,23 +114,38 @@ private struct StructuredAgentVersion: Comparable, Sendable {
     }
 }
 
+/// Pane-scoped agent identity cache, keyed by **workspace + pane**.
+///
+/// PaneId 在不同 Workspace 之间会重复（tmux `%0` / Herdr leaf 都从 0 起）。
+/// 只按 paneId 缓存会把 legion 的 Codex 串到 muxterm 的 Tab1。
+public struct StructuredAgentKey: Hashable, Sendable {
+    public let workspaceId: String
+    public let paneId: UInt32
+
+    public init(workspaceId: String, paneId: UInt32) {
+        self.workspaceId = workspaceId
+        self.paneId = paneId
+    }
+}
+
 /// Pane-scoped agent identity cache. Runtime snapshots may stop reporting an
 /// agent after it exits, but the Agents sidebar keeps the last identity until
 /// the pane itself closes. A missing runtime agent is marked unknown until a
 /// newer authoritative status or attention snapshot arrives.
 public struct StructuredAgentRegistry: Sendable {
-    private var agents: [UInt32: StructuredPaneAgent] = [:]
-    private var versions: [UInt32: StructuredAgentVersion] = [:]
+    private var agents: [StructuredAgentKey: StructuredPaneAgent] = [:]
+    private var versions: [StructuredAgentKey: StructuredAgentVersion] = [:]
 
     public init() {}
 
-    public mutating func observe(paneId: UInt32, agent: StructuredPaneAgent?) {
+    public mutating func observe(workspaceId: String, paneId: UInt32, agent: StructuredPaneAgent?) {
+        let key = StructuredAgentKey(workspaceId: workspaceId, paneId: paneId)
         if let agent {
             let incoming = StructuredAgentVersion(
                 stateChangeSeq: agent.stateChangeSeq,
                 revision: agent.revision
             )
-            let current = versions[paneId] ?? agents[paneId].map {
+            let current = versions[key] ?? agents[key].map {
                 StructuredAgentVersion(
                     stateChangeSeq: $0.stateChangeSeq,
                     revision: $0.revision
@@ -139,24 +154,38 @@ public struct StructuredAgentRegistry: Sendable {
             if let current, !incoming.accepts(current) {
                 return
             }
-            agents[paneId] = agent
+            agents[key] = agent
             if incoming.isKnown {
-                versions[paneId] = incoming
+                versions[key] = incoming
             }
-        } else if let previous = agents[paneId] {
+        } else if let previous = agents[key] {
             // Runtime 的 agent authority 暂时缺失时不能猜成 idle；保留 identity，
             // 交给 attention snapshot 在可用时补充显示状态。
-            agents[paneId] = previous.replacingStatus(.unknown)
+            agents[key] = previous.replacingStatus(.unknown)
         }
     }
 
-    public mutating func removePane(_ paneId: UInt32) {
-        agents.removeValue(forKey: paneId)
-        versions.removeValue(forKey: paneId)
+    public mutating func removePane(workspaceId: String, paneId: UInt32) {
+        let key = StructuredAgentKey(workspaceId: workspaceId, paneId: paneId)
+        agents.removeValue(forKey: key)
+        versions.removeValue(forKey: key)
     }
 
+    public func snapshot(workspaceId: String) -> [StructuredPaneAgent] {
+        agents
+            .filter { $0.key.workspaceId == workspaceId }
+            .map(\.value)
+            .sorted { $0.paneId < $1.paneId }
+    }
+
+    /// 全量快照仅用于诊断；侧栏必须按 workspace 取。
     public var snapshot: [StructuredPaneAgent] {
-        agents.values.sorted { $0.paneId < $1.paneId }
+        agents.values.sorted { lhs, rhs in
+            if lhs.paneId != rhs.paneId {
+                return lhs.paneId < rhs.paneId
+            }
+            return lhs.name ?? "" < (rhs.name ?? "")
+        }
     }
 }
 
@@ -267,6 +296,38 @@ public struct CommandSidebarItem: Sendable, Equatable {
     }
 }
 
+/// 侧栏跳转：paneId 跨 Workspace 会重复，fallback 必须限定在目标 workspace。
+public enum PanelJumpRouting {
+    public struct ScenePaneIndex: Sendable, Equatable {
+        public let workspaceIds: Set<String>
+        public let paneIds: Set<UInt32>
+        public let isOpen: Bool
+
+        public init(
+            workspaceIds: Set<String>,
+            paneIds: Set<UInt32>,
+            isOpen: Bool = true
+        ) {
+            self.workspaceIds = workspaceIds
+            self.paneIds = paneIds
+            self.isOpen = isOpen
+        }
+    }
+
+    /// replica id 暂时对不上时，仅当 pane 确实属于目标 workspace 才允许直接跳。
+    public static func targetSceneContainsPane(
+        workspaceId: String,
+        paneId: UInt32,
+        scenes: [ScenePaneIndex]
+    ) -> ScenePaneIndex? {
+        scenes.first { scene in
+            scene.isOpen
+                && scene.workspaceIds.contains(workspaceId)
+                && scene.paneIds.contains(paneId)
+        }
+    }
+}
+
 /// Pure projection shared by AppKit rendering and tests.
 public enum WorkspaceSidebarProjection {
     private static let knownAgents = [
@@ -275,6 +336,8 @@ public enum WorkspaceSidebarProjection {
         "pi", "hermes", "droid",
     ]
 
+    /// Agents 只投影 Core/runtime 已标记的数据：Herdr structured agent + attention
+    /// 里 `processIsAgent == true` 的 pane。Frontend 不再根据 processName 猜 agent。
     public static func agents(
         workspaces: [WorkspaceSidebarItem],
         attention: AttentionSnapshot?
@@ -324,12 +387,13 @@ public enum WorkspaceSidebarProjection {
                 .first(where: { $0.workspaceId == workspace.workspaceId })?
                 .panes ?? []
             for pane in generic where !structuredPaneIDs.contains(pane.paneId) {
-                let isAgent = pane.processIsAgent || knownAgentName(pane.processName) != nil
-                guard isAgent else { continue }
-                let name = knownAgentName(pane.processName)
-                    ?? AttentionRowLabel.normalizedProcess(pane.processName)
-                    ?? pane.processName
-                    ?? "Agent"
+                guard pane.processIsAgent else { continue }
+                let name = firstNonempty([
+                    pane.agentName.flatMap { knownAgentName($0) ?? firstNonempty([$0]) },
+                    knownAgentName(pane.processName),
+                    AttentionRowLabel.normalizedProcess(pane.processName),
+                    pane.processName,
+                ]) ?? "Agent"
                 let tabNumber = workspace.tabNumberByPane[pane.paneId]
                 let tabId = workspace.tabIdByPane[pane.paneId]
                 result.append(AgentSidebarItem(
@@ -349,6 +413,8 @@ public enum WorkspaceSidebarProjection {
             }
         }
         return result.sorted { lhs, rhs in
+            // 状态成块；块内按 workspace 快捷键 / tab / pane 固定，只更新状态
+            // 时条目在块间移动，块内相对顺序不变。
             let rank: (AgentSidebarIndicator) -> Int = { indicator in
                 switch indicator {
                 case .done: 0
@@ -360,9 +426,10 @@ public enum WorkspaceSidebarProjection {
             let lhsRank = rank(lhs.indicator)
             let rhsRank = rank(rhs.indicator)
             if lhsRank != rhsRank { return lhsRank < rhsRank }
-            let nameOrder = lhs.agentName.localizedCaseInsensitiveCompare(rhs.agentName)
-            if nameOrder != .orderedSame {
-                return nameOrder == .orderedAscending
+            let lhsShortcut = workspaces.first(where: { $0.workspaceId == lhs.workspaceId })?.shortcut
+            let rhsShortcut = workspaces.first(where: { $0.workspaceId == rhs.workspaceId })?.shortcut
+            if lhsShortcut != rhsShortcut {
+                return (lhsShortcut ?? Int.max) < (rhsShortcut ?? Int.max)
             }
             let workspaceOrder = lhs.title.localizedCaseInsensitiveCompare(rhs.title)
             if workspaceOrder != .orderedSame {
@@ -371,7 +438,11 @@ public enum WorkspaceSidebarProjection {
             if lhs.tabNumber != rhs.tabNumber {
                 return (lhs.tabNumber ?? Int.max) < (rhs.tabNumber ?? Int.max)
             }
-            return lhs.paneId < rhs.paneId
+            if lhs.paneId != rhs.paneId {
+                return lhs.paneId < rhs.paneId
+            }
+            let nameOrder = lhs.agentName.localizedCaseInsensitiveCompare(rhs.agentName)
+            return nameOrder == .orderedAscending
         }
     }
 
@@ -392,7 +463,7 @@ public enum WorkspaceSidebarProjection {
         for workspace in workspaces {
             for pane in attention?.workspaces.first(where: {
                 $0.workspaceId == workspace.workspaceId
-            })?.panes ?? [] where pane.processIsAgent || knownAgentName(pane.processName) != nil {
+            })?.panes ?? [] where pane.processIsAgent {
                 agentPaneKeys.insert(PaneKey(workspaceId: workspace.workspaceId, paneId: pane.paneId))
             }
         }
@@ -457,19 +528,15 @@ public enum WorkspaceSidebarProjection {
     }
 
     private static func knownAgentName(_ process: String?) -> String? {
-        guard let process else { return nil }
-        let tokens = process.lowercased().split { character in
-            !(character.isLetter || character.isNumber || character == "-" || character == "_")
-        }
-        for token in tokens {
-            let token = String(token)
-            if let agent = knownAgents.first(where: {
-                token == $0 || token.hasPrefix($0 + "-") || token.hasPrefix($0 + "_")
-            }) {
-                return agent
+        AttentionRowLabel.normalizedProcess(process).flatMap { name in
+            let lower = name.lowercased()
+            if lower == "agent" || lower == "cursor-agent" {
+                return "cursor"
             }
+            return knownAgents.first(where: {
+                lower == $0 || lower.hasPrefix($0 + "-") || lower.hasPrefix($0 + "_")
+            })
         }
-        return nil
     }
 
     private static func detail(workspace: WorkspaceSidebarItem, paneId: UInt32) -> String {

@@ -506,6 +506,53 @@ final class PaneOutputFeedPolicyTests: XCTestCase {
                 timeBudget: .infinity
             )
         )
+        XCTAssertGreaterThan(
+            SurfaceEventBatchPolicy.activeMaxEventsPerPass,
+            SurfaceEventBatchPolicy.maxEventsPerPass
+        )
+        XCTAssertGreaterThan(
+            SurfaceEventBatchPolicy.activeTimeBudget,
+            SurfaceEventBatchPolicy.timeBudget
+        )
+        XCTAssertGreaterThanOrEqual(
+            SurfaceEventBatchPolicy.attentionRefreshMinInterval,
+            SurfaceEventBatchPolicy.catchUpInterval
+        )
+        XCTAssertEqual(
+            SurfaceEventBatchPolicy.catchUpInterval,
+            FlatChrome.eventPollInterval
+        )
+    }
+
+    func testSurfaceOutputCoalesceKeepsNewestInsteadOfOverflow() {
+        XCTAssertEqual(
+            SurfaceOutputCoalescePolicy.decide(previousBytes: 100, incomingBytes: 50),
+            .combine
+        )
+        XCTAssertEqual(
+            SurfaceOutputCoalescePolicy.decide(
+                previousBytes: SurfaceEventBatchPolicy.maxCoalescedOutputBytes - 10,
+                incomingBytes: 64
+            ),
+            .keepNewest,
+            "超限应丢掉旧合并缓冲保留最新一段，避免 frontend-surface-overflow 撕帧"
+        )
+        XCTAssertEqual(
+            SurfaceOutputCoalescePolicy.decide(
+                previousBytes: 0,
+                incomingBytes: SurfaceEventBatchPolicy.maxCoalescedOutputBytes + 1
+            ),
+            .markOverflow
+        )
+        XCTAssertGreaterThan(
+            SurfaceEventBatchPolicy.maxCoalescedOutputBytes,
+            512 * 1024,
+            "Cursor 主屏 redraw 常超过 512KiB"
+        )
+        XCTAssertEqual(
+            SurfaceEventBatchPolicy.catchUpInterval,
+            FlatChrome.eventPollInterval
+        )
     }
 
     func testUnchangedPaneGridMustNotForceScrollToLatest() {
