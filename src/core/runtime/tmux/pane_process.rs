@@ -39,8 +39,12 @@ where
         .next()
         .map(str::trim)
         .filter(|argv| !argv.is_empty() && !argv.starts_with("<'"));
-    if let Some(server_argv) = server_argv {
+    if let Some(server_argv) = server_argv.filter(|argv| is_wrapper_argv(argv)) {
         return server_argv.to_string();
+    }
+    if server_argv.is_some() {
+        tracing::debug!(target: "muxterm::tmux", reported, local,
+            "ignored conflicting cached foreground argv");
     }
     if !local {
         return reported.to_string();
@@ -49,14 +53,100 @@ where
         return reported.to_string();
     };
     resolve(pid)
-        .filter(|command| !command.trim().is_empty())
+        .filter(|command| is_wrapper_argv(command))
         .unwrap_or_else(|| reported.to_string())
+}
+
+/// #() 的缓存和当前 pane_current_command 不是原子采样。既然当前命令仍是
+/// wrapper，旧 shell/ps argv 不能作为 agent 退出的证据；本地 ps 补查也会竞态。
+/// 完整 node server.js 仍保留，用来区分同一 wrapper 下真正更换的程序。
+fn is_wrapper_argv(command: &str) -> bool {
+    let executable = command
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .trim_matches(['\'', '"'])
+        .rsplit('/')
+        .next()
+        .unwrap_or("");
+    matches!(executable, "node" | "nodejs" | "npx" | "bun")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::activity::attention::engine::known_agent_process_name;
+
+    #[test]
+    fn wrapped_agent_identity_survives_cached_shell_and_animated_redraws() {
+        use crate::activity::attention::{
+            clock::FakeClock, engine::AttentionEngine, screen::ScreenSnapshot,
+        };
+        use crate::config::AttentionConfig;
+        let mut engine = AttentionEngine::new(
+            AttentionConfig::default(),
+            FakeClock::new(std::time::Instant::now()),
+        );
+        // 1651 日志关联到本地 pane 130；以下是边界竞态的合成输入，不冒充日志原文。
+        engine.set_process_name("muxterm", 130, Some("node /opt/bin/codex --yolo".into()));
+        for (seq, raw) in [
+            "42|node|-zsh",
+            "42|node|",
+            "42|node|node /opt/bin/codex --yolo",
+        ]
+        .iter()
+        .cycle()
+        .take(60)
+        .enumerate()
+        {
+            let observed = resolve_subscription_value_with(raw, false, |_| None);
+            engine.set_process_name("muxterm", 130, Some(observed));
+            let star = if seq % 2 == 0 { "✦" } else { "✧" };
+            let screen = ScreenSnapshot::from_text(&format!("{star} input\nesc to interrupt"));
+            engine.apply_with_screen("muxterm", 130, &[], "", seq as u64, Some(&screen));
+            engine.on_became_visible("muxterm", 130);
+            let pane = &engine.snapshot()[0].panes[0];
+            assert!(pane.process_is_agent, "agent disappeared at step {seq}");
+            assert_eq!(pane.agent_name.as_deref(), Some("codex"));
+        }
+        // 真实 shell 事实仍应立刻移除 agent，不能靠永久粘住身份掩盖问题。
+        let observed =
+            resolve_subscription_value_with("42|zsh|node /opt/bin/codex", false, |_| None);
+        engine.set_process_name("muxterm", 130, Some(observed));
+        assert!(!engine.snapshot()[0].panes[0].process_is_agent);
+    }
+
+    #[test]
+    fn stale_shell_argv_cannot_replace_a_live_wrapper() {
+        for stale in ["-zsh", "/bin/zsh -l", "ps -ww -o args= -p 42", "-"] {
+            let value = format!("42|node|{stale}");
+            assert_eq!(
+                resolve_subscription_value_with(&value, false, |_| {
+                    panic!("remote PID must stay remote")
+                }),
+                "node"
+            );
+            assert_eq!(
+                resolve_subscription_value_with(&value, true, |_| {
+                    Some("node /opt/bin/codex --yolo".into())
+                }),
+                "node /opt/bin/codex --yolo"
+            );
+        }
+    }
+
+    #[test]
+    fn raced_local_foreground_lookup_keeps_reported_wrapper() {
+        assert_eq!(
+            resolve_subscription_value_with("42|node|", true, |_| { Some("/bin/zsh -l".into()) }),
+            "node"
+        );
+        // 完整的其他 node 脚本仍是退出 agent 的有效证据。
+        assert_eq!(
+            resolve_subscription_value_with("42|node|node server.js", false, |_| None),
+            "node server.js"
+        );
+    }
 
     #[test]
     fn captured_wrapped_codex_uses_full_foreground_argv() {
