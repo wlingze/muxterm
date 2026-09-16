@@ -3,7 +3,8 @@
 > 用途：重构落地后，**不要 rebase 这条分支**。以本文为需求，在新树上按条重做。
 > 来源：Grok 会话 `01a07ac0-4e2c-79f1-9848-946a024a2fa6`（续 Codex `01a07aaf-e33e-7ae3-85ef-0e4d31101758`）。
 > 参考实现：`feature/dogfood-0907` @ `96c5076`（相对当时 `main` `fbd66f2`，11 个提交）。
-> 整理：2026-09-09（Asia/Shanghai）。§16 起为同日补记的待做（尚未实现）。
+> 整理：2026-09-09（Asia/Shanghai）；2026-09-16 对照当前 `feature/macos` 更新状态。
+> §16 起最初是待做，不代表现在全部未实现；以 §0.1 核对表为准。
 > 1.0 收口顺序见 `docs/PRODUCT-1.0-REMAINING.md`。
 
 本文记的是**使用中碰到的问题和你想要的行为**，不是 git 考古。旧路径只作对照；新树上 frontend 已取代 `src/platform`，文件搬家后按行为验收。
@@ -20,6 +21,38 @@
 6. 测试：macOS 用 `cargo test --no-default-features --features ffi --lib`；tmux 只用隔离 `-L`。
 
 快捷键平台差：Linux `Ctrl+Alt+N`，macOS `Cmd+Ctrl+N`。`Cmd+0` 仍是重置字体，workspace 最后一个是 `Cmd+Ctrl+0`。
+
+### 0.1 当前代码核对（2026-09-16）
+
+这是历史需求和后续施工单，不是整篇已经验收的发布说明。“已有”只表示找到
+对应实现/测试，不等于本轮做了所有平台的手工验收。旧路径、旧锁机制、旧分支
+哈希保留作背景，不能照搬；尤其 §8 的状态判断必须消费 Core 事实。
+
+| 章节 | 当前状态 | 实现证据 / 剩余差异 |
+| --- | --- | --- |
+| §2 | 部分已有 | `config/mod.rs` 默认 20；`WorkspaceShortcutIndex` 与 Core `WorkspacePool::reorder` 已有。macOS `MainWindow.reorderWorkspaces` 仍只改 Scene 的 openedOrder，尚未统一到 Core；不能标整项完成。 |
+| §3 | 已有 | `TerminalView.copy` 先 clearContents 再 setString。 |
+| §4 | 待补齐 | `SettingsService::open` 缺文件仅生成内存默认值，没有落盘；当前 ConfigDocument 未见旧 normalize_projects 去重路径，需要按现有配置契约补测试。不得修改用户本机配置来冒充修复。 |
+| §5 | 已有核心路径 | Workspace 默认 cwd 和 tmux 新 Tab cwd 回归已存在；不同 transport/runtime 的完整手测另验。 |
+| §6–8 | 已有对应实现，继续回归 | 常驻 Scene、侧栏投影、分区布局和 Attention 已在新树；不恢复 WarmConnectionSlot/bridgeLock，也不在前端补进程识别。 |
+| §9 / §18 | 选词、命令轨已有；滚动部分未收口 | `ProgressiveWordSelection.dragByTokens` 已接 TerminalView；`CommandMarkRail` 已有。92% 吸附仍存在，见 §17/22。 |
+| §10–11 | 已有 | 构建签名/CLI smoke、SidebarSectionSplitLayout、GUI 日志策略、Attention 色块正常文字都有实现与测试。 |
+| §13 | 历史诊断 | 不再作为恢复前端锁/校准的方案；新一轮卡顿证据见 `PERFORMANCE-DIAGNOSTICS.md`。 |
+| §16 | 本轮补齐 macOS | Cmd-W 逐层关闭；Cmd-Shift-W 关窗口；独立窗口不会误关主 pane。 |
+| §17 / §22 | 待做，建议下一批一起修 | `shouldSnapToLatest` 仍用 0.92；胶囊 setter 每次改属性并 needsLayout，尚无迟滞/去抖。 |
+| §19 | 本轮补齐 macOS | Agents / Commands / Attention 共用工作区与机器标题；搜索保留机器字段。Linux 对齐另验。 |
+| §20.1 | 待做 | KeyAction/KeyBindings 尚无全局 Agent 数字导航；面板数字导航也未作为本轮完成项。 |
+| §20.2–20.3 | 部分数据已有，展示未完成 | structured title 已解码，但仍混在 agentName 回退链；尚无独立 sessionTitle 展示。tmux OSC/title 到任务标题的完整链路须另验，不能沿用旧文中关于上游版本的断言。 |
+| §23–25 | 待做 | 尚无 Shells/Agents 聚合槽与 Cmd-K 动作；提升 muxer 必须另做安全设计，不自动 detach 现有客户端。 |
+| §26–27 | 规划，不是验收清单 | Tab 状态、设置页收口、多 Window 等各自拆任务，不在本轮顺手扩大架构。 |
+
+本轮只落地 §16、§19；下一批建议 §17+§22，再补 §2 的 Core 改序与 §4。
+不 rebase 旧分支，不把旧实现整文件搬回来。
+
+验证：本轮 Chrome/关闭键/侧栏/原生面板 380 项通过。额外运行的
+`AttentionNavE2ETests` 仍在回复 overlay 的历史文本断言失败（空文本），
+不归入已验收；`toggleReplyOverlay` 当前另建终端并读取 output 的路径需单独
+按 One Surface 契约修复，不能用 Index dump 补画来让测试通过。
 
 ---
 
@@ -592,7 +625,13 @@ Linux 用的是剩余像素 `page/6`（大约几行），比 0.92 比例克制�
 
 ---
 
-## 19. 待做：Agents / Attention 分不清 local 和 ryzen
+## 19. 已补齐（macOS，2026-09-16）：Agents / Attention 分清 local 和 ryzen
+
+当前实现由 `WorkspaceDisplayTitle` 统一生成标题。Agents、Commands、Attention
+第一行都为 `{workspaceName} · {transport}`；Commands 第二行保留状态、命令及
+可用的 Tab 编号。不会把未知机器臆断为 local。Core 已提供的 local/SSH alias
+直接渲染；Attention 搜索仍匹配 transport。回归用同名 local/ryzen 两个工作区
+验证三个列表和搜索隔离。下文“现在”为历史问题描述。
 
 **问题**
 
@@ -726,14 +765,14 @@ Working · Codex · Implement runtime events · Tab 2
 
 ---
 
-## 21. 待做对照（尚未实现，不要从旧分支抄成「已完成」）
+## 21. 原待做对照（当前状态以 §0.1 为准）
 
 | 节 | 主题 | 重做落点 |
 | --- | --- | --- |
-| 16 | Cmd-W 关 pane / 关 Settings | 菜单 target、KeyBindings、覆盖层 |
+| 16 | Cmd-W 关 pane / 关 Settings（macOS 已补齐） | 菜单 target、KeyBindings、覆盖层 |
 | 17 | 列表向下滚不该整页回尾 | 吸附改成剩余行数；agent TUI 关闭吸附 |
-| 18 | 双击后按 word 拖选 | 保留并验证 `dragByTokens` |
-| 19 | Agents/Attention 标 local/ryzen | 标题带 transport |
+| 18 | 双击后按 word 拖选（已有） | 保留并验证 `dragByTokens` |
+| 19 | Agents/Attention 标 local/ryzen（macOS 已补齐） | 标题带 transport |
 | 20.1 | 键盘切 Agent / 面板 Ctrl+数字 | `Cmd+Option+1..9`；面板 `Ctrl+1..9` |
 | 20.2 | Herdr session title | `agentName` 与 `title` 分列显示 |
 | 20.3 | tmux Codex title | `#{pane_title}` / OSC 0，不要刮 TUI 画面 |

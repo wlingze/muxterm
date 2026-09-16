@@ -2,6 +2,34 @@ import XCTest
 @testable import MuxtermChrome
 
 final class WorkspaceSidebarModelTests: XCTestCase {
+    func testMachineIdentityMatchesAgentsCommandsAndSearchableAttention() {
+        let machines = ["local", "ryzen"]
+        let workspaces = machines.map { machine in
+            WorkspaceSidebarItem(workspaceId: machine, name: "muxterm", runtime: "tmux",
+                transport: machine, isActive: false, tabNumberByPane: [1: 1, 2: 2])
+        }
+        let attention = AttentionSnapshot(blockedCount: 0, workspaces: machines.map { machine in
+            WorkspaceAttention(workspaceId: machine, name: "muxterm", transport: machine,
+                blocked: 0, done: 0, working: 2, panes: [
+                    PaneAttention(paneId: 1, status: .working, lastLine: "", seq: 1,
+                        processName: "codex", processIsAgent: true, agentName: "Codex"),
+                    PaneAttention(paneId: 2, status: .working, lastLine: "", seq: 2,
+                        processName: "cargo test"),
+                ])
+        })
+        let expected = Set(["muxterm · local", "muxterm · ryzen"])
+        XCTAssertEqual(Set(WorkspaceSidebarProjection.agents(workspaces: workspaces,
+            attention: attention).map(\.title)), expected)
+        let commands = WorkspaceSidebarProjection.commands(workspaces: workspaces, attention: attention)
+        XCTAssertEqual(Set(commands.map(\.title)), expected)
+        XCTAssertEqual(Set(commands.map(\.detail)), ["working · cargo test · Tab 2"])
+        for machine in machines {
+            let rows = AttentionList.rows(from: attention, workspaces: workspaces, query: machine)
+            XCTAssertEqual(rows.count, 2)
+            XCTAssertEqual(Set(rows.map(\.title)), ["muxterm · \(machine)"])
+        }
+    }
+
     func testWorkspaceShortcutIndexesUseOpenedOrderAndStopAtNine() {
         let ids = ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"]
 
@@ -70,7 +98,7 @@ final class WorkspaceSidebarModelTests: XCTestCase {
             attention: nil
         )
         XCTAssertEqual(projected.count, 1)
-        XCTAssertEqual(projected[0].title, "muxterm")
+        XCTAssertEqual(projected[0].title, "muxterm · local")
         XCTAssertEqual(projected[0].detail, "idle · Codex")
         XCTAssertEqual(projected[0].indicator, .idle)
 
@@ -437,7 +465,7 @@ final class WorkspaceSidebarModelTests: XCTestCase {
         )
 
         // 同状态块内按 workspace shortcut 固定：muxterm(1) 在前，dev(2) 在后。
-        XCTAssertEqual(items.map(\.title), ["muxterm", "dev"])
+        XCTAssertEqual(items.map(\.title), ["muxterm · local", "dev · local"])
         XCTAssertEqual(items.map(\.detail), [
             "working · Codex · Tab 2",
             "working · pi · Tab 1",
@@ -493,7 +521,7 @@ final class WorkspaceSidebarModelTests: XCTestCase {
         )
 
         XCTAssertEqual(agents.count, 1)
-        XCTAssertEqual(agents[0].title, "muxterm")
+        XCTAssertEqual(agents[0].title, "muxterm · local")
         XCTAssertEqual(agents[0].detail, "done · Codex · Tab 2")
         XCTAssertEqual(agents[0].tabNumber, 2)
         XCTAssertFalse(agents[0].detail.localizedCaseInsensitiveContains("pane"))
@@ -563,7 +591,8 @@ final class WorkspaceSidebarModelTests: XCTestCase {
             attention: attention
         )
 
-        XCTAssertEqual(commands.map(\.title), ["cargo test", "sleep"])
+        XCTAssertEqual(commands.map(\.title), ["dev · local", "dev · local"])
+        XCTAssertEqual(commands.map(\.detail), ["working · cargo test", "done · sleep"])
         XCTAssertEqual(commands.map(\.paneId), [1, 2])
         XCTAssertEqual(commands.map(\.indicator), [.working, .done])
     }
@@ -609,7 +638,7 @@ final class WorkspaceSidebarModelTests: XCTestCase {
             attention: attention
         )
 
-        XCTAssertEqual(agents.map(\.title), ["dev"])
+        XCTAssertEqual(agents.map(\.title), ["dev · local"])
         XCTAssertEqual(agents.map(\.detail), ["working · cursor · Tab 1"])
         XCTAssertTrue(commands.isEmpty)
     }
