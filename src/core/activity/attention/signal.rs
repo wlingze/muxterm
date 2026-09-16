@@ -37,7 +37,7 @@ pub enum AttentionSignal {
 pub fn is_transient_shell_command(command: &str) -> bool {
     let token = command
         .trim()
-        .trim_start_matches(|ch: char| ch == '\'' || ch == '"')
+        .trim_start_matches(['\'', '"'])
         .split_whitespace()
         .next()
         .unwrap_or("")

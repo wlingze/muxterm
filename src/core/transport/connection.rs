@@ -232,6 +232,10 @@ struct ProcessByteChannel {
 }
 
 impl ByteChannel for ProcessByteChannel {
+    fn process_observer(&self) -> Option<crate::transport::ProcessObserver> {
+        self.transport.process_observer()
+    }
+
     fn read(&mut self) -> io::Result<Option<Vec<u8>>> {
         self.transport.read()
     }

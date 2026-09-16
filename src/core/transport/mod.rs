@@ -70,12 +70,20 @@ impl ChannelRequest {
     }
 }
 
+/// 可独立运行的目标进程采样器；生命周期由持有通道的 Runtime 管理。
+pub type ProcessObserver = Box<dyn FnMut() -> Option<String> + Send>;
+
 /// Runtime-facing byte channel. It contains no terminal or pane semantics.
 pub trait ByteChannel: Send {
     fn read(&mut self) -> std::io::Result<Option<Vec<u8>>>;
     fn write(&mut self, data: &[u8]) -> std::io::Result<usize>;
     fn resize(&mut self, cols: u16, rows: u16) -> TransportResult<()>;
     fn shutdown(&mut self) -> TransportResult<()>;
+    /// 独立的进程观察器；可能阻塞，只能在后台使用，不持有通道读写锁。
+    /// 不支持的 Transport 返回 None，不能用远端 PID 查本机进程。
+    fn process_observer(&self) -> Option<ProcessObserver> {
+        None
+    }
 }
 
 /// Reusable target-level connection owned by the transport registry.
@@ -207,6 +215,10 @@ pub type TransportResult<T> = std::result::Result<T, TransportError>;
 /// The synchronous methods are used by the transport adapters and their
 /// background reader threads.
 pub trait ProcessTransport: Send {
+    fn process_observer(&self) -> Option<ProcessObserver> {
+        None
+    }
+
     /// 在远端（或本地）以 PTY 模式启动一个长驻命令。
     ///
     /// `program` 在 local 为 shell/tmux 路径，在 ssh 为经 SSH 执行的命令。

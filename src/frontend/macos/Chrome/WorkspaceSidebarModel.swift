@@ -330,12 +330,6 @@ public enum PanelJumpRouting {
 
 /// Pure projection shared by AppKit rendering and tests.
 public enum WorkspaceSidebarProjection {
-    private static let knownAgents = [
-        "codex", "cursor", "claude", "gemini", "aider", "opencode",
-        "copilot", "cline", "goose", "amp", "grok", "windsurf", "kiro",
-        "pi", "hermes", "droid",
-    ]
-
     /// Agents 只投影 Core/runtime 已标记的数据：Herdr structured agent + attention
     /// 里 `processIsAgent == true` 的 pane。Frontend 不再根据 processName 猜 agent。
     public static func agents(
@@ -389,9 +383,7 @@ public enum WorkspaceSidebarProjection {
             for pane in generic where !structuredPaneIDs.contains(pane.paneId) {
                 guard pane.processIsAgent else { continue }
                 let name = firstNonempty([
-                    pane.agentName.flatMap { knownAgentName($0) ?? firstNonempty([$0]) },
-                    knownAgentName(pane.processName),
-                    AttentionRowLabel.normalizedProcess(pane.processName),
+                    pane.agentName,
                     pane.processName,
                 ]) ?? "Agent"
                 let tabNumber = workspace.tabNumberByPane[pane.paneId]
@@ -525,18 +517,6 @@ public enum WorkspaceSidebarProjection {
             let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmed.isEmpty ? nil : trimmed
         }.first
-    }
-
-    private static func knownAgentName(_ process: String?) -> String? {
-        AttentionRowLabel.normalizedProcess(process).flatMap { name in
-            let lower = name.lowercased()
-            if lower == "agent" || lower == "cursor-agent" {
-                return "cursor"
-            }
-            return knownAgents.first(where: {
-                lower == $0 || lower.hasPrefix($0 + "-") || lower.hasPrefix($0 + "_")
-            })
-        }
     }
 
     private static func detail(workspace: WorkspaceSidebarItem, paneId: UInt32) -> String {

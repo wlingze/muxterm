@@ -145,10 +145,11 @@ pub fn spawn_program(
 pub fn kill(handle: &ProcessHandle) -> Result<(), io::Error> {
     #[cfg(unix)]
     {
-        let pid = handle.pid as i32;
-        if pid <= 0 {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid pid"));
-        }
+        // 不允许 u32 溢出成负 PID；Unix 会把负数解释为进程组。
+        let pid = i32::try_from(handle.pid)
+            .ok()
+            .filter(|pid| *pid > 0)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid pid"))?;
         // 优先 SIGHUP（关闭终端会话的常见信号）
         let r = unsafe { libc::kill(pid, libc::SIGHUP) };
         if r == 0 {
@@ -485,10 +486,11 @@ mod tests {
     }
 
     #[test]
-    fn kill_missing_pid_ok() {
-        // 很大的 pid 通常不存在；kill 应对 ESRCH 返回 Ok
-        let h = ProcessHandle::from_pid(u32::MAX - 1);
-        let _ = kill(&h);
+    fn kill_rejects_invalid_pids_without_signalling_a_process_group() {
+        for pid in [0, u32::MAX - 1, u32::MAX] {
+            let h = ProcessHandle::from_pid(pid);
+            assert_eq!(kill(&h).unwrap_err().kind(), io::ErrorKind::InvalidInput);
+        }
     }
 
     #[test]

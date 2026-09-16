@@ -66,8 +66,6 @@ public enum QueuedMuxOperation: Equatable, Sendable {
             switch attention {
             case .becameVisible(let paneID):
                 return .attentionVisible(paneID)
-            case .setProcessName(let paneID, _):
-                return .attentionProcessName(paneID)
             case .acknowledge, .mute:
                 return nil
             }
@@ -88,7 +86,6 @@ public enum QueuedMuxOperation: Equatable, Sendable {
         case coloursPane(UInt32)
         case coloursAll
         case attentionVisible(UInt32)
-        case attentionProcessName(UInt32)
     }
 }
 
@@ -122,7 +119,6 @@ public enum QueuedMuxResize: Equatable, Sendable {
 /// terminal tasks so a scene switch cannot retarget an acknowledgement.
 public enum QueuedMuxAttention: Equatable, Sendable {
     case becameVisible(paneID: UInt32)
-    case setProcessName(paneID: UInt32, name: String?)
     case acknowledge(paneID: UInt32)
     case mute(paneID: UInt32, seconds: UInt64)
 }
