@@ -143,11 +143,11 @@ jobs:
 
       - name: Run local Four-Mode case
         if: matrix.ssh == false
-        run: timeout 120 cargo test --no-default-features --features ffi --test four_mode_integration -- ${{ matrix.filter }} --nocapture
+        run: timeout 120 cargo test --no-default-features --features ffi,test-harness --test four_mode_integration -- ${{ matrix.filter }} --nocapture
 
       - name: Run SSH Four-Mode case
         if: matrix.ssh == true
-        run: timeout 120 cargo test --no-default-features --features ffi --test four_mode_integration -- ${{ matrix.filter }} --nocapture --ignored
+        run: timeout 120 cargo test --no-default-features --features ffi,test-harness --test four_mode_integration -- ${{ matrix.filter }} --nocapture --ignored
         env:
           RUST_BACKTRACE: 1
 

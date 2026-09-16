@@ -8,6 +8,17 @@ cd "$ROOT"
 failures=0
 checks=0
 
+search_matches() {
+    local pattern="$1"
+    shift
+    if command -v rg >/dev/null 2>&1; then
+        rg -n --no-heading -e "$pattern" "$@"
+        return $?
+    fi
+    grep -R -n -E --include='*.rs' --include='*.swift' --include='*.sh' --include='*.md' \
+        -e "$pattern" "$@"
+}
+
 check_absent() {
     local label="$1"
     local pattern="$2"
@@ -25,16 +36,15 @@ check_absent() {
 
     checks=$((checks + 1))
     local matches
-    if matches="$(rg -n --no-heading -e "$pattern" "${paths[@]}" 2>/dev/null)"; then
+    local status=0
+    matches="$(search_matches "$pattern" "${paths[@]}" 2>/dev/null)" || status=$?
+    if [[ "$status" -eq 0 && -n "$matches" ]]; then
         echo "architecture: FAIL: $label" >&2
         printf '%s\n' "$matches" | head -50 >&2 || true
         failures=$((failures + 1))
-    else
-        local rg_status=$?
-        if [[ "$rg_status" -gt 1 ]]; then
-            echo "architecture: ERROR: unable to check $label (rg status $rg_status)" >&2
-            failures=$((failures + 1))
-        fi
+    elif [[ "$status" -gt 1 ]]; then
+        echo "architecture: ERROR: unable to check $label (search status $status)" >&2
+        failures=$((failures + 1))
     fi
 }
 
@@ -140,9 +150,9 @@ check_absent \
 # Concrete provider modules must stay inside their directories in production
 # source. test-harness may re-export them for integration tests.
 checks=$((checks + 1))
-if leaked="$(rg -n --no-heading -e 'crate::runtime::(tmux|herdr|shell)::' src --glob '*.rs' \
-    | rg -v 'src/core/runtime/(tmux|herdr|shell)/' \
-    | rg -v 'src/core/runtime/mod.rs' || true)" \
+if leaked="$(search_matches 'crate::runtime::(tmux|herdr|shell)::' src \
+    | grep -v 'src/core/runtime/\(tmux\|herdr\|shell\)/' \
+    | grep -v 'src/core/runtime/mod.rs' || true)" \
     && [[ -n "$leaked" ]]; then
     echo "architecture: FAIL: concrete Runtime types leaked outside provider dirs" >&2
     printf '%s\n' "$leaked" | head -50 >&2 || true
