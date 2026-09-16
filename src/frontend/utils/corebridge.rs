@@ -2500,6 +2500,8 @@ fn client_target_json(target: &ClientTarget) -> serde_json::Value {
         "path": target.path,
         "session": target.session,
         "socket": target.socket,
+        "workspace_id": (target.runtime == "herdr" && !target.path.is_empty())
+            .then_some(target.path.as_str()),
     })
 }
 
@@ -3140,6 +3142,7 @@ mod tests {
         assert_eq!(value["target"], "devbox");
         assert_eq!(value["session"], "agent");
         assert_eq!(value["socket"], "/tmp/herdr.sock");
+        assert_eq!(value["workspace_id"], "/workspace/project");
     }
 
     #[test]

@@ -312,6 +312,10 @@ pub(crate) fn target_config_from_json(
         .get("workspace_id")
         .and_then(serde_json::Value::as_str)
         .map(str::to_string);
+    // WorkspaceSpec::herdr stores the Herdr workspace id in `path`.
+    if config.workspace_id.is_none() && runtime == TargetRuntime::Herdr && !config.path.is_empty() {
+        config.workspace_id = Some(config.path.clone());
+    }
     Some(config)
 }
 

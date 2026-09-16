@@ -733,10 +733,7 @@ impl AppWindow {
                 }
             }
             Err(error) => {
-                self._state
-                    .borrow_mut()
-                    .notification_log
-                    .push(format!("{workspace_replica_id}: connect failed: {error}"));
+                panic!("{workspace_replica_id}: connect failed: {error}");
             }
         }
     }
