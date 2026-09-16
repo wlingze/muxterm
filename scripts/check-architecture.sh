@@ -11,12 +11,23 @@ checks=0
 search_matches() {
     local pattern="$1"
     shift
-    if command -v rg >/dev/null 2>&1; then
-        rg -n --no-heading -e "$pattern" "$@"
-        return $?
+    local files=()
+    local path file
+    for path in "$@"; do
+        if [[ -d "$path" ]]; then
+            while IFS= read -r file; do
+                files+=("$file")
+            done < <(find "$path" -type f \( \
+                -name '*.rs' -o -name '*.swift' -o -name '*.sh' -o -name '*.md' \
+            \))
+        elif [[ -f "$path" ]]; then
+            files+=("$path")
+        fi
+    done
+    if [[ "${#files[@]}" -eq 0 ]]; then
+        return 1
     fi
-    grep -R -n -E --include='*.rs' --include='*.swift' --include='*.sh' --include='*.md' \
-        -e "$pattern" "$@"
+    grep -n -E -e "$pattern" "${files[@]}"
 }
 
 check_absent() {

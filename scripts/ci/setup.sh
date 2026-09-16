@@ -49,8 +49,7 @@ if [ "$OS" = "Linux" ]; then
     bison \
     flex \
     fonts-dejavu-core \
-    zsh \
-    ripgrep
+    zsh
   # 统一 pane shell 为 zsh（与本地开发机一致）：herdr pane 用 passwd 的
   # 登录 shell，CI runner 默认 bash 的多行彩色 PS1 与本地 zsh 环境不同，
   # 会让 detach/reattach 内容连续性测试在 CI 上表现不一致。

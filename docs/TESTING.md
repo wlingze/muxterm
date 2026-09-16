@@ -9,7 +9,7 @@
 
 ## 0. 结构门禁
 
-用 `rg` 门禁守模块边界；单一 crate，不靠 workspace 成员隔离。
+用 `scripts/check-architecture.sh`（grep）守模块边界；单一 crate，不靠 workspace 成员隔离。
 
 ```text
 禁止根 src/main.rs 声明 Core modules
