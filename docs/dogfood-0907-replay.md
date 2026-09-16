@@ -42,11 +42,12 @@
 | §17 / §22 | 待做，建议下一批一起修 | `shouldSnapToLatest` 仍用 0.92；胶囊 setter 每次改属性并 needsLayout，尚无迟滞/去抖。 |
 | §19 | 本轮补齐 macOS | Agents / Commands / Attention 共用工作区与机器标题；搜索保留机器字段。Linux 对齐另验。 |
 | §20.1 | 待做 | KeyAction/KeyBindings 尚无全局 Agent 数字导航；面板数字导航也未作为本轮完成项。 |
-| §20.2–20.3 | 部分数据已有，展示未完成 | structured title 已解码，但仍混在 agentName 回退链；尚无独立 sessionTitle 展示。tmux OSC/title 到任务标题的完整链路须另验，不能沿用旧文中关于上游版本的断言。 |
-| §23–25 | 待做 | 尚无 Shells/Agents 聚合槽与 Cmd-K 动作；提升 muxer 必须另做安全设计，不自动 detach 现有客户端。 |
+| §20.2–20.3 | 部分数据已有，展示未完成 | structured title 已解码，macOS Agents 聚合标题已单独消费 session title；侧栏/Attention 与 tmux OSC/title 到任务标题的完整链路仍须另验，不能沿用旧文中关于上游版本的断言。 |
+| §23–24 | 本轮补齐 macOS | 固定 Shells/Agents 槽、真实 ShellRuntime 聚合、源 agent Surface 借用、Cmd-K 与 `open_shells` 配置动作均已接入；Linux 聚合 Scene 与绑定仍待对齐。 |
+| §25 | 待做 | 提升 muxer 必须另做安全设计，不自动 detach 现有客户端。 |
 | §26–27 | 规划，不是验收清单 | Tab 状态、设置页收口、多 Window 等各自拆任务，不在本轮顺手扩大架构。 |
 
-本轮只落地 §16、§19；下一批建议 §17+§22，再补 §2 的 Core 改序与 §4。
+本轮已落地 §16、§19、§23–24 的 macOS 部分；下一批建议 §17+§22，再补 §2 的 Core 改序与 §4。
 不 rebase 旧分支，不把旧实现整文件搬回来。
 
 验证：本轮 Chrome/关闭键/侧栏/原生面板 380 项通过。额外运行的
@@ -815,7 +816,7 @@ Working · Codex · Implement runtime events · Tab 2
 
 ---
 
-## 23. 待做：Shells / Agents 都是前端聚合格子
+## 23. 已补齐（macOS，2026-09-16）：Shells / Agents 都是前端聚合格子
 
 **问题**
 
@@ -852,9 +853,14 @@ Agents（聚合：各项目里的 agent pane / tab）
 
 验收：`Cmd-K` 进 Shells，Tab 1 能敲本地命令；侧栏能进 Agents，切 tab 等于跳到那个 agent 现场，源项目 Workspace 里的 tab 还在。
 
+macOS 实现保持聚合槽只存前端身份：Shells 的每一页指向真实 ShellRuntime
+Workspace/Tab，Agents 的每一页指向真实 Workspace/Tab/Pane 并复用原
+`TerminalManager` 与 `MuxTerminalView`。固定槽不能关闭或拖动；Agents 空槽仍可进入，
+关闭 agent 投影页不会关闭源 pane。
+
 ---
 
-## 24. 待做：进 Shells 用 Cmd-K（不要用 Cmd-N）
+## 24. 已补齐（macOS，2026-09-16；Linux 待对齐）：进 Shells 用 Cmd-K（不要用 Cmd-N）
 
 **期望**
 
