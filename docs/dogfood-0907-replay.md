@@ -42,11 +42,12 @@
 | §17 / §22 | 待做，建议下一批一起修 | `shouldSnapToLatest` 仍用 0.92；胶囊 setter 每次改属性并 needsLayout，尚无迟滞/去抖。 |
 | §19 | 本轮补齐 macOS | Agents / Commands / Attention 共用工作区与机器标题；搜索保留机器字段。Linux 对齐另验。 |
 | §20.1 | 待做 | KeyAction/KeyBindings 尚无全局 Agent 数字导航；面板数字导航也未作为本轮完成项。 |
-| §20.2–20.3 | 部分数据已有，展示未完成 | structured title 已解码，但仍混在 agentName 回退链；尚无独立 sessionTitle 展示。tmux OSC/title 到任务标题的完整链路须另验，不能沿用旧文中关于上游版本的断言。 |
-| §23–25 | 待做 | 尚无 Shells/Agents 聚合槽与 Cmd-K 动作；提升 muxer 必须另做安全设计，不自动 detach 现有客户端。 |
+| §20.2–20.3 | 部分数据已有，展示未完成 | structured title 已解码，macOS Agents 聚合标题已单独消费 session title；侧栏/Attention 与 tmux OSC/title 到任务标题的完整链路仍须另验，不能沿用旧文中关于上游版本的断言。 |
+| §23–24 | 本轮补齐 macOS | 固定 Shells/Agents 槽、真实 ShellRuntime 聚合、完整源 Tab 借用、`Cmd+Ctrl+S/A` 与 `open_shells` / `open_agents` 配置动作均已接入；Linux 聚合 Scene 与绑定仍待对齐。 |
+| §25 | 待做 | 提升 muxer 必须另做安全设计，不自动 detach 现有客户端。 |
 | §26–27 | 规划，不是验收清单 | Tab 状态、设置页收口、多 Window 等各自拆任务，不在本轮顺手扩大架构。 |
 
-本轮只落地 §16、§19；下一批建议 §17+§22，再补 §2 的 Core 改序与 §4。
+本轮已落地 §16、§19、§23–24 的 macOS 部分；下一批建议 §17+§22，再补 §2 的 Core 改序与 §4。
 不 rebase 旧分支，不把旧实现整文件搬回来。
 
 验证：本轮 Chrome/关闭键/侧栏/原生面板 380 项通过。额外运行的
@@ -95,7 +96,7 @@ Grok 开场额外要求：点侧栏 WORKSPACES / AGENTS / COMMANDS **闪烁，�
 **期望**
 
 - 提醒上限 20，不自动淘汰。
-- `1–9` = 侧栏固定打开顺序；`0` = 最后一个，哪怕总共不到 10 个。
+- `1–9` = 真实项目 Workspace 的固定打开顺序；`0` = 最后一个，哪怕总共不到 10 个。Shells / Agents 固定槽不占编号。
 - 拖 Workspace 行之后，编号跟着变。
 
 **做法（当时）**
@@ -778,7 +779,7 @@ Working · Codex · Implement runtime events · Tab 2
 | 20.3 | tmux Codex title | `#{pane_title}` / OSC 0，不要刮 TUI 画面 |
 | 22 | 回底胶囊闪烁 | 迟滞 + 状态不变不重绘；和 §17 一起修 |
 | 23 | Shells / Agents 前端聚合 | GUI 投影格子，不是 Core Workspace |
-| 24 | Cmd-K 进 Shells | 靠近 Cmd-N；Cmd-N 留给以后新 Window |
+| 24 | Cmd-Ctrl-S/A 进 Shells/Agents | 固定聚合入口；Cmd-N 留给以后新 Window |
 | 25 | 从 shell 提升 tmux/herdr | 难在认出 session；不 hook 命令 |
 | 26 | 聚合怎么排；Tab 状态 / 设置页 TODO；总规划 | 只记不设计 |
 
@@ -815,7 +816,7 @@ Working · Codex · Implement runtime events · Tab 2
 
 ---
 
-## 23. 待做：Shells / Agents 都是前端聚合格子
+## 23. 已补齐（macOS，2026-09-16）：Shells / Agents 都是前端聚合格子
 
 **问题**
 
@@ -825,7 +826,7 @@ Working · Codex · Implement runtime events · Tab 2
 **原则（重构后也不许破）**
 
 Core 仍是 **一个 Workspace = 一个已 attach 的 Runtime**。Window 只是体现。  
-**Shells 和 Agents 都不是新 Runtime，也不是把 pane 搬进一个假 Workspace。** 只是前端把已有格子聚合成两个看起来像 Workspace 的槽，切过去的手感和普通 Workspace 一样（侧栏一行、数字键、同一套激活）。
+**Shells 和 Agents 都不是新 Runtime，也不是把 pane 搬进一个假 Workspace。** 只是前端把已有格子聚合成两个看起来像 Workspace 的槽，切过去的手感和普通 Workspace 一样（侧栏一行、同一套激活）。这两个固定槽不占真实 Workspace 的数字编号；`Cmd+Ctrl+S/A` 分别进入 Shells/Agents，`Cmd+Ctrl+1` 始终切第一个真实项目 Workspace。
 
 ```text
 Shells（聚合：本机 shell + 各机器 shell）
@@ -834,6 +835,11 @@ Agents（聚合：各项目里的 agent pane / tab）
 ```
 
 切来切去都在 Workspaces 列表里。
+
+侧边栏和 Quick Panel 的 Workspaces 页必须消费同一份前端投影：最上面固定为
+`Shells`、`Agents`，分别显示字母地标 `S`、`A`；后面的真实项目 Workspace 才显示
+`1`、`2`、`3`……。两处的顺序、选中态和点击目标一致；底层 ShellRuntime Workspace
+不在 `Shells` 之外重复占一行。
 
 ### 23.1 Shells
 
@@ -844,28 +850,51 @@ Agents（聚合：各项目里的 agent pane / tab）
 
 ### 23.2 Agents
 
-- 同样一个固定槽。Tab 列表 = 当前所有 agent pane（每个 agent 一页）。
-- Surface **借用源 Workspace 的同一个 pane**，不搬 PTY、不合成一个 tmux session。
-- 只画当前 tab。在 Agents 里关 tab ≠ 杀 agent，只离开这个视图。
-- 不要在投影里 split / new tab 造假拓扑。
+- 同样一个固定槽。Tab 列表 = 当前所有**包含 agent 的真实源 Tab**；一个源 Tab 只出现一页，同 Tab 有多个 agent 也不拆开。
+- 投影复用源 Tab 的完整布局和全部 Surface，包括同 Tab 里的 shell pane；不搬 PTY、不放大 agent pane、不合成一个 tmux session。
+- 进入 Agents 只切到对应源 Tab，不强制切换活动 pane，也不重新校准 pane 大小。
+- 只画当前 tab。在 Agents 里关 tab ≠ 杀 agent，只隐藏这个投影页。
+- 在投影里禁止新 Tab；split pane / close pane 直接操作当前真实源 Tab，结果同步回源 Workspace。
 - 标题带 `工作区 · 机器 · agent · title`（§19 / §20），两个 muxterm 才分得开。
 
-验收：`Cmd-K` 进 Shells，Tab 1 能敲本地命令；侧栏能进 Agents，切 tab 等于跳到那个 agent 现场，源项目 Workspace 里的 tab 还在。
+验收：侧边栏和 Quick Panel 顶部都先显示 `S Shells`、`A Agents`，后续项目从 1
+开始；`Cmd+Ctrl+S` 进 Shells，Tab 1 能敲本地命令；`Cmd+Ctrl+A` 进 Agents，切 tab
+等于跳到包含 agent 的完整源 Tab，源项目 Workspace 里的 tab 还在。
+
+macOS 实现保持聚合槽只存前端身份：Shells 的每一页指向真实 ShellRuntime
+Workspace/Tab，Agents 的每一页按 Workspace/源 Tab 标识并复用原
+`TerminalManager`、完整布局与全部 `MuxTerminalView`。固定槽不能关闭或拖动；Agents
+空槽仍可进入，关闭 agent 投影页不会关闭源 Tab 或 pane。
+
+### 23.3 打开 Workspace 时先进入可切走的加载页
+
+Project / Worktree / Existing 开始 attach 后，前端立即增加一个 `Opening` 投影并切过去；
+它出现在侧边栏和 Quick Panel 的同一份列表数据里，但不是 Core Workspace，也不占数字
+快捷键。spinner 只覆盖终端 PaneGrid，不遮挡 tab/status/侧栏。等待期间可以切回其它
+Workspace；若用户已经切走，attach 完成后只把新 Scene 隐藏插入，不能抢回焦点。
+
+### 23.4 高频 pane 不能拖住其它 pane
+
+Cursor/Codex 一类 TUI 可能在单个 pane 连续重画。Surface feed 与 Core Index 都必须按
+pane 轮转并设每轮字节/时间预算，同一 pane 内仍严格保序。某个 pane 的待处理输出超过
+上限时，只 fence 该 pane 并请求权威 snapshot/full frame；其它 pane 的显示、输入和
+Activity 继续前进。输入 FIFO 不因这项优化改序。
 
 ---
 
-## 24. 待做：进 Shells 用 Cmd-K（不要用 Cmd-N）
+## 24. 已补齐（macOS，2026-09-17；Linux 待对齐）：聚合槽使用 Cmd-Ctrl-A/S
 
 **期望**
 
-- **`Cmd-K`**：切到 Shells 聚合槽。已经在里面则保证 Tab 1（local）可用；需要新 local 时在 Shells 里加 tab。
-- **`Cmd-N` 先别占。** 以后可能有多 Window，「新 Window」会用离 N 近的键；K 和 N 够近，日用也顺。
+- **`Cmd+Ctrl+S`**：切到 Shells 聚合槽。已经在里面则保证 Tab 1（local）可用；需要新 local 时在 Shells 里加 tab。
+- **`Cmd+Ctrl+A`**：切到 Agents 聚合槽；没有 agent 时显示空槽，不制造 Core Workspace。
+- **`Cmd-N` 先别占。** 以后可能用于新 Window。
 - 项目 Workspace 里新 tmux window 仍是 **`Cmd-T`**。
-- Muxterm **不要**把 Cmd-K 做成终端清屏（清屏仍是 pane 里 Ctrl-L）。当前 `KeyBindings` 没有 `k`，键是空的。
+- 配置动作分别为 `open_shells` / `open_agents`；默认键只占 `Cmd+Ctrl+S/A`。
 
 Linux 对齐：同一个「进 Shells」动作，键位用配置里的绑定，不要写死成 Ctrl-K 清屏。
 
-验收：项目 Workspace 里按 Cmd-K 到 Shells/local；Cmd-T 仍在当前项目新 tab。
+验收：项目 Workspace 里按 `Cmd+Ctrl+S` 到 Shells/local，按 `Cmd+Ctrl+A` 到 Agents；`Cmd+Ctrl+1..9/0` 只切真实项目 Workspace；Cmd-T 仍在当前项目新 tab。
 
 ---
 
@@ -913,11 +942,11 @@ Shells 里的 pane 是 **ShellRuntime 的 PTY**。Muxterm 不是这个内层 tmu
 
 | 条 | 值不值 | 难度 | 何时 |
 | --- | --- | --- | --- |
-| **Shells + Cmd-K** | 最高。就是现在关掉的那个废 1 号，和别的终端 Cmd-N 的洞。没有它，Muxterm 不像一台终端。 | 中。多台机器 = 多个 ShellRuntime，GUI 合成 tabs。 | 第三波日用里 **先做**。 |
+| **Shells + Cmd-Ctrl-S** | 最高。就是现在关掉的那个废 1 号，和别的终端 Cmd-N 的洞。没有它，Muxterm 不像一台终端。 | 中。多台机器 = 多个 ShellRuntime，GUI 合成 tabs。 | 第三波日用里 **先做**。 |
 | **Agents 聚合槽** | 高。B 的列表是发现；这个槽是进去干活。agent 一多，点侧栏会烦。 | 中偏高。Surface 借用、焦点/resize、和源 Workspace 同时开着。只画当前 tab，别一屏拼十个。 | B 列表能跳之后。 |
 | **提升 muxer** | 方向对，是 `twork` 的里面那半。 | **最高。** 难在从 Shell PTY 反推内层 session（尤其 SSH）。认错会 attach 到别人的 tmux。 | **后做。** 先有 Shells；过渡期在 shell 里 detach 再 QuickConnect / `muxterm ~/proj` 也能过。 |
 
-`Cmd-K` 进 Shells、`Cmd-N` 留给以后的 Window，这个分工对。
+`Cmd+Ctrl+S/A` 进两个聚合槽，`Cmd+Ctrl+数字` 只切真实 Workspace；`Cmd-N` 留给以后的 Window。
 
 ### 其它日用（2026-09-09 口径）
 
@@ -940,7 +969,7 @@ Shells 里的 pane 是 **ShellRuntime 的 PTY**。Muxterm 不是这个内层 tmu
 0. 迁 0907 已落地行为（§2–§11、§16–§22 里能独立验证的）
 1. B 闭环：peek → 一行答复、红点口径、工作区汇总、机器标记、title
 2. Tab/Pane 状态（TODO，无设计稿）+ 设置页收口
-3. Shells + Cmd-K；然后 Agents 聚合槽
+3. Shells + Cmd-Ctrl-S；然后 Agents + Cmd-Ctrl-A 聚合槽
 4. 地标（未读线 / 刻度 / 回底不闪）+ 搜索跳到坐标
 5. 图投递、SSH 端口提醒后转发、Cmd-W、选词、URL
 6. 后做：提升 muxer、两格来回、新 Window、Tab 视觉
@@ -965,7 +994,7 @@ Muxterm 是 **望向已有工作的那扇原生窗**。工作活在 tmux / Herdr
 ### 几条还没写成功能、但会影响设计的想法
 
 1. **Tab 条是第三块注意力表面。** 红点回答「有没有」，Attention 回答「是谁」，你整天盯着的其实是 Tab。Tab/Pane 状态（§26.3）不是装饰：很多时候不用 Cmd-R。Agents 聚合槽也不该长成看板，它只是「这些现场排成 tab」。
-2. **冷启动应是 Shells，不是空项目。** 打开 App = 能敲的本机 shell（Cmd-K 的那个槽）。项目 Workspace 是 attach 出来的，不该占死 1 号。
+2. **冷启动应是 Shells，不是空项目。** 打开 App = 能敲的本机 shell（Cmd-Ctrl-S 的那个槽）。项目 Workspace 是 attach 出来的，不该占死 1 号。
 3. **Catalog 有两条进路。** 外面：QuickConnect / `muxterm ~/proj`。里面：当前 pane 的语境往外提。提升 muxer（§25）是难的那条；更轻的一条可以后做——「把这个目录 / 这个已经 ssh 上去的壳，收成 Workspace」，不必先认出 tmux 名字。
 4. **一键到「卡我的那个」。** 面板能跳之后，再给一个不经过列表的键：跳到全局最该处理的 blocked pane。有则跳，无则无事。别做成编排。
 5. **端口提醒要长在 agent 上。** 转发 toast 带 `工作区 · 机器 · agent · :5173`，点了进那个 pane 再问转不转。不要全局静默全转。
@@ -976,7 +1005,7 @@ Muxterm 是 **望向已有工作的那扇原生窗**。工作活在 tmux / Herdr
 
 1. 迁 0907 行为。
 2. **B 闭环 + Tab/Pane 状态 + 设置页** —— 同一条状态管道，先让「谁在等我」长在已经看着的 chrome 上。
-3. **Shells + Cmd-K** —— 把终端身份找回来。
+3. **Shells + Cmd-Ctrl-S** —— 把终端身份找回来。
 4. Agents 槽、地标、搜索坐标、图、端口、Cmd-W、选词。
 5. 提升 muxer、两格来回、Window、Tab 视觉 —— 后做。
 

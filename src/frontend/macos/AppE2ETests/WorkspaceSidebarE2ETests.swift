@@ -47,6 +47,13 @@ final class WorkspaceSidebarE2ETests: XCTestCase {
             app.testPollOnce()
             return app.testActiveWorkspaceSession() == second.session
         })
+        let secondPane = UInt32(second.pane.dropFirst()) ?? 0
+        app.testInjectAgent(paneId: secondPane, name: "Codex", title: "Switch workspaces")
+        app.testOpenAgents()
+        XCTAssertEqual(
+            app.testSelectedSidebarWorkspaceID(),
+            AggregateWorkspaceIdentity.agents
+        )
 
         let event = try XCTUnwrap(
             app.testMakeKeyEvent(key: "1", keyCode: 18, command: true, control: true),
@@ -56,7 +63,7 @@ final class WorkspaceSidebarE2ETests: XCTestCase {
         XCTAssertEqual(
             app.testActiveWorkspaceSession(),
             first.session,
-            "Cmd-Ctrl-1 应切回固定顺序的第一个 Workspace"
+            "Cmd-Ctrl-1 应从 Agents 等固定槽切回第一个真实 Workspace"
         )
 
         let secondEvent = try XCTUnwrap(
@@ -436,7 +443,7 @@ final class WorkspaceSidebarE2ETests: XCTestCase {
         let remainingIDs = app.testWorkspaceIDs()
         XCTAssertEqual(remainingIDs.count, 1)
         app.testCloseWorkspace(workspaceId: remainingIDs[0])
-        XCTAssertTrue(app.testWindowClosing(), "关闭最后一个 Workspace 应关闭窗口")
+        XCTAssertTrue(app.testWindowClosing(), "兼容直连且没有 shell runtime 时应关闭窗口")
     }
 
     func testSidebarWorkspaceSwitchIsFastWithPendingBackgroundEvents() throws {

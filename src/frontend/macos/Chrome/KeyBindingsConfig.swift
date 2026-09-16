@@ -32,6 +32,8 @@ public enum KeyBindingsConfig {
         case "toggle_pane_fullscreen": return .togglePaneFullscreen
         case "switch_tab_last": return .switchLastTab
         case "toggle_sidebar": return .toggleSidebar
+        case "open_shells": return .openShells
+        case "open_agents": return .openAgents
         default:
             if name == "switch_workspace_last" {
                 return .switchWorkspace(0)

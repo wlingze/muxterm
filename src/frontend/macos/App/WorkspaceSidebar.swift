@@ -252,13 +252,18 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
     /// Agent、Command 和 Hidden Command 都是同一组导航目标的不同投影，
     /// 当前 pane 变化时只能有一个投影显示选中框；不匹配任何条目时全部
     /// 清空，避免旧 row 因为切换 Workspace 或 pane 而残留高亮。
-    func setActiveTarget(workspaceId: String?, tabId: UInt32?, paneId: UInt32?) {
+    func setActiveTarget(
+        workspaceId: String?,
+        tabId: UInt32?,
+        paneId: UInt32?,
+        workspaceSelectionId: String? = nil
+    ) {
         isReloadingSelection = true
         defer { isReloadingSelection = false }
 
-        if let workspaceId,
+        if let selectedWorkspaceId = workspaceSelectionId ?? workspaceId,
            let workspaceRow = workspaces.firstIndex(where: {
-               $0.workspaceId == workspaceId
+               $0.workspaceId == selectedWorkspaceId
            })
         {
             setSelection(in: workspaceTable, row: workspaceRow)
@@ -448,17 +453,20 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
         item: WorkspaceSidebarItem
     ) {
         cell.set(
-            marker: item.isActive ? "●" : "○",
+            marker: item.isAggregate ? "◆" : (item.isActive ? "●" : "○"),
             markerColor: item.isActive ? .controlAccentColor : .tertiaryLabelColor,
             title: item.name,
             detail: "\(item.runtime) @ \(item.transport)",
-            shortcut: item.shortcut,
-            trailingSymbol: "xmark",
-            trailingTooltip: "Close workspace",
-            trailingAccessibilityID: "muxterm.sidebar.workspace.close.\(safeID(item.workspaceId))",
-            trailingAction: { [weak self] in
+            shortcut: item.shortcutText,
+            emphasized: item.isAggregate,
+            trailingSymbol: item.isClosable ? "xmark" : nil,
+            trailingTooltip: item.isClosable ? "Close workspace" : nil,
+            trailingAccessibilityID: item.isClosable
+                ? "muxterm.sidebar.workspace.close.\(safeID(item.workspaceId))"
+                : nil,
+            trailingAction: item.isClosable ? { [weak self] in
                 self?.onWorkspaceClose?(item.workspaceId)
-            }
+            } : nil
         )
         cell.setAccessibilityIdentifier("muxterm.sidebar.workspace.\(safeID(item.workspaceId))")
     }
@@ -509,6 +517,7 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
         guard tableView === workspaceTable, workspaces.indices.contains(row) else {
             return nil
         }
+        guard workspaces[row].isReorderable else { return nil }
         let item = NSPasteboardItem()
         item.setString(workspaces[row].workspaceId, forType: Self.workspaceDragType)
         return item
@@ -521,6 +530,10 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
         proposedDropOperation dropOperation: NSTableView.DropOperation
     ) -> NSDragOperation {
         guard tableView === workspaceTable, dropOperation == .above else { return [] }
+        let clampedRow = min(max(row, 0), workspaces.count - 1)
+        guard workspaces.indices.contains(clampedRow), workspaces[clampedRow].isReorderable else {
+            return []
+        }
         return .move
     }
 
@@ -533,7 +546,8 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
         guard tableView === workspaceTable,
               dropOperation == .above,
               let dragged = info.draggingPasteboard.string(forType: Self.workspaceDragType),
-              let from = workspaces.firstIndex(where: { $0.workspaceId == dragged })
+              let from = workspaces.firstIndex(where: { $0.workspaceId == dragged }),
+              workspaces[from].isReorderable
         else {
             return false
         }
@@ -710,6 +724,8 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
             && lhs.transport == rhs.transport
             && lhs.isActive == rhs.isActive
             && lhs.shortcut == rhs.shortcut
+            && lhs.isClosable == rhs.isClosable
+            && lhs.isReorderable == rhs.isReorderable
     }
 
     private func sectionTitle(_ section: SidebarTestSection) -> String {
@@ -878,6 +894,7 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
     func testAgentIndicators() -> [AgentSidebarIndicator] { agents.map(\.indicator) }
     func testWorkspaceNames() -> [String] { workspaces.map(\.name) }
     func testWorkspaceIDs() -> [String] { workspaces.map(\.workspaceId) }
+    func testWorkspaceShortcutTexts() -> [String?] { workspaces.map(\.shortcutText) }
     func testSelectWorkspace(_ workspaceId: String) {
         guard let row = workspaces.firstIndex(where: { $0.workspaceId == workspaceId }) else {
             return
@@ -1035,7 +1052,8 @@ private final class WorkspaceSidebarCellView: NSTableCellView {
         title: String,
         detail: String,
         detailColor: NSColor = .secondaryLabelColor,
-        shortcut: Int? = nil,
+        shortcut: String? = nil,
+        emphasized: Bool = false,
         closeAction: (() -> Void)? = nil,
         trailingSymbol: String? = nil,
         trailingTooltip: String? = nil,
@@ -1045,8 +1063,10 @@ private final class WorkspaceSidebarCellView: NSTableCellView {
     ) {
         self.marker.stringValue = marker
         self.marker.textColor = markerColor
-        shortcutLabel.stringValue = shortcut.map(String.init) ?? ""
+        shortcutLabel.stringValue = shortcut ?? ""
+        shortcutLabel.textColor = emphasized ? .controlAccentColor : .tertiaryLabelColor
         titleLabel.stringValue = title
+        titleLabel.textColor = emphasized ? .controlAccentColor : .labelColor
         detailLabel.stringValue = detail
         detailLabel.textColor = detailColor
         // NSTableView reuses cells. Always clear the text before applying an
