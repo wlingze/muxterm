@@ -105,12 +105,12 @@ final class UnifiedPanelE2ETests: XCTestCase {
         )
         XCTAssertEqual(
             app.unifiedPanel.testWorkspaceIndex(matching: first.session),
-            1,
-            "快速面板的第一个 Workspace 编号必须复用侧栏顺序"
+            3,
+            "普通 Workspace 必须复用 Shells/Agents 后的侧栏顺序"
         )
         XCTAssertEqual(
             app.unifiedPanel.testWorkspaceIndex(matching: second.session),
-            2,
+            4,
             "当前 Workspace 即使按 Recent 排在前面，也必须保留侧栏编号"
         )
     }

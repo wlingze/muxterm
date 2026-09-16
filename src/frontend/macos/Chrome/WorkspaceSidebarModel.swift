@@ -205,6 +205,9 @@ public struct WorkspaceSidebarItem: Sendable, Equatable {
     public let transport: String
     public let isActive: Bool
     public let shortcut: Int?
+    /// 固定聚合槽不能关闭或参与真实 Workspace 的拖动改序。
+    public let isClosable: Bool
+    public let isReorderable: Bool
     public let structuredAgents: [StructuredPaneAgent]
     /// 以当前 Tab 排序生成的 1-based 编号；pane id 仍只用于内部跳转。
     public let tabNumberByPane: [UInt32: Int]
@@ -223,6 +226,8 @@ public struct WorkspaceSidebarItem: Sendable, Equatable {
         transport: String,
         isActive: Bool,
         shortcut: Int? = nil,
+        isClosable: Bool = true,
+        isReorderable: Bool = true,
         structuredAgents: [StructuredPaneAgent] = [],
         tabNumberByPane: [UInt32: Int] = [:],
         tabIdByPane: [UInt32: UInt32] = [:]
@@ -233,6 +238,8 @@ public struct WorkspaceSidebarItem: Sendable, Equatable {
         self.transport = transport
         self.isActive = isActive
         self.shortcut = shortcut
+        self.isClosable = isClosable
+        self.isReorderable = isReorderable
         self.structuredAgents = structuredAgents
         self.tabNumberByPane = tabNumberByPane
         self.tabIdByPane = tabIdByPane
@@ -260,6 +267,8 @@ public struct AgentSidebarItem: Sendable, Equatable {
     public let indicator: AgentSidebarIndicator
     /// The name used for sorting and for the second display line.
     public let agentName: String
+    /// Runtime 提供的 agent/session title；与 agentName 分开，供聚合 Tab 展示。
+    public let sessionTitle: String?
     public let tabNumber: Int?
 
     public init(
@@ -270,6 +279,7 @@ public struct AgentSidebarItem: Sendable, Equatable {
         detail: String,
         indicator: AgentSidebarIndicator,
         agentName: String = "Agent",
+        sessionTitle: String? = nil,
         tabNumber: Int? = nil
     ) {
         self.workspaceId = workspaceId
@@ -279,6 +289,7 @@ public struct AgentSidebarItem: Sendable, Equatable {
         self.detail = detail
         self.indicator = indicator
         self.agentName = agentName
+        self.sessionTitle = sessionTitle
         self.tabNumber = tabNumber
     }
 }
@@ -386,6 +397,7 @@ public enum WorkspaceSidebarProjection {
                     ),
                     indicator: indicator(status: agent.status, attention: attention),
                     agentName: agentName,
+                    sessionTitle: agent.title,
                     tabNumber: tabNumber
                 ))
             }

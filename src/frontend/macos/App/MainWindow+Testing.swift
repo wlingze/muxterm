@@ -57,6 +57,22 @@ extension MainWindowController {
         lastSnapshot.tabs.map(\.id)
     }
 
+    func testPresentedTabIDs() -> [UInt32] {
+        presentedTabs().map(\.id)
+    }
+
+    func testPresentedTabTitles() -> [String] {
+        presentedTabs().map(\.name)
+    }
+
+    func testPresentedActiveTabID() -> UInt32? {
+        presentedTabs().first(where: \.isActive)?.id
+    }
+
+    func testTerminalViewIdentity(_ paneId: UInt32) -> ObjectIdentifier {
+        ObjectIdentifier(terminalManager.view(for: paneId))
+    }
+
     func testActiveTabID() -> UInt32 {
         lastSnapshot.tabs.first(where: \.isActive)?.id ?? lastSnapshot.activeTab
     }
@@ -186,6 +202,20 @@ extension MainWindowController {
     /// 通过生产 Core task 创建 tab；测试不得直接操作 tmux socket。
     func testNewTab() {
         newTab()
+        pollOnce()
+    }
+
+    func testOpenShells() {
+        activateShells(selectFirstLocal: true)
+        pollOnce()
+    }
+
+    func testInjectAgent(paneId: UInt32, name: String, title: String?) {
+        cacheStructuredAgentForTesting(paneId: paneId, name: name, title: title)
+    }
+
+    func testOpenAgents() {
+        activateAgents()
         pollOnce()
     }
 
@@ -416,11 +446,11 @@ extension MainWindowController {
     }
 
     func testWorkspaceCount() -> Int {
-        workspaceSidebar.testWorkspaceCount()
+        runtimeSidebarItems().count
     }
 
     func testWorkspaceIDs() -> [String] {
-        workspaceSidebar.testWorkspaceIDs()
+        runtimeSidebarItems().map(\.workspaceId)
     }
 
     func testSelectSidebarWorkspace(_ workspaceId: String) {
@@ -432,7 +462,7 @@ extension MainWindowController {
     }
 
     func testWorkspaceNames() -> [String] {
-        workspaceSidebar.testWorkspaceNames()
+        runtimeSidebarItems().map(\.name)
     }
 
     func refreshWorkspaceSidebarForTest() {
@@ -444,7 +474,8 @@ extension MainWindowController {
     }
 
     func testSwitchBackToFirstWorkspace() {
-        switchToWorkspaceAtFixedIndex(1)
+        guard let first = runtimeSidebarItems().first else { return }
+        activateSidebarWorkspace(first.workspaceId)
     }
 
     func testSwitchToWorkspaceAtFixedIndex(_ oneBased: Int) {

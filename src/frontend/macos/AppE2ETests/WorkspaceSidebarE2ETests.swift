@@ -49,21 +49,21 @@ final class WorkspaceSidebarE2ETests: XCTestCase {
         })
 
         let event = try XCTUnwrap(
-            app.testMakeKeyEvent(key: "1", keyCode: 18, command: true, control: true),
-            "必须能构造 Cmd-Ctrl-1"
+            app.testMakeKeyEvent(key: "3", keyCode: 20, command: true, control: true),
+            "必须能构造 Cmd-Ctrl-3"
         )
-        XCTAssertTrue(app.testDispatchKeyEvent(event), "Cmd-Ctrl-1 必须被窗口快捷键消费")
+        XCTAssertTrue(app.testDispatchKeyEvent(event), "Cmd-Ctrl-3 必须被窗口快捷键消费")
         XCTAssertEqual(
             app.testActiveWorkspaceSession(),
             first.session,
-            "Cmd-Ctrl-1 应切回固定顺序的第一个 Workspace"
+            "Shells/Agents 之后的 Cmd-Ctrl-3 应切回第一个真实 Workspace"
         )
 
         let secondEvent = try XCTUnwrap(
-            app.testMakeKeyEvent(key: "2", keyCode: 19, command: true, control: true),
-            "必须能构造 Cmd-Ctrl-2"
+            app.testMakeKeyEvent(key: "4", keyCode: 21, command: true, control: true),
+            "必须能构造 Cmd-Ctrl-4"
         )
-        XCTAssertTrue(app.testDispatchKeyEvent(secondEvent), "Cmd-Ctrl-2 必须被窗口快捷键消费")
+        XCTAssertTrue(app.testDispatchKeyEvent(secondEvent), "Cmd-Ctrl-4 必须被窗口快捷键消费")
         XCTAssertEqual(app.testActiveWorkspaceSession(), second.session)
 
         let lastEvent = try XCTUnwrap(
@@ -436,7 +436,7 @@ final class WorkspaceSidebarE2ETests: XCTestCase {
         let remainingIDs = app.testWorkspaceIDs()
         XCTAssertEqual(remainingIDs.count, 1)
         app.testCloseWorkspace(workspaceId: remainingIDs[0])
-        XCTAssertTrue(app.testWindowClosing(), "关闭最后一个 Workspace 应关闭窗口")
+        XCTAssertTrue(app.testWindowClosing(), "兼容直连且没有 shell runtime 时应关闭窗口")
     }
 
     func testSidebarWorkspaceSwitchIsFastWithPendingBackgroundEvents() throws {
@@ -516,8 +516,8 @@ final class WorkspaceSidebarE2ETests: XCTestCase {
             return app.testActiveWorkspaceSession() == second.session
         })
 
-        app.testSwitchToWorkspaceAtFixedIndex(1)
-        app.testSwitchToWorkspaceAtFixedIndex(2)
+        app.testSwitchToWorkspaceAtFixedIndex(3)
+        app.testSwitchToWorkspaceAtFixedIndex(4)
 
         XCTAssertTrue(AppE2E.wait(timeout: 2) {
             app.testPollOnce()

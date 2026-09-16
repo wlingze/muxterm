@@ -505,6 +505,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         quickConnectItem.target = windowController
         viewMenu.addItem(quickConnectItem)
 
+        let shellsItem = NSMenuItem(
+            title: "Shells",
+            action: #selector(MainWindowController.openShellsFromMenu(_:)),
+            keyEquivalent: "k"
+        )
+        shellsItem.keyEquivalentModifierMask = .command
+        shellsItem.target = windowController
+        viewMenu.addItem(shellsItem)
+
         let commandPalette = NSMenuItem(
             title: MuxtermI18n.shared.tr(.menuCommandPalette),
             action: #selector(MainWindowController.openCommandPalette),

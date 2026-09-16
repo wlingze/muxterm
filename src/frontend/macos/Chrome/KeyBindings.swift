@@ -25,6 +25,8 @@ public enum KeyAction: Equatable, Sendable {
     case resetFontSize
     case togglePaneFullscreen
     case toggleSidebar
+    /// 进入前端 Shells 聚合槽；不会向终端发送清屏字符。
+    case openShells
     case switchWorkspace(Int) // 1-based opened order; 0 is always last
 }
 
@@ -103,6 +105,10 @@ public enum KeyBindings {
         // Cmd+P：QuickConnect 面板（Recent + Project）。
         if chord.command, !chord.shift, !chord.option, key == "p" {
             return .quickConnect
+        }
+        // Cmd+K：进入 Shells 聚合槽。终端清屏继续由 Ctrl-L 完成。
+        if chord.command, !chord.shift, !chord.option, !chord.control, key == "k" {
+            return .openShells
         }
         // Cmd+Shift+P：旧命令面板（保留）。
         if chord.command, chord.shift, !chord.option, key == "p" {
