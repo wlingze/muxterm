@@ -1,4 +1,27 @@
 import AppKit
+
+extension NSApplication {
+    /// 菜单沿 responder chain 到达应用后，仍只操作 key window。
+    /// Settings 等独立窗口不能把关闭动作误投到 main window。
+    @objc func closeMuxtermSurface(_ sender: Any?) {
+        MuxtermCloseRouting.close(window: keyWindow, sender: sender)
+    }
+}
+
+enum MuxtermCloseRouting {
+    static func close(window: NSWindow?, sender: Any? = nil) {
+        guard let window else { return }
+        if let controller = window.windowController as? MainWindowController {
+            controller.closeFocusedSurface()
+        } else if let controller = window.windowController as? UnifiedPanelController {
+            controller.dismiss()
+        } else if let controller = window.windowController as? CommandPaletteController {
+            controller.dismiss()
+        } else {
+            window.performClose(sender)
+        }
+    }
+}
 import Darwin
 import MuxtermChrome
 import UserNotifications
@@ -299,18 +322,19 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let closePane = NSMenuItem(
             title: MuxtermI18n.shared.tr(.menuClosePane),
-            action: #selector(MainWindowController.closeActivePane),
-            keyEquivalent: ""
+            action: #selector(NSApplication.closeMuxtermSurface(_:)),
+            keyEquivalent: "w"
         )
-        closePane.target = windowController
+        closePane.target = nil
         fileMenu.addItem(closePane)
 
         let closeWindow = NSMenuItem(
             title: MuxtermI18n.shared.tr(.menuCloseWindow),
-            action: #selector(MainWindowController.closeActiveWindow),
+            action: #selector(NSWindow.performClose(_:)),
             keyEquivalent: "w"
         )
-        closeWindow.target = windowController
+        closeWindow.keyEquivalentModifierMask = [.command, .shift]
+        closeWindow.target = nil
         fileMenu.addItem(closeWindow)
 
         // Window 菜单：Cmd+1..9 切 tab（避免落到 SwiftTerm noop:）

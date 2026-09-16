@@ -141,7 +141,9 @@ final class KeyBindingsTests: XCTestCase {
             KeyBindings.action(for: KeyChord(command: true, shift: true, key: "d")),
             .splitHorizontal
         )
-        XCTAssertEqual(KeyBindings.action(for: KeyChord(command: true, key: "w")), .closeWindow)
+        XCTAssertEqual(KeyBindings.action(for: KeyChord(command: true, key: "w")), .closePane)
+        XCTAssertEqual(KeyBindings.action(for: KeyChord(command: true, shift: true, key: "w")), .closeWindow)
+        XCTAssertNil(KeyBindings.action(for: KeyChord(command: true, control: true, key: "w")))
         XCTAssertEqual(KeyBindings.action(for: KeyChord(command: true, key: "2")), .switchTab(2))
         XCTAssertNil(
             KeyBindings.action(for: KeyChord(control: true, key: "d")),

@@ -767,6 +767,19 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         closeSessionWindow()
     }
 
+    /// 每次只关闭最上面一层，不能穿过面板关闭背后的 pane。
+    func closeFocusedSurface() {
+        if unifiedPanel?.window?.isVisible == true {
+            unifiedPanel.dismiss()
+        } else if commandPalette?.window?.isVisible == true {
+            commandPalette.dismiss()
+        } else if !content.replyOverlayContainer.isHidden {
+            toggleReplyOverlay()
+        } else {
+            closeActivePane()
+        }
+    }
+
     /// 菜单 Cmd+1..9：tag 为 1-based 序号。
     @objc func switchTabByNumber(_ sender: Any?) {
         let n: Int
@@ -5006,7 +5019,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         case .closeWindow:
             closeActiveWindow()
         case .closePane:
-            closeActivePane()
+            closeFocusedSurface()
         case .switchTab(let n):
             switchToTabIndex(n)
         case .switchLastTab:
