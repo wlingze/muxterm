@@ -19,6 +19,10 @@ const KNOWN_AGENTS: &[&str] = &[
     "grok", "windsurf", "kiro", "pi", "hermes", "droid",
 ];
 
+/// 与 Core `known_agent_process_name` 同语义：argv basename 优先，路径段精确匹配。
+/// 兼容层不得 `use` Core 内部模块，只能本地保持算法一致。
+const AGENT_ALIASES: &[(&str, &str)] = &[("agent", "cursor"), ("cursor-agent", "cursor")];
+
 #[derive(Debug, Clone, Copy)]
 enum CompatEvent {
     CommandStart,
@@ -340,15 +344,44 @@ impl CompatibilityActivity {
             let initial_process = entry.pane.process_name.is_none();
             if shell {
                 entry.pane.shell_name = Some(next_process.clone());
-            }
-            if !shell || initial_process {
+                let stale_agent_process = entry
+                    .pane
+                    .process_name
+                    .as_deref()
+                    .is_some_and(|name| known_agent_process_name(name).is_some());
+                if entry.pane.process_is_agent
+                    || entry.pane.agent_name.is_some()
+                    || stale_agent_process
+                {
+                    entry.pane.process_name = Some(next_process.clone());
+                    entry.pane.process_is_agent = false;
+                    entry.pane.agent_name = None;
+                    if !matches!(entry.pane.status_kind(), ClientAttentionStatus::Working) {
+                        entry.pane.status = status_name(ClientAttentionStatus::Idle).to_string();
+                        entry.pane.acknowledged = true;
+                    }
+                } else if initial_process {
+                    entry.pane.process_name = Some(next_process.clone());
+                    entry.pane.process_is_agent = false;
+                }
+            } else if initial_process {
                 entry.pane.process_name = Some(next_process.clone());
                 entry.pane.process_is_agent = process_is_agent;
-            }
-            if process_is_agent {
-                entry.pane.agent_name = detected_agent
-                    .map(str::to_string)
-                    .or_else(|| Some(next_process.clone()));
+                if process_is_agent {
+                    entry.pane.agent_name = detected_agent
+                        .map(str::to_string)
+                        .or_else(|| Some(next_process.clone()));
+                }
+            } else {
+                entry.pane.process_name = Some(next_process.clone());
+                entry.pane.process_is_agent = process_is_agent;
+                if process_is_agent {
+                    entry.pane.agent_name = detected_agent
+                        .map(str::to_string)
+                        .or_else(|| Some(next_process.clone()));
+                } else {
+                    entry.pane.agent_name = None;
+                }
             }
         }
 
@@ -460,18 +493,49 @@ fn transition(status: ClientAttentionStatus, event: CompatEvent) -> ClientAttent
 }
 
 fn known_agent_process_name(value: &str) -> Option<&'static str> {
-    value
-        .split(|ch: char| !(ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_')))
-        .filter(|token| !token.is_empty())
-        .find_map(|token| {
-            let lower = token.to_ascii_lowercase();
-            KNOWN_AGENTS.iter().find_map(|agent| {
-                (lower == *agent
-                    || lower.starts_with(&format!("{agent}-"))
-                    || lower.starts_with(&format!("{agent}_")))
-                .then_some(*agent)
-            })
-        })
+    for token in value.split_whitespace() {
+        let trimmed = token.trim_matches(|c: char| c == '\'' || c == '"');
+        if trimmed.is_empty() || trimmed.starts_with('-') {
+            continue;
+        }
+        let basename = trimmed.rsplit(['/', '\\']).next().unwrap_or(trimmed);
+        if let Some(agent) = match_agent_basename(basename) {
+            return Some(agent);
+        }
+    }
+    // 路径段从右往左：`.../codex/.../cursor-agent/...` 必须认 cursor。
+    for token in value.split_whitespace() {
+        let segments: Vec<&str> = token.split(['/', '\\']).filter(|s| !s.is_empty()).collect();
+        for segment in segments.into_iter().rev() {
+            if let Some(agent) = match_agent_path_segment(segment) {
+                return Some(agent);
+            }
+        }
+    }
+    None
+}
+
+fn match_agent_basename(token: &str) -> Option<&'static str> {
+    let lower = token.to_ascii_lowercase();
+    if let Some((_, agent)) = AGENT_ALIASES.iter().find(|(alias, _)| lower == *alias) {
+        return Some(*agent);
+    }
+    KNOWN_AGENTS.iter().copied().find(|agent| {
+        lower == *agent
+            || lower.starts_with(&format!("{agent}-"))
+            || lower.starts_with(&format!("{agent}_"))
+    })
+}
+
+fn match_agent_path_segment(segment: &str) -> Option<&'static str> {
+    if segment.is_empty() {
+        return None;
+    }
+    let lower = segment.to_ascii_lowercase();
+    if let Some((_, agent)) = AGENT_ALIASES.iter().find(|(alias, _)| lower == *alias) {
+        return Some(*agent);
+    }
+    KNOWN_AGENTS.iter().copied().find(|agent| lower == *agent)
 }
 
 fn normalize_process_name(name: &str) -> Option<String> {

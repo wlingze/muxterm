@@ -462,11 +462,23 @@ public enum SurfaceEventPolicy {
 ///
 /// 后台连接必须继续消费事件，但不能把积压的高流量 PTY 在一次主线程
 /// 回调里全部重放。超过预算时保留队列，下一拍继续处理；如果单个 pane
-/// 的合并输出也超过上限，则交给 Runtime 重新发送权威 baseline。
+/// 的合并输出也超过上限，则优先丢掉旧合并缓冲、保留最新一段，避免
+/// `frontend-surface-overflow` → pause/capture 把 Cursor 主屏 redraw 撕坏。
 public enum SurfaceEventBatchPolicy {
-    public static let maxEventsPerPass = 32
+    public static let maxEventsPerPass = 48
+    /// 隐藏 scene 每拍预算：给 AppKit 留出绘制/输入时间。
     public static let timeBudget: TimeInterval = 0.004
-    public static let maxCoalescedOutputBytes = 512 * 1024
+    /// 前台 scene 积压时加大预算，尽快排空以免切到 Cursor 仍转圈。
+    public static let activeTimeBudget: TimeInterval = 0.024
+    /// 前台每拍最多处理的事件数（仍受 activeTimeBudget 约束）。
+    public static let activeMaxEventsPerPass = 96
+    /// Cursor 一类主屏 inplace redraw 单帧常超过 512KiB；过小会误触发
+    /// overflow → SSH pause/capture，既撕帧又把控制通道占满。
+    public static let maxCoalescedOutputBytes = 2 * 1024 * 1024
+    /// catch-up 调度间隔。旧值 1ms 会在积压时把主线程打满（~100% CPU）。
+    public static let catchUpInterval: TimeInterval = FlatChrome.eventPollInterval
+    /// Surface 积压时降低 attention/sidebar 刷新频率，避免和 VT feed 抢主线程。
+    public static let attentionRefreshMinInterval: TimeInterval = 0.25
 
     public static func shouldYield(
         processedEvents: Int,
@@ -476,6 +488,35 @@ public enum SurfaceEventBatchPolicy {
     ) -> Bool {
         processedEvents >= max(1, maxEvents)
             || elapsed >= max(0, timeBudget)
+    }
+}
+
+/// 同一 pane 连续 PaneOutput 合并策略：超限时保留最新一段，而不是整段
+/// 丢弃并请求权威 snapshot（后者在 Cursor 主屏 redraw 中途 capture 会花屏）。
+public enum SurfaceOutputCoalescePolicy {
+    public enum Decision: Equatable {
+        /// 合并进已有 PaneOutput。
+        case combine
+        /// 丢掉该 pane 尚未交付的旧输出，只保留本段新字节。
+        case keepNewest
+        /// 单段已超过上限：必须 fence，向 Runtime 要权威 baseline。
+        case markOverflow
+    }
+
+    public static func decide(
+        previousBytes: Int,
+        incomingBytes: Int,
+        maxBytes: Int = SurfaceEventBatchPolicy.maxCoalescedOutputBytes
+    ) -> Decision {
+        guard incomingBytes > 0 else { return .combine }
+        if incomingBytes > maxBytes {
+            return .markOverflow
+        }
+        let (sum, overflow) = previousBytes.addingReportingOverflow(incomingBytes)
+        if overflow || sum > maxBytes {
+            return .keepNewest
+        }
+        return .combine
     }
 }
 

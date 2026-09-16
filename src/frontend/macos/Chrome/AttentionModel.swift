@@ -213,18 +213,44 @@ public enum AttentionRowLabel {
             "copilot", "cline", "goose", "amp", "grok", "windsurf", "kiro",
             "pi", "hermes", "droid",
         ]
+        let aliases = [
+            "agent": "cursor",
+            "cursor-agent": "cursor",
+        ]
         let commandTokens = value.split { character in
             character.isWhitespace || ";|&<>\"'`()".contains(character)
         }
-        let identifierTokens = value.lowercased().split { character in
-            !(character.isLetter || character.isNumber || character == "-" || character == "_")
-        }
-        for token in identifierTokens {
-            let token = String(token)
+        // 先看 argv basename，避免路径中间的 cursor/codex 目录互相抢身份。
+        for token in commandTokens {
+            let raw = String(token).trimmingCharacters(in: CharacterSet(charactersIn: "'\""))
+            guard !raw.isEmpty, !raw.hasPrefix("-") else { continue }
+            let basename = raw.split(whereSeparator: { $0 == "/" || $0 == "\\" })
+                .last
+                .map(String.init) ?? raw
+            let package = basename.split(separator: "/").last.map(String.init) ?? basename
+            let lower = package.lowercased()
+            if let alias = aliases[lower] {
+                return alias
+            }
             if let match = known.first(where: {
-                token == $0 || token.hasPrefix($0 + "-") || token.hasPrefix($0 + "_")
+                lower == $0 || lower.hasPrefix($0 + "-") || lower.hasPrefix($0 + "_")
             }) {
                 return match
+            }
+        }
+        // 路径段从右往左：.../codex/.../cursor-agent/... 必须认 cursor。
+        for token in commandTokens {
+            let segments = String(token).split(whereSeparator: { $0 == "/" || $0 == "\\" })
+                .map(String.init)
+                .filter { !$0.isEmpty }
+            for segment in segments.reversed() {
+                let lower = segment.lowercased()
+                if let alias = aliases[lower] {
+                    return alias
+                }
+                if let match = known.first(where: { lower == $0 }) {
+                    return match
+                }
             }
         }
         guard let firstToken = commandTokens.first else { return nil }
