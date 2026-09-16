@@ -8,8 +8,6 @@
 use crate::projects::{ProjectTarget, TargetConfig, TargetRuntime, TargetTransport};
 use crate::workspace::WorkspaceSpec;
 
-pub use crate::protocol::candidate::{OpenRequest, ResolveIntent};
-
 /// 解析失败阶段（用户通知显示阶段 + 身份摘要）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResolveErrorStage {
@@ -347,7 +345,7 @@ pub fn herdr_candidate_to_config(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::candidate::CandidateRef;
+    use crate::protocol::candidate::{CandidateRef, OpenRequest, ResolveIntent};
 
     #[test]
     fn open_request_round_trips_typed_reference_and_defaults_activation() {

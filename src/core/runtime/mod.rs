@@ -32,7 +32,7 @@ pub use batch::{ControlEvent, RenderEvent, RuntimeBatch, RuntimeSignal};
 pub use capability::RuntimeCapability;
 pub use contract::{Runtime, RuntimeSpec, WorktreeCreateSpec, WorktreeInfo};
 pub use error::{RuntimeError, RuntimeResult};
-#[cfg(any(test, feature = "test-harness"))]
+#[cfg(test)]
 pub(crate) use mock::MockRuntime;
 pub use provider::{runtime_supports_channels, RuntimeInfo, RuntimeProvider};
 pub use registry::RuntimeRegistry;
