@@ -64,6 +64,7 @@ struct Rule {
 
 /// 对已知 agent 的当前屏幕分类。`None` = 保持原状态（transcript viewer）。
 pub fn classify_agent_screen(agent: &str, screen: &ScreenSnapshot) -> Option<PaneStatus> {
+    let _timing = crate::performance::SCREEN.enter();
     let agent = agent.to_ascii_lowercase();
     let mut rules: Vec<&Rule> = RULES
         .iter()

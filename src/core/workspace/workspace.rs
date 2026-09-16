@@ -251,7 +251,10 @@ impl Workspace {
 
     /// 刷新 Runtime，再以三条 lane 交付给 Pool。
     pub fn refresh_batch(&mut self) -> RuntimeBatch {
-        let batch = self.model.refresh_batch();
+        let batch = {
+            let _timing = crate::performance::RUNTIME.enter();
+            self.model.refresh_batch()
+        };
         self.feed_batch(&batch);
         self.advance_template_application_for_batch(&batch);
         batch
