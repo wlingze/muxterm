@@ -82,9 +82,8 @@ mod tests {
         use crate::activity::attention::{
             clock::FakeClock, engine::AttentionEngine, screen::ScreenSnapshot,
         };
-        use crate::config::AttentionConfig;
         let mut engine = AttentionEngine::new(
-            AttentionConfig::default(),
+            Default::default(),
             FakeClock::new(std::time::Instant::now()),
         );
         // 1651 日志关联到本地 pane 130；以下是边界竞态的合成输入，不冒充日志原文。
