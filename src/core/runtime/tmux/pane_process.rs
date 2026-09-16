@@ -10,7 +10,7 @@ use crate::protocol::terminal::foreground_process_command;
 /// 也会读取远端进程。条件分支保证普通 shell/htop/cargo 不启动额外 job。
 pub(crate) const PANE_PROCESS_FORMAT: &str = concat!(
     "#{pane_pid}|#{pane_current_command}|",
-    "#{?#{==:#{pane_current_command},node},",
+    "#{?#{||:#{==:#{pane_current_command},node},#{==:#{pane_current_command},nodejs},#{==:#{pane_current_command},npx},#{==:#{pane_current_command},bun}},",
     "#(ps -ww -o args= -p $(ps -o tpgid= -p #{pane_pid} 2>/dev/null) 2>/dev/null),}"
 );
 

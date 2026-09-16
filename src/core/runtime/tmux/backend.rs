@@ -1694,12 +1694,24 @@ impl TmuxRuntime {
                 flow.resyncing = false;
                 flow.suppressed.clear();
             }
+            // 失败/超时不能把半截 live 喂进 VT，但必须解除 pause：
+            // dogfood 1157 里 Cursor 卡在「转圈→很久才好」，就是 deadline
+            // abort 后仍持 pause，直到冷却后下一次 resync 碰巧成功。
+            self.paused_panes.remove(&pane);
+            if resync.pause_client {
+                let _ = self.dispatch_tmux_command(&cmd::refresh_client_pause(pane, false));
+            }
+            // 丢弃该 pane 积压，避免 watermark 堵控制响应；故意不
+            // resume_output_pane——output_gaps 继续丢增量，冷却后权威快照再清。
+            if let Some(receiver) = self.event_rx.as_mut() {
+                receiver.discard_output_pane(pane);
+            }
             tracing::info!(
                 target: "muxterm::tmux::resync",
                 pane = pane.0,
                 generation = resync.generation,
                 reason,
-                "pane snapshot transaction dropped without resuming live output"
+                "pane snapshot transaction dropped; live pause released, output stays fenced"
             );
             return;
         }
@@ -1828,8 +1840,29 @@ impl TmuxRuntime {
         // capture-pane 挤进 control lane。pending gap 保留到 snapshot 成功，
         // 绝不能 drain 后直接 resume；否则下一块可能续在半截 CSI/OSC 上。
         let now = Instant::now();
+        let active_tab = self.active_tab_id();
         let mut panes: Vec<PaneId> = self.dropped_output_panes.iter().copied().collect();
-        panes.sort_by_key(|pane| pane.0);
+        // 活动 tab 上的 pane 优先：切到 Cursor 时不能排在后台 shell gap 后面
+        // 等 5s×N 冷却（dogfood legion 切 tab 转圈）。
+        panes.sort_by_key(|pane| {
+            let on_active = active_tab
+                .zip(self.pane_tab(*pane))
+                .is_some_and(|(active, tab)| active == tab);
+            let is_active_pane = self
+                .panes
+                .iter()
+                .any(|info| info.id == *pane && info.active);
+            (
+                if is_active_pane {
+                    0u8
+                } else if on_active {
+                    1
+                } else {
+                    2
+                },
+                pane.0,
+            )
+        });
         for pane in panes {
             if self
                 .resync_cooldown_until
@@ -7638,7 +7671,7 @@ mod tests {
 
     #[test]
     fn resync_deadline_keeps_output_fenced_for_retry() {
-        let (tx, _rx) = mpsc::unbounded_channel::<String>();
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         let mut b = TmuxRuntime::new(None);
         b.cmd_tx = Some(tx);
         let pane = PaneId(33);
@@ -7648,12 +7681,13 @@ mod tests {
             .unwrap()
             .suppressed
             .extend_from_slice(b"suppressed\r\n");
+        b.paused_panes.insert(pane);
         b.resyncs.insert(
             pane,
             PaneResync {
                 deadline: Some(Instant::now() - Duration::from_millis(1)),
                 pre_capture: b"108;118mBROKEN".to_vec(),
-                pause_client: false,
+                pause_client: true,
                 ..PaneResync::default()
             },
         );
@@ -7663,6 +7697,20 @@ mod tests {
         assert!(!b.resyncs.contains_key(&pane));
         assert!(!b.flow.get(&pane).unwrap().resyncing);
         assert!(b.dropped_output_panes.contains(&pane));
+        assert!(
+            !b.paused_panes.contains(&pane),
+            "deadline abort 必须 continue，不能让 Cursor 一直停在 pause"
+        );
+        let mut saw_continue = false;
+        while let Ok(cmd) = rx.try_recv() {
+            if cmd.contains("%33:continue") {
+                saw_continue = true;
+            }
+        }
+        assert!(
+            saw_continue,
+            "pause_client resync 超时必须发 refresh-client continue"
+        );
         assert!(b.state_events().iter().all(|event| {
             !matches!(event, StateChange::PaneOutput { pane: p, .. } if *p == pane)
         }));
@@ -7674,6 +7722,65 @@ mod tests {
             .resync_cooldown_until
             .get(&pane)
             .is_some_and(|until| *until > Instant::now()));
+    }
+
+    #[test]
+    fn maybe_start_resyncs_prefers_active_tab_pane() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        let mut b = TmuxRuntime::new(None);
+        b.cmd_tx = Some(tx);
+        b.tabs = vec![
+            TabInfo {
+                id: TabId(1),
+                name: "a".into(),
+                active: false,
+            },
+            TabInfo {
+                id: TabId(2),
+                name: "cursor".into(),
+                active: true,
+            },
+        ];
+        b.panes = vec![
+            PaneInfo {
+                id: PaneId(10),
+                tab: TabId(1),
+                active: false,
+                cols: 80,
+                rows: 24,
+                title: String::new(),
+            },
+            PaneInfo {
+                id: PaneId(84),
+                tab: TabId(2),
+                active: true,
+                cols: 80,
+                rows: 24,
+                title: String::new(),
+            },
+        ];
+        b.initial_capture_done.insert(PaneId(10));
+        b.initial_capture_done.insert(PaneId(84));
+        b.mark_output_gap(PaneId(10), "test-bg");
+        b.mark_output_gap(PaneId(84), "test-cursor");
+        b.maybe_start_resyncs();
+
+        assert!(
+            b.resyncs.contains_key(&PaneId(84)),
+            "活动 Cursor pane 必须先于后台 gap 恢复"
+        );
+        assert!(
+            !b.resyncs.contains_key(&PaneId(10)),
+            "每轮只启动一个 resync"
+        );
+        let mut cmds = Vec::new();
+        while let Ok(cmd) = rx.try_recv() {
+            cmds.push(cmd);
+        }
+        assert!(
+            cmds.iter().any(|cmd| cmd.contains("%84")),
+            "应先向活动 pane 发 pause/state 查询: {cmds:?}"
+        );
     }
 
     #[test]

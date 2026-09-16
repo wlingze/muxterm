@@ -5,6 +5,8 @@
 
 use super::state::PaneStatus;
 use regex::Regex;
+use std::collections::HashMap;
+use std::sync::OnceLock;
 
 /// 可见屏 + OSC 标题/进度，给规则当输入。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -90,10 +92,12 @@ fn rule_matches(rule: &Rule, screen: &ScreenSnapshot) -> bool {
             return false;
         }
     }
+    // Cursor 等高频 redraw 下每拍都会跑规则；haystack 只 lower 一次。
+    let text_lower = text.to_ascii_lowercase();
     if !rule
         .contains
         .iter()
-        .all(|needle| contains_ci(&text, needle))
+        .all(|needle| text_lower.contains(&needle.to_ascii_lowercase()))
     {
         return false;
     }
@@ -101,7 +105,7 @@ fn rule_matches(rule: &Rule, screen: &ScreenSnapshot) -> bool {
         && !rule
             .any_contains
             .iter()
-            .any(|needle| contains_ci(&text, needle))
+            .any(|needle| text_lower.contains(&needle.to_ascii_lowercase()))
     {
         return false;
     }
@@ -123,7 +127,7 @@ fn rule_matches(rule: &Rule, screen: &ScreenSnapshot) -> bool {
     if rule
         .not_contains
         .iter()
-        .any(|needle| contains_ci(&text, needle))
+        .any(|needle| text_lower.contains(&needle.to_ascii_lowercase()))
     {
         return false;
     }
@@ -160,16 +164,46 @@ fn region_text(region: Region, screen: &ScreenSnapshot) -> (String, Vec<String>)
     }
 }
 
-fn contains_ci(haystack: &str, needle: &str) -> bool {
-    haystack
-        .to_ascii_lowercase()
-        .contains(&needle.to_ascii_lowercase())
+/// 屏幕规则 regex 必须缓存。Cursor 主屏 redraw 每拍都会走 classify；
+/// 旧实现对每个 line_regex 调用 `Regex::new`，两三个 cursor pane 就能把
+/// 单核打满（dogfood 2026-09-16 日志 + 97% CPU）。
+fn regex_cache() -> &'static HashMap<&'static str, Regex> {
+    static CACHE: OnceLock<HashMap<&'static str, Regex>> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        let mut map = HashMap::new();
+        for rule in RULES {
+            for pattern in rule
+                .line_regex
+                .iter()
+                .chain(rule.regex.iter())
+                .chain(rule.not_regex.iter())
+            {
+                if map.contains_key(pattern) {
+                    continue;
+                }
+                match Regex::new(pattern) {
+                    Ok(regex) => {
+                        map.insert(*pattern, regex);
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            target: "muxterm::attention",
+                            pattern,
+                            %error,
+                            "非法 agent screen regex，规则将永不命中"
+                        );
+                    }
+                }
+            }
+        }
+        map
+    })
 }
 
 fn regex_is_match(pattern: &str, text: &str) -> bool {
-    Regex::new(pattern)
-        .map(|regex| regex.is_match(text))
-        .unwrap_or(false)
+    regex_cache()
+        .get(pattern)
+        .is_some_and(|regex| regex.is_match(text))
 }
 
 const EMPTY: &[&str] = &[];
@@ -461,6 +495,134 @@ const RULES: &[Rule] = &[
         not_contains: &["Action Required"],
         not_regex: &[r"(?:^| )[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏](?: |$)"],
     },
+    // —— cursor（Herdr cursor.toml 2026.08.03.1）——
+    // Cursor TUI 用 `ctrl+c to stop`，不是 Codex/Claude 的 `esc to interrupt`。
+    // 没有本段规则时，generating 的 cursor 会一直落进默认 Idle。
+    Rule {
+        agent: "cursor",
+        priority: 320,
+        state: PaneStatus::Blocked,
+        keep: false,
+        region: Region::Bottom(8),
+        contains: &["write to this file?", "proceed (y)"],
+        any_contains: &["reject & propose changes", "esc or n or p", "add write("],
+        line_regex: EMPTY,
+        regex: EMPTY,
+        not_contains: EMPTY,
+        not_regex: EMPTY,
+    },
+    Rule {
+        agent: "cursor",
+        priority: 300,
+        state: PaneStatus::Blocked,
+        keep: false,
+        region: Region::Whole,
+        contains: EMPTY,
+        any_contains: &[
+            "waiting for approval",
+            "run this command?",
+            "run (once) (y)",
+            "skip (esc or n)",
+            "(y) (enter)",
+            "keep (n)",
+        ],
+        line_regex: EMPTY,
+        regex: EMPTY,
+        not_contains: EMPTY,
+        not_regex: EMPTY,
+    },
+    Rule {
+        agent: "cursor",
+        priority: 295,
+        state: PaneStatus::Blocked,
+        keep: false,
+        region: Region::Whole,
+        contains: EMPTY,
+        any_contains: EMPTY,
+        line_regex: &[r"(?i)^\s*allow .*\(y\)", r"(?i)^\s*(?:→\s*)?run .*\(y\)"],
+        regex: EMPTY,
+        not_contains: EMPTY,
+        not_regex: EMPTY,
+    },
+    Rule {
+        agent: "cursor",
+        priority: 100,
+        state: PaneStatus::Working,
+        keep: false,
+        region: Region::Bottom(6),
+        contains: EMPTY,
+        any_contains: &["ctrl+c to stop", "ctrl-c to stop", "press ctrl+c to stop"],
+        line_regex: EMPTY,
+        regex: EMPTY,
+        not_contains: EMPTY,
+        not_regex: EMPTY,
+    },
+    Rule {
+        agent: "cursor",
+        priority: 98,
+        state: PaneStatus::Working,
+        keep: false,
+        region: Region::Bottom(8),
+        contains: EMPTY,
+        any_contains: &["generating", "thinking", "planning next moves"],
+        line_regex: EMPTY,
+        regex: EMPTY,
+        not_contains: EMPTY,
+        not_regex: EMPTY,
+    },
+    Rule {
+        agent: "cursor",
+        priority: 95,
+        state: PaneStatus::Working,
+        keep: false,
+        region: Region::Bottom(5),
+        contains: EMPTY,
+        any_contains: EMPTY,
+        line_regex: &[r"(?i)\b[1-9][0-9]*\s+background\s+tasks?\b"],
+        regex: EMPTY,
+        not_contains: EMPTY,
+        not_regex: EMPTY,
+    },
+    Rule {
+        agent: "cursor",
+        priority: 90,
+        state: PaneStatus::Working,
+        keep: false,
+        region: Region::Bottom(8),
+        contains: EMPTY,
+        any_contains: EMPTY,
+        line_regex: &[r"^\s*(⬡|⬢|[\u2800-\u28FF]+)\s+\S+ing\b"],
+        regex: EMPTY,
+        not_contains: EMPTY,
+        not_regex: EMPTY,
+    },
+    // OSC title（/status-indicators）：Working… / Waiting for you / Ready
+    Rule {
+        agent: "cursor",
+        priority: 85,
+        state: PaneStatus::Working,
+        keep: false,
+        region: Region::Title,
+        contains: EMPTY,
+        any_contains: &["Working", "Working…", "Working..."],
+        line_regex: EMPTY,
+        regex: EMPTY,
+        not_contains: EMPTY,
+        not_regex: EMPTY,
+    },
+    Rule {
+        agent: "cursor",
+        priority: 84,
+        state: PaneStatus::Blocked,
+        keep: false,
+        region: Region::Title,
+        contains: EMPTY,
+        any_contains: &["Waiting for you", "Waiting for confirmation"],
+        line_regex: EMPTY,
+        regex: EMPTY,
+        not_contains: EMPTY,
+        not_regex: EMPTY,
+    },
     // —— 其它已知 agent 的弱规则 ——
     Rule {
         agent: "",
@@ -488,7 +650,7 @@ const RULES: &[Rule] = &[
         keep: false,
         region: Region::Whole,
         contains: EMPTY,
-        any_contains: &["esc to interrupt", "[stop]"],
+        any_contains: &["esc to interrupt", "ctrl+c to stop", "[stop]"],
         line_regex: EMPTY,
         regex: EMPTY,
         not_contains: EMPTY,
@@ -588,6 +750,64 @@ mod tests {
             classify_agent_screen("codex", &screen),
             Some(PaneStatus::Working)
         );
+    }
+
+    #[test]
+    fn cursor_ctrl_c_stop_is_working() {
+        let screen =
+            ScreenSnapshot::from_text("Composer 2.5 Fast\n→ Add a follow-up\nctrl+c to stop");
+        assert_eq!(
+            classify_agent_screen("cursor", &screen),
+            Some(PaneStatus::Working)
+        );
+    }
+
+    #[test]
+    fn cursor_idle_prompt_without_stop_hint_is_idle() {
+        let screen = ScreenSnapshot::from_text("Composer 2.5 Fast\n→ Add a follow-up");
+        assert_eq!(
+            classify_agent_screen("cursor", &screen),
+            Some(PaneStatus::Idle)
+        );
+    }
+
+    #[test]
+    fn cursor_approval_prompt_is_blocked() {
+        let screen = ScreenSnapshot::from_text(
+            "Run this command?\n  npm test\nrun (once) (y)  skip (esc or n)",
+        );
+        assert_eq!(
+            classify_agent_screen("cursor", &screen),
+            Some(PaneStatus::Blocked)
+        );
+    }
+
+    #[test]
+    fn cursor_screen_rules_survive_repeated_classify() {
+        // 回归：旧实现对每个 line_regex 现编 Regex，Cursor redraw 热路径会
+        // 把 CPU 打满。重复 classify 必须保持正确且走缓存。
+        let working =
+            ScreenSnapshot::from_text("Composer 2.5 Fast\n→ Add a follow-up\nctrl+c to stop");
+        let idle = ScreenSnapshot::from_text("Composer 2.5 Fast\n→ Add a follow-up");
+        let busy_lines: Vec<String> = (0..40)
+            .map(|i| format!("transcript line {i} with ⠋ spinner noise"))
+            .chain(std::iter::once("ctrl+c to stop".into()))
+            .collect();
+        let busy = ScreenSnapshot::from_visible("", "", busy_lines);
+        for _ in 0..200 {
+            assert_eq!(
+                classify_agent_screen("cursor", &working),
+                Some(PaneStatus::Working)
+            );
+            assert_eq!(
+                classify_agent_screen("cursor", &idle),
+                Some(PaneStatus::Idle)
+            );
+            assert_eq!(
+                classify_agent_screen("cursor", &busy),
+                Some(PaneStatus::Working)
+            );
+        }
     }
 
     #[test]

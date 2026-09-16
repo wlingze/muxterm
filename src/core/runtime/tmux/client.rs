@@ -215,10 +215,13 @@ impl TmuxEventSink for mpsc::UnboundedSender<TmuxEvent> {
 
 /// 同一 pane 连续 `%output` 在进入有界 lane 前合并成一块。
 ///
-/// tmux 控制协议按行推送；Codex/htop 一次重绘可以产生远超
+/// tmux 控制协议按行推送；Codex/Cursor/htop 一次重绘可以产生远超
 /// [`OUTPUT_EVENT_BUFFER`] 条 `%output`。若不合并，共享 bounded lane 会立刻
 /// OutputGap，backend 再 pause + 大 capture，表现为卡死后再整屏重绘。
-const OUTPUT_COALESCE_MAX_BYTES: usize = 32 * 1024;
+///
+/// Cursor 主屏一帧常远超 32KiB；过小会把一次 redraw 拆成几十条 lane 事件，
+/// 多 pane SSH 交错时更容易打满 256 槽。
+const OUTPUT_COALESCE_MAX_BYTES: usize = 256 * 1024;
 /// PTY/SSH reader 的一次 logical burst 在短暂空闲后才 flush。这样底层 4KiB
 /// read 边界不会退化成 Surface 事件边界，同时安静输出最多只增加 8ms 延迟。
 pub(crate) const OUTPUT_COALESCE_IDLE: std::time::Duration = std::time::Duration::from_millis(8);
@@ -1960,7 +1963,7 @@ mod tests {
         let expected_max_events = (chunks * payload_len).div_ceil(OUTPUT_COALESCE_MAX_BYTES) + 1;
         assert!(
             output_events <= expected_max_events,
-            "大块 redraw 应按约 32KiB 合并，最多 {expected_max_events} 个事件，实际 {output_events}"
+            "大块 redraw 应按 coalesce 上限合并，最多 {expected_max_events} 个事件，实际 {output_events}"
         );
     }
 

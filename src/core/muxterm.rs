@@ -10,6 +10,7 @@ use std::ffi::{c_char, CString};
 use std::ptr;
 use std::sync::Arc;
 
+use crate::activity::attention::engine::should_skip_command_mark_on_shell_foreground;
 use crate::activity::attention::signal::AttentionSignal;
 use crate::activity::{ActivityContext, ActivityState};
 use crate::catalog::{ResolveError, ResolvedTarget};
@@ -37,7 +38,7 @@ type PendingAttentionUpdate = (
     String,
     u64,
     Option<String>,
-    crate::activity::attention::screen::ScreenSnapshot,
+    Option<crate::activity::attention::screen::ScreenSnapshot>,
 );
 
 #[derive(Debug, Clone, Copy)]
@@ -494,6 +495,29 @@ impl Muxterm {
         let mut pending_commands: Vec<PendingCommandActivity> = Vec::new();
         let mut removed_panes = Vec::new();
         let mut attention_panes = Vec::new();
+        let ws_name = ws_id.replica_id();
+        // 先扫一遍本批涉及的 pane，避免在持有 Workspace 可变借用时再碰 Attention。
+        let mut candidate_panes = Vec::new();
+        for event in &batch.render {
+            let pane = match event {
+                RenderEvent::PaneOutput { pane, .. }
+                | RenderEvent::PaneSnapshot { pane, .. }
+                | RenderEvent::PaneFrame { pane, .. }
+                | RenderEvent::PaneIndexSnapshot { pane, .. }
+                | RenderEvent::PaneHistory { pane, .. } => *pane,
+            };
+            candidate_panes.push(pane);
+        }
+        for event in &batch.signals {
+            if let RuntimeSignal::PaneAgentChanged { pane, .. } = event {
+                candidate_panes.push(*pane);
+            }
+        }
+        let need_screen: std::collections::HashSet<u32> = candidate_panes
+            .iter()
+            .map(|pane| pane.0)
+            .filter(|pane| self.activity.attention.is_tracked_agent(&ws_name, *pane))
+            .collect();
         {
             let Some(ws) = self.pool_mut().get_mut(ws_id) else {
                 return;
@@ -559,7 +583,14 @@ impl Muxterm {
             for pane in attention_panes {
                 let signals = ws.take_attention_signals(pane);
                 let (last_line, seq) = ws.pane_last_line_seq(pane);
-                let screen = ws.pane_screen_snapshot(pane);
+                // 屏幕快照只给已跟踪的 agent：给每个 PaneOutput 都跑
+                // visible_snapshot 会在 Cursor 洪峰时把 EventPump（常在主线程）
+                // 打满。普通命令不需要屏幕规则。
+                let screen = if need_screen.contains(&pane.0) {
+                    Some(ws.pane_screen_snapshot(pane))
+                } else {
+                    None
+                };
                 let command_name = ws
                     .pane_command_marks(pane)
                     .last()
@@ -594,7 +625,6 @@ impl Muxterm {
                 ));
             }
         }
-        let ws_name = ws_id.replica_id();
         for (pane, agent) in pending_agents {
             if let Some(context) = self.activity_context(ws_id, pane) {
                 let event = self.activity.apply_agent_signal(context, agent.as_ref());
@@ -625,9 +655,18 @@ impl Muxterm {
         }
         for (pane, signals, last_line, seq, command, screen) in pending {
             if let Some(command) = command {
-                self.activity
+                let skip = self
+                    .activity
                     .attention
-                    .set_process_name(&ws_name, pane, Some(command));
+                    .foreground_process_name(&ws_name, pane)
+                    .is_some_and(|foreground| {
+                        should_skip_command_mark_on_shell_foreground(&foreground, &command)
+                    });
+                if !skip {
+                    self.activity
+                        .attention
+                        .set_process_name(&ws_name, pane, Some(command));
+                }
             }
             self.activity.attention.apply_with_screen(
                 &ws_name,
@@ -635,7 +674,7 @@ impl Muxterm {
                 &signals,
                 &last_line,
                 seq,
-                Some(&screen),
+                screen.as_ref(),
             );
         }
         for pane in removed_panes {
