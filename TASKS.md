@@ -167,8 +167,8 @@ CI 跑 [`docs/TESTING.md`](docs/TESTING.md) 的结构门禁。
 
 8. 迁 0907 已落地行为（§2–§11；顺序见 dogfood §12）。
 9. B 闭环 + Tab/Pane 状态 + 设置页（同一条状态管道）。
-10. Shells + Cmd-K。
-11. Agents 槽、地标、搜索坐标、图、端口、Cmd-W、选词。
+10. ~~Shells + Cmd-K（macOS）。~~ Linux 聚合 Scene 与配置绑定待对齐。
+11. ~~Agents 槽（macOS）。~~ 地标、搜索坐标、图、端口、Cmd-W、选词仍待做。
 12. 后做：提升 muxer、两格来回、Window、Tab 视觉。
 
 ## 非目标

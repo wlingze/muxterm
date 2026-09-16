@@ -219,9 +219,12 @@ final class UnifiedPanelExistingConnectionsE2ETests: XCTestCase {
         app.openQuickConnect()
         AppE2E.pump(80)
         XCTAssertEqual(
-            app.unifiedPanel.testWorkspaceTitles().first,
-            MuxtermI18n.shared.tr(.existingConnections),
-            "Workspaces 根列表第一行必须是 Existing Connections"
+            Array(app.unifiedPanel.testWorkspaceTitles().prefix(2)),
+            ["Shells", "Agents"],
+            "固定聚合项必须位于 Workspaces 根列表最上方"
+        )
+        XCTAssertTrue(
+            app.unifiedPanel.testWorkspaceTitles().contains(MuxtermI18n.shared.tr(.existingConnections))
         )
 
         app.unifiedPanel.testActivateWorkspaceItem(matching: MuxtermI18n.shared.tr(.existingConnections))

@@ -13,6 +13,7 @@ struct UnifiedPanelSearchRequest {
 }
 
 private enum UnifiedWorkspaceItem {
+    case workspace(WorkspaceSidebarItem)
     case existingConnections
     case target(
         TargetConfig,
@@ -28,6 +29,8 @@ private enum UnifiedWorkspaceItem {
 
     var title: String {
         switch self {
+        case .workspace(let item):
+            return item.name
         case .existingConnections:
             return MuxtermI18n.shared.tr(.existingConnections)
         case .target(let config, _, _, _):
@@ -54,6 +57,11 @@ private enum UnifiedWorkspaceItem {
     func score(for query: String) -> Int? {
         let normalizedQuery = query.lowercased()
         switch self {
+        case .workspace(let item):
+            let haystack = [item.name, item.runtime, item.transport, item.shortcutText ?? ""]
+                .joined(separator: " ")
+                .lowercased()
+            return haystack.contains(normalizedQuery) ? 1_000 : nil
         case .existingConnections, .newProject, .loading, .empty:
             return title.lowercased().contains(normalizedQuery) ? 500 : nil
         case .target(let config, _, _, _):
@@ -77,6 +85,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     private static let preferredContentSize = NSSize(width: 640, height: 420)
 
     var onConnect: ((TargetConfig) -> Void)?
+    var onWorkspaceActivate: ((String) -> Void)?
     var onLoadExistingConnections: ((@escaping (Result<[ExistingConnectionChoice], Error>) -> Void) -> Void)?
     var onLoadSSHAliases: ((@escaping (Result<[String], Error>) -> Void) -> Void)?
     var onAttachExistingConnection: ((ExistingConnectionChoice) -> Void)?
@@ -337,25 +346,40 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
             allItems = existingItems
             return
         }
-        if let connectedWorkspaces {
-            store.replaceAllRecents(connectedWorkspaces())
+        let connected = connectedWorkspaces?() ?? []
+        if connectedWorkspaces != nil {
+            store.replaceAllRecents(connected)
         }
+        let connectedIDs = Set(connected.map { QuickConnect.uniqueID(for: $0) })
+        let chromeWorkspaces = sidebarWorkspaces?() ?? []
         let currentId = currentConfig.map { QuickConnect.uniqueID(for: $0) }
-        allItems = [.existingConnections]
+        allItems = chromeWorkspaces.isEmpty
+            ? [.existingConnections]
+            : chromeWorkspaces.map(UnifiedWorkspaceItem.workspace)
         let queryIsNonEmpty = !model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let entries = QuickConnect.entries(
             recents: store.recents,
             projects: store.projects,
             recentLimit: queryIsNonEmpty ? QuickConnectStore.maxRecent : 5
         )
-        allItems.append(contentsOf: entries.map { entry in
-            .target(
+        // 已打开项直接使用侧边栏投影，保证固定槽、顺序、编号和选中态
+        // 完全一致。QuickConnect target 只补尚未打开的 Project。
+        allItems.append(contentsOf: entries.compactMap { entry in
+            guard chromeWorkspaces.isEmpty
+                || !connectedIDs.contains(QuickConnect.uniqueID(for: entry.config))
+            else {
+                return nil
+            }
+            return .target(
                 entry.config,
                 badges: entry.badges,
                 isCurrent: currentId == QuickConnect.uniqueID(for: entry.config),
                 workspaceIndex: workspaceIndex(entry.config)
             )
         })
+        if !chromeWorkspaces.isEmpty {
+            allItems.append(.existingConnections)
+        }
         if queryIsNonEmpty {
             var seen = Set(entries.map { QuickConnect.uniqueID(for: $0.config) })
             for choice in rootExistingChoices {
@@ -391,6 +415,9 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     private func defaultSelectedRow() -> Int {
         guard model.tab == .workspaces else { return 0 }
         return visibleItems.firstIndex { item in
+            if case .workspace(let workspace) = item {
+                return workspace.isActive
+            }
             if case .target(_, _, let isCurrent, _) = item {
                 return isCurrent
             }
@@ -574,6 +601,9 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         case .workspaces:
             guard table.selectedRow < visibleItems.count else { return }
             switch visibleItems[table.selectedRow] {
+            case .workspace(let item):
+                onWorkspaceActivate?(item.workspaceId)
+                dismiss()
             case .existingConnections:
                 openExistingConnections()
             case .target(let config, _, _, _):
@@ -1067,6 +1097,12 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
             guard row < visibleItems.count else { return nil }
             let item = visibleItems[row]
             switch item {
+            case .workspace(let workspace):
+                let id = NSUserInterfaceItemIdentifier("QuickWorkspace")
+                let cell = tableView.makeView(withIdentifier: id, owner: self) as? QuickTargetCellView
+                    ?? QuickTargetCellView(identifier: id)
+                cell.workspace = workspace
+                return cell
             case .existingConnections:
                 let id = NSUserInterfaceItemIdentifier("ExistingConnectionsFolder")
                 let cell = tableView.makeView(withIdentifier: id, owner: self) as? QuickActionCellView
@@ -1078,6 +1114,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                 let id = NSUserInterfaceItemIdentifier("QuickTarget")
                 let cell = tableView.makeView(withIdentifier: id, owner: self) as? QuickTargetCellView
                     ?? QuickTargetCellView(identifier: id)
+                cell.workspace = nil
                 cell.config = config
                 cell.badges = badges
                 cell.isCurrent = isCurrent
@@ -1383,10 +1420,27 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     func testWorkspaceIndex(matching title: String) -> Int? {
-        guard let row = visibleItems.firstIndex(where: { $0.title == title }),
-              case .target(_, _, _, let index) = visibleItems[row]
-        else { return nil }
-        return index
+        guard let row = visibleItems.firstIndex(where: { $0.title == title }) else { return nil }
+        switch visibleItems[row] {
+        case .workspace(let item):
+            return item.shortcut
+        case .target(_, _, _, let index):
+            return index
+        default:
+            return nil
+        }
+    }
+
+    func testWorkspaceShortcutText(matching title: String) -> String? {
+        guard let row = visibleItems.firstIndex(where: { $0.title == title }) else { return nil }
+        switch visibleItems[row] {
+        case .workspace(let item):
+            return item.shortcutText
+        case .target(_, _, _, let index):
+            return index.map(String.init)
+        default:
+            return nil
+        }
     }
 
     func testSelectedWorkspaceTitle() -> String? {

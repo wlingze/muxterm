@@ -1,6 +1,7 @@
 import AppKit
 import XCTest
 @testable import MuxtermAppLib
+import MuxtermChrome
 
 /// Linux Cmd-P 是**一个**三 tab 面板（Workspaces / Attention / Search），
 /// Tab / Shift+Tab 循环。macOS 现在仍是三个独立 NSPanel，本测试必须红。
@@ -99,6 +100,13 @@ final class UnifiedPanelE2ETests: XCTestCase {
         AppE2E.pump(80)
 
         XCTAssertEqual(
+            Array(app.unifiedPanel.testWorkspaceTitles().prefix(4)),
+            ["Shells", "Agents", first.session, second.session],
+            "快速面板必须复用侧边栏的固定项和真实 Workspace 打开顺序"
+        )
+        XCTAssertEqual(app.unifiedPanel.testWorkspaceShortcutText(matching: "Shells"), "S")
+        XCTAssertEqual(app.unifiedPanel.testWorkspaceShortcutText(matching: "Agents"), "A")
+        XCTAssertEqual(
             app.unifiedPanel.testSelectedWorkspaceTitle(),
             second.session,
             "快速面板打开时必须默认选中当前 Workspace"
@@ -106,12 +114,46 @@ final class UnifiedPanelE2ETests: XCTestCase {
         XCTAssertEqual(
             app.unifiedPanel.testWorkspaceIndex(matching: first.session),
             1,
-            "快速面板的第一个 Workspace 编号必须复用侧栏顺序"
+            "固定聚合槽不能占用真实 Workspace 编号"
         )
         XCTAssertEqual(
             app.unifiedPanel.testWorkspaceIndex(matching: second.session),
             2,
             "当前 Workspace 即使按 Recent 排在前面，也必须保留侧栏编号"
+        )
+    }
+
+    func testAggregateRowsActivateTheSameSidebarDestinations() throws {
+        AppE2E.ensureApp()
+        let bridge = try CoreBridge(backendType: "local")
+        let app = MainWindowController(bridge: bridge, debug: true)
+        defer { app.testShutdown() }
+
+        XCTAssertTrue(AppE2E.wait(timeout: AppE2E.attachTimeout) {
+            app.testPollOnce()
+            app.refreshWorkspaceSidebarForTest()
+            return app.testActivePaneID() != 0
+        })
+        app.testInjectAgent(
+            paneId: app.testActivePaneID(),
+            name: "Codex",
+            title: "Panel aggregate activation"
+        )
+
+        app.openQuickConnect()
+        AppE2E.pump(40)
+        app.unifiedPanel.testActivateWorkspaceItem(matching: "Agents")
+        XCTAssertEqual(
+            app.testSelectedSidebarWorkspaceID(),
+            AggregateWorkspaceIdentity.agents
+        )
+
+        app.openQuickConnect()
+        AppE2E.pump(40)
+        app.unifiedPanel.testActivateWorkspaceItem(matching: "Shells")
+        XCTAssertEqual(
+            app.testSelectedSidebarWorkspaceID(),
+            AggregateWorkspaceIdentity.shells
         )
     }
 }

@@ -25,6 +25,10 @@ public enum KeyAction: Equatable, Sendable {
     case resetFontSize
     case togglePaneFullscreen
     case toggleSidebar
+    /// 进入前端 Shells 聚合槽；不会向终端发送清屏字符。
+    case openShells
+    /// 进入前端 Agents 聚合槽；只投影已有源 Tab。
+    case openAgents
     case switchWorkspace(Int) // 1-based opened order; 0 is always last
 }
 
@@ -103,6 +107,11 @@ public enum KeyBindings {
         // Cmd+P：QuickConnect 面板（Recent + Project）。
         if chord.command, !chord.shift, !chord.option, key == "p" {
             return .quickConnect
+        }
+        // Cmd+Ctrl+A/S：进入 Agents / Shells 前端聚合槽。
+        if chord.command, chord.control, !chord.option, !chord.shift {
+            if key == "a" { return .openAgents }
+            if key == "s" { return .openShells }
         }
         // Cmd+Shift+P：旧命令面板（保留）。
         if chord.command, chord.shift, !chord.option, key == "p" {

@@ -63,6 +63,21 @@ final class StatusBarView: NSView {
     var onCloseTab: ((UInt32) -> Void)?
     var onMoveTab: ((UInt32, UInt32, Bool) -> Void)?
     var onAttentionClick: (() -> Void)?
+    var allowsTabCreation = true {
+        didSet { newTabButton.isHidden = !allowsTabCreation }
+    }
+    var allowsTabRenaming = true {
+        didSet {
+            guard allowsTabRenaming != oldValue else { return }
+            rebuildCurrentTabs()
+        }
+    }
+    var allowsTabClosing = true {
+        didSet {
+            guard allowsTabClosing != oldValue else { return }
+            rebuildCurrentTabs()
+        }
+    }
     var allowsTabReordering = false {
         didSet {
             guard allowsTabReordering != oldValue else { return }
@@ -244,7 +259,11 @@ final class StatusBarView: NSView {
 
     func updateTabs(_ tabs: [Tab]) {
         currentTabs = tabs
-        rebuildTabButtons(tabs.map {
+        rebuildCurrentTabs()
+    }
+
+    private func rebuildCurrentTabs() {
+        rebuildTabButtons(currentTabs.map {
             TabBarItem(id: $0.id, index: nil, name: $0.name, active: $0.isActive)
         })
     }
@@ -608,9 +627,9 @@ final class StatusBarView: NSView {
             button.action = #selector(tabClicked(_:))
             button.setAccessibilityIdentifier("muxterm.tab.\(item.id)")
             button.isActiveTab = item.active
-            button.onDoubleClick = { [weak self] in
+            button.onDoubleClick = allowsTabRenaming ? { [weak self] in
                 self?.onRenameTab?(item.id)
-            }
+            } : nil
             if allowsTabReordering {
                 button.onDragEnd = { [weak self, weak button] location in
                     guard let self, let button else { return }
@@ -619,14 +638,16 @@ final class StatusBarView: NSView {
             }
             button.applyStyle()
             let menu = NSMenu()
-            let rename = NSMenuItem(
-                title: MuxtermI18n.shared.tr(.renameTab),
-                action: #selector(renameTabFromMenu(_:)),
-                keyEquivalent: ""
-            )
-            rename.tag = Int(item.id)
-            rename.target = self
-            menu.addItem(rename)
+            if allowsTabRenaming {
+                let rename = NSMenuItem(
+                    title: MuxtermI18n.shared.tr(.renameTab),
+                    action: #selector(renameTabFromMenu(_:)),
+                    keyEquivalent: ""
+                )
+                rename.tag = Int(item.id)
+                rename.target = self
+                menu.addItem(rename)
+            }
             if allowsTabReordering, position > 0 {
                 let moveLeft = StatusTabMoveMenuItem(
                     title: MuxtermI18n.shared.tr(.moveTabLeft),
@@ -649,16 +670,20 @@ final class StatusBarView: NSView {
                 moveRight.action = #selector(moveTabFromMenu(_:))
                 menu.addItem(moveRight)
             }
-            menu.addItem(NSMenuItem.separator())
-            let close = NSMenuItem(
-                title: MuxtermI18n.shared.tr(.closeTab),
-                action: #selector(closeTabFromMenu(_:)),
-                keyEquivalent: ""
-            )
-            close.tag = Int(item.id)
-            close.target = self
-            menu.addItem(close)
-            button.menu = menu
+            if allowsTabClosing {
+                if !menu.items.isEmpty {
+                    menu.addItem(NSMenuItem.separator())
+                }
+                let close = NSMenuItem(
+                    title: MuxtermI18n.shared.tr(.closeTab),
+                    action: #selector(closeTabFromMenu(_:)),
+                    keyEquivalent: ""
+                )
+                close.tag = Int(item.id)
+                close.target = self
+                menu.addItem(close)
+            }
+            button.menu = menu.items.isEmpty ? nil : menu
             tabStack.addArrangedSubview(button)
         }
     }
