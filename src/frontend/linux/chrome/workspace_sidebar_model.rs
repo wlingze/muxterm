@@ -116,13 +116,14 @@ impl AgentSidebarItem {
                     let Some(attention) = by_pane.get(&(activity_key.as_str(), pane.id)) else {
                         continue;
                     };
-                    let agent_name = attention.agent_name.as_deref().or_else(|| {
-                        attention
-                            .process_is_agent
-                            .then_some(attention.process_name.as_deref())
-                            .flatten()
-                    });
-                    let Some(agent_name) = agent_name else {
+                    if !attention.process_is_agent {
+                        continue;
+                    }
+                    let Some(agent_name) = attention
+                        .agent_name
+                        .as_deref()
+                        .or(attention.process_name.as_deref())
+                    else {
                         continue;
                     };
                     items.push(Self {
@@ -140,6 +141,7 @@ impl AgentSidebarItem {
             }
         }
         items.sort_by(|left, right| {
+            // 状态成块；块内按 title/pane 固定。
             let rank = |indicator| match indicator {
                 ActivityIndicator::Done => 0,
                 ActivityIndicator::Blocked => 1,
@@ -151,6 +153,7 @@ impl AgentSidebarItem {
                 .cmp(&rank(right.indicator))
                 .then(left.title.cmp(&right.title))
                 .then(left.pane_id.cmp(&right.pane_id))
+                .then(left.detail.cmp(&right.detail))
         });
         items
     }
