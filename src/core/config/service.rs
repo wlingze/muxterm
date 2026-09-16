@@ -603,7 +603,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn patch_rejects_font_fallback_string_and_accepts_array() {
         let path = temp_path("fallback.toml");
         let _ = fs::remove_file(&path);
