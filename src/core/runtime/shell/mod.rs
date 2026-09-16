@@ -211,14 +211,32 @@ impl ShellRuntime {
     /// 子进程 Exit（如 Ctrl+D 退出 shell）：仅剩 1 个 pane 时关闭整个 window；
     /// 否则只关闭该 pane。
     fn drain_pty_output(&mut self) {
-        let mut outputs = Vec::new();
+        let mut outputs: Vec<(PaneId, Vec<u8>)> = Vec::new();
         let mut exits = Vec::new();
         let mut processes = Vec::new();
 
         if let Some(rx) = self.pty_rx.as_mut() {
-            while let Ok(msg) = rx.try_recv() {
+            let mut bytes = 0usize;
+            // SSH + tmux 在普通 shell 中同样会产生连续 redraw。不能追着
+            // producer 无界排空，也不能把每个 1KiB read 都变成一次 VT feed。
+            for _ in 0..1024 {
+                if bytes >= 256 * 1024 {
+                    break;
+                }
+                let Ok(msg) = rx.try_recv() else {
+                    break;
+                };
                 match msg {
-                    PtyMsg::Output { pane, data } => outputs.push((pane, data)),
+                    PtyMsg::Output { pane, data } => {
+                        bytes = bytes.saturating_add(data.len());
+                        if let Some((_, previous)) =
+                            outputs.last_mut().filter(|(id, _)| *id == pane)
+                        {
+                            previous.extend(data);
+                        } else {
+                            outputs.push((pane, data));
+                        }
+                    }
                     PtyMsg::Exit { pane } => exits.push(pane),
                     PtyMsg::Process { pane, command } => processes.push((pane, command)),
                 }
@@ -1261,6 +1279,56 @@ impl ShellRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn logged_shell_ssh_burst_is_coalesced_bounded_and_lossless() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../tests/samples/activity-stall-2026-0916.json"
+        ))
+        .unwrap();
+        let pane = PaneId(fixture["shell_burst"]["pane"].as_u64().unwrap() as u32);
+        let size = fixture["shell_burst"]["dominant_chunk_bytes"]
+            .as_u64()
+            .unwrap() as usize;
+        let mut b = ShellRuntime::new("/bin/sh", "/tmp");
+        let (tx, rx) = mpsc::channel(8192);
+        b.pty_rx = Some(rx);
+        let mut expected = Vec::new();
+        for i in 0..1024 {
+            let mut bytes = format!("\x1b[H\x1b[38;2;12;34;56m中文-{i}\x1b[0m").into_bytes();
+            bytes.resize(size, b' ');
+            expected.extend_from_slice(&bytes);
+            tx.try_send(PtyMsg::Output { pane, data: bytes }).unwrap();
+        }
+        let mut actual = Vec::new();
+        let mut rounds = 0;
+        while actual.len() < expected.len() && rounds < 100 {
+            b.drain_pty_output();
+            let mut chunks = 0;
+            let mut bytes = 0;
+            for batch in b.events.drain(..) {
+                for event in batch.render {
+                    if let RenderEvent::PaneOutput { pane: id, data } = event {
+                        assert_eq!(id, pane);
+                        chunks += 1;
+                        bytes += data.len();
+                        actual.extend(data);
+                    }
+                }
+            }
+            assert!(
+                bytes <= 256 * 1024,
+                "one poll must not drain the whole SSH flood: {bytes}"
+            );
+            assert!(
+                chunks <= 1,
+                "adjacent 1KiB PTY chunks must coalesce: {chunks}"
+            );
+            rounds += 1;
+        }
+        assert_eq!(actual, expected, "coalescing must preserve every ANSI byte");
+        assert!(rounds > 1);
+    }
     use crate::protocol::layout::SplitDir;
 
     fn runtime() -> ShellRuntime {

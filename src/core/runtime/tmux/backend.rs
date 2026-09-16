@@ -89,6 +89,9 @@ const PUMP_EVENT_BUDGET: usize = 2_048;
 /// 即使事件数没有达到上限，也要把主线程还给 UI。下一轮 poll 会继续处理
 /// 剩余事件；结构事件仍会被保留在 core 队列中。
 const PUMP_TIME_BUDGET: Duration = Duration::from_millis(4);
+// 取队列本身很快，真正的 VT/Index/Surface 工作发生在 pump 返回之后。
+// 合并块增大后必须同时限制字节，不能一次把几十 MiB 交给 UI。
+const PUMP_OUTPUT_BYTE_BUDGET: usize = 256 * 1024;
 /// Snapshot 是恢复手段，不得把 pane 永久锁在 resyncing；5s 也与 iTerm2 的
 /// tmux unresponsive watchdog 保持同一量级。
 const RESYNC_TIMEOUT: Duration = Duration::from_secs(5);
@@ -2393,12 +2396,22 @@ impl TmuxRuntime {
 
         let started = Instant::now();
         let mut processed = 0usize;
-        while processed < PUMP_EVENT_BUDGET && started.elapsed() < PUMP_TIME_BUDGET {
+        let mut output_bytes = 0usize;
+        while processed < PUMP_EVENT_BUDGET
+            && started.elapsed() < PUMP_TIME_BUDGET
+            && output_bytes < PUMP_OUTPUT_BYTE_BUDGET
+        {
             // 只借用 receiver 取出一个事件，随后立刻释放借用，允许下面的
             // state/response 处理继续修改 self。剩余事件留在 channel，交给
             // 下一轮 poll，避免一次 OMP 洪峰独占 UI 线程。
             let ev = self.event_rx.as_mut().and_then(|rx| rx.try_recv().ok());
             let Some(ev) = ev else { break };
+            if let TmuxEvent::Message(
+                Message::Output { content, .. } | Message::ExtendedOutput { content, .. },
+            ) = &ev
+            {
+                output_bytes = output_bytes.saturating_add(content.len());
+            }
             processed += 1;
             match ev {
                 TmuxEvent::Message(msg) => {
@@ -4890,6 +4903,59 @@ impl TmuxRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn logged_multi_pane_redraw_is_bounded_and_byte_exact() {
+        use crate::runtime::tmux::client::{event_channel, TmuxEventSink};
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../tests/samples/activity-stall-2026-0916.json"
+        ))
+        .unwrap();
+        for case in fixture["cases"].as_array().unwrap() {
+            let mut b = TmuxRuntime::new(None);
+            let (tx, rx) = event_channel();
+            b.event_rx = Some(rx);
+            let mut expected = HashMap::<PaneId, Vec<u8>>::new();
+            // 模拟合并后的 Cursor 多 pane 重绘积压；每条 64KiB，内含
+            // 真彩 SGR、CUP 和 UTF-8，不能为了帧预算丢字节或拆坏转义。
+            for id in case["panes"].as_array().unwrap() {
+                let pane = PaneId(id.as_u64().unwrap() as u32);
+                let paint = "\x1b[H\x1b[38;2;12;34;56m中文\x1b[0m".repeat(2048);
+                for _ in 0..8 {
+                    let data = paint.as_bytes().to_vec();
+                    expected.entry(pane).or_default().extend_from_slice(&data);
+                    tx.emit(TmuxEvent::Message(Message::Output {
+                        pane,
+                        content: data,
+                        raw_content: String::new(),
+                    }));
+                }
+            }
+            let mut received = HashMap::<PaneId, Vec<u8>>::new();
+            let mut rounds = 0;
+            while received != expected && rounds < 100 {
+                let events = b.take_events();
+                let mut bytes = 0;
+                let mut largest = 0;
+                for event in events {
+                    if let StateChange::PaneOutput { pane, data } = event {
+                        bytes += data.len();
+                        largest = largest.max(data.len());
+                        received.entry(pane).or_default().extend_from_slice(&data);
+                    }
+                }
+                assert!(bytes <= 256 * 1024 + largest,
+                    "one poll transferred {bytes} bytes; event count budget misses coalesced redraw cost");
+                rounds += 1;
+            }
+            assert_eq!(
+                received, expected,
+                "{}: no dropped or reordered ANSI",
+                case["source"]
+            );
+            assert!(rounds > 1, "backlog must yield between polls");
+        }
+    }
 
     #[test]
     fn muxterm_new_ssh_socket_is_alias_not_remote_dash_l() {

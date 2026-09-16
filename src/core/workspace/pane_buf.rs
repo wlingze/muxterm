@@ -41,14 +41,17 @@ impl PaneBuf {
     /// 注意力信号留在 `TerminalState`，由 [`Self::take_attention_signals`]
     /// 取走；这里**不** drain（`Workspace::feed_events` 丢弃返回值会丢信号）。
     pub fn feed(&mut self, bytes: &[u8], cols: u16, rows: u16) -> Vec<AttentionSignal> {
+        let _timing = crate::performance::INDEX.enter();
         self.terminal
             .resize(usize::from(cols.max(1)), usize::from(rows.max(1)));
         append_capped(&mut self.byte_ring, bytes, MAX_PANE_OUTPUT_BYTES);
         self.terminal.feed(bytes);
         // resize/新输出可能改变可见行数，旧 viewport 不能悬空到历史范围之外。
-        self.viewport = self
-            .viewport
-            .min(self.history_max_offset(self.terminal.rows() as u32));
+        if self.viewport != 0 {
+            self.viewport = self
+                .viewport
+                .min(self.history_max_offset(self.terminal.rows() as u32));
+        }
         Vec::new()
     }
 
@@ -205,7 +208,7 @@ impl PaneBuf {
     /// 首屏只播种可见网格不等于丢掉历史：GUI 滚轮必须用这个上限喂
     /// `scroll_ansi`，而不是依赖 VTE/SwiftTerm 本地 scrollback。
     pub fn history_max_offset(&self, rows: u32) -> u32 {
-        let n = self.terminal.scrollback_lines() + self.terminal.visible_snapshot().len();
+        let n = self.terminal.scrollback_lines() + self.terminal.visible_line_count();
         n.saturating_sub(rows.max(1) as usize) as u32
     }
 

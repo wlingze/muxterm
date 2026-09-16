@@ -1,0 +1,29 @@
+{
+  "note": "Extracted metadata only, not terminal byte recordings. Regression tests synthesize ANSI redraws for these affected pane sets.",
+  "shell_burst": {
+    "source": "test-2026-0916-1616.log",
+    "pane": 2,
+    "start_utc": "2026-09-16T08:20:52.797694Z",
+    "end_utc": "2026-09-16T08:21:36.152267Z",
+    "chunks": 40238,
+    "bytes": 32474820,
+    "dominant_chunk_bytes": 1024
+  },
+  "cases": [
+    {
+      "source": "test-2026-0916-1556.log",
+      "gap_time_utc": "2026-09-16T07:58:45.367824Z",
+      "panes": [92, 45, 84],
+      "deadline_pane": 92,
+      "deadline_time_utc": "2026-09-16T07:58:50.380273Z"
+    },
+    {
+      "source": "test-2026-0916-1600.log",
+      "gap_time_utc": "2026-09-16T08:06:29.049469Z",
+      "panes": [84, 8, 92, 45],
+      "recovered_pane": 8,
+      "recovered_time_utc": "2026-09-16T08:06:46.470030Z",
+      "client_size": [157, 48]
+    }
+  ]
+}

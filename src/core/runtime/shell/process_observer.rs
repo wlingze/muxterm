@@ -29,7 +29,11 @@ impl ProcessWatch {
             .spawn(move || {
                 let mut previous = None;
                 while !worker_stop.load(Ordering::Acquire) && !tx.is_closed() {
-                    if let Some(command) = observe().filter(|value| !value.trim().is_empty()) {
+                    let command = {
+                        let _timing = crate::performance::PROCESS.enter();
+                        observe()
+                    };
+                    if let Some(command) = command.filter(|value| !value.trim().is_empty()) {
                         if worker_stop.load(Ordering::Acquire) {
                             break;
                         }

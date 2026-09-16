@@ -792,9 +792,15 @@ impl TerminalState {
     /// 屏幕快照，去行尾空白与 NUL（空单元格用 `\0` 表示），并去掉末尾空行。
     pub fn snapshot_trimmed(&self) -> Vec<String> {
         let mut rows: Vec<String> = self
-            .snapshot()
-            .into_iter()
-            .map(|s| s.trim_end_matches([' ', '\0']).to_string())
+            .grid
+            .iter()
+            .map(|row| {
+                let end = row
+                    .iter()
+                    .rposition(|cell| !matches!(cell.ch, ' ' | '\0'))
+                    .map_or(0, |index| index + 1);
+                row[..end].iter().map(|cell| cell.ch).collect()
+            })
             .collect();
         // 去掉末尾空行（保留中间空行，便于滚动区域断言）
         while rows.last().map(|r| r.is_empty()).unwrap_or(false) {
@@ -1091,17 +1097,28 @@ impl TerminalState {
 
     /// 最近一条非空行：先看可见屏，再回退 scrollback。
     pub fn last_non_empty_line(&self) -> Option<String> {
-        self.snapshot_trimmed()
-            .into_iter()
+        // 高频 Activity 查询只分配命中的一行，不能为一个尾行复制整屏。
+        for row in self.grid.iter().rev() {
+            let Some(end) = row.iter().rposition(|cell| !matches!(cell.ch, ' ' | '\0')) else {
+                continue;
+            };
+            if row[..=end].iter().any(|cell| !cell.ch.is_whitespace()) {
+                return Some(row[..=end].iter().map(|cell| cell.ch).collect());
+            }
+        }
+        self.scrollback
+            .iter()
             .rev()
-            .find(|l| !l.trim().is_empty())
-            .or_else(|| {
-                self.scrollback
-                    .iter()
-                    .rev()
-                    .map(|l| l.text.clone())
-                    .find(|l| !l.trim().is_empty())
-            })
+            .find(|line| !line.text.trim().is_empty())
+            .map(|line| line.text.clone())
+    }
+
+    /// 和 snapshot_trimmed 的行数一致，但不生成任何字符串。
+    pub fn visible_line_count(&self) -> usize {
+        self.grid
+            .iter()
+            .rposition(|row| row.iter().any(|cell| !matches!(cell.ch, ' ' | '\0')))
+            .map_or(0, |index| index + 1)
     }
 
     /// 可见屏快照（去行尾空白与末尾空行）。
@@ -2808,6 +2825,94 @@ mod scrollback_tests {
     }
 
     /// last_non_empty_line 跳过空白行，从可见屏回退到 scrollback。
+    #[test]
+    fn attention_tail_matches_snapshot_reference_after_redraw_and_clear() {
+        let mut t = TerminalState::with_scrollback(120, 40, 100);
+        for bytes in [
+            "first\r\n中文 tail  ",
+            "\x1b[35;1Hbottom\t  ",
+            "\x1b[35;1H\x1b[2K",
+            "\x1b[2J",
+            "\r\n\t  ",
+        ] {
+            t.feed(bytes.as_bytes());
+            assert_eq!(t.visible_line_count(), t.snapshot_trimmed().len());
+            let reference = t
+                .snapshot_trimmed()
+                .into_iter()
+                .rev()
+                .find(|line| !line.trim().is_empty())
+                .or_else(|| {
+                    t.scrollback
+                        .iter()
+                        .rev()
+                        .find(|line| !line.text.trim().is_empty())
+                        .map(|line| line.text.clone())
+                });
+            assert_eq!(t.last_non_empty_line(), reference);
+        }
+    }
+
+    #[test]
+    fn trimmed_grid_and_tail_preserve_blank_nul_and_unicode_semantics() {
+        let mut terminal = TerminalState::new(13, 7);
+        let chars = ['\0', ' ', '\t', '\u{2003}', '中', 'x'];
+        for seed in 0..64 {
+            for (row_index, row) in terminal.grid.iter_mut().enumerate() {
+                for (col_index, cell) in row.iter_mut().enumerate() {
+                    cell.ch = chars[(seed + row_index * 3 + col_index * 7) % chars.len()];
+                }
+            }
+            let mut reference: Vec<String> = terminal
+                .snapshot()
+                .into_iter()
+                .map(|line| line.trim_end_matches([' ', '\0']).to_string())
+                .collect();
+            while reference.last().is_some_and(String::is_empty) {
+                reference.pop();
+            }
+            assert_eq!(terminal.visible_line_count(), reference.len());
+            assert_eq!(terminal.snapshot_trimmed(), reference);
+            assert_eq!(
+                terminal.last_non_empty_line(),
+                reference
+                    .into_iter()
+                    .rev()
+                    .find(|line| !line.trim().is_empty())
+            );
+        }
+    }
+
+    /// 手动性能门禁：直播尾行查询不能重新序列化整个屏幕。
+    #[test]
+    #[ignore = "manual performance comparison"]
+    fn attention_tail_avoids_full_screen_allocation() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        let mut t = TerminalState::new(240, 80);
+        t.feed(b"\x1b[80;1Hworking");
+        let start = Instant::now();
+        for _ in 0..2000 {
+            black_box(t.last_non_empty_line());
+        }
+        let tail = start.elapsed();
+        let start = Instant::now();
+        for _ in 0..2000 {
+            black_box(
+                t.snapshot_trimmed()
+                    .into_iter()
+                    .rev()
+                    .find(|line| !line.trim().is_empty()),
+            );
+        }
+        let full = start.elapsed();
+        let subscriber = tracing_subscriber::fmt().with_test_writer().finish();
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(?tail, ?full, "attention tail benchmark")
+        });
+        assert!(tail * 3 < full, "tail={tail:?}, full={full:?}");
+    }
+
     #[test]
     fn last_non_empty_line_skips_blank() {
         let mut t = TerminalState::with_scrollback(10, 3, 50);
