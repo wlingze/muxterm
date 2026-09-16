@@ -190,7 +190,11 @@ final class WorkspaceScene: SceneProtocol {
             for event in surface {
                 enqueueSurfaceEvent(event)
             }
-            viewStore.pendingDrainedWhileHidden = true
+            // 仅隐藏 scene 需要抑制「为未见 pane 建 view」。可见 scene 也置位
+            // 会让 applyPending 短暂关掉 viewCreation，激活后首拍白白丢 Surface。
+            if visibilityValue != .visible {
+                viewStore.pendingDrainedWhileHidden = true
+            }
         }
         if let topology {
             viewStore.snapshot = topology.snapshot
@@ -276,27 +280,43 @@ final class WorkspaceScene: SceneProtocol {
                     viewStore.pendingSurfaceEvents.append(event)
                     return
                 }
-                let combinedSize = previous.data.count.addingReportingOverflow(event.data.count)
-                guard !combinedSize.overflow,
-                      combinedSize.partialValue <= SurfaceEventBatchPolicy.maxCoalescedOutputBytes
-                else {
+                switch SurfaceOutputCoalescePolicy.decide(
+                    previousBytes: previous.data.count,
+                    incomingBytes: event.data.count
+                ) {
+                case .combine:
+                    viewStore.pendingSurfaceEvents[index] = StateChange(
+                        type: previous.type,
+                        paneId: previous.paneId,
+                        tabId: previous.tabId,
+                        windowId: previous.windowId,
+                        data: Self.appendedData(previous.data, event.data),
+                        name: previous.name
+                    )
+                case .keepNewest:
+                    // 旧合并缓冲已被更新的 TUI 帧取代；保留最新一段，避免
+                    // overflow → pause/capture 中途撕帧。
+                    viewStore.pendingSurfaceEvents.removeAll { candidate in
+                        candidate.paneId == paneId && candidate.isPaneOutput
+                    }
+                    viewStore.pendingSurfaceEvents.append(event)
+                case .markOverflow:
                     viewStore.pendingSurfaceEvents.removeAll { candidate in
                         candidate.paneId == paneId && candidate.isPaneOutput
                     }
                     viewStore.pendingSurfaceOverflowPanes.insert(paneId)
-                    return
                 }
-                viewStore.pendingSurfaceEvents[index] = StateChange(
-                    type: previous.type,
-                    paneId: previous.paneId,
-                    tabId: previous.tabId,
-                    windowId: previous.windowId,
-                    data: Self.appendedData(previous.data, event.data),
-                    name: previous.name
-                )
                 return
             }
-            viewStore.pendingSurfaceEvents.append(event)
+            switch SurfaceOutputCoalescePolicy.decide(
+                previousBytes: 0,
+                incomingBytes: event.data.count
+            ) {
+            case .combine, .keepNewest:
+                viewStore.pendingSurfaceEvents.append(event)
+            case .markOverflow:
+                viewStore.pendingSurfaceOverflowPanes.insert(paneId)
+            }
             return
         }
 

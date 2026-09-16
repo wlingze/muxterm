@@ -1527,7 +1527,8 @@ final class CoreBridge {
         if let status = events.last(where: \.isBackendStatus) {
             lastStatus = status.paneId
         }
-        updateStructuredAgents(with: events)
+        // 无 WorkspaceId 的 legacy poll 不得写入 structured agent：
+        // paneId 跨 workspace 会撞，会把 Codex 串到错误的侧栏。
         return events
     }
 
@@ -1555,7 +1556,7 @@ final class CoreBridge {
         if let status = events.last(where: { $0.event.isBackendStatus }) {
             lastStatus = status.event.paneId
         }
-        updateStructuredAgents(with: events.map(\.event))
+        updateStructuredAgents(with: events)
         return events
     }
 
@@ -1577,10 +1578,14 @@ final class CoreBridge {
         )
     }
 
-    private func updateStructuredAgents(with events: [StateChange]) {
-        for event in events {
+    private func updateStructuredAgents(with events: [WorkspaceStateChange]) {
+        for item in events {
+            let event = item.event
             if event.isPaneClosed {
-                structuredAgents.removePane(event.paneId)
+                structuredAgents.removePane(
+                    workspaceId: item.workspaceID,
+                    paneId: event.paneId
+                )
             } else if event.isPaneAgentChanged {
                 guard let payload = try? JSONDecoder().decode(
                     CorePaneAgentEvent.self,
@@ -1589,6 +1594,7 @@ final class CoreBridge {
                     continue
                 }
                 structuredAgents.observe(
+                    workspaceId: item.workspaceID,
                     paneId: event.paneId,
                     agent: payload.agent?.sidebarAgent(paneId: event.paneId)
                 )
@@ -1636,6 +1642,11 @@ final class CoreBridge {
     }
 
     /// Stable pane order keeps incremental AppKit reloads deterministic.
+    func structuredAgentSnapshot(workspaceId: String) -> [StructuredPaneAgent] {
+        structuredAgents.snapshot(workspaceId: workspaceId)
+    }
+
+    /// 全量快照仅用于诊断；侧栏必须按 workspace 取。
     func structuredAgentSnapshot() -> [StructuredPaneAgent] {
         structuredAgents.snapshot
     }

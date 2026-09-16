@@ -273,6 +273,132 @@ mod tests {
     }
 
     #[test]
+    fn agent_rows_sort_by_status_blocks_then_title_pane() {
+        let id = workspace_id("local", None, "muxterm", "tmux", "/work/muxterm");
+        let mut store = ViewStore::default();
+        store.replace_topology(
+            ClientWorkspace {
+                id: id.as_str(),
+                name: "muxterm".into(),
+                runtime: id.runtime.clone(),
+                active: true,
+                resolved_target: None,
+            },
+            vec![
+                ClientTab {
+                    id: 1,
+                    name: "t1".into(),
+                    is_active: true,
+                },
+                ClientTab {
+                    id: 2,
+                    name: "t2".into(),
+                    is_active: false,
+                },
+            ],
+            vec![
+                (
+                    1,
+                    vec![
+                        ClientPane {
+                            id: 1,
+                            cols: 80,
+                            rows: 24,
+                            is_active: true,
+                            title: "a".into(),
+                        },
+                        ClientPane {
+                            id: 2,
+                            cols: 80,
+                            rows: 24,
+                            is_active: false,
+                            title: "b".into(),
+                        },
+                    ],
+                ),
+                (
+                    2,
+                    vec![ClientPane {
+                        id: 3,
+                        cols: 80,
+                        rows: 24,
+                        is_active: false,
+                        title: "c".into(),
+                    }],
+                ),
+            ],
+        );
+        let snapshot = ClientActivitySnapshot {
+            blocked_count: 0,
+            workspaces: vec![ClientWorkspaceAttention {
+                workspace_id: id.replica_id(),
+                path: id.path.clone(),
+                blocked: 0,
+                done: 1,
+                working: 1,
+                panes: vec![
+                    ClientAttentionPane {
+                        workspace_id: id.replica_id(),
+                        pane_id: 1,
+                        status: "working".into(),
+                        acknowledged: true,
+                        last_line: String::new(),
+                        seq: 1,
+                        process_name: Some("codex".into()),
+                        process_is_agent: true,
+                        agent_name: Some("codex".into()),
+                        shell_name: Some("zsh".into()),
+                    },
+                    ClientAttentionPane {
+                        workspace_id: id.replica_id(),
+                        pane_id: 2,
+                        status: "done".into(),
+                        acknowledged: false,
+                        last_line: String::new(),
+                        seq: 2,
+                        process_name: Some("cursor".into()),
+                        process_is_agent: true,
+                        agent_name: Some("cursor".into()),
+                        shell_name: Some("zsh".into()),
+                    },
+                    ClientAttentionPane {
+                        workspace_id: id.replica_id(),
+                        pane_id: 3,
+                        status: "idle".into(),
+                        acknowledged: true,
+                        last_line: String::new(),
+                        seq: 3,
+                        process_name: Some("amp".into()),
+                        process_is_agent: true,
+                        agent_name: Some("amp".into()),
+                        shell_name: Some("zsh".into()),
+                    },
+                ],
+            }],
+        };
+        let items = AgentSidebarItem::from_views(&store, &snapshot);
+        assert_eq!(
+            items.iter().map(|item| item.indicator).collect::<Vec<_>>(),
+            [
+                ActivityIndicator::Done,
+                ActivityIndicator::Working,
+                ActivityIndicator::Idle
+            ]
+        );
+        assert_eq!(
+            items.iter().map(|item| item.pane_id).collect::<Vec<_>>(),
+            [2, 1, 3]
+        );
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.title.as_str())
+                .collect::<Vec<_>>(),
+            ["cursor", "codex", "amp"]
+        );
+    }
+
+    #[test]
     fn command_rows_follow_activity_lifecycle_and_ignore_agents() {
         let id = workspace_id("local", None, "command-workspace", "tmux", "/work/command");
         let mut store = ViewStore::default();

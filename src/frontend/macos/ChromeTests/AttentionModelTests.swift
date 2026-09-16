@@ -323,6 +323,22 @@ final class AttentionRowLabelTests: XCTestCase {
         )
         XCTAssertEqual(AttentionRowLabel.normalizedProcess("pi"), "pi")
         XCTAssertEqual(AttentionRowLabel.normalizedProcess("hermes-agent"), "hermes")
+        XCTAssertEqual(
+            AttentionRowLabel.normalizedProcess(
+                "node /Users/x/.codex/vendor/cursor-agent/versions/1/index.js"
+            ),
+            "cursor",
+            "路径左侧的 .codex 不得把 cursor-agent 标成 codex"
+        )
+        XCTAssertNotEqual(
+            AttentionRowLabel.normalizedProcess("node /Users/x/.codex/vendor/helper/index.js"),
+            "codex",
+            "仅 .codex 配置目录不得识别成 agent"
+        )
+        XCTAssertEqual(
+            AttentionRowLabel.normalizedProcess("agent --resume"),
+            "cursor"
+        )
     }
 
     func testExtractsExecutableFromAnsiShellCommand() {
