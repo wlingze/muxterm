@@ -798,7 +798,7 @@ key_path = "~/.ssh/id_rsa"
 
     #[test]
     fn builtin_themes_parse() {
-        let themes = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../configs/themes");
+        let themes = Path::new(env!("CARGO_MANIFEST_DIR")).join("configs/themes");
         let dark = std::fs::read_to_string(themes.join("dark.toml")).unwrap();
         let t = parse_theme_toml(&dark).unwrap();
         assert_eq!(t.name, "Dark");

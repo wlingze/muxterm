@@ -2594,7 +2594,7 @@ mod tests {
     #[test]
     fn feed_real_samples_byte_fidelity_across_chunks() {
         let chunk_sizes = [1usize, 2, 3, 7, 16, 31, 64, 256];
-        let samples = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/samples");
+        let samples = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/samples");
         for name in ["real-htop", "real-git_lg", "real-ls_la", "real-codex"] {
             let bytes = std::fs::read(samples.join(format!("{name}.txt")))
                 .unwrap_or_else(|e| panic!("读取样例 {name} 失败: {e}"));
