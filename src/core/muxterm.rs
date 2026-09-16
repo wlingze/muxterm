@@ -488,6 +488,7 @@ impl Muxterm {
         ws_id: &crate::protocol::WorkspaceId,
         batch: &RuntimeBatch,
     ) {
+        let _timing = crate::performance::ATTENTION.enter();
         let mut pending: Vec<PendingAttentionUpdate> = Vec::new();
         let mut pending_agents: Vec<(u32, Option<PaneAgentInfo>)> = Vec::new();
         let mut pending_commands: Vec<PendingCommandActivity> = Vec::new();

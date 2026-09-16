@@ -108,6 +108,7 @@ fn init_logging_inner(config: LoggingConfig) -> anyhow::Result<()> {
                 .map_err(|e| anyhow::anyhow!("初始化 tracing 失败: {e}"))?;
         }
     }
+    crate::performance::start();
     Ok(())
 }
 

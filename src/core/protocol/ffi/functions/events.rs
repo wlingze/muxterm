@@ -179,6 +179,7 @@ pub unsafe extern "C" fn muxterm_poll_events(
     out: *mut CStateChange,
     max_count: i32,
 ) -> i32 {
+    let _timing = crate::performance::POLL.enter();
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if h.is_null() || out.is_null() || max_count <= 0 {
             return -1;
@@ -229,6 +230,7 @@ pub unsafe extern "C" fn muxterm_poll_workspace_events(
     out: *mut CWorkspaceStateChange,
     max_count: i32,
 ) -> i32 {
+    let _timing = crate::performance::POLL.enter();
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if h.is_null() || out.is_null() || max_count <= 0 {
             return -1;
