@@ -71,3 +71,17 @@ cargo test --no-default-features --features ffi,test-harness --lib sample_curren
 确认 SELF 与 user/system 计时含义；
 [Apple Performance Tools](https://developer.apple.com/library/archive/documentation/Performance/Conceptual/PerformanceOverview/PerformanceTools/PerformanceTools.html)
 确认 sample 的执行采样用途。具体参数和短暂停线程行为另核对本机 `man sample`。
+
+## 修饰方向键
+
+真实 AppKit 事件回归复现旧版 legacy 模式下四个 Shift+方向键均发送零字节；
+SwiftTerm 将它们交给 AppKit 的扩展选区命令，却未实现对应终端编码。
+应用快捷键仍优先匹配，其余修饰方向键由 Surface 编码发送一次，不在窗口
+monitor 中手动分发事件。文本/IME、未修饰方向键和 Kitty 模式保留原路径。
+回归覆盖四个方向、七种 Shift/Option/Control 组合及 Kitty Shift 方向键，
+并验证普通文字、中文提交和 Enter 不双写、Cmd-Enter 仍执行应用动作。
+
+编码契约核验时间：2026-09-16T16:38:19+08:00；
+[xterm Control Sequences](https://invisible-island.net/xterm/ctlseqs/ctlseqs.html)
+定义修饰键参数 2–8（Shift/Alt/Control 组合），修饰方向键使用 CSI，
+例如 Shift-Left 为 `ESC [ 1 ; 2 D`。

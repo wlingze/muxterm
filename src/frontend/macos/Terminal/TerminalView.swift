@@ -48,9 +48,32 @@ enum MuxTerminalGridMetrics {
 
 /// 单个 pane 的 SwiftTerm 终端视图；输入经 delegate 回传到 FFI。
 ///
-/// 不重写 `keyDown`：交给 SwiftTerm → `interpretKeyEvents` → `insertText`（NSTextInputClient）
-/// 单路径发送，避免 keyDown 与 insertText 双写。
+/// 普通文本保留 SwiftTerm → `interpretKeyEvents` → `insertText` 单路径。
+/// 仅补齐 legacy 修饰方向键编码，避免 AppKit 将其吞成选区操作。
 final class MuxTerminalView: TerminalView {
+    override func keyDown(with event: NSEvent) {
+        let flags = event.modifierFlags
+        if !hasMarkedText(), getTerminal().keyboardEnhancementFlags.isEmpty,
+           !flags.contains(.command),
+           flags.contains(.shift) || flags.contains(.control) || flags.contains(.option) {
+            let suffix: String?
+            switch event.keyCode {
+            case 123: suffix = "D"
+            case 124: suffix = "C"
+            case 125: suffix = "B"
+            case 126: suffix = "A"
+            default: suffix = nil
+            }
+            if let suffix {
+                let modifier = 1 + (flags.contains(.shift) ? 1 : 0)
+                    + (flags.contains(.option) ? 2 : 0) + (flags.contains(.control) ? 4 : 0)
+                send(data: Array("\u{1b}[1;\(modifier)\(suffix)".utf8)[...])
+                return
+            }
+        }
+        super.keyDown(with: event)
+    }
+
     /// 对应 muxterm pane id。
     let paneId: UInt32
     private var fontFamily: String
