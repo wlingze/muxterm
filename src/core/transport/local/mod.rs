@@ -100,6 +100,13 @@ impl LocalProcessTransport {
 }
 
 impl ProcessTransport for LocalProcessTransport {
+    fn process_observer(&self) -> Option<crate::transport::ProcessObserver> {
+        let pid = self.pid?;
+        Some(Box::new(move || {
+            crate::protocol::terminal::foreground_process_command(pid)
+        }))
+    }
+
     fn spawn_exec(
         &mut self,
         program: &str,

@@ -37,7 +37,9 @@ use crate::protocol::state::{BackendStatus, PaneInfo, State, TabInfo};
 use crate::protocol::task::{Task, TaskOutcome};
 use crate::protocol::terminal::input::encode;
 use crate::protocol::{PaneId, TabId};
-use crate::runtime::{ControlEvent, RenderEvent, Runtime, RuntimeBatch, RuntimeCapability};
+use crate::runtime::{
+    ControlEvent, RenderEvent, Runtime, RuntimeBatch, RuntimeCapability, RuntimeSignal,
+};
 use crate::transport::{
     ByteChannel, ChannelRequest, Connect, PtySize as TransportPtySize, TargetConnection,
 };
@@ -45,7 +47,9 @@ use crate::transport::{
 pub mod daemon;
 pub mod daemon_client;
 pub mod daemon_runtime;
+mod process_observer;
 pub mod provider;
+use process_observer::ProcessWatch;
 
 pub(super) use provider::ShellDriver;
 
@@ -55,6 +59,10 @@ const DEFAULT_ROWS: u16 = 24;
 
 /// 后台读线程发回的字节块。
 enum PtyMsg {
+    Process {
+        pane: PaneId,
+        command: String,
+    },
     Output {
         pane: PaneId,
         data: Vec<u8>,
@@ -87,6 +95,8 @@ struct LocalPane {
     writer: Option<Arc<Mutex<Box<dyn Write + Send>>>>,
     /// pid（用于进程名查询，标题更新）。
     pid: u32,
+    // pane 关闭即取消后台采样，不在 UI/poll 路径执行 ps。
+    _process_watch: Option<ProcessWatch>,
 }
 
 impl std::fmt::Debug for LocalPane {
@@ -203,13 +213,27 @@ impl ShellRuntime {
     fn drain_pty_output(&mut self) {
         let mut outputs = Vec::new();
         let mut exits = Vec::new();
+        let mut processes = Vec::new();
 
         if let Some(rx) = self.pty_rx.as_mut() {
             while let Ok(msg) = rx.try_recv() {
                 match msg {
                     PtyMsg::Output { pane, data } => outputs.push((pane, data)),
                     PtyMsg::Exit { pane } => exits.push(pane),
+                    PtyMsg::Process { pane, command } => processes.push((pane, command)),
                 }
+            }
+        }
+        for (pane, command) in processes {
+            if self.panes.iter().any(|p| p.info.id == pane) && !exits.contains(&pane) {
+                self.push_batch(RuntimeBatch {
+                    signals: vec![RuntimeSignal::StatusBarSubscription {
+                        name: "muxterm.pane-cmd".into(),
+                        value: command,
+                        pane: Some(pane),
+                    }],
+                    ..RuntimeBatch::default()
+                });
             }
         }
         for (pane, data) in outputs {
@@ -467,6 +491,12 @@ impl ShellRuntime {
 
         let pane_id = self.alloc_pane_id();
 
+        let process_watch = ProcessWatch::start(
+            pane_id,
+            Box::new(move || crate::protocol::terminal::foreground_process_command(pid)),
+            tx.clone(),
+        )?;
+
         // 后台读线程：把字节块发回 backend 的共享 channel
         let pane_for_reader = pane_id;
         std::thread::Builder::new()
@@ -514,6 +544,7 @@ impl ShellRuntime {
             output: Vec::new(),
             writer: Some(Arc::new(Mutex::new(writer))),
             pid,
+            _process_watch: Some(process_watch),
         };
         self.panes.push(pane);
         Ok(pane_id)
@@ -545,9 +576,13 @@ impl ShellRuntime {
                     connection.target()
                 )
             })?;
+        let observer = channel.process_observer();
         let channel = Arc::new(Mutex::new(channel));
         let pane_id = self.alloc_pane_id();
         let tx = self.pty_tx.clone().expect("channel 已建立");
+        let process_watch = observer
+            .map(|observer| ProcessWatch::start(pane_id, observer, tx.clone()))
+            .transpose()?;
         let pane_for_reader = pane_id;
         let reader_channel = Arc::clone(&channel);
         std::thread::Builder::new()
@@ -593,6 +628,7 @@ impl ShellRuntime {
             output: Vec::new(),
             writer: None,
             pid: 0,
+            _process_watch: process_watch,
         });
         Ok(pane_id)
     }
@@ -1230,6 +1266,73 @@ mod tests {
     fn runtime() -> ShellRuntime {
         // 长驻进程，避免测试中途 Exit 触发「末 pane 关 window」逻辑。
         ShellRuntime::new("sleep 60", "/")
+    }
+
+    #[tokio::test]
+    async fn shell_agent_lifecycle_is_observed_without_osc_or_frontend() {
+        use crate::activity::attention::engine::known_agent_process_name;
+        use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+        // 用 sleep 的独立别名模拟 Agent 进程，不启动真实模型或用户会话。
+        let dir = std::env::temp_dir().join(format!(
+            "muxterm-test-shell-agent-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let executable = dir.join("codex");
+        std::os::unix::fs::symlink("/bin/sleep", &executable).unwrap();
+        for through_channel in [false, true] {
+            let mut b = if through_channel {
+                ShellRuntime::new_with_connection(Connect::new("local", ""), "/bin/sh -i", "/tmp")
+            } else {
+                ShellRuntime::new("/bin/sh -i", "/tmp")
+            };
+            b.connect().await.unwrap();
+            let pane = b.panes[0].info.id;
+            let is_process = |events: &[StateChange], agent: bool| {
+                events.iter().any(|event| {
+                matches!(event, StateChange::StatusBarSubscription { name, value, pane: Some(id) }
+                    if name == "muxterm.pane-cmd" && *id == pane
+                    && (known_agent_process_name(value).is_some() == agent))
+            })
+            };
+            let initial = wait_events(&mut b, Duration::from_secs(4), |events| {
+                is_process(events, false)
+            })
+            .await;
+            b.execute(&Task::WriteRaw {
+                target: pane,
+                data: format!("{} 3\n", executable.display()).into_bytes(),
+            })
+            .unwrap();
+            let running = wait_events(&mut b, Duration::from_secs(4), |events| {
+                is_process(events, true)
+            })
+            .await;
+            let finished = wait_events(&mut b, Duration::from_secs(5), |events| {
+                is_process(events, false)
+            })
+            .await;
+            b.shutdown().await.unwrap();
+            assert!(
+                is_process(&initial, false),
+                "initial shell observation; channel={through_channel}"
+            );
+            assert!(
+                is_process(&running, true),
+                "new agent observation; channel={through_channel}"
+            );
+            assert!(
+                is_process(&finished, false),
+                "shell return; channel={through_channel}"
+            );
+        }
+        std::fs::remove_file(executable).unwrap();
+        std::fs::remove_dir(dir).unwrap();
     }
 
     /// 轮询 `take_events`，直到 `pred` 成立或超时（避免短命子进程 Exit 与单次 sleep 竞态）。
