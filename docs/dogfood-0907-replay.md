@@ -502,7 +502,19 @@ Attention 整行绿或橙，和侧栏不像。
 
 ---
 
-## 16. 待做：Cmd-W 关 pane，Settings 开着时关 Settings
+## 16. 已补齐（macOS，2026-09-16）：Cmd-W 关 pane，Settings 开着时关 Settings
+
+当前实现：`KeyBindings` 默认 Cmd-W → closePane，Cmd-Shift-W → closeWindow。
+主窗口先 dismiss 面板/回复覆盖层，再关闭当前 pane；菜单的 Cmd-W 不绑定
+某个 MainWindowController，而经 responder chain 到应用，按 key window 路由。
+独立设置窗只执行自己的 performClose；面板执行 dismiss，保留焦点恢复和清理。
+`CmdEnterKeyE2ETests` 覆盖两 pane 逐个关闭、面板优先关闭、独立设置形态窗口
+与主窗口隔离。下文“现在为什么不对”为历史原因，不再代表当前代码。
+
+AppKit 契约核验：2026-09-16T17:29:15+08:00，
+[NSApplication.sendAction](https://developer.apple.com/documentation/appkit/nsapplication/sendaction(_:to:from:))
+确认 nil target 的 responder chain 搜索行为。应用端仍显式检查 key window，
+避免 responder chain 回退 main window 时误操作背后的工作区。
 
 **问题**
 

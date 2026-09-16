@@ -4,6 +4,55 @@ import XCTest
 
 /// 用户路径：Cmd-Enter 切换当前 pane 全屏。不要只测 KeyChord 表，要走 handleKey。
 final class CmdEnterKeyE2ETests: XCTestCase {
+    func testCloseMenuTargetsKeySettingsWindowInsteadOfMainPane() throws {
+        let fixture = TwoPaneCat(label: "close-settings")
+        let app = try AppE2E.attachWindow(socket: fixture.socket, session: fixture.session)
+        defer { app.testShutdown() }
+        XCTAssertTrue(app.waitReady(minLeaves: 2))
+        let settings = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 300, height: 200),
+            styleMask: [.titled, .closable], backing: .buffered, defer: false
+        )
+        settings.isReleasedWhenClosed = false
+        defer { settings.close() }
+        settings.makeKeyAndOrderFront(nil)
+        AppE2E.pump(30)
+        // XCTest 后台进程没有 key window，显式提供生产入口读取的那个窗口。
+        MuxtermCloseRouting.close(window: settings)
+        AppE2E.pump(30)
+        XCTAssertFalse(settings.isVisible)
+        XCTAssertTrue(app.window?.isVisible == true)
+        XCTAssertEqual(app.testLayoutLeafIDs().count, 2)
+
+        app.testOpenAttentionPanel()
+        MuxtermCloseRouting.close(window: app.unifiedPanel.window)
+        XCTAssertFalse(app.testAttentionPanelOpen())
+        XCTAssertEqual(app.testLayoutLeafIDs().count, 2)
+    }
+
+    func testCmdWClosesPanelBeforePaneAndOnlyOnePaneAtATime() throws {
+        let fixture = TwoPaneCat(label: "close-layer")
+        let app = try AppE2E.attachWindow(socket: fixture.socket, session: fixture.session)
+        defer { app.testShutdown() }
+        XCTAssertTrue(app.waitReady(minLeaves: 2))
+        app.testOpenAttentionPanel()
+        let event = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: .command,
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: try XCTUnwrap(app.window).windowNumber, context: nil,
+            characters: "w", charactersIgnoringModifiers: "w", isARepeat: false, keyCode: 13
+        ))
+        XCTAssertTrue(app.testDispatchKeyEvent(event))
+        XCTAssertFalse(app.testAttentionPanelOpen())
+        XCTAssertEqual(app.testLayoutLeafIDs().count, 2)
+        XCTAssertTrue(app.testDispatchKeyEvent(event))
+        XCTAssertTrue(AppE2E.wait(timeout: 5) {
+            app.testPollOnce()
+            return app.testLayoutLeafIDs().count == 1
+        })
+        XCTAssertTrue(app.window?.isVisible == true)
+    }
+
     func testShiftArrowsReachTerminalExactlyOnceInLegacyAndKittyModes() throws {
         let fixture = OnePaneCat(label: "shift-arrows")
         let app = try AppE2E.attachWindow(socket: fixture.socket, session: fixture.session)

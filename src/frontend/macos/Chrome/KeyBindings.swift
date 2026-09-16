@@ -73,9 +73,9 @@ public enum KeyBindings {
         if chord.command, !chord.option, key == "d" {
             return chord.shift ? .splitHorizontal : .splitVertical
         }
-        // Cmd+W 关窗口
-        if chord.command, !chord.shift, !chord.option, key == "w" {
-            return .closeWindow
+        // Cmd+W 只关当前层；整个窗口显式使用 Cmd+Shift+W。
+        if chord.command, !chord.option, !chord.control, key == "w" {
+            return chord.shift ? .closeWindow : .closePane
         }
         // Cmd+1..9 切 tab；Cmd+Ctrl+N 留给 Workspace 切换。
         if chord.command, !chord.option, !chord.shift, !chord.control,
