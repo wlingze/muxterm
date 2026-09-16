@@ -189,6 +189,14 @@ public struct StructuredAgentRegistry: Sendable {
     }
 }
 
+/// Agents / Commands / Attention 共用机器标记，不另行推测 runtime 身份。
+public enum WorkspaceDisplayTitle {
+    public static func make(name: String, transport: String) -> String {
+        let machine = transport.trimmingCharacters(in: .whitespacesAndNewlines)
+        return machine.isEmpty ? name : "\(name) · \(machine)"
+    }
+}
+
 /// One open Workspace shown by the main-window sidebar.
 public struct WorkspaceSidebarItem: Sendable, Equatable {
     public let workspaceId: String
@@ -202,6 +210,11 @@ public struct WorkspaceSidebarItem: Sendable, Equatable {
     public let tabNumberByPane: [UInt32: Int]
     /// Pane 所属的稳定 TabId；侧栏点击时直接复用，避免再次遍历 Core 拓扑。
     public let tabIdByPane: [UInt32: UInt32]
+
+    /// Core 提供的机器名与工作区名一起展示，不能仅藏在 tooltip。
+    public var displayTitle: String {
+        WorkspaceDisplayTitle.make(name: name, transport: transport)
+    }
 
     public init(
         workspaceId: String,
@@ -365,7 +378,7 @@ public enum WorkspaceSidebarProjection {
                     workspaceId: workspace.workspaceId,
                     tabId: tabId,
                     paneId: agent.paneId,
-                    title: workspace.name,
+                    title: workspace.displayTitle,
                     detail: agentDetail(
                         status: statusLabel(status: agent.status, attention: attention),
                         agentName: agentName,
@@ -392,7 +405,7 @@ public enum WorkspaceSidebarProjection {
                     workspaceId: workspace.workspaceId,
                     tabId: tabId,
                     paneId: pane.paneId,
-                    title: workspace.name,
+                    title: workspace.displayTitle,
                     detail: agentDetail(
                         status: statusLabel(status: pane.status),
                         agentName: name,
@@ -477,8 +490,9 @@ public enum WorkspaceSidebarProjection {
                         workspaceId: workspace.workspaceId,
                         tabId: workspace.tabIdByPane[pane.paneId],
                         paneId: pane.paneId,
-                        title: title,
-                        detail: detail(workspace: workspace, paneId: pane.paneId),
+                        title: workspace.displayTitle,
+                        detail: agentDetail(status: statusLabel(status: pane.status),
+                            agentName: title, tabNumber: workspace.tabNumberByPane[pane.paneId]),
                         indicator: .working
                     ))
                 case .blocked, .done:
@@ -487,8 +501,9 @@ public enum WorkspaceSidebarProjection {
                         workspaceId: workspace.workspaceId,
                         tabId: workspace.tabIdByPane[pane.paneId],
                         paneId: pane.paneId,
-                        title: title,
-                        detail: detail(workspace: workspace, paneId: pane.paneId),
+                        title: workspace.displayTitle,
+                        detail: agentDetail(status: statusLabel(status: pane.status),
+                            agentName: title, tabNumber: workspace.tabNumberByPane[pane.paneId]),
                         indicator: pane.status == .blocked ? .blocked : .done
                     ))
                 case .unknown, .idle:
@@ -517,10 +532,6 @@ public enum WorkspaceSidebarProjection {
             let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmed.isEmpty ? nil : trimmed
         }.first
-    }
-
-    private static func detail(workspace: WorkspaceSidebarItem, paneId: UInt32) -> String {
-        "\(workspace.name) · pane \(paneId)"
     }
 
     private static func agentDetail(

@@ -5,6 +5,7 @@
 # 3) 暴露 scrollWheel override，允许 Muxterm 仅对滚轮临时启用 TUI mouse protocol
 # 4) muxtermPrependHistoryLines：按行写入 scrollback，不 reset；CJK 按列宽占格
 # 5) live feed / linefeed / Auto Layout 抖动不得清选区
+# 6) 暴露 keyDown override，补齐 legacy 修饰方向键，文本/IME 仍走原路径
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MACOS_DIR="$ROOT/src/frontend/macos"
@@ -129,6 +130,16 @@ if "MUXTERM_DOCOMMAND" not in mac_text:
     print("==> applied SwiftTerm doCommand patch")
 else:
     print("==> SwiftTerm doCommand patch already applied")
+
+mac_text = mac.read_text()
+if "MUXTERM_KEY_DOWN" not in mac_text:
+    old = "    public override func keyDown(with event: NSEvent) {\n"
+    new = "    open override func keyDown(with event: NSEvent) { // MUXTERM_KEY_DOWN\n"
+    if old not in mac_text:
+        print("ERROR: SwiftTerm keyDown declaration changed; update scripts/patch-swiftterm.sh", file=sys.stderr)
+        sys.exit(1)
+    mac.write_text(mac_text.replace(old, new, 1))
+    print("==> applied SwiftTerm key-down override patch")
 
 mac_text = mac.read_text()
 if "MUXTERM_SCROLL_WHEEL" not in mac_text:

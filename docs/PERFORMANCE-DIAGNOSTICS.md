@@ -71,3 +71,49 @@ cargo test --no-default-features --features ffi,test-harness --lib sample_curren
 确认 SELF 与 user/system 计时含义；
 [Apple Performance Tools](https://developer.apple.com/library/archive/documentation/Performance/Conceptual/PerformanceOverview/PerformanceTools/PerformanceTools.html)
 确认 sample 的执行采样用途。具体参数和短暂停线程行为另核对本机 `man sample`。
+
+## 修饰方向键
+
+真实 AppKit 事件回归复现旧版 legacy 模式下四个 Shift+方向键均发送零字节；
+SwiftTerm 将它们交给 AppKit 的扩展选区命令，却未实现对应终端编码。
+应用快捷键仍优先匹配，其余修饰方向键由 Surface 编码发送一次，不在窗口
+monitor 中手动分发事件。文本/IME、未修饰方向键和 Kitty 模式保留原路径。
+回归覆盖四个方向、七种 Shift/Option/Control 组合及 Kitty Shift 方向键，
+并验证普通文字、中文提交和 Enter 不双写、Cmd-Enter 仍执行应用动作。
+
+编码契约核验时间：2026-09-16T16:38:19+08:00；
+[xterm Control Sequences](https://invisible-island.net/xterm/ctlseqs/ctlseqs.html)
+定义修饰键参数 2–8（Shift/Alt/Control 组合），修饰方向键使用 CSI，
+例如 Shift-Left 为 `ESC [ 1 ; 2 D`。
+
+## 1651 日志：Codex 条目出现 / 消失
+
+用户报告的是 Agents 整条记录消失，不是仅 Working/Idle 切换。检查时间
+2026-09-16T17:38:56+08:00 起；`test-2026-0916-1651.log` 此时仍在追加。
+09:27:21Z 起本地 muxterm pane 130 多次记录 `live_agent=true`；09:33 起
+反复出现 Idle → Working，但旧日志不记录进程身份清除边沿，因此不能仅凭
+这些行断言是排序，也不能断言输入框星星动画就是原因。
+
+只读 `list-panes` 与本机 ps 核对：该 pane 报告 node，前台进程组 leader
+是 node 启动的 Codex。身份来自进程订阅，而非星星/提示符图案。
+
+发现并回归修复一个可真实删除 agent 身份的冲突路径：
+
+1. 订阅当前命令为 node/npx 等 wrapper。
+2. 同条 format 的 `#(ps …)` 是异步缓存，或本机两次 ps 补查遇到进程切换。
+3. 旧代码不验证 argv 一致性，若取得旧 shell argv，Attention 将其视为
+   agent 已退出，清掉 process_is_agent；之后 Codex argv 到来才重新加入。
+
+现在 wrapper 只接收匹配 wrapper 家族的 argv；冲突缓存被忽略，本机可补查，
+远端绝不拿 PID 查本机。信息不足时保留当前 wrapper，不伪造 shell 退出。
+当前命令真正为 zsh 时仍立即移除 agent；完整 node server.js 也会释放旧身份。
+合成竞态/动画回归覆盖连续 60 次更新身份不丢和真正退出，**不是日志逐帧录像**。
+
+新增 `activity agent identity changed`，记录 workspace/pane、前后 agent 布尔值、
+可执行名与 authority；不记录完整 argv/提示词。`ignored conflicting cached
+foreground argv` 标记冲突缓存。需要新版日志验证此次用户现场是否命中此路径，
+不能把这个已复现的缺陷当作全部消失事件的既定解释。
+
+外部契约核验时间：2026-09-16T17:44:01+08:00，
+[tmux 官方手册 FORMATS](https://github.com/tmux/tmux/blob/master/tmux.1)
+明确 `#()` 不等待命令完成，会使用先前结果或占位符。

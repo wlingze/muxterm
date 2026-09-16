@@ -531,6 +531,15 @@ impl Muxterm {
                 continue;
             }
             candidate_panes.push(pane);
+            let previous_agent = self.activity.attention.is_tracked_agent(&ws_name, pane.0);
+            let observed_executable = name
+                .as_deref()
+                .and_then(|value| value.split_whitespace().next())
+                .unwrap_or("")
+                .rsplit('/')
+                .next()
+                .unwrap_or("")
+                .to_string();
             if authoritative {
                 self.activity
                     .attention
@@ -539,6 +548,13 @@ impl Muxterm {
                 self.activity
                     .attention
                     .set_process_name(&ws_name, pane.0, name);
+            }
+            let current_agent = self.activity.attention.is_tracked_agent(&ws_name, pane.0);
+            if previous_agent != current_agent {
+                // 只记录身份边沿与可执行名，不记录 argv 中的提示词/用户输入。
+                tracing::debug!(target: "muxterm::attention", workspace = %ws_name,
+                    pane = pane.0, previous_agent, current_agent, authoritative,
+                    executable = %observed_executable, "activity agent identity changed");
             }
         }
         for event in &batch.control {
