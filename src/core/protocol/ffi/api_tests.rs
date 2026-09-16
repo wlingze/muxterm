@@ -351,6 +351,193 @@ fn ffi_agent_event_updates_attention_without_surface_output() {
     }
 }
 
+// 通过 Runtime → Workspace Index → Muxterm → FFI 验证；不让前端回写进程名。
+unsafe fn poll_attention_fixture(
+    h: *mut MuxtermHandle,
+    id: &WorkspaceId,
+    events: Vec<StateChange>,
+) -> serde_json::Value {
+    let mut runtime = MockRuntime::with_single_pane();
+    runtime.events = events;
+    if let Some(ws) = (*h).pool_mut().get_mut(id) {
+        ws.swap_runtime(Box::new(runtime));
+    } else {
+        (*h).pool_mut().insert_connected(Workspace::new(
+            id.clone(),
+            "activity-fixture".into(),
+            Box::new(runtime),
+        ));
+    }
+    let mut out = [CStateChange::default(); 32];
+    muxterm_poll_events(h, out.as_mut_ptr(), out.len() as i32);
+    let raw = muxterm_attention_snapshot(h);
+    let text = CStr::from_ptr(raw).to_string_lossy().into_owned();
+    muxterm_free_string(raw);
+    serde_json::from_str(&text).unwrap()
+}
+
+fn process_fixture(pane: u32, name: &str) -> StateChange {
+    StateChange::StatusBarSubscription {
+        name: "muxterm.pane-cmd".into(),
+        value: name.into(),
+        pane: Some(PaneId(pane)),
+    }
+}
+
+#[test]
+fn ffi_agent_process_after_screen_classifies_without_more_output() {
+    let h = muxterm_catalog_new();
+    unsafe {
+        let id = WorkspaceId::new("local", None, "agent-fixture", "tmux", "repo");
+        poll_attention_fixture(
+            h,
+            &id,
+            vec![StateChange::PaneOutput {
+                pane: PaneId(1),
+                data: b"Working (esc to interrupt)\r\ncontext left".to_vec(),
+            }],
+        );
+        let value = poll_attention_fixture(h, &id, vec![process_fixture(1, "codex")]);
+        let pane = &value["workspaces"][0]["panes"][0];
+        assert_eq!(pane["process_is_agent"], true, "{value}");
+        assert_eq!(pane["status"], "working", "{value}");
+        muxterm_free(h);
+    }
+}
+
+#[test]
+fn ffi_agent_process_and_screen_in_one_batch_use_screen_rules() {
+    let h = muxterm_catalog_new();
+    unsafe {
+        let id = WorkspaceId::new("local", None, "agent-fixture", "tmux", "repo");
+        let value = poll_attention_fixture(
+            h,
+            &id,
+            vec![
+                process_fixture(1, "cursor-agent"),
+                StateChange::PaneOutput {
+                    pane: PaneId(1),
+                    data: b"Working\r\nctrl+c to stop\r\nfooter".to_vec(),
+                },
+            ],
+        );
+        assert_eq!(
+            value["workspaces"][0]["panes"][0]["status"], "working",
+            "{value}"
+        );
+        muxterm_free(h);
+    }
+}
+
+#[test]
+fn ffi_foreground_observation_wins_over_completed_agent_command_marks() {
+    let h = muxterm_catalog_new();
+    unsafe {
+        let id = WorkspaceId::new("local", None, "agent-fixture", "tmux", "repo");
+        let value = poll_attention_fixture(
+            h,
+            &id,
+            vec![
+                process_fixture(1, "zsh"),
+                StateChange::PaneOutput {
+                    pane: PaneId(1),
+                    data: b"\x1b]133;B\x07codex\r\n\x1b]133;C\x07\x1b]133;D;0\x07prompt".to_vec(),
+                },
+            ],
+        );
+        assert_eq!(
+            value["workspaces"][0]["panes"][0]["process_is_agent"], false,
+            "{value}"
+        );
+        let value = poll_attention_fixture(
+            h,
+            &id,
+            vec![
+                process_fixture(1, "cursor-agent"),
+                StateChange::PaneOutput {
+                    pane: PaneId(1),
+                    data: b"\x1b]133;B\x07codex\r\n\x1b]133;C\x07\x1b]133;D;0\x07ctrl+c to stop"
+                        .to_vec(),
+                },
+            ],
+        );
+        assert_eq!(
+            value["workspaces"][0]["panes"][0]["agent_name"], "cursor",
+            "{value}"
+        );
+        muxterm_free(h);
+    }
+}
+
+#[test]
+fn ffi_agent_redraw_and_shell_return_preserve_workspace_isolation() {
+    let h = muxterm_catalog_new();
+    unsafe {
+        let id = WorkspaceId::new("local", None, "yaklang-fixture", "tmux", "repo");
+        let initial = format!(
+            "{}\x1b[2J\x1b[HReady\x1b[24;1Hcontext left",
+            "history\r\n".repeat(30)
+        );
+        let value = poll_attention_fixture(
+            h,
+            &id,
+            vec![
+                process_fixture(1, "codex"),
+                StateChange::PaneOutput {
+                    pane: PaneId(1),
+                    data: initial.into_bytes(),
+                },
+            ],
+        );
+        let before = value["workspaces"][0]["panes"][0].clone();
+        assert_eq!(before["status"], "idle");
+        assert!(before["seq"].as_u64().unwrap() > 0);
+
+        let value = poll_attention_fixture(
+            h,
+            &id,
+            vec![StateChange::PaneOutput {
+                pane: PaneId(1),
+                data: b"\x1b[1;1H\x1b[2KWorking (esc to interrupt)".to_vec(),
+            }],
+        );
+        let working = &value["workspaces"][0]["panes"][0];
+        assert_eq!(working["seq"], before["seq"]);
+        assert_eq!(working["last_line"], before["last_line"]);
+        assert_eq!(working["status"], "working", "{value}");
+
+        let other = WorkspaceId::new("local", None, "other-fixture", "tmux", "repo");
+        let value = poll_attention_fixture(
+            h,
+            &other,
+            vec![process_fixture(1, "zsh"), process_fixture(99, "codex")],
+        );
+        let workspaces = value["workspaces"].as_array().unwrap();
+        let shell = workspaces
+            .iter()
+            .find(|ws| ws["workspace_id"] == other.replica_id())
+            .unwrap();
+        assert_eq!(shell["panes"].as_array().unwrap().len(), 1);
+        assert_eq!(shell["panes"][0]["process_is_agent"], false);
+        let agent = workspaces
+            .iter()
+            .find(|ws| ws["workspace_id"] == id.replica_id())
+            .unwrap();
+        assert_eq!(agent["panes"][0]["status"], "working");
+
+        let value = poll_attention_fixture(h, &id, vec![process_fixture(1, "zsh")]);
+        for ws in value["workspaces"].as_array().unwrap() {
+            assert_eq!(ws["panes"][0]["process_is_agent"], false, "{value}");
+            assert_eq!(
+                ws["panes"][0]["agent_name"],
+                serde_json::Value::Null,
+                "{value}"
+            );
+        }
+        muxterm_free(h);
+    }
+}
+
 #[test]
 fn ffi_command_marks_update_activity_lane() {
     let h = muxterm_new(c"local".as_ptr(), ptr::null(), ptr::null());
