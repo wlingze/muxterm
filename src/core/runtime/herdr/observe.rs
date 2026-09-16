@@ -125,7 +125,10 @@ impl ObserveStream {
         tx: Sender<PaneStreamEvent>,
     ) -> Result<Self> {
         Self::start_with_session(
-            Arc::new(HerdrSession::new("default", socket_path)),
+            Arc::new(HerdrSession::new(
+                "default",
+                super::session::api_socket_path_from_client_or_api(socket_path),
+            )),
             target,
             pane,
             generation,

@@ -64,13 +64,27 @@ pub fn assert_herdr_version_ok() {
     );
 }
 
-/// 唯一 named session 名：`muxterm-test-herdr-{label}-{nanos}`。
+/// Unique named session: `muxterm-test-{slug}-{id}`.
+///
+/// Keep this short: GitHub runners use
+/// `~/.config/herdr/sessions/<name>/herdr-client.sock`, which must stay
+/// under the Unix `SUN_LEN` (108) path limit.
 pub fn unique_name(label: &str) -> String {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.subsec_nanos())
         .unwrap_or(0);
-    format!("muxterm-test-herdr-{label}-{nanos}")
+    let slug: String = label
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-')
+        .take(16)
+        .collect();
+    let slug = if slug.is_empty() {
+        "s".to_string()
+    } else {
+        slug
+    };
+    format!("muxterm-test-{slug}-{nanos:x}")
 }
 
 /// 用户默认 herdr socket（测试永远不许连 / 清理它）。
@@ -147,7 +161,7 @@ impl Drop for TempAgentCommand {
                 .dir
                 .file_name()
                 .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with("muxterm-test-herdr-agent-"));
+                .is_some_and(|name| name.starts_with("muxterm-test-agent-"));
         if safe {
             let _ = std::fs::remove_dir_all(&self.dir);
         }

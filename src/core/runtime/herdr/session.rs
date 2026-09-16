@@ -337,6 +337,19 @@ pub(crate) fn client_socket_path_from_api(api_socket_path: &Path) -> PathBuf {
     parent.join(format!("{stem}-client.sock"))
 }
 
+/// Accept either the API socket or an already-derived client socket.
+pub(crate) fn api_socket_path_from_client_or_api(path: &Path) -> PathBuf {
+    let file = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("");
+    if let Some(stem) = file.strip_suffix("-client.sock") {
+        path.with_file_name(format!("{stem}.sock"))
+    } else {
+        path.to_path_buf()
+    }
+}
+
 /// `session.snapshot` 的产品视图（Herdr id 保持字符串，映射在 HerdrRuntime）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionSnapshot {
@@ -1045,6 +1058,7 @@ mod tests {
 
     #[test]
     fn session_derives_client_socket_from_api_socket() {
+        use super::api_socket_path_from_client_or_api;
         let s = HerdrSession::new(
             "muxterm-test-herdr-x-1",
             "/home/wlz/.config/herdr/sessions/muxterm-test-herdr-x-1/herdr.sock",
@@ -1059,6 +1073,13 @@ mod tests {
         assert_eq!(
             forwarded.client_socket_path(),
             Path::new("/tmp/muxterm-herdr-fwd-loopback-123-client.sock")
+        );
+
+        let already_client =
+            Path::new("/home/wlz/.config/herdr/sessions/muxterm-test-x/herdr-client.sock");
+        assert_eq!(
+            api_socket_path_from_client_or_api(already_client),
+            Path::new("/home/wlz/.config/herdr/sessions/muxterm-test-x/herdr.sock")
         );
     }
 
