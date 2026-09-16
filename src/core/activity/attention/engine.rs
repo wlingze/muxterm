@@ -44,29 +44,40 @@ const AGENT_ALIASES: &[(&str, &str)] = &[("agent", "cursor"), ("cursor-agent", "
 
 /// 从进程名/argv 中识别通用 agent 名；不依赖具体 Runtime。
 ///
-/// 优先匹配 **argv 各参数的 basename**（含 `cursor-agent` / `codex-cli` 前缀），
-/// 再回退到路径中间的精确段（如 `.../cursor-agent/.../index.js`）。
-/// 不把 `/opt/cursor/.../codex` 里的目录名 `cursor` 当成身份——那会和
-/// `/opt/codex-tools/cursor-agent` 互相标错。
+/// 只识别可执行文件，或已知脚本宿主的入口文件。提示词、文件参数和
+/// 工作目录里的 agent 名都不是进程身份。
 pub fn known_agent_process_name(value: &str) -> Option<&'static str> {
-    for token in value.split_whitespace() {
-        let trimmed = token.trim_matches(|c: char| c == '\'' || c == '"');
-        if trimmed.is_empty() || trimmed.starts_with('-') {
-            continue;
-        }
-        let basename = trimmed.rsplit(['/', '\\']).next().unwrap_or(trimmed);
-        if let Some(agent) = match_agent_basename(basename) {
-            return Some(agent);
-        }
+    let mut words = value.split_whitespace();
+    let executable = words.next()?.trim_matches(['\'', '"']);
+    let basename = executable.rsplit(['/', '\\']).next()?;
+    if let Some(agent) = match_agent_basename(basename) {
+        return Some(agent);
     }
-    // node 跑 cursor-agent 的 index.js 时，basename 只是 node/index.js；
-    // 从路径段里找 agent。必须从右往左扫：`.../codex/.../cursor-agent/...`
-    // 里靠右的 cursor-agent 才是身份，左边的目录名不得抢先。
-    for token in value.split_whitespace() {
-        let segments: Vec<&str> = token.split(['/', '\\']).filter(|s| !s.is_empty()).collect();
-        for segment in segments.into_iter().rev() {
-            if let Some(agent) = match_agent_path_segment(segment) {
-                return Some(agent);
+    if !matches!(
+        basename,
+        "node" | "nodejs" | "npx" | "bun" | "deno" | "tsx" | "ts-node"
+    ) {
+        return None;
+    }
+    while let Some(word) = words.next() {
+        match word {
+            "--require" | "-r" | "--import" | "--loader" => {
+                words.next()?;
+            }
+            "--" | "-y" | "--yes" | "--no-warnings" => {}
+            option if option.starts_with('-') => return None,
+            entry => {
+                let entry = entry.trim_matches(['\'', '"']);
+                let basename = entry.rsplit(['/', '\\']).next()?;
+                if let Some(agent) = match_agent_basename(basename) {
+                    return Some(agent);
+                }
+                // Cursor 的发布包用通用 index.js 作为入口；只检查这个入口
+                // 的安装路径，不能继续扫描后面的 prompt/file 参数。
+                return entry
+                    .split(['/', '\\'])
+                    .rev()
+                    .find_map(match_agent_path_segment);
             }
         }
     }
@@ -212,6 +223,8 @@ pub struct AttentionEngine<C: Clock> {
     /// pane-cmd 上一次实际看到的前台进程。展示名称会在回到 shell 后
     /// 保留 agent 名用于 Done 行，所以生命周期边沿不能反查展示字段。
     foreground_processes: HashMap<(String, u32), String>,
+    /// 行号是 scrollback 的身份，不能代表 TUI 原地重绘。缓存实际分类输入。
+    agent_screens: HashMap<(String, u32), (String, ScreenSnapshot)>,
     /// 正则缓存：编译失败时记录该条并跳过。
     regex_cache: HashMap<String, Option<Regex>>,
 }
@@ -228,6 +241,7 @@ impl<C: Clock> AttentionEngine<C> {
             notified_done_panes: HashSet::new(),
             authoritative_panes: HashSet::new(),
             foreground_processes: HashMap::new(),
+            agent_screens: HashMap::new(),
             regex_cache: HashMap::new(),
         }
     }
@@ -366,23 +380,30 @@ impl<C: Clock> AttentionEngine<C> {
         });
         // tmux 已知 agent：屏幕规则是 idle/working/blocked 的权威。
         // 没有快照时才退回输出启发式（单测 / 旧调用）。
-        // 输出未变时跳过 classify：规则本身无副作用，且 Cursor 多 pane
-        // 同批事件里不应重复跑全表 regex。首帧（previous_seq==0）必须跑。
+        // 按整份屏幕（含标题/进度）去重，不能只比较最后一行或 scrollback seq。
         if live_agent && !authoritative {
             if let Some(screen) = screen {
-                if output_moved || previous_seq == 0 {
-                    let agent = self
-                        .panes
-                        .get(&key)
-                        .and_then(|entry| entry.agent_name.as_deref())
-                        .and_then(known_agent_process_name)
-                        .or_else(|| {
-                            self.foreground_processes
-                                .get(&key)
-                                .and_then(|name| known_agent_process_name(name))
-                        })
-                        .unwrap_or("agent");
-                    if let Some(next) = classify_agent_screen(agent, screen) {
+                let agent = self
+                    .panes
+                    .get(&key)
+                    .and_then(|entry| entry.agent_name.as_deref())
+                    .and_then(known_agent_process_name)
+                    .or_else(|| {
+                        self.foreground_processes
+                            .get(&key)
+                            .and_then(|name| known_agent_process_name(name))
+                    })
+                    .unwrap_or("agent")
+                    .to_string();
+                let unchanged = self.agent_screens.get(&key).is_some_and(
+                    |(previous_agent, previous_screen)| {
+                        previous_agent == &agent && previous_screen == screen
+                    },
+                );
+                if !unchanged {
+                    self.agent_screens
+                        .insert(key.clone(), (agent.clone(), screen.clone()));
+                    if let Some(next) = classify_agent_screen(&agent, screen) {
                         status = match next {
                             PaneStatus::Idle
                                 if matches!(status, PaneStatus::Working | PaneStatus::Done) =>
@@ -398,6 +419,12 @@ impl<C: Clock> AttentionEngine<C> {
                     status = transition(status, PaneEvent::OutputActivity);
                 }
             }
+        }
+
+        if status != previous_status {
+            tracing::debug!(target: "muxterm::attention", workspace = ws, pane,
+                ?previous_status, ?status, live_agent, authoritative,
+                screen = screen.is_some(), "activity status changed");
         }
 
         if authoritative {
@@ -557,6 +584,24 @@ impl<C: Clock> AttentionEngine<C> {
         self.set_process_name_with_kind(ws, pane, name, false);
     }
 
+    /// OSC 命令文本是展示线索，不能覆盖 Runtime 已观察到的 agent 身份。
+    /// 不把命令刻度写进 foreground 表，避免历史线索成为下一轮的进程事实。
+    pub fn set_command_name(&mut self, ws: &str, pane: u32, command: String) {
+        let key = (ws.to_string(), pane);
+        let observed = self.foreground_processes.get(&key).cloned();
+        if observed.as_deref().is_some_and(|process| {
+            !Self::is_shell(process) || known_agent_process_name(&command).is_some()
+        }) {
+            return;
+        }
+        self.set_process_name(ws, pane, Some(command));
+        if let Some(observed) = observed {
+            self.foreground_processes.insert(key, observed);
+        } else {
+            self.foreground_processes.remove(&key);
+        }
+    }
+
     /// Runtime 结构化识别出的 agent。GUI 只调用这份通用产品接口，不按
     /// Runtime 名字分支；agent identity 会一直保留到 pane 被关闭。
     pub fn set_agent_process_name(&mut self, ws: &str, pane: u32, name: Option<String>) {
@@ -632,6 +677,7 @@ impl<C: Clock> AttentionEngine<C> {
                 // 的 cursor/codex 身份冲掉，否则 Agents 丢识别且不再跑屏幕规则。
                 let keep_wrapper_agent = !process_is_agent
                     && Self::is_script_host_wrapper(next_process)
+                    && next_process.split_whitespace().count() == 1
                     && entry.process_is_agent
                     && entry.agent_name.is_some();
                 if keep_wrapper_agent {
@@ -657,6 +703,9 @@ impl<C: Clock> AttentionEngine<C> {
             entry.is_some_and(|e| e.process_is_agent)
         };
         let previous_was_shell = previous.as_deref().is_none_or(Self::is_shell);
+        if !process_is_agent || previous_was_shell {
+            self.agent_screens.remove(&key);
+        }
         // pane-cmd may report only `node`/`pi` for wrappers. `process_name` is a
         // display field and intentionally retains the finished agent after the
         // run; lifecycle edges therefore use the observed foreground process.
@@ -671,7 +720,8 @@ impl<C: Clock> AttentionEngine<C> {
         if process_is_agent {
             let entry = self.entry_mut(ws, pane);
             if !initial_observation_follows_attention
-                && matches!(entry.status, PaneStatus::Unknown | PaneStatus::Done)
+                && (entry.status == PaneStatus::Unknown
+                    || (previous_was_shell && entry.status == PaneStatus::Done))
             {
                 entry.status = PaneStatus::Idle;
                 entry.acknowledged = true;
@@ -772,6 +822,7 @@ impl<C: Clock> AttentionEngine<C> {
         self.panes.remove(&key);
         self.authoritative_panes.remove(&key);
         self.foreground_processes.remove(&key);
+        self.agent_screens.remove(&key);
         self.sync_notified(ws, pane, now);
     }
 
@@ -1480,6 +1531,52 @@ mod tests {
             Some("pi".into()),
             "tmux pane_current_command reports the Pi coding agent as `pi`"
         );
+    }
+
+    #[test]
+    fn agent_identity_does_not_come_from_command_arguments() {
+        for command in [
+            "rg codex src",
+            "cat /tmp/codex",
+            "zsh -c 'echo codex'",
+            "node server.js --label codex",
+            "node server.js /opt/cursor-agent/index.js",
+            "node /opt/cursor-agent/versions/1/index.js --prompt codex",
+        ] {
+            let expected = command
+                .contains("node /opt/cursor-agent")
+                .then_some("cursor");
+            assert_eq!(known_agent_process_name(command), expected, "{command}");
+        }
+    }
+
+    #[test]
+    fn full_non_agent_wrapper_releases_previous_identity() {
+        let mut e = AttentionEngine::new(AttentionConfig::default(), clock());
+        e.set_process_name("ws", 1, Some("node /opt/bin/codex".into()));
+        e.set_process_name("ws", 1, Some("node server.js".into()));
+        let pane = &e.snapshot()[0].panes[0];
+        assert!(!pane.process_is_agent);
+        assert_eq!(pane.agent_name, None);
+    }
+
+    #[test]
+    fn agent_screen_redraw_without_new_scrollback_reclassifies() {
+        let mut e = AttentionEngine::new(AttentionConfig::default(), clock());
+        e.set_process_name("ws", 1, Some("codex".into()));
+        let idle = ScreenSnapshot::from_text("Ready\ncontext left");
+        let working = ScreenSnapshot::from_text("Working (esc to interrupt)\ncontext left");
+        e.apply_with_screen("ws", 1, &[], "context left", 17, Some(&idle));
+        assert_eq!(e.snapshot()[0].panes[0].status, PaneStatus::Idle);
+        e.apply_with_screen("ws", 1, &[], "context left", 17, Some(&working));
+        assert_eq!(e.snapshot()[0].panes[0].status, PaneStatus::Working);
+        e.apply_with_screen("ws", 1, &[], "context left", 17, Some(&idle));
+        assert_eq!(e.snapshot()[0].panes[0].status, PaneStatus::Done);
+        e.set_process_name("ws", 1, Some("codex".into()));
+        assert_eq!(e.snapshot()[0].panes[0].status, PaneStatus::Done);
+        e.on_became_visible("ws", 1);
+        e.apply_with_screen("ws", 1, &[], "context left", 17, Some(&idle));
+        assert_eq!(e.snapshot()[0].panes[0].status, PaneStatus::Idle);
     }
 
     #[test]

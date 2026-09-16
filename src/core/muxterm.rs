@@ -10,7 +10,6 @@ use std::ffi::{c_char, CString};
 use std::ptr;
 use std::sync::Arc;
 
-use crate::activity::attention::engine::should_skip_command_mark_on_shell_foreground;
 use crate::activity::attention::signal::AttentionSignal;
 use crate::activity::{ActivityContext, ActivityState};
 use crate::catalog::{ResolveError, ResolvedTarget};
@@ -490,14 +489,62 @@ impl Muxterm {
         batch: &RuntimeBatch,
     ) {
         let mut pending: Vec<PendingAttentionUpdate> = Vec::new();
-        let mut pending_process_names: Vec<(u32, Option<String>, bool)> = Vec::new();
         let mut pending_agents: Vec<(u32, Option<PaneAgentInfo>)> = Vec::new();
         let mut pending_commands: Vec<PendingCommandActivity> = Vec::new();
         let mut removed_panes = Vec::new();
         let mut attention_panes = Vec::new();
         let ws_name = ws_id.replica_id();
-        // 先扫一遍本批涉及的 pane，避免在持有 Workspace 可变借用时再碰 Attention。
+        // 先应用进程事实，再决定哪些 pane 要分类。进程事件自身也必须触发
+        // 分类：attach 首屏可能早于订阅，不能等下一条终端输出才发现 working。
         let mut candidate_panes = Vec::new();
+        for event in &batch.signals {
+            let (pane, name, authoritative) = match event {
+                RuntimeSignal::PaneAgentChanged { pane, agent, .. } => {
+                    let name = agent.as_deref().and_then(|agent| {
+                        [
+                            agent.name.as_deref(),
+                            agent.kind.as_deref(),
+                            agent.display_name.as_deref(),
+                        ]
+                        .into_iter()
+                        .flatten()
+                        .find(|name| !name.trim().is_empty())
+                        .map(str::to_string)
+                    });
+                    (*pane, name, true)
+                }
+                RuntimeSignal::StatusBarSubscription {
+                    name,
+                    value,
+                    pane: Some(pane),
+                } if name == "muxterm.pane-cmd" => {
+                    (*pane, (!value.is_empty()).then(|| value.clone()), false)
+                }
+                _ => continue,
+            };
+            if !self
+                .pool()
+                .get(ws_id)
+                .is_some_and(|ws| ws.state().pane(&pane).is_some())
+            {
+                continue;
+            }
+            candidate_panes.push(pane);
+            if authoritative {
+                self.activity
+                    .attention
+                    .set_agent_process_name(&ws_name, pane.0, name);
+            } else {
+                self.activity
+                    .attention
+                    .set_process_name(&ws_name, pane.0, name);
+            }
+        }
+        for event in &batch.control {
+            if let ControlEvent::PaneTitleChanged { pane, .. } = event {
+                candidate_panes.push(*pane);
+            }
+        }
         for event in &batch.render {
             let pane = match event {
                 RenderEvent::PaneOutput { pane, .. }
@@ -508,11 +555,7 @@ impl Muxterm {
             };
             candidate_panes.push(pane);
         }
-        for event in &batch.signals {
-            if let RuntimeSignal::PaneAgentChanged { pane, .. } = event {
-                candidate_panes.push(*pane);
-            }
-        }
+        attention_panes.extend(candidate_panes.iter().copied());
         let need_screen: std::collections::HashSet<u32> = candidate_panes
             .iter()
             .map(|pane| pane.0)
@@ -531,31 +574,6 @@ impl Muxterm {
                 match event {
                     RuntimeSignal::PaneAgentChanged { pane, agent, .. } => {
                         pending_agents.push((pane.0, agent.as_deref().cloned()));
-                        let process_name = agent.as_deref().and_then(|agent| {
-                            [
-                                agent.display_name.as_deref(),
-                                agent.title.as_deref(),
-                                agent.name.as_deref(),
-                                agent.kind.as_deref(),
-                            ]
-                            .into_iter()
-                            .flatten()
-                            .find(|value| !value.trim().is_empty())
-                            .map(str::to_string)
-                        });
-                        pending_process_names.push((pane.0, process_name, true));
-                        attention_panes.push(*pane);
-                    }
-                    RuntimeSignal::StatusBarSubscription {
-                        name,
-                        value,
-                        pane: Some(pane),
-                    } if name.starts_with("muxterm.pane-cmd") => {
-                        pending_process_names.push((
-                            pane.0,
-                            (!value.is_empty()).then(|| value.clone()),
-                            false,
-                        ));
                     }
                     RuntimeSignal::StatusBarSubscription { .. } => {}
                 }
@@ -580,7 +598,12 @@ impl Muxterm {
                 };
                 attention_panes.push(pane);
             }
+            attention_panes.sort_unstable_by_key(|pane| pane.0);
+            attention_panes.dedup();
             for pane in attention_panes {
+                if ws.state().pane(&pane).is_none() {
+                    continue;
+                }
                 let signals = ws.take_attention_signals(pane);
                 let (last_line, seq) = ws.pane_last_line_seq(pane);
                 // 屏幕快照只给已跟踪的 agent：给每个 PaneOutput 都跑
@@ -615,14 +638,13 @@ impl Muxterm {
                         CommandActivityPhase::Done(exit_code),
                     ));
                 }
-                pending.push((
-                    pane.0,
-                    signals,
-                    last_line,
-                    seq,
-                    command_started.then_some(command_name).flatten(),
-                    screen,
-                ));
+                let command_hint = (command_started
+                    && !signals
+                        .iter()
+                        .any(|signal| matches!(signal, AttentionSignal::CommandDone { .. })))
+                .then_some(command_name)
+                .flatten();
+                pending.push((pane.0, signals, last_line, seq, command_hint, screen));
             }
         }
         for (pane, agent) in pending_agents {
@@ -642,31 +664,11 @@ impl Muxterm {
                 self.push_activity_event(ws_id.clone(), event);
             }
         }
-        for (pane, name, is_agent) in pending_process_names {
-            if is_agent {
-                self.activity
-                    .attention
-                    .set_agent_process_name(&ws_name, pane, name);
-            } else {
-                self.activity
-                    .attention
-                    .set_process_name(&ws_name, pane, name);
-            }
-        }
         for (pane, signals, last_line, seq, command, screen) in pending {
             if let Some(command) = command {
-                let skip = self
-                    .activity
+                self.activity
                     .attention
-                    .foreground_process_name(&ws_name, pane)
-                    .is_some_and(|foreground| {
-                        should_skip_command_mark_on_shell_foreground(&foreground, &command)
-                    });
-                if !skip {
-                    self.activity
-                        .attention
-                        .set_process_name(&ws_name, pane, Some(command));
-                }
+                    .set_command_name(&ws_name, pane, command);
             }
             self.activity.attention.apply_with_screen(
                 &ws_name,

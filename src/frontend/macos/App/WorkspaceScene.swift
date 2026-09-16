@@ -162,21 +162,8 @@ final class WorkspaceScene: SceneProtocol {
             : nil
         var surface: [StateChange] = []
         for event in events {
-            if event.type == STATE_STATUS_SUBSCRIPTION,
-               event.name.hasPrefix("muxterm.pane-cmd")
-            {
-                let value = String(data: event.data, encoding: .utf8) ?? ""
-                if let workspaceID, let enqueueCoreCommand {
-                    _ = enqueueCoreCommand(.attention(
-                        workspaceID: workspaceID,
-                        .setProcessName(
-                            paneID: event.paneId,
-                            name: value.isEmpty ? nil : value
-                        ),
-                        failureMessage: ""
-                    ))
-                }
-            } else if event.isPaneOutput
+            // Core 已消费进程事实；Scene 不得把旧订阅异步写回 Activity。
+            if event.isPaneOutput
                 || event.isPaneFrame
                 || event.isPaneSnapshot
                 || event.isPaneHistory

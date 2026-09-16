@@ -30,6 +30,11 @@ where
         return value.trim().to_string();
     };
     let reported = reported.trim();
+    // #() 返回的是异步缓存；进程已回到 shell 或换成具名命令时，旧 argv
+    // 不得复活上一个 agent，也不应为每个 shell 同步启动两次本机 ps。
+    if !matches!(reported, "node" | "nodejs" | "npx" | "bun") {
+        return reported.to_string();
+    }
     let server_argv = fields
         .next()
         .map(str::trim)
@@ -101,5 +106,20 @@ mod tests {
             resolve_subscription_value_with("not-a-pid|htop", true, |_| None),
             "htop"
         );
+    }
+
+    #[test]
+    fn current_shell_or_named_command_overrides_cached_agent_argv() {
+        for command in ["zsh", "-bash", "htop", "cursor-agent"] {
+            let value = format!("42|{command}|node /usr/bin/codex --yolo");
+            for local in [false, true] {
+                assert_eq!(
+                    resolve_subscription_value_with(&value, local, |_| {
+                        panic!("only ambiguous wrappers need a process lookup")
+                    }),
+                    command
+                );
+            }
+        }
     }
 }

@@ -83,14 +83,14 @@ pub fn classify_agent_screen(agent: &str, screen: &ScreenSnapshot) -> Option<Pan
 
 fn rule_matches(rule: &Rule, screen: &ScreenSnapshot) -> bool {
     let (text, lines) = region_text(rule.region, screen);
-    if text.trim().is_empty() && !matches!(rule.region, Region::Whole) {
-        if !rule.contains.is_empty()
+    if text.trim().is_empty()
+        && !matches!(rule.region, Region::Whole)
+        && (!rule.contains.is_empty()
             || !rule.any_contains.is_empty()
             || !rule.line_regex.is_empty()
-            || !rule.regex.is_empty()
-        {
-            return false;
-        }
+            || !rule.regex.is_empty())
+    {
+        return false;
     }
     // Cursor 等高频 redraw 下每拍都会跑规则；haystack 只 lower 一次。
     let text_lower = text.to_ascii_lowercase();
