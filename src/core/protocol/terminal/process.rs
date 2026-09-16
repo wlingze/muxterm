@@ -261,10 +261,9 @@ pub fn foreground_process_name(pid: u32) -> Option<String> {
 
 /// 读取 pane 首进程的前台进程组 argv。
 ///
-/// tmux 的 `pane_current_command` 在 Linux 只保留前台进程组 leader 的
-/// argv0，因此 npm 安装的 Codex 会退化成 `node`。这里通过 pane shell 的
-/// `/proc/<pid>/stat` 找到 tpgid，再读取完整 cmdline；非 Linux 或没有本地
-/// `/proc` 时返回 None，由 Runtime 使用 tmux 的原值回退。
+/// tmux 的 `pane_current_command` 常只保留 argv0，npm 安装的 Codex/Cursor
+/// 会退化成 `node`。Linux 走 `/proc`；macOS/BSD 用 `ps` 读 tpgid + args。
+/// 都失败时返回 None，由 Runtime 回退到 tmux 原值。
 pub fn foreground_process_command(pid: u32) -> Option<String> {
     if pid == 0 {
         return None;
@@ -278,9 +277,56 @@ pub fn foreground_process_command(pid: u32) -> Option<String> {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = pid;
-        None
+        foreground_process_command_via_ps(pid)
     }
+}
+
+/// macOS/BSD：`ps -o tpgid= -p <pane_pid>` → `ps -ww -o args= -p <tpgid>`。
+/// 与 tmux pane-cmd 订阅里的 `#()` 同语义，供本地 Runtime 在订阅字段为空时补全。
+/// tpgid 为 0（无控制终端，如测试进程）时回退到该 pid 自身的 args。
+#[cfg(not(target_os = "linux"))]
+fn foreground_process_command_via_ps(pid: u32) -> Option<String> {
+    let tpgid = ps_column(pid, "tpgid")
+        .and_then(|value| value.parse::<u32>().ok())
+        .filter(|value| *value != 0)
+        .unwrap_or(pid);
+    let args = ps_column(tpgid, "args")?;
+    format_process_command_line(&args)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn ps_column(pid: u32, column: &str) -> Option<String> {
+    let output = std::process::Command::new("ps")
+        .args(["-ww", "-o", &format!("{column}="), "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && *line != "-")
+        .map(str::to_string)?;
+    Some(value)
+}
+
+fn format_process_command_line(command: &str) -> Option<String> {
+    const MAX_COMMAND_CHARS: usize = 1_024;
+    let mut cleaned = command
+        .chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if cleaned.is_empty() {
+        return None;
+    }
+    if cleaned.chars().count() > MAX_COMMAND_CHARS {
+        cleaned = cleaned.chars().take(MAX_COMMAND_CHARS).collect();
+    }
+    Some(cleaned)
 }
 
 /// 路径 basename（`/usr/bin/bash` → `bash`）。
@@ -318,25 +364,7 @@ fn parse_foreground_process_group(stat: &str) -> Option<u32> {
 
 #[cfg(target_os = "linux")]
 fn format_process_command(argv: &[String]) -> Option<String> {
-    const MAX_COMMAND_CHARS: usize = 1_024;
-    let mut command = argv
-        .iter()
-        .map(|arg| {
-            arg.chars()
-                .map(|ch| if ch.is_control() { ' ' } else { ch })
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-        .trim()
-        .to_string();
-    if command.is_empty() {
-        return None;
-    }
-    if command.chars().count() > MAX_COMMAND_CHARS {
-        command = command.chars().take(MAX_COMMAND_CHARS).collect();
-    }
-    Some(command)
+    format_process_command_line(&argv.join(" "))
 }
 
 #[cfg(target_os = "linux")]
@@ -426,8 +454,27 @@ mod tests {
     }
 
     #[test]
-    fn foreground_invalid_pid() {
-        assert!(foreground_process_name(0).is_none());
+    fn foreground_process_command_rejects_pid_zero() {
+        assert!(foreground_process_command(0).is_none());
+    }
+
+    #[test]
+    #[cfg(not(target_os = "linux"))]
+    fn foreground_process_command_via_ps_reads_self() {
+        let pid = std::process::id();
+        let command = foreground_process_command(pid);
+        assert!(
+            command.as_ref().is_some_and(|value| !value.is_empty()),
+            "macOS/BSD 必须能用 ps 读到本进程前台 argv，got={command:?}"
+        );
+    }
+
+    #[test]
+    fn format_process_command_line_strips_control_and_bounds() {
+        assert_eq!(
+            format_process_command_line("node /usr/bin/codex line\nvalue").as_deref(),
+            Some("node /usr/bin/codex line value")
+        );
     }
 
     #[test]

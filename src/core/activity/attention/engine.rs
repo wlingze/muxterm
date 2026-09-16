@@ -15,8 +15,12 @@ use super::signal::{is_transient_shell_command, AttentionSignal};
 use super::state::{transition, PaneEvent, PaneStatus};
 use crate::config::AttentionConfig;
 
-/// 普通命令要跑过这么久才进 Commands。pwd/回车/闪过去的 git status 不出现。
-const COMMAND_VISIBLE_AFTER: Duration = Duration::from_millis(1500);
+/// 普通命令要跑过这么久才进 Commands。
+///
+/// `pwd`/`ls` 等瞬间命令由 `is_transient_shell_command` 直接过滤；
+/// 这里只挡住闪过去的 `git status` / 空回车竞态。1.5s 太长会把
+/// `sleep 1`、短编译等真实命令也吃掉。
+const COMMAND_VISIBLE_AFTER: Duration = Duration::from_millis(400);
 
 fn listed_command_status(pane: &PaneAttention, now: Instant) -> PaneStatus {
     if pane.process_is_agent || pane.status != PaneStatus::Working {
@@ -35,22 +39,103 @@ const KNOWN_AGENTS: &[&str] = &[
     "grok", "windsurf", "kiro", "pi", "hermes", "droid",
 ];
 
+/// 可执行名别名 → 规范 agent id。`agent` 是 cursor-agent 的常见 symlink。
+const AGENT_ALIASES: &[(&str, &str)] = &[("agent", "cursor"), ("cursor-agent", "cursor")];
+
 /// 从进程名/argv 中识别通用 agent 名；不依赖具体 Runtime。
+///
+/// 优先匹配 **argv 各参数的 basename**（含 `cursor-agent` / `codex-cli` 前缀），
+/// 再回退到路径中间的精确段（如 `.../cursor-agent/.../index.js`）。
+/// 不把 `/opt/cursor/.../codex` 里的目录名 `cursor` 当成身份——那会和
+/// `/opt/codex-tools/cursor-agent` 互相标错。
 pub fn known_agent_process_name(value: &str) -> Option<&'static str> {
-    for token in value.split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))) {
-        if token.is_empty() {
+    for token in value.split_whitespace() {
+        let trimmed = token.trim_matches(|c: char| c == '\'' || c == '"');
+        if trimmed.is_empty() || trimmed.starts_with('-') {
             continue;
         }
-        let lower = token.to_ascii_lowercase();
-        if let Some(agent) = KNOWN_AGENTS.iter().find(|agent| {
-            lower == **agent
-                || lower.starts_with(&format!("{}-", agent))
-                || lower.starts_with(&format!("{}_", agent))
-        }) {
-            return Some(*agent);
+        let basename = trimmed.rsplit(['/', '\\']).next().unwrap_or(trimmed);
+        if let Some(agent) = match_agent_basename(basename) {
+            return Some(agent);
+        }
+    }
+    // node 跑 cursor-agent 的 index.js 时，basename 只是 node/index.js；
+    // 从路径段里找 agent。必须从右往左扫：`.../codex/.../cursor-agent/...`
+    // 里靠右的 cursor-agent 才是身份，左边的目录名不得抢先。
+    for token in value.split_whitespace() {
+        let segments: Vec<&str> = token.split(['/', '\\']).filter(|s| !s.is_empty()).collect();
+        for segment in segments.into_iter().rev() {
+            if let Some(agent) = match_agent_path_segment(segment) {
+                return Some(agent);
+            }
         }
     }
     None
+}
+
+fn match_agent_basename(token: &str) -> Option<&'static str> {
+    let lower = token.to_ascii_lowercase();
+    if let Some((_, agent)) = AGENT_ALIASES.iter().find(|(alias, _)| lower == *alias) {
+        return Some(*agent);
+    }
+    KNOWN_AGENTS.iter().copied().find(|agent| {
+        lower == *agent
+            || lower.starts_with(&format!("{agent}-"))
+            || lower.starts_with(&format!("{agent}_"))
+    })
+}
+
+fn match_agent_path_segment(segment: &str) -> Option<&'static str> {
+    if segment.is_empty() {
+        return None;
+    }
+    let lower = segment.to_ascii_lowercase();
+    if let Some((_, agent)) = AGENT_ALIASES.iter().find(|(alias, _)| lower == *alias) {
+        return Some(*agent);
+    }
+    KNOWN_AGENTS.iter().copied().find(|agent| lower == *agent)
+}
+
+/// 是否只是空闲交互 shell（pane-cmd 回到它 = 命令结束）。
+/// `bash -c ...` / `zsh -lc ...` 是实际命令，不能当作空闲容器。
+fn is_interactive_shell_command(command: &str) -> bool {
+    let mut words = command.split_whitespace();
+    let Some(executable) = words.next() else {
+        return false;
+    };
+    let base = executable
+        .trim_matches(|ch: char| ch == '\'' || ch == '"')
+        .trim_start_matches('-')
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(executable)
+        .to_ascii_lowercase();
+    let shell = matches!(
+        base.as_str(),
+        "zsh" | "bash" | "sh" | "fish" | "tcsh" | "csh" | "dash" | "ksh"
+    );
+    shell
+        && !words.any(|arg| {
+            arg == "-c"
+                || arg == "--command"
+                || (arg.starts_with('-')
+                    && !arg.starts_with("--")
+                    && arg.chars().skip(1).any(|ch| ch == 'c'))
+        })
+}
+
+/// 是否空闲交互 shell（zsh/bash 等，不含 `bash -c`）。
+pub fn is_interactive_shell(command: &str) -> bool {
+    is_interactive_shell_command(command)
+}
+
+/// pane-cmd 已回到 shell 时，scrollback 里的 agent command mark 不得再覆盖
+/// foreground，否则 idle shell 会重新 export 成 codex/cursor agent。
+pub fn should_skip_command_mark_on_shell_foreground(
+    shell_foreground: &str,
+    command_mark: &str,
+) -> bool {
+    is_interactive_shell(shell_foreground) && known_agent_process_name(command_mark).is_some()
 }
 
 /// 单个 pane 的注意力状态。
@@ -210,10 +295,17 @@ impl<C: Clock> AttentionEngine<C> {
                 entry.command_started_at,
             )
         };
-        let live_agent = self
-            .foreground_processes
-            .get(&key)
-            .is_some_and(|name| known_agent_process_name(name).is_some());
+        let live_agent = {
+            let entry_is_agent = self
+                .panes
+                .get(&key)
+                .is_some_and(|entry| entry.process_is_agent);
+            let process_is_agent = self
+                .foreground_processes
+                .get(&key)
+                .is_some_and(|name| known_agent_process_name(name).is_some());
+            entry_is_agent || process_is_agent
+        };
         let previous_status = status;
         let mut initial_status = None;
 
@@ -274,22 +366,32 @@ impl<C: Clock> AttentionEngine<C> {
         });
         // tmux 已知 agent：屏幕规则是 idle/working/blocked 的权威。
         // 没有快照时才退回输出启发式（单测 / 旧调用）。
+        // 输出未变时跳过 classify：规则本身无副作用，且 Cursor 多 pane
+        // 同批事件里不应重复跑全表 regex。首帧（previous_seq==0）必须跑。
         if live_agent && !authoritative {
             if let Some(screen) = screen {
-                let agent = self
-                    .foreground_processes
-                    .get(&key)
-                    .and_then(|name| known_agent_process_name(name))
-                    .unwrap_or("agent");
-                if let Some(next) = classify_agent_screen(agent, screen) {
-                    status = match next {
-                        PaneStatus::Idle
-                            if matches!(status, PaneStatus::Working | PaneStatus::Done) =>
-                        {
-                            PaneStatus::Done
-                        }
-                        other => other,
-                    };
+                if output_moved || previous_seq == 0 {
+                    let agent = self
+                        .panes
+                        .get(&key)
+                        .and_then(|entry| entry.agent_name.as_deref())
+                        .and_then(known_agent_process_name)
+                        .or_else(|| {
+                            self.foreground_processes
+                                .get(&key)
+                                .and_then(|name| known_agent_process_name(name))
+                        })
+                        .unwrap_or("agent");
+                    if let Some(next) = classify_agent_screen(agent, screen) {
+                        status = match next {
+                            PaneStatus::Idle
+                                if matches!(status, PaneStatus::Working | PaneStatus::Done) =>
+                            {
+                                PaneStatus::Done
+                            }
+                            other => other,
+                        };
+                    }
                 }
             } else {
                 if line_changed && !blocked_this_round && !initial_seed {
@@ -405,32 +507,45 @@ impl<C: Clock> AttentionEngine<C> {
         self.sync_notified(ws, pane, now);
     }
 
-    /// 是否只是空闲交互 shell（pane-cmd 回到它 = 命令结束）。
-    /// `bash -c ...` / `zsh -lc ...` 是实际命令，不能当作空闲容器。
     fn is_shell(command: &str) -> bool {
-        let mut words = command.split_whitespace();
-        let Some(executable) = words.next() else {
-            return false;
-        };
-        let base = executable
-            .trim_matches(|ch| ch == '\'' || ch == '"')
+        is_interactive_shell_command(command)
+    }
+
+    /// node/npx/bun 等脚本宿主：pane-cmd 常只报 basename，完整 argv 可能丢。
+    fn is_script_host_wrapper(command: &str) -> bool {
+        let token = command
+            .trim()
+            .trim_matches(|ch: char| ch == '\'' || ch == '"')
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
             .trim_start_matches('-')
             .rsplit(['/', '\\'])
             .next()
-            .unwrap_or(executable)
-            .to_ascii_lowercase();
-        let shell = matches!(
-            base.as_str(),
-            "zsh" | "bash" | "sh" | "fish" | "tcsh" | "csh" | "dash" | "ksh"
-        );
-        shell
-            && !words.any(|arg| {
-                arg == "-c"
-                    || arg == "--command"
-                    || (arg.starts_with('-')
-                        && !arg.starts_with("--")
-                        && arg.chars().skip(1).any(|ch| ch == 'c'))
-            })
+            .unwrap_or("");
+        matches!(
+            token.to_ascii_lowercase().as_str(),
+            "node" | "nodejs" | "npx" | "bun" | "deno" | "tsx" | "ts-node"
+        )
+    }
+
+    /// pane-cmd 当前 foreground 进程名（已 normalize）。
+    pub fn foreground_process_name(&self, ws: &str, pane: u32) -> Option<String> {
+        self.foreground_processes
+            .get(&(ws.to_string(), pane))
+            .cloned()
+    }
+
+    /// 该 pane 是否按 agent 跟踪（用于避免给普通 pane 建屏幕快照）。
+    pub fn is_tracked_agent(&self, ws: &str, pane: u32) -> bool {
+        let key = (ws.to_string(), pane);
+        self.panes
+            .get(&key)
+            .is_some_and(|entry| entry.process_is_agent)
+            || self
+                .foreground_processes
+                .get(&key)
+                .is_some_and(|name| known_agent_process_name(name).is_some())
     }
 
     /// 更新 pane 进程名；非 shell 进程名可作 Working 粗判来源（注释见 LINUX-PLAN §9）。
@@ -488,30 +603,59 @@ impl<C: Clock> AttentionEngine<C> {
                 entry.shell_name = normalized.clone();
                 // tmux pane-cmd 回到 zsh：agent 已经退出。Herdr 权威状态
                 // 由 Runtime 自己清；这里不能把 grok 继续留在 Agents 里当 idle。
-                if !authoritative_agent && entry.process_is_agent {
-                    entry.process_is_agent = false;
-                    entry.agent_name = None;
-                    entry.process_name = normalized.clone();
-                    if !matches!(entry.status, PaneStatus::Working) {
-                        entry.status = PaneStatus::Idle;
-                        entry.acknowledged = true;
+                if !authoritative_agent {
+                    let stale_agent_process = entry
+                        .process_name
+                        .as_deref()
+                        .is_some_and(|name| known_agent_process_name(name).is_some());
+                    if entry.process_is_agent || entry.agent_name.is_some() || stale_agent_process {
+                        entry.process_is_agent = false;
+                        entry.agent_name = None;
+                        // agent 退出或 pane-cmd 仍报 agent 路径时，展示名必须
+                        // 回到 shell；普通命令（cargo/sleep）仍保留 process_name
+                        // 供 Done 通知使用。
+                        entry.process_name = normalized.clone();
+                        if !matches!(entry.status, PaneStatus::Working) {
+                            entry.status = PaneStatus::Idle;
+                            entry.acknowledged = true;
+                        }
+                    } else if is_initial_process {
+                        entry.process_name = normalized.clone();
+                        entry.process_is_agent = false;
                     }
                 } else if is_initial_process {
                     entry.process_name = normalized.clone();
                     entry.process_is_agent = false;
                 }
             } else {
-                entry.process_name = normalized.clone();
-                entry.process_is_agent = process_is_agent;
-                if process_is_agent {
-                    entry.agent_name = Some(
-                        detected_agent
-                            .map(str::to_string)
-                            .unwrap_or_else(|| next_process.clone()),
-                    );
+                // SSH 上 pane-cmd 常只给 `node`（ps argv 为空）。不能把已识别
+                // 的 cursor/codex 身份冲掉，否则 Agents 丢识别且不再跑屏幕规则。
+                let keep_wrapper_agent = !process_is_agent
+                    && Self::is_script_host_wrapper(next_process)
+                    && entry.process_is_agent
+                    && entry.agent_name.is_some();
+                if keep_wrapper_agent {
+                    entry.process_is_agent = true;
+                    // 展示仍用已收敛的 agent 名；foreground 记真实 wrapper。
+                } else {
+                    entry.process_name = normalized.clone();
+                    entry.process_is_agent = process_is_agent;
+                    if process_is_agent {
+                        entry.agent_name = Some(
+                            detected_agent
+                                .map(str::to_string)
+                                .unwrap_or_else(|| next_process.clone()),
+                        );
+                    } else {
+                        entry.agent_name = None;
+                    }
                 }
             }
         }
+        let process_is_agent = {
+            let entry = self.panes.get(&(ws.to_string(), pane));
+            entry.is_some_and(|e| e.process_is_agent)
+        };
         let previous_was_shell = previous.as_deref().is_none_or(Self::is_shell);
         // pane-cmd may report only `node`/`pi` for wrappers. `process_name` is a
         // display field and intentionally retains the finished agent after the
@@ -1323,6 +1467,11 @@ mod tests {
             Some("cursor".into())
         );
         assert_eq!(
+            AttentionEngine::<FakeClock>::normalize_process_name("agent --resume"),
+            Some("cursor".into()),
+            "cursor-agent 的常见 symlink `agent` 必须识别为 cursor"
+        );
+        assert_eq!(
             AttentionEngine::<FakeClock>::normalize_process_name("/bin/zsh"),
             Some("zsh".into())
         );
@@ -1331,6 +1480,123 @@ mod tests {
             Some("pi".into()),
             "tmux pane_current_command reports the Pi coding agent as `pi`"
         );
+    }
+
+    #[test]
+    fn known_agent_matches_argv_basename_not_path_directories() {
+        assert_eq!(
+            known_agent_process_name("node /opt/cursor/node_modules/@openai/codex/bin/codex -m x"),
+            Some("codex"),
+            "路径里的 cursor 目录不得抢在可执行 basename codex 之前"
+        );
+        assert_eq!(
+            known_agent_process_name("node /opt/codex-tools/bin/cursor-agent --resume"),
+            Some("cursor"),
+            "路径里的 codex-tools 目录不得抢在 cursor-agent 之前"
+        );
+        assert_eq!(
+            known_agent_process_name(
+                "node /home/x/.local/share/cursor-agent/versions/2026.09.10/index.js"
+            ),
+            Some("cursor"),
+            "node 跑 cursor-agent 的 index.js 时应靠路径段 cursor-agent 识别"
+        );
+        assert_eq!(
+            known_agent_process_name("node /home/x/.cursor-server/bin/node-pty"),
+            None,
+            "cursor-server 不得被前缀误判成 cursor"
+        );
+        assert_eq!(
+            known_agent_process_name(
+                "node /Users/x/.codex/vendor/cursor-agent/versions/1/index.js"
+            ),
+            Some("cursor"),
+            "路径左侧的 .codex/codex 目录不得抢在右侧 cursor-agent 之前"
+        );
+        assert_eq!(
+            known_agent_process_name("node /Users/x/.codex/vendor/helper/index.js"),
+            None,
+            "仅配置目录名 .codex 不得当成 agent；段名是 .codex 不是 codex"
+        );
+        assert_eq!(
+            known_agent_process_name("zsh"),
+            None,
+            "空闲 shell 不得识别成 agent"
+        );
+    }
+
+    #[test]
+    fn bare_node_wrapper_keeps_recognized_cursor_agent() {
+        let mut e = AttentionEngine::new(AttentionConfig::default(), clock());
+        e.set_process_name("ws", 9, Some("zsh".into()));
+        e.set_process_name(
+            "ws",
+            9,
+            Some("node /home/x/.local/share/cursor-agent/versions/2026.09.10/index.js".into()),
+        );
+        assert_eq!(
+            e.snapshot()[0].panes[0].agent_name.as_deref(),
+            Some("cursor")
+        );
+        assert!(e.snapshot()[0].panes[0].process_is_agent);
+        // SSH 上后续订阅可能只剩 `node`；身份必须保住。
+        e.set_process_name("ws", 9, Some("node".into()));
+        let pane = &e.snapshot()[0].panes[0];
+        assert!(pane.process_is_agent, "bare node 不得冲掉 cursor 身份");
+        assert_eq!(pane.agent_name.as_deref(), Some("cursor"));
+        assert!(e.is_tracked_agent("ws", 9));
+    }
+
+    #[test]
+    fn nested_codex_dir_with_cursor_agent_stays_cursor_after_bare_node() {
+        let mut e = AttentionEngine::new(AttentionConfig::default(), clock());
+        e.set_process_name("muxterm", 20, Some("zsh".into()));
+        e.set_process_name(
+            "muxterm",
+            20,
+            Some("node /Users/x/.codex/vendor/cursor-agent/versions/2026.09.10/index.js".into()),
+        );
+        let pane = &e.snapshot()[0].panes[0];
+        assert_eq!(pane.agent_name.as_deref(), Some("cursor"));
+        assert!(pane.process_is_agent);
+        e.set_process_name("muxterm", 20, Some("node".into()));
+        let pane = &e.snapshot()[0].panes[0];
+        assert_eq!(
+            pane.agent_name.as_deref(),
+            Some("cursor"),
+            "bare node 必须保留已识别的 cursor，不能被路径里的 .codex 改成 codex"
+        );
+        // 同 Workspace 空闲 pane 不得因为别处有 agent 而沾上身份。
+        e.set_process_name("muxterm", 10, Some("zsh".into()));
+        e.set_process_name("muxterm", 30, Some("zsh".into()));
+        let snap = e.snapshot();
+        let ws = &snap[0];
+        assert!(ws
+            .panes
+            .iter()
+            .filter(|p| p.pane_id == 10 || p.pane_id == 30)
+            .all(|p| !p.process_is_agent && p.agent_name.is_none()));
+        assert_eq!(
+            ws.panes
+                .iter()
+                .find(|p| p.pane_id == 20)
+                .and_then(|p| p.agent_name.as_deref()),
+            Some("cursor")
+        );
+    }
+
+    #[test]
+    fn attention_keys_do_not_leak_agents_across_workspaces_with_same_pane_id() {
+        let mut e = AttentionEngine::new(AttentionConfig::default(), clock());
+        e.set_process_name("legion", 1, Some("codex".into()));
+        e.set_process_name("muxterm", 1, Some("zsh".into()));
+        let snap = e.snapshot();
+        let legion = snap.iter().find(|w| w.workspace_id == "legion").unwrap();
+        let muxterm = snap.iter().find(|w| w.workspace_id == "muxterm").unwrap();
+        assert_eq!(legion.panes[0].agent_name.as_deref(), Some("codex"));
+        assert!(legion.panes[0].process_is_agent);
+        assert!(!muxterm.panes[0].process_is_agent);
+        assert!(muxterm.panes[0].agent_name.is_none());
     }
 
     #[test]
@@ -1432,7 +1698,7 @@ mod tests {
             PaneStatus::Idle,
             "short-lived commands stay hidden until they last"
         );
-        c.advance(Duration::from_millis(1600));
+        c.advance(Duration::from_millis(450));
         assert_eq!(
             e.snapshot()[0].panes[0].status,
             PaneStatus::Working,
@@ -1468,7 +1734,7 @@ mod tests {
         e.set_process_name("ws", 1, Some("/bin/bash -c echo-ready".into()));
         let pane = &e.snapshot()[0].panes[0];
         assert_eq!(pane.process_name.as_deref(), Some("bash -c echo-ready"));
-        c.advance(Duration::from_millis(1600));
+        c.advance(Duration::from_millis(450));
         assert_eq!(e.snapshot()[0].panes[0].status, PaneStatus::Working);
 
         e.set_process_name("ws", 1, Some("/bin/zsh -l".into()));
@@ -1497,6 +1763,84 @@ mod tests {
     }
 
     #[test]
+    fn idle_shell_clears_stale_node_path_agent_identity() {
+        let mut e = AttentionEngine::new(AttentionConfig::default(), clock());
+        e.set_process_name(
+            "ws",
+            1,
+            Some("node /Users/x/.codex/vendor/cursor-agent/versions/1/index.js".into()),
+        );
+        assert!(e.snapshot()[0].panes[0].process_is_agent);
+        e.set_process_name("ws", 1, Some("zsh".into()));
+        let pane = &e.snapshot()[0].panes[0];
+        assert!(!pane.process_is_agent);
+        assert!(pane.agent_name.is_none());
+        assert_eq!(pane.process_name.as_deref(), Some("zsh"));
+        assert!(!e.is_tracked_agent("ws", 1));
+    }
+
+    #[test]
+    fn should_skip_agent_command_mark_on_shell_foreground_but_not_cargo() {
+        assert!(should_skip_command_mark_on_shell_foreground(
+            "zsh",
+            "node /Users/x/.codex/vendor/cursor-agent/versions/1/index.js"
+        ));
+        assert!(!should_skip_command_mark_on_shell_foreground(
+            "zsh",
+            "cargo test"
+        ));
+        assert!(!should_skip_command_mark_on_shell_foreground(
+            "node /Users/x/.codex/vendor/cursor-agent/versions/1/index.js",
+            "node /Users/x/.codex/vendor/cursor-agent/versions/1/index.js"
+        ));
+    }
+
+    #[test]
+    fn shell_foreground_survives_stale_agent_command_mark_reapply() {
+        let mut e = AttentionEngine::new(AttentionConfig::default(), clock());
+        e.set_process_name(
+            "ws",
+            1,
+            Some("node /Users/x/.codex/vendor/cursor-agent/versions/1/index.js".into()),
+        );
+        e.set_process_name("ws", 1, Some("zsh".into()));
+        let stale_mark = "node /Users/x/.codex/vendor/cursor-agent/versions/1/index.js".to_string();
+        let foreground = e
+            .foreground_process_name("ws", 1)
+            .expect("shell foreground");
+        assert!(should_skip_command_mark_on_shell_foreground(
+            &foreground,
+            &stale_mark
+        ));
+        if !should_skip_command_mark_on_shell_foreground(&foreground, &stale_mark) {
+            e.set_process_name("ws", 1, Some(stale_mark));
+        }
+        let pane = &e.snapshot()[0].panes[0];
+        assert!(!pane.process_is_agent);
+        assert!(pane.agent_name.is_none());
+        assert_eq!(pane.process_name.as_deref(), Some("zsh"));
+    }
+
+    #[test]
+    fn idle_shell_panes_never_export_as_agents_without_live_process() {
+        let mut e = AttentionEngine::new(AttentionConfig::default(), clock());
+        for pane_id in [71, 64, 85, 151] {
+            e.set_process_name("yaklang", pane_id, Some("zsh".into()));
+        }
+        let snap = e
+            .snapshot()
+            .into_iter()
+            .find(|ws| ws.workspace_id == "yaklang")
+            .expect("workspace snapshot");
+        assert!(
+            snap.panes
+                .iter()
+                .all(|pane| !pane.process_is_agent && pane.agent_name.is_none()),
+            "纯 idle shell pane 不得带 agent 标记给 frontend"
+        );
+    }
+
+    #[test]
     fn cursor_agent_rerun_after_shell_clears_and_reenters_working() {
         let mut e = AttentionEngine::new(AttentionConfig::default(), clock());
         e.set_process_name("ws", 9, Some("zsh".into()));
@@ -1518,6 +1862,12 @@ mod tests {
             !e.snapshot()[0].panes[0].process_is_agent,
             "退回 shell 后 Agents 应去掉这条"
         );
+        assert_eq!(
+            e.snapshot()[0].panes[0].process_name.as_deref(),
+            Some("zsh"),
+            "退回 shell 后 process_name 必须回到 zsh，不能停在 cursor-agent 路径"
+        );
+        assert!(!e.is_tracked_agent("ws", 9));
 
         e.on_became_visible("ws", 9);
         assert_eq!(e.snapshot()[0].panes[0].status, PaneStatus::Idle);
@@ -1602,7 +1952,7 @@ mod tests {
             PaneStatus::Idle,
             "刚启动的命令先不进 Commands"
         );
-        c.advance(Duration::from_millis(1600));
+        c.advance(Duration::from_millis(450));
         assert_eq!(e.snapshot()[0].panes[0].status, PaneStatus::Working);
     }
 
@@ -1733,6 +2083,7 @@ mod tests {
             ("droid droid-agent", Some("droid")),
             ("amp amp-agent", Some("amp")),
             ("/opt/cursor-agent", Some("cursor")),
+            ("agent", Some("cursor")),
             ("grok-1.0.25-mac", Some("grok")),
             ("grok", Some("grok")),
         ] {
