@@ -480,6 +480,7 @@ impl<C: Clock> AttentionEngine<C> {
 
     /// 工作区聚合快照。
     pub fn snapshot(&self) -> Vec<WorkspaceAttention> {
+        let now = self.clock.now();
         let mut map: HashMap<String, Vec<&PaneAttention>> = HashMap::new();
         for p in self.panes.values() {
             map.entry(p.workspace_id.clone()).or_default().push(p);
@@ -489,11 +490,19 @@ impl<C: Clock> AttentionEngine<C> {
             .map(|(workspace_id, panes)| {
                 let blocked = panes
                     .iter()
-                    .filter(|p| p.status == PaneStatus::Blocked && !p.acknowledged)
+                    .filter(|p| {
+                        p.status == PaneStatus::Blocked
+                            && !p.acknowledged
+                            && !p.mute_until.map(|until| until > now).unwrap_or(false)
+                    })
                     .count();
                 let done = panes
                     .iter()
-                    .filter(|p| p.status == PaneStatus::Done && !p.acknowledged)
+                    .filter(|p| {
+                        p.status == PaneStatus::Done
+                            && !p.acknowledged
+                            && !p.mute_until.map(|until| until > now).unwrap_or(false)
+                    })
                     .count();
                 let working = panes
                     .iter()
@@ -764,8 +773,10 @@ mod tests {
             1,
         );
         assert_eq!(e.blocked_workspace_count(), 1);
+        assert_eq!(e.snapshot()[0].blocked, 1);
         e.mute_for("ws", 1, Duration::from_secs(3600));
         assert_eq!(e.blocked_workspace_count(), 0);
+        assert_eq!(e.snapshot()[0].blocked, 0);
     }
 
     #[test]
