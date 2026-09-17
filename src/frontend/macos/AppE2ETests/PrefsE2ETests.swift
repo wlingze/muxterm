@@ -27,6 +27,12 @@ final class PrefsE2ETests: XCTestCase {
         let after = app.testTerminalFontSize()
         XCTAssertEqual(after, before + 1, accuracy: 0.01)
 
+        XCTAssertTrue(AppE2E.wait(timeout: 2) {
+            app.testPollOnce()
+            guard let persisted = try? String(contentsOf: config.configURL, encoding: .utf8)
+            else { return false }
+            return abs(MuxtermTerminalFont.settings(from: persisted).size - after) < 0.01
+        }, "字号配置必须在 event pump 提交后持久化")
         let persisted = try String(contentsOf: config.configURL, encoding: .utf8)
         XCTAssertEqual(MuxtermTerminalFont.settings(from: persisted).size, after, accuracy: 0.01)
         XCTAssertFalse(

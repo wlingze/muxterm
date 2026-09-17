@@ -188,6 +188,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private var terminalFontSettings: MuxtermTerminalFont.Settings
     /// Cmd +/- / Cmd 0 只写 Core `[font] size`；不再使用 UserDefaults 覆盖。
     private var configuredFontSize: CGFloat = MuxtermTerminalFont.defaultSize
+    /// 当前窗口已应用的主题。配置持久化经主线程 event pump 异步提交，
+    /// UI 在提交前不能回读 Core 旧快照，否则连续切换会两次都选中同一主题。
+    private var appliedTheme = MuxtermTheme.light
 
     /// Core 解析后的配置快照（`configDescribeJSON` → `data.values`）。
     private struct ResolvedSettings {
@@ -245,9 +248,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let resolved = Self.resolvedSettings(from: bridge)
         let initialWorkspace = bridge.workspaceList().first
         let initialWorkspaceID = initialWorkspace?.id
-        MuxtermTerminalColors.activePalette = MuxtermTheme.from(
-            name: resolved.themeName
-        ).palette
+        appliedTheme = MuxtermTheme.from(name: resolved.themeName)
+        MuxtermTerminalColors.activePalette = appliedTheme.palette
         configuredFontSize = MuxtermTerminalFont.clamp(resolved.fontSize)
         terminalFontSettings = MuxtermTerminalFont.Settings(
             family: resolved.fontFamily,
@@ -570,7 +572,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         bridge.selectWorkspace(initialWorkspaceID)
 
         installKeyEquivalents()
-        applyTheme(currentTheme())
+        applyTheme(currentTheme(), persist: false)
         refreshWorkspaceSidebar(force: true)
         startPolling()
         DispatchQueue.main.async { [weak self] in
@@ -876,16 +878,18 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         )
     }
 
-    /// 当前主题：从 Core 解析后的快照读取，缺省浅色。
+    /// 当前主题：返回窗口已应用的本地状态。
     func currentTheme() -> MuxtermTheme {
-        MuxtermTheme.from(name: Self.resolvedSettings(from: bridge).themeName)
+        appliedTheme
     }
 
-    /// 应用主题并持久化：更新终端默认色、重报 tmux 颜色，命令面板标题会
-    /// 在下次打开时显示当前主题。
-    private func applyTheme(_ theme: MuxtermTheme) {
-        let name = theme == .dark ? "black" : "white"
-        persistConfig([["op": "replace", "path": "/theme/name", "value": name]])
+    /// 应用主题：更新终端默认色、重报 tmux 颜色，用户操作时再异步持久化。
+    private func applyTheme(_ theme: MuxtermTheme, persist: Bool = true) {
+        appliedTheme = theme
+        if persist {
+            let name = theme == .dark ? "black" : "white"
+            persistConfig([["op": "replace", "path": "/theme/name", "value": name]])
+        }
         MuxtermTerminalColors.activePalette = theme.palette
         // Chrome 外观必须跟着主题走（light=aqua, dark=darkAqua），
         // 不能只写 UserDefaults（W19-A：主题切换失败）。

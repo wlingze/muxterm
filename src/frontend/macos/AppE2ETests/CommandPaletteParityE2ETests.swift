@@ -78,6 +78,12 @@ final class CommandPaletteParityE2ETests: XCTestCase {
         AppE2E.pump(40)
         app.testSelectPaletteTitle(MuxtermI18n.shared.tr(.menuIncreaseFontSize))
         XCTAssertEqual(app.testTerminalFontSize(), 19.0, accuracy: 0.01)
+        XCTAssertTrue(AppE2E.wait(timeout: 2) {
+            app.testPollOnce()
+            guard let persisted = try? String(contentsOf: config.configURL, encoding: .utf8)
+            else { return false }
+            return abs(MuxtermTerminalFont.settings(from: persisted).size - 19.0) < 0.01
+        }, "命令面板的字号配置必须经 event pump 持久化")
         let persisted = try String(contentsOf: config.configURL, encoding: .utf8)
         XCTAssertEqual(MuxtermTerminalFont.settings(from: persisted).size, 19.0, accuracy: 0.01)
     }
