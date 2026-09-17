@@ -837,7 +837,7 @@ Agents（聚合：各项目里的 agent pane / tab）
 切来切去都在 Workspaces 列表里。
 
 侧边栏和 Quick Panel 的 Workspaces 页必须消费同一份前端投影：最上面固定为
-`Shells`、`Agents`，分别显示字母地标 `T`、`A`；后面的真实项目 Workspace 才显示
+`Shells`、`Agents`，分别显示字母地标 `S`、`A`；后面的真实项目 Workspace 才显示
 `1`、`2`、`3`……。两处的顺序、选中态和点击目标一致；底层 ShellRuntime Workspace
 不在 `Shells` 之外重复占一行。
 
@@ -853,11 +853,11 @@ Agents（聚合：各项目里的 agent pane / tab）
 - 同样一个固定槽。Tab 列表 = 当前所有**包含 agent 的真实源 Tab**；一个源 Tab 只出现一页，同 Tab 有多个 agent 也不拆开。
 - 投影复用源 Tab 的完整布局和全部 Surface，包括同 Tab 里的 shell pane；不搬 PTY、不放大 agent pane、不合成一个 tmux session。
 - 进入 Agents 只切到对应源 Tab，不强制切换活动 pane，也不重新校准 pane 大小。
-- 只画当前 tab。在 Agents 里关 tab ≠ 杀 agent，只离开这个视图。
-- 不要在投影里 split / new tab 造假拓扑。
+- 只画当前 tab。在 Agents 里关 tab ≠ 杀 agent，只隐藏这个投影页。
+- 在投影里禁止新 Tab；split pane / close pane 直接操作当前真实源 Tab，结果同步回源 Workspace。
 - 标题带 `工作区 · 机器 · agent · title`（§19 / §20），两个 muxterm 才分得开。
 
-验收：侧边栏和 Quick Panel 顶部都先显示 `T Shells`、`A Agents`，后续项目从 1
+验收：侧边栏和 Quick Panel 顶部都先显示 `S Shells`、`A Agents`，后续项目从 1
 开始；`Cmd+Ctrl+S` 进 Shells，Tab 1 能敲本地命令；`Cmd+Ctrl+A` 进 Agents，切 tab
 等于跳到包含 agent 的完整源 Tab，源项目 Workspace 里的 tab 还在。
 
@@ -865,6 +865,20 @@ macOS 实现保持聚合槽只存前端身份：Shells 的每一页指向真实 
 Workspace/Tab，Agents 的每一页按 Workspace/源 Tab 标识并复用原
 `TerminalManager`、完整布局与全部 `MuxTerminalView`。固定槽不能关闭或拖动；Agents
 空槽仍可进入，关闭 agent 投影页不会关闭源 Tab 或 pane。
+
+### 23.3 打开 Workspace 时先进入可切走的加载页
+
+Project / Worktree / Existing 开始 attach 后，前端立即增加一个 `Opening` 投影并切过去；
+它出现在侧边栏和 Quick Panel 的同一份列表数据里，但不是 Core Workspace，也不占数字
+快捷键。spinner 只覆盖终端 PaneGrid，不遮挡 tab/status/侧栏。等待期间可以切回其它
+Workspace；若用户已经切走，attach 完成后只把新 Scene 隐藏插入，不能抢回焦点。
+
+### 23.4 高频 pane 不能拖住其它 pane
+
+Cursor/Codex 一类 TUI 可能在单个 pane 连续重画。Surface feed 与 Core Index 都必须按
+pane 轮转并设每轮字节/时间预算，同一 pane 内仍严格保序。某个 pane 的待处理输出超过
+上限时，只 fence 该 pane 并请求权威 snapshot/full frame；其它 pane 的显示、输入和
+Activity 继续前进。输入 FIFO 不因这项优化改序。
 
 ---
 
