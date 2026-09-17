@@ -580,6 +580,20 @@ final class WorkspaceSidebarE2ETests: XCTestCase {
         XCTAssertFalse(app.testSidebarOpen(), "再按 Cmd-B 应收起侧边栏")
     }
 
+    func testBottomBarButtonTogglesSidebarThroughProductionCallback() throws {
+        AppE2E.ensureApp()
+        let bridge = try CoreBridge(backendType: "local")
+        let app = MainWindowController(bridge: bridge)
+        defer { app.testShutdown() }
+        app.showWindow(nil)
+        app.testSetSidebarOpen(false)
+
+        app.content.statusBar.testClickSidebar()
+        XCTAssertTrue(app.testSidebarOpen())
+        app.content.statusBar.testClickSidebar()
+        XCTAssertFalse(app.testSidebarOpen())
+    }
+
     private func findView(_ root: NSView?, id: String) -> NSView? {
         guard let root else { return nil }
         if root.accessibilityIdentifier() == id { return root }

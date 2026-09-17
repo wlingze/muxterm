@@ -360,6 +360,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         content.statusBar.onToggleSidebar = { [weak self] in
             self?.toggleWorkspaceSidebar()
         }
+        content.statusBar.onWorkspaceClick = { [weak self] in
+            self?.openQuickConnect()
+        }
         wireTerminalManagerCallbacks()
 
         workspaceSidebar.onWorkspaceActivate = { [weak self] workspaceId in
@@ -1151,12 +1154,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func setWorkspaceSidebarOpen(_ open: Bool) {
-        sidebarSplitItem?.isCollapsed = !open
+        guard let sidebarSplitItem else { return }
+        sidebarSplitItem.isCollapsed = !open
         content.statusBar.sidebarOpen = open
         if open {
             refreshWorkspaceSidebar(force: true)
         }
-        window?.contentView?.needsLayout = true
+        // NSSplitViewController owns the divider geometry. Laying out only
+        // NSWindow.contentView can leave the toggle changed while the sidebar
+        // remains visually collapsed.
+        mainSplitController.view.needsLayout = true
+        mainSplitController.view.layoutSubtreeIfNeeded()
     }
 
     /// In-process E2E uses the same production toggle path.
@@ -1970,24 +1978,28 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         content.updateTabs(tabs)
         switch workspacePresentation {
         case .workspace:
+            content.statusBar.setWorkspacePresentation(.workspace)
             content.statusBar.allowsTabCreation = true
             content.statusBar.allowsTabRenaming = true
             content.statusBar.allowsTabClosing = true
             content.statusBar.allowsTabReordering = terminalManager.usesClientResize
             content.paneLayout.allowsPaneBreak = terminalManager.usesClientResize
         case .shells:
+            content.statusBar.setWorkspacePresentation(.shells)
             content.statusBar.allowsTabCreation = true
             content.statusBar.allowsTabRenaming = false
             content.statusBar.allowsTabClosing = true
             content.statusBar.allowsTabReordering = false
             content.paneLayout.allowsPaneBreak = false
         case .agents:
+            content.statusBar.setWorkspacePresentation(.agents)
             content.statusBar.allowsTabCreation = false
             content.statusBar.allowsTabRenaming = false
             content.statusBar.allowsTabClosing = true
             content.statusBar.allowsTabReordering = false
             content.paneLayout.allowsPaneBreak = false
         case .connecting:
+            content.statusBar.setWorkspacePresentation(.opening)
             content.statusBar.allowsTabCreation = false
             content.statusBar.allowsTabRenaming = false
             content.statusBar.allowsTabClosing = false

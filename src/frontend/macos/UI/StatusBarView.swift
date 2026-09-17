@@ -63,6 +63,7 @@ final class StatusBarView: NSView {
     var onRenameTab: ((UInt32) -> Void)?
     var onCloseTab: ((UInt32) -> Void)?
     var onMoveTab: ((UInt32, UInt32, Bool) -> Void)?
+    var onWorkspaceClick: (() -> Void)?
     var onAttentionClick: (() -> Void)?
     var sidebarOpen = false {
         didSet {
@@ -102,6 +103,7 @@ final class StatusBarView: NSView {
     private let leftLabel = NSTextField(labelWithString: "")
     private let rightLabel = NSTextField(labelWithString: "")
     private let statusDot = StatusDotButton()
+    private let workspaceButton = NSButton()
     private let attentionButton = AttentionBellButton()
     private let newTabButton = NSButton()
     private let edgeLine = CALayer()
@@ -120,6 +122,7 @@ final class StatusBarView: NSView {
     private var lastRightStyle = "default"
     private var lastPlainForeground: NSColor?
     private var currentTabs: [Tab] = []
+    private var workspacePresentation: StatusBarWorkspacePresentation = .workspace
     private var tmuxStatusEnabled = false
     private var edgeAtBottom = false
 
@@ -189,6 +192,18 @@ final class StatusBarView: NSView {
         statusDot.action = #selector(statusDotClicked)
         statusDot.translatesAutoresizingMaskIntoConstraints = false
 
+        // Workspace 快速入口。普通 Workspace 显示列表图标，固定聚合槽
+        // 显示醒目的 S/A 地标，让底栏本身就能说明当前投影语义。
+        workspaceButton.isBordered = false
+        workspaceButton.focusRingType = .none
+        workspaceButton.wantsLayer = true
+        workspaceButton.layer?.cornerRadius = 5
+        workspaceButton.target = self
+        workspaceButton.action = #selector(workspaceClicked)
+        workspaceButton.setAccessibilityIdentifier("muxterm.statusWorkspaces")
+        workspaceButton.translatesAutoresizingMaskIntoConstraints = false
+        setWorkspacePresentation(.workspace)
+
         // 原生通知铃铛：始终可发现；有消息时变红并显示数量。
         attentionButton.target = self
         attentionButton.action = #selector(attentionClicked)
@@ -209,7 +224,7 @@ final class StatusBarView: NSView {
 
         for view in [
             sidebarToggleButton, tabStack, leftLabel, rightLabel,
-            statusDot, attentionButton, newTabButton,
+            statusDot, workspaceButton, attentionButton, newTabButton,
         ] {
             view.translatesAutoresizingMaskIntoConstraints = false
             addSubview(view)
@@ -268,7 +283,12 @@ final class StatusBarView: NSView {
             attentionButton.widthAnchor.constraint(equalToConstant: 24),
             attentionButton.heightAnchor.constraint(equalToConstant: 20),
 
-            statusDot.trailingAnchor.constraint(equalTo: attentionButton.leadingAnchor, constant: -2),
+            workspaceButton.trailingAnchor.constraint(equalTo: attentionButton.leadingAnchor, constant: -2),
+            workspaceButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            workspaceButton.widthAnchor.constraint(equalToConstant: 24),
+            workspaceButton.heightAnchor.constraint(equalToConstant: 20),
+
+            statusDot.trailingAnchor.constraint(equalTo: workspaceButton.leadingAnchor, constant: -2),
             statusDot.centerYAnchor.constraint(equalTo: centerYAnchor),
             statusDot.widthAnchor.constraint(equalToConstant: 18),
             statusDot.heightAnchor.constraint(equalToConstant: 18),
@@ -317,6 +337,50 @@ final class StatusBarView: NSView {
             : .secondaryLabelColor
         sidebarToggleButton.toolTip = sidebarOpen ? "Hide Sidebar" : "Show Sidebar"
         sidebarToggleButton.setAccessibilityValue(sidebarOpen ? "open" : "closed")
+    }
+
+    func setWorkspacePresentation(_ presentation: StatusBarWorkspacePresentation) {
+        workspacePresentation = presentation
+        let symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 11, weight: .medium)
+        workspaceButton.imagePosition = .imageOnly
+        workspaceButton.image = nil
+        workspaceButton.title = ""
+        workspaceButton.font = NSFont.monospacedSystemFont(ofSize: 10, weight: .bold)
+        switch presentation {
+        case .workspace:
+            workspaceButton.image = NSImage(
+                systemSymbolName: "square.grid.2x2",
+                accessibilityDescription: nil
+            )?.withSymbolConfiguration(symbolConfiguration)
+            workspaceButton.contentTintColor = .secondaryLabelColor
+            workspaceButton.layer?.backgroundColor = NSColor.clear.cgColor
+            workspaceButton.toolTip = MuxtermI18n.shared.tr(.panelWorkspaces)
+            layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        case .shells:
+            workspaceButton.imagePosition = .noImage
+            workspaceButton.title = "S"
+            workspaceButton.contentTintColor = .systemTeal
+            workspaceButton.layer?.backgroundColor = NSColor.systemTeal.withAlphaComponent(0.16).cgColor
+            workspaceButton.toolTip = "Shells · Cmd-Ctrl-S"
+            layer?.backgroundColor = NSColor.systemTeal.withAlphaComponent(0.045).cgColor
+        case .agents:
+            workspaceButton.imagePosition = .noImage
+            workspaceButton.title = "A"
+            workspaceButton.contentTintColor = .systemPurple
+            workspaceButton.layer?.backgroundColor = NSColor.systemPurple.withAlphaComponent(0.17).cgColor
+            workspaceButton.toolTip = "Agents · Cmd-Ctrl-A"
+            layer?.backgroundColor = NSColor.systemPurple.withAlphaComponent(0.05).cgColor
+        case .opening:
+            workspaceButton.image = NSImage(
+                systemSymbolName: "ellipsis",
+                accessibilityDescription: nil
+            )?.withSymbolConfiguration(symbolConfiguration)
+            workspaceButton.contentTintColor = .systemYellow
+            workspaceButton.layer?.backgroundColor = NSColor.systemYellow.withAlphaComponent(0.12).cgColor
+            workspaceButton.toolTip = MuxtermI18n.shared.tr(.statusConnecting)
+            layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        }
+        workspaceButton.setAccessibilityLabel(workspaceButton.toolTip)
     }
 
     // MARK: - Tab 列表
@@ -370,6 +434,8 @@ final class StatusBarView: NSView {
                 TabBarItem(id: $0.id, index: nil, name: $0.name, active: $0.isActive)
             })
         }
+        // tmux status 更新只改变 left/right 文案；聚合槽身份必须保持。
+        setWorkspacePresentation(workspacePresentation)
         needsLayout = true
     }
 
@@ -783,6 +849,10 @@ final class StatusBarView: NSView {
         onToggleSidebar?()
     }
 
+    @objc private func workspaceClicked() {
+        onWorkspaceClick?()
+    }
+
     @objc private func renameTabFromMenu(_ sender: NSMenuItem) {
         onRenameTab?(UInt32(sender.tag))
     }
@@ -968,6 +1038,18 @@ final class StatusBarView: NSView {
 
     func testClickAttention() {
         attentionButton.performClick(nil)
+    }
+
+    func testClickWorkspace() {
+        workspaceButton.performClick(nil)
+    }
+
+    func testWorkspaceTitle() -> String {
+        workspaceButton.title
+    }
+
+    func testClickSidebar() {
+        sidebarToggleButton.performClick(nil)
     }
 
     func testStatusRightWidth() -> CGFloat {
