@@ -483,6 +483,54 @@ final class PaneOutputFeedPolicyTests: XCTestCase {
         XCTAssertTrue(SurfaceEventPolicy.shouldDeliver(viewCreationEnabled: false, hasView: true))
     }
 
+    func testFairPaneFeedSchedulerDoesNotLetChattyPaneStarveQuietPane() {
+        var scheduler = FairPaneFeedScheduler()
+        scheduler.append(paneID: 1, data: Data(repeating: 1, count: 96 * 1024))
+        scheduler.append(paneID: 2, data: Data([2]))
+
+        let first = scheduler.pop(maxBytes: 16 * 1024)
+        let second = scheduler.pop(maxBytes: 16 * 1024)
+        let third = scheduler.pop(maxBytes: 16 * 1024)
+
+        XCTAssertEqual(first?.paneID, 1)
+        XCTAssertEqual(first?.data.count, 16 * 1024)
+        XCTAssertEqual(second?.paneID, 2, "quiet pane must run after one chatty chunk")
+        XCTAssertEqual(second?.data, Data([2]))
+        XCTAssertEqual(third?.paneID, 1)
+    }
+
+    func testFairPaneFeedSchedulerPreservesOrderAndRotatesUnreadyPane() {
+        var scheduler = FairPaneFeedScheduler()
+        scheduler.append(paneID: 1, data: Data("ab".utf8))
+        scheduler.append(paneID: 1, data: Data("cd".utf8))
+        scheduler.append(paneID: 2, data: Data("z".utf8))
+        XCTAssertEqual(scheduler.pendingBytes(for: 1), 4)
+
+        let ready = scheduler.pop(maxBytes: 2) { $0 != 1 }
+        XCTAssertEqual(ready?.paneID, 2)
+        XCTAssertEqual(String(data: ready?.data ?? Data(), encoding: .utf8), "z")
+        let first = scheduler.pop(maxBytes: 2)
+        let second = scheduler.pop(maxBytes: 2)
+        XCTAssertEqual(String(data: first?.data ?? Data(), encoding: .utf8), "ab")
+        XCTAssertEqual(String(data: second?.data ?? Data(), encoding: .utf8), "cd")
+        XCTAssertEqual(scheduler.pendingBytes(for: 1), 0)
+        XCTAssertTrue(scheduler.isEmpty)
+    }
+
+    func testFairPaneFeedSchedulerCoalescesQueuedEventsWithoutReordering() {
+        var scheduler = FairPaneFeedScheduler()
+        for byte in UInt8(0)..<UInt8(100) {
+            scheduler.append(paneID: 1, data: Data([byte]))
+        }
+
+        let first = scheduler.pop(maxBytes: 64)
+        let second = scheduler.pop(maxBytes: 64)
+
+        XCTAssertEqual(first?.data, Data(UInt8(0)..<UInt8(64)))
+        XCTAssertEqual(second?.data, Data(UInt8(64)..<UInt8(100)))
+        XCTAssertTrue(scheduler.isEmpty)
+    }
+
     func testSurfaceEventBatchPolicyHonoursCallerBudget() {
         XCTAssertFalse(
             SurfaceEventBatchPolicy.shouldYield(

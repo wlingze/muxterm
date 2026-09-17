@@ -5,6 +5,51 @@ import MuxtermChrome
 
 /// iTerm2 风格的 macOS 浮层应紧凑、原生，并始终收在 owner window 内。
 final class NativePanelLayoutE2ETests: XCTestCase {
+    func testPanelNavigationAcceptsArrowsAndEmacsKeys() throws {
+        func event(
+            keyCode: UInt16,
+            characters: String,
+            flags: NSEvent.ModifierFlags = []
+        ) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.keyEvent(
+                with: .keyDown,
+                location: .zero,
+                modifierFlags: flags,
+                timestamp: 0,
+                windowNumber: 0,
+                context: nil,
+                characters: characters,
+                charactersIgnoringModifiers: characters,
+                isARepeat: false,
+                keyCode: keyCode
+            ))
+        }
+
+        XCTAssertEqual(
+            CompactPanelKeyNavigation.selectionOffset(for: try event(keyCode: 125, characters: "")),
+            1
+        )
+        XCTAssertEqual(
+            CompactPanelKeyNavigation.selectionOffset(for: try event(keyCode: 126, characters: "")),
+            -1
+        )
+        XCTAssertEqual(
+            CompactPanelKeyNavigation.selectionOffset(
+                for: try event(keyCode: 45, characters: "n", flags: .control)
+            ),
+            1
+        )
+        XCTAssertEqual(
+            CompactPanelKeyNavigation.selectionOffset(
+                for: try event(keyCode: 35, characters: "p", flags: .control)
+            ),
+            -1
+        )
+        XCTAssertNil(CompactPanelKeyNavigation.selectionOffset(
+            for: try event(keyCode: 45, characters: "n", flags: [.control, .shift])
+        ))
+    }
+
     func testCompactPanelGeometryClampsToOwnerContent() {
         XCTAssertEqual(
             CompactPanelLayout.contentSize(

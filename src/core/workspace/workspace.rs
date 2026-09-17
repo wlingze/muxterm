@@ -4,7 +4,7 @@
 //! `RenderEvent::PaneOutput` 时，Workspace 把原始字节喂进对应 Pane 的
 //! `TerminalState`（Index 面，供搜索/提醒；live 显示仍走 Surface 原始字节）。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::activity::attention::signal::AttentionSignal;
 use crate::activity::attention::state::PaneStatus;
@@ -30,6 +30,85 @@ pub struct SearchHit {
     pub line: String,
 }
 
+const INDEX_FEED_CHUNK_BYTES: usize = 16 * 1024;
+const INDEX_FEED_BUDGET_BYTES: usize = 64 * 1024;
+const INDEX_PANE_BACKLOG_LIMIT: usize = 2 * 1024 * 1024;
+
+#[derive(Default)]
+struct PaneIndexBacklog {
+    panes: HashMap<PaneId, VecDeque<Vec<u8>>>,
+    bytes: HashMap<PaneId, usize>,
+    order: VecDeque<PaneId>,
+    suspended: HashSet<PaneId>,
+}
+
+impl PaneIndexBacklog {
+    /// Returns true only when this append newly overflows and fences the pane.
+    fn append(&mut self, pane: PaneId, data: &[u8]) -> bool {
+        if data.is_empty() || self.suspended.contains(&pane) {
+            return false;
+        }
+        let pending = self.bytes.get(&pane).copied().unwrap_or(0);
+        if pending.saturating_add(data.len()) > INDEX_PANE_BACKLOG_LIMIT {
+            self.remove(pane);
+            self.suspended.insert(pane);
+            tracing::warn!(
+                target: "muxterm::index",
+                pane = pane.0,
+                backlog_limit = INDEX_PANE_BACKLOG_LIMIT,
+                "pane index backlog suspended until authoritative snapshot"
+            );
+            return true;
+        }
+        let queue = self.panes.entry(pane).or_default();
+        if queue.is_empty() {
+            self.order.push_back(pane);
+        }
+        queue.push_back(data.to_vec());
+        self.bytes.insert(pane, pending + data.len());
+        false
+    }
+
+    fn pop(&mut self, max_bytes: usize) -> Option<(PaneId, Vec<u8>)> {
+        let pane = self.order.pop_front()?;
+        let queue = self.panes.get_mut(&pane)?;
+        let mut data = queue.pop_front()?;
+        let limit = max_bytes.max(1);
+        let chunk = if data.len() > limit {
+            let tail = data.split_off(limit);
+            queue.push_front(tail);
+            data
+        } else {
+            data
+        };
+        let remaining = self
+            .bytes
+            .get(&pane)
+            .copied()
+            .unwrap_or(0)
+            .saturating_sub(chunk.len());
+        if queue.is_empty() {
+            self.panes.remove(&pane);
+            self.bytes.remove(&pane);
+        } else {
+            self.bytes.insert(pane, remaining);
+            self.order.push_back(pane);
+        }
+        Some((pane, chunk))
+    }
+
+    fn reset(&mut self, pane: PaneId) {
+        self.remove(pane);
+        self.suspended.remove(&pane);
+    }
+
+    fn remove(&mut self, pane: PaneId) {
+        self.panes.remove(&pane);
+        self.bytes.remove(&pane);
+        self.order.retain(|queued| *queued != pane);
+    }
+}
+
 /// 一个工作区：稳定 id + 一个 Runtime + 本工作区 pane 缓冲（PaneBuf）。
 pub struct Workspace {
     id: WorkspaceId,
@@ -43,6 +122,10 @@ pub struct Workspace {
     scrollback_lines: usize,
     agents: HashMap<PaneId, PaneAgentInfo>,
     runtime_attention: HashMap<PaneId, Vec<AttentionSignal>>,
+    /// PaneOutput parsing is chunked round-robin so one repaint-heavy agent
+    /// cannot monopolize the shared Workspace event pump.
+    pending_index_output: PaneIndexBacklog,
+    indexed_panes: HashSet<PaneId>,
     /// Catalog 打开时保存的规范化目标（W6 §11.2）。
     /// Recent/重连/高亮只读这份 Core 元数据，禁止从 WorkspaceId 反向猜。
     resolved_target: Option<crate::catalog::ResolvedTarget>,
@@ -75,6 +158,8 @@ impl Workspace {
             scrollback_lines: scrollback_lines.max(1),
             agents: HashMap::new(),
             runtime_attention: HashMap::new(),
+            pending_index_output: PaneIndexBacklog::default(),
+            indexed_panes: HashSet::new(),
             resolved_target: None,
             provenance: None,
             template_application: None,
@@ -578,6 +663,8 @@ impl Workspace {
                     self.panes.remove(pane);
                     self.agents.remove(pane);
                     self.runtime_attention.remove(pane);
+                    self.pending_index_output.remove(*pane);
+                    self.indexed_panes.remove(pane);
                 }
                 ControlEvent::WorkspaceRenamed { name } => self.name.clone_from(name),
                 _ => {}
@@ -613,14 +700,87 @@ impl Workspace {
 
         for event in &batch.render {
             if !matches!(event, RenderEvent::PaneOutput { .. }) {
+                match event {
+                    RenderEvent::PaneSnapshot { pane, .. }
+                    | RenderEvent::PaneFrame { pane, .. }
+                    | RenderEvent::PaneIndexSnapshot { pane, .. } => {
+                        self.pending_index_output.reset(*pane);
+                    }
+                    RenderEvent::PaneHistory { .. } | RenderEvent::PaneOutput { .. } => {}
+                }
                 self.feed_render_event(event, &closed_panes);
+                let pane = match event {
+                    RenderEvent::PaneSnapshot { pane, .. }
+                    | RenderEvent::PaneFrame { pane, .. }
+                    | RenderEvent::PaneIndexSnapshot { pane, .. }
+                    | RenderEvent::PaneHistory { pane, .. }
+                    | RenderEvent::PaneOutput { pane, .. } => *pane,
+                };
+                self.indexed_panes.insert(pane);
             }
         }
+        let mut snapshot_requests = Vec::new();
         for event in &batch.render {
-            if matches!(event, RenderEvent::PaneOutput { .. }) {
-                self.feed_render_event(event, &closed_panes);
+            if let RenderEvent::PaneOutput { pane, data } = event {
+                if !closed_panes.contains(pane) && self.pending_index_output.append(*pane, data) {
+                    snapshot_requests.push(*pane);
+                }
             }
         }
+        self.drain_index_output();
+        for pane in snapshot_requests {
+            match self
+                .model
+                .execute(Task::RequestPaneSnapshot { target: pane })
+            {
+                Ok(TaskOutcome::Rejected { reason }) => {
+                    // Direct PTY runtimes cannot capture an authoritative
+                    // baseline. Reset only this Index parser and resume from
+                    // the next complete runtime output event.
+                    self.pending_index_output.reset(pane);
+                    self.panes.remove(&pane);
+                    tracing::warn!(
+                        target: "muxterm::index",
+                        pane = pane.0,
+                        %reason,
+                        "pane index snapshot unavailable; reset isolated parser"
+                    );
+                }
+                Err(error) => {
+                    self.pending_index_output.reset(pane);
+                    self.panes.remove(&pane);
+                    tracing::warn!(
+                        target: "muxterm::index",
+                        pane = pane.0,
+                        %error,
+                        "pane index snapshot request failed; reset isolated parser"
+                    );
+                }
+                Ok(_) => {}
+            }
+        }
+    }
+
+    fn drain_index_output(&mut self) {
+        let mut consumed = 0usize;
+        let closed = HashSet::new();
+        while consumed < INDEX_FEED_BUDGET_BYTES {
+            let remaining = INDEX_FEED_BUDGET_BYTES - consumed;
+            let Some((pane, data)) = self
+                .pending_index_output
+                .pop(remaining.min(INDEX_FEED_CHUNK_BYTES))
+            else {
+                break;
+            };
+            consumed = consumed.saturating_add(data.len());
+            self.feed_render_event(&RenderEvent::PaneOutput { pane, data }, &closed);
+            self.indexed_panes.insert(pane);
+        }
+    }
+
+    /// Panes whose Index advanced since Activity last observed this Workspace.
+    pub(crate) fn take_indexed_panes(&mut self) -> HashSet<PaneId> {
+        std::mem::take(&mut self.indexed_panes)
     }
 
     fn feed_render_event(
@@ -841,6 +1001,81 @@ mod tests {
             }
         )));
         assert!(w.pane_text(PaneId(1)).contains("MUXTERM_TOKEN"));
+    }
+
+    #[test]
+    fn index_output_scheduler_gives_quiet_pane_a_turn_during_agent_flood() {
+        let mut w = workspace("fair-index");
+        let chatty = vec![b'x'; 256 * 1024];
+        let quiet = b"QUIET_PANE_READY\r\n".to_vec();
+        let mut batch = RuntimeBatch::default();
+        batch.render.push(RenderEvent::PaneOutput {
+            pane: PaneId(1),
+            data: chatty.clone(),
+        });
+        batch.render.push(RenderEvent::PaneOutput {
+            pane: PaneId(2),
+            data: quiet.clone(),
+        });
+
+        w.feed_batch(&batch);
+
+        assert_eq!(w.pane_raw_bytes(PaneId(2)), quiet);
+        assert!(
+            w.pane_raw_bytes(PaneId(1)).len() < chatty.len(),
+            "chatty pane should remain chunked instead of monopolizing one refresh"
+        );
+        assert_eq!(
+            w.take_indexed_panes(),
+            HashSet::from([PaneId(1), PaneId(2)])
+        );
+    }
+
+    #[test]
+    fn overflowing_one_index_backlog_suspends_only_that_pane() {
+        let mut backlog = PaneIndexBacklog::default();
+        assert!(backlog.append(PaneId(1), &vec![0; INDEX_PANE_BACKLOG_LIMIT + 1]));
+        assert!(!backlog.append(PaneId(2), b"ok"));
+
+        let (pane, data) = backlog.pop(16).expect("quiet pane must remain queued");
+        assert_eq!(pane, PaneId(2));
+        assert_eq!(data, b"ok");
+        assert!(backlog.suspended.contains(&PaneId(1)));
+
+        backlog.reset(PaneId(1));
+        assert!(!backlog.append(PaneId(1), b"snapshot-tail"));
+        assert_eq!(backlog.pop(32).unwrap().0, PaneId(1));
+    }
+
+    #[test]
+    fn overflowing_index_backlog_requests_snapshot_for_only_that_pane() {
+        use std::sync::{Arc, Mutex};
+
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut runtime = MockRuntime::with_single_pane();
+        runtime.executed_log = Some(log.clone());
+        let id = WorkspaceId::new("local", None, "overflow", "tmux", "");
+        let mut workspace = Workspace::new(id, "overflow".into(), Box::new(runtime));
+        workspace.feed_batch(&RuntimeBatch {
+            render: vec![RenderEvent::PaneOutput {
+                pane: PaneId(1),
+                data: vec![b'x'; INDEX_PANE_BACKLOG_LIMIT + 1],
+            }],
+            ..RuntimeBatch::default()
+        });
+
+        let executed = log.lock().unwrap();
+        assert_eq!(
+            executed
+                .iter()
+                .filter(|task| matches!(task, Task::RequestPaneSnapshot { .. }))
+                .count(),
+            1
+        );
+        assert!(matches!(
+            executed.last(),
+            Some(Task::RequestPaneSnapshot { target: PaneId(1) })
+        ));
     }
 
     #[test]

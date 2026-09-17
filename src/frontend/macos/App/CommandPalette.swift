@@ -1,5 +1,31 @@
 import AppKit
 
+/// 快速浮层列表共用的上下导航。方向键与 Emacs 的 Ctrl-N/Ctrl-P
+/// 使用同一条选择路径，避免每个 panel 对修饰键的处理逐渐分叉。
+enum CompactPanelKeyNavigation {
+    static func selectionOffset(for event: NSEvent) -> Int? {
+        switch event.keyCode {
+        case 125: return 1
+        case 126: return -1
+        default: break
+        }
+
+        let flags = event.modifierFlags
+            .intersection(.deviceIndependentFlagsMask)
+            .intersection([.command, .option, .control, .shift])
+        guard flags == [.control] else { return nil }
+        switch event.charactersIgnoringModifiers?.lowercased() {
+        case "n": return 1
+        case "p": return -1
+        default:
+            // 输入法未提供 characters 时，仍按物理 N/P 键识别。
+            if event.keyCode == 45 { return 1 }
+            if event.keyCode == 35 { return -1 }
+            return nil
+        }
+    }
+}
+
 /// macOS 浮层的统一几何：优先使用紧凑尺寸，小窗口时留 12pt 四周边距。
 enum CompactPanelLayout {
     static let edgeClearance: CGFloat = 24
@@ -274,15 +300,13 @@ final class CommandPaletteController: NSWindowController, NSSearchFieldDelegate,
     private func installKeyMonitor() {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, self.window?.isKeyWindow == true else { return event }
+            if let offset = CompactPanelKeyNavigation.selectionOffset(for: event) {
+                self.selectRow(offset: offset)
+                return nil
+            }
             switch event.keyCode {
             case 53: // Escape
                 self.dismiss()
-                return nil
-            case 125: // Down
-                self.selectRow(offset: 1)
-                return nil
-            case 126: // Up
-                self.selectRow(offset: -1)
                 return nil
             case 36, 76: // Return / keypad Enter
                 self.activateSelected()

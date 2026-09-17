@@ -30,6 +30,10 @@ extension MainWindowController {
         workspaceSidebar.testWorkspaceShortcutTexts()
     }
 
+    func testSidebarAllWorkspaceIDs() -> [String] {
+        workspaceSidebar.testWorkspaceIDs()
+    }
+
     func testSidebarAgentCount() -> Int {
         workspaceSidebar.testAgentCount()
     }
@@ -681,6 +685,18 @@ extension MainWindowController {
     func testConnectProgressValue() -> String {
         let view = testView(identifier: ConnectProgress.identifier)
         return (view?.accessibilityValue() as? String) ?? view?.toolTip ?? ""
+    }
+
+    func testConnectProgressFrame() -> NSRect {
+        content.connectProgressOverlay.frame
+    }
+
+    func testPaneLayoutFrame() -> NSRect {
+        content.paneLayout.frame
+    }
+
+    func testStatusBarFrame() -> NSRect {
+        content.statusBar.frame
     }
 
     func testReplyOverlayVisible() -> Bool {
