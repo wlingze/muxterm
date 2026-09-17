@@ -108,6 +108,10 @@ extension MainWindowController {
             && content.paneLayout.testPaneSurfaceVisible(paneId)
     }
 
+    func testPaneTitleVisible(_ paneId: UInt32) -> Bool {
+        content.paneLayout.testPaneTitleVisible(paneId)
+    }
+
     func testPaneTerminalText(_ paneId: UInt32) -> String {
         terminalManager.view(for: paneId).visibleScreenText()
     }

@@ -47,6 +47,7 @@ final class PaneLayoutView: NSView {
         didSet {
             for host in hostByPane.values {
                 host.setAllowsMoveToNewTab(allowsPaneBreak && currentPaneIds.count > 1)
+                host.setTitleDragEnabled(allowsPaneBreak && currentPaneIds.count > 1)
             }
         }
     }
@@ -212,6 +213,8 @@ final class PaneLayoutView: NSView {
         currentPaneIds = ids
         for host in hostByPane.values {
             host.setAllowsMoveToNewTab(allowsPaneBreak && ids.count > 1)
+            host.setShowsTitleBar(ids.count > 1)
+            host.setTitleDragEnabled(allowsPaneBreak && ids.count > 1)
         }
         markActivePane(active)
         tabTrees[tabId] = CachedTabTree(
@@ -333,6 +336,8 @@ final class PaneLayoutView: NSView {
         // 但停驻树可能是 0×0 建的，必须按现在的 host 像素重算格子。
         for host in hostByPane.values {
             host.setAllowsMoveToNewTab(allowsPaneBreak && currentPaneIds.count > 1)
+            host.setShowsTitleBar(currentPaneIds.count > 1)
+            host.setTitleDragEnabled(allowsPaneBreak && currentPaneIds.count > 1)
         }
         markActivePane(cached.activePaneId)
         if TabGeometrySyncPolicy.shouldSyncOnCachedReveal() {
@@ -346,6 +351,10 @@ final class PaneLayoutView: NSView {
 
     func testPaneSurfaceVisible(_ paneId: UInt32) -> Bool {
         hostByPane[paneId]?.isHidden == false
+    }
+
+    func testPaneTitleVisible(_ paneId: UInt32) -> Bool {
+        hostByPane[paneId]?.isTitleBarVisibleForTesting == true
     }
 
     func testMovePaneToNewTab(_ paneId: UInt32) {
@@ -461,6 +470,8 @@ final class PaneLayoutView: NSView {
                 self?.onMovePaneToNewTab?(id)
             }
             wrap.setAllowsMoveToNewTab(false)
+            wrap.setShowsTitleBar(false)
+            wrap.setTitleDragEnabled(false)
             hostByPane[paneId] = wrap
             return wrap
 
@@ -525,6 +536,7 @@ final class PaneHostView: NSView {
     private var isPaneActive = false
     private let moveToNewTabItem: NSMenuItem
     private let moveSeparator: NSMenuItem
+    private let titleBar: PaneTitleBarView
 
     init(paneId: UInt32, terminal: MuxTerminalView) {
         self.paneId = paneId
@@ -534,6 +546,7 @@ final class PaneHostView: NSView {
             keyEquivalent: ""
         )
         self.moveSeparator = NSMenuItem.separator()
+        self.titleBar = PaneTitleBarView(paneId: paneId)
         super.init(frame: .zero)
         wantsLayer = true
         layer?.masksToBounds = true
@@ -558,6 +571,23 @@ final class PaneHostView: NSView {
             terminal.trailingAnchor.constraint(equalTo: trailingAnchor),
             terminal.topAnchor.constraint(equalTo: topAnchor),
             terminal.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+
+        titleBar.translatesAutoresizingMaskIntoConstraints = false
+        titleBar.isHidden = true
+        titleBar.onActivate = { [weak self] in
+            guard let self else { return }
+            self.onActivate?(self.paneId)
+        }
+        titleBar.onDragOut = { [weak self] in
+            self?.triggerMoveToNewTab()
+        }
+        addSubview(titleBar)
+        NSLayoutConstraint.activate([
+            titleBar.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 1),
+            titleBar.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -1),
+            titleBar.topAnchor.constraint(equalTo: topAnchor, constant: 1),
+            titleBar.heightAnchor.constraint(equalToConstant: 20),
         ])
 
         let contextMenu = NSMenu()
@@ -595,6 +625,7 @@ final class PaneHostView: NSView {
         layer?.borderWidth = active ? FlatChrome.activePaneBorderWidth : 0
         layer?.borderColor = active ? NSColor.controlAccentColor.cgColor : nil
         layer?.cornerRadius = 0
+        titleBar.setActive(active)
         publishGeometry()
     }
 
@@ -615,6 +646,16 @@ final class PaneHostView: NSView {
         moveSeparator.isHidden = !allowed
         moveToNewTabItem.isHidden = !allowed
     }
+
+    func setShowsTitleBar(_ visible: Bool) {
+        titleBar.isHidden = !visible
+    }
+
+    func setTitleDragEnabled(_ enabled: Bool) {
+        titleBar.dragEnabled = enabled
+    }
+
+    var isTitleBarVisibleForTesting: Bool { !titleBar.isHidden }
 
     func triggerMoveToNewTab() {
         guard !moveToNewTabItem.isHidden else { return }
@@ -642,6 +683,89 @@ final class PaneHostView: NSView {
     override func mouseDown(with event: NSEvent) {
         onActivate?(paneId)
         super.mouseDown(with: event)
+    }
+}
+
+/// 多 pane 时覆盖在 Surface 顶部的轻标题条。覆盖而非占位可保持 tmux
+/// 的 rows 与可见 Surface 高度一致，避免标题条本身制造新的 grid 偏差。
+private final class PaneTitleBarView: NSView {
+    var onActivate: (() -> Void)?
+    var onDragOut: (() -> Void)?
+    var dragEnabled = false
+    private let label = NSTextField(labelWithString: "")
+    private let handle = NSImageView()
+
+    init(paneId: UInt32) {
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.88).cgColor
+        layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.5).cgColor
+        layer?.borderWidth = 0.5
+
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.stringValue = "@\(paneId)"
+        label.font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .medium)
+        label.textColor = .secondaryLabelColor
+        label.lineBreakMode = .byTruncatingTail
+        addSubview(label)
+
+        handle.translatesAutoresizingMaskIntoConstraints = false
+        handle.image = NSImage(
+            systemSymbolName: "line.3.horizontal",
+            accessibilityDescription: nil
+        )
+        handle.contentTintColor = .tertiaryLabelColor
+        handle.imageScaling = .scaleProportionallyDown
+        addSubview(handle)
+
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 7),
+            label.centerYAnchor.constraint(equalTo: centerYAnchor),
+            label.trailingAnchor.constraint(lessThanOrEqualTo: handle.leadingAnchor, constant: -6),
+            handle.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
+            handle.centerYAnchor.constraint(equalTo: centerYAnchor),
+            handle.widthAnchor.constraint(equalToConstant: 12),
+            handle.heightAnchor.constraint(equalToConstant: 12),
+        ])
+        setAccessibilityRole(.group)
+        setAccessibilityLabel("Pane @\(paneId)")
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { nil }
+
+    func setActive(_ active: Bool) {
+        label.textColor = active ? .controlAccentColor : .secondaryLabelColor
+        layer?.backgroundColor = (active
+            ? NSColor.controlAccentColor.withAlphaComponent(0.13)
+            : NSColor.windowBackgroundColor.withAlphaComponent(0.88)
+        ).cgColor
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        onActivate?()
+        guard dragEnabled, let window else { return }
+        let start = event.locationInWindow
+        var dragged = false
+        while let next = window.nextEvent(
+            matching: [.leftMouseDragged, .leftMouseUp],
+            until: .distantFuture,
+            inMode: .eventTracking,
+            dequeue: true
+        ) {
+            if next.type == .leftMouseDragged {
+                let dx = next.locationInWindow.x - start.x
+                let dy = next.locationInWindow.y - start.y
+                if hypot(dx, dy) >= 5 {
+                    dragged = true
+                    alphaValue = 0.65
+                }
+            } else if next.type == .leftMouseUp {
+                alphaValue = 1
+                if dragged { onDragOut?() }
+                return
+            }
+        }
     }
 }
 

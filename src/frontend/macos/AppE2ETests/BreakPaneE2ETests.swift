@@ -5,6 +5,24 @@ import MuxtermChrome
 
 /// 把 pane 拖成新 tab = tmux `break-pane`（iTerm2 breakOutWindowPane / MoveSessionToNewTab）。
 final class BreakPaneE2ETests: XCTestCase {
+    func testPaneTitlesAppearOnlyForSplitTabs() throws {
+        let single = OnePaneCat(label: "pane-title-single")
+        let singleApp = try AppE2E.attachWindow(socket: single.socket, session: single.session)
+        XCTAssertTrue(singleApp.waitReady(minLeaves: 1))
+        let onlyPane = try XCTUnwrap(singleApp.testLayoutLeafIDs().first)
+        XCTAssertFalse(singleApp.testPaneTitleVisible(onlyPane))
+        singleApp.testShutdown()
+
+        let split = TwoPaneCat(label: "pane-title-split")
+        let splitApp = try AppE2E.attachWindow(socket: split.socket, session: split.session)
+        defer { splitApp.testShutdown() }
+        XCTAssertTrue(splitApp.waitReady(minLeaves: 2))
+        XCTAssertTrue(
+            splitApp.testLayoutLeafIDs().allSatisfy { splitApp.testPaneTitleVisible($0) },
+            "多 pane tab 的每个 Surface 都应显示轻标题条"
+        )
+    }
+
     func testBreakPaneCreatesNewTabWithoutExtraHierarchy() throws {
         let fx = TwoPaneCat(label: "break-p")
         let app = try AppE2E.attachWindow(socket: fx.socket, session: fx.session)
