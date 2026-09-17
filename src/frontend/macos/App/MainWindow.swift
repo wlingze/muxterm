@@ -436,6 +436,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     completion: request.completion
                 )
             },
+            filterSearchHits: { [weak self] hits, scope in
+                self?.filterSearchHitsForPanel(hits, scope: scope) ?? []
+            },
             workspaceIndex: { [weak self] config in
                 self?.workspaceShortcutIndex(for: config)
             },
@@ -1397,6 +1400,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         nextSearchRequestID += 1
         pendingSearchCompletions[requestID] = { [weak self] hits in
             guard let self else { return }
+            self.cacheActiveWorkspaceIdentity(from: hits)
             var uniqueHits: [SearchHit] = []
             var seen = Set<String>()
             for hit in hits {
@@ -1405,12 +1409,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     uniqueHits.append(hit)
                 }
             }
-            completion(scope.filter(
-                uniqueHits,
-                activePane: self.activePaneID,
-                workspaceId: self.activeWorkspaceReplicaID,
-                workspacePaneIDs: self.activeWorkspacePaneIDs()
-            ))
+            completion(self.filterSearchHitsForPanel(uniqueHits, scope: scope))
         }
         let accepted = enqueueCoreCommand(.search(
             query: query,
@@ -1420,6 +1419,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             pendingSearchCompletions.removeValue(forKey: requestID)
             completion([])
         }
+    }
+
+    private func cacheActiveWorkspaceIdentity(from hits: [SearchHit]) {
+        guard let activeKey = sceneStack.activeKey,
+              let activeScene = sceneStack.scenes[activeKey]
+        else {
+            return
+        }
+        let expectedWorkspaceID = workspaceReplicaID(for: activeScene)
+        guard hits.contains(where: { $0.workspaceId == expectedWorkspaceID }) else { return }
+        activeScene.cacheWorkspaceReplicaID(expectedWorkspaceID)
     }
 
     private func finishSearchRequest(_ requestID: UInt64, hits: [SearchHit]) {
@@ -1452,6 +1462,26 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     private func finishPaneOutputRequest(_ requestID: UInt64, data: Data) {
         pendingPaneOutputCompletions.removeValue(forKey: requestID)?(data)
+    }
+
+    private func filterSearchHitsForPanel(
+        _ hits: [SearchHit],
+        scope: SearchScope
+    ) -> [SearchHit] {
+        let activePaneIDs: Set<UInt32>
+        if let activeKey = sceneStack.activeKey,
+           let activeScene = sceneStack.scenes[activeKey]
+        {
+            activePaneIDs = paneIDsForScene(activeScene)
+        } else {
+            activePaneIDs = Set(lastSnapshot.panes.map(\.id))
+        }
+        return scope.filter(
+            hits,
+            activePane: activePaneID,
+            workspaceId: activeWorkspaceReplicaID,
+            workspacePaneIDs: activePaneIDs
+        )
     }
 
     private func paneIDsForScene(_ scene: WorkspaceScene) -> Set<UInt32> {
