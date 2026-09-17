@@ -16,6 +16,7 @@ final class ContentView: NSView {
     /// OSC 133 命令轨（滚动条一侧覆盖层，绿成功 / 红失败）。
     let commandMarkRail = CommandMarkRailView()
     private var jumpLatestTrailing: NSLayoutConstraint?
+    private var lastSeenTrailing: NSLayoutConstraint?
     private var railWidthConstraint: NSLayoutConstraint?
     /// 正在打开的 Workspace 页面。只占终端区，不能盖住 tab/status bar。
     let connectProgressOverlay = WorkspaceOpeningView()
@@ -67,6 +68,16 @@ final class ContentView: NSView {
         lastSeenButton.translatesAutoresizingMaskIntoConstraints = false
         lastSeenButton.title = "上次看到这里"
         lastSeenButton.bezelStyle = .rounded
+        lastSeenButton.isBordered = false
+        lastSeenButton.wantsLayer = true
+        lastSeenButton.layer?.cornerRadius = 12
+        lastSeenButton.layer?.masksToBounds = true
+        lastSeenButton.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.08).cgColor
+        lastSeenButton.layer?.borderWidth = 1
+        lastSeenButton.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.7).cgColor
+        lastSeenButton.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        lastSeenButton.contentTintColor = .secondaryLabelColor
+        lastSeenButton.focusRingType = .none
         lastSeenButton.isHidden = true
         lastSeenButton.setAccessibilityIdentifier("muxterm.lastSeen")
         lastSeenButton.setAccessibilityElement(true)
@@ -95,14 +106,20 @@ final class ContentView: NSView {
             equalTo: paneLayout.trailingAnchor,
             constant: -12
         )
+        let seenTrailing = lastSeenButton.trailingAnchor.constraint(
+            equalTo: paneLayout.trailingAnchor,
+            constant: -12
+        )
         railWidthConstraint = railWidth
         jumpLatestTrailing = jumpTrailing
+        lastSeenTrailing = seenTrailing
 
         NSLayoutConstraint.activate([
             disconnectOverlay.centerXAnchor.constraint(equalTo: centerXAnchor),
             disconnectOverlay.centerYAnchor.constraint(equalTo: centerYAnchor),
-            lastSeenButton.centerXAnchor.constraint(equalTo: paneLayout.centerXAnchor),
+            seenTrailing,
             lastSeenButton.topAnchor.constraint(equalTo: paneLayout.topAnchor, constant: 12),
+            lastSeenButton.heightAnchor.constraint(equalToConstant: 24),
             commandMarkRail.trailingAnchor.constraint(equalTo: paneLayout.trailingAnchor),
             commandMarkRail.topAnchor.constraint(equalTo: paneLayout.topAnchor, constant: 4),
             commandMarkRail.bottomAnchor.constraint(equalTo: paneLayout.bottomAnchor, constant: -4),
@@ -234,6 +251,7 @@ final class ContentView: NSView {
             ? 0
             : CommandMarkRailLayout.width(expanded: commandMarkRail.expanded) + 6
         jumpLatestTrailing?.constant = -(12 + railSpace)
+        lastSeenTrailing?.constant = -(12 + railSpace)
     }
 
     private func styleJumpLatestCapsule(emphasized: Bool) {

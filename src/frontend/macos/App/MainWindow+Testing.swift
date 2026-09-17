@@ -99,9 +99,17 @@ extension MainWindowController {
         content.paneLayout.testPaneAllocation(paneId)
     }
 
+    func testPaneGrid(_ paneId: UInt32) -> (cols: Int, rows: Int) {
+        terminalManager.view(for: paneId).renderedGridSize
+    }
+
     func testPaneSurfaceReady(_ paneId: UInt32) -> Bool {
         terminalManager.isSurfaceReady(for: paneId)
             && content.paneLayout.testPaneSurfaceVisible(paneId)
+    }
+
+    func testPaneTitleVisible(_ paneId: UInt32) -> Bool {
+        content.paneLayout.testPaneTitleVisible(paneId)
     }
 
     func testPaneTerminalText(_ paneId: UInt32) -> String {
@@ -568,6 +576,31 @@ extension MainWindowController {
             modifierFlags: flags,
             timestamp: ProcessInfo.processInfo.systemUptime,
             windowNumber: window.windowNumber,
+            context: nil,
+            characters: key,
+            charactersIgnoringModifiers: key,
+            isARepeat: false,
+            keyCode: keyCode
+        )
+    }
+
+    /// 构造真正归属于统一面板窗口的事件，覆盖 local monitor 生产路径。
+    func testMakeUnifiedPanelKeyEvent(
+        key: String,
+        keyCode: UInt16,
+        command: Bool = false,
+        control: Bool = false
+    ) -> NSEvent? {
+        guard let panelWindow = unifiedPanel.window else { return nil }
+        var flags: NSEvent.ModifierFlags = []
+        if command { flags.insert(.command) }
+        if control { flags.insert(.control) }
+        return NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: flags,
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: panelWindow.windowNumber,
             context: nil,
             characters: key,
             charactersIgnoringModifiers: key,

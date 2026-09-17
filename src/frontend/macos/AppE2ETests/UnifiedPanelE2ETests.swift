@@ -156,6 +156,57 @@ final class UnifiedPanelE2ETests: XCTestCase {
             AggregateWorkspaceIdentity.shells
         )
     }
+
+    func testWorkspaceShortcutsDismissPanelAndNavigate() throws {
+        let fixture = OnePaneCat(label: "panel-workspace-shortcuts")
+        let app = try AppE2E.attachWindow(socket: fixture.socket, session: fixture.session)
+        defer { app.testShutdown() }
+        XCTAssertTrue(app.waitReady(minLeaves: 1))
+        app.testInjectAgent(
+            paneId: app.testActivePaneID(),
+            name: "Codex",
+            title: "Panel shortcut"
+        )
+
+        app.openQuickConnect()
+        let agents = try XCTUnwrap(app.testMakeUnifiedPanelKeyEvent(
+            key: "a", keyCode: 0, command: true, control: true
+        ))
+        XCTAssertNil(app.testRouteMonitoredKeyEvent(agents))
+        XCTAssertFalse(app.unifiedPanel.window?.isVisible == true)
+        XCTAssertEqual(app.testSelectedSidebarWorkspaceID(), AggregateWorkspaceIdentity.agents)
+
+        app.openQuickConnect()
+        let first = try XCTUnwrap(app.testMakeUnifiedPanelKeyEvent(
+            key: "1", keyCode: 18, command: true, control: true
+        ))
+        XCTAssertNil(app.testRouteMonitoredKeyEvent(first))
+        XCTAssertFalse(app.unifiedPanel.window?.isVisible == true)
+        XCTAssertEqual(app.testActiveWorkspaceSession(), fixture.session)
+        XCTAssertNotEqual(
+            app.testSelectedSidebarWorkspaceID(),
+            AggregateWorkspaceIdentity.agents
+        )
+    }
+
+    func testShellShortcutDismissesPanel() throws {
+        AppE2E.ensureApp()
+        let bridge = try CoreBridge(backendType: "local")
+        let app = MainWindowController(bridge: bridge, debug: true)
+        defer { app.testShutdown() }
+        XCTAssertTrue(AppE2E.wait(timeout: AppE2E.attachTimeout) {
+            app.testPollOnce()
+            return app.testActivePaneID() != 0
+        })
+
+        app.openQuickConnect()
+        let shells = try XCTUnwrap(app.testMakeUnifiedPanelKeyEvent(
+            key: "s", keyCode: 1, command: true, control: true
+        ))
+        XCTAssertNil(app.testRouteMonitoredKeyEvent(shells))
+        XCTAssertFalse(app.unifiedPanel.window?.isVisible == true)
+        XCTAssertEqual(app.testSelectedSidebarWorkspaceID(), AggregateWorkspaceIdentity.shells)
+    }
 }
 
 private extension UnifiedPanelE2ETests {

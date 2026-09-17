@@ -139,4 +139,48 @@ final class AggregateWorkspaceE2ETests: XCTestCase {
         )
         XCTAssertFalse(app.testWindowClosing(), "关闭 Agents 投影页不能关闭源 Workspace")
     }
+
+    func testAgentsRestoresLastSelectedAggregateTab() throws {
+        let first = OnePaneCat(label: "aggregate-agent-memory-first")
+        let second = OnePaneCat(label: "aggregate-agent-memory-second")
+        let app = try AppE2E.attachWindow(socket: first.socket, session: first.session)
+        defer { app.testShutdown() }
+        XCTAssertTrue(app.waitReady(minLeaves: 1))
+        app.testInjectAgent(
+            paneId: app.testActivePaneID(),
+            name: "Codex",
+            title: "First agent"
+        )
+
+        let secondBridge = try CoreBridge(
+            backendType: "tmux",
+            socket: second.socket,
+            session: second.session
+        )
+        app.testActivateWorkspaceBridge(secondBridge, session: second.session)
+        XCTAssertTrue(AppE2E.wait(timeout: AppE2E.attachTimeout) {
+            app.testPollOnce()
+            return app.testActiveWorkspaceSession() == second.session
+        })
+        app.testInjectAgent(
+            paneId: app.testActivePaneID(),
+            name: "Claude",
+            title: "Second agent"
+        )
+
+        app.testOpenAgents()
+        let aggregateTabs = app.testPresentedTabIDs()
+        XCTAssertEqual(aggregateTabs.count, 2)
+        app.testSwitchTab(aggregateTabs[1])
+        XCTAssertEqual(app.testPresentedActiveTabID(), aggregateTabs[1])
+
+        app.testSwitchBackToFirstWorkspace()
+        XCTAssertNotEqual(app.testSelectedSidebarWorkspaceID(), AggregateWorkspaceIdentity.agents)
+        app.testOpenAgents()
+        XCTAssertEqual(
+            app.testPresentedActiveTabID(),
+            aggregateTabs[1],
+            "返回 Agents 时应保留上次选择的聚合 Tab"
+        )
+    }
 }

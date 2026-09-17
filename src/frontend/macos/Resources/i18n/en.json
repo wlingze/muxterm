@@ -1,7 +1,10 @@
 {
   "attention_jump": "Jump",
+  "attention_hide": "Hide",
   "attention_mute": "Mute…",
   "attention_open": "Open",
+  "attention_show": "Show",
+  "attention_show_hidden": "Show hidden",
   "command_palette_no_results": "No matching commands",
   "existing_back": "Back",
   "existing_connections": "Existing connections",

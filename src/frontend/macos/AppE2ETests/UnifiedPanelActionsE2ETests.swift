@@ -68,11 +68,24 @@ final class UnifiedPanelActionsE2ETests: XCTestCase {
         XCTAssertNotNil(app.testView(identifier: "muxterm.attention.jump"))
         XCTAssertNotNil(app.testView(identifier: "muxterm.attention.open"))
         XCTAssertNotNil(app.testView(identifier: "muxterm.attention.mute"))
+        XCTAssertNotNil(app.testView(identifier: "muxterm.attention.visibility"))
+        XCTAssertNotNil(app.testView(identifier: "muxterm.attention.hidden"))
+
+        let visibleCount = app.testAttentionRowCount()
+        app.unifiedPanel.testToggleSelectedAttentionVisibility()
+        XCTAssertEqual(app.testAttentionRowCount(), visibleCount - 1)
+        app.unifiedPanel.testToggleHiddenAttention()
+        XCTAssertEqual(app.testAttentionRowCount(), 1, "Hidden 视图应显示刚隐藏的条目")
+        app.unifiedPanel.testSelectFirstRow()
+        app.unifiedPanel.testToggleSelectedAttentionVisibility()
+        XCTAssertEqual(app.testAttentionRowCount(), visibleCount)
+        app.unifiedPanel.testSelectFirstRow()
 
         app.unifiedPanel.testOpenSelectedAttention()
         AppE2E.pump(80)
         XCTAssertTrue(app.testReplyOverlayVisible(), "可见的 Open 动作必须走现有 replica overlay")
         app.toggleReplyOverlay()
+        app.unifiedPanel.testSelectFirstRow()
 
         app.unifiedPanel.testMuteSelected(seconds: 300)
         XCTAssertTrue(AppE2E.wait(timeout: 2) {

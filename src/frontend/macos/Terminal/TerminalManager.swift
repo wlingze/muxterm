@@ -934,6 +934,14 @@ final class TerminalManager: TerminalInputHandler {
         }
     }
 
+    func syncSurfaceToAllocatedSize(paneId: UInt32) {
+        guard let view = views[paneId] else { return }
+        view.layoutSubtreeIfNeeded()
+        if view.syncToAllocatedGrid() {
+            view.forceRedraw()
+        }
+    }
+
     /// 取任一可见终端的字符格 point 尺寸；同一窗口字体统一。
     /// `refresh-client -C` 必须用 point，不能用 backing pixel 再除 scale。
     func cellSizeInPoints(paneIds: Set<UInt32>) -> (width: CGFloat, height: CGFloat)? {
@@ -995,14 +1003,20 @@ final class TerminalManager: TerminalInputHandler {
         container: NSView,
         paneIds: Set<UInt32>
     ) -> (UInt16, UInt16)? {
-        guard let cell = cellSizeInPoints(paneIds: paneIds), cell.width > 0, cell.height > 0 else {
-            return nil
-        }
-        let pointSize = container.bounds.size
-        let cols = Int(floor(pointSize.width / cell.width))
-        let rows = Int(floor(pointSize.height / cell.height))
-        guard cols >= 2, rows >= 1, cols < 10000, rows < 10000 else { return nil }
-        return (UInt16(cols), UInt16(rows))
+        guard !paneIds.isEmpty else { return nil }
+        // 缓存 tab/Workspace 的任意 terminal 可能正处于 detach/reattach，
+        // 此时从 view 取到的 cellDimension 会随窗口 scale 生命周期波动。
+        // client 是整个可见容器的尺寸，直接用统一配置字体计算最稳定，
+        // 且与 attach 前 initialClientSize 使用同一像素取整规则。
+        let scale = container.window?.backingScaleFactor
+            ?? NSScreen.main?.backingScaleFactor
+            ?? 1
+        return MuxTerminalGridMetrics.clientSize(
+            bounds: container.bounds.size,
+            family: fontFamily,
+            size: fontSize,
+            backingScale: scale
+        )
     }
 
     /// 提交鼠标拖动后的单轴 pane 尺寸；tmux 会把结果保存到其窗口 layout。

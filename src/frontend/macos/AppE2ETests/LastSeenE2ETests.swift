@@ -76,6 +76,17 @@ final class LastSeenE2ETests: XCTestCase {
             0,
             "last-seen 目标必须离开 live 尾部；\(app.testLastSeenDiagnostics(paneId: firstPaneID)) jump=\(String(describing: jumpOffset))"
         )
+        app.content.layoutSubtreeIfNeeded()
+        XCTAssertLessThan(
+            app.content.paneLayout.frame.maxX - app.content.lastSeenButton.frame.maxX,
+            40,
+            "last-seen 入口应贴近终端右上角"
+        )
+        XCTAssertLessThan(
+            app.content.paneLayout.frame.maxY - app.content.lastSeenButton.frame.maxY,
+            40,
+            "last-seen 入口应贴近终端右上角"
+        )
         app.testClickLastSeen()
         AppE2E.pump(80)
         XCTAssertGreaterThan(

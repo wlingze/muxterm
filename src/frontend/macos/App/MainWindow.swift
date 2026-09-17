@@ -64,9 +64,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private var customKeybindings: [KeyChord: KeyAction] = [:]
     private var nextWorkspaceOpenedOrder: UInt64 = 1
     private var workspacePresentation: WorkspacePresentation = .workspace
+    /// Agents 是前端投影槽；离开后仍应回到用户最后查看的源 Tab。
+    private var lastAgentAggregateKey: AgentAggregateKey?
     private var pendingWorkspaceOpen: PendingWorkspaceOpen?
     /// 在 Agents 槽关闭一页只隐藏投影，不关闭源 pane。源 agent 消失后会清理。
     private var hiddenAgentTabs = Set<AgentAggregateKey>()
+    /// 用户在 Attention 中隐藏的 pane。只影响前端投影，不确认或静音 Core。
+    private var hiddenAttentionKeys = Set<AttentionVisibilityKey>()
     private var structuredAgentTestOverrides: [String: [StructuredPaneAgent]] = [:]
     private var quickConnectStore: QuickConnectStore!
     private var pollTimer: Timer?
@@ -113,6 +117,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 当前 pane 上一次是否已经展示过 last-seen；避免 60Hz poll 重复
     /// 改变全局 overlay 的可见状态。
     private var lastSeenVisiblePane: UInt32?
+    /// last-seen 只在返回 pane 后短暂提供入口，避免长期盖住终端内容。
+    private var lastSeenVisibleUntil: TimeInterval?
+    private static let lastSeenPresentationDuration: TimeInterval = 4
     /// Core 在索引快照切换时可能短暂返回 rawOffset=-1。保留已经展示的
     /// marker 一个很短的窗口，避免用户点击时目标被一次瞬时查询失败清掉。
     private var lastSeenOffsetFailureSince: [UInt32: TimeInterval] = [:]
@@ -306,7 +313,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
-        window.isMovableByWindowBackground = true
+        // 终端必须完整接收 mouseDown/drag 做文本选择；窗口移动只由顶部
+        // StatusBarView 的空白区域显式处理。
+        window.isMovableByWindowBackground = false
         // Muxterm 的顶部状态栏已经承担窗口 chrome；隐藏悬浮在内容上的
         // traffic lights，把整行宽度留给 Workspace 与 tab。
         window.standardWindowButton(.closeButton)?.isHidden = true
@@ -352,6 +361,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         installMainSplit(in: window)
         content.statusBar.onToggleSidebar = { [weak self] in
             self?.toggleWorkspaceSidebar()
+        }
+        content.statusBar.onWorkspaceClick = { [weak self] in
+            self?.openQuickConnect()
         }
         wireTerminalManagerCallbacks()
 
@@ -493,6 +505,18 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 paneId: paneId,
                 seconds: seconds
             )
+        }
+        unifiedPanel.isAttentionHidden = { [weak self] key in
+            self?.hiddenAttentionKeys.contains(key) == true
+        }
+        unifiedPanel.onAttentionVisibilityChange = { [weak self] key, hidden in
+            guard let self else { return }
+            if hidden {
+                self.hiddenAttentionKeys.insert(key)
+            } else {
+                self.hiddenAttentionKeys.remove(key)
+            }
+            self.refreshAttentionChrome(allowBridgeQueries: false, force: true)
         }
         unifiedPanel.onDismissed = { [weak self] in
             self?.restoreTerminalFocusIfAllowed()
@@ -1144,12 +1168,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func setWorkspaceSidebarOpen(_ open: Bool) {
-        sidebarSplitItem?.isCollapsed = !open
+        guard let sidebarSplitItem else { return }
+        sidebarSplitItem.isCollapsed = !open
         content.statusBar.sidebarOpen = open
         if open {
             refreshWorkspaceSidebar(force: true)
         }
-        window?.contentView?.needsLayout = true
+        // NSSplitViewController owns the divider geometry. Laying out only
+        // NSWindow.contentView can leave the toggle changed while the sidebar
+        // remains visually collapsed.
+        mainSplitController.view.needsLayout = true
+        mainSplitController.view.layoutSubtreeIfNeeded()
     }
 
     /// In-process E2E uses the same production toggle path.
@@ -1963,24 +1992,28 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         content.updateTabs(tabs)
         switch workspacePresentation {
         case .workspace:
+            content.statusBar.setWorkspacePresentation(.workspace)
             content.statusBar.allowsTabCreation = true
             content.statusBar.allowsTabRenaming = true
             content.statusBar.allowsTabClosing = true
             content.statusBar.allowsTabReordering = terminalManager.usesClientResize
             content.paneLayout.allowsPaneBreak = terminalManager.usesClientResize
         case .shells:
+            content.statusBar.setWorkspacePresentation(.shells)
             content.statusBar.allowsTabCreation = true
             content.statusBar.allowsTabRenaming = false
             content.statusBar.allowsTabClosing = true
             content.statusBar.allowsTabReordering = false
             content.paneLayout.allowsPaneBreak = false
         case .agents:
+            content.statusBar.setWorkspacePresentation(.agents)
             content.statusBar.allowsTabCreation = false
             content.statusBar.allowsTabRenaming = false
             content.statusBar.allowsTabClosing = true
             content.statusBar.allowsTabReordering = false
             content.paneLayout.allowsPaneBreak = false
         case .connecting:
+            content.statusBar.setWorkspacePresentation(.opening)
             content.statusBar.allowsTabCreation = false
             content.statusBar.allowsTabRenaming = false
             content.statusBar.allowsTabClosing = false
@@ -2017,11 +2050,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             }
         case .agents(let selectedKey):
             let tabs = agentAggregateTabs(agents: agents)
-            guard let target = tabs.first(where: { $0.key == selectedKey }) ?? tabs.first else {
+            guard let target = tabs.first(where: { $0.key == selectedKey })
+                ?? tabs.first(where: { $0.key == lastAgentAggregateKey })
+                ?? tabs.first else {
                 workspacePresentation = .agents(nil)
+                lastAgentAggregateKey = nil
                 presentEmptyAgents()
                 return
             }
+            lastAgentAggregateKey = target.key
             if target.key != selectedKey {
                 workspacePresentation = .agents(target.key)
                 DispatchQueue.main.async { [weak self] in
@@ -2037,7 +2074,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let agents = WorkspaceSidebarProjection.agents(
             workspaces: runtimeSidebarItems(),
             attention: attention
-        )
+        ).filter { !hiddenAttentionKeys.contains(AttentionVisibilityKey(
+            workspaceId: $0.workspaceId,
+            paneId: $0.paneId
+        )) }
         reconcileAggregatePresentation(agents: agents)
         guard force || isWorkspaceSidebarOpen else { return }
         let workspaces = sidebarItems()
@@ -2046,7 +2086,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         workspaceSidebar.setCommands(WorkspaceSidebarProjection.commands(
             workspaces: runtimeSidebarItems(),
             attention: attention
-        ))
+        ).filter { !hiddenAttentionKeys.contains(AttentionVisibilityKey(
+            workspaceId: $0.workspaceId,
+            paneId: $0.paneId
+        )) })
         workspaceSidebar.setActiveTarget(
             workspaceId: activeWorkspaceReplicaID,
             tabId: lastSnapshot.activeTab,
@@ -2404,13 +2447,20 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         let tabs = agentAggregateTabs()
         let target = preferred.flatMap { key in tabs.first(where: { $0.key == key }) }
+            ?? {
+                guard case .agents(let selectedKey) = workspacePresentation else { return nil }
+                return selectedKey.flatMap { key in tabs.first(where: { $0.key == key }) }
+            }()
+            ?? lastAgentAggregateKey.flatMap { key in tabs.first(where: { $0.key == key }) }
             ?? tabs.first
         guard let target, let slot = scene(forWorkspaceId: target.workspaceId) else {
             workspacePresentation = .agents(nil)
+            lastAgentAggregateKey = nil
             presentEmptyAgents()
             refreshWorkspaceSidebar(force: true)
             return
         }
+        lastAgentAggregateKey = target.key
         workspacePresentation = .agents(target.key)
         activateBackingSlot(slot, force: false)
         if slot.lastSnapshot.activeTab != target.sourceTabId {
@@ -2788,7 +2838,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         terminalManager.scrollToLatest(paneId: pane)
         viewportOffsets[pane] = 0
         content.setJumpLatestVisible(false, unseenLines: 0)
-        needsLayoutReload = true
     }
 
     @objc func jumpToLastSeen() {
@@ -2903,6 +2952,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 unseenLines: self.terminalManager.unseenLineCount(paneId: paneId)
             )
             guard paneId == self.activePaneID else { return }
+            if self.lastSeenVisiblePane == paneId {
+                self.dismissLastSeenOffer(for: paneId)
+            }
             self.refreshHistoryChrome(for: paneId)
         }
         terminalManager.onUnseenLinesChanged = { [weak self] paneId, count in
@@ -3431,6 +3483,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         pendingLastSeenPanes.removeAll()
         lastSeenJump = nil
         lastSeenVisiblePane = nil
+        lastSeenVisibleUntil = nil
         lastSeenOffsetFailureSince.removeAll()
         content.setLastSeenVisible(false)
         commandTimelineCursor.removeAll()
@@ -3796,9 +3849,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     panes: lastSnapshot.panes,
                     tabId: lastSnapshot.activeTab
                 )
+                content.paneLayout.refreshSurfaceGeometry(paneId: target)
             }
         } else if content.paneLayout.testFullscreenPaneID != nil {
             content.paneLayout.setFullscreenPane(paneId: target)
+            content.paneLayout.refreshSurfaceGeometry(paneId: target)
         }
 
         // select-pane 的状态事件稍后才会到达；先乐观更新焦点、tab pane
@@ -4999,19 +5054,20 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             lastPoolAttentionSnapshot = snapshot
             updateSceneAttentionStores(snapshot: snapshot)
         }
-        var blockedCount = 0
         if allowBridgeQueries {
             drainAttentionNotifications(from: bridge)
         }
         for slot in sceneStack.scenes.values
             where slot.visibility != .closed
         {
-            if let snapshot = attentionSnapshot(for: slot) {
-                blockedCount += snapshot.blockedCount
-            }
             postAttentionNotifications(slot.takePendingAttentionNotifications())
         }
-        content.statusBar.setAttention(StatusBarAttention(count: blockedCount))
+        let visibleRows = attentionSnapshotForPanel().map {
+            AttentionList.rows(from: $0, workspaces: runtimeSidebarItems(), query: "")
+        }?.filter { !hiddenAttentionKeys.contains($0.visibilityKey) } ?? []
+        content.statusBar.setAttention(StatusBarAttention(
+            indicators: visibleRows.map(\.indicator)
+        ))
         refreshWorkspaceSidebar()
     }
 
@@ -5108,8 +5164,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         content.statusBar.updateDebugSnapshot(snap)
         content.statusBar.updateOutputSnippet(terminalManager.recentOutputSnippet)
         if let activePane = snap.panes.first(where: \.isActive)?.id ?? snap.panes.first?.id {
-            let viewport = UInt32(max(0, bridge.paneViewport(paneId: activePane)))
-            viewportOffsets[activePane] = viewport
+            // 滚轮回调已经持有最新的 native viewport。Core 写入通过 event
+            // pump 排队，不能用尚未应用的旧 offset 把按钮反复闪回去。
+            let viewport: UInt32
+            if let localViewport = viewportOffsets[activePane] {
+                viewport = localViewport
+            } else {
+                viewport = UInt32(max(0, bridge.paneViewport(paneId: activePane)))
+                viewportOffsets[activePane] = viewport
+            }
             content.setJumpLatestVisible(
                 viewport > 0,
                 unseenLines: terminalManager.unseenLineCount(paneId: activePane)
@@ -5256,6 +5319,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     private func refreshHistoryChrome(for paneId: UInt32) {
         guard paneId == activePaneID else { return }
+        expireLastSeenOfferIfNeeded(for: paneId)
         let workspaceID = activeSceneWorkspaceID
         let latest = paneLatestLineSeqCache[PaneHistoryKey(
             workspaceID: workspaceID,
@@ -5355,14 +5419,35 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         if visible {
             guard lastSeenVisiblePane != paneId else { return }
             lastSeenVisiblePane = paneId
+            lastSeenVisibleUntil = ProcessInfo.processInfo.systemUptime
+                + Self.lastSeenPresentationDuration
         } else {
             // 清除来自旧 active pane 的 marker 也必须是幂等的。切 tab/pane
             // 时刷新函数传入的是新 pane，不能因为 paneId 不同而把旧按钮留在
             // 左上角，造成所有页面闪烁或残留。
             guard lastSeenVisiblePane != nil else { return }
             lastSeenVisiblePane = nil
+            lastSeenVisibleUntil = nil
         }
         content.setLastSeenVisible(visible)
+    }
+
+    private func expireLastSeenOfferIfNeeded(for paneId: UInt32) {
+        guard lastSeenVisiblePane == paneId,
+              let deadline = lastSeenVisibleUntil,
+              ProcessInfo.processInfo.systemUptime >= deadline
+        else { return }
+        dismissLastSeenOffer(for: paneId)
+    }
+
+    private func dismissLastSeenOffer(for paneId: UInt32) {
+        lastSeenLineSeq.removeValue(forKey: paneId)
+        pendingLastSeenPanes.remove(paneId)
+        lastSeenOffsetFailureSince.removeValue(forKey: paneId)
+        if lastSeenJump?.paneId == paneId {
+            lastSeenJump = nil
+        }
+        setLastSeenVisible(false, paneId: paneId)
     }
 
     /// 当前 Workspace 已空时关掉这一格，切到邻近 Workspace。
@@ -5569,6 +5654,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // windows. Their text fields own Backspace and other editing keys;
         // the main terminal shortcut router must never consume those events.
         if let eventWindow = event.window, eventWindow !== window {
+            if eventWindow === unifiedPanel?.window,
+               let action = workspaceNavigationAction(for: event)
+            {
+                unifiedPanel.dismiss()
+                performWorkspaceNavigation(action)
+                return nil
+            }
             return event
         }
         if handleKey(event) {
@@ -5699,6 +5791,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             }
             return false
         }
+        if performWorkspaceNavigation(action) {
+            if unifiedPanel?.window?.isVisible == true {
+                unifiedPanel.dismiss()
+            }
+            return true
+        }
         switch action {
         case .newTab:
             newTab()
@@ -5744,12 +5842,48 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             toggleActivePaneFullscreen()
         case .toggleSidebar:
             toggleWorkspaceSidebar()
+        case .openShells, .openAgents, .switchWorkspace:
+            break
+        }
+        return true
+    }
+
+    /// 独立 NSPanel 的本地事件不会进入主窗口 `handleKey`；这里只识别
+    /// Workspace 导航键，其余编辑和面板导航仍交给面板自己的 responder。
+    private func workspaceNavigationAction(for event: NSEvent) -> KeyAction? {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard let raw = event.charactersIgnoringModifiers, let first = raw.first else {
+            return nil
+        }
+        let chord = KeyChord(
+            command: flags.contains(.command),
+            shift: flags.contains(.shift),
+            option: flags.contains(.option),
+            control: flags.contains(.control),
+            key: String(first)
+        )
+        guard let action = KeyBindings.action(for: chord, custom: customKeybindings) else {
+            return nil
+        }
+        switch action {
+        case .openShells, .openAgents, .switchWorkspace:
+            return action
+        default:
+            return nil
+        }
+    }
+
+    @discardableResult
+    private func performWorkspaceNavigation(_ action: KeyAction) -> Bool {
+        switch action {
         case .openShells:
             activateShells(selectFirstLocal: true)
         case .openAgents:
             activateAgents()
-        case .switchWorkspace(let n):
-            switchToWorkspaceAtFixedIndex(n)
+        case .switchWorkspace(let index):
+            switchToWorkspaceAtFixedIndex(index)
+        default:
+            return false
         }
         return true
     }
