@@ -19,6 +19,7 @@ public struct PaneAttention: Equatable, Sendable {
     public let paneId: UInt32
     public let status: PaneAttentionStatus
     public let acknowledged: Bool
+    public let muted: Bool
     public let lastLine: String
     public let seq: UInt64
     public let processName: String?
@@ -31,6 +32,7 @@ public struct PaneAttention: Equatable, Sendable {
         paneId: UInt32,
         status: PaneAttentionStatus,
         acknowledged: Bool = false,
+        muted: Bool = false,
         lastLine: String,
         seq: UInt64,
         processName: String?,
@@ -40,6 +42,7 @@ public struct PaneAttention: Equatable, Sendable {
         self.paneId = paneId
         self.status = status
         self.acknowledged = acknowledged
+        self.muted = muted
         self.lastLine = lastLine
         self.seq = seq
         self.processName = processName
@@ -113,6 +116,7 @@ public struct AttentionSnapshot: Equatable, Sendable {
                             paneId: paneId,
                             status: status,
                             acknowledged: (p["acknowledged"] as? Bool) ?? false,
+                            muted: (p["muted"] as? Bool) ?? false,
                             lastLine: (p["last_line"] as? String) ?? "",
                             seq: (p["seq"] as? UInt64) ?? (p["seq"] as? NSNumber)?.uint64Value ?? 0,
                             processName: p["process_name"] as? String,
@@ -423,7 +427,7 @@ public enum AttentionList {
                 ws.name,
                 ws.workspaceId.split(separator: "@").first.map(String.init),
             ]) ?? ws.workspaceId
-            for pane in ws.panes where pane.status.isListed
+            for pane in ws.panes where !pane.muted && pane.status.isListed
                 && (pane.status == .working || !pane.acknowledged)
             {
                 let projectedAgent = projectedByPane[

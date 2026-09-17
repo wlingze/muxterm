@@ -102,6 +102,7 @@ pub unsafe extern "C" fn muxterm_attention_snapshot(h: *mut MuxtermHandle) -> *m
                             "pane_id": p.pane_id,
                             "status": format!("{:?}", p.status).to_lowercase(),
                             "acknowledged": p.acknowledged,
+                            "muted": p.muted,
                             "last_line": p.last_line,
                             "seq": p.seq,
                             "process_name": p.process_name,

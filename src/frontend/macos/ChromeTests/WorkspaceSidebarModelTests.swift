@@ -69,7 +69,10 @@ final class WorkspaceSidebarModelTests: XCTestCase {
         for machine in machines {
             let rows = AttentionList.rows(from: attention, workspaces: workspaces, query: machine)
             XCTAssertEqual(rows.count, 2)
-            XCTAssertEqual(Set(rows.map(\.title)), ["muxterm · \(machine)"])
+            XCTAssertEqual(Set(rows.map(\.title)), [
+                "muxterm  cargo  \(machine)  ~",
+                "muxterm  codex  \(machine)  ~",
+            ])
         }
     }
 

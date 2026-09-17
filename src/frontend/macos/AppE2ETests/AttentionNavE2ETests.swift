@@ -118,9 +118,16 @@ final class AttentionNavE2ETests: XCTestCase {
         AppE2E.pump(80)
         XCTAssertFalse(app.testReplyOverlayVisible(), "第二次 Cmd-Enter 必须退出 overlay")
 
-        app.testOpenAttentionPanel()
-        AppE2E.pump(40)
-        app.unifiedPanel.testSelectAttentionPane(bgPane)
+        // overlay 回复已经清除了原来的 Blocked；重新触发一次真实 attention，
+        // 再验证普通 Enter 的跳转语义，不能依赖旧 ViewStore 行残留。
+        fx.sendBelOnBackground()
+        XCTAssertTrue(AppE2E.wait(timeout: AppE2E.featureTimeout) {
+            app.testPollOnce()
+            app.testOpenAttentionPanel()
+            app.unifiedPanel.refreshData()
+            app.unifiedPanel.testSelectAttentionPane(bgPane)
+            return app.unifiedPanel.testSelectedAttentionRow()?.pane.paneId == bgPane
+        })
         app.attentionPanel.window?.makeKeyAndOrderFront(nil)
         let enter = try XCTUnwrap(app.testMakeReturnEvent())
         _ = app.testDispatchKeyEvent(enter)
