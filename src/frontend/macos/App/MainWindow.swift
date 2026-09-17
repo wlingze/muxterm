@@ -1052,14 +1052,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         sidebarController.view = workspaceSidebar
         let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebarController)
         sidebarItem.canCollapse = true
-        sidebarItem.minimumThickness = 180
+        sidebarItem.minimumThickness = 160
         sidebarItem.maximumThickness = 420
         sidebarItem.preferredThicknessFraction = 0.25
 
         let contentController = NSViewController()
         contentController.view = content
         let contentItem = NSSplitViewItem(viewController: contentController)
-        contentItem.minimumThickness = 320
+        contentItem.minimumThickness = 300
 
         mainSplitController.splitView.isVertical = true
         mainSplitController.splitView.dividerStyle = .thin
