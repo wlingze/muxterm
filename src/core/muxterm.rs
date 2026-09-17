@@ -489,6 +489,11 @@ impl Muxterm {
         batch: &RuntimeBatch,
     ) {
         let _timing = crate::performance::ATTENTION.enter();
+        let indexed_panes = self
+            .pool_mut()
+            .get_mut(ws_id)
+            .map(Workspace::take_indexed_panes)
+            .unwrap_or_default();
         let mut pending: Vec<PendingAttentionUpdate> = Vec::new();
         let mut pending_agents: Vec<(u32, Option<PaneAgentInfo>)> = Vec::new();
         let mut pending_commands: Vec<PendingCommandActivity> = Vec::new();
@@ -562,16 +567,7 @@ impl Muxterm {
                 candidate_panes.push(*pane);
             }
         }
-        for event in &batch.render {
-            let pane = match event {
-                RenderEvent::PaneOutput { pane, .. }
-                | RenderEvent::PaneSnapshot { pane, .. }
-                | RenderEvent::PaneFrame { pane, .. }
-                | RenderEvent::PaneIndexSnapshot { pane, .. }
-                | RenderEvent::PaneHistory { pane, .. } => *pane,
-            };
-            candidate_panes.push(pane);
-        }
+        candidate_panes.extend(indexed_panes.iter().copied());
         attention_panes.extend(candidate_panes.iter().copied());
         let need_screen: std::collections::HashSet<u32> = candidate_panes
             .iter()
@@ -594,26 +590,6 @@ impl Muxterm {
                     }
                     RuntimeSignal::StatusBarSubscription { .. } => {}
                 }
-            }
-            for event in batch
-                .render
-                .iter()
-                .filter(|event| !matches!(event, RenderEvent::PaneOutput { .. }))
-                .chain(
-                    batch
-                        .render
-                        .iter()
-                        .filter(|event| matches!(event, RenderEvent::PaneOutput { .. })),
-                )
-            {
-                let pane = match event {
-                    RenderEvent::PaneOutput { pane, .. }
-                    | RenderEvent::PaneSnapshot { pane, .. }
-                    | RenderEvent::PaneFrame { pane, .. }
-                    | RenderEvent::PaneIndexSnapshot { pane, .. }
-                    | RenderEvent::PaneHistory { pane, .. } => *pane,
-                };
-                attention_panes.push(pane);
             }
             attention_panes.sort_unstable_by_key(|pane| pane.0);
             attention_panes.dedup();

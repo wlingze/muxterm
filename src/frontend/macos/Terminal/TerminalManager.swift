@@ -48,9 +48,16 @@ final class TerminalManager: TerminalInputHandler {
     /// 同一 pane 待合并的增量输出：codex/agent 一帧会被拆成多个 PaneOutput
     /// 事件，分帧喂给 SwiftTerm 会让中间态把输入行逐帧推走（一直换行），
     /// 也造成高频重绘；合并后一次 feed 保持稳定。
-    private var pendingFeeds: [UInt32: Data] = [:]
+    private var pendingFeeds = FairPaneFeedScheduler()
     private var feedFlushWorkItem: DispatchWorkItem?
-    private static let feedFlushInterval: TimeInterval = 0.033 // 合并同一 pane 短窗口输出（约 30fps），减少中间态闪烁
+    private static let feedFlushInterval: TimeInterval = FlatChrome.eventPollInterval
+    /// One VT parse may exceed the pass budget, so keep each atomic feed small.
+    private static let feedChunkBytes = 16 * 1024
+    private static let feedTimeBudget: TimeInterval = 0.004
+    /// A single pane may repaint faster than SwiftTerm can parse. Fence only
+    /// that pane and request a fresh baseline before its queue grows without
+    /// bound; other panes continue through the round-robin scheduler.
+    private static let liveOutputCap = 2 * 1024 * 1024
     /// Surface seed 可能包含完整 scrollback；分块投喂，避免一次同步 feed
     /// 占住主线程，让 connect/Cmd-Shift-P 或 tab 切换出现 beachball。
     private struct PendingSeed {
@@ -432,7 +439,7 @@ final class TerminalManager: TerminalInputHandler {
         }
         // 只有 seed 和同一期间的 live catch-up 都完成后才显示 host。
         // 多 pane 可在各自 seed 完成的同一轮独立变为 ready。
-        for paneId in completed where !pendingFeeds.keys.contains(paneId) {
+        for paneId in completed where !pendingFeeds.contains(paneId) {
             setSurfaceReady(paneId, true)
         }
     }
@@ -531,7 +538,7 @@ final class TerminalManager: TerminalInputHandler {
         if !pendingFeeds.isEmpty {
             flushPendingFeeds()
         }
-        for paneId in completed where !pendingFeeds.keys.contains(paneId) {
+        for paneId in completed where !pendingFeeds.contains(paneId) {
             setSurfaceReady(paneId, true)
         }
     }
@@ -588,7 +595,16 @@ final class TerminalManager: TerminalInputHandler {
 
     private func queueLiveOutput(_ paneId: UInt32, data: Data) {
         dispatchPrecondition(condition: .onQueue(.main))
-        pendingFeeds[paneId, default: Data()].append(data)
+        if !isDirectPtyTerminal {
+            let pending = pendingFeeds.pendingBytes(for: paneId)
+            if data.count > Self.liveOutputCap - min(pending, Self.liveOutputCap) {
+                pendingFeeds.remove(paneID: paneId)
+                markNeedsAuthoritativeSnapshot(paneId: paneId)
+                requestAuthoritativeSnapshotsIfNeeded()
+                return
+            }
+        }
+        pendingFeeds.append(paneID: paneId, data: data)
         appendSnippet(data)
         recordTraffic(bytes: data.count)
         scheduleFeedFlush()
@@ -668,7 +684,7 @@ final class TerminalManager: TerminalInputHandler {
         pendingFrames.removeValue(forKey: paneId)
         pendingSnapshots.removeValue(forKey: paneId)
         // full frame 覆盖已经排队但尚未送入 SwiftTerm 的旧 live 字节。
-        pendingFeeds.removeValue(forKey: paneId)
+        pendingFeeds.remove(paneID: paneId)
         pendingSeeds.removeValue(forKey: paneId)
         seedingPanes.remove(paneId)
 
@@ -700,7 +716,7 @@ final class TerminalManager: TerminalInputHandler {
         pendingSnapshots.removeValue(forKey: paneId)
         pendingFrames.removeValue(forKey: paneId)
         let viewExisted = views[paneId] != nil
-        pendingFeeds.removeValue(forKey: paneId)
+        pendingFeeds.remove(paneID: paneId)
         pendingSeeds.removeValue(forKey: paneId)
         seedingPanes.remove(paneId)
         let view = view(for: paneId)
@@ -797,18 +813,17 @@ final class TerminalManager: TerminalInputHandler {
     private func flushPendingFeeds() {
         dispatchPrecondition(condition: .onQueue(.main))
         feedFlushWorkItem = nil
-        let feeds = pendingFeeds
-        pendingFeeds.removeAll()
-        for (paneId, data) in feeds {
-            let rows = expectedPaneSizes[paneId]?.rows ?? 24
-            guard let view = views[paneId], !seedingPanes.contains(paneId),
-                  swiftTermSeeded.contains(paneId)
-            else {
-                // Surface seed 尚未完成时保留 live；seed flush 完成后会再次
-                // 调用这里，后台无 view 时则交回 Core 的累计缓冲。
-                pendingFeeds[paneId, default: Data()].append(data)
-                continue
+        let started = ProcessInfo.processInfo.systemUptime
+        while let (paneId, data) = pendingFeeds.pop(
+            maxBytes: Self.feedChunkBytes,
+            accepting: { [views, seedingPanes, swiftTermSeeded] paneID in
+                views[paneID] != nil
+                    && !seedingPanes.contains(paneID)
+                    && swiftTermSeeded.contains(paneID)
             }
+        ) {
+            let rows = expectedPaneSizes[paneId]?.rows ?? 24
+            guard let view = views[paneId] else { continue }
             syncHistoryCapacity(paneId: paneId, view: view)
             let wasAtLatest = view.isAtLatest()
             if !wasAtLatest {
@@ -827,6 +842,12 @@ final class TerminalManager: TerminalInputHandler {
             if wasAtLatest {
                 view.scrollToLatest()
             }
+            if ProcessInfo.processInfo.systemUptime - started >= Self.feedTimeBudget {
+                break
+            }
+        }
+        if !pendingFeeds.isEmpty {
+            scheduleFeedFlush()
         }
     }
 
@@ -844,7 +865,7 @@ final class TerminalManager: TerminalInputHandler {
     /// 切 tab / 布局重建不得丢视图，否则 SwiftTerm 状态被清掉，
     /// 切回来重放被截断的累计输出会乱码 / 黑屏）。
     func removePane(_ paneId: UInt32) {
-        pendingFeeds.removeValue(forKey: paneId)
+        pendingFeeds.remove(paneID: paneId)
         pendingViewportOffsets.removeValue(forKey: paneId)
         pendingPtySizes.removeValue(forKey: paneId)
         pendingInputs.removeAll { $0.paneId == paneId }

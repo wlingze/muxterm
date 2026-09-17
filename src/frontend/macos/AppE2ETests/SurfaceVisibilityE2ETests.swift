@@ -460,6 +460,52 @@ final class SurfaceVisibilityE2ETests: XCTestCase {
         XCTAssertFalse(text.contains("118;"), "半截 SGR suffix 不得进入 SwiftTerm。got=\(text)")
     }
 
+    func testActivePaneOutputOverflowFencesOnlyThatSurfaceQueue() throws {
+        AppE2E.ensureApp()
+        let bridge = try CoreBridge(backendType: "local")
+        defer { bridge.shutdown() }
+        let manager = TerminalManager(bridge: bridge, runtimeID: "tmux")
+        let paneId: UInt32 = 7
+        var requested: [UInt32] = []
+        manager.onAuthoritativeSnapshotRequired = { pane in
+            requested.append(pane)
+            return true
+        }
+
+        let view = manager.view(for: paneId)
+        manager.handleSnapshot(
+            paneId: paneId,
+            data: Data("\u{1b}[2J\u{1b}[HSAFE_BEFORE_FLOOD".utf8)
+        )
+        manager.handleOutput(
+            paneId: paneId,
+            data: Data(repeating: 0x78, count: 3 * 1024 * 1024)
+        )
+
+        XCTAssertEqual(requested, [paneId])
+        manager.handleOutput(
+            paneId: paneId,
+            data: Data("DROPPED_WHILE_WAITING".utf8)
+        )
+        XCTAssertEqual(requested, [paneId], "fenced pane must not request duplicate snapshots")
+
+        manager.handleSnapshot(
+            paneId: paneId,
+            data: Data("\u{1b}[2J\u{1b}[HCURRENT_AFTER_FLOOD\r\n".utf8)
+        )
+        manager.handleOutput(
+            paneId: paneId,
+            data: Data("LIVE_AFTER_FLOOD\r\n".utf8)
+        )
+        manager.testFlushFeeds()
+
+        let text = view.visibleScreenText()
+        XCTAssertTrue(text.contains("CURRENT_AFTER_FLOOD"), "fresh baseline must recover the pane")
+        XCTAssertTrue(text.contains("LIVE_AFTER_FLOOD"), "live output must resume after recovery")
+        XCTAssertFalse(text.contains("DROPPED_WHILE_WAITING"))
+        XCTAssertFalse(text.contains("xxxxxxxx"), "overflow bytes must never enter the VT parser")
+    }
+
     func testBackgroundOutputOverflowRejectedRequestUsesOnlySafeBaseline() throws {
         let (bridge, manager) = try makeManager()
         defer { bridge.shutdown() }
