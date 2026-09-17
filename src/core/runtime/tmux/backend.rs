@@ -887,7 +887,12 @@ impl TmuxRuntime {
     }
 
     fn prepare_remote_or_local_dir(&self, dir: &str) -> String {
-        if self.config.ssh_alias.is_some() {
+        let is_ssh = self.config.ssh_alias.is_some()
+            || self
+                .target_connection
+                .as_ref()
+                .is_some_and(|connection| connection.transport_id() == "ssh");
+        if is_ssh {
             dir.trim().to_string()
         } else {
             crate::executable::expand_config_value(dir)
@@ -9218,10 +9223,16 @@ mod tests {
     }
 
     #[test]
-    fn ssh_new_tab_keeps_remote_tilde_path() {
-        let mut b = TmuxRuntime::new_ssh_attach("ryzen", None, "muxterm");
+    fn provider_ssh_new_tab_keeps_remote_tilde_path() {
+        let connection: std::sync::Arc<dyn TargetConnection> = Connect::new("ssh", "ryzen");
+        let mut b = TmuxRuntime::new_with_connection_and_cwd(
+            connection,
+            None,
+            Some("muxterm"),
+            false,
+            Some("~/Developer/self/muxterm"),
+        );
         b.active_session = Some(TmuxSessionId(4));
-        b.set_workspace_workdir("~/Developer/self/muxterm");
         b.tabs.push(TabInfo {
             id: TabId(7),
             name: "current".into(),
