@@ -105,7 +105,7 @@ public enum StatusBarTabOverflow {
     /// status-right 最少可见宽度。
     public static let statusRightMinWidth: CGFloat = 64
     /// 状态点 18 + 铃铛 ~22 + 加号 28 + 间距。
-    public static let chromeWidth: CGFloat = 80
+    public static let chromeWidth: CGFloat = 108
 
     /// 放不下的 tab 数量（>0 必须滚动/溢出，不得压缩 right+chrome）。
     public static func overflowCount(

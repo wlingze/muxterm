@@ -56,6 +56,7 @@ struct TrafficRateSampler {
 ///
 /// 渲染纪律：高频输出时只更新状态点颜色，不重建 tab 列表。
 final class StatusBarView: NSView {
+    var onToggleSidebar: (() -> Void)?
     var onSelectWindow: ((UInt32) -> Void)?
     var onSelectTab: ((UInt32) -> Void)?
     var onNewTab: (() -> Void)?
@@ -63,6 +64,13 @@ final class StatusBarView: NSView {
     var onCloseTab: ((UInt32) -> Void)?
     var onMoveTab: ((UInt32, UInt32, Bool) -> Void)?
     var onAttentionClick: (() -> Void)?
+    var sidebarOpen = false {
+        didSet {
+            sidebarToggleButton.state = sidebarOpen ? .on : .off
+            updateSidebarPresentation()
+            updateSidebarLeadingInset()
+        }
+    }
     var allowsTabCreation = true {
         didSet { newTabButton.isHidden = !allowsTabCreation }
     }
@@ -88,7 +96,8 @@ final class StatusBarView: NSView {
     }
     var colorMode: StatusBarMode = .tmux
 
-    // 左→右：tab 列表 → tmux-left → tmux-right → 状态点 → 通知 → 新建
+    // 左→右：侧栏 → tab 列表 → tmux-left → tmux-right → 状态点 → 通知 → 新建
+    private let sidebarToggleButton = NSButton()
     private let tabStack = NSStackView()
     private let leftLabel = NSTextField(labelWithString: "")
     private let rightLabel = NSTextField(labelWithString: "")
@@ -104,6 +113,7 @@ final class StatusBarView: NSView {
 
     private var justifyConstraints: [NSLayoutConstraint] = []
     private var heightConstraint: NSLayoutConstraint!
+    private var sidebarLeadingConstraint: NSLayoutConstraint!
     private var lastTmuxSnapshot: StatusBarSnapshot?
     private var lastBase = StatusBarTextStyle.default
     private var lastLeftStyle = "default"
@@ -112,6 +122,7 @@ final class StatusBarView: NSView {
     private var currentTabs: [Tab] = []
     private var tmuxStatusEnabled = false
     private var edgeAtBottom = false
+    private var integratedTitlebar = false
 
     // debug / 状态信息（点击状态点时弹出显示）
     private var isDebug = false
@@ -135,10 +146,27 @@ final class StatusBarView: NSView {
         edgeLine.backgroundColor = NSColor.separatorColor.cgColor
         layer?.addSublayer(edgeLine)
 
+        sidebarToggleButton.image = NSImage(
+            systemSymbolName: "sidebar.leading",
+            accessibilityDescription: "Toggle Sidebar"
+        )
+        sidebarToggleButton.title = ""
+        sidebarToggleButton.imagePosition = .imageOnly
+        sidebarToggleButton.imageScaling = .scaleProportionallyDown
+        sidebarToggleButton.bezelStyle = .shadowlessSquare
+        sidebarToggleButton.isBordered = false
+        sidebarToggleButton.setButtonType(.toggle)
+        sidebarToggleButton.focusRingType = .none
+        sidebarToggleButton.target = self
+        sidebarToggleButton.action = #selector(sidebarClicked)
+        sidebarToggleButton.setAccessibilityIdentifier("muxterm.sidebar.toggle")
+        sidebarToggleButton.translatesAutoresizingMaskIntoConstraints = false
+        updateSidebarPresentation()
+
         // tab 列表
         tabStack.orientation = .horizontal
         tabStack.alignment = .centerY
-        tabStack.spacing = 4
+        tabStack.spacing = 1
         tabStack.setContentHuggingPriority(.defaultHigh, for: .horizontal)
         tabStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
@@ -180,7 +208,10 @@ final class StatusBarView: NSView {
         newTabButton.setAccessibilityIdentifier("muxterm.newTabButton")
         newTabButton.translatesAutoresizingMaskIntoConstraints = false
 
-        for view in [tabStack, leftLabel, rightLabel, statusDot, attentionButton, newTabButton] {
+        for view in [
+            sidebarToggleButton, tabStack, leftLabel, rightLabel,
+            statusDot, attentionButton, newTabButton,
+        ] {
             view.translatesAutoresizingMaskIntoConstraints = false
             addSubview(view)
         }
@@ -201,11 +232,20 @@ final class StatusBarView: NSView {
             greaterThanOrEqualToConstant: StatusBarTabOverflow.statusRightMinWidth
         )
 
+        sidebarLeadingConstraint = sidebarToggleButton.leadingAnchor.constraint(
+            equalTo: leadingAnchor,
+            constant: 4
+        )
         NSLayoutConstraint.activate([
             heightConstraint,
 
-            // tab 列表从最左侧开始；最大宽度给 right+chrome 留空间（W19-F）。
-            tabStack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
+            sidebarLeadingConstraint,
+            sidebarToggleButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            sidebarToggleButton.widthAnchor.constraint(equalToConstant: 24),
+            sidebarToggleButton.heightAnchor.constraint(equalToConstant: 20),
+
+            // tab 列表紧跟侧栏按钮；最大宽度给 right+chrome 留空间（W19-F）。
+            tabStack.leadingAnchor.constraint(equalTo: sidebarToggleButton.trailingAnchor, constant: 4),
             tabStack.centerYAnchor.constraint(equalTo: centerYAnchor),
             tabMaxWidth,
 
@@ -253,6 +293,24 @@ final class StatusBarView: NSView {
     func setEdgeLineAtBottom(_ atBottom: Bool) {
         edgeAtBottom = atBottom
         needsLayout = true
+    }
+
+    /// 顶部状态栏与透明 titlebar 共用一行；侧栏收起时为 traffic lights 留位。
+    func setIntegratedTitlebar(_ integrated: Bool) {
+        integratedTitlebar = integrated
+        updateSidebarLeadingInset()
+    }
+
+    private func updateSidebarLeadingInset() {
+        sidebarLeadingConstraint?.constant = integratedTitlebar && !sidebarOpen ? 76 : 4
+    }
+
+    private func updateSidebarPresentation() {
+        sidebarToggleButton.contentTintColor = sidebarOpen
+            ? .controlAccentColor
+            : .secondaryLabelColor
+        sidebarToggleButton.toolTip = sidebarOpen ? "Hide Sidebar" : "Show Sidebar"
+        sidebarToggleButton.setAccessibilityValue(sidebarOpen ? "open" : "closed")
     }
 
     // MARK: - Tab 列表
@@ -715,6 +773,10 @@ final class StatusBarView: NSView {
         onNewTab?()
     }
 
+    @objc private func sidebarClicked() {
+        onToggleSidebar?()
+    }
+
     @objc private func renameTabFromMenu(_ sender: NSMenuItem) {
         onRenameTab?(UInt32(sender.tag))
     }
@@ -1024,6 +1086,7 @@ private final class AttentionBellButton: NSButton {
 
 /// iTerm2 风格 GUI tab：圆角色块 + 系统字体，不用 tmux 格式串。
 private final class StatusTabButton: NSButton {
+    private let activeUnderline = CALayer()
     var onDoubleClick: (() -> Void)?
     var onDragEnd: ((NSPoint) -> Void)?
     var isActiveTab = false {
@@ -1035,8 +1098,11 @@ private final class StatusTabButton: NSButton {
         bezelStyle = .shadowlessSquare
         isBordered = false
         wantsLayer = true
-        layer?.cornerRadius = 6
+        layer?.cornerRadius = 3
         layer?.masksToBounds = true
+        activeUnderline.backgroundColor = NSColor.controlAccentColor.cgColor
+        activeUnderline.isHidden = true
+        layer?.addSublayer(activeUnderline)
         focusRingType = .none
         lineBreakMode = .byTruncatingTail
         cell?.lineBreakMode = .byTruncatingTail
@@ -1058,6 +1124,16 @@ private final class StatusTabButton: NSButton {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         applyStyle()
+    }
+
+    override func layout() {
+        super.layout()
+        activeUnderline.frame = CGRect(
+            x: 5,
+            y: 0,
+            width: max(0, bounds.width - 10),
+            height: FlatChrome.activeTabUnderlineHeight
+        )
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -1112,9 +1188,10 @@ private final class StatusTabButton: NSButton {
             ]
         )
         layer?.backgroundColor = (isActiveTab
-            ? NSColor.controlAccentColor.withAlphaComponent(0.22)
-            : NSColor.labelColor.withAlphaComponent(0.06)
+            ? NSColor.selectedControlColor.withAlphaComponent(0.14)
+            : NSColor.clear
         ).cgColor
+        activeUnderline.isHidden = !isActiveTab
     }
 }
 

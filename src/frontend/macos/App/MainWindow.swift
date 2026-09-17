@@ -56,8 +56,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     let workspaceSidebar = WorkspaceSidebarView(frame: NSRect(x: 0, y: 0, width: 240, height: 640))
     private let mainSplitController = NSSplitViewController()
     private var sidebarSplitItem: NSSplitViewItem?
-    private let sidebarToggleButton = NSButton()
-    private var sidebarTitlebarAccessory: NSTitlebarAccessoryViewController?
     private let discovery = ConnectionDiscovery()
     var commandPalette: CommandPaletteController!
     var unifiedPanel: UnifiedPanelController!
@@ -300,12 +298,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 960, height: 640),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         window.title = "Muxterm"
-        window.titleVisibility = .visible
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.titlebarSeparatorStyle = .none
+        window.isMovableByWindowBackground = true
         window.minSize = NSSize(width: 480, height: 320)
         window.center()
         window.contentView = content
@@ -344,7 +345,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         window.delegate = self
         installMainSplit(in: window)
-        installSidebarToggle(in: window)
+        content.statusBar.onToggleSidebar = { [weak self] in
+            self?.toggleWorkspaceSidebar()
+        }
         wireTerminalManagerCallbacks()
 
         workspaceSidebar.onWorkspaceActivate = { [weak self] workspaceId in
@@ -1102,36 +1105,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         unifiedPanel.show(tab: .attention)
     }
 
-    private func installSidebarToggle(in window: NSWindow) {
-        sidebarToggleButton.image = NSImage(
-            systemSymbolName: "sidebar.left",
-            accessibilityDescription: "Toggle Sidebar"
-        )
-        sidebarToggleButton.title = ""
-        sidebarToggleButton.imagePosition = .imageOnly
-        sidebarToggleButton.bezelStyle = .texturedRounded
-        sidebarToggleButton.setButtonType(.toggle)
-        sidebarToggleButton.state = .off
-        sidebarToggleButton.target = self
-        sidebarToggleButton.action = #selector(toggleWorkspaceSidebar)
-        sidebarToggleButton.setAccessibilityIdentifier("muxterm.sidebar.toggle")
-        sidebarToggleButton.translatesAutoresizingMaskIntoConstraints = false
-
-        let holder = NSView(frame: NSRect(x: 0, y: 0, width: 38, height: 28))
-        holder.addSubview(sidebarToggleButton)
-        NSLayoutConstraint.activate([
-            sidebarToggleButton.leadingAnchor.constraint(equalTo: holder.leadingAnchor, constant: 4),
-            sidebarToggleButton.centerYAnchor.constraint(equalTo: holder.centerYAnchor),
-            sidebarToggleButton.widthAnchor.constraint(equalToConstant: 30),
-            sidebarToggleButton.heightAnchor.constraint(equalToConstant: 24),
-        ])
-        let accessory = NSTitlebarAccessoryViewController()
-        accessory.layoutAttribute = .left
-        accessory.view = holder
-        window.addTitlebarAccessoryViewController(accessory)
-        sidebarTitlebarAccessory = accessory
-    }
-
     private func installMainSplit(in window: NSWindow) {
         let sidebarController = NSViewController()
         sidebarController.view = workspaceSidebar
@@ -1167,7 +1140,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     private func setWorkspaceSidebarOpen(_ open: Bool) {
         sidebarSplitItem?.isCollapsed = !open
-        sidebarToggleButton.state = open ? .on : .off
+        content.statusBar.sidebarOpen = open
         if open {
             refreshWorkspaceSidebar(force: true)
         }

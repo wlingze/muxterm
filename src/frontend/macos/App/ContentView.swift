@@ -156,9 +156,11 @@ final class ContentView: NSView {
         case .top:
             NSLayoutConstraint.activate(topConstraints)
             statusBar.setEdgeLineAtBottom(true)
+            statusBar.setIntegratedTitlebar(true)
         case .bottom:
             NSLayoutConstraint.activate(bottomConstraints)
             statusBar.setEdgeLineAtBottom(false)
+            statusBar.setIntegratedTitlebar(false)
         }
         needsLayout = true
     }

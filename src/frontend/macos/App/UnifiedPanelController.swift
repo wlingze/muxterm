@@ -180,11 +180,14 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         panel.title = MuxtermI18n.shared.tr(.quickConnect)
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
+        panel.titlebarSeparatorStyle = .none
         panel.isMovableByWindowBackground = true
         panel.isFloatingPanel = true
         panel.level = .floating
         panel.hidesOnDeactivate = false
         panel.hasShadow = true
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
 
         super.init(window: panel)
         buildView()
@@ -643,10 +646,16 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     private func buildView() {
         guard let window, let content = window.contentView else { return }
 
-        let root = NSView()
+        let root = NSVisualEffectView()
         root.translatesAutoresizingMaskIntoConstraints = false
+        root.material = .popover
+        root.blendingMode = .behindWindow
+        root.state = .active
         root.wantsLayer = true
-        root.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        root.layer?.cornerRadius = 10
+        root.layer?.borderWidth = 1
+        root.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.7).cgColor
+        root.layer?.masksToBounds = true
         content.addSubview(root)
 
         buildTabControl()
@@ -760,8 +769,8 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
             input.topAnchor.constraint(equalTo: tabControl.bottomAnchor, constant: 8),
             input.heightAnchor.constraint(equalToConstant: 28),
 
-            scrollView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            scrollView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            scrollView.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 8),
+            scrollView.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -8),
             accessoryContainer.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 14),
             accessoryContainer.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -14),
             accessoryContainer.topAnchor.constraint(equalTo: input.bottomAnchor, constant: 4),

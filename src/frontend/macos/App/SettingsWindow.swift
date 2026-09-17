@@ -233,7 +233,7 @@ private func settingsStyleCard(_ view: NSView, fill: NSColor = .controlBackgroun
     view.layer?.backgroundColor = fill.cgColor
     view.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.7).cgColor
     view.layer?.borderWidth = 1
-    view.layer?.cornerRadius = 12
+    view.layer?.cornerRadius = 7
 }
 
 final class SettingsWindowController: NSWindowController, NSWindowDelegate,
@@ -281,11 +281,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         )
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 980, height: 720),
-            styleMask: [.titled, .closable, .resizable],
+            styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         window.title = "Settings"
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.titlebarSeparatorStyle = .none
+        window.isMovableByWindowBackground = true
         window.minSize = NSSize(width: 760, height: 520)
         super.init(window: window)
         window.delegate = self
@@ -434,35 +438,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         let header = NSView()
         header.translatesAutoresizingMaskIntoConstraints = false
         header.wantsLayer = true
-        header.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        header.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
         root.addSubview(header)
 
-        let mark = NSTextField(labelWithString: "⌘")
-        mark.translatesAutoresizingMaskIntoConstraints = false
-        mark.alignment = .center
-        mark.font = .systemFont(ofSize: 22, weight: .bold)
-        mark.textColor = .controlAccentColor
-        mark.wantsLayer = true
-        mark.layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.14).cgColor
-        mark.layer?.cornerRadius = 11
-        header.addSubview(mark)
-
         let headerTitle = NSTextField(labelWithString: "Settings")
-        headerTitle.font = .systemFont(ofSize: 22, weight: .bold)
-        let headerSubtitle = NSTextField(labelWithString: "Make Muxterm feel like yours.")
-        headerSubtitle.font = .systemFont(ofSize: 12)
-        headerSubtitle.textColor = .secondaryLabelColor
-        let configLabel = NSTextField(labelWithString: "Configuration · config.toml")
-        configLabel.font = .systemFont(ofSize: 10)
-        configLabel.textColor = .tertiaryLabelColor
-        let heading = NSStackView(views: [headerTitle, headerSubtitle, configLabel])
-        heading.translatesAutoresizingMaskIntoConstraints = false
-        heading.orientation = .vertical
-        heading.alignment = .leading
-        heading.spacing = 2
-        heading.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        heading.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        header.addSubview(heading)
+        headerTitle.translatesAutoresizingMaskIntoConstraints = false
+        headerTitle.font = .systemFont(ofSize: 17, weight: .semibold)
+        header.addSubview(headerTitle)
 
         searchField.translatesAutoresizingMaskIntoConstraints = false
         searchField.placeholderString = "Search settings"
@@ -480,7 +462,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
 
         sidebarView.translatesAutoresizingMaskIntoConstraints = false
         sidebarView.wantsLayer = true
-        sidebarView.layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.74).cgColor
+        sidebarView.layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.48).cgColor
         sidebarView.setAccessibilityIdentifier("muxterm.settings.categories")
         pagesContainer.translatesAutoresizingMaskIntoConstraints = false
         pagesContainer.setAccessibilityIdentifier("muxterm.settings.pages")
@@ -488,8 +470,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("category"))
         categoryTable.addTableColumn(column)
         categoryTable.headerView = nil
-        categoryTable.rowHeight = 56
-        categoryTable.intercellSpacing = NSSize(width: 0, height: 4)
+        categoryTable.rowHeight = 44
+        categoryTable.intercellSpacing = NSSize(width: 0, height: 1)
         categoryTable.style = .sourceList
         categoryTable.backgroundColor = .clear
         categoryTable.usesAlternatingRowBackgroundColors = false
@@ -539,7 +521,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         let footer = NSView()
         footer.translatesAutoresizingMaskIntoConstraints = false
         footer.wantsLayer = true
-        footer.layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.74).cgColor
+        footer.layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.48).cgColor
         right.addSubview(footer)
         summaryLabel.textColor = .secondaryLabelColor
         summaryLabel.font = .systemFont(ofSize: 11)
@@ -564,17 +546,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
             header.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             header.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             header.topAnchor.constraint(equalTo: root.topAnchor),
-            header.heightAnchor.constraint(equalToConstant: 88),
-            mark.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 28),
-            mark.centerYAnchor.constraint(equalTo: header.centerYAnchor),
-            mark.widthAnchor.constraint(equalToConstant: 42),
-            mark.heightAnchor.constraint(equalToConstant: 42),
-            heading.leadingAnchor.constraint(equalTo: mark.trailingAnchor, constant: 12),
-            heading.centerYAnchor.constraint(equalTo: header.centerYAnchor),
-            heading.trailingAnchor.constraint(lessThanOrEqualTo: searchField.leadingAnchor, constant: -20),
-            searchField.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -28),
+            header.heightAnchor.constraint(equalToConstant: 58),
+            headerTitle.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 78),
+            headerTitle.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            headerTitle.trailingAnchor.constraint(lessThanOrEqualTo: searchField.leadingAnchor, constant: -20),
+            searchField.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -20),
             searchField.centerYAnchor.constraint(equalTo: header.centerYAnchor),
-            searchField.widthAnchor.constraint(equalToConstant: 250),
+            searchField.widthAnchor.constraint(equalToConstant: 230),
             headerSeparator.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             headerSeparator.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             headerSeparator.topAnchor.constraint(equalTo: header.bottomAnchor),
@@ -585,11 +563,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
             sidebarView.widthAnchor.constraint(equalToConstant: 180),
             sidebarTitle.leadingAnchor.constraint(equalTo: sidebarView.leadingAnchor, constant: 18),
             sidebarTitle.trailingAnchor.constraint(equalTo: sidebarView.trailingAnchor, constant: -12),
-            sidebarTitle.topAnchor.constraint(equalTo: sidebarView.topAnchor, constant: 20),
+            sidebarTitle.topAnchor.constraint(equalTo: sidebarView.topAnchor, constant: 14),
             categoryScroll.leadingAnchor.constraint(equalTo: sidebarView.leadingAnchor),
             categoryScroll.trailingAnchor.constraint(equalTo: sidebarView.trailingAnchor),
-            categoryScroll.topAnchor.constraint(equalTo: sidebarTitle.bottomAnchor, constant: 10),
-            categoryScroll.bottomAnchor.constraint(equalTo: sidebarView.bottomAnchor, constant: -12),
+            categoryScroll.topAnchor.constraint(equalTo: sidebarTitle.bottomAnchor, constant: 8),
+            categoryScroll.bottomAnchor.constraint(equalTo: sidebarView.bottomAnchor, constant: -8),
             separator.leadingAnchor.constraint(equalTo: sidebarView.trailingAnchor),
             separator.topAnchor.constraint(equalTo: headerSeparator.bottomAnchor),
             separator.bottomAnchor.constraint(equalTo: root.bottomAnchor),
@@ -605,7 +583,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
             footer.leadingAnchor.constraint(equalTo: right.leadingAnchor),
             footer.trailingAnchor.constraint(equalTo: right.trailingAnchor),
             footer.bottomAnchor.constraint(equalTo: right.bottomAnchor),
-            footer.heightAnchor.constraint(equalToConstant: 60),
+            footer.heightAnchor.constraint(equalToConstant: 52),
             summaryLabel.leadingAnchor.constraint(equalTo: footer.leadingAnchor, constant: 24),
             summaryLabel.centerYAnchor.constraint(equalTo: footer.centerYAnchor),
             summaryLabel.trailingAnchor.constraint(lessThanOrEqualTo: cancel.leadingAnchor, constant: -12),
@@ -632,14 +610,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         stack.translatesAutoresizingMaskIntoConstraints = false
         stack.orientation = .vertical
         stack.alignment = .width
-        stack.spacing = 18
-        stack.edgeInsets = NSEdgeInsets(top: 28, left: 34, bottom: 34, right: 38)
+        stack.spacing = 14
+        stack.edgeInsets = NSEdgeInsets(top: 22, left: 26, bottom: 28, right: 30)
         stack.setContentHuggingPriority(.defaultLow, for: .horizontal)
         stack.setContentCompressionResistancePriority(.required, for: .horizontal)
-        let contentWidth: CGFloat = -72
+        let contentWidth: CGFloat = -56
 
         let title = NSTextField(labelWithString: category.title)
-        title.font = .systemFont(ofSize: 25, weight: .bold)
+        title.font = .systemFont(ofSize: 20, weight: .semibold)
         title.textColor = .labelColor
         let description = NSTextField(labelWithString: category.description)
         description.font = .systemFont(ofSize: 12)
@@ -649,7 +627,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         let pageHeader = NSStackView(views: [title, description])
         pageHeader.orientation = .vertical
         pageHeader.alignment = .leading
-        pageHeader.spacing = 5
+        pageHeader.spacing = 3
         pageHeader.setContentHuggingPriority(.defaultLow, for: .horizontal)
         stack.addArrangedSubview(pageHeader)
         pageHeader.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: contentWidth).isActive = true
@@ -670,7 +648,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         cardHeader.orientation = .vertical
         cardHeader.alignment = .leading
         cardHeader.spacing = 3
-        cardHeader.edgeInsets = NSEdgeInsets(top: 18, left: 16, bottom: 12, right: 16)
+        cardHeader.edgeInsets = NSEdgeInsets(top: 14, left: 16, bottom: 10, right: 16)
         cardHeader.setContentHuggingPriority(.defaultLow, for: .horizontal)
         card.addArrangedSubview(cardHeader)
         cardHeader.widthAnchor.constraint(equalTo: card.widthAnchor).isActive = true
