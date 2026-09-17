@@ -1015,6 +1015,10 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     private func installKeyMonitor() {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, self.window?.isKeyWindow == true else { return event }
+            if let offset = CompactPanelKeyNavigation.selectionOffset(for: event) {
+                self.moveSelection(offset: offset)
+                return nil
+            }
             switch event.keyCode {
             case 53: // Escape
                 if self.model.tab == .workspaces,
@@ -1032,12 +1036,6 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                 self.model.cycleTab(back: event.modifierFlags.contains(.shift))
                 self.applyTab()
                 self.reload()
-                return nil
-            case 125: // Down
-                self.moveSelection(offset: 1)
-                return nil
-            case 126: // Up
-                self.moveSelection(offset: -1)
                 return nil
             case 36, 76: // Return / keypad Enter
                 self.activateSelected()

@@ -15,6 +15,7 @@ final class AttentionPanelController: NSWindowController, NSSearchFieldDelegate,
     private let peekContainer = NSView()
     private var peekView: MuxTerminalView?
     private var rows: [AttentionRow] = []
+    private var keyMonitor: Any?
     private weak var ownerWindow: NSWindow?
     private let snapshot: () -> AttentionSnapshot?
     private let paneOutput: (UInt32) -> Data
@@ -48,11 +49,16 @@ final class AttentionPanelController: NSWindowController, NSSearchFieldDelegate,
 
         super.init(window: panel)
         buildView()
+        installKeyMonitor()
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         return nil
+    }
+
+    deinit {
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
     }
 
     func present() {
@@ -161,6 +167,34 @@ final class AttentionPanelController: NSWindowController, NSSearchFieldDelegate,
         let row = rows[table.selectedRow]
         onJump?(nil, row.pane.paneId, 0, "")
         dismiss()
+    }
+
+    private func installKeyMonitor() {
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, self.window?.isKeyWindow == true else { return event }
+            if let offset = CompactPanelKeyNavigation.selectionOffset(for: event) {
+                self.selectRow(offset: offset)
+                return nil
+            }
+            switch event.keyCode {
+            case 53:
+                self.dismiss()
+                return nil
+            case 36, 76:
+                self.activateSelected()
+                return nil
+            default:
+                return event
+            }
+        }
+    }
+
+    private func selectRow(offset: Int) {
+        guard !rows.isEmpty else { return }
+        let current = table.selectedRow >= 0 ? table.selectedRow : 0
+        let next = ((current + offset) % rows.count + rows.count) % rows.count
+        table.selectRowIndexes(IndexSet(integer: next), byExtendingSelection: false)
+        table.scrollRowToVisible(next)
     }
 
     /// 选中行 → 填充 peek 小终端（该 pane 的最近输出）。

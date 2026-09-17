@@ -166,15 +166,13 @@ final class QuickConnectController: NSWindowController, NSSearchFieldDelegate,
     private func installKeyMonitor() {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, self.window?.isKeyWindow == true else { return event }
+            if let offset = CompactPanelKeyNavigation.selectionOffset(for: event) {
+                self.selectRow(offset: offset)
+                return nil
+            }
             switch event.keyCode {
             case 53: // Escape
                 self.dismiss()
-                return nil
-            case 125: // Down
-                self.selectRow(offset: 1)
-                return nil
-            case 126: // Up
-                self.selectRow(offset: -1)
                 return nil
             case 36, 76: // Return / keypad Enter
                 self.activateSelected()
