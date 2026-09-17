@@ -66,6 +66,10 @@ final class AttentionNavE2ETests: XCTestCase {
         )
         // overlay / Enter 仍针对带 bgToken 的后台 pane，不能停在刚移到的那一行。
         app.unifiedPanel.testSelectAttentionPane(bgPane)
+        XCTAssertTrue(
+            app.unifiedPanel.testSelectedAttentionRow()?.pane.lastLine.contains(fx.bgToken) == true,
+            "overlay 的即时兜底必须来自 Core attention snapshot 的稳定行"
+        )
 
         let cmdEnter = try XCTUnwrap(app.testMakeCmdEnterEvent(), "必须能构造 Cmd-Enter")
         XCTAssertTrue(app.testDispatchKeyEvent(cmdEnter), "注意力面板 Cmd-Enter 必须被消费")

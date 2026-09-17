@@ -2146,6 +2146,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let targetScene = targetWorkspaceId.flatMap { scene(forWorkspaceId: $0) }
         guard targetWorkspaceId == nil || targetScene != nil else { return }
         let workspaceID = targetScene?.workspaceID ?? activeSceneWorkspaceID
+        let cachedLastLine = selectedRow.flatMap { row -> String? in
+            guard row.pane.paneId == targetPaneId,
+                  targetWorkspaceId == nil || row.workspaceId == targetWorkspaceId
+            else {
+                return nil
+            }
+            let line = row.pane.lastLine.trimmingCharacters(in: .newlines)
+            return line.isEmpty ? nil : line
+        }
         let overlay = MuxTerminalView(paneId: targetPaneId, frame: .zero)
         overlay.setAccessibilityIdentifier(CmdEnterRouting.overlayIdentifier)
         overlay.setAccessibilityElement(true)
@@ -2176,7 +2185,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             workspaceID: workspaceID,
             paneID: targetPaneId,
             attemptsRemaining: 50,
-            requestedSnapshot: false
+            requestedSnapshot: false,
+            cachedLastLine: cachedLastLine
         )
         content.replyOverlayContainer.setAccessibilityValue("1")
     }
@@ -2189,7 +2199,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         workspaceID: String?,
         paneID: UInt32,
         attemptsRemaining: Int,
-        requestedSnapshot: Bool
+        requestedSnapshot: Bool,
+        cachedLastLine: String?
     ) {
         _ = enqueuePaneOutput(
             workspaceID: workspaceID,
@@ -2212,6 +2223,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             }
             guard attemptsRemaining > 1 else { return }
             if !requestedSnapshot {
+                // AttentionSnapshot 已由 event pump 缓存在前端值类型模型中。
+                // 权威 pane snapshot 尚未就绪时先显示它的最新稳定行，避免
+                // overlay 留白；完整 VT 快照到达后会 reset 并替换这行。
+                if let cachedLastLine {
+                    overlay.feedOutput(Data((cachedLastLine + "\r\n").utf8), isSnapshot: true)
+                }
                 _ = self.enqueueCoreTask(
                     workspaceID: workspaceID,
                     MuxTask.requestPaneSnapshot(paneID),
@@ -2225,7 +2242,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     workspaceID: workspaceID,
                     paneID: paneID,
                     attemptsRemaining: attemptsRemaining - 1,
-                    requestedSnapshot: true
+                    requestedSnapshot: true,
+                    cachedLastLine: nil
                 )
             }
         }
