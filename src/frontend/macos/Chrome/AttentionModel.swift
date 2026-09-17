@@ -144,6 +144,7 @@ public struct AttentionRow: Equatable, Sendable {
     public let workspaceName: String
     public let agentName: String
     public let tabNumber: Int?
+    public let projectedAgent: AgentSidebarItem?
 
     public init(
         workspaceId: String,
@@ -152,7 +153,8 @@ public struct AttentionRow: Equatable, Sendable {
         pane: PaneAttention,
         workspaceName: String = "",
         agentName: String = "",
-        tabNumber: Int? = nil
+        tabNumber: Int? = nil,
+        projectedAgent: AgentSidebarItem? = nil
     ) {
         self.workspaceId = workspaceId
         self.transport = transport
@@ -161,6 +163,7 @@ public struct AttentionRow: Equatable, Sendable {
         self.workspaceName = workspaceName
         self.agentName = agentName
         self.tabNumber = tabNumber
+        self.projectedAgent = projectedAgent
     }
 
     /// 第一行：工作区名 + 进程 + 机器/路径身份。
@@ -174,7 +177,10 @@ public struct AttentionRow: Equatable, Sendable {
     }
 
     public var detail: String {
-        AttentionRowLabel.detail(
+        if let projectedAgent {
+            return projectedAgent.detail
+        }
+        return AttentionRowLabel.detail(
             status: pane.status,
             agentName: agentName.isEmpty
                 ? (AttentionRowLabel.normalizedProcess(pane.processName) ?? pane.processName ?? "")
@@ -184,6 +190,9 @@ public struct AttentionRow: Equatable, Sendable {
     }
 
     public var indicator: AgentSidebarIndicator {
+        if let projectedAgent {
+            return projectedAgent.indicator
+        }
         switch pane.status {
         case .working:
             return .working
@@ -375,9 +384,20 @@ public enum AttentionList {
         query: String
     ) -> [AttentionRow] {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let projectedAgents = WorkspaceSidebarProjection.agents(
+            workspaces: workspaces,
+            attention: snapshot
+        )
+        let projectedByPane = Dictionary(
+            projectedAgents.map { (PaneProjectionKey(workspaceId: $0.workspaceId, paneId: $0.paneId), $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
         var rows: [AttentionRow] = []
         for ws in snapshot.workspaces {
             let chrome = workspaces.first { $0.workspaceId == ws.workspaceId }
+            if chrome?.isAggregate == true || chrome?.isOpening == true {
+                continue
+            }
             let transport = !ws.transport.isEmpty
                 ? ws.transport
                 : (chrome?.transport
@@ -390,6 +410,9 @@ public enum AttentionList {
             for pane in ws.panes where pane.status.isListed
                 && (pane.status == .working || !pane.acknowledged)
             {
+                let projectedAgent = projectedByPane[
+                    PaneProjectionKey(workspaceId: ws.workspaceId, paneId: pane.paneId)
+                ]
                 let agentName = firstNonempty([
                     chrome?.structuredAgents.first(where: { $0.paneId == pane.paneId }).flatMap {
                         firstNonempty([$0.displayName, $0.name, $0.kind, $0.title])
@@ -417,27 +440,33 @@ public enum AttentionList {
                     pane: pane,
                     workspaceName: workspaceName,
                     agentName: agentName,
-                    tabNumber: chrome?.tabNumberByPane[pane.paneId]
+                    tabNumber: chrome?.tabNumberByPane[pane.paneId],
+                    projectedAgent: projectedAgent
                 ))
             }
         }
         rows.sort { a, b in
-            func rank(_ status: PaneAttentionStatus) -> Int {
-                switch status {
+            func rank(_ indicator: AgentSidebarIndicator) -> Int {
+                switch indicator {
                 case .done: 0
                 case .blocked: 1
                 case .working: 2
-                case .unknown, .idle: 3
+                case .idle: 3
                 }
             }
-            let aRank = rank(a.pane.status)
-            let bRank = rank(b.pane.status)
+            let aRank = rank(a.indicator)
+            let bRank = rank(b.indicator)
             if aRank != bRank {
                 return aRank < bRank
             }
             return a.pane.seq > b.pane.seq
         }
         return rows
+    }
+
+    private struct PaneProjectionKey: Hashable {
+        let workspaceId: String
+        let paneId: UInt32
     }
 
     private static func firstNonempty(_ values: [String?]) -> String? {

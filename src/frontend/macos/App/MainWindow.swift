@@ -424,6 +424,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             },
             sidebarWorkspaces: { [weak self] in
                 self?.sidebarItems() ?? []
+            },
+            activityWorkspaces: { [weak self] in
+                self?.runtimeSidebarItems() ?? []
             }
         )
         unifiedPanel.onWorkspaceActivate = { [weak self] workspaceId in

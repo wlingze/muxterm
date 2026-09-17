@@ -408,7 +408,7 @@ public enum WorkspaceSidebarProjection {
         }
         var result: [AgentSidebarItem] = []
 
-        for workspace in workspaces {
+        for workspace in workspaces where !workspace.isAggregate && !workspace.isOpening {
             var structuredPaneIDs = Set<UInt32>()
             for agent in workspace.structuredAgents {
                 structuredPaneIDs.insert(agent.paneId)
@@ -510,12 +510,12 @@ public enum WorkspaceSidebarProjection {
         attention: AttentionSnapshot?
     ) -> [CommandSidebarItem] {
         var agentPaneKeys = Set<PaneKey>()
-        for workspace in workspaces {
+        for workspace in workspaces where !workspace.isAggregate && !workspace.isOpening {
             for agent in workspace.structuredAgents {
                 agentPaneKeys.insert(PaneKey(workspaceId: workspace.workspaceId, paneId: agent.paneId))
             }
         }
-        for workspace in workspaces {
+        for workspace in workspaces where !workspace.isAggregate && !workspace.isOpening {
             for pane in attention?.workspaces.first(where: {
                 $0.workspaceId == workspace.workspaceId
             })?.panes ?? [] where pane.processIsAgent {
@@ -524,7 +524,7 @@ public enum WorkspaceSidebarProjection {
         }
 
         var result: [CommandSidebarItem] = []
-        for workspace in workspaces {
+        for workspace in workspaces where !workspace.isAggregate && !workspace.isOpening {
             guard let panes = attention?.workspaces
                 .first(where: { $0.workspaceId == workspace.workspaceId })?
                 .panes

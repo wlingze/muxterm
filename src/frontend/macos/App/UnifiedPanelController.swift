@@ -147,6 +147,8 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     private let connectedWorkspaces: (() -> [TargetConfig])?
     /// 侧栏 chrome：Attention 行用同一套 workspace / agent / Tab 编号。
     private let sidebarWorkspaces: (() -> [WorkspaceSidebarItem])?
+    /// Attention/Activity 只读真实 Workspace；固定聚合槽不参与状态投影。
+    private let activityWorkspaces: (() -> [WorkspaceSidebarItem])?
 
     init(
         store: QuickConnectStore,
@@ -156,7 +158,8 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         search: @escaping (UnifiedPanelSearchRequest) -> Void,
         workspaceIndex: @escaping (TargetConfig) -> Int? = { _ in nil },
         connectedWorkspaces: (() -> [TargetConfig])? = nil,
-        sidebarWorkspaces: (() -> [WorkspaceSidebarItem])? = nil
+        sidebarWorkspaces: (() -> [WorkspaceSidebarItem])? = nil,
+        activityWorkspaces: (() -> [WorkspaceSidebarItem])? = nil
     ) {
         self.store = store
         self.ownerWindow = ownerWindow
@@ -166,6 +169,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         self.workspaceIndex = workspaceIndex
         self.connectedWorkspaces = connectedWorkspaces
         self.sidebarWorkspaces = sidebarWorkspaces
+        self.activityWorkspaces = activityWorkspaces
 
         let panel = NSPanel(
             contentRect: NSRect(origin: .zero, size: Self.preferredContentSize),
@@ -278,7 +282,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
             rows = snapshot().map {
                 AttentionList.rows(
                     from: $0,
-                    workspaces: sidebarWorkspaces?() ?? [],
+                    workspaces: activityWorkspaces?() ?? sidebarWorkspaces?() ?? [],
                     query: model.query
                 )
             } ?? []

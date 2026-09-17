@@ -178,10 +178,17 @@ final class AttentionListTests: XCTestCase {
             tabNumberByPane: [4: 2]
         )
         let rows = AttentionList.rows(from: snap, workspaces: [chrome], query: "")
+        let projected = WorkspaceSidebarProjection.agents(
+            workspaces: [chrome],
+            attention: snap
+        )
         XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(projected.count, 1)
         XCTAssertEqual(rows[0].title, "muxterm  codex  ryzen  ~/Developer/self/muxterm")
         XCTAssertEqual(rows[0].detail, "working · Codex · Tab 2")
         XCTAssertEqual(rows[0].indicator, .working)
+        XCTAssertEqual(rows[0].detail, projected[0].detail)
+        XCTAssertEqual(rows[0].indicator, projected[0].indicator)
         XCTAssertTrue(rows[0].title.contains("ryzen"))
         XCTAssertTrue(rows[0].title.contains("~/Developer/self/muxterm"))
         XCTAssertEqual(
