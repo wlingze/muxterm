@@ -158,6 +158,8 @@ pub struct PaneAttention {
     /// 用户是否已经查看/处理了当前 Blocked 或 Done 状态。
     /// Runtime 权威状态可以继续保持 Blocked/Done；该位只表达 UI 未读语义。
     pub acknowledged: bool,
+    /// 当前快照时刻是否处于用户静音期；不改变真实 lifecycle 状态。
+    pub muted: bool,
     pub last_line: String,
     pub seq: u64,
     /// 当前或最近一次命令的展示名。
@@ -260,6 +262,7 @@ impl<C: Clock> AttentionEngine<C> {
                 pane_id: pane,
                 status: PaneStatus::Unknown,
                 acknowledged: true,
+                muted: false,
                 last_line: String::new(),
                 seq: 0,
                 process_name: None,
@@ -729,14 +732,21 @@ impl<C: Clock> AttentionEngine<C> {
             }
             return;
         }
+        let can_start_from_status = self.panes.get(&key).is_some_and(|pane| {
+            matches!(pane.status, PaneStatus::Unknown | PaneStatus::Idle)
+                || (pane.status == PaneStatus::Done && pane.acknowledged)
+        });
+        let preserves_unread_done = self
+            .panes
+            .get(&key)
+            .is_some_and(|pane| pane.status == PaneStatus::Done && !pane.acknowledged);
+        let process_changed = previous.as_ref() != normalized.as_ref();
         let starts_command = !is_shell
             && !initial_observation_follows_attention
             && !is_transient_shell_command(next_process)
-            && (previous_was_shell
-                || matches!(
-                    current_status,
-                    Some(PaneStatus::Unknown | PaneStatus::Idle | PaneStatus::Done)
-                ));
+            && process_changed
+            && !preserves_unread_done
+            && (previous_was_shell || can_start_from_status);
         if starts_command {
             let (last_line, seq) = self
                 .panes
@@ -849,28 +859,21 @@ impl<C: Clock> AttentionEngine<C> {
                     .cloned()
                     .map(|mut pane| {
                         pane.status = listed_command_status(&pane, now);
+                        pane.muted = pane.mute_until.map(|until| until > now).unwrap_or(false);
                         pane
                     })
                     .collect();
                 let blocked = panes
                     .iter()
-                    .filter(|p| {
-                        p.status == PaneStatus::Blocked
-                            && !p.acknowledged
-                            && !p.mute_until.map(|until| until > now).unwrap_or(false)
-                    })
+                    .filter(|p| p.status == PaneStatus::Blocked && !p.acknowledged && !p.muted)
                     .count();
                 let done = panes
                     .iter()
-                    .filter(|p| {
-                        p.status == PaneStatus::Done
-                            && !p.acknowledged
-                            && !p.mute_until.map(|until| until > now).unwrap_or(false)
-                    })
+                    .filter(|p| p.status == PaneStatus::Done && !p.acknowledged && !p.muted)
                     .count();
                 let working = panes
                     .iter()
-                    .filter(|p| p.status == PaneStatus::Working)
+                    .filter(|p| p.status == PaneStatus::Working && !p.muted)
                     .count();
                 panes.sort_by_key(|p| (p.pane_id, p.seq));
                 WorkspaceAttention {
@@ -1161,7 +1164,41 @@ mod tests {
         assert_eq!(e.snapshot()[0].blocked, 1);
         e.mute_for("ws", 1, Duration::from_secs(3600));
         assert_eq!(e.blocked_workspace_count(), 0);
-        assert_eq!(e.snapshot()[0].blocked, 0);
+        let snapshot = e.snapshot();
+        assert_eq!(snapshot[0].blocked, 0);
+        assert!(snapshot[0].panes[0].muted);
+    }
+
+    #[test]
+    fn late_process_observation_does_not_overwrite_unread_command_done() {
+        let mut e = AttentionEngine::new(AttentionConfig::default(), clock());
+        e.set_process_name("ws", 1, Some("cat".into()));
+        e.apply(
+            "ws",
+            1,
+            &[AttentionSignal::AttentionRequest {
+                source: AttentionSource::Bel,
+            }],
+            "blocked",
+            1,
+        );
+        e.on_user_input("ws", 1);
+        e.apply(
+            "ws",
+            1,
+            &[AttentionSignal::CommandDone { exit_code: Some(0) }],
+            "done",
+            2,
+        );
+        assert_eq!(e.snapshot()[0].panes[0].status, PaneStatus::Done);
+
+        // pane respawn 时进程轮询可能短暂清空，再晚于 OSC 133 D 看到新进程。
+        e.set_process_name("ws", 1, None);
+        e.set_process_name("ws", 1, Some("python3".into()));
+
+        let pane = &e.snapshot()[0].panes[0];
+        assert_eq!(pane.status, PaneStatus::Done);
+        assert!(!pane.acknowledged);
     }
 
     #[test]
@@ -2055,10 +2092,20 @@ mod tests {
 
     #[test]
     fn short_command_never_lists_in_commands() {
-        let mut e = AttentionEngine::new(AttentionConfig::default(), clock());
+        let c = clock();
+        let mut e = AttentionEngine::new(AttentionConfig::default(), c.clone());
         e.set_process_name("ws", 2, Some("zsh".into()));
         e.set_process_name("ws", 2, Some("go".into()));
-        e.set_process_name("ws", 2, Some("zsh".into()));
+        e.apply(
+            "ws",
+            2,
+            &[AttentionSignal::CommandDone { exit_code: Some(0) }],
+            "done",
+            1,
+        );
+        // pane-cmd 会重复报告同一个前台进程；重复观察不能重新武装 Working。
+        e.set_process_name("ws", 2, Some("go".into()));
+        c.advance(Duration::from_millis(450));
         assert_eq!(
             e.snapshot()[0].panes[0].status,
             PaneStatus::Idle,

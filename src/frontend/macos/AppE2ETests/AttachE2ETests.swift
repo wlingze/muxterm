@@ -177,9 +177,14 @@ final class AttachE2ETests: XCTestCase {
                 && app.testNativeCanScroll()
         }
         let live = app.testActivePaneTerminalText()
+        let attachDiagnostics = "session=\(app.testActiveWorkspaceSession() ?? "nil") "
+            + "workspaces=\(app.testWorkspaceIDs()) "
+            + "progress=\(app.testConnectProgressValue()) "
+            + "error=\(app.testLastPaletteError() ?? "nil")"
         XCTAssertTrue(
             painted,
-            "Existing attach 首屏必须同时保留 agent 顶栏/正文/输入区与历史。got=\(live)"
+            "Existing attach 首屏必须同时保留 agent 顶栏/正文/输入区与历史。"
+                + "\(attachDiagnostics) got=\(live)"
         )
         XCTAssertEqual(app.window?.frame, fixedFrame, "agent attach 后测试没有 resize 窗口")
 

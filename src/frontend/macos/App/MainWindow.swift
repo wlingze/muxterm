@@ -1541,6 +1541,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private func flushCoreCommandQueue() {
         let commands = commandQueue.drain()
         guard !commands.isEmpty else { return }
+        var attentionMutationSucceeded = false
         for command in commands {
             let result: Int32
             switch command.operation {
@@ -1760,6 +1761,21 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             if result != 0, !command.failureMessage.isEmpty {
                 reportStatusError(command.failureMessage)
             }
+            if result == 0 {
+                switch command.operation {
+                case .attention(.acknowledge), .attention(.mute):
+                    attentionMutationSucceeded = true
+                default:
+                    break
+                }
+            }
+        }
+        if attentionMutationSucceeded {
+            if let snapshot = attentionSnapshot(from: bridge) {
+                lastPoolAttentionSnapshot = snapshot
+                updateSceneAttentionStores(snapshot: snapshot)
+            }
+            refreshAttentionChrome(allowBridgeQueries: false, force: true)
         }
         if attentionPanelRefreshPending {
             attentionPanelRefreshPending = false
