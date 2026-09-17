@@ -732,14 +732,21 @@ impl<C: Clock> AttentionEngine<C> {
             }
             return;
         }
+        let can_start_from_status = self.panes.get(&key).is_some_and(|pane| {
+            matches!(pane.status, PaneStatus::Unknown | PaneStatus::Idle)
+                || (pane.status == PaneStatus::Done && pane.acknowledged)
+        });
+        let preserves_unread_done = self
+            .panes
+            .get(&key)
+            .is_some_and(|pane| pane.status == PaneStatus::Done && !pane.acknowledged);
+        let process_changed = previous.as_ref() != normalized.as_ref();
         let starts_command = !is_shell
             && !initial_observation_follows_attention
             && !is_transient_shell_command(next_process)
-            && (previous_was_shell
-                || matches!(
-                    current_status,
-                    Some(PaneStatus::Unknown | PaneStatus::Idle | PaneStatus::Done)
-                ));
+            && process_changed
+            && !preserves_unread_done
+            && (previous_was_shell || can_start_from_status);
         if starts_command {
             let (last_line, seq) = self
                 .panes
@@ -1160,6 +1167,38 @@ mod tests {
         let snapshot = e.snapshot();
         assert_eq!(snapshot[0].blocked, 0);
         assert!(snapshot[0].panes[0].muted);
+    }
+
+    #[test]
+    fn late_process_observation_does_not_overwrite_unread_command_done() {
+        let mut e = AttentionEngine::new(AttentionConfig::default(), clock());
+        e.set_process_name("ws", 1, Some("cat".into()));
+        e.apply(
+            "ws",
+            1,
+            &[AttentionSignal::AttentionRequest {
+                source: AttentionSource::Bel,
+            }],
+            "blocked",
+            1,
+        );
+        e.on_user_input("ws", 1);
+        e.apply(
+            "ws",
+            1,
+            &[AttentionSignal::CommandDone { exit_code: Some(0) }],
+            "done",
+            2,
+        );
+        assert_eq!(e.snapshot()[0].panes[0].status, PaneStatus::Done);
+
+        // pane respawn 时进程轮询可能短暂清空，再晚于 OSC 133 D 看到新进程。
+        e.set_process_name("ws", 1, None);
+        e.set_process_name("ws", 1, Some("python3".into()));
+
+        let pane = &e.snapshot()[0].panes[0];
+        assert_eq!(pane.status, PaneStatus::Done);
+        assert!(!pane.acknowledged);
     }
 
     #[test]
@@ -2053,10 +2092,20 @@ mod tests {
 
     #[test]
     fn short_command_never_lists_in_commands() {
-        let mut e = AttentionEngine::new(AttentionConfig::default(), clock());
+        let c = clock();
+        let mut e = AttentionEngine::new(AttentionConfig::default(), c.clone());
         e.set_process_name("ws", 2, Some("zsh".into()));
         e.set_process_name("ws", 2, Some("go".into()));
-        e.set_process_name("ws", 2, Some("zsh".into()));
+        e.apply(
+            "ws",
+            2,
+            &[AttentionSignal::CommandDone { exit_code: Some(0) }],
+            "done",
+            1,
+        );
+        // pane-cmd 会重复报告同一个前台进程；重复观察不能重新武装 Working。
+        e.set_process_name("ws", 2, Some("go".into()));
+        c.advance(Duration::from_millis(450));
         assert_eq!(
             e.snapshot()[0].panes[0].status,
             PaneStatus::Idle,
