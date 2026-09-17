@@ -158,6 +158,8 @@ pub struct PaneAttention {
     /// 用户是否已经查看/处理了当前 Blocked 或 Done 状态。
     /// Runtime 权威状态可以继续保持 Blocked/Done；该位只表达 UI 未读语义。
     pub acknowledged: bool,
+    /// 当前快照时刻是否处于用户静音期；不改变真实 lifecycle 状态。
+    pub muted: bool,
     pub last_line: String,
     pub seq: u64,
     /// 当前或最近一次命令的展示名。
@@ -260,6 +262,7 @@ impl<C: Clock> AttentionEngine<C> {
                 pane_id: pane,
                 status: PaneStatus::Unknown,
                 acknowledged: true,
+                muted: false,
                 last_line: String::new(),
                 seq: 0,
                 process_name: None,
@@ -849,28 +852,21 @@ impl<C: Clock> AttentionEngine<C> {
                     .cloned()
                     .map(|mut pane| {
                         pane.status = listed_command_status(&pane, now);
+                        pane.muted = pane.mute_until.map(|until| until > now).unwrap_or(false);
                         pane
                     })
                     .collect();
                 let blocked = panes
                     .iter()
-                    .filter(|p| {
-                        p.status == PaneStatus::Blocked
-                            && !p.acknowledged
-                            && !p.mute_until.map(|until| until > now).unwrap_or(false)
-                    })
+                    .filter(|p| p.status == PaneStatus::Blocked && !p.acknowledged && !p.muted)
                     .count();
                 let done = panes
                     .iter()
-                    .filter(|p| {
-                        p.status == PaneStatus::Done
-                            && !p.acknowledged
-                            && !p.mute_until.map(|until| until > now).unwrap_or(false)
-                    })
+                    .filter(|p| p.status == PaneStatus::Done && !p.acknowledged && !p.muted)
                     .count();
                 let working = panes
                     .iter()
-                    .filter(|p| p.status == PaneStatus::Working)
+                    .filter(|p| p.status == PaneStatus::Working && !p.muted)
                     .count();
                 panes.sort_by_key(|p| (p.pane_id, p.seq));
                 WorkspaceAttention {
@@ -1161,7 +1157,9 @@ mod tests {
         assert_eq!(e.snapshot()[0].blocked, 1);
         e.mute_for("ws", 1, Duration::from_secs(3600));
         assert_eq!(e.blocked_workspace_count(), 0);
-        assert_eq!(e.snapshot()[0].blocked, 0);
+        let snapshot = e.snapshot();
+        assert_eq!(snapshot[0].blocked, 0);
+        assert!(snapshot[0].panes[0].muted);
     }
 
     #[test]
