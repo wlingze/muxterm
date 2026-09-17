@@ -1,8 +1,8 @@
 //! Workspace / tab Scene navigation for the GTK window.
 //!
-//! This module owns only frontend-local scene selection. Core mutations stay
-//! at the lifecycle call sites in `window.rs`; changing the visible scene must
-//! not query or activate a Workspace through FFI.
+//! This module owns frontend-local scene selection. Workspace activation stays
+//! at lifecycle call sites. Tab switches still send `SwitchTab` so Herdr/tmux
+//! server focus follows the visible pane.
 
 use std::time::{Duration, Instant};
 
@@ -16,6 +16,7 @@ use super::window_render::mark_active_attention_visible;
 use super::window_sidebar::{refresh_sidebar_if_open, refresh_sidebar_workspaces_if_open};
 use super::window_status::{maybe_refresh_status, sync_chrome_visibility};
 use super::{active_workspace_key, parse_workspace_id, LayoutHost, UiState};
+use crate::frontend::utils::corebridge::ClientTask;
 
 pub(super) fn switch_tab_n(s: &mut UiState, n: usize) {
     let workspace_id = active_workspace_key(s);
@@ -109,10 +110,22 @@ pub(super) fn show_tab_scene(s: &mut UiState, tab_id: u32) -> bool {
 }
 
 pub(super) fn request_switch_tab(s: &mut UiState, tab_id: u32) {
-    if tab_id == s.active_tab {
-        return;
+    if tab_id != s.active_tab {
+        let _ = show_tab_scene(s, tab_id);
     }
-    let _ = show_tab_scene(s, tab_id);
+    // Local shell already routes input by pane id. Herdr/tmux keep a server
+    // focus that must follow the visible tab, otherwise pane.report_* and
+    // Control streams stay on the previous tab. Re-send even when GTK is
+    // already on this tab: reattach can restore Herdr to the last tab.
+    let runtime = s
+        .view_store
+        .workspace(&s.active_workspace_key())
+        .and_then(|view| view.workspace.as_ref())
+        .map(|workspace| workspace.runtime.as_str())
+        .unwrap_or("");
+    if runtime == "herdr" || runtime == "tmux" {
+        let _ = s.execute_active_task(ClientTask::SwitchTab { tab_id });
+    }
 }
 
 pub(super) fn activate_existing(s: &mut UiState, id: WorkspaceId) {
