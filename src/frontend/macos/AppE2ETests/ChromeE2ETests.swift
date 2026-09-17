@@ -102,6 +102,14 @@ final class ChromeE2ETests: XCTestCase {
         XCTAssertEqual(bar.testAttentionSymbolName(), "bell")
     }
 
+    func testAttentionBellUsesSidebarActivityState() {
+        let bar = StatusBarView(frame: .zero)
+        bar.setAttention(StatusBarAttention(indicators: [.working, .blocked]))
+        XCTAssertEqual(bar.testAttentionIndicator(), .blocked)
+        bar.setAttention(StatusBarAttention(indicators: [.working]))
+        XCTAssertEqual(bar.testAttentionIndicator(), .working)
+    }
+
     func testClickStatusTabInvokesSwitchWithWindowId() {
         let bar = StatusBarView(frame: .zero)
         window.contentView = bar

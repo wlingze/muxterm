@@ -1,7 +1,10 @@
 {
   "attention_jump": "跳转",
+  "attention_hide": "隐藏",
   "attention_mute": "静音…",
   "attention_open": "打开",
+  "attention_show": "恢复显示",
+  "attention_show_hidden": "显示已隐藏项",
   "command_palette_no_results": "没有匹配的命令",
   "existing_back": "返回",
   "existing_connections": "已有的连接",

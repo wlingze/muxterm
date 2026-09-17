@@ -96,6 +96,8 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     // (workspaceId, tabId, paneId, seq, query)
     var onPreview: ((String, UInt32) -> Void)? // (workspaceId, paneId)
     var onMute: ((String, UInt32, UInt64) -> Void)? // (workspaceId, paneId, seconds)
+    var isAttentionHidden: ((AttentionVisibilityKey) -> Bool)?
+    var onAttentionVisibilityChange: ((AttentionVisibilityKey, Bool) -> Void)?
     /// 明确打开 Attention 条目时确认已读；仅切到列表或查看状态不触发。
     var onAcknowledge: ((String, UInt32) -> Void)? // (workspaceId, paneId)
     var onDismissed: (() -> Void)?
@@ -114,6 +116,8 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     private let attentionJumpButton = NSButton(title: "", target: nil, action: nil)
     private let attentionOpenButton = NSButton(title: "", target: nil, action: nil)
     private let attentionMuteButton = NSPopUpButton(frame: .zero, pullsDown: true)
+    private let attentionVisibilityButton = NSButton(title: "", target: nil, action: nil)
+    private let attentionHiddenButton = NSButton(title: "", target: nil, action: nil)
     private var selectionAliases: [String: PanelAccessibilityAliasButton] = [:]
     private var allItems: [UnifiedWorkspaceItem] = []
     private var visibleItems: [UnifiedWorkspaceItem] = []
@@ -134,6 +138,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     private var searchRequestGeneration: UInt64 = 0
     private var hits: [SearchHit] = []
     private var rows: [AttentionRow] = []
+    private var showHiddenAttention = false
     private var model = PanelModel.open(.workspaces)
     private var accessoryHeightConstraint: NSLayoutConstraint?
     private var keyMonitor: Any?
@@ -214,6 +219,8 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         model.query = ""
         model.scope = scope
         input.stringValue = ""
+        showHiddenAttention = false
+        attentionHiddenButton.state = .off
         workspaceNavigation = .root
         existingItems = []
         rootExistingChoices = []
@@ -282,13 +289,25 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
             loadWorkspaceItems()
         }
         if PanelReloadPolicy.needsAttentionSnapshot(model.tab) {
-            rows = snapshot().map {
+            let allRows = snapshot().map {
                 AttentionList.rows(
                     from: $0,
                     workspaces: activityWorkspaces?() ?? sidebarWorkspaces?() ?? [],
                     query: model.query
                 )
             } ?? []
+            let hasHidden = allRows.contains {
+                isAttentionHidden?($0.visibilityKey) == true
+            }
+            if showHiddenAttention, !hasHidden {
+                showHiddenAttention = false
+                attentionHiddenButton.state = .off
+            }
+            rows = allRows.filter { row in
+                let hidden = isAttentionHidden?(row.visibilityKey) == true
+                return showHiddenAttention ? hidden : !hidden
+            }
+            attentionHiddenButton.isEnabled = hasHidden
         } else {
             rows = []
         }
@@ -880,6 +899,21 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         attentionActions.addArrangedSubview(attentionJumpButton)
         attentionActions.addArrangedSubview(attentionOpenButton)
         attentionActions.addArrangedSubview(attentionMuteButton)
+        attentionVisibilityButton.target = self
+        attentionVisibilityButton.action = #selector(toggleSelectedAttentionVisibility)
+        attentionVisibilityButton.controlSize = .small
+        attentionVisibilityButton.bezelStyle = .rounded
+        attentionVisibilityButton.setAccessibilityIdentifier("muxterm.attention.visibility")
+        attentionActions.addArrangedSubview(attentionVisibilityButton)
+
+        attentionHiddenButton.target = self
+        attentionHiddenButton.action = #selector(toggleHiddenAttention)
+        attentionHiddenButton.controlSize = .small
+        attentionHiddenButton.bezelStyle = .rounded
+        attentionHiddenButton.setButtonType(.toggle)
+        attentionHiddenButton.title = MuxtermI18n.shared.tr(.attentionShowHidden)
+        attentionHiddenButton.setAccessibilityIdentifier("muxterm.attention.hidden")
+        attentionActions.addArrangedSubview(attentionHiddenButton)
     }
 
     private func aliasLabel(_ id: String) -> NSView {
@@ -966,6 +1000,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         attentionJumpButton.title = MuxtermI18n.shared.tr(.attentionJump)
         attentionOpenButton.title = MuxtermI18n.shared.tr(.attentionOpen)
         attentionMuteButton.item(at: 0)?.title = MuxtermI18n.shared.tr(.attentionMute)
+        attentionHiddenButton.title = MuxtermI18n.shared.tr(.attentionShowHidden)
         applyTab()
         table.reloadData()
     }
@@ -1250,6 +1285,12 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         attentionJumpButton.isEnabled = hasSelection
         attentionOpenButton.isEnabled = hasSelection
         attentionMuteButton.isEnabled = hasSelection
+        attentionVisibilityButton.isEnabled = hasSelection
+        if let row = selectedAttentionRow(), isAttentionHidden?(row.visibilityKey) == true {
+            attentionVisibilityButton.title = MuxtermI18n.shared.tr(.attentionShow)
+        } else {
+            attentionVisibilityButton.title = MuxtermI18n.shared.tr(.attentionHide)
+        }
     }
 
     @objc private func jumpSelectedAttention() {
@@ -1272,6 +1313,20 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     private func muteSelected(seconds: UInt64) {
         guard let row = selectedAttentionRow(), seconds > 0 else { return }
         onMute?(row.workspaceId, row.pane.paneId, seconds)
+        reload()
+    }
+
+    @objc private func toggleSelectedAttentionVisibility() {
+        guard let row = selectedAttentionRow() else { return }
+        let key = row.visibilityKey
+        let hidden = isAttentionHidden?(key) != true
+        onAttentionVisibilityChange?(key, hidden)
+        reload()
+    }
+
+    @objc private func toggleHiddenAttention() {
+        showHiddenAttention.toggle()
+        attentionHiddenButton.state = showHiddenAttention ? .on : .off
         reload()
     }
 
@@ -1362,6 +1417,14 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         guard !rows.isEmpty else { return }
         table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
         table.window?.makeFirstResponder(table)
+    }
+
+    func testToggleSelectedAttentionVisibility() {
+        toggleSelectedAttentionVisibility()
+    }
+
+    func testToggleHiddenAttention() {
+        toggleHiddenAttention()
     }
 
     func testPeekView() -> NSView? {

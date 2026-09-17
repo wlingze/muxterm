@@ -878,7 +878,7 @@ final class StatusBarView: NSView {
     }
 
     func setAttention(_ attention: StatusBarAttention) {
-        attentionButton.setCount(attention.count)
+        attentionButton.setAttention(attention)
         updateAttentionAccessibility()
     }
 
@@ -1036,6 +1036,10 @@ final class StatusBarView: NSView {
         attentionButton.symbolName
     }
 
+    func testAttentionIndicator() -> AgentSidebarIndicator? {
+        attentionButton.indicator
+    }
+
     func testClickAttention() {
         attentionButton.performClick(nil)
     }
@@ -1118,6 +1122,7 @@ private final class AttentionBellButton: NSButton {
     private let badgeLabel = NSTextField(labelWithString: "")
     private(set) var count = 0
     private(set) var symbolName = "bell"
+    private(set) var indicator: AgentSidebarIndicator?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -1143,7 +1148,7 @@ private final class AttentionBellButton: NSButton {
             badgeLabel.heightAnchor.constraint(equalToConstant: 11),
             badgeLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 11),
         ])
-        setCount(0)
+        setAttention(StatusBarAttention(count: 0))
     }
 
     @available(*, unavailable)
@@ -1159,14 +1164,24 @@ private final class AttentionBellButton: NSButton {
         count > 1 ? badgeLabel.stringValue : (count == 1 ? "1" : "")
     }
 
-    func setCount(_ count: Int) {
-        self.count = max(0, count)
+    func setAttention(_ attention: StatusBarAttention) {
+        count = attention.count
+        indicator = attention.indicator
         let active = self.count > 0
         symbolName = active ? "bell.fill" : "bell"
         let configuration = NSImage.SymbolConfiguration(pointSize: 11, weight: .regular)
         image = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)?
             .withSymbolConfiguration(configuration)
-        contentTintColor = active ? .systemRed : .secondaryLabelColor
+        let color: NSColor
+        switch attention.indicator {
+        case .done: color = .systemTeal
+        case .blocked: color = .systemPink
+        case .working: color = .systemYellow
+        case .idle: color = .tertiaryLabelColor
+        case nil: color = .secondaryLabelColor
+        }
+        contentTintColor = color
+        badgeLabel.layer?.backgroundColor = color.cgColor
         badgeLabel.stringValue = self.count > 99 ? "99+" : "\(self.count)"
         badgeLabel.isHidden = self.count <= 1
     }

@@ -69,6 +69,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private var pendingWorkspaceOpen: PendingWorkspaceOpen?
     /// 在 Agents 槽关闭一页只隐藏投影，不关闭源 pane。源 agent 消失后会清理。
     private var hiddenAgentTabs = Set<AgentAggregateKey>()
+    /// 用户在 Attention 中隐藏的 pane。只影响前端投影，不确认或静音 Core。
+    private var hiddenAttentionKeys = Set<AttentionVisibilityKey>()
     private var structuredAgentTestOverrides: [String: [StructuredPaneAgent]] = [:]
     private var quickConnectStore: QuickConnectStore!
     private var pollTimer: Timer?
@@ -503,6 +505,18 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 paneId: paneId,
                 seconds: seconds
             )
+        }
+        unifiedPanel.isAttentionHidden = { [weak self] key in
+            self?.hiddenAttentionKeys.contains(key) == true
+        }
+        unifiedPanel.onAttentionVisibilityChange = { [weak self] key, hidden in
+            guard let self else { return }
+            if hidden {
+                self.hiddenAttentionKeys.insert(key)
+            } else {
+                self.hiddenAttentionKeys.remove(key)
+            }
+            self.refreshAttentionChrome(allowBridgeQueries: false, force: true)
         }
         unifiedPanel.onDismissed = { [weak self] in
             self?.restoreTerminalFocusIfAllowed()
@@ -2060,7 +2074,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let agents = WorkspaceSidebarProjection.agents(
             workspaces: runtimeSidebarItems(),
             attention: attention
-        )
+        ).filter { !hiddenAttentionKeys.contains(AttentionVisibilityKey(
+            workspaceId: $0.workspaceId,
+            paneId: $0.paneId
+        )) }
         reconcileAggregatePresentation(agents: agents)
         guard force || isWorkspaceSidebarOpen else { return }
         let workspaces = sidebarItems()
@@ -2069,7 +2086,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         workspaceSidebar.setCommands(WorkspaceSidebarProjection.commands(
             workspaces: runtimeSidebarItems(),
             attention: attention
-        ))
+        ).filter { !hiddenAttentionKeys.contains(AttentionVisibilityKey(
+            workspaceId: $0.workspaceId,
+            paneId: $0.paneId
+        )) })
         workspaceSidebar.setActiveTarget(
             workspaceId: activeWorkspaceReplicaID,
             tabId: lastSnapshot.activeTab,
@@ -5034,19 +5054,20 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             lastPoolAttentionSnapshot = snapshot
             updateSceneAttentionStores(snapshot: snapshot)
         }
-        var blockedCount = 0
         if allowBridgeQueries {
             drainAttentionNotifications(from: bridge)
         }
         for slot in sceneStack.scenes.values
             where slot.visibility != .closed
         {
-            if let snapshot = attentionSnapshot(for: slot) {
-                blockedCount += snapshot.blockedCount
-            }
             postAttentionNotifications(slot.takePendingAttentionNotifications())
         }
-        content.statusBar.setAttention(StatusBarAttention(count: blockedCount))
+        let visibleRows = attentionSnapshotForPanel().map {
+            AttentionList.rows(from: $0, workspaces: runtimeSidebarItems(), query: "")
+        }?.filter { !hiddenAttentionKeys.contains($0.visibilityKey) } ?? []
+        content.statusBar.setAttention(StatusBarAttention(
+            indicators: visibleRows.map(\.indicator)
+        ))
         refreshWorkspaceSidebar()
     }
 

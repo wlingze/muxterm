@@ -125,12 +125,28 @@ public enum StatusBarTabOverflow {
 /// 消息弹窗 / 通知列表后续复用这个位置，这里先预留。
 public struct StatusBarAttention: Equatable, Sendable {
     public let count: Int
+    public let indicator: AgentSidebarIndicator?
 
-    public init(count: Int) {
+    public init(count: Int, indicator: AgentSidebarIndicator? = nil) {
         self.count = max(0, count)
+        self.indicator = self.count > 0 ? indicator : nil
+    }
+
+    public init(indicators: [AgentSidebarIndicator]) {
+        count = indicators.count
+        indicator = indicators.min { Self.rank($0) < Self.rank($1) }
     }
 
     public var isActive: Bool { count > 0 }
+
+    private static func rank(_ indicator: AgentSidebarIndicator) -> Int {
+        switch indicator {
+        case .done: 0
+        case .blocked: 1
+        case .working: 2
+        case .idle: 3
+        }
+    }
 }
 
 /// 当前状态栏体现的 Workspace 类型。Shells / Agents 是前端固定聚合槽，

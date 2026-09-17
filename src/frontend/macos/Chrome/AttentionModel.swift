@@ -204,6 +204,22 @@ public struct AttentionRow: Equatable, Sendable {
             return .idle
         }
     }
+
+    public var visibilityKey: AttentionVisibilityKey {
+        AttentionVisibilityKey(workspaceId: workspaceId, paneId: pane.paneId)
+    }
+}
+
+/// Frontend-only visibility identity. Hiding an item never acknowledges,
+/// mutes, or changes the Core activity state.
+public struct AttentionVisibilityKey: Hashable, Sendable {
+    public let workspaceId: String
+    public let paneId: UInt32
+
+    public init(workspaceId: String, paneId: UInt32) {
+        self.workspaceId = workspaceId
+        self.paneId = paneId
+    }
 }
 
 /// 注意力行标题：进程名 + transport + path，不用 last_line 片段。
