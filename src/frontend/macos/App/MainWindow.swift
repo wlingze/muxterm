@@ -306,7 +306,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
-        window.isMovableByWindowBackground = true
+        // 终端必须完整接收 mouseDown/drag 做文本选择；窗口移动只由顶部
+        // StatusBarView 的空白区域显式处理。
+        window.isMovableByWindowBackground = false
         // Muxterm 的顶部状态栏已经承担窗口 chrome；隐藏悬浮在内容上的
         // traffic lights，把整行宽度留给 Workspace 与 tab。
         window.standardWindowButton(.closeButton)?.isHidden = true

@@ -289,6 +289,12 @@ final class StatusBarView: NSView {
         edgeLine.frame = CGRect(x: 0, y: y, width: bounds.width, height: 1)
     }
 
+    override func mouseDown(with event: NSEvent) {
+        // 只有命中 status bar 自身的空白区域才移动窗口。Tab、侧栏按钮和
+        // terminal Surface 会继续收到各自的点击/拖拽事件。
+        window?.performDrag(with: event)
+    }
+
     func setEdgeLineAtBottom(_ atBottom: Bool) {
         edgeAtBottom = atBottom
         needsLayout = true
