@@ -163,16 +163,14 @@ public struct AttentionRow: Equatable, Sendable {
         self.tabNumber = tabNumber
     }
 
-    /// 第一行：工作区名。缺省时回退旧标题。
+    /// 第一行：工作区名 + 进程 + 机器/路径身份。
     public var title: String {
-        if !workspaceName.isEmpty {
-            return workspaceName
-        }
-        return AttentionRowLabel.display(
+        let identity = AttentionRowLabel.display(
             process: pane.processName,
             transport: transport,
             path: path
         )
+        return workspaceName.isEmpty ? identity : "\(workspaceName)  \(identity)"
     }
 
     public var detail: String {
@@ -385,7 +383,9 @@ public enum AttentionList {
                 rows.append(AttentionRow(
                     workspaceId: ws.workspaceId,
                     transport: transport,
-                    path: chrome.map { "\($0.runtime) @ \($0.transport)" } ?? ws.path,
+                    // Workspace chrome 可以补名称与 transport，但不能用
+                    // `runtime @ transport` 副标题覆盖 Core 提供的真实路径。
+                    path: ws.path,
                     pane: pane,
                     workspaceName: workspaceName,
                     agentName: agentName,

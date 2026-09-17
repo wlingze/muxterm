@@ -179,11 +179,11 @@ final class AttentionListTests: XCTestCase {
         )
         let rows = AttentionList.rows(from: snap, workspaces: [chrome], query: "")
         XCTAssertEqual(rows.count, 1)
-        XCTAssertEqual(rows[0].title, "muxterm")
+        XCTAssertEqual(rows[0].title, "muxterm  codex  ryzen  ~/Developer/self/muxterm")
         XCTAssertEqual(rows[0].detail, "Working · Codex · Tab 2")
         XCTAssertEqual(rows[0].indicator, .running)
-        XCTAssertFalse(rows[0].title.contains("local"))
-        XCTAssertFalse(rows[0].title.contains("~"))
+        XCTAssertTrue(rows[0].title.contains("ryzen"))
+        XCTAssertTrue(rows[0].title.contains("~/Developer/self/muxterm"))
         XCTAssertEqual(
             AttentionRowLabel.sidebarAligned(
                 workspaceName: "muxterm",
