@@ -1033,7 +1033,7 @@ impl TmuxRuntime {
         }
         let pending: Vec<PaneId> = self.deferred_attach_seeds.drain().collect();
         for pane in pending {
-            self.query_capture_pane(pane);
+            self.query_capture_pane_with_pause(pane, false);
         }
     }
 
@@ -1075,7 +1075,7 @@ impl TmuxRuntime {
         for pane in panes {
             if self.background_capture_only.contains(&pane) && self.capture_grid_stale(pane) {
                 self.background_capture_only.remove(&pane);
-                self.query_capture_pane(pane);
+                self.query_capture_pane_with_pause(pane, true);
                 continue;
             }
             if self.initial_capture_done.contains(&pane) {
@@ -1094,7 +1094,7 @@ impl TmuxRuntime {
                 self.background_capture_only.remove(&pane);
                 // 兼容旧状态/测试中已经完成的后台索引：它仍然没有播种
                 // Surface，切入时必须另发前台 seed。
-                self.query_capture_pane(pane);
+                self.query_capture_pane_with_pause(pane, true);
                 continue;
             }
             self.query_capture_pane(pane);
@@ -1510,12 +1510,15 @@ impl TmuxRuntime {
         self.begin_pane_snapshot(pane, reason, false, true);
     }
 
-    /// attach 首次 Surface seed：先 pause 该 pane 的控制输出（与 iTerm2
-    /// TmuxWindowOpener 一样），再抓当前可见网格和 alternate/cursor。
-    /// pause 让 tmux 不再往这条 client 堆 %output，seed 才能在 deadline
-    /// 内完成。可见屏一轮就能回来，不能再抓 `-S -10000`。
+    /// attach 首次 Surface seed。后台 Index 首次升级成 Surface 时可以先
+    /// pause；attach bootstrap 则不能 pause，因为 tmux 3.4 会丢弃暂停
+    /// 期间的 BEL/OSC，只能靠 unpaused pre/post-capture 边界保留这些语义。
     fn begin_initial_pane_seed(&mut self, pane: PaneId) {
         self.begin_pane_snapshot(pane, "initial-seed", true, true);
+    }
+
+    fn begin_initial_pane_seed_unpaused(&mut self, pane: PaneId) {
+        self.begin_pane_snapshot(pane, "initial-seed", true, false);
     }
 
     fn begin_pane_snapshot(
@@ -1587,7 +1590,8 @@ impl TmuxRuntime {
                 target: "muxterm::tmux::resync",
                 pane = pane.0,
                 reason,
-                "paused pane and requested authoritative state/capture"
+                pause_client,
+                "started authoritative pane state/capture"
             );
         } else {
             self.abort_pane_resync(pane, "state-query-failed");
@@ -1648,11 +1652,12 @@ impl TmuxRuntime {
             return;
         };
         let initial = resync.initial;
+        let pause_client = resync.pause_client;
         self.release_pane_resync(pane, "pane-size-changed", false);
         self.resync_cooldown_until.remove(&pane);
         if initial {
             self.initial_capture_done.remove(&pane);
-            self.begin_initial_pane_seed(pane);
+            self.begin_pane_snapshot(pane, "initial-seed", true, pause_client);
         } else {
             self.begin_pane_resync(pane, "pane-size-changed");
         }
@@ -1839,7 +1844,7 @@ impl TmuxRuntime {
                 if self.awaiting_ui_client_size || self.deferred_attach_seeds.contains(&pane) {
                     continue;
                 }
-                self.begin_initial_pane_seed(pane);
+                self.begin_initial_pane_seed_unpaused(pane);
             } else {
                 self.begin_pane_resync(pane, "output-dropped");
             }
@@ -2732,17 +2737,20 @@ impl TmuxRuntime {
         let pause_client = resync.pause_client;
         // 普通 output-gap snapshot 只拼 capture `%begin` 后的 live：边界前
         // 可能是半截 SGR/OSC，必须由权威网格覆盖。attach 首次 resize 是
-        // 唯一例外：SIGWINCH 的完整 home + ED2 重绘可能先到达 `%output`，
-        // 而 capture-pane 仍是 resize 中间态。保留重绘前的 OSC/BEL，先用
-        // fence 收回 parser，再画 capture，最后用完整重绘覆盖 stale grid。
+        // 唯一例外：attach 期间的 OSC/BEL 不能从 capture-pane 网格恢复，
+        // 因此先重放 pre-capture，再用 fence 收回 parser，并让权威 capture
+        // 覆盖其中的普通可见字节。若 SIGWINCH 已产生完整 home + ED2 重绘，
+        // 则把该重绘留到 capture 后，覆盖可能仍处于 resize 中间态的网格。
         let redraw_start = if initial {
             last_full_redraw_start(&resync.pre_capture)
         } else {
             None
         };
-        let (prelude, redraw) = redraw_start
-            .map(|start| resync.pre_capture.split_at(start))
-            .unwrap_or((&[], &[]));
+        let (prelude, redraw): (&[u8], &[u8]) = match redraw_start {
+            Some(start) => resync.pre_capture.split_at(start),
+            None if initial => (&resync.pre_capture, &[]),
+            None => (&[], &[]),
+        };
         let mut snapshot = Vec::new();
         if !prelude.is_empty() {
             snapshot.extend_from_slice(prelude);
@@ -3331,6 +3339,12 @@ impl TmuxRuntime {
 
     /// 查询 pane 当前可见屏幕，用于 attach 初始渲染恢复。
     fn query_capture_pane(&mut self, pane: PaneId) {
+        let pause_client =
+            self.attach_bootstrap_complete || self.background_capture_only.contains(&pane);
+        self.query_capture_pane_with_pause(pane, pause_client);
+    }
+
+    fn query_capture_pane_with_pause(&mut self, pane: PaneId, pause_client: bool) {
         if !self.is_attach_mode() {
             return;
         }
@@ -3363,7 +3377,7 @@ impl TmuxRuntime {
         }
         // W16a：attach 播种必须恢复 alternate/cursor/mouse，但只抓当前可见
         // 网格。把 `-S -N` 历史当 VT 流重放会卡住控制通道，htop/pi 也会乱码。
-        self.begin_initial_pane_seed(pane);
+        self.begin_pane_snapshot(pane, "initial-seed", true, pause_client);
     }
 
     /// 发送 attach 首次快照边界前暂存的用户输入。
@@ -4357,7 +4371,7 @@ impl Runtime for TmuxRuntime {
                     // pane before any GUI ResizeClient arrives; use the remote
                     // grid directly instead of leaving that request fenced.
                     self.deferred_attach_seeds.remove(target);
-                    self.begin_initial_pane_seed(*target);
+                    self.begin_initial_pane_seed_unpaused(*target);
                     return Ok(TaskOutcome::Done);
                 }
                 // 平台缓存溢出与 reader lane gap 是同一种 Surface 数据丢失：
@@ -6284,6 +6298,43 @@ mod tests {
     }
 
     #[test]
+    fn initial_seed_without_redraw_preserves_bel_from_pre_capture() {
+        let mut b = TmuxRuntime::new_with_attach(None, "existing");
+        let pane = PaneId(24);
+        b.resyncs.insert(
+            pane,
+            PaneResync {
+                generation: 1,
+                initial: true,
+                primary: Some(b"prompt$ ".to_vec()),
+                pre_capture: vec![0x07],
+                ..PaneResync::default()
+            },
+        );
+
+        b.finish_pane_resync(pane);
+
+        let snapshot = b
+            .state_events()
+            .iter()
+            .find_map(|event| match event {
+                StateChange::PaneSnapshot { pane: p, data } if *p == pane => Some(data.clone()),
+                _ => None,
+            })
+            .expect("initial seed must emit one pane snapshot");
+        let mut terminal = crate::protocol::terminal::emulate::TerminalState::new(80, 24);
+        terminal.feed(&snapshot);
+        assert_eq!(
+            terminal.take_attention_signals(),
+            vec![
+                crate::activity::attention::signal::AttentionSignal::AttentionRequest {
+                    source: crate::activity::attention::signal::AttentionSource::Bel,
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn pane_resync_emits_empty_snapshot_to_clear_blank_screen() {
         let (tx, _rx) = mpsc::unbounded_channel::<String>();
         let mut b = TmuxRuntime::new(None);
@@ -6420,8 +6471,14 @@ mod tests {
         assert!(b.resyncs.contains_key(&pane));
         let commands = drain_tmux_cmds(&mut rx);
         assert!(
-            commands.iter().any(|command| command.contains("%41:pause")),
+            commands
+                .iter()
+                .any(|command| command.contains("display-message")),
             "explicit snapshot request must start the authoritative seed: {commands:?}"
+        );
+        assert!(
+            !commands.iter().any(|command| command.contains("pause")),
+            "headless bootstrap must preserve BEL/OSC while capturing: {commands:?}"
         );
         assert!(
             !commands
@@ -7066,9 +7123,16 @@ mod tests {
                 .any(|cmd| cmd.contains("refresh-client -C 142x67")),
             "必须 -C: {cmds:?}"
         );
-        // 放出 deferred seed → 一次 pause，不得因 -C 再武装第二轮 pause。
+        // 放出 deferred bootstrap seed，但不得 pause 丢掉 settle 期间的 BEL/OSC。
         let pause_count = cmds.iter().filter(|cmd| cmd.contains("%1:pause")).count();
-        assert_eq!(pause_count, 1, "只 pause 一次: {cmds:?}");
+        assert_eq!(pause_count, 0, "bootstrap seed 不得 pause: {cmds:?}");
+        assert_eq!(
+            cmds.iter()
+                .filter(|cmd| cmd.contains("display-message"))
+                .count(),
+            1,
+            "-C 只能放出一轮 seed: {cmds:?}"
+        );
     }
 
     #[test]
@@ -7092,8 +7156,12 @@ mod tests {
 
         let cmds = drain_tmux_cmds(&mut rx);
         assert!(
-            cmds.iter().any(|cmd| cmd.contains("%7:pause")),
+            cmds.iter().any(|cmd| cmd.contains("display-message")),
             "已有初始 UI 尺寸时必须直接开始 Surface seed: {cmds:?}"
+        );
+        assert!(
+            !cmds.iter().any(|cmd| cmd.contains("pause")),
+            "attach bootstrap 不能 pause 丢掉 BEL/OSC: {cmds:?}"
         );
         assert!(
             !b.deferred_attach_seeds.contains(&pane),
@@ -7354,8 +7422,12 @@ mod tests {
         b.flush_deferred_attach_seeds();
         let cmds = drain_tmux_cmds(&mut rx);
         assert!(
-            cmds.iter().any(|cmd| cmd.contains("%1:pause")),
+            cmds.iter().any(|cmd| cmd.contains("display-message")),
             "尺寸到位后才 seed: {cmds:?}"
+        );
+        assert!(
+            !cmds.iter().any(|cmd| cmd.contains("pause")),
+            "bootstrap settle 期间必须继续接收 BEL/OSC: {cmds:?}"
         );
         assert!(!b.deferred_attach_seeds.contains(&pane));
         assert!(!b.awaiting_ui_client_size);
@@ -8840,7 +8912,7 @@ mod tests {
     }
 
     #[test]
-    fn attach_active_tab_still_pause_seeds() {
+    fn attach_active_tab_bootstrap_seeds_without_pausing_output() {
         let mut b = TmuxRuntime::new_with_attach(None, "existing");
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         b.cmd_tx = Some(tx);
@@ -8852,8 +8924,12 @@ mod tests {
         b.handle_list_panes_response(TabId(1), vec!["0: [80x24] %0 (active)".into()]);
         let cmds = drain_tmux_cmds(&mut rx);
         assert!(
-            cmds.iter().any(|cmd| cmd.contains("pause")),
-            "attach 首屏仍必须 pause-seed: {cmds:?}"
+            cmds.iter().any(|cmd| cmd.contains("display-message")),
+            "attach 首屏必须启动权威 seed: {cmds:?}"
+        );
+        assert!(
+            !cmds.iter().any(|cmd| cmd.contains("pause")),
+            "attach 首屏不能 pause 丢掉 BEL/OSC: {cmds:?}"
         );
         assert!(b.initial_capture_pending.contains(&PaneId(0)));
     }

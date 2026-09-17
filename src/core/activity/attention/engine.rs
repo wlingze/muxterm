@@ -385,10 +385,16 @@ impl<C: Clock> AttentionEngine<C> {
         // pane-cmd may report only `node`/`pi` for wrappers. `process_name` is a
         // display field and intentionally retains the finished agent after the
         // run; lifecycle edges therefore use the observed foreground process.
+        // 首次订阅晚于 BEL/OSC 时只补元数据，不能把已有 Blocked/Done 当成
+        // “刚启动命令”覆盖；后续 shell → command 仍是真实生命周期边沿。
+        let current_status = self.panes.get(&key).map(|pane| pane.status);
+        let initial_observation_follows_attention = previous.is_none()
+            && matches!(current_status, Some(PaneStatus::Blocked | PaneStatus::Done));
         let starts_command = !is_shell
+            && !initial_observation_follows_attention
             && (previous_was_shell
                 || matches!(
-                    self.panes.get(&key).map(|pane| pane.status),
+                    current_status,
                     Some(PaneStatus::Unknown | PaneStatus::Idle | PaneStatus::Done)
                 ));
         if starts_command {
@@ -1197,6 +1203,30 @@ mod tests {
             e.snapshot()[0].panes[0].status,
             PaneStatus::Working,
             "a new run must replace the previous Done state"
+        );
+    }
+
+    #[test]
+    fn initial_process_observation_does_not_overwrite_blocked_signal() {
+        let mut e = AttentionEngine::new(AttentionConfig::default(), clock());
+        e.apply(
+            "ws",
+            1,
+            &[AttentionSignal::AttentionRequest {
+                source: AttentionSource::Bel,
+            }],
+            "approval required",
+            1,
+        );
+
+        e.set_process_name("ws", 1, Some("cat".into()));
+
+        let pane = &e.snapshot()[0].panes[0];
+        assert_eq!(pane.process_name.as_deref(), Some("cat"));
+        assert_eq!(
+            pane.status,
+            PaneStatus::Blocked,
+            "the first process subscription is bootstrap metadata, not a later command start"
         );
     }
 
