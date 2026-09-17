@@ -393,13 +393,27 @@ final class MuxTerminalView: TerminalView {
     }
 
     /// 将 FFI 输出喂给终端引擎，并更新 AX 值供 UITest 断言「确实渲染到了」。
-    func feedOutput(_ data: Data, isSnapshot: Bool = false) {
+    func feedOutput(
+        _ data: Data,
+        isSnapshot: Bool = false,
+        snapshotGrid: (cols: Int, rows: Int)? = nil
+    ) {
         if isSnapshot {
             // 只允许新建 Surface 的一次性 seed reset；历史 seed 随后进入
             // SwiftTerm 原生 scrollback，不能在 live/滚轮路径重复调用。
             snapshotResetCount += 1
             historyPrepended = false
             getTerminal().resetToInitialState()
+            // 完整 VT snapshot 必须在生成它的源网格上解析。把 resize 放在
+            // reset 之后，避免 SwiftTerm/AppKit 用 view 像素尺寸恢复另一套
+            // 行列，导致窄屏 replica 把快照顶部内容滚出可见区。
+            if let snapshotGrid {
+                applyGridSize(
+                    cols: snapshotGrid.cols,
+                    rows: snapshotGrid.rows,
+                    followTail: true
+                )
+            }
         }
         // A zero-byte snapshot is meaningful: it clears an authoritative blank
         // pane. Incremental empty output remains a no-op.

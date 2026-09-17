@@ -1394,9 +1394,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func scene(forWorkspaceId workspaceId: String) -> WorkspaceScene? {
-        sceneStack.scenes.values.first {
+        let matches = sceneStack.scenes.values.filter {
             $0.visibility != .closed && scene($0, matchesWorkspaceId: workspaceId)
         }
+        return matches.first(where: { $0.visibility == .visible }) ?? matches.first
     }
 
     private func cachedTabID(containingPane paneID: UInt32) -> UInt32? {
@@ -2146,6 +2147,29 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let targetScene = targetWorkspaceId.flatMap { scene(forWorkspaceId: $0) }
         guard targetWorkspaceId == nil || targetScene != nil else { return }
         let workspaceID = targetScene?.workspaceID ?? activeSceneWorkspaceID
+        // Scene 的只读 ViewStore 可能正等待本轮布局提交；可见场景必须以
+        // MainWindow 已应用的 lastSnapshot 为准。隐藏 workspace 则只读
+        // 自己的 ViewStore，不能用可能碰撞的活动 workspace pane id。
+        let windowPane = lastSnapshot.panes.first(where: { $0.id == targetPaneId })
+        let scenePane = targetScene?.lastSnapshot.panes.first(where: { $0.id == targetPaneId })
+        let targetsActiveScene: Bool
+        if let targetWorkspaceId,
+           let activeKey = sceneStack.activeKey,
+           let activeScene = sceneStack.scenes[activeKey]
+        {
+            targetsActiveScene = targetScene?.key == activeKey
+                || scene(activeScene, matchesWorkspaceId: targetWorkspaceId)
+        } else {
+            targetsActiveScene = targetWorkspaceId == nil
+        }
+        let sourcePane: Pane?
+        if targetsActiveScene {
+            sourcePane = windowPane ?? scenePane
+        } else {
+            sourcePane = scenePane
+        }
+        let sourceGrid = sourcePane
+            .map { (cols: Int($0.cols), rows: Int($0.rows)) }
         let cachedLastLine = selectedRow.flatMap { row -> String? in
             guard row.pane.paneId == targetPaneId,
                   targetWorkspaceId == nil || row.workspaceId == targetWorkspaceId
@@ -2179,20 +2203,27 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         content.replyOverlayContainer.frame = overlayFrame
         overlay.frame = content.replyOverlayContainer.bounds
         overlay.layoutSubtreeIfNeeded()
+        // Pane snapshot 是在源 pane 字符格上生成的完整 VT 流。replica 若按
+        // overlay 的像素尺寸解析，窄屏会因行数不同把顶部内容滚出可见区。
         _ = overlay.syncSizeToPty(notifyResize: false)
         // AttentionSnapshot 已经由 event pump 缓存在前端值类型模型中。
         // 先同步显示最新稳定行，不能把兜底放进异步 pane-output 回调；
         // Core command queue 繁忙时 overlay 也必须立即可用。这里不追加换行，
         // 避免初始极小网格只有一行时把唯一内容滚出可见区。
         if let cachedLastLine {
-            overlay.feedOutput(Data(cachedLastLine.utf8), isSnapshot: true)
+            overlay.feedOutput(
+                Data(cachedLastLine.utf8),
+                isSnapshot: true,
+                snapshotGrid: sourceGrid
+            )
         }
         seedReplyOverlay(
             overlay,
             workspaceID: workspaceID,
             paneID: targetPaneId,
             attemptsRemaining: 50,
-            requestedSnapshot: false
+            requestedSnapshot: false,
+            sourceGrid: sourceGrid
         )
         content.replyOverlayContainer.setAccessibilityValue("1")
     }
@@ -2205,7 +2236,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         workspaceID: String?,
         paneID: UInt32,
         attemptsRemaining: Int,
-        requestedSnapshot: Bool
+        requestedSnapshot: Bool,
+        sourceGrid: (cols: Int, rows: Int)?
     ) {
         _ = enqueuePaneOutput(
             workspaceID: workspaceID,
@@ -2223,7 +2255,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             if !raw.isEmpty {
                 // pane output 是一个完整 VT 字节流；尾部的光标定位/退出
                 // alternate-screen 并不代表新帧，不能据此裁掉前面的正文。
-                overlay.feedOutput(raw, isSnapshot: true)
+                overlay.feedOutput(raw, isSnapshot: true, snapshotGrid: sourceGrid)
                 return
             }
             guard attemptsRemaining > 1 else { return }
@@ -2241,7 +2273,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     workspaceID: workspaceID,
                     paneID: paneID,
                     attemptsRemaining: attemptsRemaining - 1,
-                    requestedSnapshot: true
+                    requestedSnapshot: true,
+                    sourceGrid: sourceGrid
                 )
             }
         }

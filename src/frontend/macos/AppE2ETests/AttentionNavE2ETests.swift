@@ -77,6 +77,13 @@ final class AttentionNavE2ETests: XCTestCase {
             app.testReplyOverlayText().contains(fx.bgToken),
             "Cmd-Enter 返回时必须已用 attention snapshot 同步填充 overlay"
         )
+        let overlay = try XCTUnwrap(
+            app.testView(identifier: CmdEnterRouting.overlayIdentifier) as? MuxTerminalView
+        )
+        let sourcePane = try XCTUnwrap(app.lastSnapshot.panes.first { $0.id == bgPane })
+        let overlayGrid = overlay.getTerminal().getDims()
+        XCTAssertEqual(overlayGrid.cols, Int(sourcePane.cols), "replica 必须按源 pane 列数解析 VT")
+        XCTAssertEqual(overlayGrid.rows, Int(sourcePane.rows), "replica 必须按源 pane 行数解析 VT")
         AppE2E.pump(80)
         XCTAssertTrue(
             app.testReplyOverlayVisible(),
