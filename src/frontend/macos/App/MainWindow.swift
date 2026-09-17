@@ -1201,9 +1201,25 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         _ task: MuxTask,
         failureMessage: String
     ) -> Bool {
+        enqueueCoreTask(
+            workspaceID: activeSceneWorkspaceID,
+            task,
+            failureMessage: failureMessage
+        )
+    }
+
+    /// Enqueue a task for an explicitly identified Workspace. Overlay actions
+    /// can target a hidden scene, so they must not inherit the active scene at
+    /// the time the event pump eventually drains the command.
+    @discardableResult
+    private func enqueueCoreTask(
+        workspaceID: String?,
+        _ task: MuxTask,
+        failureMessage: String
+    ) -> Bool {
         guard !isClosing else { return false }
         return enqueueCoreCommand(QueuedMuxCommand(
-            workspaceID: activeSceneWorkspaceID,
+            workspaceID: workspaceID,
             task: QueuedMuxTask(
                 type: task.type,
                 targetPane: task.targetPane,
@@ -2159,18 +2175,21 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             overlay,
             workspaceID: workspaceID,
             paneID: targetPaneId,
-            attemptsRemaining: 50
+            attemptsRemaining: 50,
+            requestedSnapshot: false
         )
         content.replyOverlayContainer.setAccessibilityValue("1")
     }
 
-    /// Core 可能仍在接收 attach seed；空 snapshot 不能让 overlay 永久留白。
-    /// 重试仍经过统一命令队列，并由 overlay 身份守卫阻止旧请求串到新 pane。
+    /// Core 可能还没为后台 pane 完成 attach seed。第一次读到空缓存时显式
+    /// 请求 runtime-neutral snapshot；后续读取与请求都经过统一命令队列，
+    /// overlay 身份守卫则阻止旧请求串到新 pane。
     private func seedReplyOverlay(
         _ overlay: MuxTerminalView,
         workspaceID: String?,
         paneID: UInt32,
-        attemptsRemaining: Int
+        attemptsRemaining: Int,
+        requestedSnapshot: Bool
     ) {
         _ = enqueuePaneOutput(
             workspaceID: workspaceID,
@@ -2192,13 +2211,21 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 return
             }
             guard attemptsRemaining > 1 else { return }
+            if !requestedSnapshot {
+                _ = self.enqueueCoreTask(
+                    workspaceID: workspaceID,
+                    MuxTask.requestPaneSnapshot(paneID),
+                    failureMessage: ""
+                )
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(100)) { [weak self, weak overlay] in
                 guard let self, let overlay else { return }
                 self.seedReplyOverlay(
                     overlay,
                     workspaceID: workspaceID,
                     paneID: paneID,
-                    attemptsRemaining: attemptsRemaining - 1
+                    attemptsRemaining: attemptsRemaining - 1,
+                    requestedSnapshot: true
                 )
             }
         }
