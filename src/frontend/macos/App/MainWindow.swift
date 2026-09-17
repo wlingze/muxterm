@@ -361,7 +361,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             sendInput: { [weak self] paneId, data in
                 guard let self else { return }
                 self.performIfWindowOpen {
-                    _ = self.enqueueCoreInput(paneId: paneId, data: data)
+                    _ = self.enqueueCoreInput(
+                        workspaceID: self.activeSceneWorkspaceID,
+                        paneId: paneId,
+                        data: data
+                    )
                 }
             },
             search: { [weak self] request in
@@ -426,7 +430,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         unifiedPanel.onPreview = { [weak self] workspaceId, paneId in
             guard let self, self.activateWorkspaceIfAvailable(workspaceId) else { return }
             self.performIfWindowOpen { [weak self] in
-                self?.toggleReplyOverlay(paneId: paneId)
+                self?.toggleReplyOverlay(paneId: paneId, workspaceId: workspaceId)
             }
         }
         unifiedPanel.onAcknowledge = { [weak self] workspaceId, paneId in
@@ -1221,6 +1225,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     @discardableResult
     private func enqueueCoreInput(
+        workspaceID: String?,
         paneId: UInt32,
         data: Data,
         quiet: Bool = false,
@@ -1228,7 +1233,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     ) -> Bool {
         guard !data.isEmpty else { return true }
         return enqueueCoreCommand(.input(
-            workspaceID: activeSceneWorkspaceID,
+            workspaceID: workspaceID,
             paneID: paneId,
             data: data,
             quiet: quiet,
@@ -1291,7 +1296,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         nextSearchRequestID += 1
         pendingSearchCompletions[requestID] = { [weak self] hits in
             guard let self else { return }
-            self.cacheActiveWorkspaceIdentity(from: hits)
             var uniqueHits: [SearchHit] = []
             var seen = Set<String>()
             for hit in hits {
@@ -1304,7 +1308,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 uniqueHits,
                 activePane: self.activePaneID,
                 workspaceId: self.activeWorkspaceReplicaID,
-                workspacePaneIDs: self.cachedWorkspacePaneIDs()
+                workspacePaneIDs: self.activeWorkspacePaneIDs()
             ))
         }
         let accepted = enqueueCoreCommand(.search(
@@ -1315,23 +1319,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             pendingSearchCompletions.removeValue(forKey: requestID)
             completion([])
         }
-    }
-
-    private func cacheActiveWorkspaceIdentity(from hits: [SearchHit]) {
-        guard let activeKey = sceneStack.activeKey,
-              let activeScene = sceneStack.scenes[activeKey]
-        else {
-            return
-        }
-        var activePaneIDs = Set(lastSnapshot.panes.map(\.id))
-        if let cachedPaneIDs = activeScene.cachedTabIdsByPane?.keys {
-            activePaneIDs.formUnion(cachedPaneIDs)
-        }
-        guard let workspaceID = hits.first(where: { activePaneIDs.contains($0.paneId) })?.workspaceId
-        else {
-            return
-        }
-        activeScene.cacheWorkspaceReplicaID(workspaceID)
     }
 
     private func finishSearchRequest(_ requestID: UInt64, hits: [SearchHit]) {
@@ -1366,14 +1353,41 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         pendingPaneOutputCompletions.removeValue(forKey: requestID)?(data)
     }
 
-    private func cachedWorkspacePaneIDs() -> Set<UInt32> {
-        var paneIDs = Set(lastSnapshot.panes.map(\.id))
-        for scene in sceneStack.scenes.values where scene.visibility != .closed {
-            if let scenePaneIDs = scene.cachedTabIdsByPane?.keys {
-                paneIDs.formUnion(scenePaneIDs)
-            }
+    private func paneIDsForScene(_ scene: WorkspaceScene) -> Set<UInt32> {
+        var paneIDs = Set(scene.lastSnapshot.panes.map(\.id))
+        if let cachedPaneIDs = scene.cachedTabIdsByPane?.keys {
+            paneIDs.formUnion(cachedPaneIDs)
         }
         return paneIDs
+    }
+
+    private func activeWorkspacePaneIDs() -> Set<UInt32> {
+        guard let activeKey = sceneStack.activeKey,
+              let activeScene = sceneStack.scenes[activeKey]
+        else {
+            return []
+        }
+        var paneIDs = paneIDsForScene(activeScene)
+        paneIDs.formUnion(lastSnapshot.panes.map(\.id))
+        return paneIDs
+    }
+
+    private func scene(_ scene: WorkspaceScene, matchesWorkspaceId workspaceId: String) -> Bool {
+        workspaceReplicaID(for: scene) == workspaceId
+            || scene.cachedWorkspaceReplicaID == workspaceId
+            || fallbackReplicaID(for: scene.targetConfig) == workspaceId
+            || WorkspaceReplicaID.from(
+                session: scene.targetConfig.session,
+                path: "",
+                transport: scene.targetConfig.transport.label
+            ) == workspaceId
+            || QuickConnect.uniqueID(for: scene.targetConfig) == workspaceId
+    }
+
+    private func scene(forWorkspaceId workspaceId: String) -> WorkspaceScene? {
+        sceneStack.scenes.values.first {
+            $0.visibility != .closed && scene($0, matchesWorkspaceId: workspaceId)
+        }
     }
 
     private func cachedTabID(containingPane paneID: UInt32) -> UInt32? {
@@ -1772,8 +1786,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     func testAttentionBlockedCount(workspaceId: String) -> Int {
         var blockedCount = -1
         guard let slot = sceneStack.scenes.values.first(where: {
-            workspaceReplicaID(for: $0) == workspaceId
-                || QuickConnect.uniqueID(for: $0.targetConfig) == workspaceId
+            scene($0, matchesWorkspaceId: workspaceId)
         }), let snapshot = slot.cachedAttentionSnapshot else {
             return blockedCount
         }
@@ -1955,18 +1968,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     @discardableResult
     private func activateWorkspaceIfAvailable(_ workspaceId: String) -> Bool {
-        if activeWorkspaceReplicaID == workspaceId {
+        if let activeKey = sceneStack.activeKey,
+           let activeScene = sceneStack.scenes[activeKey],
+           scene(activeScene, matchesWorkspaceId: workspaceId)
+        {
             return true
         }
-        for slot in sceneStack.scenes.values where slot.visibility != .closed {
-            let matches = workspaceReplicaID(for: slot) == workspaceId
-                || QuickConnect.uniqueID(for: slot.targetConfig) == workspaceId
-            if matches {
-                activate(slot: slot)
-                return true
-            }
-        }
-        return false
+        guard let targetScene = scene(forWorkspaceId: workspaceId) else { return false }
+        activate(slot: targetScene)
+        return true
     }
 
     /// 面板跳转的统一入口。目标 scene 常驻，由主线程 event pump 持续更新。
@@ -1977,25 +1987,33 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         seq: UInt64,
         query: String
     ) {
-        if let workspaceId, !activateWorkspaceIfAvailable(workspaceId) {
-            // replica id 字符串暂时对不上时，若当前连接已经有这个 pane，
-            // 仍立即跳转（Linux jump_to_attention_pane 同语义）。只有跨
-            // Workspace 且目标 slot 尚未 ready 才排队等下一轮 poll。
-            if cachedWorkspacePaneIDs().contains(paneId) {
-                pendingPanelJump = nil
-                performIfWindowOpen { [weak self] in
-                    self?.jumpToPane(tabId: tabId, paneId: paneId, seq: seq, query: query)
-                }
+        if let workspaceId {
+            guard let targetScene = scene(forWorkspaceId: workspaceId) else {
+                pendingPanelJump = PendingPanelJump(
+                    workspaceId: workspaceId,
+                    tabId: tabId,
+                    paneId: paneId,
+                    seq: seq,
+                    query: query
+                )
                 return
             }
-            pendingPanelJump = PendingPanelJump(
-                workspaceId: workspaceId,
-                tabId: tabId,
-                paneId: paneId,
-                seq: seq,
-                query: query
-            )
-            return
+            if sceneStack.activeKey != targetScene.key {
+                activate(slot: targetScene)
+            }
+            // paneId 只在目标 Workspace 内有意义，不能拿其它 tmux server
+            // 中相同的 pane 数字作为跨 Workspace 跳转的回退。
+            let targetPaneIDs = paneIDsForScene(targetScene)
+            if !targetPaneIDs.isEmpty, !targetPaneIDs.contains(paneId) {
+                pendingPanelJump = PendingPanelJump(
+                    workspaceId: workspaceId,
+                    tabId: tabId,
+                    paneId: paneId,
+                    seq: seq,
+                    query: query
+                )
+                return
+            }
         }
         pendingPanelJump = nil
         performIfWindowOpen { [weak self] in
@@ -2005,10 +2023,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     private func retryPendingPanelJump() {
         guard let jump = pendingPanelJump else { return }
-        if let workspaceId = jump.workspaceId,
-           !activateWorkspaceIfAvailable(workspaceId)
-        {
-            return
+        if let workspaceId = jump.workspaceId {
+            guard let targetScene = scene(forWorkspaceId: workspaceId) else { return }
+            let targetPaneIDs = paneIDsForScene(targetScene)
+            guard targetPaneIDs.isEmpty || targetPaneIDs.contains(jump.paneId) else { return }
+            if sceneStack.activeKey != targetScene.key {
+                activate(slot: targetScene)
+            }
         }
         pendingPanelJump = nil
         performIfWindowOpen { [weak self] in
@@ -2023,11 +2044,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     private func acknowledgeWorkspacePane(workspaceId: String, paneId: UInt32) {
         performIfWindowOpen { [weak self] in
-            guard let self else { return }
-            guard let scene = self.sceneStack.scenes.values.first(where: {
-                self.workspaceReplicaID(for: $0) == workspaceId
-                    || QuickConnect.uniqueID(for: $0.targetConfig) == workspaceId
-            }), let sceneWorkspaceID = scene.workspaceID else { return }
+            guard let self,
+                  let targetScene = self.scene(forWorkspaceId: workspaceId),
+                  let sceneWorkspaceID = targetScene.workspaceID
+            else {
+                return
+            }
             _ = self.enqueueCoreAttention(
                 workspaceID: sceneWorkspaceID,
                 .acknowledge(paneID: paneId)
@@ -2041,11 +2063,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         seconds: UInt64
     ) {
         performIfWindowOpen { [weak self] in
-            guard let self else { return }
-            guard let scene = self.sceneStack.scenes.values.first(where: {
-                self.workspaceReplicaID(for: $0) == workspaceId
-                    || QuickConnect.uniqueID(for: $0.targetConfig) == workspaceId
-            }), let sceneWorkspaceID = scene.workspaceID else { return }
+            guard let self,
+                  let targetScene = self.scene(forWorkspaceId: workspaceId),
+                  let sceneWorkspaceID = targetScene.workspaceID
+            else {
+                return
+            }
             _ = self.enqueueCoreAttention(
                 workspaceID: sceneWorkspaceID,
                 .mute(paneID: paneId, seconds: seconds)
@@ -2096,7 +2119,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     /// 注意力面板 Cmd-Enter：打开/关闭独立 replica overlay（W19-E）。
     /// overlay 用选中 pane 的 snapshot 渲染，I/O 走 overlay，不改主布局。
-    func toggleReplyOverlay(paneId: UInt32? = nil) {
+    func toggleReplyOverlay(paneId: UInt32? = nil, workspaceId: String? = nil) {
         if let overlay = replyOverlayView, !content.replyOverlayContainer.isHidden {
             overlay.removeFromSuperview()
             replyOverlayView = nil
@@ -2107,8 +2130,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             return
         }
         guard unifiedPanel?.modelTab == .attention else { return }
-        let targetPaneId = paneId ?? unifiedPanel?.testSelectedAttentionRow()?.pane.paneId
+        let selectedRow = unifiedPanel?.testSelectedAttentionRow()
+        let targetPaneId = paneId ?? selectedRow?.pane.paneId
         guard let targetPaneId else { return }
+        let targetWorkspaceId = workspaceId ?? selectedRow?.workspaceId
+        let targetScene = targetWorkspaceId.flatMap { scene(forWorkspaceId: $0) }
+        guard targetWorkspaceId == nil || targetScene != nil else { return }
+        let workspaceID = targetScene?.workspaceID ?? activeSceneWorkspaceID
         let overlay = MuxTerminalView(paneId: targetPaneId, frame: .zero)
         overlay.setAccessibilityIdentifier(CmdEnterRouting.overlayIdentifier)
         overlay.setAccessibilityElement(true)
@@ -2124,7 +2152,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         ])
         replyOverlayView = overlay
         replyOverlayPaneId = targetPaneId
-        let workspaceID = activeSceneWorkspaceID
         replyOverlayWorkspaceID = workspaceID
         content.replyOverlayContainer.isHidden = false
         // 手动布局（不依赖容器 Auto Layout，headless 下容器高度可能为 0）。
@@ -2148,9 +2175,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             else {
                 return
             }
-            let data = PanePaintPolicy.lastScreen(raw, visibleRows: 24)
-            if !data.isEmpty {
-                overlay.feedOutput(data, isSnapshot: true)
+            if !raw.isEmpty {
+                // pane output 是一个完整 VT 字节流；尾部的光标定位/退出
+                // alternate-screen 并不代表新帧，不能据此裁掉前面的正文。
+                overlay.feedOutput(raw, isSnapshot: true)
             }
         }
         content.replyOverlayContainer.setAccessibilityValue("1")
@@ -4172,9 +4200,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         agents: [StructuredPaneAgent]
     ) {
         for scene in sceneStack.scenes.values where scene.visibility != .closed {
-            let workspaceID = workspaceReplicaID(for: scene)
             let workspaces = snapshot.workspaces.filter {
-                $0.workspaceId == workspaceID
+                self.scene(scene, matchesWorkspaceId: $0.workspaceId)
             }
             let blockedCount = workspaces.reduce(into: 0) { count, workspace in
                 count += workspace.blocked
@@ -4930,11 +4957,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
 extension MainWindowController: TerminalInputHandler {
     func terminal(_ view: MuxTerminalView, send data: ArraySlice<UInt8>) {
+        guard replyOverlayView === view else { return }
         let paneId = replyOverlayPaneId ?? view.paneId
+        let workspaceID = replyOverlayWorkspaceID
         let payload = Data(data)
         // W19-E：overlay 快速回复不清 Blocked（注意力行保留，Enter 仍可跳转）。
         performIfWindowOpen { [weak self] in
             _ = self?.enqueueCoreInput(
+                workspaceID: workspaceID,
                 paneId: paneId,
                 data: payload,
                 quiet: true

@@ -39,6 +39,7 @@ final class ThemeToggleE2ETests: XCTestCase {
         let beforeDark = app.testChromeAppearanceIsDark()
         let beforeSaved = app.currentTheme()
         app.testToggleTheme()
+        app.testPollOnce()
         AppE2E.pump(80)
 
         XCTAssertNotEqual(
@@ -71,6 +72,7 @@ final class ThemeToggleE2ETests: XCTestCase {
         )
 
         app.testToggleTheme()
+        app.testPollOnce()
         AppE2E.pump(80)
         let osc2 = try XCTUnwrap(app.testThemeHexColors())
         let palette2 = app.currentTheme().palette

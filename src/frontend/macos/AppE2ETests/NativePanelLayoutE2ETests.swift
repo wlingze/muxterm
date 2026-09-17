@@ -119,7 +119,11 @@ final class NativePanelLayoutE2ETests: XCTestCase {
         panel.present(initial: .attention)
         defer { panel.dismiss() }
         AppE2E.pump(40)
-        XCTAssertEqual(panel.testAttentionRowTitle(0).split(separator: "\n").first.map(String.init), "muxterm")
+        let title = panel.testAttentionRowTitle(0)
+        XCTAssertTrue(title.contains("muxterm"))
+        XCTAssertTrue(title.contains("codex"))
+        XCTAssertTrue(title.contains("local"))
+        XCTAssertTrue(title.contains("/tmp/muxterm"))
         XCTAssertTrue(panel.testAttentionRowUsesNormalTextColor(0))
     }
 

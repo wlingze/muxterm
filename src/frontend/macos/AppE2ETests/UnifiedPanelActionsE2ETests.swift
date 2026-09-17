@@ -33,10 +33,17 @@ final class UnifiedPanelActionsE2ETests: XCTestCase {
         XCTAssertTrue(Set(app.unifiedPanel.testSearchHitPaneIDs()).isSuperset(of: [activePane, backgroundPane]))
 
         app.unifiedPanel.testSetSearchScope(.pane)
-        XCTAssertEqual(Set(app.unifiedPanel.testSearchHitPaneIDs()), [activePane])
+        XCTAssertTrue(AppE2E.wait(timeout: 2) {
+            app.testPollOnce()
+            return Set(app.unifiedPanel.testSearchHitPaneIDs()) == [activePane]
+        })
 
         app.unifiedPanel.testSetSearchScope(.workspace)
-        XCTAssertTrue(Set(app.unifiedPanel.testSearchHitPaneIDs()).isSuperset(of: [activePane, backgroundPane]))
+        XCTAssertTrue(AppE2E.wait(timeout: 2) {
+            app.testPollOnce()
+            return Set(app.unifiedPanel.testSearchHitPaneIDs())
+                .isSuperset(of: [activePane, backgroundPane])
+        })
     }
 
     func testAttentionActionsExposePreviewAndMuteProductionPath() throws {
@@ -118,9 +125,15 @@ final class UnifiedPanelActionsE2ETests: XCTestCase {
         )
 
         app.unifiedPanel.testSetSearchScope(.workspace)
-        XCTAssertEqual(app.testSearchHitCount(), 0, "Workspace 范围不能混入后台连接")
+        XCTAssertTrue(AppE2E.wait(timeout: 2) {
+            app.testPollOnce()
+            return app.testSearchHitCount() == 0
+        }, "Workspace 范围不能混入后台连接")
         app.unifiedPanel.testSetSearchScope(.all)
-        XCTAssertTrue(app.unifiedPanel.testSearchHitWorkspaceIDs().contains(firstWorkspace))
+        XCTAssertTrue(AppE2E.wait(timeout: 2) {
+            app.testPollOnce()
+            return app.unifiedPanel.testSearchHitWorkspaceIDs().contains(firstWorkspace)
+        })
 
         app.testActivateFirstSearchHit()
         XCTAssertTrue(AppE2E.wait(timeout: AppE2E.featureTimeout) {
