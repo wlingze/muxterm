@@ -104,7 +104,7 @@ final class UnifiedPanelE2ETests: XCTestCase {
             ["Shells", "Agents", first.session, second.session],
             "快速面板必须复用侧边栏的固定项和真实 Workspace 打开顺序"
         )
-        XCTAssertEqual(app.unifiedPanel.testWorkspaceShortcutText(matching: "Shells"), "T")
+        XCTAssertEqual(app.unifiedPanel.testWorkspaceShortcutText(matching: "Shells"), "S")
         XCTAssertEqual(app.unifiedPanel.testWorkspaceShortcutText(matching: "Agents"), "A")
         XCTAssertEqual(
             app.unifiedPanel.testSelectedWorkspaceTitle(),

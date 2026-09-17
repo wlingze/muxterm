@@ -796,10 +796,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     @objc func closeActivePane() {
-        if case .agents = workspacePresentation {
-            closeActiveAggregateAgentTab()
-            return
-        }
         guard let pane = lastSnapshot.panes.first(where: \.isActive)?.id ?? lastSnapshot.panes.first?.id else {
             return
         }
@@ -826,8 +822,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             commandPalette.dismiss()
         } else if !content.replyOverlayContainer.isHidden {
             toggleReplyOverlay()
-        } else if case .agents = workspacePresentation {
-            closeActiveAggregateAgentTab()
         } else {
             closeActivePane()
         }
@@ -3622,7 +3616,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func splitActivePane(horizontal: Bool) {
-        if case .agents = workspacePresentation { return }
         guard let pane = lastSnapshot.panes.first(where: \.isActive)?.id ?? lastSnapshot.panes.first?.id else {
             return
         }

@@ -22,7 +22,7 @@ final class AggregateWorkspaceE2ETests: XCTestCase {
             return !app.testPresentedTabTitles().isEmpty
         })
         XCTAssertEqual(app.testSidebarWorkspaceNames(), ["Shells", "Agents"])
-        XCTAssertEqual(app.testSidebarWorkspaceShortcutTexts(), ["T", "A"])
+        XCTAssertEqual(app.testSidebarWorkspaceShortcutTexts(), ["S", "A"])
         XCTAssertTrue(app.testPresentedTabTitles()[0].hasPrefix("local ·"))
 
         app.testNewTab()
@@ -104,6 +104,27 @@ final class AggregateWorkspaceE2ETests: XCTestCase {
             "\(fixture.session) · local · Codex · Review aggregate",
         ])
         XCTAssertEqual(app.testSelectedSidebarWorkspaceID(), AggregateWorkspaceIdentity.agents)
+
+        let sourceTabs = app.testTabIDs()
+        app.testNewTab()
+        AppE2E.pump(20)
+        XCTAssertEqual(
+            app.testTabIDs(),
+            sourceTabs,
+            "Agents aggregate must not create a real source Tab"
+        )
+
+        let leavesBeforeSplit = app.testLayoutLeafIDs().count
+        app.testSplitHorizontal()
+        XCTAssertTrue(AppE2E.wait(timeout: AppE2E.featureTimeout) {
+            app.testPollOnce()
+            return app.testLayoutLeafIDs().count == leavesBeforeSplit + 1
+        }, "Agents aggregate must allow splitting the real source Tab")
+        app.testCloseActivePane()
+        XCTAssertTrue(AppE2E.wait(timeout: AppE2E.featureTimeout) {
+            app.testPollOnce()
+            return app.testLayoutLeafIDs().count == leavesBeforeSplit
+        }, "Agents aggregate must allow closing a pane in the real source Tab")
 
         let aggregateTab = try XCTUnwrap(app.testPresentedTabIDs().first)
         app.testCloseTab(aggregateTab)

@@ -228,6 +228,11 @@ extension MainWindowController {
         pollOnce()
     }
 
+    func testCloseActivePane() {
+        closeActivePane()
+        pollOnce()
+    }
+
     /// 键盘所在的 SwiftTerm pane。host 边框高亮不算。
     func testFocusedTerminalPaneID() -> UInt32? {
         (window?.firstResponder as? MuxTerminalView)?.paneId

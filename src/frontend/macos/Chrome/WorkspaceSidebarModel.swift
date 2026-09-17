@@ -224,7 +224,7 @@ public struct WorkspaceSidebarItem: Sendable, Equatable {
     public var shortcutText: String? {
         switch workspaceId {
         case AggregateWorkspaceIdentity.shells:
-            return "T"
+            return "S"
         case AggregateWorkspaceIdentity.agents:
             return "A"
         default:

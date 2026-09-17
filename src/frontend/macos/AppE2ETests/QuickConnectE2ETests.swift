@@ -24,7 +24,7 @@ final class QuickConnectE2ETests: XCTestCase {
         )
         let cell = app.unifiedPanel.testWorkspaceCell(at: 0)
         XCTAssertEqual(cell?.testTitleText(), "Shells")
-        XCTAssertEqual(cell?.testWorkspaceShortcutText(), "T")
+        XCTAssertEqual(cell?.testWorkspaceShortcutText(), "S")
         XCTAssertTrue(cell?.testIsCurrent() == true, "冷启动必须选中 Shells 固定项")
         XCTAssertFalse(
             app.unifiedPanel.testWorkspaceTitles().contains("workspace"),
