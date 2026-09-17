@@ -219,6 +219,35 @@ public struct WorkspaceSidebarItem: Sendable, Equatable {
         WorkspaceDisplayTitle.make(name: name, transport: transport)
     }
 
+    /// Workspaces 列表与 Quick Panel 共用的切换标识。固定聚合槽使用
+    /// 字母地标，真实 Workspace 才使用 Cmd-Ctrl-1...9 的编号。
+    public var shortcutText: String? {
+        switch workspaceId {
+        case AggregateWorkspaceIdentity.shells:
+            return "T"
+        case AggregateWorkspaceIdentity.agents:
+            return "A"
+        default:
+            return shortcut.map(String.init)
+        }
+    }
+
+    public var isAggregate: Bool {
+        workspaceId == AggregateWorkspaceIdentity.shells
+            || workspaceId == AggregateWorkspaceIdentity.agents
+    }
+
+    public var keyboardShortcutText: String? {
+        switch workspaceId {
+        case AggregateWorkspaceIdentity.shells:
+            return "Cmd-Ctrl-S"
+        case AggregateWorkspaceIdentity.agents:
+            return "Cmd-Ctrl-A"
+        default:
+            return shortcut.map { "Cmd-Ctrl-\($0)" }
+        }
+    }
+
     public init(
         workspaceId: String,
         name: String,

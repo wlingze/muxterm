@@ -5,7 +5,7 @@ import MuxtermChrome
 
 /// 对标 `linux_quickconnect_e2e`：status snapshot + zoom 任务。
 final class QuickConnectE2ETests: XCTestCase {
-    func testStartupLocalWorkspaceAppearsInRecent() throws {
+    func testStartupLocalWorkspaceAppearsThroughFixedShellsItem() throws {
         AppE2E.ensureApp()
         let bridge = try CoreBridge(backendType: "local")
         let app = MainWindowController(
@@ -19,14 +19,17 @@ final class QuickConnectE2ETests: XCTestCase {
         AppE2E.pump(80)
 
         XCTAssertEqual(
-            app.unifiedPanel.testWorkspaceTitles().first,
-            MuxtermI18n.shared.tr(.existingConnections)
+            Array(app.unifiedPanel.testWorkspaceTitles().prefix(2)),
+            ["Shells", "Agents"]
         )
-        let cell = app.unifiedPanel.testWorkspaceCell(at: 1)
-        XCTAssertNotNil(cell, "启动创建的 local workspace 必须出现在 Quick Connect")
-        XCTAssertEqual(cell?.testTitleText(), "workspace")
-        XCTAssertEqual(cell?.testBadgeDotSizes().count, 1, "启动 workspace 必须带 Recent 标记")
-        XCTAssertTrue(cell?.testIsCurrent() == true, "启动 workspace 必须标为 Current")
+        let cell = app.unifiedPanel.testWorkspaceCell(at: 0)
+        XCTAssertEqual(cell?.testTitleText(), "Shells")
+        XCTAssertEqual(cell?.testWorkspaceShortcutText(), "T")
+        XCTAssertTrue(cell?.testIsCurrent() == true, "冷启动必须选中 Shells 固定项")
+        XCTAssertFalse(
+            app.unifiedPanel.testWorkspaceTitles().contains("workspace"),
+            "底层 shell Workspace 不应在固定 Shells 之外重复出现"
+        )
     }
 
     func testStatusSnapshotAndFullscreenZoomOnIsolatedTmux() throws {

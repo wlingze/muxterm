@@ -59,6 +59,17 @@ final class AggregateWorkspaceModelTests: XCTestCase {
                 sessionTitle: "Review UI",
                 tabNumber: 1
             ),
+            AgentSidebarItem(
+                workspaceId: "first",
+                tabId: 11,
+                paneId: 6,
+                title: "muxterm · local",
+                detail: "working · Claude · Tab 1",
+                indicator: .working,
+                agentName: "Claude",
+                sessionTitle: "Pair review",
+                tabNumber: 1
+            ),
         ]
 
         let tabs = AggregateWorkspaceProjection.agentTabs(
@@ -67,26 +78,35 @@ final class AggregateWorkspaceModelTests: XCTestCase {
         )
 
         XCTAssertEqual(tabs.map(\.workspaceId), ["first", "second"])
-        XCTAssertEqual(tabs.map(\.paneId), [5, 9])
+        XCTAssertEqual(tabs.map(\.sourceTabId), [11, 22])
+        XCTAssertEqual(tabs.map(\.agentPaneIds), [[5, 6], [9]])
         XCTAssertEqual(tabs.map(\.title), [
-            "muxterm · local · Grok · Review UI",
+            "muxterm · local · Grok, Claude · Review UI / Pair review",
             "server · ryzen · Codex · Fix build",
         ])
         XCTAssertEqual(tabs.map(\.displayId), [1, 2])
     }
 
-    func testAgentTabIdentityIncludesWorkspaceBecausePaneIdsRepeat() {
-        let first = AgentAggregateKey(workspaceId: "one", paneId: 1)
-        let second = AgentAggregateKey(workspaceId: "two", paneId: 1)
+    func testAgentTabIdentityIncludesWorkspaceBecauseTabIdsRepeat() {
+        let first = AgentAggregateKey(workspaceId: "one", sourceTabId: 1)
+        let second = AgentAggregateKey(workspaceId: "two", sourceTabId: 1)
+        let anotherTab = AgentAggregateKey(workspaceId: "one", sourceTabId: 2)
 
         XCTAssertNotEqual(first, second)
+        XCTAssertNotEqual(first, anotherTab)
     }
 
-    func testCmdKAndConfigActionEnterShells() {
+    func testDefaultAggregateShortcutsAndConfigActions() {
         XCTAssertEqual(
-            KeyBindings.action(for: KeyChord(command: true, key: "k")),
+            KeyBindings.action(for: KeyChord(command: true, control: true, key: "s")),
             .openShells
         )
+        XCTAssertEqual(
+            KeyBindings.action(for: KeyChord(command: true, control: true, key: "a")),
+            .openAgents
+        )
+        XCTAssertNil(KeyBindings.action(for: KeyChord(command: true, key: "k")))
         XCTAssertEqual(KeyBindingsConfig.action(from: "open_shells"), .openShells)
+        XCTAssertEqual(KeyBindingsConfig.action(from: "open_agents"), .openAgents)
     }
 }

@@ -61,37 +61,37 @@ public struct ShellAggregateTab: Sendable, Equatable {
 
 public struct AgentAggregateKey: Hashable, Sendable {
     public let workspaceId: String
-    public let paneId: UInt32
+    public let sourceTabId: UInt32
 
-    public init(workspaceId: String, paneId: UInt32) {
+    public init(workspaceId: String, sourceTabId: UInt32) {
         self.workspaceId = workspaceId
-        self.paneId = paneId
+        self.sourceTabId = sourceTabId
     }
 }
 
-/// Agents 槽的一页；只指向源 Workspace/pane，不拥有或复制 Surface。
+/// Agents 槽的一页；只指向包含 agent 的真实源 Tab，不拥有或复制 Surface。
 public struct AgentAggregateTab: Sendable, Equatable {
     public let displayId: UInt32
     public let workspaceId: String
-    public let sourceTabId: UInt32?
-    public let paneId: UInt32
+    public let sourceTabId: UInt32
+    public let agentPaneIds: [UInt32]
     public let title: String
 
     public var key: AgentAggregateKey {
-        AgentAggregateKey(workspaceId: workspaceId, paneId: paneId)
+        AgentAggregateKey(workspaceId: workspaceId, sourceTabId: sourceTabId)
     }
 
     public init(
         displayId: UInt32,
         workspaceId: String,
-        sourceTabId: UInt32?,
-        paneId: UInt32,
+        sourceTabId: UInt32,
+        agentPaneIds: [UInt32],
         title: String
     ) {
         self.displayId = displayId
         self.workspaceId = workspaceId
         self.sourceTabId = sourceTabId
-        self.paneId = paneId
+        self.agentPaneIds = agentPaneIds
         self.title = title
     }
 }
@@ -124,7 +124,8 @@ public enum AggregateWorkspaceProjection {
         return result
     }
 
-    /// 聚合 Tab 的次序只由 Workspace/Tab/Pane 身份决定，状态变化不会让页面跳位。
+    /// 一个真实源 Tab 只投影一页，即使它同时包含 shell 与多个 agent pane。
+    /// 次序只由 Workspace/Tab 身份决定，状态变化不会让页面跳位。
     public static func agentTabs(
         agents: [AgentSidebarItem],
         workspaceOrder: [String]
@@ -132,30 +133,70 @@ public enum AggregateWorkspaceProjection {
         let rank = Dictionary(uniqueKeysWithValues: workspaceOrder.enumerated().map {
             ($0.element, $0.offset)
         })
-        let sorted = agents.sorted { lhs, rhs in
+        let sorted = agents.compactMap { agent -> AgentSidebarItem? in
+            agent.tabId == nil ? nil : agent
+        }.sorted { lhs, rhs in
             let lhsRank = rank[lhs.workspaceId] ?? Int.max
             let rhsRank = rank[rhs.workspaceId] ?? Int.max
             if lhsRank != rhsRank { return lhsRank < rhsRank }
             if lhs.tabNumber != rhs.tabNumber {
                 return (lhs.tabNumber ?? Int.max) < (rhs.tabNumber ?? Int.max)
             }
+            if lhs.tabId != rhs.tabId {
+                return (lhs.tabId ?? UInt32.max) < (rhs.tabId ?? UInt32.max)
+            }
             if lhs.paneId != rhs.paneId { return lhs.paneId < rhs.paneId }
             return lhs.agentName.localizedCaseInsensitiveCompare(rhs.agentName) == .orderedAscending
         }
-        return sorted.enumerated().map { offset, agent in
-            var components = [agent.title, agent.agentName]
-            if let title = nonempty(agent.sessionTitle),
-               !components.contains(where: { $0.caseInsensitiveCompare(title) == .orderedSame })
-            {
-                components.append(title)
+
+        var orderedKeys: [AgentAggregateKey] = []
+        var agentsByTab: [AgentAggregateKey: [AgentSidebarItem]] = [:]
+        for agent in sorted {
+            guard let sourceTabId = agent.tabId else { continue }
+            let key = AgentAggregateKey(
+                workspaceId: agent.workspaceId,
+                sourceTabId: sourceTabId
+            )
+            if agentsByTab[key] == nil {
+                orderedKeys.append(key)
+            }
+            agentsByTab[key, default: []].append(agent)
+        }
+
+        return orderedKeys.enumerated().compactMap { offset, key in
+            guard let tabAgents = agentsByTab[key], let first = tabAgents.first else {
+                return nil
+            }
+            var components = [first.title]
+            let names = uniqueNonempty(tabAgents.map(\.agentName))
+            if !names.isEmpty {
+                components.append(names.joined(separator: ", "))
+            }
+            let sessionTitles = uniqueNonempty(tabAgents.compactMap(\.sessionTitle)).filter { title in
+                !components.contains(where: {
+                    $0.caseInsensitiveCompare(title) == .orderedSame
+                })
+            }
+            if !sessionTitles.isEmpty {
+                components.append(sessionTitles.joined(separator: " / "))
             }
             return AgentAggregateTab(
                 displayId: UInt32(offset + 1),
-                workspaceId: agent.workspaceId,
-                sourceTabId: agent.tabId,
-                paneId: agent.paneId,
+                workspaceId: key.workspaceId,
+                sourceTabId: key.sourceTabId,
+                agentPaneIds: tabAgents.map(\.paneId),
                 title: components.joined(separator: " · ")
             )
+        }
+    }
+
+    private static func uniqueNonempty(_ values: [String]) -> [String] {
+        var seen = Set<String>()
+        return values.compactMap { value in
+            guard let value = nonempty(value) else { return nil }
+            let key = value.lowercased()
+            guard seen.insert(key).inserted else { return nil }
+            return value
         }
     }
 

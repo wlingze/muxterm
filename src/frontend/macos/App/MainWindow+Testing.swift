@@ -26,6 +26,10 @@ extension MainWindowController {
         workspaceSidebar.testWorkspaceNames()
     }
 
+    func testSidebarWorkspaceShortcutTexts() -> [String?] {
+        workspaceSidebar.testWorkspaceShortcutTexts()
+    }
+
     func testSidebarAgentCount() -> Int {
         workspaceSidebar.testAgentCount()
     }

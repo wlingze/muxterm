@@ -47,23 +47,30 @@ final class WorkspaceSidebarE2ETests: XCTestCase {
             app.testPollOnce()
             return app.testActiveWorkspaceSession() == second.session
         })
+        let secondPane = UInt32(second.pane.dropFirst()) ?? 0
+        app.testInjectAgent(paneId: secondPane, name: "Codex", title: "Switch workspaces")
+        app.testOpenAgents()
+        XCTAssertEqual(
+            app.testSelectedSidebarWorkspaceID(),
+            AggregateWorkspaceIdentity.agents
+        )
 
         let event = try XCTUnwrap(
-            app.testMakeKeyEvent(key: "3", keyCode: 20, command: true, control: true),
-            "必须能构造 Cmd-Ctrl-3"
+            app.testMakeKeyEvent(key: "1", keyCode: 18, command: true, control: true),
+            "必须能构造 Cmd-Ctrl-1"
         )
-        XCTAssertTrue(app.testDispatchKeyEvent(event), "Cmd-Ctrl-3 必须被窗口快捷键消费")
+        XCTAssertTrue(app.testDispatchKeyEvent(event), "Cmd-Ctrl-1 必须被窗口快捷键消费")
         XCTAssertEqual(
             app.testActiveWorkspaceSession(),
             first.session,
-            "Shells/Agents 之后的 Cmd-Ctrl-3 应切回第一个真实 Workspace"
+            "Cmd-Ctrl-1 应从 Agents 等固定槽切回第一个真实 Workspace"
         )
 
         let secondEvent = try XCTUnwrap(
-            app.testMakeKeyEvent(key: "4", keyCode: 21, command: true, control: true),
-            "必须能构造 Cmd-Ctrl-4"
+            app.testMakeKeyEvent(key: "2", keyCode: 19, command: true, control: true),
+            "必须能构造 Cmd-Ctrl-2"
         )
-        XCTAssertTrue(app.testDispatchKeyEvent(secondEvent), "Cmd-Ctrl-4 必须被窗口快捷键消费")
+        XCTAssertTrue(app.testDispatchKeyEvent(secondEvent), "Cmd-Ctrl-2 必须被窗口快捷键消费")
         XCTAssertEqual(app.testActiveWorkspaceSession(), second.session)
 
         let lastEvent = try XCTUnwrap(
@@ -516,8 +523,8 @@ final class WorkspaceSidebarE2ETests: XCTestCase {
             return app.testActiveWorkspaceSession() == second.session
         })
 
-        app.testSwitchToWorkspaceAtFixedIndex(3)
-        app.testSwitchToWorkspaceAtFixedIndex(4)
+        app.testSwitchToWorkspaceAtFixedIndex(1)
+        app.testSwitchToWorkspaceAtFixedIndex(2)
 
         XCTAssertTrue(AppE2E.wait(timeout: 2) {
             app.testPollOnce()

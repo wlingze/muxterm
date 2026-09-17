@@ -347,10 +347,23 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             self?.reorderWorkspaces(ids)
         }
         workspaceSidebar.onAgentActivate = { [weak self] workspaceId, tabId, paneId in
-            self?.activateAgents(
-                preferred: AgentAggregateKey(workspaceId: workspaceId, paneId: paneId),
-                sourceTabId: tabId
-            )
+            guard let self else { return }
+            let resolvedTabId = tabId
+                ?? self.scene(forWorkspaceId: workspaceId)?.cachedTabIdsByPane?[paneId]
+            guard let resolvedTabId else {
+                self.routePanelJump(
+                    workspaceId: workspaceId,
+                    tabId: tabId,
+                    paneId: paneId,
+                    seq: 0,
+                    query: ""
+                )
+                return
+            }
+            self.activateAgents(preferred: AgentAggregateKey(
+                workspaceId: workspaceId,
+                sourceTabId: resolvedTabId
+            ))
         }
         workspaceSidebar.onCommandActivate = { [weak self] workspaceId, tabId, paneId in
             self?.routePanelJump(
@@ -400,9 +413,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 self?.sceneStack.allRecentTargetConfigs() ?? []
             },
             sidebarWorkspaces: { [weak self] in
-                self?.runtimeSidebarItems() ?? []
+                self?.sidebarItems() ?? []
             }
         )
+        unifiedPanel.onWorkspaceActivate = { [weak self] workspaceId in
+            self?.activateSidebarWorkspace(workspaceId)
+        }
         unifiedPanel.onConnect = { [weak self] config in
             self?.connect(config: config)
         }
@@ -863,7 +879,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// Cmd+Ctrl+N：按固定打开顺序切换 Workspace，不随最近使用重排。
     /// 与 Linux Ctrl+Alt+N 使用同一组 `switch_workspace_N` 语义。
     func switchToWorkspaceAtFixedIndex(_ oneBased: Int) {
-        let ordered = sidebarItems()
+        // Shells / Agents 是前端固定槽，不占真实 Workspace 的数字编号。
+        let ordered = runtimeSidebarItems().filter {
+            $0.runtime != TargetRuntime.shell.rawValue
+        }
         guard !ordered.isEmpty else { return }
         let target: WorkspaceSidebarItem
         if oneBased == 0 {
@@ -1751,13 +1770,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     private func workspaceShortcutIndex(for config: TargetConfig) -> Int? {
         if config.runtime == .shell {
-            return 1
+            return nil
         }
         let targetID = QuickConnect.uniqueID(for: config)
-        let orderedTargetIDs = [
-            AggregateWorkspaceIdentity.shells,
-            AggregateWorkspaceIdentity.agents,
-        ] + workspaceSidebarScenes().filter { $0.targetConfig.runtime != .shell }.map {
+        let orderedTargetIDs = workspaceSidebarScenes().filter {
+            $0.targetConfig.runtime != .shell
+        }.map {
             QuickConnect.uniqueID(for: $0.targetConfig)
         }
         return WorkspaceShortcutIndex.byWorkspaceID(orderedTargetIDs)[targetID]
@@ -1790,10 +1808,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private func sidebarItems() -> [WorkspaceSidebarItem] {
         let runtimeItems = runtimeSidebarItems()
         let regularItems = runtimeItems.filter { $0.runtime != TargetRuntime.shell.rawValue }
-        let orderedIDs = [
-            AggregateWorkspaceIdentity.shells,
-            AggregateWorkspaceIdentity.agents,
-        ] + regularItems.map(\.workspaceId)
+        let orderedIDs = regularItems.map(\.workspaceId)
         let shortcuts = WorkspaceShortcutIndex.byWorkspaceID(orderedIDs)
         let shellsActive: Bool
         let agentsActive: Bool
@@ -1815,7 +1830,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 runtime: "aggregate",
                 transport: "local + ssh",
                 isActive: shellsActive,
-                shortcut: shortcuts[AggregateWorkspaceIdentity.shells],
+                shortcut: nil,
                 isClosable: false,
                 isReorderable: false
             ),
@@ -1825,7 +1840,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 runtime: "aggregate",
                 transport: "all workspaces",
                 isActive: agentsActive,
-                shortcut: shortcuts[AggregateWorkspaceIdentity.agents],
+                shortcut: nil,
                 isClosable: false,
                 isReorderable: false
             ),
@@ -1883,15 +1898,21 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         agents: [AgentSidebarItem]? = nil
     ) -> [AgentAggregateTab] {
         let source = agents ?? projectedAgentItems()
-        let liveKeys = Set(source.map {
-            AgentAggregateKey(workspaceId: $0.workspaceId, paneId: $0.paneId)
+        let liveKeys = Set(source.compactMap { agent -> AgentAggregateKey? in
+            guard let sourceTabId = agent.tabId else { return nil }
+            return AgentAggregateKey(
+                workspaceId: agent.workspaceId,
+                sourceTabId: sourceTabId
+            )
         })
         hiddenAgentTabs.formIntersection(liveKeys)
         return AggregateWorkspaceProjection.agentTabs(
-            agents: source.filter {
-                !hiddenAgentTabs.contains(
-                    AgentAggregateKey(workspaceId: $0.workspaceId, paneId: $0.paneId)
-                )
+            agents: source.filter { agent in
+                guard let sourceTabId = agent.tabId else { return false }
+                return !hiddenAgentTabs.contains(AgentAggregateKey(
+                    workspaceId: agent.workspaceId,
+                    sourceTabId: sourceTabId
+                ))
             },
             workspaceOrder: runtimeSidebarItems().map(\.workspaceId)
         )
@@ -1987,7 +2008,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             if target.key != selectedKey {
                 workspacePresentation = .agents(target.key)
                 DispatchQueue.main.async { [weak self] in
-                    self?.activateAgents(preferred: target.key, sourceTabId: target.sourceTabId)
+                    self?.activateAgents(preferred: target.key)
                 }
             }
             updatePresentedTabs()
@@ -2239,6 +2260,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
            let activeScene = sceneStack.scenes[activeKey],
            scene(activeScene, matchesWorkspaceId: workspaceId)
         {
+            if case .workspace = workspacePresentation {
+                return true
+            }
+            // Agents / Shells 只是当前真实 scene 的前端投影；回到同一个
+            // Workspace 时只退出投影，不重新激活或重挂底层布局。
+            workspacePresentation = .workspace
+            updatePresentedTabs()
+            refreshWorkspaceSidebar(force: true)
             return true
         }
         guard let targetScene = scene(forWorkspaceId: workspaceId) else { return false }
@@ -2347,10 +2376,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         )
     }
 
-    func activateAgents(
-        preferred: AgentAggregateKey? = nil,
-        sourceTabId: UInt32? = nil
-    ) {
+    func activateAgents(preferred: AgentAggregateKey? = nil) {
         if let preferred {
             // 侧栏中的 agent 行是显式重新进入；允许把先前关掉的投影页找回。
             hiddenAgentTabs.remove(preferred)
@@ -2365,19 +2391,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             return
         }
         workspacePresentation = .agents(target.key)
-        activateBackingSlot(slot, force: true)
-        let tabId = sourceTabId ?? target.sourceTabId
-        if let tabId, slot.lastSnapshot.activeTab != tabId {
-            requestSourceTab(tabId)
+        activateBackingSlot(slot, force: false)
+        if slot.lastSnapshot.activeTab != target.sourceTabId {
+            requestSourceTab(target.sourceTabId)
         }
-        _ = enqueueCoreTask(
-            MuxTask.switchPane(target.paneId),
-            failureMessage: MuxtermI18n.shared.tr(
-                .errorSwitchPane,
-                arguments: ["id": "\(target.paneId)"]
-            )
-        )
-        presentAgentSurface(target)
+        updatePresentedTabs()
         refreshWorkspaceSidebar(force: true)
     }
 
@@ -2385,30 +2403,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         guard let target = agentAggregateTabs().first(where: { $0.displayId == displayId }) else {
             return
         }
-        activateAgents(preferred: target.key, sourceTabId: target.sourceTabId)
-    }
-
-    /// 复用源 TerminalManager 的同一个 MuxTerminalView，只给投影建一片叶子。
-    private func presentAgentSurface(_ target: AgentAggregateTab) {
-        guard case .agents = workspacePresentation else { return }
-        let pane = lastSnapshot.panes.first(where: { $0.id == target.paneId })
-            ?? Pane(id: target.paneId, cols: 80, rows: 24, isActive: true)
-        let projectedPane = Pane(
-            id: pane.id,
-            cols: pane.cols,
-            rows: pane.rows,
-            isActive: true
-        )
-        let projectionTabId = UInt32.max &- target.displayId
-        _ = content.paneLayout.apply(
-            layout: .leaf(paneId: target.paneId),
-            panes: [projectedPane],
-            tabId: projectionTabId
-        )
-        terminalManager.focusTarget = terminalManager.view(for: target.paneId)
-        content.paneLayout.markActivePane(target.paneId)
-        updatePresentedTabs()
-        restoreTerminalFocusIfAllowed()
+        activateAgents(preferred: target.key)
     }
 
     /// 固定 Agents 槽没有可投影页时仍可进入；空布局不会制造 Core 拓扑。
@@ -2431,10 +2426,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         hiddenAgentTabs.insert(current.key)
         let remaining = agentAggregateTabs()
         if let next = remaining.first {
-            activateAgents(preferred: next.key, sourceTabId: next.sourceTabId)
+            activateAgents(preferred: next.key)
         } else if let source = scene(forWorkspaceId: current.workspaceId) {
             workspacePresentation = .workspace
-            activateBackingSlot(source, force: true)
+            activateBackingSlot(source, force: false)
+            updatePresentedTabs()
         }
         refreshWorkspaceSidebar(force: true)
     }
@@ -2847,9 +2843,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private var activePaneID: UInt32? {
-        if case .agents(let selectedKey) = workspacePresentation {
-            return selectedKey?.paneId
-        }
         if let active = lastSnapshot.panes.first(where: \.isActive)?.id {
             return active
         }
@@ -3387,20 +3380,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         tabSwitchGate.onSnapshot(tabs: snapshot.tabs.map(\.id))
         updatePresentedTabs(fallback: snapshot.tabs)
         terminalManager.updatePaneSizes(snapshot.panes)
-        if case .agents = workspacePresentation {
-            // Agents 槽稍后只挂目标 pane；不能在这里恢复源 Workspace 全树。
-        } else {
-            let revealed = restoredParkedTree
-                && content.paneLayout.revealCachedTab(snapshot.activeTab) != nil
-            if !revealed,
-               content.paneLayout.apply(
-                   layout: snapshot.layout,
-                   panes: snapshot.panes,
-                   tabId: snapshot.activeTab
-               )
-            {
-                needsLayoutReload = false
-            }
+        let revealed = restoredParkedTree
+            && content.paneLayout.revealCachedTab(snapshot.activeTab) != nil
+        if !revealed,
+           content.paneLayout.apply(
+               layout: snapshot.layout,
+               panes: snapshot.panes,
+               tabId: snapshot.activeTab
+           )
+        {
+            needsLayoutReload = false
         }
         content.statusBar.updateDebugSnapshot(snapshot)
         content.statusBar.updateOutputSnippet(terminalManager.recentOutputSnippet)
@@ -4986,21 +4975,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         terminalManager.updatePaneSizes(allPanes.isEmpty ? snap.panes : allPanes)
         reportPaneColoursIfNeeded(snap.panes)
-        if case .agents(let selectedKey) = workspacePresentation {
-            let tabs = agentAggregateTabs()
-            if let target = tabs.first(where: { $0.key == selectedKey }) ?? tabs.first {
-                presentAgentSurface(target)
-            } else {
-                presentEmptyAgents()
-            }
-            content.statusBar.updateDebugSnapshot(snap)
-            content.statusBar.updateOutputSnippet(terminalManager.recentOutputSnippet)
-            cacheActiveSlotSnapshot(
-                tabIdsByPane: snap.tabs.isEmpty ? nil : tabIdsByPane,
-                tabNumbersByPane: snap.tabs.isEmpty ? nil : tabNumbersByPane
-            )
-            return
-        }
         updatePresentedTabs(fallback: snap.tabs)
         if needsLayoutReload {
             if content.paneLayout.apply(
@@ -5658,6 +5632,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             toggleWorkspaceSidebar()
         case .openShells:
             activateShells(selectFirstLocal: true)
+        case .openAgents:
+            activateAgents()
         case .switchWorkspace(let n):
             switchToWorkspaceAtFixedIndex(n)
         }

@@ -316,6 +316,12 @@ final class QuickTargetCellView: NSTableCellView {
     private let badgeStack = NSStackView()
     private let workspaceIndexLabel = NSTextField(labelWithString: "")
 
+    /// 已打开 Workspace 直接消费侧边栏投影，避免 Quick Panel 再造一套
+    /// 固定槽、顺序和编号。未打开的 Project 仍使用 `config`。
+    var workspace: WorkspaceSidebarItem? {
+        didSet { updateLayout() }
+    }
+
     var config: TargetConfig? {
         didSet { updateLayout() }
     }
@@ -394,17 +400,33 @@ final class QuickTargetCellView: NSTableCellView {
     }
 
     private func updateLayout() {
-        guard let config else { return }
-        titleLabel.stringValue = config.name
-        titleLabel.toolTip = config.name
-        workspaceIndexLabel.stringValue = workspaceIndex.map(String.init) ?? ""
-        workspaceIndexLabel.toolTip = workspaceIndex.map {
-            "Workspace shortcut \($0)"
+        let shortcutText: String?
+        if let workspace {
+            titleLabel.stringValue = workspace.name
+            titleLabel.toolTip = workspace.displayTitle
+            detailLabel.stringValue = "\(workspace.runtime) @ \(workspace.transport)"
+            shortcutText = workspace.shortcutText
+            titleLabel.textColor = workspace.isAggregate ? .controlAccentColor : .labelColor
+            workspaceIndexLabel.textColor = workspace.isAggregate
+                ? .controlAccentColor
+                : .secondaryLabelColor
+            isCurrent = workspace.isActive
+        } else if let config {
+            titleLabel.stringValue = config.name
+            titleLabel.toolTip = config.name
+            shortcutText = workspaceIndex.map(String.init)
+            let path = config.path.trimmingCharacters(in: .whitespacesAndNewlines)
+            detailLabel.stringValue = path.isEmpty
+                ? QuickConnect.subtitle(for: config)
+                : "\(QuickConnect.subtitle(for: config))  ·  \(path)"
+            titleLabel.textColor = .labelColor
+            workspaceIndexLabel.textColor = .controlAccentColor
+        } else {
+            return
         }
-        let path = config.path.trimmingCharacters(in: .whitespacesAndNewlines)
-        detailLabel.stringValue = path.isEmpty
-            ? QuickConnect.subtitle(for: config)
-            : "\(QuickConnect.subtitle(for: config))  ·  \(path)"
+        workspaceIndexLabel.stringValue = shortcutText ?? ""
+        workspaceIndexLabel.toolTip = workspace?.keyboardShortcutText
+            ?? shortcutText.map { "Workspace shortcut \($0)" }
 
         for view in badgeStack.arrangedSubviews {
             badgeStack.removeArrangedSubview(view)
@@ -418,9 +440,15 @@ final class QuickTargetCellView: NSTableCellView {
 
     private func updateHighlight() {
         wantsLayer = true
-        layer?.backgroundColor = isCurrent
-            ? NSColor.controlAccentColor.withAlphaComponent(0.18).cgColor
-            : NSColor.clear.cgColor
+        let alpha: CGFloat
+        if isCurrent {
+            alpha = 0.18
+        } else if workspace?.isAggregate == true {
+            alpha = 0.06
+        } else {
+            alpha = 0
+        }
+        layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(alpha).cgColor
     }
 
     func testTitleBoundsWidth() -> CGFloat {
@@ -445,7 +473,11 @@ final class QuickTargetCellView: NSTableCellView {
     }
 
     func testWorkspaceIndex() -> Int? {
-        workspaceIndex
+        workspace?.shortcut ?? workspaceIndex
+    }
+
+    func testWorkspaceShortcutText() -> String? {
+        workspace?.shortcutText ?? workspaceIndex.map(String.init)
     }
 
     func testBadgeDotSizes() -> [CGSize] {

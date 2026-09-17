@@ -453,11 +453,12 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
         item: WorkspaceSidebarItem
     ) {
         cell.set(
-            marker: item.isActive ? "●" : "○",
+            marker: item.isAggregate ? "◆" : (item.isActive ? "●" : "○"),
             markerColor: item.isActive ? .controlAccentColor : .tertiaryLabelColor,
             title: item.name,
             detail: "\(item.runtime) @ \(item.transport)",
-            shortcut: item.shortcut,
+            shortcut: item.shortcutText,
+            emphasized: item.isAggregate,
             trailingSymbol: item.isClosable ? "xmark" : nil,
             trailingTooltip: item.isClosable ? "Close workspace" : nil,
             trailingAccessibilityID: item.isClosable
@@ -893,6 +894,7 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
     func testAgentIndicators() -> [AgentSidebarIndicator] { agents.map(\.indicator) }
     func testWorkspaceNames() -> [String] { workspaces.map(\.name) }
     func testWorkspaceIDs() -> [String] { workspaces.map(\.workspaceId) }
+    func testWorkspaceShortcutTexts() -> [String?] { workspaces.map(\.shortcutText) }
     func testSelectWorkspace(_ workspaceId: String) {
         guard let row = workspaces.firstIndex(where: { $0.workspaceId == workspaceId }) else {
             return
@@ -1050,7 +1052,8 @@ private final class WorkspaceSidebarCellView: NSTableCellView {
         title: String,
         detail: String,
         detailColor: NSColor = .secondaryLabelColor,
-        shortcut: Int? = nil,
+        shortcut: String? = nil,
+        emphasized: Bool = false,
         closeAction: (() -> Void)? = nil,
         trailingSymbol: String? = nil,
         trailingTooltip: String? = nil,
@@ -1060,8 +1063,10 @@ private final class WorkspaceSidebarCellView: NSTableCellView {
     ) {
         self.marker.stringValue = marker
         self.marker.textColor = markerColor
-        shortcutLabel.stringValue = shortcut.map(String.init) ?? ""
+        shortcutLabel.stringValue = shortcut ?? ""
+        shortcutLabel.textColor = emphasized ? .controlAccentColor : .tertiaryLabelColor
         titleLabel.stringValue = title
+        titleLabel.textColor = emphasized ? .controlAccentColor : .labelColor
         detailLabel.stringValue = detail
         detailLabel.textColor = detailColor
         // NSTableView reuses cells. Always clear the text before applying an
