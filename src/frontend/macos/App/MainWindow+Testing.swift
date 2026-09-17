@@ -584,6 +584,31 @@ extension MainWindowController {
         )
     }
 
+    /// 构造真正归属于统一面板窗口的事件，覆盖 local monitor 生产路径。
+    func testMakeUnifiedPanelKeyEvent(
+        key: String,
+        keyCode: UInt16,
+        command: Bool = false,
+        control: Bool = false
+    ) -> NSEvent? {
+        guard let panelWindow = unifiedPanel.window else { return nil }
+        var flags: NSEvent.ModifierFlags = []
+        if command { flags.insert(.command) }
+        if control { flags.insert(.control) }
+        return NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: flags,
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: panelWindow.windowNumber,
+            context: nil,
+            characters: key,
+            charactersIgnoringModifiers: key,
+            isARepeat: false,
+            keyCode: keyCode
+        )
+    }
+
     func testMakeTabEvent(shift: Bool) -> NSEvent? {
         guard let window else { return nil }
         var flags: NSEvent.ModifierFlags = []

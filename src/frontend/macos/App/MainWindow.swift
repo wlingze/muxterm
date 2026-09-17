@@ -64,6 +64,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private var customKeybindings: [KeyChord: KeyAction] = [:]
     private var nextWorkspaceOpenedOrder: UInt64 = 1
     private var workspacePresentation: WorkspacePresentation = .workspace
+    /// Agents 是前端投影槽；离开后仍应回到用户最后查看的源 Tab。
+    private var lastAgentAggregateKey: AgentAggregateKey?
     private var pendingWorkspaceOpen: PendingWorkspaceOpen?
     /// 在 Agents 槽关闭一页只隐藏投影，不关闭源 pane。源 agent 消失后会清理。
     private var hiddenAgentTabs = Set<AgentAggregateKey>()
@@ -2022,11 +2024,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             }
         case .agents(let selectedKey):
             let tabs = agentAggregateTabs(agents: agents)
-            guard let target = tabs.first(where: { $0.key == selectedKey }) ?? tabs.first else {
+            guard let target = tabs.first(where: { $0.key == selectedKey })
+                ?? tabs.first(where: { $0.key == lastAgentAggregateKey })
+                ?? tabs.first else {
                 workspacePresentation = .agents(nil)
+                lastAgentAggregateKey = nil
                 presentEmptyAgents()
                 return
             }
+            lastAgentAggregateKey = target.key
             if target.key != selectedKey {
                 workspacePresentation = .agents(target.key)
                 DispatchQueue.main.async { [weak self] in
@@ -2409,13 +2415,20 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         let tabs = agentAggregateTabs()
         let target = preferred.flatMap { key in tabs.first(where: { $0.key == key }) }
+            ?? {
+                guard case .agents(let selectedKey) = workspacePresentation else { return nil }
+                return selectedKey.flatMap { key in tabs.first(where: { $0.key == key }) }
+            }()
+            ?? lastAgentAggregateKey.flatMap { key in tabs.first(where: { $0.key == key }) }
             ?? tabs.first
         guard let target, let slot = scene(forWorkspaceId: target.workspaceId) else {
             workspacePresentation = .agents(nil)
+            lastAgentAggregateKey = nil
             presentEmptyAgents()
             refreshWorkspaceSidebar(force: true)
             return
         }
+        lastAgentAggregateKey = target.key
         workspacePresentation = .agents(target.key)
         activateBackingSlot(slot, force: false)
         if slot.lastSnapshot.activeTab != target.sourceTabId {
@@ -5608,6 +5621,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // windows. Their text fields own Backspace and other editing keys;
         // the main terminal shortcut router must never consume those events.
         if let eventWindow = event.window, eventWindow !== window {
+            if eventWindow === unifiedPanel?.window,
+               let action = workspaceNavigationAction(for: event)
+            {
+                unifiedPanel.dismiss()
+                performWorkspaceNavigation(action)
+                return nil
+            }
             return event
         }
         if handleKey(event) {
@@ -5738,6 +5758,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             }
             return false
         }
+        if performWorkspaceNavigation(action) {
+            if unifiedPanel?.window?.isVisible == true {
+                unifiedPanel.dismiss()
+            }
+            return true
+        }
         switch action {
         case .newTab:
             newTab()
@@ -5783,12 +5809,48 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             toggleActivePaneFullscreen()
         case .toggleSidebar:
             toggleWorkspaceSidebar()
+        case .openShells, .openAgents, .switchWorkspace:
+            break
+        }
+        return true
+    }
+
+    /// 独立 NSPanel 的本地事件不会进入主窗口 `handleKey`；这里只识别
+    /// Workspace 导航键，其余编辑和面板导航仍交给面板自己的 responder。
+    private func workspaceNavigationAction(for event: NSEvent) -> KeyAction? {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard let raw = event.charactersIgnoringModifiers, let first = raw.first else {
+            return nil
+        }
+        let chord = KeyChord(
+            command: flags.contains(.command),
+            shift: flags.contains(.shift),
+            option: flags.contains(.option),
+            control: flags.contains(.control),
+            key: String(first)
+        )
+        guard let action = KeyBindings.action(for: chord, custom: customKeybindings) else {
+            return nil
+        }
+        switch action {
+        case .openShells, .openAgents, .switchWorkspace:
+            return action
+        default:
+            return nil
+        }
+    }
+
+    @discardableResult
+    private func performWorkspaceNavigation(_ action: KeyAction) -> Bool {
+        switch action {
         case .openShells:
             activateShells(selectFirstLocal: true)
         case .openAgents:
             activateAgents()
-        case .switchWorkspace(let n):
-            switchToWorkspaceAtFixedIndex(n)
+        case .switchWorkspace(let index):
+            switchToWorkspaceAtFixedIndex(index)
+        default:
+            return false
         }
         return true
     }
