@@ -335,11 +335,7 @@ final class MuxTerminalView: TerminalView {
             return
         }
         lastScrollWheelRoutedToRuntime = false
-        let towardLatest = event.scrollingDeltaY < 0
         withUserMouseReporting { super.scrollWheel(with: event) }
-        if towardLatest, JumpLatestCaption.shouldSnapToLatest(scrollPosition: scrollPosition) {
-            scrollToLatest()
-        }
     }
 
     override func mouseDown(with event: NSEvent) {

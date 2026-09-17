@@ -67,12 +67,4 @@ final class CommandMarkRailTests: XCTestCase {
         )
     }
 
-    func testScrollDownNearBottomSnapsToLatest() {
-        XCTAssertTrue(JumpLatestCaption.shouldSnapToLatest(scrollPosition: 0.95))
-        XCTAssertFalse(JumpLatestCaption.shouldSnapToLatest(scrollPosition: 0.4))
-        XCTAssertFalse(
-            JumpLatestCaption.shouldSnapToLatest(scrollPosition: 1.0),
-            "已经在底部时不要重复吸附"
-        )
-    }
 }

@@ -113,6 +113,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 当前 pane 上一次是否已经展示过 last-seen；避免 60Hz poll 重复
     /// 改变全局 overlay 的可见状态。
     private var lastSeenVisiblePane: UInt32?
+    /// last-seen 只在返回 pane 后短暂提供入口，避免长期盖住终端内容。
+    private var lastSeenVisibleUntil: TimeInterval?
+    private static let lastSeenPresentationDuration: TimeInterval = 4
     /// Core 在索引快照切换时可能短暂返回 rawOffset=-1。保留已经展示的
     /// marker 一个很短的窗口，避免用户点击时目标被一次瞬时查询失败清掉。
     private var lastSeenOffsetFailureSince: [UInt32: TimeInterval] = [:]
@@ -2790,7 +2793,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         terminalManager.scrollToLatest(paneId: pane)
         viewportOffsets[pane] = 0
         content.setJumpLatestVisible(false, unseenLines: 0)
-        needsLayoutReload = true
     }
 
     @objc func jumpToLastSeen() {
@@ -2905,6 +2907,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 unseenLines: self.terminalManager.unseenLineCount(paneId: paneId)
             )
             guard paneId == self.activePaneID else { return }
+            if self.lastSeenVisiblePane == paneId {
+                self.dismissLastSeenOffer(for: paneId)
+            }
             self.refreshHistoryChrome(for: paneId)
         }
         terminalManager.onUnseenLinesChanged = { [weak self] paneId, count in
@@ -3433,6 +3438,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         pendingLastSeenPanes.removeAll()
         lastSeenJump = nil
         lastSeenVisiblePane = nil
+        lastSeenVisibleUntil = nil
         lastSeenOffsetFailureSince.removeAll()
         content.setLastSeenVisible(false)
         commandTimelineCursor.removeAll()
@@ -5110,8 +5116,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         content.statusBar.updateDebugSnapshot(snap)
         content.statusBar.updateOutputSnippet(terminalManager.recentOutputSnippet)
         if let activePane = snap.panes.first(where: \.isActive)?.id ?? snap.panes.first?.id {
-            let viewport = UInt32(max(0, bridge.paneViewport(paneId: activePane)))
-            viewportOffsets[activePane] = viewport
+            // 滚轮回调已经持有最新的 native viewport。Core 写入通过 event
+            // pump 排队，不能用尚未应用的旧 offset 把按钮反复闪回去。
+            let viewport: UInt32
+            if let localViewport = viewportOffsets[activePane] {
+                viewport = localViewport
+            } else {
+                viewport = UInt32(max(0, bridge.paneViewport(paneId: activePane)))
+                viewportOffsets[activePane] = viewport
+            }
             content.setJumpLatestVisible(
                 viewport > 0,
                 unseenLines: terminalManager.unseenLineCount(paneId: activePane)
@@ -5258,6 +5271,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     private func refreshHistoryChrome(for paneId: UInt32) {
         guard paneId == activePaneID else { return }
+        expireLastSeenOfferIfNeeded(for: paneId)
         let workspaceID = activeSceneWorkspaceID
         let latest = paneLatestLineSeqCache[PaneHistoryKey(
             workspaceID: workspaceID,
@@ -5357,14 +5371,35 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         if visible {
             guard lastSeenVisiblePane != paneId else { return }
             lastSeenVisiblePane = paneId
+            lastSeenVisibleUntil = ProcessInfo.processInfo.systemUptime
+                + Self.lastSeenPresentationDuration
         } else {
             // 清除来自旧 active pane 的 marker 也必须是幂等的。切 tab/pane
             // 时刷新函数传入的是新 pane，不能因为 paneId 不同而把旧按钮留在
             // 左上角，造成所有页面闪烁或残留。
             guard lastSeenVisiblePane != nil else { return }
             lastSeenVisiblePane = nil
+            lastSeenVisibleUntil = nil
         }
         content.setLastSeenVisible(visible)
+    }
+
+    private func expireLastSeenOfferIfNeeded(for paneId: UInt32) {
+        guard lastSeenVisiblePane == paneId,
+              let deadline = lastSeenVisibleUntil,
+              ProcessInfo.processInfo.systemUptime >= deadline
+        else { return }
+        dismissLastSeenOffer(for: paneId)
+    }
+
+    private func dismissLastSeenOffer(for paneId: UInt32) {
+        lastSeenLineSeq.removeValue(forKey: paneId)
+        pendingLastSeenPanes.remove(paneId)
+        lastSeenOffsetFailureSince.removeValue(forKey: paneId)
+        if lastSeenJump?.paneId == paneId {
+            lastSeenJump = nil
+        }
+        setLastSeenVisible(false, paneId: paneId)
     }
 
     /// 当前 Workspace 已空时关掉这一格，切到邻近 Workspace。
