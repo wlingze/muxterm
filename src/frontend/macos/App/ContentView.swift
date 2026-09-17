@@ -17,8 +17,8 @@ final class ContentView: NSView {
     let commandMarkRail = CommandMarkRailView()
     private var jumpLatestTrailing: NSLayoutConstraint?
     private var railWidthConstraint: NSLayoutConstraint?
-    /// 连接进度全窗口覆盖（W19-C：不是小对话框）。
-    let connectProgressOverlay = NSTextField(labelWithString: "")
+    /// 正在打开的 Workspace 页面。只占终端区，不能盖住 tab/status bar。
+    let connectProgressOverlay = WorkspaceOpeningView()
     /// 注意力 Cmd-Enter 的独立 replica overlay（W19-E）。
     let replyOverlayContainer = NSView()
 
@@ -42,17 +42,6 @@ final class ContentView: NSView {
         disconnectOverlay.isHidden = true
         disconnectOverlay.setAccessibilityIdentifier("muxterm.disconnectOverlay")
         disconnectOverlay.setAccessibilityElement(true)
-
-        connectProgressOverlay.translatesAutoresizingMaskIntoConstraints = false
-        connectProgressOverlay.font = NSFont.systemFont(ofSize: 20, weight: .medium)
-        connectProgressOverlay.textColor = .labelColor
-        connectProgressOverlay.alignment = .center
-        connectProgressOverlay.wantsLayer = true
-        connectProgressOverlay.layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.92).cgColor
-        connectProgressOverlay.isHidden = true
-        connectProgressOverlay.setAccessibilityIdentifier(ConnectProgress.identifier)
-        connectProgressOverlay.setAccessibilityElement(true)
-        connectProgressOverlay.setAccessibilityRole(.staticText)
 
         replyOverlayContainer.translatesAutoresizingMaskIntoConstraints = false
         replyOverlayContainer.wantsLayer = true
@@ -122,6 +111,10 @@ final class ContentView: NSView {
             jumpLatestButton.bottomAnchor.constraint(equalTo: paneLayout.bottomAnchor, constant: -12),
             jumpLatestButton.heightAnchor.constraint(equalToConstant: 26),
             jumpLatestButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 72),
+            connectProgressOverlay.leadingAnchor.constraint(equalTo: paneLayout.leadingAnchor),
+            connectProgressOverlay.trailingAnchor.constraint(equalTo: paneLayout.trailingAnchor),
+            connectProgressOverlay.topAnchor.constraint(equalTo: paneLayout.topAnchor),
+            connectProgressOverlay.bottomAnchor.constraint(equalTo: paneLayout.bottomAnchor),
         ])
 
         // 顶部：status | pane
@@ -163,9 +156,11 @@ final class ContentView: NSView {
         case .top:
             NSLayoutConstraint.activate(topConstraints)
             statusBar.setEdgeLineAtBottom(true)
+            statusBar.setIntegratedTitlebar(true)
         case .bottom:
             NSLayoutConstraint.activate(bottomConstraints)
             statusBar.setEdgeLineAtBottom(false)
+            statusBar.setIntegratedTitlebar(false)
         }
         needsLayout = true
     }
@@ -189,21 +184,14 @@ final class ContentView: NSView {
         statusBar.refreshLocalization()
     }
 
-    /// 连接进度覆盖层：stage 为 nil 时隐藏。
-    /// 不用 Auto Layout 全约束（NSTextField 的 intrinsic 高度会压扁窗口），
-    /// 手动铺满。
-    func setConnectProgress(stage: ConnectProgressStage?) {
+    /// 连接进度页：stage 为 nil 时隐藏。页面只覆盖 PaneGrid，因此等待时
+    /// Workspace tab、侧栏入口与切换快捷键始终可用。
+    func setConnectProgress(stage: ConnectProgressStage?, title: String? = nil) {
         guard let stage else {
-            connectProgressOverlay.isHidden = true
+            connectProgressOverlay.hide()
             return
         }
-        layoutSubtreeIfNeeded()
-        connectProgressOverlay.frame = bounds
-        connectProgressOverlay.isHidden = false
-        connectProgressOverlay.stringValue = stage.rawValue
-        connectProgressOverlay.setAccessibilityValue(ConnectProgress.accessibilityValue(stage: stage))
-        connectProgressOverlay.toolTip = stage.rawValue
-        needsLayout = true
+        connectProgressOverlay.show(stage: stage, title: title)
     }
 
     /// 断线水印：tmux server 死后保留最后一帧 + 覆盖提示。
@@ -256,4 +244,78 @@ final class ContentView: NSView {
         jumpLatestButton.layer?.borderWidth = 1
         jumpLatestButton.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.7).cgColor
     }
+}
+
+/// iTerm2 风格的轻量 Workspace opening 页面。动画由系统 spinner 驱动，
+/// 不在主线程另开刷新定时器。
+final class WorkspaceOpeningView: NSView {
+    private let spinner = NSProgressIndicator()
+    private let titleLabel = NSTextField(labelWithString: "")
+    private let stageLabel = NSTextField(labelWithString: "")
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        translatesAutoresizingMaskIntoConstraints = false
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        isHidden = true
+        setAccessibilityIdentifier(ConnectProgress.identifier)
+        setAccessibilityElement(true)
+        setAccessibilityRole(.group)
+
+        spinner.translatesAutoresizingMaskIntoConstraints = false
+        spinner.style = .spinning
+        spinner.controlSize = .small
+        spinner.isIndeterminate = true
+        spinner.setAccessibilityIdentifier(ConnectProgress.spinnerIdentifier)
+
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.font = NSFont.systemFont(ofSize: 14, weight: .medium)
+        titleLabel.textColor = .labelColor
+        titleLabel.alignment = .center
+        titleLabel.lineBreakMode = .byTruncatingMiddle
+
+        stageLabel.translatesAutoresizingMaskIntoConstraints = false
+        stageLabel.font = NSFont.systemFont(ofSize: 11)
+        stageLabel.textColor = .secondaryLabelColor
+        stageLabel.alignment = .center
+
+        let stack = NSStackView(views: [spinner, titleLabel, stageLabel])
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.orientation = .vertical
+        stack.alignment = .centerX
+        stack.spacing = 7
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.centerXAnchor.constraint(equalTo: centerXAnchor),
+            stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+            stack.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 24),
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -24),
+            titleLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 360),
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    func show(stage: ConnectProgressStage, title: String?) {
+        titleLabel.stringValue = title?.trimmingCharacters(in: .whitespacesAndNewlines)
+            .nonEmpty ?? "Opening workspace"
+        stageLabel.stringValue = stage.rawValue
+        setAccessibilityValue(ConnectProgress.accessibilityValue(stage: stage))
+        toolTip = stage.rawValue
+        isHidden = false
+        spinner.startAnimation(nil)
+    }
+
+    func hide() {
+        spinner.stopAnimation(nil)
+        isHidden = true
+    }
+}
+
+private extension String {
+    var nonEmpty: String? { isEmpty ? nil : self }
 }

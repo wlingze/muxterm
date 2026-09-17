@@ -147,6 +147,8 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     private let connectedWorkspaces: (() -> [TargetConfig])?
     /// 侧栏 chrome：Attention 行用同一套 workspace / agent / Tab 编号。
     private let sidebarWorkspaces: (() -> [WorkspaceSidebarItem])?
+    /// Attention/Activity 只读真实 Workspace；固定聚合槽不参与状态投影。
+    private let activityWorkspaces: (() -> [WorkspaceSidebarItem])?
 
     init(
         store: QuickConnectStore,
@@ -156,7 +158,8 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         search: @escaping (UnifiedPanelSearchRequest) -> Void,
         workspaceIndex: @escaping (TargetConfig) -> Int? = { _ in nil },
         connectedWorkspaces: (() -> [TargetConfig])? = nil,
-        sidebarWorkspaces: (() -> [WorkspaceSidebarItem])? = nil
+        sidebarWorkspaces: (() -> [WorkspaceSidebarItem])? = nil,
+        activityWorkspaces: (() -> [WorkspaceSidebarItem])? = nil
     ) {
         self.store = store
         self.ownerWindow = ownerWindow
@@ -166,6 +169,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         self.workspaceIndex = workspaceIndex
         self.connectedWorkspaces = connectedWorkspaces
         self.sidebarWorkspaces = sidebarWorkspaces
+        self.activityWorkspaces = activityWorkspaces
 
         let panel = NSPanel(
             contentRect: NSRect(origin: .zero, size: Self.preferredContentSize),
@@ -176,11 +180,14 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         panel.title = MuxtermI18n.shared.tr(.quickConnect)
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
+        panel.titlebarSeparatorStyle = .none
         panel.isMovableByWindowBackground = true
         panel.isFloatingPanel = true
         panel.level = .floating
         panel.hidesOnDeactivate = false
         panel.hasShadow = true
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
 
         super.init(window: panel)
         buildView()
@@ -278,7 +285,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
             rows = snapshot().map {
                 AttentionList.rows(
                     from: $0,
-                    workspaces: sidebarWorkspaces?() ?? [],
+                    workspaces: activityWorkspaces?() ?? sidebarWorkspaces?() ?? [],
                     query: model.query
                 )
             } ?? []
@@ -352,6 +359,9 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         }
         let connectedIDs = Set(connected.map { QuickConnect.uniqueID(for: $0) })
         let chromeWorkspaces = sidebarWorkspaces?() ?? []
+        let presentedTargetIDs = connectedIDs.union(
+            chromeWorkspaces.compactMap(\.openingTargetID)
+        )
         let currentId = currentConfig.map { QuickConnect.uniqueID(for: $0) }
         allItems = chromeWorkspaces.isEmpty
             ? [.existingConnections]
@@ -366,7 +376,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         // 完全一致。QuickConnect target 只补尚未打开的 Project。
         allItems.append(contentsOf: entries.compactMap { entry in
             guard chromeWorkspaces.isEmpty
-                || !connectedIDs.contains(QuickConnect.uniqueID(for: entry.config))
+                || !presentedTargetIDs.contains(QuickConnect.uniqueID(for: entry.config))
             else {
                 return nil
             }
@@ -636,10 +646,16 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     private func buildView() {
         guard let window, let content = window.contentView else { return }
 
-        let root = NSView()
+        let root = NSVisualEffectView()
         root.translatesAutoresizingMaskIntoConstraints = false
+        root.material = .popover
+        root.blendingMode = .behindWindow
+        root.state = .active
         root.wantsLayer = true
-        root.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        root.layer?.cornerRadius = 10
+        root.layer?.borderWidth = 1
+        root.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.7).cgColor
+        root.layer?.masksToBounds = true
         content.addSubview(root)
 
         buildTabControl()
@@ -753,8 +769,8 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
             input.topAnchor.constraint(equalTo: tabControl.bottomAnchor, constant: 8),
             input.heightAnchor.constraint(equalToConstant: 28),
 
-            scrollView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            scrollView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            scrollView.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 8),
+            scrollView.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -8),
             accessoryContainer.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 14),
             accessoryContainer.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -14),
             accessoryContainer.topAnchor.constraint(equalTo: input.bottomAnchor, constant: 4),
@@ -999,6 +1015,10 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     private func installKeyMonitor() {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, self.window?.isKeyWindow == true else { return event }
+            if let offset = CompactPanelKeyNavigation.selectionOffset(for: event) {
+                self.moveSelection(offset: offset)
+                return nil
+            }
             switch event.keyCode {
             case 53: // Escape
                 if self.model.tab == .workspaces,
@@ -1016,12 +1036,6 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                 self.model.cycleTab(back: event.modifierFlags.contains(.shift))
                 self.applyTab()
                 self.reload()
-                return nil
-            case 125: // Down
-                self.moveSelection(offset: 1)
-                return nil
-            case 126: // Up
-                self.moveSelection(offset: -1)
                 return nil
             case 36, 76: // Return / keypad Enter
                 self.activateSelected()

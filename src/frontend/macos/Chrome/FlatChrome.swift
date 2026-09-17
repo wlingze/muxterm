@@ -458,6 +458,113 @@ public enum SurfaceEventPolicy {
     }
 }
 
+/// Per-pane round-robin byte queue for native terminal painting.
+///
+/// A Cursor/Codex pane can continuously enqueue megabytes of redraw data. A
+/// dictionary-wide flush lets that pane monopolize AppKit before another pane
+/// receives a single byte. This queue emits one bounded chunk, then moves that
+/// pane behind every other ready pane while preserving each pane's byte order.
+public struct FairPaneFeedScheduler {
+    private struct Buffer {
+        var chunks: [Data]
+        var chunkIndex: Int
+        var offset: Int
+        var byteCount: Int
+    }
+
+    private var buffers: [UInt32: Buffer] = [:]
+    private var order: [UInt32] = []
+
+    public init() {}
+
+    public var isEmpty: Bool { buffers.isEmpty }
+
+    public func contains(_ paneID: UInt32) -> Bool {
+        buffers[paneID] != nil
+    }
+
+    public func pendingBytes(for paneID: UInt32) -> Int {
+        buffers[paneID]?.byteCount ?? 0
+    }
+
+    public mutating func append(paneID: UInt32, data: Data) {
+        guard !data.isEmpty else { return }
+        if var buffer = buffers[paneID] {
+            buffer.chunks.append(data)
+            buffer.byteCount += data.count
+            buffers[paneID] = buffer
+            return
+        }
+        buffers[paneID] = Buffer(
+            chunks: [data],
+            chunkIndex: 0,
+            offset: 0,
+            byteCount: data.count
+        )
+        order.append(paneID)
+    }
+
+    public mutating func remove(paneID: UInt32) {
+        buffers.removeValue(forKey: paneID)
+        order.removeAll { $0 == paneID }
+    }
+
+    public mutating func removeAll() {
+        buffers.removeAll(keepingCapacity: true)
+        order.removeAll(keepingCapacity: true)
+    }
+
+    /// Return one chunk from the first ready pane. Rejected panes rotate
+    /// without consuming data, so seed/snapshot work cannot reorder live VT.
+    public mutating func pop(
+        maxBytes: Int,
+        accepting: (UInt32) -> Bool = { _ in true }
+    ) -> (paneID: UInt32, data: Data)? {
+        let attempts = order.count
+        guard attempts > 0 else { return nil }
+        for _ in 0..<attempts {
+            let paneID = order.removeFirst()
+            guard var buffer = buffers[paneID] else { continue }
+            guard accepting(paneID) else {
+                order.append(paneID)
+                continue
+            }
+            let count = min(max(1, maxBytes), buffer.byteCount)
+            var chunk = Data()
+            chunk.reserveCapacity(count)
+            while chunk.count < count {
+                let source = buffer.chunks[buffer.chunkIndex]
+                let available = source.count - buffer.offset
+                let taken = min(count - chunk.count, available)
+                let end = buffer.offset + taken
+                chunk.append(source[buffer.offset..<end])
+                buffer.offset = end
+                if buffer.offset == source.count {
+                    buffer.chunkIndex += 1
+                    buffer.offset = 0
+                }
+            }
+            buffer.byteCount -= chunk.count
+            if buffer.byteCount > 0 {
+                // Compact only after many chunks have drained. Appending to a
+                // partially consumed pane remains O(1) during redraw storms.
+                if buffer.chunkIndex >= 64,
+                   buffer.chunkIndex * 2 >= buffer.chunks.count
+                {
+                    buffer.chunks.removeFirst(buffer.chunkIndex)
+                    buffer.chunkIndex = 0
+                }
+                buffers[paneID] = buffer
+                order.append(paneID)
+            } else {
+                buffers.removeValue(forKey: paneID)
+            }
+            return (paneID, chunk)
+        }
+        return nil
+    }
+}
+
 /// 后台 Workspace 的 Surface catch-up 预算。
 ///
 /// 后台连接必须继续消费事件，但不能把积压的高流量 PTY 在一次主线程

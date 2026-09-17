@@ -13,6 +13,7 @@ final class SearchPanelController: NSWindowController, NSSearchFieldDelegate,
     private let table = NSTableView()
     private let scrollView = NSScrollView()
     private var hits: [SearchHit] = []
+    private var keyMonitor: Any?
     private weak var ownerWindow: NSWindow?
     private let search: (String) -> [SearchHit]
 
@@ -37,11 +38,16 @@ final class SearchPanelController: NSWindowController, NSSearchFieldDelegate,
 
         super.init(window: panel)
         buildView()
+        installKeyMonitor()
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         return nil
+    }
+
+    deinit {
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
     }
 
     func present() {
@@ -128,6 +134,34 @@ final class SearchPanelController: NSWindowController, NSSearchFieldDelegate,
             table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
             table.scrollRowToVisible(0)
         }
+    }
+
+    private func installKeyMonitor() {
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, self.window?.isKeyWindow == true else { return event }
+            if let offset = CompactPanelKeyNavigation.selectionOffset(for: event) {
+                self.selectRow(offset: offset)
+                return nil
+            }
+            switch event.keyCode {
+            case 53:
+                self.dismiss()
+                return nil
+            case 36, 76:
+                self.activateSelected()
+                return nil
+            default:
+                return event
+            }
+        }
+    }
+
+    private func selectRow(offset: Int) {
+        guard !hits.isEmpty else { return }
+        let current = table.selectedRow >= 0 ? table.selectedRow : 0
+        let next = ((current + offset) % hits.count + hits.count) % hits.count
+        table.selectRowIndexes(IndexSet(integer: next), byExtendingSelection: false)
+        table.scrollRowToVisible(next)
     }
 
     private func activateSelected() {

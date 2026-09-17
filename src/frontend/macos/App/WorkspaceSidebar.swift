@@ -453,10 +453,13 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
         item: WorkspaceSidebarItem
     ) {
         cell.set(
-            marker: item.isAggregate ? "◆" : (item.isActive ? "●" : "○"),
-            markerColor: item.isActive ? .controlAccentColor : .tertiaryLabelColor,
+            marker: item.isOpening ? "◌" : (item.isAggregate ? "◆" : (item.isActive ? "●" : "○")),
+            markerColor: item.isOpening
+                ? .systemYellow
+                : (item.isActive ? .controlAccentColor : .tertiaryLabelColor),
             title: item.name,
-            detail: "\(item.runtime) @ \(item.transport)",
+            detail: item.openingStage.map { "Opening · \($0)" }
+                ?? "\(item.runtime) @ \(item.transport)",
             shortcut: item.shortcutText,
             emphasized: item.isAggregate,
             trailingSymbol: item.isClosable ? "xmark" : nil,
@@ -726,6 +729,8 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
             && lhs.shortcut == rhs.shortcut
             && lhs.isClosable == rhs.isClosable
             && lhs.isReorderable == rhs.isReorderable
+            && lhs.openingStage == rhs.openingStage
+            && lhs.openingTargetID == rhs.openingTargetID
     }
 
     private func sectionTitle(_ section: SidebarTestSection) -> String {

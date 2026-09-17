@@ -2,6 +2,49 @@ import XCTest
 @testable import MuxtermChrome
 
 final class WorkspaceSidebarModelTests: XCTestCase {
+    func testAggregateWorkspaceRowsNeverEnterActivityProjections() {
+        let aggregate = WorkspaceSidebarItem(
+            workspaceId: AggregateWorkspaceIdentity.agents,
+            name: "Agents",
+            runtime: "aggregate",
+            transport: "all",
+            isActive: true,
+            isClosable: false,
+            isReorderable: false
+        )
+        let attention = AttentionSnapshot(
+            blockedCount: 0,
+            workspaces: [
+                WorkspaceAttention(
+                    workspaceId: AggregateWorkspaceIdentity.agents,
+                    blocked: 0,
+                    done: 0,
+                    working: 1,
+                    panes: [
+                        PaneAttention(
+                            paneId: 1,
+                            status: .working,
+                            lastLine: "frontend projection",
+                            seq: 1,
+                            processName: "codex",
+                            processIsAgent: true
+                        ),
+                    ]
+                ),
+            ]
+        )
+
+        XCTAssertTrue(WorkspaceSidebarProjection.agents(
+            workspaces: [aggregate], attention: attention
+        ).isEmpty)
+        XCTAssertTrue(WorkspaceSidebarProjection.commands(
+            workspaces: [aggregate], attention: attention
+        ).isEmpty)
+        XCTAssertTrue(AttentionList.rows(
+            from: attention, workspaces: [aggregate], query: ""
+        ).isEmpty)
+    }
+
     func testMachineIdentityMatchesAgentsCommandsAndSearchableAttention() {
         let machines = ["local", "ryzen"]
         let workspaces = machines.map { machine in

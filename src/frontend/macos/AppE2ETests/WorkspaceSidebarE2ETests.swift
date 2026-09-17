@@ -21,10 +21,7 @@ final class WorkspaceSidebarE2ETests: XCTestCase {
         XCTAssertNotNil(findView(app.window?.contentView, id: "muxterm.sidebar.agents.section"))
         XCTAssertNotNil(findView(app.window?.contentView, id: "muxterm.sidebar.commands.section"))
         XCTAssertNotNil(findView(app.window?.contentView, id: "muxterm.sidebar.hiddenCommands.section"))
-        XCTAssertNotNil(findView(
-            app.window?.titlebarAccessoryViewControllers.first?.view,
-            id: "muxterm.sidebar.toggle"
-        ))
+        XCTAssertNotNil(findView(app.window?.contentView, id: "muxterm.sidebar.toggle"))
 
         app.testSetSidebarOpen(false)
         XCTAssertFalse(app.testSidebarOpen())
