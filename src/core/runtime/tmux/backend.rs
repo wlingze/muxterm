@@ -95,6 +95,9 @@ const RESYNC_TIMEOUT: Duration = Duration::from_secs(5);
 /// attach 首屏允许更慢（SSH RTT、远端 TUI）。慢可以，但不能在 5s 时空屏
 /// 再抓 `-S -10000` 把控制通道卡死。
 const INITIAL_SEED_TIMEOUT: Duration = Duration::from_secs(20);
+/// `refresh-client -C` 完成后给前台 TUI 一次 SIGWINCH 重绘窗口。
+/// tmux 的控制命令响应只证明网格已 resize，不证明 pane 进程已经画完新帧。
+const INITIAL_CAPTURE_SETTLE: Duration = Duration::from_millis(100);
 const RESYNC_COOLDOWN: Duration = Duration::from_secs(5);
 
 /// 单个 pane 的输出流控状态。
@@ -149,6 +152,8 @@ struct PaneResync {
     /// 只有 capture `%begin` 之后的字节才是可靠 catch-up。
     initial: bool,
     capture_started: bool,
+    /// attach resize 后延迟可见网格 capture，让 pane 进程先处理 SIGWINCH。
+    capture_not_before: Option<Instant>,
     pre_capture: Vec<u8>,
     post_capture: Vec<u8>,
     /// snapshot 入队后再 `refresh-client -A continue`。
@@ -504,6 +509,34 @@ fn capture_pane_lines(lines: &[String], trim_trailing_blank: bool) -> Vec<u8> {
         }
     }
     lines[..end].join("\r\n").into_bytes()
+}
+
+/// 找到最后一次明确从 home 开始的全屏清屏重绘。
+///
+/// attach resize 后，应用的 SIGWINCH 重绘可能已经作为 `%output` 到达，
+/// 但紧随其后的 `capture-pane` 仍返回 resize 中间态。只有带 home + ED2 的
+/// 后缀能安全地放到 capture 后重放；普通 capture 前增量仍由权威网格覆盖。
+fn last_full_redraw_start(bytes: &[u8]) -> Option<usize> {
+    const CLEAR: &[u8] = b"\x1b[2J";
+    const HOME_SHORT: &[u8] = b"\x1b[H";
+    const HOME_EXPLICIT: &[u8] = b"\x1b[1;1H";
+
+    let mut last = None;
+    for clear_at in 0..=bytes.len().saturating_sub(CLEAR.len()) {
+        if !bytes[clear_at..].starts_with(CLEAR) {
+            continue;
+        }
+        let before = &bytes[..clear_at];
+        let after = &bytes[clear_at + CLEAR.len()..];
+        if before.ends_with(HOME_SHORT) {
+            last = Some(clear_at - HOME_SHORT.len());
+        } else if before.ends_with(HOME_EXPLICIT) {
+            last = Some(clear_at - HOME_EXPLICIT.len());
+        } else if after.starts_with(HOME_SHORT) || after.starts_with(HOME_EXPLICIT) {
+            last = Some(clear_at);
+        }
+    }
+    last
 }
 
 /// tmux format fields needed to restore terminal modes after capture-pane.
@@ -1742,6 +1775,46 @@ impl TmuxRuntime {
         }
     }
 
+    fn request_pane_resync_capture(&mut self, pane: PaneId, generation: u64) {
+        let Some(resync) = self.resyncs.get_mut(&pane) else {
+            return;
+        };
+        if resync.generation != generation {
+            return;
+        }
+        resync.capture_not_before = None;
+        let capture = cmd::capture_pane_visible(pane);
+        if self.dispatch_tmux_command(&capture).is_ok() {
+            self.replace_last_pending(PendingQuery::PaneResyncCapture {
+                pane,
+                alternate: false,
+                generation,
+            });
+            self.release_attach_followup_if_ready();
+        } else {
+            self.abort_pane_resync(pane, "capture-command-failed");
+        }
+    }
+
+    /// 初始 attach 的 pane 可能在 tmux resize 完成后才异步处理 SIGWINCH。
+    /// 不阻塞 UI 线程；由每轮 pump 在短暂 settle 到期后发 capture-pane。
+    fn poll_deferred_resync_captures(&mut self) {
+        let now = Instant::now();
+        let ready = self
+            .resyncs
+            .iter()
+            .filter_map(|(pane, resync)| {
+                resync
+                    .capture_not_before
+                    .is_some_and(|not_before| not_before <= now)
+                    .then_some((*pane, resync.generation))
+            })
+            .collect::<Vec<_>>();
+        for (pane, generation) in ready {
+            self.request_pane_resync_capture(pane, generation);
+        }
+    }
+
     fn maybe_start_resyncs(&mut self) {
         if self.cmd_tx.is_none() || !self.resyncs.is_empty() {
             return;
@@ -2263,6 +2336,7 @@ impl TmuxRuntime {
             self.history_backfill_hold = false;
         }
         self.expire_resyncs();
+        self.poll_deferred_resync_captures();
         for _ in 0..PUMP_EVENT_BUDGET {
             let message = self
                 .command_error_rx
@@ -2445,21 +2519,23 @@ impl TmuxRuntime {
                         // capture transaction from a stale state response.
                         return;
                     }
-                    if let Some(resync) = self.resyncs.get_mut(&pane) {
+                    let initial = if let Some(resync) = self.resyncs.get_mut(&pane) {
                         resync.state = lines.first().map(|line| parse_pane_replay_state(line));
-                    }
-                    // 只抓当前可见网格。`-S -10000` 会把控制流堵死、Surface
-                    // 藏到超时；saved primary 也不再当 VT 流重放。
-                    let capture = cmd::capture_pane_visible(pane);
-                    if self.dispatch_tmux_command(&capture).is_ok() {
-                        self.replace_last_pending(PendingQuery::PaneResyncCapture {
-                            pane,
-                            alternate: false,
-                            generation,
-                        });
-                        self.release_attach_followup_if_ready();
+                        resync.initial
                     } else {
-                        self.abort_pane_resync(pane, "capture-command-failed");
+                        return;
+                    };
+                    // 只抓当前可见网格。`-S -10000` 会把控制流堵死、Surface
+                    // 藏到超时；saved primary 也不再当 VT 流重放。初始 attach
+                    // 刚完成 client resize，先让 pane 进程处理 SIGWINCH；普通
+                    // output-gap resync 不涉及 resize，仍立即 capture。
+                    if initial {
+                        if let Some(resync) = self.resyncs.get_mut(&pane) {
+                            resync.capture_not_before =
+                                Some(Instant::now() + INITIAL_CAPTURE_SETTLE);
+                        }
+                    } else {
+                        self.request_pane_resync_capture(pane, generation);
                     }
                 }
                 PendingQuery::PaneResyncCapture {
@@ -2654,10 +2730,32 @@ impl TmuxRuntime {
         let alternate = resync.alternate.unwrap_or_default();
         let initial = resync.initial;
         let pause_client = resync.pause_client;
-        // 所有 snapshot 都只拼 capture `%begin` 后的 live。gap 前后半截、
-        // capture 边界前通知都已由权威网格覆盖，重放会生成非法 SGR/OSC。
-        let live = resync.post_capture;
-        let mut snapshot = build_pane_snapshot(resync.state.as_ref(), &primary, &alternate, &live);
+        // 普通 output-gap snapshot 只拼 capture `%begin` 后的 live：边界前
+        // 可能是半截 SGR/OSC，必须由权威网格覆盖。attach 首次 resize 是
+        // 唯一例外：SIGWINCH 的完整 home + ED2 重绘可能先到达 `%output`，
+        // 而 capture-pane 仍是 resize 中间态。保留重绘前的 OSC/BEL，先用
+        // fence 收回 parser，再画 capture，最后用完整重绘覆盖 stale grid。
+        let redraw_start = if initial {
+            last_full_redraw_start(&resync.pre_capture)
+        } else {
+            None
+        };
+        let (prelude, redraw) = redraw_start
+            .map(|start| resync.pre_capture.split_at(start))
+            .unwrap_or((&[], &[]));
+        let mut snapshot = Vec::new();
+        if !prelude.is_empty() {
+            snapshot.extend_from_slice(prelude);
+            snapshot.extend_from_slice(b"\x1b\\\x1b[0m\x1b[H");
+        }
+        snapshot.extend_from_slice(&build_pane_snapshot(
+            resync.state.as_ref(),
+            &primary,
+            &alternate,
+            &[],
+        ));
+        snapshot.extend_from_slice(redraw);
+        snapshot.extend_from_slice(&resync.post_capture);
         if snapshot.len() > MAX_PANE_OUTPUT_BYTES {
             snapshot = snapshot[snapshot.len() - MAX_PANE_OUTPUT_BYTES..].to_vec();
         }
@@ -3471,9 +3569,9 @@ impl TmuxRuntime {
     /// 活动 tab 的 display-message 还没发出可见 capture。这时往通道里
     /// 塞 list-sessions / OSC 会把 SSH 上的首屏挤死。
     fn initial_seed_blocks_followup(&self) -> bool {
-        self.resyncs
-            .values()
-            .any(|resync| resync.initial && resync.state.is_none())
+        self.resyncs.values().any(|resync| {
+            resync.initial && (resync.state.is_none() || resync.capture_not_before.is_some())
+        })
     }
 
     fn release_attach_followup_if_ready(&mut self) {
@@ -6137,6 +6235,55 @@ mod tests {
     }
 
     #[test]
+    fn initial_seed_replays_resize_redraw_after_stale_capture() {
+        let mut b = TmuxRuntime::new_with_attach(None, "existing");
+        let pane = PaneId(23);
+        let redraw = concat!(
+            "\x1b[H\x1b[2J",
+            "TOKEN_HEADER mock-codex frame-5\r\n",
+            "--------------------------------\r\n",
+            "TOKEN_BODY agent working\r\n",
+            "MOCK_CODEX_FRAME=5",
+            "\x1b[12;1HTOKEN_PROMPT |",
+            "\x1b[11;1HMOCK_CODEX_DONE"
+        );
+        let mut stale_grid = vec![" ".repeat(53); 14];
+        stale_grid[10] = format!("MOCK_CODEX_DONE{}", " ".repeat(38));
+        b.resyncs.insert(
+            pane,
+            PaneResync {
+                generation: 1,
+                initial: true,
+                state: Some(parse_pane_replay_state(
+                    "15|10|1|block|1|0|||0|1|0|0|0|0|0|0|0|0|0|0|python3",
+                )),
+                primary: Some(capture_pane_grid_bytes(&stale_grid)),
+                alternate: Some(Vec::new()),
+                pre_capture: redraw.as_bytes().to_vec(),
+                ..PaneResync::default()
+            },
+        );
+
+        b.finish_pane_resync(pane);
+
+        let snapshot = b
+            .state_events()
+            .iter()
+            .find_map(|event| match event {
+                StateChange::PaneSnapshot { pane: p, data } if *p == pane => Some(data.clone()),
+                _ => None,
+            })
+            .expect("initial seed must emit one pane snapshot");
+        let mut terminal = crate::protocol::terminal::emulate::TerminalState::new(53, 14);
+        terminal.feed(&snapshot);
+        let visible = terminal.visible_snapshot().join("\n");
+        assert!(visible.contains("TOKEN_HEADER"), "{visible}");
+        assert!(visible.contains("TOKEN_BODY"), "{visible}");
+        assert!(visible.contains("TOKEN_PROMPT"), "{visible}");
+        assert!(visible.contains("MOCK_CODEX_DONE"), "{visible}");
+    }
+
+    #[test]
     fn pane_resync_emits_empty_snapshot_to_clear_blank_screen() {
         let (tx, _rx) = mpsc::unbounded_channel::<String>();
         let mut b = TmuxRuntime::new(None);
@@ -6398,6 +6545,14 @@ mod tests {
             },
         );
         b.dispatch_response(1, vec!["0|0|1|||1|||||||||||||||".into()]);
+        let settling = drain_tmux_cmds(&mut rx);
+        assert!(
+            !settling.iter().any(|cmd| cmd.contains("capture-pane")),
+            "client resize 后必须先给 pane 进程一个 SIGWINCH 重绘窗口: {settling:?}"
+        );
+        b.resyncs.get_mut(&pane).unwrap().capture_not_before =
+            Some(Instant::now() - Duration::from_millis(1));
+        b.poll_deferred_resync_captures();
         let cmds = drain_tmux_cmds(&mut rx);
         assert!(
             cmds.iter()
@@ -6463,6 +6618,17 @@ mod tests {
             },
         );
         b.dispatch_response(1, vec!["0|0|1|||1|||||||||||||||".into()]);
+        let settling = drain_tmux_cmds(&mut rx);
+        assert!(
+            !settling.iter().any(|cmd| cmd.contains("capture-pane")
+                || cmd.contains("list-sessions")
+                || cmd.contains("refresh-client -B")
+                || cmd.contains("refresh-client -r")),
+            "SIGWINCH settle 期间 capture 与 follow-up 都必须继续排队: {settling:?}"
+        );
+        b.resyncs.get_mut(&pane).unwrap().capture_not_before =
+            Some(Instant::now() - Duration::from_millis(1));
+        b.poll_deferred_resync_captures();
         let after = drain_tmux_cmds(&mut rx);
         let capture_at = after
             .iter()
