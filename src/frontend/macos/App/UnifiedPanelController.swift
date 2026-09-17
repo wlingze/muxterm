@@ -352,6 +352,9 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         }
         let connectedIDs = Set(connected.map { QuickConnect.uniqueID(for: $0) })
         let chromeWorkspaces = sidebarWorkspaces?() ?? []
+        let presentedTargetIDs = connectedIDs.union(
+            chromeWorkspaces.compactMap(\.openingTargetID)
+        )
         let currentId = currentConfig.map { QuickConnect.uniqueID(for: $0) }
         allItems = chromeWorkspaces.isEmpty
             ? [.existingConnections]
@@ -366,7 +369,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         // 完全一致。QuickConnect target 只补尚未打开的 Project。
         allItems.append(contentsOf: entries.compactMap { entry in
             guard chromeWorkspaces.isEmpty
-                || !connectedIDs.contains(QuickConnect.uniqueID(for: entry.config))
+                || !presentedTargetIDs.contains(QuickConnect.uniqueID(for: entry.config))
             else {
                 return nil
             }

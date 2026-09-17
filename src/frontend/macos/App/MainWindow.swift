@@ -33,12 +33,21 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let target: TargetConfig
     }
 
+    /// Frontend-only placeholder shown while Core resolves/opens a Workspace.
+    /// It is never inserted into WorkspacePool and owns no Runtime/connection.
+    private struct PendingWorkspaceOpen {
+        let id: String
+        let config: TargetConfig
+        var stage: ConnectProgressStage
+    }
+
     /// 当前窗口展示的是一个真实 Workspace，还是前端聚合槽。
     /// 聚合槽只保存源身份；Core 仍然只看到真实 Workspace/Tab/Pane。
     private enum WorkspacePresentation: Equatable {
         case workspace
         case shells(workspaceId: String?, tabId: UInt32?)
         case agents(AgentAggregateKey?)
+        case connecting(String)
     }
 
     var bridge: CoreBridge
@@ -57,6 +66,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private var customKeybindings: [KeyChord: KeyAction] = [:]
     private var nextWorkspaceOpenedOrder: UInt64 = 1
     private var workspacePresentation: WorkspacePresentation = .workspace
+    private var pendingWorkspaceOpen: PendingWorkspaceOpen?
     /// 在 Agents 槽关闭一页只隐藏投影，不关闭源 pane。源 agent 消失后会清理。
     private var hiddenAgentTabs = Set<AgentAggregateKey>()
     private var structuredAgentTestOverrides: [String: [StructuredPaneAgent]] = [:]
@@ -648,6 +658,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             return
         case .shells:
             createLocalShellTab()
+            return
+        case .connecting:
             return
         case .workspace:
             break
@@ -1816,6 +1828,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         case .workspace:
             shellsActive = false
             agentsActive = false
+        case .connecting:
+            shellsActive = false
+            agentsActive = false
         }
         var result = [
             WorkspaceSidebarItem(
@@ -1839,13 +1854,27 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 isReorderable: false
             ),
         ]
+        if let pending = pendingWorkspaceOpen {
+            result.append(WorkspaceSidebarItem(
+                workspaceId: pending.id,
+                name: pending.config.name,
+                runtime: pending.config.runtime.rawValue,
+                transport: pending.config.transport.label,
+                isActive: workspacePresentation == .connecting(pending.id),
+                shortcut: nil,
+                isClosable: false,
+                isReorderable: false,
+                openingStage: pending.stage.rawValue,
+                openingTargetID: QuickConnect.uniqueID(for: pending.config)
+            ))
+        }
         result.append(contentsOf: regularItems.map { item in
             WorkspaceSidebarItem(
                 workspaceId: item.workspaceId,
                 name: item.name,
                 runtime: item.runtime,
                 transport: item.transport,
-                isActive: !shellsActive && !agentsActive && item.isActive,
+                isActive: workspacePresentation == .workspace && item.isActive,
                 shortcut: shortcuts[item.workspaceId],
                 structuredAgents: item.structuredAgents,
                 tabNumberByPane: item.tabNumberByPane,
@@ -1863,6 +1892,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             return AggregateWorkspaceIdentity.shells
         case .agents:
             return AggregateWorkspaceIdentity.agents
+        case .connecting(let id):
+            return id
         }
     }
 
@@ -1935,6 +1966,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             return tabs.map {
                 Tab(id: $0.displayId, name: $0.title, isActive: $0.key == selected?.key)
             }
+        case .connecting:
+            guard let pending = pendingWorkspaceOpen else { return [] }
+            return [Tab(id: UInt32.max, name: pending.config.name, isActive: true)]
         }
     }
 
@@ -1965,12 +1999,20 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             content.statusBar.allowsTabClosing = true
             content.statusBar.allowsTabReordering = false
             content.paneLayout.allowsPaneBreak = false
+        case .connecting:
+            content.statusBar.allowsTabCreation = false
+            content.statusBar.allowsTabRenaming = false
+            content.statusBar.allowsTabClosing = false
+            content.statusBar.allowsTabReordering = false
+            content.paneLayout.allowsPaneBreak = false
         }
     }
 
     private func reconcileAggregatePresentation(agents: [AgentSidebarItem]) {
         switch workspacePresentation {
         case .workspace:
+            return
+        case .connecting:
             return
         case .shells(let workspaceId, let tabId):
             let tabs = shellAggregateTabs()
@@ -2260,6 +2302,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             // Agents / Shells 只是当前真实 scene 的前端投影；回到同一个
             // Workspace 时只退出投影，不重新激活或重挂底层布局。
             workspacePresentation = .workspace
+            content.setConnectProgress(stage: nil)
             updatePresentedTabs()
             refreshWorkspaceSidebar(force: true)
             return true
@@ -2270,6 +2313,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func activateSidebarWorkspace(_ workspaceId: String) {
+        if pendingWorkspaceOpen?.id == workspaceId {
+            presentPendingWorkspaceOpen()
+            return
+        }
         switch workspaceId {
         case AggregateWorkspaceIdentity.shells:
             activateShells(selectFirstLocal: false)
@@ -2344,10 +2391,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             transport: .local,
             path: directory
         )
+        guard beginPendingWorkspaceOpen(config: target, stage: .resolving) else { return }
         connectCatalogTarget(config: target, intent: .createIfMissing) { [weak self] result in
-            if case .failure(let error) = result {
-                self?.showError(error)
-            }
+            self?.finishCatalogConnect(result)
         }
     }
 
@@ -2922,16 +2968,73 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 resolvedSocket: choice.socket
             )
         case .herdr:
-            content.setConnectProgress(stage: .attach)
+            guard beginPendingWorkspaceOpen(config: choice.config, stage: .attach) else { return }
             connectCatalogTarget(config: choice.config, intent: .attachOnly) { [weak self] result in
                 self?.finishCatalogConnect(result)
             }
         case .shell:
             // Shell 没有 Discover；防御未知/未来候选时仍走严格 attach-only。
-            content.setConnectProgress(stage: .attach)
+            guard beginPendingWorkspaceOpen(config: choice.config, stage: .attach) else { return }
             connectCatalogTarget(config: choice.config, intent: .attachOnly) { [weak self] result in
                 self?.finishCatalogConnect(result)
             }
+        }
+    }
+
+    /// Immediately show a selectable Workspace placeholder while Core opens
+    /// the real item. A second open request selects the existing placeholder
+    /// instead of racing the shared Core handle.
+    @discardableResult
+    private func beginPendingWorkspaceOpen(
+        config: TargetConfig,
+        stage: ConnectProgressStage
+    ) -> Bool {
+        if pendingWorkspaceOpen != nil {
+            presentPendingWorkspaceOpen()
+            return false
+        }
+        pendingWorkspaceOpen = PendingWorkspaceOpen(
+            id: "__muxterm_opening__.\(UUID().uuidString)",
+            config: config,
+            stage: stage
+        )
+        presentPendingWorkspaceOpen()
+        refreshWorkspaceSidebar(force: true)
+        unifiedPanel.refreshData()
+        return true
+    }
+
+    private func updatePendingWorkspaceOpen(stage: ConnectProgressStage) {
+        guard var pending = pendingWorkspaceOpen else { return }
+        pending.stage = stage
+        pendingWorkspaceOpen = pending
+        if workspacePresentation == .connecting(pending.id) {
+            content.setConnectProgress(stage: stage, title: pending.config.name)
+        }
+        refreshWorkspaceSidebar(force: true)
+        unifiedPanel.refreshData()
+    }
+
+    private func presentPendingWorkspaceOpen() {
+        guard let pending = pendingWorkspaceOpen else { return }
+        workspacePresentation = .connecting(pending.id)
+        content.setConnectProgress(stage: pending.stage, title: pending.config.name)
+        updatePresentedTabs()
+        refreshWorkspaceSidebar(force: true)
+    }
+
+    private func finishPendingWorkspaceOpen(error: Error? = nil, prefix: String? = nil) {
+        let pendingID = pendingWorkspaceOpen?.id
+        pendingWorkspaceOpen = nil
+        if let pendingID, workspacePresentation == .connecting(pendingID) {
+            workspacePresentation = .workspace
+            content.setConnectProgress(stage: nil)
+            updatePresentedTabs()
+        }
+        refreshWorkspaceSidebar(force: true)
+        unifiedPanel.refreshData()
+        if let error {
+            showError(error, prefix: prefix)
         }
     }
 
@@ -2939,7 +3042,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// shell runtime → 本地/远程 shell 在 path 启动。
     func connect(config: TargetConfig) {
         unifiedPanel.dismiss()
-        content.setConnectProgress(stage: .resolving)
+        guard beginPendingWorkspaceOpen(config: config, stage: .resolving) else { return }
         // recents 由 SceneStack 派生：连接成功后 sceneStack.activate 会更新列表。
         switch config.runtime {
         case .tmux:
@@ -2969,11 +3072,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 case .success:
                     box.flow.attachExistingSucceeded()
                     self.activeProjectFlow = nil
-                    self.content.setConnectProgress(stage: nil)
+                    self.finishPendingWorkspaceOpen()
                     // attachTmux 内部已通过 sceneStack 激活 slot 并切换渲染。
                 case .failure(let error):
                     box.flow.attachExistingFailed(message: error.localizedDescription)
-                    self.content.setConnectProgress(stage: nil)
+                    self.updatePendingWorkspaceOpen(stage: .resolving)
                     self.runProjectFlow(box, config: config)
                 }
             }
@@ -3005,7 +3108,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     } else {
                         box.flow.createFailed(message: msg)
                         self.activeProjectFlow = nil
-                        self.showError(error, prefix: "create session failed")
+                        self.finishPendingWorkspaceOpen(
+                            error: error,
+                            prefix: "create session failed"
+                        )
                     }
                 }
             }
@@ -3016,13 +3122,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 case .success:
                     box.flow.attachCreatedSucceeded()
                     self.activeProjectFlow = nil
-                    self.content.setConnectProgress(stage: nil)
+                    self.finishPendingWorkspaceOpen()
                     // attachTmux 内部已通过 sceneStack 激活 slot 并切换渲染。
                 case .failure(let error):
                     box.flow.attachCreatedFailed(message: error.localizedDescription)
                     self.activeProjectFlow = nil
-                    self.content.setConnectProgress(stage: nil)
-                    self.showError(error, prefix: "attach created session failed")
+                    self.finishPendingWorkspaceOpen(
+                        error: error,
+                        prefix: "attach created session failed"
+                    )
                 }
             }
         case .done:
@@ -3083,16 +3191,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 && $0.targetConfig.runtime == .shell
                 && $0.targetConfig.transport == config.transport
         }) {
-            content.setConnectProgress(stage: nil)
             activate(slot: existing)
+            finishPendingWorkspaceOpen()
             return
         }
         connectCatalogTarget(config: config, intent: .createIfMissing) { [weak self] result in
             guard let self else { return }
-            self.content.setConnectProgress(stage: nil)
-            if case .failure(let error) = result {
-                self.showError(error)
-            }
+            self.finishCatalogConnect(result)
         }
     }
 
@@ -3100,7 +3205,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 未填 session 时 Core 补 default；SSH 通过远端 session list 解析 socket，
     /// 不在这里偷选或 start server。
     private func connectHerdrProject(config: TargetConfig) {
-        content.setConnectProgress(stage: .attach)
+        updatePendingWorkspaceOpen(stage: .attach)
         connectCatalogTarget(config: config, intent: .attachOnly) { [weak self] result in
             guard let self else { return }
             switch result {
@@ -3127,6 +3232,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         initialClientSize: (UInt16, UInt16)? = nil,
         completion: @escaping (Result<CatalogConnection, Error>) -> Void
     ) {
+        let pendingID = pendingWorkspaceOpen?.id
         let requestedKey = Self.connectionKey(config: config, session: config.session)
         if let slot = sceneStack.scenes[requestedKey], slot.visibility != .closed {
             let canonical = QuickConnect.mergingProjectMetadata(
@@ -3134,7 +3240,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 requested: config
             )
             slot.targetConfig = canonical
-            activate(slot: slot)
+            if pendingID == nil || workspacePresentation == .connecting(pendingID!) {
+                activate(slot: slot)
+            }
             completion(.success(CatalogConnection(bridge: slot.bridge, target: canonical)))
             return
         }
@@ -3155,6 +3263,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                         return
                     }
                     self.sharedCoreOperationInFlight = false
+                    let shouldActivate = pendingID == nil
+                        || self.workspacePresentation == .connecting(pendingID!)
                     if let existing = self.sceneStack.scenes[key],
                        existing.visibility != .closed
                     {
@@ -3163,7 +3273,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                             requested: resolved
                         )
                         existing.targetConfig = canonical
-                        self.activate(slot: existing)
+                        if shouldActivate {
+                            self.activate(slot: existing)
+                        }
                         completion(.success(CatalogConnection(
                             bridge: existing.bridge,
                             target: canonical
@@ -3174,7 +3286,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                         opened: opened,
                         sharedBridge: sharedBridge
                     )
-                    self.activate(slot: slot)
+                    if shouldActivate {
+                        self.activate(slot: slot)
+                    } else {
+                        self.insertHidden(slot: slot)
+                    }
                     completion(.success(CatalogConnection(bridge: sharedBridge, target: resolved)))
                 }
             } catch {
@@ -3186,10 +3302,27 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    /// An open that completes in the background joins the local SceneStack
+    /// without stealing focus from the Workspace selected while it loaded.
+    private func insertHidden(slot: WorkspaceScene) {
+        if slot.openedOrder == 0 {
+            slot.openedOrder = nextWorkspaceOpenedOrder
+            nextWorkspaceOpenedOrder += 1
+        }
+        let (_, created) = sceneStack.insertHidden(key: slot.key) { _ in slot }
+        guard created else { return }
+        quickConnectStore.replaceAllRecents(sceneStack.allRecentTargetConfigs())
+        refreshWorkspaceSidebar(force: true)
+        unifiedPanel.refreshData()
+        presentWorkspaceCapacityWarningIfNeeded()
+    }
+
     private func finishCatalogConnect(_ result: Result<CatalogConnection, Error>) {
-        content.setConnectProgress(stage: nil)
-        if case .failure(let error) = result {
-            showError(error)
+        switch result {
+        case .success:
+            finishPendingWorkspaceOpen()
+        case .failure(let error):
+            finishPendingWorkspaceOpen(error: error)
         }
     }
 
@@ -3283,6 +3416,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             return
         }
         workspacePresentation = .workspace
+        content.setConnectProgress(stage: nil)
         activateBackingSlot(slot, force: true)
         refreshWorkspaceSidebar(force: true)
     }
@@ -3290,6 +3424,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 聚合槽和普通 Workspace 共用的真实 scene 激活路径。
     private func activateBackingSlot(_ slot: WorkspaceScene, force: Bool) {
         guard !isClosing else { return }
+        content.setConnectProgress(stage: nil)
         if !force,
            sceneStack.activeKey == slot.key,
            bridge === slot.bridge,
@@ -3514,6 +3649,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             activateShellTab(displayId: tabId)
         case .agents:
             activateAgentTab(displayId: tabId)
+        case .connecting:
+            return
         }
     }
 
@@ -4134,7 +4271,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             case .failure(let error):
                 // W19-B：异步失败不得把面板关成只剩 New session；
                 // 保留列表并显示错误，用户仍可重试/新建。
-                self.content.setConnectProgress(stage: nil)
                 self.lastPaletteError = error.localizedDescription
                 self.reportStatusError(error.localizedDescription)
             }
@@ -4232,6 +4368,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             session: session,
             socket: resolvedSocket
         )
+        guard beginPendingWorkspaceOpen(config: config, stage: .attach) else { return }
         let initialClientSize = initialTmuxClientSizeHint()
         connectCatalogTarget(
             config: config,
@@ -4239,9 +4376,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             initialClientSize: initialClientSize
         ) { [weak self] result in
             guard let self else { return }
-            if case .failure(let error) = result {
+            switch result {
+            case .success:
+                self.finishPendingWorkspaceOpen()
+            case .failure(let error):
                 self.lastPaletteError = error.localizedDescription
-                self.showError(error)
+                self.finishPendingWorkspaceOpen(error: error)
             }
         }
     }
@@ -4292,6 +4432,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     )
                 }
             }
+            return
+        case .connecting:
             return
         case .workspace:
             break

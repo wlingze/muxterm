@@ -131,6 +131,25 @@ final class SceneStackTests: XCTestCase {
         XCTAssertEqual(pool.activeKey, key)
     }
 
+    func testInsertHiddenKeepsCurrentSceneVisible() {
+        let pool = makePool(maxScenes: 3)
+        let currentKey = makeKey(session: "current")
+        let openedKey = makeKey(session: "opened")
+        let (current, _) = pool.activate(key: currentKey) { [self] _ in
+            createSlot(currentKey)
+        }
+
+        let (opened, created) = pool.insertHidden(key: openedKey) { [self] _ in
+            createSlot(openedKey)
+        }
+
+        XCTAssertTrue(created)
+        XCTAssertEqual(pool.activeKey, currentKey)
+        XCTAssertEqual(current.visibility, .visible)
+        XCTAssertEqual(opened.visibility, .hidden)
+        XCTAssertEqual(pool.sceneCount, 2)
+    }
+
     func testAcquireReusesActiveSlot() {
         let pool = makePool()
         let key = makeKey()

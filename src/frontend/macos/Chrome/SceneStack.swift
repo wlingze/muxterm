@@ -280,6 +280,21 @@ public final class SceneStack<Slot: SceneProtocol> {
         return (slot, true)
     }
 
+    /// Register a newly opened Core Workspace without changing the user's
+    /// current foreground selection. Used when an asynchronous open finishes
+    /// after the user has returned to another Workspace.
+    @discardableResult
+    public func insertHidden(key: SceneKey, create: (SceneKey) -> Slot) -> (Slot, Bool) {
+        if let existing = scenes[key] {
+            return (existing, false)
+        }
+        let slot = create(key)
+        slot.lastUsedAt = nowProvider()
+        slot.visibility = .hidden
+        scenes[key] = slot
+        return (slot, true)
+    }
+
     /// 把当前 scene 标为隐藏，不销毁其视图树。
     public func hide(key: SceneKey) {
         guard activeKey == key else { return }

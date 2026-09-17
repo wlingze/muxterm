@@ -208,6 +208,9 @@ public struct WorkspaceSidebarItem: Sendable, Equatable {
     /// 固定聚合槽不能关闭或参与真实 Workspace 的拖动改序。
     public let isClosable: Bool
     public let isReorderable: Bool
+    /// Frontend-only opening projection. It never becomes a Core Workspace.
+    public let openingStage: String?
+    public let openingTargetID: String?
     public let structuredAgents: [StructuredPaneAgent]
     /// 以当前 Tab 排序生成的 1-based 编号；pane id 仍只用于内部跳转。
     public let tabNumberByPane: [UInt32: Int]
@@ -237,6 +240,8 @@ public struct WorkspaceSidebarItem: Sendable, Equatable {
             || workspaceId == AggregateWorkspaceIdentity.agents
     }
 
+    public var isOpening: Bool { openingStage != nil }
+
     public var keyboardShortcutText: String? {
         switch workspaceId {
         case AggregateWorkspaceIdentity.shells:
@@ -257,6 +262,8 @@ public struct WorkspaceSidebarItem: Sendable, Equatable {
         shortcut: Int? = nil,
         isClosable: Bool = true,
         isReorderable: Bool = true,
+        openingStage: String? = nil,
+        openingTargetID: String? = nil,
         structuredAgents: [StructuredPaneAgent] = [],
         tabNumberByPane: [UInt32: Int] = [:],
         tabIdByPane: [UInt32: UInt32] = [:]
@@ -269,6 +276,8 @@ public struct WorkspaceSidebarItem: Sendable, Equatable {
         self.shortcut = shortcut
         self.isClosable = isClosable
         self.isReorderable = isReorderable
+        self.openingStage = openingStage
+        self.openingTargetID = openingTargetID
         self.structuredAgents = structuredAgents
         self.tabNumberByPane = tabNumberByPane
         self.tabIdByPane = tabIdByPane

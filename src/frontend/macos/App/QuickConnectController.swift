@@ -404,9 +404,13 @@ final class QuickTargetCellView: NSTableCellView {
         if let workspace {
             titleLabel.stringValue = workspace.name
             titleLabel.toolTip = workspace.displayTitle
-            detailLabel.stringValue = "\(workspace.runtime) @ \(workspace.transport)"
+            detailLabel.stringValue = workspace.openingStage.map {
+                "Opening · \($0) · \(workspace.runtime) @ \(workspace.transport)"
+            } ?? "\(workspace.runtime) @ \(workspace.transport)"
             shortcutText = workspace.shortcutText
-            titleLabel.textColor = workspace.isAggregate ? .controlAccentColor : .labelColor
+            titleLabel.textColor = workspace.isAggregate
+                ? .controlAccentColor
+                : (workspace.isOpening ? .systemYellow : .labelColor)
             workspaceIndexLabel.textColor = workspace.isAggregate
                 ? .controlAccentColor
                 : .secondaryLabelColor
