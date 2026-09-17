@@ -430,9 +430,10 @@ pub unsafe extern "C" fn muxterm_get_pane_output(
         let Some(pane) = resolve_c_io_pane(pane_id, ws) else {
             return -1;
         };
-        let Some(out) = ws.state().pane_output(&pane) else {
-            return 0;
-        };
+        // PaneBuf 是 Workspace 层已经消费过 snapshot/frame/live 输出后的
+        // 权威预览字节环。Runtime 的临时 pane_output 可能在 attach seed 或
+        // 高流量隔离后为空，不能再作为 peek/replica 的数据源。
+        let out = ws.pane_raw_bytes(pane);
         let n = out.len().min(buf_len);
         let start = out.len() - n;
         std::ptr::copy_nonoverlapping(out.as_ptr().add(start), buf, n);
@@ -469,9 +470,9 @@ pub unsafe extern "C" fn muxterm_workspace_get_pane_output(
         let Some(pane) = resolve_c_io_pane(pane_id, ws) else {
             return -1;
         };
-        let Some(out) = ws.state().pane_output(&pane) else {
-            return 0;
-        };
+        // 与 active-workspace API 保持同一语义：返回 Workspace Index 的
+        // 有界原始字节环，包含权威 snapshot/frame 以及后续 live 输出。
+        let out = ws.pane_raw_bytes(pane);
         let n = out.len().min(buf_len);
         let start = out.len() - n;
         std::ptr::copy_nonoverlapping(out.as_ptr().add(start), buf, n);

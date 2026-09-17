@@ -136,6 +136,8 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     private var workspaceNavigation = UnifiedWorkspaceNavigation.root
     private var existingRequestGeneration: UInt64 = 0
     private var searchRequestGeneration: UInt64 = 0
+    private var searchQuery: String?
+    private var unfilteredHits: [SearchHit] = []
     private var hits: [SearchHit] = []
     private var rows: [AttentionRow] = []
     private var showHiddenAttention = false
@@ -146,6 +148,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     private let snapshot: () -> AttentionSnapshot?
     private let sendInput: (UInt32, Data) -> Void
     private let search: (UnifiedPanelSearchRequest) -> Void
+    private let filterSearchHits: ([SearchHit], SearchScope) -> [SearchHit]
     private let workspaceIndex: (TargetConfig) -> Int?
     /// MainWindow supplies every currently pooled Workspace so direct panel
     /// search does not depend on a separate Existing discovery round trip.
@@ -161,6 +164,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         snapshot: @escaping () -> AttentionSnapshot?,
         sendInput: @escaping (UInt32, Data) -> Void,
         search: @escaping (UnifiedPanelSearchRequest) -> Void,
+        filterSearchHits: @escaping ([SearchHit], SearchScope) -> [SearchHit] = { hits, _ in hits },
         workspaceIndex: @escaping (TargetConfig) -> Int? = { _ in nil },
         connectedWorkspaces: (() -> [TargetConfig])? = nil,
         sidebarWorkspaces: (() -> [WorkspaceSidebarItem])? = nil,
@@ -171,6 +175,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         self.snapshot = snapshot
         self.sendInput = sendInput
         self.search = search
+        self.filterSearchHits = filterSearchHits
         self.workspaceIndex = workspaceIndex
         self.connectedWorkspaces = connectedWorkspaces
         self.sidebarWorkspaces = sidebarWorkspaces
@@ -228,6 +233,9 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         rootExistingLoading = false
         existingRequestGeneration &+= 1
         searchRequestGeneration &+= 1
+        searchQuery = nil
+        unfilteredHits = []
+        hits = []
         reload()
         loadSSHAliasesIfNeeded()
         guard let window else { return }
@@ -315,40 +323,49 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
             model.tab,
             queryIsEmpty: model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         ) {
-            hits = []
-            searchRequestGeneration &+= 1
-            let generation = searchRequestGeneration
             let query = model.query
-            let scope = model.scope
-            let request = UnifiedPanelSearchRequest(
-                query: query,
-                scope: scope,
-                completion: { [weak self] hits in
-                    guard let self,
-                          generation == self.searchRequestGeneration,
-                          self.model.tab == .search,
-                          self.model.query == query,
-                          self.model.scope == scope
-                    else {
-                        return
+            if searchQuery == query {
+                hits = filterSearchHits(unfilteredHits, model.scope)
+            } else {
+                searchQuery = query
+                unfilteredHits = []
+                hits = []
+                searchRequestGeneration &+= 1
+                let generation = searchRequestGeneration
+                let request = UnifiedPanelSearchRequest(
+                    query: query,
+                    scope: .all,
+                    completion: { [weak self] unfilteredHits in
+                        guard let self,
+                              generation == self.searchRequestGeneration,
+                              self.model.query == query
+                        else {
+                            return
+                        }
+                        self.unfilteredHits = unfilteredHits
+                        guard self.model.tab == .search else { return }
+                        self.hits = self.filterSearchHits(unfilteredHits, self.model.scope)
+                        self.table.reloadData()
+                        if !self.hits.isEmpty {
+                            self.table.selectRowIndexes(
+                                IndexSet(integer: 0),
+                                byExtendingSelection: false
+                            )
+                            self.table.scrollRowToVisible(0)
+                        }
+                        self.updateEmptyState()
+                        QuickConnectTableLayout.fit(self.table)
                     }
-                    self.hits = hits
-                    self.table.reloadData()
-                    if !hits.isEmpty {
-                        self.table.selectRowIndexes(
-                            IndexSet(integer: 0),
-                            byExtendingSelection: false
-                        )
-                        self.table.scrollRowToVisible(0)
-                    }
-                    self.updateEmptyState()
-                    QuickConnectTableLayout.fit(self.table)
-                }
-            )
-            search(request)
+                )
+                search(request)
+            }
         } else {
-            searchRequestGeneration &+= 1
             hits = []
+            if model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                searchRequestGeneration &+= 1
+                searchQuery = nil
+                unfilteredHits = []
+            }
         }
         if model.tab == .workspaces {
             applyFilter()
