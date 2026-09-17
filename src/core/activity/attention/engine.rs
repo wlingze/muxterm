@@ -165,9 +165,13 @@ impl<C: Clock> AttentionEngine<C> {
         let now = self.clock.now();
         let key = (ws.to_string(), pane);
         let mut authoritative = self.authoritative_panes.contains(&key);
-        let (mut status, mut acknowledged) = {
+        let (mut status, mut acknowledged, line_changed) = {
             let entry = self.entry_mut(ws, pane);
-            (entry.status, entry.acknowledged)
+            (
+                entry.status,
+                entry.acknowledged,
+                entry.last_line != last_line || entry.seq != seq,
+            )
         };
         let previous_status = status;
         let mut initial_status = None;
@@ -240,7 +244,11 @@ impl<C: Clock> AttentionEngine<C> {
             }
             _ => {}
         }
-        self.maybe_eval_regex(ws, pane, now);
+        // pane-cmd/agent 元数据也会沿用当前 last_line 调用 apply。它们不能
+        // 消耗 regex debounce，否则同批紧随其后的第一条真实输出会被永久跳过。
+        if line_changed {
+            self.maybe_eval_regex(ws, pane, now);
+        }
         self.sync_notified(ws, pane, now);
     }
 
@@ -764,6 +772,23 @@ mod tests {
         e.apply("ws", 1, &[], "ask2", 2);
         assert_eq!(e.blocked_workspace_count(), 1);
         let _ = &mut c;
+    }
+
+    #[test]
+    fn initial_process_metadata_does_not_debounce_first_matching_line() {
+        let cfg = AttentionConfig {
+            blocked_regex: vec!["NEED_INPUT".into()],
+            debounce_ms: 50,
+            ..AttentionConfig::default()
+        };
+        let mut e = AttentionEngine::new(cfg, clock());
+
+        e.set_process_name("ws", 1, Some("cat".into()));
+        e.apply("ws", 1, &[], "NEED_INPUT", 1);
+
+        let pane = &e.snapshot()[0].panes[0];
+        assert_eq!(pane.status, PaneStatus::Blocked);
+        assert!(!pane.acknowledged);
     }
 
     #[test]
