@@ -258,9 +258,9 @@ Shells（随手敲）  --提升-->  项目 Workspace（tmux/herdr）
 
 **能做，但必须是视图，不能是真 Workspace。** 不能把 ryzen 上的 Codex 和 local 上的 Grok 搬进同一个 tmux session。所谓「把 agent 所在的 tab 抽出来合成 magic workspace」，是 **同一套 Surface 的投影**：
 
-- 侧栏 / `Cmd+Ctrl` 数字键里有一个固定格子，名字就叫 `Agents`（或 `agents`），切过去的手感和普通 Workspace 一样。
-- 这个格子的 **Tab 列表 = 当前所有 agent pane**（每个 agent 一页），不是再开一套 PTY。
-- 只画当前 tab 的 Surface（跟点侧栏 Agents 行是同一个 pane）。切 tab = 焦点跳到那个 agent，不必把十个 agent 同时画出来。
+- 侧栏有一个固定格子，名字就叫 `Agents`（或 `agents`），用 `Cmd+Ctrl+A` 进入；它不占真实 Workspace 的数字编号。
+- 这个格子的 **Tab 列表 = 当前所有包含 agent 的真实源 Tab**；同一源 Tab 有多个 agent 也只出现一页，不再开一套 PTY。
+- 只画当前源 Tab，并复用它的完整布局与全部 Surface，包括同 Tab 的 shell pane；切投影页不强制改变源 Tab 的活动 pane。
 - 源 Workspace 里的 tab **还在**，没有搬走。在 Agents 视图里关 tab ≠ 杀 agent，只是离开这个视图。
 - 分屏 / 新 tab：不要在投影里造假拓扑。新 tab 应拒绝，或明确「在源工作区里 split」。
 - Tab 标题：`工作区 · 机器 · agent · Herdr title`（§19 / §20），两个 muxterm 才分得开。
@@ -275,8 +275,8 @@ Shells（随手敲）  --提升-->  项目 Workspace（tmux/herdr）
 
 - 一个特殊格子 **`Shells`**，永远可以出现在 Workspaces 列表里，有独立快捷键切过来（不要占用「默认项目 = 1 号」）。
 - **Tab 1 永远是本机 local shell。** 其余 tab 一台机器一个 shell（SSH 上的 ShellRuntime，不是自动 attach 那边的 tmux）。
-- `Cmd-N`：若当前已在 Shells，新开一个 **local** tab；若不在，先切到 Shells 再保证至少有一个 local tab 可用。项目 Workspace 里新建 tmux window 继续用 `Cmd-T`。
-- 不要启动时塞一个空的项目 Workspace 占 1 号。没有项目时，1 号可以就是 Shells。
+- `Cmd+Ctrl+S`：进入 Shells 并保证至少有一个 local tab 可用。项目 Workspace 里新建 tmux window 继续用 `Cmd-T`；`Cmd-N` 留给未来的新 Window。
+- 不要启动时塞一个空的项目 Workspace 占 1 号。Shells 使用固定字母地标 `T`，不占项目编号。
 
 **结构怎么落（别违反一 Workspace 一 Runtime）：**
 
@@ -306,15 +306,19 @@ Shells（随手敲）  --提升-->  项目 Workspace（tmux/herdr）
 
 | 动作 | 建议 |
 | --- | --- |
-| 切到 Shells | 专用键（如 `Cmd-N` 聚焦 Shells；已在其中则新 local tab） |
-| 切到 Agents 视图 | 固定格子，走同一套 Workspace 数字键（钉在列表里，可拖顺序） |
+| 切到 Shells | `Cmd+Ctrl+S` |
+| 切到 Agents 视图 | `Cmd+Ctrl+A` |
 | 项目 Workspace | 现有 `Cmd+Ctrl+1..9` / `0`，不要被 Shells 永远占死 1 号 |
 | 提升 muxer | pane 右键 / 标题栏按钮，不设全局误触快捷键 |
+
+侧边栏与 Quick Panel 的 Workspaces 页使用同一份展示投影：顶部固定为 `T Shells`、
+`A Agents`，真实项目 Workspace 随后从 `1` 开始编号。两处必须保持相同顺序、当前项
+和激活目标；聚合槽不制造 Core Workspace。
 
 ### 8.5 和四波的关系
 
 - **8.1 Agents 视图**：B 的现场；第一波列表能跳之后再做「整格切进去」。
-- **8.2 Shells + Cmd-N**：第三波日用，替代无用的默认 1 号。
+- **8.2 Shells + Cmd-Ctrl-S**：第三波日用，替代无用的默认 1 号。
 - **8.3 提升**：第三波，和 `twork` 进产品是一对；依赖 8.2 先有能跑命令的 shell。
 
 不做：Core 里一个 Workspace 混多个 Runtime；把 agent pane 从源 session 剪走；自动 hook `tmux` 命令。
