@@ -519,6 +519,23 @@ final class MuxtermI18n {
         return value
     }
 
+    /// Schema and manifest resources carry localization ids as data. They
+    /// still use the shared catalog and English fallback, while allowing new
+    /// Core-provided settings to appear without adding a frontend enum case.
+    func trDynamic(
+        _ key: String,
+        fallback: String,
+        arguments: [String: String] = [:]
+    ) -> String {
+        var value = catalog(for: resolvedLanguage)[key]
+            ?? catalog(for: .english)[key]
+            ?? fallback
+        for (name, replacement) in arguments {
+            value = value.replacingOccurrences(of: "{{\(name)}}", with: replacement)
+        }
+        return value
+    }
+
     private func catalog(for language: MuxtermLanguage) -> [String: String] {
         let tag = language == .system ? MuxtermLanguage.systemResolved.catalogTag : language.catalogTag
         if let catalog = catalogs[tag] { return catalog }

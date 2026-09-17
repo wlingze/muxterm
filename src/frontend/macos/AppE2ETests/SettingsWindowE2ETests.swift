@@ -85,7 +85,7 @@ final class SettingsWindowE2ETests: XCTestCase {
         settings.window?.layoutIfNeeded()
         let expandedWidth = settings.testSidebarWidth()
 
-        XCTAssertEqual(compactWidth, 180, accuracy: 1)
+        XCTAssertEqual(compactWidth, 208, accuracy: 1)
         XCTAssertEqual(expandedWidth, compactWidth, accuracy: 1)
         XCTAssertTrue(settings.testVisiblePageIsScrollable())
     }
@@ -129,11 +129,41 @@ final class SettingsWindowE2ETests: XCTestCase {
     }
 
     func testCategoryTitleHumanizesManifestKey() {
+        let previous = MuxtermI18n.shared.language
+        _ = MuxtermI18n.shared.setLanguage(.english)
+        defer { _ = MuxtermI18n.shared.setLanguage(previous) }
         XCTAssertEqual(
             settingsCategoryTitle(id: "appearance", titleKey: "settings.appearance"),
             "Appearance"
         )
         XCTAssertEqual(settingsCategoryTitle(id: "tab_bar", titleKey: ""), "Tab Bar")
+    }
+
+    func testSettingsUseSharedChineseCatalog() throws {
+        AppE2E.ensureApp()
+        let previous = MuxtermI18n.shared.language
+        _ = MuxtermI18n.shared.setLanguage(.simplifiedChinese)
+        let bridge = try CoreBridge(backendType: "local")
+        let settings = SettingsWindowController(bridge: bridge)
+        defer {
+            settings.window?.orderOut(nil)
+            bridge.shutdown()
+            _ = MuxtermI18n.shared.setLanguage(previous)
+        }
+
+        settings.showWindow(nil)
+        XCTAssertEqual(
+            settingsCategoryTitle(id: "appearance", titleKey: "settings.appearance"),
+            "外观"
+        )
+        XCTAssertEqual(settings.testSearchPlaceholder(), "搜索设置")
+        XCTAssertNotNil(
+            findView(settings.window?.contentView, id: "muxterm.settings.pageIcon.appearance")
+        )
+        XCTAssertNotNil(
+            findView(settings.window?.contentView, id: "muxterm.settings.row./font/family"),
+            "每个设置应使用独立平坦行，而不是整页单一卡片"
+        )
     }
 
     func testProjectsPageEditsAndPersistsProjectFromGUI() throws {
