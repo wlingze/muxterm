@@ -1423,10 +1423,7 @@ final class CoreBridge {
         guard let id = response.id, !id.isEmpty else {
             throw CoreBridgeDiscoveryError.message("Core did not return a workspace id")
         }
-        var resolved = response.resolvedTarget?.canonical.targetConfig ?? target
-        if resolved.workspaceID == nil {
-            resolved.workspaceID = id
-        }
+        let resolved = response.resolvedTarget?.canonical.targetConfig ?? target
         var appliedClientCols: UInt16?
         var appliedClientRows: UInt16?
         if let initialClientSize {

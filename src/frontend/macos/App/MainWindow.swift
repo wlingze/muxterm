@@ -544,14 +544,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // 启动时由 AppDelegate 创建的首个连接也属于当前 Workspace。
         // 过去只有 Quick Connect 后续创建的连接才登记进池，导致初始 local
         // workspace 既不在 Recent，也无法在切走后保持常驻。
-        var initialTarget = bridge.resolvedTargetConfig
-        if var target = initialTarget,
-           target.workspaceID == nil,
-           let initialWorkspaceID
-        {
-            target.workspaceID = initialWorkspaceID
-            initialTarget = target
-        }
+        let initialTarget = bridge.resolvedTargetConfig
         let initialKey = SceneKey(
             transport: bridge.sshAlias == nil ? "local" : "ssh",
             alias: bridge.sshAlias,
@@ -560,7 +553,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 ?? (terminalManager.usesClientResize ? "tmux" : "shell"),
             path: initialTarget?.path ?? bridge.startDirectory ?? "",
             socket: initialTarget?.socket ?? bridge.socket,
-            workspaceID: initialTarget?.workspaceID ?? initialWorkspaceID
+            workspaceID: initialTarget?.workspaceID
         )
         let initialSlot = WorkspaceScene(
             key: initialKey,
@@ -2162,14 +2155,31 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         overlay.frame = content.replyOverlayContainer.bounds
         overlay.layoutSubtreeIfNeeded()
         _ = overlay.syncSizeToPty(notifyResize: false)
+        seedReplyOverlay(
+            overlay,
+            workspaceID: workspaceID,
+            paneID: targetPaneId,
+            attemptsRemaining: 50
+        )
+        content.replyOverlayContainer.setAccessibilityValue("1")
+    }
+
+    /// Core 可能仍在接收 attach seed；空 snapshot 不能让 overlay 永久留白。
+    /// 重试仍经过统一命令队列，并由 overlay 身份守卫阻止旧请求串到新 pane。
+    private func seedReplyOverlay(
+        _ overlay: MuxTerminalView,
+        workspaceID: String?,
+        paneID: UInt32,
+        attemptsRemaining: Int
+    ) {
         _ = enqueuePaneOutput(
             workspaceID: workspaceID,
-            paneID: targetPaneId
+            paneID: paneID
         ) { [weak self, weak overlay] raw in
             guard let self,
                   let overlay,
                   self.replyOverlayView === overlay,
-                  self.replyOverlayPaneId == targetPaneId,
+                  self.replyOverlayPaneId == paneID,
                   self.replyOverlayWorkspaceID == workspaceID,
                   !self.content.replyOverlayContainer.isHidden
             else {
@@ -2179,9 +2189,19 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 // pane output 是一个完整 VT 字节流；尾部的光标定位/退出
                 // alternate-screen 并不代表新帧，不能据此裁掉前面的正文。
                 overlay.feedOutput(raw, isSnapshot: true)
+                return
+            }
+            guard attemptsRemaining > 1 else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(100)) { [weak self, weak overlay] in
+                guard let self, let overlay else { return }
+                self.seedReplyOverlay(
+                    overlay,
+                    workspaceID: workspaceID,
+                    paneID: paneID,
+                    attemptsRemaining: attemptsRemaining - 1
+                )
             }
         }
-        content.replyOverlayContainer.setAccessibilityValue("1")
     }
 
     /// 回底：把当前 pane 的 viewport 重置到最新（W16a jump-latest）。

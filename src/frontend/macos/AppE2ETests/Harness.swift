@@ -320,7 +320,7 @@ final class TwoPaneCat {
     }
 
     func sendOsc133DoneOnBackground() {
-        let py = AppE2E.repoRoot.appendingPathComponent("tests/scripts/osc133_done.py")
+        let py = AppE2E.repoRoot.appendingPathComponent("tests/scripts/osc133_d_only.py")
         XCTAssertTrue(FileManager.default.isReadableFile(atPath: py.path), "缺少 \(py.path)")
         Tmux.ok(socket: socket, args: [
             "respawn-pane", "-k", "-t", panes[1], "python3 -u \(py.path)",

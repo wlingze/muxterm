@@ -81,7 +81,7 @@ final class AttentionNavE2ETests: XCTestCase {
         )
         XCTAssertTrue(
             app.testReplyOverlayText().contains(fx.bgToken)
-                || AppE2E.wait(timeout: 3) {
+                || AppE2E.wait(timeout: AppE2E.featureTimeout) {
                     app.testPollOnce()
                     app.testFlushFeeds()
                     return app.testReplyOverlayText().contains(fx.bgToken)
