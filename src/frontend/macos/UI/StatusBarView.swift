@@ -122,7 +122,6 @@ final class StatusBarView: NSView {
     private var currentTabs: [Tab] = []
     private var tmuxStatusEnabled = false
     private var edgeAtBottom = false
-    private var integratedTitlebar = false
 
     // debug / 状态信息（点击状态点时弹出显示）
     private var isDebug = false
@@ -166,7 +165,7 @@ final class StatusBarView: NSView {
         // tab 列表
         tabStack.orientation = .horizontal
         tabStack.alignment = .centerY
-        tabStack.spacing = 1
+        tabStack.spacing = 3
         tabStack.setContentHuggingPriority(.defaultHigh, for: .horizontal)
         tabStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
@@ -295,14 +294,15 @@ final class StatusBarView: NSView {
         needsLayout = true
     }
 
-    /// 顶部状态栏与透明 titlebar 共用一行；侧栏收起时为 traffic lights 留位。
+    /// 顶部状态栏与透明 titlebar 共用一行。
     func setIntegratedTitlebar(_ integrated: Bool) {
-        integratedTitlebar = integrated
+        _ = integrated
         updateSidebarLeadingInset()
     }
 
     private func updateSidebarLeadingInset() {
-        sidebarLeadingConstraint?.constant = integratedTitlebar && !sidebarOpen ? 76 : 4
+        // 主窗口不显示 traffic lights；无论侧栏状态都从统一的紧凑边距开始。
+        sidebarLeadingConstraint?.constant = 4
     }
 
     private func updateSidebarPresentation() {
@@ -1098,7 +1098,7 @@ private final class StatusTabButton: NSButton {
         bezelStyle = .shadowlessSquare
         isBordered = false
         wantsLayer = true
-        layer?.cornerRadius = 3
+        layer?.cornerRadius = 4
         layer?.masksToBounds = true
         activeUnderline.backgroundColor = NSColor.controlAccentColor.cgColor
         activeUnderline.isHidden = true
@@ -1118,7 +1118,7 @@ private final class StatusTabButton: NSButton {
 
     override var intrinsicContentSize: NSSize {
         let size = super.intrinsicContentSize
-        return NSSize(width: max(36, size.width + 16), height: 18)
+        return NSSize(width: max(44, size.width + 20), height: 20)
     }
 
     override func viewDidMoveToWindow() {
@@ -1129,9 +1129,9 @@ private final class StatusTabButton: NSButton {
     override func layout() {
         super.layout()
         activeUnderline.frame = CGRect(
-            x: 5,
+            x: 7,
             y: 0,
-            width: max(0, bounds.width - 10),
+            width: max(0, bounds.width - 14),
             height: FlatChrome.activeTabUnderlineHeight
         )
     }

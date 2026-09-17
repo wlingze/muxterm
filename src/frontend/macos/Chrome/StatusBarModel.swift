@@ -101,7 +101,7 @@ public enum StatusBarLayoutPolicy {
 /// macOS 当前把 tab 放在最左且未限宽，长窗口名会把 `muxterm.statusRight` 挤成 0。
 public enum StatusBarTabOverflow {
     /// 单个 tab 按钮固定宽度（超出省略号）。
-    public static let fixedTabWidth: CGFloat = 96
+    public static let fixedTabWidth: CGFloat = 104
     /// status-right 最少可见宽度。
     public static let statusRightMinWidth: CGFloat = 64
     /// 状态点 18 + 铃铛 ~22 + 加号 28 + 间距。

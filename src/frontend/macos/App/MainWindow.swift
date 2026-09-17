@@ -307,6 +307,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
         window.isMovableByWindowBackground = true
+        // Muxterm 的顶部状态栏已经承担窗口 chrome；隐藏悬浮在内容上的
+        // traffic lights，把整行宽度留给 Workspace 与 tab。
+        window.standardWindowButton(.closeButton)?.isHidden = true
+        window.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        window.standardWindowButton(.zoomButton)?.isHidden = true
         window.minSize = NSSize(width: 480, height: 320)
         window.center()
         window.contentView = content
