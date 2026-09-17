@@ -73,6 +73,10 @@ final class AttentionNavE2ETests: XCTestCase {
 
         let cmdEnter = try XCTUnwrap(app.testMakeCmdEnterEvent(), "必须能构造 Cmd-Enter")
         XCTAssertTrue(app.testDispatchKeyEvent(cmdEnter), "注意力面板 Cmd-Enter 必须被消费")
+        XCTAssertTrue(
+            app.testReplyOverlayText().contains(fx.bgToken),
+            "Cmd-Enter 返回时必须已用 attention snapshot 同步填充 overlay"
+        )
         AppE2E.pump(80)
         XCTAssertTrue(
             app.testReplyOverlayVisible(),

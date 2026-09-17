@@ -2180,13 +2180,19 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         overlay.frame = content.replyOverlayContainer.bounds
         overlay.layoutSubtreeIfNeeded()
         _ = overlay.syncSizeToPty(notifyResize: false)
+        // AttentionSnapshot 已经由 event pump 缓存在前端值类型模型中。
+        // 先同步显示最新稳定行，不能把兜底放进异步 pane-output 回调；
+        // Core command queue 繁忙时 overlay 也必须立即可用。这里不追加换行，
+        // 避免初始极小网格只有一行时把唯一内容滚出可见区。
+        if let cachedLastLine {
+            overlay.feedOutput(Data(cachedLastLine.utf8), isSnapshot: true)
+        }
         seedReplyOverlay(
             overlay,
             workspaceID: workspaceID,
             paneID: targetPaneId,
             attemptsRemaining: 50,
-            requestedSnapshot: false,
-            cachedLastLine: cachedLastLine
+            requestedSnapshot: false
         )
         content.replyOverlayContainer.setAccessibilityValue("1")
     }
@@ -2199,8 +2205,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         workspaceID: String?,
         paneID: UInt32,
         attemptsRemaining: Int,
-        requestedSnapshot: Bool,
-        cachedLastLine: String?
+        requestedSnapshot: Bool
     ) {
         _ = enqueuePaneOutput(
             workspaceID: workspaceID,
@@ -2223,12 +2228,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             }
             guard attemptsRemaining > 1 else { return }
             if !requestedSnapshot {
-                // AttentionSnapshot 已由 event pump 缓存在前端值类型模型中。
-                // 权威 pane snapshot 尚未就绪时先显示它的最新稳定行，避免
-                // overlay 留白；完整 VT 快照到达后会 reset 并替换这行。
-                if let cachedLastLine {
-                    overlay.feedOutput(Data((cachedLastLine + "\r\n").utf8), isSnapshot: true)
-                }
                 _ = self.enqueueCoreTask(
                     workspaceID: workspaceID,
                     MuxTask.requestPaneSnapshot(paneID),
@@ -2242,8 +2241,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     workspaceID: workspaceID,
                     paneID: paneID,
                     attemptsRemaining: attemptsRemaining - 1,
-                    requestedSnapshot: true,
-                    cachedLastLine: nil
+                    requestedSnapshot: true
                 )
             }
         }
