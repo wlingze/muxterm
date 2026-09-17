@@ -34,14 +34,21 @@ def screen_size() -> tuple[int, int]:
 def draw(frame: int) -> None:
     cols, rows = screen_size()
     out = sys.stdout
-    out.write("\x1b[H\x1b[2J")
-    out.write(f"TOKEN_HEADER mock-codex frame-{frame}\n")
-    out.write("─" * min(48, max(8, cols - 1)) + "\n")
-    out.write("TOKEN_BODY agent working\n")
-    out.write(f"MOCK_CODEX_FRAME={frame}\n")
     # rows-2：2-pane 布局里 VTE 可见区比 tmux 24 行少 2 行左右，
     # 写最后一行会把 TOKEN_PROMPT 放到可见区之外（Linux e2e 断言可见文本）。
-    out.write(f"\x1b[{max(1, rows - 2)};1HTOKEN_PROMPT ▌")
+    # 整帧一次 write，避免慢 CI 在清屏与后续逐行 write 之间 capture 到半帧。
+    out.write(
+        "".join(
+            [
+                "\x1b[H\x1b[2J",
+                f"TOKEN_HEADER mock-codex frame-{frame}\n",
+                "─" * min(48, max(8, cols - 1)) + "\n",
+                "TOKEN_BODY agent working\n",
+                f"MOCK_CODEX_FRAME={frame}\n",
+                f"\x1b[{max(1, rows - 2)};1HTOKEN_PROMPT ▌",
+            ]
+        )
+    )
     out.flush()
 
 
