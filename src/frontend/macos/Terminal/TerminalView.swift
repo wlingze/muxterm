@@ -741,6 +741,31 @@ final class MuxTerminalView: TerminalView {
         return true
     }
 
+    /// 乐观全屏/缓存投影刚挂载时，后端 pane size 事件还在路上。先让
+    /// SwiftTerm 按当前 allocation 重算 grid，避免在旧 split 宽度上输入。
+    @discardableResult
+    func syncToAllocatedGrid() -> Bool {
+        layoutSubtreeIfNeeded()
+        let size = bounds.size
+        guard size.width >= 40, size.height >= 24 else { return false }
+        // 即使 frame 数值未变也强制 SwiftTerm 重新执行 processSizeChange；
+        // 缓存树重新挂载后 model 可能仍保留上一次 exactGrid。
+        setFrameSize(size)
+        let term = getTerminal()
+        guard term.cols >= 2, term.rows >= 1 else { return false }
+        minimumModelCols = term.cols
+        minimumModelRows = term.rows
+        return syncSizeToPty(
+            notifyResize: false,
+            exactGrid: (cols: term.cols, rows: term.rows)
+        )
+    }
+
+    var renderedGridSize: (cols: Int, rows: Int) {
+        let term = getTerminal()
+        return (term.cols, term.rows)
+    }
+
     func forceRedraw() {
         needsDisplay = true
         // 触达 Metal/CG 显示路径

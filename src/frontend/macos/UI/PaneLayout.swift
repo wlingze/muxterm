@@ -385,6 +385,18 @@ final class PaneLayoutView: NSView {
         scheduleGeometrySync(paneIds: currentPaneIds)
     }
 
+    /// 全屏 pane 乐观切换后，目标 host 已经放大，但 tmux 的尺寸事件可能
+    /// 还没返回。Auto Layout 完成后立即用真实 allocation 更新 Surface。
+    func refreshSurfaceGeometry(paneId: UInt32) {
+        guard currentPaneIds.contains(paneId) else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.currentPaneIds.contains(paneId) else { return }
+            self.layoutSubtreeIfNeeded()
+            self.hostByPane[paneId]?.layoutSubtreeIfNeeded()
+            self.terminalManager.syncSurfaceToAllocatedSize(paneId: paneId)
+        }
+    }
+
     /// 更新活跃 pane 高亮与 AX（供 Cmd+[ / ] 焦点跟随断言）。
     func markActivePane(_ paneId: UInt32) {
         for (id, host) in hostByPane {

@@ -99,6 +99,10 @@ extension MainWindowController {
         content.paneLayout.testPaneAllocation(paneId)
     }
 
+    func testPaneGrid(_ paneId: UInt32) -> (cols: Int, rows: Int) {
+        terminalManager.view(for: paneId).renderedGridSize
+    }
+
     func testPaneSurfaceReady(_ paneId: UInt32) -> Bool {
         terminalManager.isSurfaceReady(for: paneId)
             && content.paneLayout.testPaneSurfaceVisible(paneId)

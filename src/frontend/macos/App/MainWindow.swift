@@ -3804,9 +3804,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     panes: lastSnapshot.panes,
                     tabId: lastSnapshot.activeTab
                 )
+                content.paneLayout.refreshSurfaceGeometry(paneId: target)
             }
         } else if content.paneLayout.testFullscreenPaneID != nil {
             content.paneLayout.setFullscreenPane(paneId: target)
+            content.paneLayout.refreshSurfaceGeometry(paneId: target)
         }
 
         // select-pane 的状态事件稍后才会到达；先乐观更新焦点、tab pane
