@@ -35,6 +35,7 @@ final class ChromeE2ETests: XCTestCase {
 
         XCTAssertEqual(bar.accessibilityIdentifier(), "muxterm.statusBar")
         XCTAssertNotNil(find(bar, "muxterm.statusDot"), "状态点按钮应存在")
+        XCTAssertNotNil(find(bar, "muxterm.statusWorkspaces"), "Workspace 快速入口应存在")
         XCTAssertNotNil(find(bar, "muxterm.statusAttention"), "通知位应存在")
         XCTAssertNotNil(find(bar, "muxterm.newTabButton"), "新建 tab 按钮应存在")
 
@@ -64,6 +65,21 @@ final class ChromeE2ETests: XCTestCase {
         XCTAssertNotNil(find(bar, "muxterm.tab.21"))
     }
 
+    func testWorkspaceButtonShowsAggregatePresentationAndInvokesPanel() {
+        let bar = StatusBarView(frame: .zero)
+        window.contentView = bar
+        window.orderFront(nil)
+        var clicks = 0
+        bar.onWorkspaceClick = { clicks += 1 }
+
+        bar.setWorkspacePresentation(.shells)
+        XCTAssertEqual(bar.testWorkspaceTitle(), "S")
+        bar.setWorkspacePresentation(.agents)
+        XCTAssertEqual(bar.testWorkspaceTitle(), "A")
+        bar.testClickWorkspace()
+        XCTAssertEqual(clicks, 1)
+    }
+
     func testNotifyButtonInvokesAttentionCallbackWhenNPositive() {
         let bar = StatusBarView(frame: .zero)
         window.contentView = bar
@@ -84,6 +100,14 @@ final class ChromeE2ETests: XCTestCase {
 
         bar.setAttention(StatusBarAttention(count: 0))
         XCTAssertEqual(bar.testAttentionSymbolName(), "bell")
+    }
+
+    func testAttentionBellUsesSidebarActivityState() {
+        let bar = StatusBarView(frame: .zero)
+        bar.setAttention(StatusBarAttention(indicators: [.working, .blocked]))
+        XCTAssertEqual(bar.testAttentionIndicator(), .blocked)
+        bar.setAttention(StatusBarAttention(indicators: [.working]))
+        XCTAssertEqual(bar.testAttentionIndicator(), .working)
     }
 
     func testClickStatusTabInvokesSwitchWithWindowId() {

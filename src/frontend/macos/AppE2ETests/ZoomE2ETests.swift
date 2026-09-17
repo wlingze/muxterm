@@ -64,6 +64,7 @@ final class ZoomE2ETests: XCTestCase {
         let firstPane = try XCTUnwrap(paneIDs.first)
         let secondPane = try XCTUnwrap(paneIDs.dropFirst().first)
         XCTAssertEqual(app.testActivePaneID(), firstPane)
+        let secondGridBeforeZoom = app.testPaneGrid(secondPane)
 
         app.testTogglePaneFullscreen()
         XCTAssertTrue(
@@ -93,6 +94,13 @@ final class ZoomE2ETests: XCTestCase {
                     ) == "1"
             },
             "Cmd-] 应切到下一个 pane，并继续保持全屏"
+        )
+        AppE2E.pump(80)
+        let secondGridAfterZoom = app.testPaneGrid(secondPane)
+        XCTAssertTrue(
+            secondGridAfterZoom.cols > secondGridBeforeZoom.cols
+                || secondGridAfterZoom.rows > secondGridBeforeZoom.rows,
+            "目标 Surface 必须从 split grid 放大到全屏 allocation。before=\(secondGridBeforeZoom) after=\(secondGridAfterZoom)"
         )
 
         let previous = try XCTUnwrap(

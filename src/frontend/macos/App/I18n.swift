@@ -3,8 +3,11 @@ import Foundation
 /// JSON catalog 的 typed id。业务代码只能引用这个 enum，避免手写 key。
 enum MuxtermTextKey: CaseIterable {
     case attentionJump
+    case attentionHide
     case attentionMute
     case attentionOpen
+    case attentionShow
+    case attentionShowHidden
     case cancel
     case chooseDirectoryMessage
     case chooseRemoteDirectory
@@ -223,8 +226,11 @@ enum MuxtermTextKey: CaseIterable {
     var id: String {
         switch self {
         case .attentionJump: return "attention_jump"
+        case .attentionHide: return "attention_hide"
         case .attentionMute: return "attention_mute"
         case .attentionOpen: return "attention_open"
+        case .attentionShow: return "attention_show"
+        case .attentionShowHidden: return "attention_show_hidden"
         case .cancel: return "cancel"
         case .chooseDirectoryMessage: return "choose_directory_message"
         case .chooseRemoteDirectory: return "choose_remote_directory"

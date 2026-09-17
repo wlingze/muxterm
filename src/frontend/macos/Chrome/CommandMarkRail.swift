@@ -109,19 +109,12 @@ public enum CommandMarkRailLayout {
     }
 }
 
-/// 「↓ 最新 · +N」胶囊文案与滚到底吸附。
+/// 「↓ 最新 · +N」胶囊文案。
 public enum JumpLatestCaption {
-    /// 接近底部时继续下拉就吸附到实时尾部，避免在最后几行里细挪。
-    public static let snapScrollPosition: Double = 0.92
-
     public static func title(unseenLines: UInt32, latestWord: String) -> String {
         if unseenLines == 0 {
             return "↓ \(latestWord)"
         }
         return "↓ \(latestWord) · +\(unseenLines)"
-    }
-
-    public static func shouldSnapToLatest(scrollPosition: Double) -> Bool {
-        scrollPosition >= snapScrollPosition && scrollPosition < 0.999
     }
 }

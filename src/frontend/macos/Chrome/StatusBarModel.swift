@@ -104,8 +104,8 @@ public enum StatusBarTabOverflow {
     public static let fixedTabWidth: CGFloat = 104
     /// status-right 最少可见宽度。
     public static let statusRightMinWidth: CGFloat = 64
-    /// 状态点 18 + 铃铛 ~22 + 加号 28 + 间距。
-    public static let chromeWidth: CGFloat = 108
+    /// 状态点 18 + Workspace 24 + 铃铛 24 + 加号 28 + 间距。
+    public static let chromeWidth: CGFloat = 136
 
     /// 放不下的 tab 数量（>0 必须滚动/溢出，不得压缩 right+chrome）。
     public static func overflowCount(
@@ -125,12 +125,37 @@ public enum StatusBarTabOverflow {
 /// 消息弹窗 / 通知列表后续复用这个位置，这里先预留。
 public struct StatusBarAttention: Equatable, Sendable {
     public let count: Int
+    public let indicator: AgentSidebarIndicator?
 
-    public init(count: Int) {
+    public init(count: Int, indicator: AgentSidebarIndicator? = nil) {
         self.count = max(0, count)
+        self.indicator = self.count > 0 ? indicator : nil
+    }
+
+    public init(indicators: [AgentSidebarIndicator]) {
+        count = indicators.count
+        indicator = indicators.min { Self.rank($0) < Self.rank($1) }
     }
 
     public var isActive: Bool { count > 0 }
+
+    private static func rank(_ indicator: AgentSidebarIndicator) -> Int {
+        switch indicator {
+        case .done: 0
+        case .blocked: 1
+        case .working: 2
+        case .idle: 3
+        }
+    }
+}
+
+/// 当前状态栏体现的 Workspace 类型。Shells / Agents 是前端固定聚合槽，
+/// 用单独外观避免它们看起来像普通 tmux/Herdr Workspace。
+public enum StatusBarWorkspacePresentation: Equatable, Sendable {
+    case workspace
+    case shells
+    case agents
+    case opening
 }
 
 /// GUI tab 标题（iTerm2 风格：序号 + 名字），不用 tmux `#[fg=…]` 格式串。

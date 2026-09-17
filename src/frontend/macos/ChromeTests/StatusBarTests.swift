@@ -246,6 +246,13 @@ final class StatusBarAttentionTests: XCTestCase {
         XCTAssertEqual(attention.count, 0)
         XCTAssertFalse(attention.isActive)
     }
+
+    func testDominantActivityUsesSidebarPriority() {
+        let mixed = StatusBarAttention(indicators: [.working, .blocked, .done, .idle])
+        XCTAssertEqual(mixed.count, 4)
+        XCTAssertEqual(mixed.indicator, .done)
+        XCTAssertEqual(StatusBarAttention(indicators: [.working, .idle]).indicator, .working)
+    }
 }
 
 final class StatusBarTabTitleTests: XCTestCase {

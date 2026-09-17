@@ -46,6 +46,17 @@ final class HistoryE2ETests: XCTestCase {
         )
         XCTAssertTrue(app.testJumpLatestVisible(), "向上滚动后必须出现回底按钮 muxterm.jumpLatest")
         XCTAssertGreaterThan(app.testPaneViewport(), 0, "滚离底部后 viewport 应 > 0")
+        app.content.layoutSubtreeIfNeeded()
+        XCTAssertLessThan(
+            app.content.paneLayout.frame.maxX - app.content.jumpLatestButton.frame.maxX,
+            40,
+            "回底入口应贴近终端右侧"
+        )
+        XCTAssertLessThan(
+            app.content.jumpLatestButton.frame.minY - app.content.paneLayout.frame.minY,
+            40,
+            "回底入口应贴近终端底部"
+        )
 
         app.testClickJumpLatest()
         AppE2E.pump(80)
@@ -149,6 +160,16 @@ final class HistoryE2ETests: XCTestCase {
             app.testPaneTerminalText(pane).contains(fx.token),
             "真实鼠标上划后必须看见 attach 前的离屏 token"
         )
+
+        let beforeSmallDown = app.testPaneViewport()
+        XCTAssertTrue(app.testDispatchScrollWheel(deltaLines: -1), "必须能分发单行下划事件")
+        AppE2E.pump(40)
+        XCTAssertGreaterThan(
+            app.testPaneViewport(),
+            0,
+            "单次向下滚动只能逐行移动，不能从历史位置直接吸附到底部"
+        )
+        XCTAssertLessThan(app.testPaneViewport(), beforeSmallDown)
 
         XCTAssertTrue(app.testDispatchScrollWheel(deltaLines: -10_000), "必须能分发下划事件")
         AppE2E.pump(80)
