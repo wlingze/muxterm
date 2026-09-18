@@ -130,6 +130,7 @@ final class StatusBarView: NSView {
     private var lastRightStyle = "default"
     private var lastPlainForeground: NSColor?
     private var currentTabs: [Tab] = []
+    private var currentTabActivities: [UInt32: AgentSidebarIndicator] = [:]
     private var workspacePresentation: StatusBarWorkspacePresentation = .workspace
     private var tmuxStatusEnabled = false
     private var edgeAtBottom = false
@@ -421,6 +422,18 @@ final class StatusBarView: NSView {
     func updateTabs(_ tabs: [Tab]) {
         currentTabs = tabs
         rebuildCurrentTabs()
+    }
+
+    /// Activity is projected from the same Core-backed model as the sidebar.
+    /// Updating a status only touches the existing indicator views; it does not
+    /// rebuild the tab strip or start a frontend polling timer.
+    func setTabActivities(_ activities: [UInt32: AgentSidebarIndicator]) {
+        let visible = activities.filter { $0.value != .idle }
+        guard visible != currentTabActivities else { return }
+        currentTabActivities = visible
+        for button in tabStack.arrangedSubviews.compactMap({ $0 as? StatusTabButton }) {
+            button.configureActivity(currentTabActivities[UInt32(button.tag)])
+        }
     }
 
     private func rebuildCurrentTabs() {
@@ -815,6 +828,7 @@ final class StatusBarView: NSView {
             button.action = #selector(tabClicked(_:))
             button.setAccessibilityIdentifier("muxterm.tab.\(item.id)")
             button.isActiveTab = item.active
+            button.configureActivity(currentTabActivities[item.id])
             button.configureClose(tabID: item.id, visible: allowsTabClosing) { [weak self] in
                 self?.onCloseTab?(item.id)
             }
@@ -1064,6 +1078,20 @@ final class StatusBarView: NSView {
             .aggregateAppearance?.rawValue
     }
 
+    func testTabActivity(_ tabId: UInt32) -> AgentSidebarIndicator? {
+        tabStack.arrangedSubviews
+            .compactMap { $0 as? StatusTabButton }
+            .first(where: { $0.tag == Int(tabId) })?
+            .activityForTesting
+    }
+
+    func testTabActivityAnimating(_ tabId: UInt32) -> Bool {
+        tabStack.arrangedSubviews
+            .compactMap { $0 as? StatusTabButton }
+            .first(where: { $0.tag == Int(tabId) })?
+            .activityAnimatingForTesting == true
+    }
+
     func testTabWidths() -> [CGFloat] {
         layoutSubtreeIfNeeded()
         return tabStack.arrangedSubviews.map(\.frame.width)
@@ -1278,6 +1306,7 @@ private final class AttentionBellButton: NSButton {
 /// iTerm2 风格 GUI tab：圆角色块 + 系统字体，不用 tmux 格式串。
 private final class StatusTabButton: NSButton {
     private let activeUnderline = CALayer()
+    private let activityView = TabActivityIndicatorView()
     private let closeButton = NSButton()
     private var onClose: (() -> Void)?
     var onDoubleClick: (() -> Void)?
@@ -1306,6 +1335,10 @@ private final class StatusTabButton: NSButton {
         setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         setContentHuggingPriority(.defaultHigh, for: .horizontal)
 
+        activityView.translatesAutoresizingMaskIntoConstraints = false
+        activityView.isHidden = true
+        addSubview(activityView)
+
         closeButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: nil)
         closeButton.imagePosition = .imageOnly
         closeButton.imageScaling = .scaleProportionallyDown
@@ -1318,6 +1351,10 @@ private final class StatusTabButton: NSButton {
         closeButton.translatesAutoresizingMaskIntoConstraints = false
         addSubview(closeButton)
         NSLayoutConstraint.activate([
+            activityView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 7),
+            activityView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            activityView.widthAnchor.constraint(equalToConstant: 10),
+            activityView.heightAnchor.constraint(equalToConstant: 10),
             closeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
             closeButton.centerYAnchor.constraint(equalTo: centerYAnchor),
             closeButton.widthAnchor.constraint(equalToConstant: 16),
@@ -1356,6 +1393,12 @@ private final class StatusTabButton: NSButton {
         closeButton.setAccessibilityIdentifier("muxterm.tab.close.\(tabID)")
         closeButton.setAccessibilityLabel(MuxtermI18n.shared.tr(.closeTab))
         closeButton.toolTip = MuxtermI18n.shared.tr(.closeTab)
+    }
+
+    func configureActivity(_ activity: AgentSidebarIndicator?) {
+        activityView.activity = activity
+        activityView.isHidden = activity == nil || activity == .idle
+        applyStyle()
     }
 
     @objc private func closeClicked() {
@@ -1411,8 +1454,9 @@ private final class StatusTabButton: NSButton {
         self.font = font
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = .left
-        paragraph.headIndent = 8
-        paragraph.firstLineHeadIndent = 8
+        let leadingIndent: CGFloat = activityView.isHidden ? 8 : 21
+        paragraph.headIndent = leadingIndent
+        paragraph.firstLineHeadIndent = leadingIndent
         paragraph.tailIndent = closeButton.isHidden ? -8 : -24
         attributedTitle = NSAttributedString(
             string: attributedTitle.string.isEmpty ? title : attributedTitle.string,
@@ -1437,9 +1481,101 @@ private final class StatusTabButton: NSButton {
     }
 
     var closeVisibleForTesting: Bool { !closeButton.isHidden }
+    var activityForTesting: AgentSidebarIndicator? { activityView.activity }
+    var activityAnimatingForTesting: Bool { activityView.isAnimating }
 
     func clickCloseForTesting() {
         closeButton.performClick(nil)
+    }
+}
+
+/// Compact iTerm-style tab activity mark. The working state rotates on Core
+/// Animation's render server, so multiple busy tabs do not create competing
+/// main-thread timers or increase the event-pump frequency.
+private final class TabActivityIndicatorView: NSView {
+    private let shape = CAShapeLayer()
+
+    var activity: AgentSidebarIndicator? {
+        didSet {
+            guard activity != oldValue else { return }
+            updateAppearance()
+        }
+    }
+
+    var isAnimating: Bool {
+        shape.animation(forKey: "muxterm.tab.activity.rotation") != nil
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        shape.contentsScale = NSScreen.main?.backingScaleFactor ?? 2
+        layer?.addSublayer(shape)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override func layout() {
+        super.layout()
+        shape.frame = bounds
+        updatePath()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        updateAnimation()
+    }
+
+    private func updateAppearance() {
+        let color: NSColor
+        switch activity {
+        case .working: color = .systemYellow
+        case .blocked: color = .systemPink
+        case .done: color = .systemTeal
+        case .idle, nil: color = .tertiaryLabelColor
+        }
+        shape.strokeColor = color.cgColor
+        shape.fillColor = activity == .working ? NSColor.clear.cgColor : color.cgColor
+        shape.lineWidth = activity == .working ? 1.5 : 1
+        shape.lineCap = .round
+        updatePath()
+        updateAnimation()
+    }
+
+    private func updatePath() {
+        let rect = bounds.insetBy(dx: 1.5, dy: 1.5)
+        guard rect.width > 0, rect.height > 0 else { return }
+        if activity == .working {
+            let path = CGMutablePath()
+            path.addArc(
+                center: CGPoint(x: rect.midX, y: rect.midY),
+                radius: min(rect.width, rect.height) / 2,
+                startAngle: -.pi / 2,
+                endAngle: .pi,
+                clockwise: false
+            )
+            shape.path = path
+        } else {
+            shape.path = CGPath(ellipseIn: rect, transform: nil)
+        }
+    }
+
+    private func updateAnimation() {
+        shape.removeAnimation(forKey: "muxterm.tab.activity.rotation")
+        guard activity == .working,
+              window != nil,
+              !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        else { return }
+        let animation = CABasicAnimation(keyPath: "transform.rotation.z")
+        animation.fromValue = 0
+        animation.toValue = Double.pi * 2
+        animation.duration = 0.9
+        animation.repeatCount = .infinity
+        animation.isRemovedOnCompletion = false
+        shape.add(animation, forKey: "muxterm.tab.activity.rotation")
     }
 }
 

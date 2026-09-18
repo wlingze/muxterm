@@ -115,6 +115,28 @@ final class ChromeE2ETests: XCTestCase {
         XCTAssertEqual(bar.testAttentionIndicator(), .working)
     }
 
+    func testTabsShowSharedActivityStateAndWorkingSpinner() {
+        let bar = StatusBarView(frame: NSRect(x: 0, y: 0, width: 600, height: 24))
+        window.contentView = bar
+        window.orderFront(nil)
+        bar.updateTabs([
+            Tab(id: 1, name: "build", isActive: true),
+            Tab(id: 2, name: "review", isActive: false),
+        ])
+
+        bar.setTabActivities([1: .working, 2: .done])
+        AppE2E.pump(20)
+
+        XCTAssertEqual(bar.testTabActivity(1), .working)
+        XCTAssertTrue(bar.testTabActivityAnimating(1))
+        XCTAssertEqual(bar.testTabActivity(2), .done)
+        XCTAssertFalse(bar.testTabActivityAnimating(2))
+
+        bar.setTabActivities([2: .blocked])
+        XCTAssertNil(bar.testTabActivity(1))
+        XCTAssertEqual(bar.testTabActivity(2), .blocked)
+    }
+
     func testClickStatusTabInvokesSwitchWithWindowId() {
         let bar = StatusBarView(frame: .zero)
         window.contentView = bar

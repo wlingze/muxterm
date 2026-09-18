@@ -1995,6 +1995,40 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         )
     }
 
+    private func presentedTabActivities() -> [UInt32: AgentSidebarIndicator] {
+        let workspaces = runtimeSidebarItems()
+        let source = WorkspaceSidebarProjection.tabActivities(
+            workspaces: workspaces,
+            attention: attentionSnapshotForPanel(),
+            hidden: hiddenAttentionKeys
+        )
+        func indicator(workspaceId: String, tabId: UInt32) -> AgentSidebarIndicator? {
+            source[WorkspaceTabActivityKey(workspaceId: workspaceId, tabId: tabId)]
+        }
+
+        switch workspacePresentation {
+        case .workspace:
+            guard let workspaceId = activeWorkspaceReplicaID else { return [:] }
+            return Dictionary(uniqueKeysWithValues: lastSnapshot.tabs.compactMap { tab in
+                indicator(workspaceId: workspaceId, tabId: tab.id).map { (tab.id, $0) }
+            })
+        case .shells:
+            return Dictionary(uniqueKeysWithValues: shellAggregateTabs().compactMap { tab in
+                indicator(workspaceId: tab.workspaceId, tabId: tab.sourceTabId).map {
+                    (tab.displayId, $0)
+                }
+            })
+        case .agents:
+            return Dictionary(uniqueKeysWithValues: agentAggregateTabs().compactMap { tab in
+                indicator(workspaceId: tab.workspaceId, tabId: tab.sourceTabId).map {
+                    (tab.displayId, $0)
+                }
+            })
+        case .connecting:
+            return [:]
+        }
+    }
+
     private func agentAggregateTabs(
         agents: [AgentSidebarItem]? = nil
     ) -> [AgentAggregateTab] {
@@ -2056,6 +2090,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             tabs = presentedTabs()
         }
         content.updateTabs(tabs)
+        content.statusBar.setTabActivities(presentedTabActivities())
         switch workspacePresentation {
         case .workspace:
             content.statusBar.setWorkspacePresentation(.workspace)
@@ -5140,6 +5175,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         content.statusBar.setAttention(StatusBarAttention(
             indicators: visibleRows.map(\.indicator)
         ))
+        content.statusBar.setTabActivities(presentedTabActivities())
         refreshWorkspaceSidebar()
     }
 
