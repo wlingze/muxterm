@@ -417,10 +417,8 @@ impl<C: Clock> AttentionEngine<C> {
                         };
                     }
                 }
-            } else {
-                if line_changed && !blocked_this_round && !initial_seed {
-                    status = transition(status, PaneEvent::OutputActivity);
-                }
+            } else if line_changed && !blocked_this_round && !initial_seed {
+                status = transition(status, PaneEvent::OutputActivity);
             }
         }
 

@@ -1527,17 +1527,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         return paneIDs
     }
 
-    private func activeWorkspacePaneIDs() -> Set<UInt32> {
-        guard let activeKey = sceneStack.activeKey,
-              let activeScene = sceneStack.scenes[activeKey]
-        else {
-            return []
-        }
-        var paneIDs = paneIDsForScene(activeScene)
-        paneIDs.formUnion(lastSnapshot.panes.map(\.id))
-        return paneIDs
-    }
-
     private func scene(_ scene: WorkspaceScene, matchesWorkspaceId workspaceId: String) -> Bool {
         workspaceReplicaID(for: scene) == workspaceId
             || scene.cachedWorkspaceReplicaID == workspaceId
@@ -2465,14 +2454,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             activateAgents()
         default:
             _ = activateWorkspaceIfAvailable(workspaceId)
-        }
-    }
-
-    private func scene(forWorkspaceId workspaceId: String) -> WorkspaceScene? {
-        sceneStack.scenes.values.first { slot in
-            slot.visibility != .closed
-                && (workspaceReplicaID(for: slot) == workspaceId
-                    || QuickConnect.uniqueID(for: slot.targetConfig) == workspaceId)
         }
     }
 
@@ -5203,6 +5184,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             let workspaces = snapshot.workspaces.filter {
                 self.scene(scene, matchesWorkspaceId: $0.workspaceId)
             }
+            let workspaceID = workspaces.first?.workspaceId ?? workspaceReplicaID(for: scene)
             let blockedCount = workspaces.reduce(into: 0) { count, workspace in
                 count += workspace.blocked
             }

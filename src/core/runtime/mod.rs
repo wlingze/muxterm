@@ -34,7 +34,7 @@ pub use contract::{Runtime, RuntimeSpec, WorktreeCreateSpec, WorktreeInfo};
 pub use error::{RuntimeError, RuntimeResult};
 #[cfg(test)]
 pub(crate) use mock::MockRuntime;
-pub use provider::{runtime_supports_channels, RuntimeInfo, RuntimeProvider};
+pub use provider::{runtime_supports_channels, RuntimeInfo, RuntimeNamespace, RuntimeProvider};
 pub use registry::RuntimeRegistry;
 
 /// Legacy C constructor helper. Lives here so FFI does not name TmuxDriver.

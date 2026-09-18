@@ -121,6 +121,7 @@ fn run_split(socket: &str, dir: u32) -> (usize, usize) {
                 id: 0,
                 cols: 0,
                 rows: 0,
+                title: std::ptr::null(),
                 is_active: 0,
             }; 16];
             final_npanes = muxterm_get_panes(h, tab, panes.as_mut_ptr(), 16) as usize;
@@ -214,6 +215,7 @@ fn pane_zero_id_is_distinct_from_active_after_split() {
             id: 0,
             cols: 0,
             rows: 0,
+            title: std::ptr::null(),
             is_active: 0,
         }; 16];
         while Instant::now() < deadline {

@@ -80,6 +80,11 @@ pub enum ResolveError {
         identity: String,
         candidates: Vec<String>,
     },
+    #[error("需要选择正在运行的 Runtime namespace（identity={identity}）：{candidates:?}")]
+    NamespaceChoiceRequired {
+        identity: String,
+        candidates: Vec<String>,
+    },
     #[error("workspace identity 不完整（identity={identity}）：{reason}")]
     InvalidIdentity { identity: String, reason: String },
     #[error("template 名称无效（name={name}）：{reason}")]
@@ -101,6 +106,7 @@ impl ResolveError {
             | Self::NoMatch { .. }
             | Self::CreateNotAllowed { .. }
             | Self::AmbiguousCandidate { .. }
+            | Self::NamespaceChoiceRequired { .. }
             | Self::InvalidIdentity { .. }
             | Self::InvalidTemplate { .. } => ResolveErrorStage::IdentityResolution,
             Self::RuntimeOpen { .. } => ResolveErrorStage::RuntimeConnect,
@@ -122,6 +128,7 @@ impl ResolveError {
             Self::NoMatch { .. } => "no_match",
             Self::CreateNotAllowed { .. } => "create_not_allowed",
             Self::AmbiguousCandidate { .. } => "ambiguous_candidate",
+            Self::NamespaceChoiceRequired { .. } => "namespace_choice_required",
             Self::InvalidIdentity { .. } => "invalid_identity",
             Self::InvalidTemplate { .. } => "invalid_template",
         }
