@@ -4146,7 +4146,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
 
         // detach 只对 tmux/SSH 控制 client 有意义；local shell 不能显示这个命令。
-        // 关闭窗口时 CoreBridge.shutdown() 会发送 detach-client，保留 tmux session。
+        // 多 Workspace 时只关闭当前 Scene/Core Workspace；最后一个仍走显式
+        // Task::Detach 关闭窗口并保留 tmux session。
         if terminalManager.usesClientResize {
             items.insert(
                 PaletteItem(
@@ -4238,7 +4239,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             closeActiveWindow()
         case .command(.detach):
             commandPalette.dismiss()
-            detachSessionWindow()
+            detachCurrentWorkspace()
         case .command(.language):
             showLanguageOptions()
         case .command(.increaseFontSize):
@@ -5684,6 +5685,18 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// 通过 core 的独立 detach FFI 关闭控制 client，保留 tmux session。
+    private func detachCurrentWorkspace() {
+        guard terminalManager.usesClientResize else { return }
+        if runtimeSidebarItems().count > 1,
+           let workspaceID = activeWorkspaceReplicaID
+        {
+            closeWorkspace(workspaceID)
+        } else {
+            detachSessionWindow()
+        }
+    }
+
+    /// 通过 core 的独立 detach FFI 关闭最后一个控制 client，保留 tmux session。
     private func detachSessionWindow() {
         guard terminalManager.usesClientResize else { return }
         guard !isClosing else { return }
