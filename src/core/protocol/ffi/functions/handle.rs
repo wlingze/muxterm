@@ -246,6 +246,7 @@ fn boxed_handle(
         event_data: Vec::new(),
         event_names: Vec::new(),
         tab_names: Vec::new(),
+        pane_names: Vec::new(),
         layout_nodes: Vec::new(),
         deferred_batches: std::collections::VecDeque::new(),
         deferred_activity_events: std::collections::VecDeque::new(),

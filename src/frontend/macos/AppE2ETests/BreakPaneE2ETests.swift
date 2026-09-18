@@ -19,8 +19,19 @@ final class BreakPaneE2ETests: XCTestCase {
         XCTAssertTrue(splitApp.waitReady(minLeaves: 2))
         XCTAssertTrue(
             splitApp.testLayoutLeafIDs().allSatisfy { splitApp.testPaneTitleVisible($0) },
-            "多 pane tab 的每个 Surface 都应显示轻标题条"
+            "多 pane tab 的每个 Surface 都应显示布局内标题条"
         )
+        for pane in splitApp.testLayoutLeafIDs() {
+            let title = try XCTUnwrap(splitApp.testPaneTitle(pane))
+            XCTAssertFalse(title.isEmpty)
+            XCTAssertFalse(title.hasPrefix("Pane @"), "标题应来自 Core PaneInfo，而不是 pane id")
+            XCTAssertEqual(
+                splitApp.testPaneAllocation(pane).height - splitApp.testPaneTerminalHeight(pane),
+                22,
+                accuracy: 1,
+                "标题条必须占据独立布局行，不能悬浮覆盖 terminal"
+            )
+        }
     }
 
     func testBreakPaneCreatesNewTabWithoutExtraHierarchy() throws {

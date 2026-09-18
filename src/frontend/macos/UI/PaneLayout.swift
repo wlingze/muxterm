@@ -149,6 +149,10 @@ final class PaneLayoutView: NSView {
     @discardableResult
     func apply(layout: LayoutNode?, panes: [Pane], tabId: UInt32) -> Bool {
         lastPanes = panes
+        updatePaneTitles(panes, hosts: hostByPane)
+        if let cached = tabTrees[tabId] {
+            updatePaneTitles(panes, hosts: cached.hostByPane)
+        }
         if let layout {
             baseLayout = layout
         }
@@ -357,6 +361,14 @@ final class PaneLayoutView: NSView {
         hostByPane[paneId]?.isTitleBarVisibleForTesting == true
     }
 
+    func testPaneTitle(_ paneId: UInt32) -> String? {
+        hostByPane[paneId]?.titleForTesting
+    }
+
+    func testPaneTerminalHeight(_ paneId: UInt32) -> CGFloat {
+        hostByPane[paneId]?.terminalHeightForTesting ?? 0
+    }
+
     func testMovePaneToNewTab(_ paneId: UInt32) {
         hostByPane[paneId]?.triggerMoveToNewTab()
     }
@@ -417,6 +429,23 @@ final class PaneLayoutView: NSView {
         }
     }
 
+    func updatePaneTitle(paneId: UInt32, title: String) {
+        lastPanes = lastPanes.map { pane in
+            guard pane.id == paneId else { return pane }
+            return Pane(
+                id: pane.id,
+                cols: pane.cols,
+                rows: pane.rows,
+                isActive: pane.isActive,
+                title: title
+            )
+        }
+        hostByPane[paneId]?.setTitle(title)
+        for cached in tabTrees.values {
+            cached.hostByPane[paneId]?.setTitle(title)
+        }
+    }
+
     private func finalizeAfterLayout(paneIds: Set<UInt32>, attempt: Int) {
         guard paneIds == currentPaneIds else { return }
         layoutSubtreeIfNeeded()
@@ -460,7 +489,8 @@ final class PaneLayoutView: NSView {
         switch node {
         case .leaf(let paneId):
             let term = terminalManager.view(for: paneId)
-            let wrap = PaneHostView(paneId: paneId, terminal: term)
+            let title = lastPanes.first(where: { $0.id == paneId })?.title ?? ""
+            let wrap = PaneHostView(paneId: paneId, title: title, terminal: term)
             // 尚未完成 Runtime seed / 首批 PTY 的 pane 先藏起来，避免白屏。
             wrap.setSurfaceReady(terminalManager.isSurfaceReady(for: paneId))
             wrap.onActivate = { [weak self] id in
@@ -526,6 +556,12 @@ final class PaneLayoutView: NSView {
             return collectPaneIds(first) + collectPaneIds(second)
         }
     }
+
+    private func updatePaneTitles(_ panes: [Pane], hosts: [UInt32: PaneHostView]) {
+        for pane in panes {
+            hosts[pane.id]?.setTitle(pane.title)
+        }
+    }
 }
 
 /// 承载单个终端；暴露几何 AX 供布局比例测试。
@@ -537,16 +573,19 @@ final class PaneHostView: NSView {
     private let moveToNewTabItem: NSMenuItem
     private let moveSeparator: NSMenuItem
     private let titleBar: PaneTitleBarView
+    private let terminal: MuxTerminalView
+    private var titleBarHeightConstraint: NSLayoutConstraint!
 
-    init(paneId: UInt32, terminal: MuxTerminalView) {
+    init(paneId: UInt32, title: String = "", terminal: MuxTerminalView) {
         self.paneId = paneId
+        self.terminal = terminal
         self.moveToNewTabItem = NSMenuItem(
             title: MuxtermI18n.shared.tr(.movePaneToNewTab),
             action: #selector(moveToNewTab(_:)),
             keyEquivalent: ""
         )
         self.moveSeparator = NSMenuItem.separator()
-        self.titleBar = PaneTitleBarView(paneId: paneId)
+        self.titleBar = PaneTitleBarView(paneId: paneId, title: title)
         super.init(frame: .zero)
         wantsLayer = true
         layer?.masksToBounds = true
@@ -569,13 +608,6 @@ final class PaneHostView: NSView {
         terminal.onActivatePane = { [weak self] id in
             self?.onActivate?(id)
         }
-        NSLayoutConstraint.activate([
-            terminal.leadingAnchor.constraint(equalTo: leadingAnchor),
-            terminal.trailingAnchor.constraint(equalTo: trailingAnchor),
-            terminal.topAnchor.constraint(equalTo: topAnchor),
-            terminal.bottomAnchor.constraint(equalTo: bottomAnchor),
-        ])
-
         titleBar.translatesAutoresizingMaskIntoConstraints = false
         titleBar.isHidden = true
         titleBar.onActivate = { [weak self] in
@@ -586,11 +618,16 @@ final class PaneHostView: NSView {
             self?.triggerMoveToNewTab()
         }
         addSubview(titleBar)
+        titleBarHeightConstraint = titleBar.heightAnchor.constraint(equalToConstant: 0)
         NSLayoutConstraint.activate([
-            titleBar.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 1),
-            titleBar.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -1),
-            titleBar.topAnchor.constraint(equalTo: topAnchor, constant: 1),
-            titleBar.heightAnchor.constraint(equalToConstant: 20),
+            titleBar.leadingAnchor.constraint(equalTo: leadingAnchor),
+            titleBar.trailingAnchor.constraint(equalTo: trailingAnchor),
+            titleBar.topAnchor.constraint(equalTo: topAnchor),
+            titleBarHeightConstraint,
+            terminal.leadingAnchor.constraint(equalTo: leadingAnchor),
+            terminal.trailingAnchor.constraint(equalTo: trailingAnchor),
+            terminal.topAnchor.constraint(equalTo: titleBar.bottomAnchor),
+            terminal.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
 
         let contextMenu = NSMenu()
@@ -652,6 +689,12 @@ final class PaneHostView: NSView {
 
     func setShowsTitleBar(_ visible: Bool) {
         titleBar.isHidden = !visible
+        titleBarHeightConstraint.constant = visible ? 22 : 0
+        needsLayout = true
+    }
+
+    func setTitle(_ title: String) {
+        titleBar.setTitle(title)
     }
 
     func setTitleDragEnabled(_ enabled: Bool) {
@@ -659,6 +702,8 @@ final class PaneHostView: NSView {
     }
 
     var isTitleBarVisibleForTesting: Bool { !titleBar.isHidden }
+    var titleForTesting: String { titleBar.titleForTesting }
+    var terminalHeightForTesting: CGFloat { terminal.frame.height }
 
     func triggerMoveToNewTab() {
         guard !moveToNewTabItem.isHidden else { return }
@@ -689,28 +734,30 @@ final class PaneHostView: NSView {
     }
 }
 
-/// 多 pane 时覆盖在 Surface 顶部的轻标题条。覆盖而非占位可保持 tmux
-/// 的 rows 与可见 Surface 高度一致，避免标题条本身制造新的 grid 偏差。
+/// 多 Pane 时位于 Surface 上方的固定标题行；单 Pane 高度为 0。
+/// 标题行参与 Auto Layout，终端字符格按剩余真实高度同步给 Runtime。
 private final class PaneTitleBarView: NSView {
     var onActivate: (() -> Void)?
     var onDragOut: (() -> Void)?
     var dragEnabled = false
     private let label = NSTextField(labelWithString: "")
     private let handle = NSImageView()
+    private let paneId: UInt32
 
-    init(paneId: UInt32) {
+    init(paneId: UInt32, title: String) {
+        self.paneId = paneId
         super.init(frame: .zero)
         wantsLayer = true
-        layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.88).cgColor
-        layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.5).cgColor
+        layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.65).cgColor
         layer?.borderWidth = 0.5
 
         label.translatesAutoresizingMaskIntoConstraints = false
-        label.stringValue = "@\(paneId)"
-        label.font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .medium)
+        label.font = NSFont.systemFont(ofSize: 11, weight: .medium)
         label.textColor = .secondaryLabelColor
         label.lineBreakMode = .byTruncatingTail
         addSubview(label)
+        setTitle(title)
 
         handle.translatesAutoresizingMaskIntoConstraints = false
         handle.image = NSImage(
@@ -731,7 +778,7 @@ private final class PaneTitleBarView: NSView {
             handle.heightAnchor.constraint(equalToConstant: 12),
         ])
         setAccessibilityRole(.group)
-        setAccessibilityLabel("Pane @\(paneId)")
+        setAccessibilityLabel(label.stringValue)
     }
 
     @available(*, unavailable)
@@ -740,10 +787,19 @@ private final class PaneTitleBarView: NSView {
     func setActive(_ active: Bool) {
         label.textColor = active ? .controlAccentColor : .secondaryLabelColor
         layer?.backgroundColor = (active
-            ? NSColor.controlAccentColor.withAlphaComponent(0.13)
-            : NSColor.windowBackgroundColor.withAlphaComponent(0.88)
+            ? NSColor.controlAccentColor.withAlphaComponent(0.10)
+            : NSColor.windowBackgroundColor
         ).cgColor
     }
+
+    func setTitle(_ title: String) {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        label.stringValue = trimmed.isEmpty ? "Pane @\(paneId)" : trimmed
+        label.toolTip = label.stringValue
+        setAccessibilityLabel(label.stringValue)
+    }
+
+    var titleForTesting: String { label.stringValue }
 
     override func mouseDown(with event: NSEvent) {
         onActivate?()

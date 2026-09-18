@@ -40,6 +40,7 @@ struct CPane {
     uint32_t id;
     uint16_t cols;
     uint16_t rows;
+    const char* title;
     uint8_t is_active;
 };
 
@@ -71,6 +72,7 @@ struct CLayoutNode {
 #define STATE_PANE_HISTORY        17u
 #define STATE_TAB_ORDER_CHANGED   18u
 #define STATE_PANE_FRAME          19u
+#define STATE_PANE_TITLE_CHANGED  20u
 #define STATE_OTHER               99u
 
 #define TASK_SPLIT_PANE  0u

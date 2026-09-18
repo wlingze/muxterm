@@ -3903,7 +3903,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 id: pane.id,
                 cols: pane.cols,
                 rows: pane.rows,
-                isActive: pane.id == paneId
+                isActive: pane.id == paneId,
+                title: pane.title
             )
         }
         content.paneLayout.markActivePane(paneId)
@@ -4859,6 +4860,18 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 statusBarNeedsRefresh = true
             } else if ev.isWorkspaceRenamed {
                 applyWorkspaceRename(ev.name)
+            } else if ev.isPaneTitleChanged {
+                lastSnapshot.panes = lastSnapshot.panes.map { pane in
+                    guard pane.id == ev.paneId else { return pane }
+                    return Pane(
+                        id: pane.id,
+                        cols: pane.cols,
+                        rows: pane.rows,
+                        isActive: pane.isActive,
+                        title: ev.name
+                    )
+                }
+                content.paneLayout.updatePaneTitle(paneId: ev.paneId, title: ev.name)
             } else if ev.type == STATE_PANE_RESIZED {
                 // pane 格子变了：立刻把 SwiftTerm 模型对齐（含缩小）。
                 // 不能只记轻量更新，否则 attach 的 128x63 会钉在 93x51

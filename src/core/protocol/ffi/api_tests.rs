@@ -225,6 +225,26 @@ fn ffi_export_policy_filters_index_snapshots_only() {
 }
 
 #[test]
+fn ffi_pane_title_event_has_a_distinct_type_and_owned_name() {
+    let h = muxterm_new(c"local".as_ptr(), ptr::null(), ptr::null());
+    assert!(!h.is_null());
+    unsafe {
+        let event = StateChange::PaneTitleChanged {
+            pane: PaneId(17),
+            title: "Pi · fly-brain".into(),
+        };
+        let c_event = state_change_to_c(&mut *h, &event);
+        assert_eq!(c_event.type_, STATE_PANE_TITLE_CHANGED);
+        assert_eq!(c_event.pane_id, 17);
+        assert_eq!(
+            CStr::from_ptr(c_event.name).to_str().unwrap(),
+            "Pi · fly-brain"
+        );
+        muxterm_free(h);
+    }
+}
+
+#[test]
 fn ffi_pane_agent_event_uses_runtime_neutral_json() {
     let h = muxterm_new(c"local".as_ptr(), ptr::null(), ptr::null());
     assert!(!h.is_null());
@@ -637,12 +657,15 @@ fn ffi_local_new_connect_split_poll_free() {
             id: 0,
             cols: 0,
             rows: 0,
+            title: ptr::null(),
             is_active: 0,
         }; 8];
         // split 后可能需要一点时间；再 refresh
         let _ = muxterm_poll_events(h, buf.as_mut_ptr(), 32);
         let npanes = muxterm_get_panes(h, tab_id, panes.as_mut_ptr(), 8);
         assert!(npanes >= 1, "应有 pane: {npanes}");
+        assert!(!panes[0].title.is_null(), "pane title 必须穿过 FFI");
+        assert!(!CStr::from_ptr(panes[0].title).to_bytes().is_empty());
 
         // 写入输入
         let msg = b"echo ffi-ok\n";
@@ -766,6 +789,7 @@ fn ffi_workspace_task_targets_background_workspace_without_activation() {
             id: 0,
             cols: 0,
             rows: 0,
+            title: ptr::null(),
             is_active: 0,
         }; 4];
         assert_eq!(
@@ -1074,6 +1098,7 @@ fn ffi_get_pane_output_returns_recent_tail() {
             id: 0,
             cols: 0,
             rows: 0,
+            title: ptr::null(),
             is_active: 0,
         }; 8];
         let npanes = muxterm_get_panes(h, tab_id, panes.as_mut_ptr(), 8);

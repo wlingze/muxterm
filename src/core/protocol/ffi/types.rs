@@ -33,6 +33,8 @@ pub const STATE_TAB_ORDER_CHANGED: u32 = 18;
 /// Complete terminal frame that replaces the current screen without resetting
 /// the native terminal scrollback. This is distinct from incremental output.
 pub const STATE_PANE_FRAME: u32 = 19;
+/// Pane title changed; `name` contains the owned title for this poll batch.
+pub const STATE_PANE_TITLE_CHANGED: u32 = 20;
 pub const STATE_OTHER: u32 = 99;
 
 // ── BackendStatus 编码到 CStateChange.pane_id ──────────────
@@ -127,6 +129,7 @@ pub struct CPane {
     pub id: u32,
     pub cols: u16,
     pub rows: u16,
+    pub title: *const c_char,
     pub is_active: u8,
 }
 

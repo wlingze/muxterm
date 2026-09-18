@@ -349,20 +349,35 @@ pub unsafe extern "C" fn muxterm_get_panes(
     if h.is_null() || out.is_null() || max_count <= 0 {
         return -1;
     }
-    let handle = &*h;
+    let handle = &mut *h;
     let tid = TabId(tab_id);
-    let Some(ws) = handle.active_workspace() else {
-        return 0;
+    let panes = {
+        let Some(ws) = handle.active_workspace() else {
+            return 0;
+        };
+        ws.state()
+            .panes(&tid)
+            .iter()
+            .map(|p| (p.id.0, p.cols, p.rows, p.title.clone(), p.active))
+            .collect::<Vec<_>>()
     };
-    let panes = ws.state().panes(&tid);
+    handle.pane_names.clear();
     let n = panes.len().min(max_count as usize);
     let slice = std::slice::from_raw_parts_mut(out, n);
-    for (i, p) in panes.iter().take(n).enumerate() {
+    for (i, (id, cols, rows, title, active)) in panes.iter().take(n).enumerate() {
+        let title_ptr = match CString::new(title.as_str()) {
+            Ok(value) => {
+                handle.pane_names.push(value);
+                handle.pane_names.last().unwrap().as_ptr()
+            }
+            Err(_) => ptr::null(),
+        };
         slice[i] = CPane {
-            id: p.id.0,
-            cols: p.cols,
-            rows: p.rows,
-            is_active: u8::from(p.active),
+            id: *id,
+            cols: *cols,
+            rows: *rows,
+            title: title_ptr,
+            is_active: u8::from(*active),
         };
     }
     n as i32
@@ -388,19 +403,34 @@ pub unsafe extern "C" fn muxterm_workspace_get_panes(
         return -1;
     };
     let workspace_id = parse_workspace_id(&workspace_id);
-    let handle = &*h;
-    let Some(ws) = handle.pool().get(&workspace_id) else {
-        return -1;
+    let handle = &mut *h;
+    let panes = {
+        let Some(ws) = handle.pool().get(&workspace_id) else {
+            return -1;
+        };
+        ws.state()
+            .panes(&TabId(tab_id))
+            .iter()
+            .map(|p| (p.id.0, p.cols, p.rows, p.title.clone(), p.active))
+            .collect::<Vec<_>>()
     };
-    let panes = ws.state().panes(&TabId(tab_id));
+    handle.pane_names.clear();
     let n = panes.len().min(max_count as usize);
     let slice = std::slice::from_raw_parts_mut(out, n);
-    for (i, p) in panes.iter().take(n).enumerate() {
+    for (i, (id, cols, rows, title, active)) in panes.iter().take(n).enumerate() {
+        let title_ptr = match CString::new(title.as_str()) {
+            Ok(value) => {
+                handle.pane_names.push(value);
+                handle.pane_names.last().unwrap().as_ptr()
+            }
+            Err(_) => ptr::null(),
+        };
         slice[i] = CPane {
-            id: p.id.0,
-            cols: p.cols,
-            rows: p.rows,
-            is_active: u8::from(p.active),
+            id: *id,
+            cols: *cols,
+            rows: *rows,
+            title: title_ptr,
+            is_active: u8::from(*active),
         };
     }
     n as i32

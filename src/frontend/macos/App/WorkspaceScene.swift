@@ -211,6 +211,7 @@ final class WorkspaceScene: SceneProtocol {
             || type == STATE_ACTIVE_TAB_CHANGED
             || type == STATE_ACTIVE_PANE_CHANGED
             || type == STATE_PANE_RESIZED
+            || type == STATE_PANE_TITLE_CHANGED
             || type == STATE_TAB_RENAMED
     }
 
