@@ -21,6 +21,16 @@ pub struct RuntimeInfo {
     pub accepted_transports: Vec<String>,
 }
 
+/// Runtime-owned namespace that can host new attachable identities.
+///
+/// Herdr uses a named/default server session and its target-side socket. Other
+/// providers may leave namespace discovery empty.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeNamespace {
+    pub name: String,
+    pub socket: Option<String>,
+}
+
 /// A registered Runtime implementation.
 pub trait RuntimeProvider: Send + Sync {
     fn id(&self) -> &'static str;
@@ -33,7 +43,10 @@ pub trait RuntimeProvider: Send + Sync {
     }
 
     /// Optional named namespace discovery (Herdr sessions, for example).
-    fn namespaces(&self, connection: &dyn TargetConnection) -> RuntimeResult<Vec<String>> {
+    fn namespaces(
+        &self,
+        connection: &dyn TargetConnection,
+    ) -> RuntimeResult<Vec<RuntimeNamespace>> {
         let _ = connection;
         Ok(Vec::new())
     }

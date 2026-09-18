@@ -1,15 +1,18 @@
 //! Catalog 单测。内置 Driver 未登记时 `with_builtins_*` 为红；mock 路径应绿。
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use super::{Catalog, OpenRequest, Reach, ResolveIntent, ResolvedTarget, ResolvedTargetDescriptor};
+use super::{
+    Catalog, OpenRequest, Reach, ResolveError, ResolveIntent, ResolvedTarget,
+    ResolvedTargetDescriptor,
+};
 use crate::muxterm::Muxterm;
-use crate::projects::{Project, Worktree};
+use crate::projects::{Project, TargetConfig, TargetRuntime, TargetTransport, Worktree};
 use crate::protocol::candidate::{CandidateRef, ExistingCandidate, ExistingCandidateRef};
 use crate::runtime::MockRuntime;
 use crate::runtime::RuntimeProvider;
-use crate::runtime::{Runtime, RuntimeCapability, RuntimeResult};
+use crate::runtime::{Runtime, RuntimeCapability, RuntimeNamespace, RuntimeResult, RuntimeSpec};
 use crate::transport::provider::{TargetInfo, TransportProvider};
 use crate::transport::registry::ConnectionRegistry;
 use crate::transport::Connect;
@@ -137,6 +140,268 @@ impl RuntimeProvider for UnixSocketOnlyDriver {
     ) -> RuntimeResult<Box<dyn Runtime>> {
         Ok(Box::new(MockRuntime::with_single_pane()))
     }
+}
+
+struct HerdrResolverDriver {
+    namespaces: Vec<RuntimeNamespace>,
+    candidates: Vec<ExistingCandidate>,
+    create_calls: Arc<AtomicUsize>,
+    created_specs: Arc<Mutex<Vec<RuntimeSpec>>>,
+}
+
+impl RuntimeProvider for HerdrResolverDriver {
+    fn id(&self) -> &'static str {
+        "herdr"
+    }
+
+    fn name(&self) -> &'static str {
+        "Herdr"
+    }
+
+    fn support(&self) -> &'static [RuntimeCapability] {
+        &[RuntimeCapability::Discover]
+    }
+
+    fn namespaces(
+        &self,
+        _connection: &dyn TargetConnection,
+    ) -> RuntimeResult<Vec<RuntimeNamespace>> {
+        Ok(self.namespaces.clone())
+    }
+
+    fn discover(
+        &self,
+        _connection: &dyn TargetConnection,
+        _namespace: Option<&str>,
+    ) -> RuntimeResult<Vec<ExistingCandidate>> {
+        Ok(self.candidates.clone())
+    }
+
+    fn new_instance(
+        &self,
+        _connection: Arc<dyn TargetConnection>,
+        _spec: &RuntimeSpec,
+    ) -> RuntimeResult<Box<dyn Runtime>> {
+        Ok(Box::new(MockRuntime::with_single_pane()))
+    }
+
+    fn create_identity(
+        &self,
+        _connection: &dyn TargetConnection,
+        spec: &RuntimeSpec,
+        _label: Option<&str>,
+    ) -> RuntimeResult<RuntimeSpec> {
+        self.create_calls.fetch_add(1, Ordering::SeqCst);
+        self.created_specs.lock().unwrap().push(spec.clone());
+        let mut created = spec.clone();
+        created.path = "w-created".into();
+        Ok(created)
+    }
+}
+
+fn herdr_resolver_catalog(
+    namespaces: Vec<RuntimeNamespace>,
+    candidates: Vec<ExistingCandidate>,
+) -> (Catalog, Arc<AtomicUsize>, Arc<Mutex<Vec<RuntimeSpec>>>) {
+    let create_calls = Arc::new(AtomicUsize::new(0));
+    let created_specs = Arc::new(Mutex::new(Vec::new()));
+    let mut catalog = Catalog::new();
+    catalog.register_transport(Box::new(MockTransport {
+        id: "ssh",
+        name: "SSH",
+        connects: Arc::new(AtomicUsize::new(0)),
+        fail: false,
+        targets: vec![TargetInfo::new("ryzen", "ryzen")],
+    }));
+    catalog.register_runtime(Box::new(HerdrResolverDriver {
+        namespaces,
+        candidates,
+        create_calls: Arc::clone(&create_calls),
+        created_specs: Arc::clone(&created_specs),
+    }));
+    (catalog, create_calls, created_specs)
+}
+
+fn provisional_ssh_herdr_target() -> TargetConfig {
+    TargetConfig::new(
+        "yaklang-workspace",
+        TargetRuntime::Herdr,
+        TargetTransport::Ssh {
+            name: "ryzen".into(),
+        },
+        "~/Developer/yaklang-workspace",
+    )
+}
+
+fn herdr_candidate(session: &str, socket: &str, workspace_id: &str) -> ExistingCandidate {
+    ExistingCandidate {
+        runtime_id: "herdr".into(),
+        transport_id: "ssh".into(),
+        target: "ryzen".into(),
+        namespace: Some(session.into()),
+        name: "different-label".into(),
+        extra: workspace_id.into(),
+        session: Some(session.into()),
+        socket: Some(socket.into()),
+        workspace_id: Some(workspace_id.into()),
+    }
+}
+
+#[test]
+fn provisional_herdr_project_without_running_namespace_requires_a_choice() {
+    let (catalog, create_calls, _) = herdr_resolver_catalog(Vec::new(), Vec::new());
+    let mut connections = ConnectionRegistry::new();
+
+    let error = catalog
+        .resolve_target(
+            &mut connections,
+            &provisional_ssh_herdr_target(),
+            ResolveIntent::CreateIfMissing,
+        )
+        .expect_err("没有运行中的 namespace 时不能静默选择 default");
+
+    assert!(matches!(
+        error,
+        ResolveError::NamespaceChoiceRequired { candidates, .. } if candidates.is_empty()
+    ));
+    assert_eq!(create_calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn provisional_herdr_project_uses_the_only_running_namespace() {
+    let (catalog, create_calls, created_specs) = herdr_resolver_catalog(
+        vec![RuntimeNamespace {
+            name: "work".into(),
+            socket: Some("/run/herdr-work.sock".into()),
+        }],
+        Vec::new(),
+    );
+    let mut connections = ConnectionRegistry::new();
+
+    let resolved = catalog
+        .resolve_target(
+            &mut connections,
+            &provisional_ssh_herdr_target(),
+            ResolveIntent::CreateIfMissing,
+        )
+        .unwrap();
+
+    assert_eq!(create_calls.load(Ordering::SeqCst), 1);
+    let created_specs = created_specs.lock().unwrap();
+    assert_eq!(created_specs.len(), 1);
+    assert_eq!(created_specs[0].session, "work");
+    assert_eq!(
+        created_specs[0].socket.as_deref(),
+        Some("/run/herdr-work.sock")
+    );
+    assert_eq!(created_specs[0].path, "~/Developer/yaklang-workspace");
+    assert_eq!(resolved.canonical.session.as_deref(), Some("work"));
+    assert_eq!(
+        resolved.canonical.socket.as_deref(),
+        Some("/run/herdr-work.sock")
+    );
+    assert_eq!(
+        resolved.canonical.workspace_id.as_deref(),
+        Some("w-created")
+    );
+    assert_eq!(resolved.spec.path, "w-created");
+}
+
+#[test]
+fn provisional_herdr_project_with_multiple_namespaces_requires_a_choice() {
+    let (catalog, create_calls, _) = herdr_resolver_catalog(
+        vec![
+            RuntimeNamespace {
+                name: "beta".into(),
+                socket: Some("/run/beta.sock".into()),
+            },
+            RuntimeNamespace {
+                name: "alpha".into(),
+                socket: Some("/run/alpha.sock".into()),
+            },
+        ],
+        Vec::new(),
+    );
+    let mut connections = ConnectionRegistry::new();
+
+    let error = catalog
+        .resolve_target(
+            &mut connections,
+            &provisional_ssh_herdr_target(),
+            ResolveIntent::CreateIfMissing,
+        )
+        .expect_err("多个 namespace 时必须让用户选择");
+
+    assert!(matches!(
+        error,
+        ResolveError::NamespaceChoiceRequired { candidates, .. }
+            if candidates == ["alpha (/run/alpha.sock)", "beta (/run/beta.sock)"]
+    ));
+    assert_eq!(create_calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn explicitly_selected_default_herdr_namespace_can_create() {
+    let (catalog, create_calls, created_specs) = herdr_resolver_catalog(Vec::new(), Vec::new());
+    let mut connections = ConnectionRegistry::new();
+    let mut target = provisional_ssh_herdr_target();
+    target.session = Some("default".into());
+    target.socket = Some("/run/herdr.sock".into());
+
+    let resolved = catalog
+        .resolve_target(&mut connections, &target, ResolveIntent::CreateIfMissing)
+        .unwrap();
+
+    assert_eq!(create_calls.load(Ordering::SeqCst), 1);
+    let created_specs = created_specs.lock().unwrap();
+    assert_eq!(created_specs[0].session, "default");
+    assert_eq!(created_specs[0].socket.as_deref(), Some("/run/herdr.sock"));
+    assert_eq!(resolved.canonical.session.as_deref(), Some("default"));
+}
+
+#[test]
+fn herdr_workspace_id_shared_by_namespaces_is_ambiguous() {
+    let (catalog, create_calls, _) = herdr_resolver_catalog(
+        Vec::new(),
+        vec![
+            herdr_candidate("alpha", "/run/alpha.sock", "w7"),
+            herdr_candidate("beta", "/run/beta.sock", "w7"),
+        ],
+    );
+    let mut connections = ConnectionRegistry::new();
+    let mut target = provisional_ssh_herdr_target();
+    target.workspace_id = Some("w7".into());
+
+    let error = catalog
+        .resolve_target(&mut connections, &target, ResolveIntent::CreateIfMissing)
+        .expect_err("跨 namespace 的同一 workspace id 不能任意选择");
+
+    assert!(matches!(
+        error,
+        ResolveError::AmbiguousCandidate { candidates, .. }
+            if candidates == ["alpha:w7", "beta:w7"]
+    ));
+    assert_eq!(create_calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn herdr_exact_workspace_requires_the_configured_socket() {
+    let (catalog, create_calls, _) = herdr_resolver_catalog(
+        Vec::new(),
+        vec![herdr_candidate("alpha", "/run/alpha.sock", "w7")],
+    );
+    let mut connections = ConnectionRegistry::new();
+    let mut target = provisional_ssh_herdr_target();
+    target.session = Some("alpha".into());
+    target.socket = Some("/run/stale.sock".into());
+    target.workspace_id = Some("w7".into());
+
+    let error = catalog
+        .resolve_target(&mut connections, &target, ResolveIntent::AttachOnly)
+        .expect_err("workspace id 相同但 socket 不同不能视为同一身份");
+
+    assert!(matches!(error, ResolveError::NoMatch { .. }));
+    assert_eq!(create_calls.load(Ordering::SeqCst), 0);
 }
 
 fn mock_spec(runtime: &str, transport: &str, alias: Option<&str>, session: &str) -> WorkspaceSpec {

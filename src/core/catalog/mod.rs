@@ -326,7 +326,7 @@ impl Catalog {
                 let driver = self
                     .runtime("herdr")
                     .expect("刚检查过的 Herdr RuntimeProvider 必须仍在");
-                let namespace = descriptor.session.clone();
+                let namespace = normalized_optional(&descriptor.session);
                 let candidates = driver
                     .discover(connect.as_ref(), namespace.as_deref())
                     .map_err(|error| resolver::ResolveError::Discovery {
@@ -336,19 +336,57 @@ impl Catalog {
                         message: format!("{error:#}"),
                     })?;
 
-                // exact identity：workspace_id 精确命中。
-                if let Some(wid) = &descriptor.workspace_id {
-                    if let Some(hit) = candidates
+                let scoped: Vec<&ExistingCandidate> = candidates
+                    .iter()
+                    .filter(|candidate| {
+                        candidate_in_scope(
+                            candidate,
+                            namespace.as_deref(),
+                            descriptor.socket.as_deref(),
+                        )
+                    })
+                    .collect();
+
+                // exact identity：workspace_id 精确命中。旧配置把 wN 放在
+                // path 时也先按精确 id 迁移，禁止误命中同名 workspace。
+                let requested_workspace =
+                    normalized_optional(&descriptor.workspace_id).or_else(|| {
+                        let path = descriptor.path.trim();
+                        scoped
+                            .iter()
+                            .any(|candidate| {
+                                candidate_workspace_id(candidate).as_deref() == Some(path)
+                            })
+                            .then(|| path.to_string())
+                    });
+                if let Some(workspace_id) = requested_workspace {
+                    let exact: Vec<&ExistingCandidate> = scoped
                         .iter()
-                        .find(|c| c.extra == *wid && c.namespace.as_deref() == namespace.as_deref())
-                    {
-                        return Ok(self.resolved_from_candidate(descriptor, hit));
+                        .copied()
+                        .filter(|candidate| {
+                            candidate_workspace_id(candidate).as_deref()
+                                == Some(workspace_id.as_str())
+                        })
+                        .collect();
+                    match exact.as_slice() {
+                        [one] => return Ok(self.resolved_from_candidate(descriptor, one)),
+                        many if many.len() > 1 => {
+                            return Err(resolver::ResolveError::AmbiguousCandidate {
+                                identity,
+                                candidates: many
+                                    .iter()
+                                    .map(|candidate| candidate_identity_summary(candidate))
+                                    .collect(),
+                            });
+                        }
+                        _ => {}
                     }
                 }
                 // name/label 命中；同名两候选 → ambiguity。
-                let named: Vec<&ExistingCandidate> = candidates
+                let named: Vec<&ExistingCandidate> = scoped
                     .iter()
-                    .filter(|c| c.name == descriptor.name)
+                    .copied()
+                    .filter(|candidate| candidate.name == descriptor.name)
                     .collect();
                 match named.as_slice() {
                     [] => match intent {
@@ -357,10 +395,57 @@ impl Catalog {
                             intent: format!("{intent:?}"),
                         }),
                         ResolveIntent::CreateIfMissing => {
-                            // 未填 session/socket 时与 attach 一样补 default；
-                            // SSH 通过 session list 解析远端 socket。server
-                            // 没起来就失败，不偷偷 start。
-                            let runtime_spec = descriptor_to_spec(descriptor).runtime_spec();
+                            // 缺 session 时只允许选择唯一运行中的 namespace。
+                            // `default` 也是普通显式选项，绝不能作为静默后备。
+                            let mut create_descriptor = descriptor.clone();
+                            if let Some(session) = namespace.clone() {
+                                create_descriptor.session = Some(session);
+                            } else {
+                                let mut namespaces =
+                                    driver.namespaces(connect.as_ref()).map_err(|error| {
+                                        resolver::ResolveError::Discovery {
+                                            runtime_id: "herdr".to_string(),
+                                            transport_id: transport.to_string(),
+                                            target: target.to_string(),
+                                            message: format!("{error:#}"),
+                                        }
+                                    })?;
+                                namespaces.extend(scoped.iter().filter_map(|candidate| {
+                                    candidate_session(candidate).map(|name| {
+                                        crate::runtime::RuntimeNamespace {
+                                            name,
+                                            socket: normalized_optional(&candidate.socket),
+                                        }
+                                    })
+                                }));
+                                normalize_namespaces(&mut namespaces);
+                                if let Some(socket) = normalized_optional(&descriptor.socket) {
+                                    namespaces.retain(|candidate| {
+                                        candidate.socket.as_deref() == Some(socket.as_str())
+                                    });
+                                }
+                                match namespaces.as_slice() {
+                                    [one] => {
+                                        create_descriptor.session = Some(one.name.clone());
+                                        if create_descriptor.socket.is_none() {
+                                            create_descriptor.socket = one.socket.clone();
+                                        }
+                                    }
+                                    choices => {
+                                        return Err(
+                                            resolver::ResolveError::NamespaceChoiceRequired {
+                                                identity,
+                                                candidates: choices
+                                                    .iter()
+                                                    .map(namespace_summary)
+                                                    .collect(),
+                                            },
+                                        );
+                                    }
+                                }
+                            }
+                            let runtime_spec =
+                                descriptor_to_spec(&create_descriptor).runtime_spec();
                             let created = driver
                                 .create_identity(
                                     connect.as_ref(),
@@ -371,7 +456,7 @@ impl Catalog {
                                     identity: identity.clone(),
                                     reason: error.to_string(),
                                 })?;
-                            let mut canonical = descriptor.clone();
+                            let mut canonical = create_descriptor;
                             canonical.workspace_id = Some(created.path.clone());
                             if !created.session.is_empty() {
                                 canonical.session = Some(created.session.clone());
@@ -386,7 +471,7 @@ impl Catalog {
                         identity,
                         candidates: many
                             .iter()
-                            .map(|candidate| candidate.extra.clone())
+                            .map(|candidate| candidate_identity_summary(candidate))
                             .collect(),
                     }),
                 }
@@ -774,6 +859,81 @@ impl Catalog {
 
     pub fn inventory_mut(&mut self) -> &mut Inventory {
         &mut self.inventory
+    }
+}
+
+fn normalized_optional(value: &Option<String>) -> Option<String> {
+    value
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn candidate_session(candidate: &ExistingCandidate) -> Option<String> {
+    candidate
+        .session
+        .as_ref()
+        .or(candidate.namespace.as_ref())
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn candidate_workspace_id(candidate: &ExistingCandidate) -> Option<String> {
+    candidate
+        .workspace_id
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            let value = candidate.extra.trim();
+            (!value.is_empty()).then(|| value.to_string())
+        })
+}
+
+fn candidate_in_scope(
+    candidate: &ExistingCandidate,
+    namespace: Option<&str>,
+    socket: Option<&str>,
+) -> bool {
+    namespace.is_none_or(|expected| candidate_session(candidate).as_deref() == Some(expected))
+        && socket.is_none_or(|expected| {
+            candidate.socket.as_deref().map(str::trim) == Some(expected.trim())
+        })
+}
+
+fn candidate_identity_summary(candidate: &ExistingCandidate) -> String {
+    format!(
+        "{}:{}",
+        candidate_session(candidate).unwrap_or_else(|| "?".into()),
+        candidate_workspace_id(candidate).unwrap_or_else(|| "?".into())
+    )
+}
+
+fn normalize_namespaces(namespaces: &mut Vec<crate::runtime::RuntimeNamespace>) {
+    for namespace in namespaces.iter_mut() {
+        namespace.name = if namespace.name.trim().is_empty() {
+            "default".into()
+        } else {
+            namespace.name.trim().to_string()
+        };
+        namespace.socket = normalized_optional(&namespace.socket);
+    }
+    namespaces.retain(|namespace| !namespace.name.is_empty());
+    namespaces.sort_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then_with(|| left.socket.cmp(&right.socket))
+    });
+    namespaces.dedup();
+}
+
+fn namespace_summary(namespace: &crate::runtime::RuntimeNamespace) -> String {
+    match namespace.socket.as_deref() {
+        Some(socket) => format!("{} ({socket})", namespace.name),
+        None => namespace.name.clone(),
     }
 }
 

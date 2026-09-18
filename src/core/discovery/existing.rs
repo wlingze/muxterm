@@ -99,12 +99,35 @@ fn tmux_entry(
 /// `config_dir` 覆盖 `~/.config/herdr`（测试传临时目录，避免扫到用户默认）。
 /// 连不上的 socket 跳过，不 panic。
 pub fn discover_local_herdr(config_dir: Option<&Path>) -> Vec<ExistingEntry> {
+    discover_local_herdr_namespaces(config_dir)
+        .into_iter()
+        .flat_map(|(session_name, socket)| {
+            let workspaces =
+                crate::runtime::list_herdr_workspaces_at(&session_name, Path::new(&socket))
+                    .unwrap_or_default();
+            workspaces.into_iter().map(move |ws| ExistingEntry {
+                title: ws.label,
+                runtime: TargetRuntime::Herdr,
+                transport: TargetTransport::Local,
+                tmux_session: None,
+                tmux_socket: None,
+                herdr_session: Some(session_name.clone()),
+                herdr_workspace_id: Some(ws.workspace_id),
+                herdr_socket: Some(socket.clone()),
+            })
+        })
+        .collect()
+}
+
+/// 本地正在运行的 Herdr namespace。即使 session 暂时没有 workspace，也
+/// 必须出现在 create target 选择中。
+pub(crate) fn discover_local_herdr_namespaces(config_dir: Option<&Path>) -> Vec<(String, String)> {
     let mut sockets: Vec<PathBuf> = Vec::new();
     // 测试 override：设了 HERDR_SOCKET_PATH 就只扫它，禁止连用户默认。
     if let Ok(env) = std::env::var("HERDR_SOCKET_PATH") {
         if !env.trim().is_empty() {
             sockets.push(PathBuf::from(env));
-            return scan_sockets(sockets, None);
+            return scan_running_sockets(sockets, None);
         }
     }
     let base = config_dir.map(Path::to_path_buf).unwrap_or_else(|| {
@@ -123,11 +146,11 @@ pub fn discover_local_herdr(config_dir: Option<&Path>) -> Vec<ExistingEntry> {
             }
         }
     }
-    scan_sockets(sockets, Some(default))
+    scan_running_sockets(sockets, Some(default))
 }
 
-/// 逐个 socket ping + workspace.list，产出 ExistingEntry。
-fn scan_sockets(sockets: Vec<PathBuf>, default: Option<PathBuf>) -> Vec<ExistingEntry> {
+/// 逐个 socket ping，产出可安全用于 workspace.create 的运行中 namespace。
+fn scan_running_sockets(sockets: Vec<PathBuf>, default: Option<PathBuf>) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for socket in sockets {
@@ -140,24 +163,12 @@ fn scan_sockets(sockets: Vec<PathBuf>, default: Option<PathBuf>) -> Vec<Existing
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_default()
         };
-        let Some(list) = crate::runtime::list_herdr_workspaces_at(&session_name, &socket) else {
+        let Some(_) = crate::runtime::list_herdr_workspaces_at(&session_name, &socket) else {
             continue;
         };
-        for ws in list {
-            let key = format!("{session_name}:{}", ws.workspace_id);
-            if !seen.insert(key) {
-                continue;
-            }
-            out.push(ExistingEntry {
-                title: ws.label,
-                runtime: TargetRuntime::Herdr,
-                transport: TargetTransport::Local,
-                tmux_session: None,
-                tmux_socket: None,
-                herdr_session: Some(session_name.clone()),
-                herdr_workspace_id: Some(ws.workspace_id),
-                herdr_socket: Some(socket.to_string_lossy().to_string()),
-            });
+        let socket = socket.to_string_lossy().to_string();
+        if seen.insert((session_name.clone(), socket.clone())) {
+            out.push((session_name, socket));
         }
     }
     out
@@ -276,7 +287,7 @@ pub fn ssh_herdr_running_socket(
 }
 
 /// `ssh … herdr session list --json` → `(session_name, socket_path)`（running 的）。
-fn ssh_herdr_sessions(
+pub(crate) fn ssh_herdr_sessions(
     alias: &str,
     ssh_config_path: Option<&str>,
     timeout: Duration,

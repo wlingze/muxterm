@@ -9,7 +9,9 @@ use crate::protocol::candidate::ExistingCandidate;
 use crate::runtime::herdr::runtime::HerdrRuntime;
 use crate::runtime::herdr::session::HerdrSession;
 use crate::runtime::RuntimeProvider;
-use crate::runtime::{Runtime, RuntimeCapability, RuntimeError, RuntimeResult, RuntimeSpec};
+use crate::runtime::{
+    Runtime, RuntimeCapability, RuntimeError, RuntimeNamespace, RuntimeResult, RuntimeSpec,
+};
 use crate::transport::{ChannelKind, Connect, TargetConnection};
 
 /// herdr 插件（local / ssh）。
@@ -117,27 +119,38 @@ impl RuntimeProvider for HerdrDriver {
     fn namespaces(
         &self,
         connect: &dyn TargetConnection,
-    ) -> crate::runtime::RuntimeResult<Vec<String>> {
+    ) -> crate::runtime::RuntimeResult<Vec<RuntimeNamespace>> {
         if connect.transport_id() == "ssh" {
-            return Ok(Vec::new());
+            let sessions = crate::discovery::existing::ssh_herdr_sessions(
+                connect.target(),
+                std::env::var("MUXTERM_SSH_CONFIG_PATH").ok().as_deref(),
+                Duration::from_secs(2),
+            )
+            .unwrap_or_default();
+            return Ok(sessions
+                .into_iter()
+                .map(|(name, socket)| RuntimeNamespace {
+                    name: if name.trim().is_empty() {
+                        "default".into()
+                    } else {
+                        name
+                    },
+                    socket: (!socket.trim().is_empty()).then_some(socket),
+                })
+                .collect());
         }
-        // 本地 named sessions 名（不含 default 空串）。
-        let mut out = Vec::new();
-        let base = std::env::var("HERDR_CONFIG_DIR")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|_| {
-                let home = std::env::var("HOME").unwrap_or_default();
-                std::path::PathBuf::from(home).join(".config/herdr")
-            });
-        if let Ok(entries) = std::fs::read_dir(base.join("sessions")) {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if !out.contains(&name) {
-                    out.push(name);
-                }
-            }
-        }
-        Ok(out)
+        let config_dir = std::env::var("HERDR_CONFIG_DIR")
+            .ok()
+            .map(std::path::PathBuf::from);
+        Ok(
+            crate::discovery::existing::discover_local_herdr_namespaces(config_dir.as_deref())
+                .into_iter()
+                .map(|(name, socket)| RuntimeNamespace {
+                    name,
+                    socket: Some(socket),
+                })
+                .collect(),
+        )
     }
 
     fn new_instance(
@@ -171,7 +184,9 @@ impl RuntimeProvider for HerdrDriver {
         let is_ssh = connection.transport_id() == "ssh";
         let mut spec = spec.clone();
         if spec.session.is_empty() {
-            spec.session = "default".into();
+            return Err(RuntimeError::message(
+                "Herdr session 未选择。请先选择一个正在运行的 named/default session",
+            ));
         }
         if spec.socket.is_none() {
             if is_ssh {
