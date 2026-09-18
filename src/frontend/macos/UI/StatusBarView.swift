@@ -250,10 +250,13 @@ final class StatusBarView: NSView {
             constant: -(StatusBarTabOverflow.statusRightMinWidth
                 + StatusBarTabOverflow.chromeWidth + 16)
         )
-        tabFillWidthConstraint = tabStack.widthAnchor.constraint(
-            equalTo: widthAnchor,
-            constant: -(StatusBarTabOverflow.statusRightMinWidth
-                + StatusBarTabOverflow.chromeWidth + 48)
+        // 等宽模式靠完整的 tab → status-left → status-right → chrome 链条
+        // 吃满可用宽度。不能把 tab 尾端直接钉到 chrome 附近：那会和
+        // status 文本的约束互相冲突，并让 NSSplitViewController 把主内容
+        // 压到 minimumThickness。
+        tabFillWidthConstraint = rightLabel.trailingAnchor.constraint(
+            equalTo: statusDot.leadingAnchor,
+            constant: -6
         )
         tabFillWidthConstraint.priority = .defaultHigh
         let rightMinWidth = rightLabel.widthAnchor.constraint(

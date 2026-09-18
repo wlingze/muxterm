@@ -411,6 +411,11 @@ final class AttachE2ETests: XCTestCase {
             app.waitReady(minTabs: 2, minLeaves: 3),
             "attach 后应有 2 tab / 3 pane 布局，实际 \(app.testTabAndPaneCounts()) leaves=\(app.testLayoutLeafIDs())"
         )
+        XCTAssertEqual(
+            app.window?.frame,
+            AppE2E.fixedWindowFrame(width: 1280, height: 800),
+            "拓扑和等宽 Tab 出现后不能把主窗口压到内容最小宽度"
+        )
 
         app.testFlushFeeds()
         for id in app.testLayoutLeafIDs() {
