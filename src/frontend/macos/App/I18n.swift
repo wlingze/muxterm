@@ -20,6 +20,7 @@ enum MuxtermTextKey: CaseIterable {
     case closeTabDetail
     case closeWindow
     case closeWindowDetail
+    case closeWorkspace
     case cmdNewPane
     case cmdNewPaneVertical
     case cmdOpenConfig
@@ -243,6 +244,7 @@ enum MuxtermTextKey: CaseIterable {
         case .closeTabDetail: return "close_tab_detail"
         case .closeWindow: return "close_window"
         case .closeWindowDetail: return "close_window_detail"
+        case .closeWorkspace: return "close_workspace"
         case .cmdNewPane: return "cmd_new_pane"
         case .cmdNewPaneVertical: return "cmd_new_pane_vertical"
         case .cmdOpenConfig: return "cmd_open_config"

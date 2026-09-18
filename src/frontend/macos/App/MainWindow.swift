@@ -462,6 +462,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         unifiedPanel.onWorkspaceActivate = { [weak self] workspaceId in
             self?.activateSidebarWorkspace(workspaceId)
         }
+        unifiedPanel.onWorkspaceClose = { [weak self] workspaceId in
+            self?.closeWorkspace(workspaceId)
+        }
         unifiedPanel.onConnect = { [weak self] config in
             self?.connect(config: config)
         }
@@ -2298,6 +2301,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             }
         }
         refreshWorkspaceSidebar(force: true)
+        unifiedPanel.refreshData()
     }
 
     /// 容量是 soft limit：超过阈值时只提醒用户，绝不静默移除后台 Workspace。

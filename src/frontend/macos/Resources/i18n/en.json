@@ -64,6 +64,7 @@
   "close_tab_detail": "Close the current tab",
   "close_window": "Close Window",
   "close_window_detail": "Close the current window",
+  "close_workspace": "Close workspace",
   "rename": "Rename",
   "rename_tab": "Rename Tab…",
   "rename_tab_detail": "Change the current tab name",

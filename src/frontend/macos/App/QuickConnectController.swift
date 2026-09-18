@@ -313,6 +313,13 @@ final class QuickTargetCellView: NSTableCellView {
     private let detailLabel = NSTextField(labelWithString: "")
     private let badgeStack = NSStackView()
     private let workspaceIndexLabel = NSTextField(labelWithString: "")
+    private let closeButton = NSButton()
+    private var onCloseWorkspace: ((String) -> Void)?
+    private var closeWorkspaceID: String?
+    private var badgeTrailingWithClose: NSLayoutConstraint!
+    private var badgeTrailingWithoutClose: NSLayoutConstraint!
+    private var detailTrailingWithClose: NSLayoutConstraint!
+    private var detailTrailingWithoutClose: NSLayoutConstraint!
 
     /// 已打开 Workspace 直接消费侧边栏投影，避免 Quick Panel 再造一套
     /// 固定槽、顺序和编号。未打开的 Project 仍使用 `config`。
@@ -373,10 +380,38 @@ final class QuickTargetCellView: NSTableCellView {
         badgeStack.spacing = 4
         badgeStack.setContentHuggingPriority(.defaultHigh, for: .horizontal)
         badgeStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        closeButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: nil)
+        closeButton.imagePosition = .imageOnly
+        closeButton.imageScaling = .scaleProportionallyDown
+        closeButton.bezelStyle = .shadowlessSquare
+        closeButton.isBordered = false
+        closeButton.focusRingType = .none
+        closeButton.contentTintColor = .tertiaryLabelColor
+        closeButton.target = self
+        closeButton.action = #selector(closeWorkspaceClicked)
+        closeButton.translatesAutoresizingMaskIntoConstraints = false
+        closeButton.isHidden = true
         addSubview(titleLabel)
         addSubview(detailLabel)
         addSubview(badgeStack)
         addSubview(workspaceIndexLabel)
+        addSubview(closeButton)
+        badgeTrailingWithClose = badgeStack.trailingAnchor.constraint(
+            lessThanOrEqualTo: closeButton.leadingAnchor,
+            constant: -6
+        )
+        badgeTrailingWithoutClose = badgeStack.trailingAnchor.constraint(
+            lessThanOrEqualTo: trailingAnchor,
+            constant: -14
+        )
+        detailTrailingWithClose = detailLabel.trailingAnchor.constraint(
+            equalTo: closeButton.leadingAnchor,
+            constant: -6
+        )
+        detailTrailingWithoutClose = detailLabel.trailingAnchor.constraint(
+            equalTo: trailingAnchor,
+            constant: -14
+        )
         NSLayoutConstraint.activate([
             workspaceIndexLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
             workspaceIndexLabel.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
@@ -386,9 +421,14 @@ final class QuickTargetCellView: NSTableCellView {
             badgeStack.leadingAnchor.constraint(equalTo: titleLabel.trailingAnchor, constant: 6),
             badgeStack.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
             detailLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
-            detailLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
             detailLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 2),
             detailLabel.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -5),
+            closeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            closeButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            closeButton.widthAnchor.constraint(equalToConstant: 18),
+            closeButton.heightAnchor.constraint(equalToConstant: 18),
+            badgeTrailingWithoutClose,
+            detailTrailingWithoutClose,
         ])
     }
 
@@ -440,6 +480,32 @@ final class QuickTargetCellView: NSTableCellView {
         updateHighlight()
     }
 
+    func configureWorkspaceClose(
+        _ workspaceID: String?,
+        action: ((String) -> Void)?
+    ) {
+        closeWorkspaceID = workspaceID
+        onCloseWorkspace = action
+        let visible = workspaceID != nil && action != nil
+        closeButton.isHidden = !visible
+        closeButton.setAccessibilityIdentifier(
+            visible ? "muxterm.panel.workspace.close.\(workspaceID ?? "")" : nil
+        )
+        closeButton.setAccessibilityLabel(
+            visible ? MuxtermI18n.shared.tr(.closeWorkspace) : nil
+        )
+        closeButton.toolTip = visible ? MuxtermI18n.shared.tr(.closeWorkspace) : nil
+        badgeTrailingWithoutClose.isActive = !visible
+        detailTrailingWithoutClose.isActive = !visible
+        badgeTrailingWithClose.isActive = visible
+        detailTrailingWithClose.isActive = visible
+    }
+
+    @objc private func closeWorkspaceClicked() {
+        guard let closeWorkspaceID else { return }
+        onCloseWorkspace?(closeWorkspaceID)
+    }
+
     private func updateHighlight() {
         wantsLayer = true
         let alpha: CGFloat
@@ -489,6 +555,12 @@ final class QuickTargetCellView: NSTableCellView {
             let size = view.bounds.size
             return size.width > 0 ? size : view.fittingSize
         }
+    }
+
+    var closeVisibleForTesting: Bool { !closeButton.isHidden }
+
+    func clickCloseForTesting() {
+        closeButton.performClick(nil)
     }
 }
 
