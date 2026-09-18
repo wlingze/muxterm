@@ -123,6 +123,14 @@ final class UnifiedPanelE2ETests: XCTestCase {
         )
         XCTAssertFalse(app.unifiedPanel.testWorkspaceCloseVisible(matching: "Shells"))
         XCTAssertFalse(app.unifiedPanel.testWorkspaceCloseVisible(matching: "Agents"))
+        XCTAssertEqual(
+            app.unifiedPanel.testWorkspaceAggregateAppearance(matching: "Shells"),
+            "shells"
+        )
+        XCTAssertEqual(
+            app.unifiedPanel.testWorkspaceAggregateAppearance(matching: "Agents"),
+            "agents"
+        )
         XCTAssertTrue(app.unifiedPanel.testWorkspaceCloseVisible(matching: first.session))
         XCTAssertTrue(app.unifiedPanel.testWorkspaceCloseVisible(matching: second.session))
 

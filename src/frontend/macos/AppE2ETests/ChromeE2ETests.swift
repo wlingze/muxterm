@@ -74,8 +74,13 @@ final class ChromeE2ETests: XCTestCase {
 
         bar.setWorkspacePresentation(.shells)
         XCTAssertEqual(bar.testWorkspaceTitle(), "S")
+        bar.updateTabs([Tab(id: 7, name: "shell", isActive: true)])
+        XCTAssertEqual(bar.testTabAggregateAppearance(7), "shells")
         bar.setWorkspacePresentation(.agents)
         XCTAssertEqual(bar.testWorkspaceTitle(), "A")
+        XCTAssertEqual(bar.testTabAggregateAppearance(7), "agents")
+        bar.setWorkspacePresentation(.workspace)
+        XCTAssertNil(bar.testTabAggregateAppearance(7))
         bar.testClickWorkspace()
         XCTAssertEqual(clicks, 1)
     }

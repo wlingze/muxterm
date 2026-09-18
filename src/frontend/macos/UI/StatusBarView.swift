@@ -113,6 +113,7 @@ final class StatusBarView: NSView {
     private let attentionButton = AttentionBellButton()
     private let newTabButton = NSButton()
     private let edgeLine = CALayer()
+    private var edgeLineThickness: CGFloat = 1
 
     // 状态点弹出框（点击展开 debug 信息）
     private var statusPopover: NSPopover?
@@ -318,8 +319,13 @@ final class StatusBarView: NSView {
 
     override func layout() {
         super.layout()
-        let y: CGFloat = edgeAtBottom ? bounds.height - 1 : 0
-        edgeLine.frame = CGRect(x: 0, y: y, width: bounds.width, height: 1)
+        let y: CGFloat = edgeAtBottom ? bounds.height - edgeLineThickness : 0
+        edgeLine.frame = CGRect(
+            x: 0,
+            y: y,
+            width: bounds.width,
+            height: edgeLineThickness
+        )
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -353,7 +359,12 @@ final class StatusBarView: NSView {
     }
 
     func setWorkspacePresentation(_ presentation: StatusBarWorkspacePresentation) {
+        let presentationChanged = workspacePresentation != presentation
         workspacePresentation = presentation
+        let aggregate = AggregateWorkspaceAppearance(presentation: presentation)
+        edgeLineThickness = aggregate == nil ? 1 : 2
+        edgeLine.backgroundColor = (aggregate?.accentColor.withAlphaComponent(0.72)
+            ?? NSColor.separatorColor).cgColor
         let symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 11, weight: .medium)
         workspaceButton.imagePosition = .imageOnly
         workspaceButton.image = nil
@@ -371,18 +382,20 @@ final class StatusBarView: NSView {
             layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
         case .shells:
             workspaceButton.imagePosition = .noImage
-            workspaceButton.title = "S"
-            workspaceButton.contentTintColor = .systemTeal
-            workspaceButton.layer?.backgroundColor = NSColor.systemTeal.withAlphaComponent(0.16).cgColor
+            workspaceButton.title = aggregate?.symbol ?? "S"
+            workspaceButton.contentTintColor = aggregate?.accentColor
+            workspaceButton.layer?.backgroundColor = aggregate?.accentColor
+                .withAlphaComponent(0.24).cgColor
             workspaceButton.toolTip = "Shells · Cmd-Ctrl-S"
-            layer?.backgroundColor = NSColor.systemTeal.withAlphaComponent(0.045).cgColor
+            layer?.backgroundColor = aggregate?.accentColor.withAlphaComponent(0.09).cgColor
         case .agents:
             workspaceButton.imagePosition = .noImage
-            workspaceButton.title = "A"
-            workspaceButton.contentTintColor = .systemPurple
-            workspaceButton.layer?.backgroundColor = NSColor.systemPurple.withAlphaComponent(0.17).cgColor
+            workspaceButton.title = aggregate?.symbol ?? "A"
+            workspaceButton.contentTintColor = aggregate?.accentColor
+            workspaceButton.layer?.backgroundColor = aggregate?.accentColor
+                .withAlphaComponent(0.25).cgColor
             workspaceButton.toolTip = "Agents · Cmd-Ctrl-A"
-            layer?.backgroundColor = NSColor.systemPurple.withAlphaComponent(0.05).cgColor
+            layer?.backgroundColor = aggregate?.accentColor.withAlphaComponent(0.10).cgColor
         case .opening:
             workspaceButton.image = NSImage(
                 systemSymbolName: "ellipsis",
@@ -394,6 +407,10 @@ final class StatusBarView: NSView {
             layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
         }
         workspaceButton.setAccessibilityLabel(workspaceButton.toolTip)
+        needsLayout = true
+        if presentationChanged {
+            rebuildCurrentTabs()
+        }
     }
 
     // MARK: - Tab 列表
@@ -788,6 +805,9 @@ final class StatusBarView: NSView {
                 minimum.isActive = true
             }
             button.tag = Int(item.id)
+            button.aggregateAppearance = AggregateWorkspaceAppearance(
+                presentation: workspacePresentation
+            )
             button.target = self
             button.action = #selector(tabClicked(_:))
             button.setAccessibilityIdentifier("muxterm.tab.\(item.id)")
@@ -1034,6 +1054,13 @@ final class StatusBarView: NSView {
         }
     }
 
+    func testTabAggregateAppearance(_ tabId: UInt32) -> String? {
+        tabStack.arrangedSubviews
+            .compactMap { $0 as? StatusTabButton }
+            .first(where: { $0.tag == Int(tabId) })?
+            .aggregateAppearance?.rawValue
+    }
+
     func testTabWidths() -> [CGFloat] {
         layoutSubtreeIfNeeded()
         return tabStack.arrangedSubviews.map(\.frame.width)
@@ -1252,6 +1279,9 @@ private final class StatusTabButton: NSButton {
     private var onClose: (() -> Void)?
     var onDoubleClick: (() -> Void)?
     var onDragEnd: ((NSPoint) -> Void)?
+    var aggregateAppearance: AggregateWorkspaceAppearance? {
+        didSet { applyStyle() }
+    }
     var isActiveTab = false {
         didSet { applyStyle() }
     }
@@ -1371,7 +1401,10 @@ private final class StatusTabButton: NSButton {
 
     func applyStyle() {
         let font = NSFont.systemFont(ofSize: 11, weight: isActiveTab ? .semibold : .regular)
-        let fg = isActiveTab ? NSColor.labelColor : NSColor.secondaryLabelColor
+        let accent = aggregateAppearance?.accentColor
+        let fg = accent.map {
+            isActiveTab ? $0 : $0.withAlphaComponent(0.78)
+        } ?? (isActiveTab ? NSColor.labelColor : NSColor.secondaryLabelColor)
         self.font = font
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = .left
@@ -1386,10 +1419,17 @@ private final class StatusTabButton: NSButton {
                 .paragraphStyle: paragraph,
             ]
         )
-        layer?.backgroundColor = (isActiveTab
-            ? NSColor.selectedControlColor.withAlphaComponent(0.14)
-            : NSColor.clear
-        ).cgColor
+        layer?.backgroundColor = if let accent {
+            accent.withAlphaComponent(isActiveTab ? 0.20 : 0.065).cgColor
+        } else {
+            (isActiveTab
+                ? NSColor.selectedControlColor.withAlphaComponent(0.14)
+                : NSColor.clear
+            ).cgColor
+        }
+        activeUnderline.backgroundColor = (accent ?? NSColor.controlAccentColor).cgColor
+        closeButton.contentTintColor = accent?.withAlphaComponent(0.82)
+            ?? .tertiaryLabelColor
         activeUnderline.isHidden = !isActiveTab
     }
 
