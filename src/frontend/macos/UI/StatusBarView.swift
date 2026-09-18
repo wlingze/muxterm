@@ -128,9 +128,6 @@ final class StatusBarView: NSView {
     private var heightConstraint: NSLayoutConstraint!
     private var sidebarLeadingConstraint: NSLayoutConstraint!
     private var tabStackTrailingConstraint: NSLayoutConstraint!
-    private var rightMinWidthConstraint: NSLayoutConstraint!
-    private var muxtermMiddleConstraints: [NSLayoutConstraint] = []
-    private var tmuxMiddleConstraints: [NSLayoutConstraint] = []
     private var lastTmuxSnapshot: StatusBarSnapshot?
     private var lastBase = StatusBarTextStyle.default
     private var lastLeftStyle = "default"
@@ -253,7 +250,9 @@ final class StatusBarView: NSView {
         tabStack.translatesAutoresizingMaskIntoConstraints = false
         tabViewport.addSubview(tabStack)
         for view in [leftLabel, tabViewport, rightLabel] {
-            view.translatesAutoresizingMaskIntoConstraints = false
+            // 中间区内部按当前 bounds 手工排布，避免 tab 的填充约束
+            // 参与 NSWindow fitting-size 求解并覆盖用户调整的窗口宽度。
+            view.translatesAutoresizingMaskIntoConstraints = true
             middleStack.addSubview(view)
         }
 
@@ -265,30 +264,9 @@ final class StatusBarView: NSView {
             addSubview(view)
         }
 
-        let leftMaxWidth = leftLabel.widthAnchor.constraint(
-            lessThanOrEqualTo: widthAnchor, multiplier: StatusBarLayoutPolicy.sideMaxFraction
-        )
-        let rightMaxWidth = rightLabel.widthAnchor.constraint(
-            lessThanOrEqualTo: widthAnchor, multiplier: StatusBarLayoutPolicy.sideMaxFraction
-        )
-
         tabStackTrailingConstraint = tabStack.trailingAnchor.constraint(
             equalTo: tabViewport.trailingAnchor
         )
-        rightMinWidthConstraint = rightLabel.widthAnchor.constraint(
-            greaterThanOrEqualToConstant: StatusBarTabOverflow.statusRightMinWidth
-        )
-        rightMinWidthConstraint.priority = .defaultHigh
-        muxtermMiddleConstraints = [
-            tabViewport.leadingAnchor.constraint(equalTo: middleStack.leadingAnchor),
-            tabViewport.trailingAnchor.constraint(equalTo: middleStack.trailingAnchor),
-        ]
-        tmuxMiddleConstraints = [
-            leftLabel.leadingAnchor.constraint(equalTo: middleStack.leadingAnchor),
-            tabViewport.leadingAnchor.constraint(equalTo: leftLabel.trailingAnchor, constant: 6),
-            rightLabel.leadingAnchor.constraint(equalTo: tabViewport.trailingAnchor, constant: 6),
-            rightLabel.trailingAnchor.constraint(equalTo: middleStack.trailingAnchor),
-        ]
 
         sidebarLeadingConstraint = sidebarToggleButton.leadingAnchor.constraint(
             equalTo: leadingAnchor,
@@ -312,11 +290,6 @@ final class StatusBarView: NSView {
             tabStack.centerYAnchor.constraint(equalTo: tabViewport.centerYAnchor),
             tabStack.heightAnchor.constraint(equalTo: tabViewport.heightAnchor),
 
-            leftLabel.centerYAnchor.constraint(equalTo: middleStack.centerYAnchor),
-            tabViewport.topAnchor.constraint(equalTo: middleStack.topAnchor),
-            tabViewport.bottomAnchor.constraint(equalTo: middleStack.bottomAnchor),
-            rightLabel.centerYAnchor.constraint(equalTo: middleStack.centerYAnchor),
-
             // 最右侧三个图标：状态点 → 通知 → 新建。
             newTabButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
             newTabButton.centerYAnchor.constraint(equalTo: centerYAnchor),
@@ -336,10 +309,7 @@ final class StatusBarView: NSView {
             statusDot.centerYAnchor.constraint(equalTo: centerYAnchor),
             statusDot.widthAnchor.constraint(equalToConstant: 18),
             statusDot.heightAnchor.constraint(equalToConstant: 18),
-
-            leftMaxWidth, rightMaxWidth,
         ])
-        NSLayoutConstraint.activate(muxtermMiddleConstraints)
         refreshLocalization()
     }
 
@@ -350,12 +320,57 @@ final class StatusBarView: NSView {
 
     override func layout() {
         super.layout()
+        layoutMiddleContent()
         let y: CGFloat = edgeAtBottom ? bounds.height - edgeLineThickness : 0
         edgeLine.frame = CGRect(
             x: 0,
             y: y,
             width: bounds.width,
             height: edgeLineThickness
+        )
+    }
+
+    private func layoutMiddleContent() {
+        let contentBounds = middleStack.bounds
+        let showsTmuxSegments = tmuxStatusEnabled && colorMode == .tmux
+        guard showsTmuxSegments else {
+            tabViewport.frame = contentBounds
+            return
+        }
+
+        let maxSegmentWidth = bounds.width * StatusBarLayoutPolicy.sideMaxFraction
+        let availableSegmentWidth = max(0, contentBounds.width - 12)
+        let rightWidth = min(
+            max(rightLabel.intrinsicContentSize.width, StatusBarTabOverflow.statusRightMinWidth),
+            maxSegmentWidth,
+            availableSegmentWidth
+        )
+        let leftWidth = min(
+            leftLabel.intrinsicContentSize.width,
+            maxSegmentWidth,
+            max(0, availableSegmentWidth - rightWidth)
+        )
+        let leftHeight = min(leftLabel.intrinsicContentSize.height, contentBounds.height)
+        let rightHeight = min(rightLabel.intrinsicContentSize.height, contentBounds.height)
+        leftLabel.frame = NSRect(
+            x: contentBounds.minX,
+            y: contentBounds.midY - leftHeight / 2,
+            width: leftWidth,
+            height: leftHeight
+        )
+        rightLabel.frame = NSRect(
+            x: contentBounds.maxX - rightWidth,
+            y: contentBounds.midY - rightHeight / 2,
+            width: rightWidth,
+            height: rightHeight
+        )
+        let viewportX = leftLabel.frame.maxX + 6
+        let viewportMaxX = rightLabel.frame.minX - 6
+        tabViewport.frame = NSRect(
+            x: viewportX,
+            y: contentBounds.minY,
+            width: max(0, viewportMaxX - viewportX),
+            height: contentBounds.height
         )
     }
 
@@ -855,15 +870,6 @@ final class StatusBarView: NSView {
             for: .horizontal
         )
         tabStackTrailingConstraint.isActive = equalWidth && !items.isEmpty
-        let showsTmuxSegments = tmuxStatusEnabled && colorMode == .tmux
-        if showsTmuxSegments {
-            NSLayoutConstraint.deactivate(muxtermMiddleConstraints)
-            NSLayoutConstraint.activate(tmuxMiddleConstraints)
-        } else {
-            NSLayoutConstraint.deactivate(tmuxMiddleConstraints)
-            NSLayoutConstraint.activate(muxtermMiddleConstraints)
-        }
-        rightMinWidthConstraint.isActive = showsTmuxSegments
         var firstEqualWidthButton: StatusTabButton?
         for (position, item) in items.enumerated() {
             let button = StatusTabButton()
@@ -955,6 +961,7 @@ final class StatusBarView: NSView {
             }
             button.menu = menu.items.isEmpty ? nil : menu
         }
+        needsLayout = true
     }
 
     private func finishTabDrag(source: StatusTabButton, locationInWindow: NSPoint) {
@@ -1038,6 +1045,7 @@ final class StatusBarView: NSView {
             )
         default: break
         }
+        needsLayout = true
     }
 
     func refreshLocalization() {
