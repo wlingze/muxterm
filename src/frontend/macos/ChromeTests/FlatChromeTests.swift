@@ -1276,9 +1276,9 @@ final class PaneHistorySeedPolicyTests: XCTestCase {
             PaneHistorySeedPolicy.shouldResetTerminal(),
             "历史按行写入 scrollback，不得 reset 正在用的 Surface"
         )
-        XCTAssertFalse(
+        XCTAssertTrue(
             PaneHistorySeedPolicy.shouldScrollToLatestAfterPrepend(),
-            "prepend 后 scrollToLatest 会把历史尾卷进视口，TUI 只剩中间"
+            "初次 attach 的 history prepend 完成后必须显式恢复 native live tail"
         )
     }
 

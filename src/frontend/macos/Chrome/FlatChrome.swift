@@ -856,11 +856,11 @@ public enum WorkspaceSwitchPaintPolicy {
 }
 
 /// attach 前历史按行写入 native scrollback：不得 reset，也不得当 VT dump。
-/// prepend 已经把视口留在当前 TUI 上，不要再 scrollToLatest 把历史尾卷进来。
+/// 初次 seed 完成后明确回到底部，避免 reset/prepend 中间态留下旧 `yDisp`。
 public enum PaneHistorySeedPolicy {
     public static func shouldResetTerminal() -> Bool { false }
 
-    public static func shouldScrollToLatestAfterPrepend() -> Bool { false }
+    public static func shouldScrollToLatestAfterPrepend() -> Bool { true }
 
     public static func splitHistoryAndVisible(
         lines: [String],

@@ -501,12 +501,13 @@ final class AgentRenderE2ETests: XCTestCase {
         manager.testFlushSurfaceSeeds()
         AppE2E.pump(40)
 
+        XCTAssertTrue(view.isAtLatest(), "Pi attach + history 回填后必须位于 native live tail")
         let visible = view.visibleScreenText()
         XCTAssertTrue(visible.contains("PI_STATUS"), "顶栏必须还在。got=\(visible)")
         XCTAssertTrue(visible.contains("PROMPT>"), "输入盒必须还在，不能只看到中间。got=\(visible)")
         XCTAssertFalse(
             visible.contains("HIST_ZHONG"),
-            "prepend 后不得 scrollToLatest 把历史尾卷进视口。got=\(visible)"
+            "live tail 不应显示离屏历史。got=\(visible)"
         )
 
         view.scrollLines(80)

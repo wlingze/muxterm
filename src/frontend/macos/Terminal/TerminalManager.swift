@@ -388,10 +388,7 @@ final class TerminalManager: TerminalInputHandler {
             } else {
                 pendingViewportOffsets[paneId] = requestedOffset
             }
-        } else if seed.scrollToLatest,
-                  !(seed.view.historyPrepended
-                    && !PaneHistorySeedPolicy.shouldScrollToLatestAfterPrepend())
-        {
+        } else if seed.scrollToLatest {
             applyingNativeScroll.insert(paneId)
             seed.view.scrollToLatest()
             applyingNativeScroll.remove(paneId)

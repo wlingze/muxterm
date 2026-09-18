@@ -484,9 +484,15 @@ final class MuxTerminalView: TerminalView {
     func prependHistoryLines(_ lines: [String]) {
         guard !PaneHistorySeedPolicy.shouldResetTerminal() else { return }
         guard !lines.isEmpty, !historyPrepended else { return }
+        let wasAtLatest = isAtLatest()
         historyPrepended = true
         ensureHistoryCapacity(atLeast: historyCapacity + lines.count)
         getTerminal().muxtermPrependHistoryLines(lines)
+        // SwiftTerm 的 buffer splice 会移动 yBase/yDisp。若 seed 原本在
+        // live tail，明确恢复到底部；若用户已经在历史中，则保留原内容。
+        if wasAtLatest {
+            scrollToLatest()
+        }
         updateAccessibilityOutput()
     }
 
