@@ -146,6 +146,7 @@ enum MuxtermTextKey: CaseIterable {
     case paneSearchPlaceholder
     case panes
     case paneAccessibility
+    case paneActions
     case previousPane
     case previousPaneDetail
     case previousCommand
@@ -370,6 +371,7 @@ enum MuxtermTextKey: CaseIterable {
         case .paneSearchPlaceholder: return "pane_search_placeholder"
         case .panes: return "panes"
         case .paneAccessibility: return "pane_accessibility"
+        case .paneActions: return "pane_actions"
         case .previousPane: return "previous_pane"
         case .previousPaneDetail: return "previous_pane_detail"
         case .previousCommand: return "previous_command"

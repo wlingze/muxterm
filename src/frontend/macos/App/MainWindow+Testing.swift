@@ -120,6 +120,10 @@ extension MainWindowController {
         content.paneLayout.testPaneTerminalHeight(paneId)
     }
 
+    func testTerminalClientContentSize() -> NSSize {
+        content.paneLayout.terminalClientContentSize
+    }
+
     func testPaneTerminalText(_ paneId: UInt32) -> String {
         terminalManager.view(for: paneId).visibleScreenText()
     }

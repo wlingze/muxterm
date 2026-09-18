@@ -100,6 +100,7 @@
   "panes": "panes",
   "pane": "pane",
   "pane_accessibility": "Pane @{{id}}",
+  "pane_actions": "Pane actions",
   "hint_palette": "palette",
   "hint_pane": "pane",
   "hint_new_tab": "new tab",
