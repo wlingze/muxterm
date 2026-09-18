@@ -259,6 +259,7 @@ unsafe fn tab_layout_shape(
         id: 0,
         cols: 0,
         rows: 0,
+        title: std::ptr::null(),
         is_active: 0,
     }; 32];
     let n = muxterm_get_panes(h, query_id, panes.as_mut_ptr(), panes.len() as i32);
@@ -362,6 +363,7 @@ unsafe fn tab_pane_count(
         id: 0,
         cols: 0,
         rows: 0,
+        title: std::ptr::null(),
         is_active: 0,
     }; 16];
     muxterm_get_panes(h, tab_id, panes.as_mut_ptr(), 16)
@@ -643,6 +645,7 @@ fn macos_ffi_split_and_new_tab_complete_within_latency_budget() {
                 id: 0,
                 cols: 0,
                 rows: 0,
+                title: std::ptr::null(),
                 is_active: 0,
             }; 8];
             if muxterm_get_panes(h, 0, panes.as_mut_ptr(), 8) == 1 {
@@ -778,6 +781,7 @@ fn macos_ffi_layout_stays_isolated_after_split_and_new_tabs() {
             id: 0,
             cols: 0,
             rows: 0,
+            title: std::ptr::null(),
             is_active: 0,
         }; 16];
         let npanes = muxterm_get_panes(h, three_tab, panes.as_mut_ptr(), 16);
@@ -838,6 +842,7 @@ fn macos_ffi_layout_stays_isolated_after_split_and_new_tabs() {
                 id: 0,
                 cols: 0,
                 rows: 0,
+                title: std::ptr::null(),
                 is_active: 0,
             }; 8];
             if muxterm_get_panes(h, tab3, new_panes.as_mut_ptr(), 8) >= 1 {
@@ -940,6 +945,7 @@ fn macos_ffi_tmux_client_resize_is_stable_and_pane_axis_resize_persists() {
             id: 0,
             cols: 0,
             rows: 0,
+            title: std::ptr::null(),
             is_active: 0,
         }; 16];
         let n = muxterm_get_panes(h, three_tab, panes.as_mut_ptr(), panes.len() as i32);
