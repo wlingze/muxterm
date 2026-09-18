@@ -1,11 +1,37 @@
 import AppKit
 import MuxtermChrome
 
+enum PaneTitleAction: Equatable {
+    case splitHorizontal
+    case splitVertical
+    case close
+}
+
+/// Pane 标题栏占用的是原生像素，不属于 Runtime 字符格。左右分屏共享同一
+/// 条纵向空间，只扣较深的一侧；上下分屏会把两棵子树的标题高度相加。
+enum PaneTitleBarGeometry {
+    static let height: CGFloat = 22
+
+    static func reservedHeight(for layout: LayoutNode?, showsTitles: Bool) -> CGFloat {
+        guard showsTitles, let layout else { return 0 }
+        switch layout {
+        case .leaf:
+            return height
+        case .split(let horizontal, _, let first, let second):
+            let firstHeight = reservedHeight(for: first, showsTitles: true)
+            let secondHeight = reservedHeight(for: second, showsTitles: true)
+            return horizontal
+                ? max(firstHeight, secondHeight)
+                : firstHeight + secondHeight
+        }
+    }
+}
+
 /// 递归二叉树 Pane 分割布局（对应 CLayoutNode）。
 ///
 /// 全程 Auto Layout，避免 frame/AL 混用导致子视图 bounds=0 → SwiftTerm 黑屏。
 /// 每个 Workspace 一份已建 tab 树；切工作区 / 切 tab 只挂已有 host，不拆 SwiftTerm。
-final class PaneLayoutView: NSView {
+final class PaneLayoutView: NSView, TerminalClientContentSizing {
     private struct CachedTabTree {
         var layout: LayoutNode
         var paneIds: Set<UInt32>
@@ -41,8 +67,10 @@ final class PaneLayoutView: NSView {
     private var lastLayoutBounds: (Int, Int) = (0, 0)
     private var geometrySyncScheduled = false
     private var pendingGeometryPaneIds: Set<UInt32>?
+    private var pendingForcedClientResize = false
     var onActivatePane: ((UInt32) -> Void)?
     var onMovePaneToNewTab: ((UInt32) -> Void)?
+    var onPaneTitleAction: ((UInt32, PaneTitleAction) -> Void)?
     var allowsPaneBreak = false {
         didSet {
             for host in hostByPane.values {
@@ -235,7 +263,7 @@ final class PaneLayoutView: NSView {
         // 的像素重算 SwiftTerm 格子，否则切 tab 后字体/结构会错，
         // 直到用户再点一下 pane。
         if TabGeometrySyncPolicy.needsPaneGridSync(treeChanged: true) {
-            scheduleGeometrySync(paneIds: ids)
+            scheduleGeometrySync(paneIds: ids, forceClientResize: true)
         }
         return true
     }
@@ -345,7 +373,7 @@ final class PaneLayoutView: NSView {
         }
         markActivePane(cached.activePaneId)
         if TabGeometrySyncPolicy.shouldSyncOnCachedReveal() {
-            scheduleGeometrySync(paneIds: cached.paneIds)
+            scheduleGeometrySync(paneIds: cached.paneIds, forceClientResize: true)
         }
     }
 
@@ -367,6 +395,25 @@ final class PaneLayoutView: NSView {
 
     func testPaneTerminalHeight(_ paneId: UInt32) -> CGFloat {
         hostByPane[paneId]?.terminalHeightForTesting ?? 0
+    }
+
+    var terminalClientContentSize: NSSize {
+        let reservedHeight = PaneTitleBarGeometry.reservedHeight(
+            for: currentLayout,
+            showsTitles: currentPaneIds.count > 1
+        )
+        return NSSize(
+            width: bounds.width,
+            height: max(0, bounds.height - reservedHeight)
+        )
+    }
+
+    func testPaneTitleActions(_ paneId: UInt32) -> [PaneTitleAction] {
+        hostByPane[paneId]?.titleActionsForTesting ?? []
+    }
+
+    func testTriggerPaneTitleAction(_ paneId: UInt32, action: PaneTitleAction) {
+        hostByPane[paneId]?.triggerTitleAction(action)
     }
 
     func testMovePaneToNewTab(_ paneId: UInt32) {
@@ -446,19 +493,31 @@ final class PaneLayoutView: NSView {
         }
     }
 
-    private func finalizeAfterLayout(paneIds: Set<UInt32>, attempt: Int) {
+    private func finalizeAfterLayout(
+        paneIds: Set<UInt32>,
+        forceClientResize: Bool,
+        attempt: Int
+    ) {
         guard paneIds == currentPaneIds else { return }
         layoutSubtreeIfNeeded()
         if (bounds.width < 8 || bounds.height < 8), attempt < 10 {
             DispatchQueue.main.async { [weak self] in
-                self?.finalizeAfterLayout(paneIds: paneIds, attempt: attempt + 1)
+                self?.finalizeAfterLayout(
+                    paneIds: paneIds,
+                    forceClientResize: forceClientResize,
+                    attempt: attempt + 1
+                )
             }
             return
         }
         for host in hostByPane.values {
             host.publishGeometry()
         }
-        terminalManager.syncAllVisibleSizes(paneIds: paneIds, container: self)
+        terminalManager.syncAllVisibleSizes(
+            paneIds: paneIds,
+            container: self,
+            forceClientResize: forceClientResize
+        )
         terminalManager.forceRedraw(paneIds: paneIds)
     }
 
@@ -471,17 +530,27 @@ final class PaneLayoutView: NSView {
         scheduleGeometrySync(paneIds: currentPaneIds)
     }
 
-    private func scheduleGeometrySync(paneIds: Set<UInt32>) {
+    private func scheduleGeometrySync(
+        paneIds: Set<UInt32>,
+        forceClientResize: Bool = false
+    ) {
         guard paneIds == currentPaneIds else { return }
         pendingGeometryPaneIds = paneIds
+        pendingForcedClientResize = pendingForcedClientResize || forceClientResize
         guard !geometrySyncScheduled else { return }
         geometrySyncScheduled = true
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.geometrySyncScheduled = false
             let latestPaneIds = self.pendingGeometryPaneIds ?? self.currentPaneIds
+            let forceClientResize = self.pendingForcedClientResize
             self.pendingGeometryPaneIds = nil
-            self.finalizeAfterLayout(paneIds: latestPaneIds, attempt: 0)
+            self.pendingForcedClientResize = false
+            self.finalizeAfterLayout(
+                paneIds: latestPaneIds,
+                forceClientResize: forceClientResize,
+                attempt: 0
+            )
         }
     }
 
@@ -498,6 +567,9 @@ final class PaneLayoutView: NSView {
             }
             wrap.onMoveToNewTab = { [weak self] id in
                 self?.onMovePaneToNewTab?(id)
+            }
+            wrap.onTitleAction = { [weak self] id, action in
+                self?.onPaneTitleAction?(id, action)
             }
             wrap.setAllowsMoveToNewTab(false)
             wrap.setShowsTitleBar(false)
@@ -569,6 +641,7 @@ final class PaneHostView: NSView {
     let paneId: UInt32
     var onActivate: ((UInt32) -> Void)?
     var onMoveToNewTab: ((UInt32) -> Void)?
+    var onTitleAction: ((UInt32, PaneTitleAction) -> Void)?
     private var isPaneActive = false
     private let moveToNewTabItem: NSMenuItem
     private let moveSeparator: NSMenuItem
@@ -616,6 +689,10 @@ final class PaneHostView: NSView {
         }
         titleBar.onDragOut = { [weak self] in
             self?.triggerMoveToNewTab()
+        }
+        titleBar.onAction = { [weak self] action in
+            guard let self else { return }
+            self.onTitleAction?(self.paneId, action)
         }
         addSubview(titleBar)
         titleBarHeightConstraint = titleBar.heightAnchor.constraint(equalToConstant: 0)
@@ -689,7 +766,7 @@ final class PaneHostView: NSView {
 
     func setShowsTitleBar(_ visible: Bool) {
         titleBar.isHidden = !visible
-        titleBarHeightConstraint.constant = visible ? 22 : 0
+        titleBarHeightConstraint.constant = visible ? PaneTitleBarGeometry.height : 0
         needsLayout = true
     }
 
@@ -704,6 +781,13 @@ final class PaneHostView: NSView {
     var isTitleBarVisibleForTesting: Bool { !titleBar.isHidden }
     var titleForTesting: String { titleBar.titleForTesting }
     var terminalHeightForTesting: CGFloat { terminal.frame.height }
+    var titleActionsForTesting: [PaneTitleAction] { titleBar.actionsForTesting }
+
+    func triggerTitleAction(_ action: PaneTitleAction) {
+        guard !titleBar.isHidden else { return }
+        onActivate?(paneId)
+        onTitleAction?(paneId, action)
+    }
 
     func triggerMoveToNewTab() {
         guard !moveToNewTabItem.isHidden else { return }
@@ -739,9 +823,11 @@ final class PaneHostView: NSView {
 private final class PaneTitleBarView: NSView {
     var onActivate: (() -> Void)?
     var onDragOut: (() -> Void)?
+    var onAction: ((PaneTitleAction) -> Void)?
     var dragEnabled = false
     private let label = NSTextField(labelWithString: "")
-    private let handle = NSImageView()
+    private let actionButton = NSButton()
+    private let actionMenu = NSMenu()
     private let paneId: UInt32
 
     init(paneId: UInt32, title: String) {
@@ -759,23 +845,31 @@ private final class PaneTitleBarView: NSView {
         addSubview(label)
         setTitle(title)
 
-        handle.translatesAutoresizingMaskIntoConstraints = false
-        handle.image = NSImage(
-            systemSymbolName: "line.3.horizontal",
-            accessibilityDescription: nil
+        configureActionMenu()
+        actionButton.translatesAutoresizingMaskIntoConstraints = false
+        actionButton.image = NSImage(
+            systemSymbolName: "ellipsis.circle",
+            accessibilityDescription: MuxtermI18n.shared.tr(.paneActions)
         )
-        handle.contentTintColor = .tertiaryLabelColor
-        handle.imageScaling = .scaleProportionallyDown
-        addSubview(handle)
+        actionButton.imagePosition = .imageOnly
+        actionButton.isBordered = false
+        actionButton.bezelStyle = .inline
+        actionButton.focusRingType = .none
+        actionButton.contentTintColor = .secondaryLabelColor
+        actionButton.target = self
+        actionButton.action = #selector(showActionMenu(_:))
+        actionButton.toolTip = MuxtermI18n.shared.tr(.paneActions)
+        actionButton.setAccessibilityIdentifier("muxterm.paneActions.\(paneId)")
+        addSubview(actionButton)
 
         NSLayoutConstraint.activate([
             label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 7),
             label.centerYAnchor.constraint(equalTo: centerYAnchor),
-            label.trailingAnchor.constraint(lessThanOrEqualTo: handle.leadingAnchor, constant: -6),
-            handle.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
-            handle.centerYAnchor.constraint(equalTo: centerYAnchor),
-            handle.widthAnchor.constraint(equalToConstant: 12),
-            handle.heightAnchor.constraint(equalToConstant: 12),
+            label.trailingAnchor.constraint(lessThanOrEqualTo: actionButton.leadingAnchor, constant: -6),
+            actionButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+            actionButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            actionButton.widthAnchor.constraint(equalToConstant: 18),
+            actionButton.heightAnchor.constraint(equalToConstant: 18),
         ])
         setAccessibilityRole(.group)
         setAccessibilityLabel(label.stringValue)
@@ -800,6 +894,57 @@ private final class PaneTitleBarView: NSView {
     }
 
     var titleForTesting: String { label.stringValue }
+    var actionsForTesting: [PaneTitleAction] {
+        [.splitHorizontal, .splitVertical, .close]
+    }
+
+    private func configureActionMenu() {
+        let horizontal = NSMenuItem(
+            title: MuxtermI18n.shared.tr(.menuSplitHorizontal),
+            action: #selector(splitHorizontal(_:)),
+            keyEquivalent: ""
+        )
+        horizontal.target = self
+        actionMenu.addItem(horizontal)
+
+        let vertical = NSMenuItem(
+            title: MuxtermI18n.shared.tr(.menuSplitVertical),
+            action: #selector(splitVertical(_:)),
+            keyEquivalent: ""
+        )
+        vertical.target = self
+        actionMenu.addItem(vertical)
+        actionMenu.addItem(.separator())
+
+        let close = NSMenuItem(
+            title: MuxtermI18n.shared.tr(.menuClosePane),
+            action: #selector(closePane(_:)),
+            keyEquivalent: ""
+        )
+        close.target = self
+        actionMenu.addItem(close)
+    }
+
+    @objc private func showActionMenu(_ sender: NSButton) {
+        onActivate?()
+        actionMenu.popUp(
+            positioning: nil,
+            at: NSPoint(x: sender.bounds.maxX, y: sender.bounds.minY),
+            in: sender
+        )
+    }
+
+    @objc private func splitHorizontal(_ sender: Any?) {
+        onAction?(.splitHorizontal)
+    }
+
+    @objc private func splitVertical(_ sender: Any?) {
+        onAction?(.splitVertical)
+    }
+
+    @objc private func closePane(_ sender: Any?) {
+        onAction?(.close)
+    }
 
     override func mouseDown(with event: NSEvent) {
         onActivate?()

@@ -1,6 +1,12 @@
 import AppKit
 import MuxtermChrome
 
+/// 提供终端真正可用的 client 区域。Pane 标题栏属于原生 chrome，不能
+/// 被计入 tmux / Runtime 的字符格，否则最下面几行会落到可见区域之外。
+protocol TerminalClientContentSizing: AnyObject {
+    var terminalClientContentSize: NSSize { get }
+}
+
 /// 管理多个 pane 对应的 `MuxTerminalView`，并把输出/输入接到 CoreBridge。
 final class TerminalManager: TerminalInputHandler {
     private weak var bridge: CoreBridge?
@@ -933,7 +939,11 @@ final class TerminalManager: TerminalInputHandler {
 
     /// 布局完成后：先更新各个 SwiftTerm 的本地渲染尺寸，再按后端类型同步尺寸。
     /// tmux 模式只发送一次整体 client resize，避免 pane resize 逐个触发布局反馈。
-    func syncAllVisibleSizes(paneIds: Set<UInt32>, container: NSView? = nil) {
+    func syncAllVisibleSizes(
+        paneIds: Set<UInt32>,
+        container: NSView? = nil,
+        forceClientResize: Bool = false
+    ) {
         for id in paneIds {
             guard let view = views[id] else { continue }
             view.layoutSubtreeIfNeeded()
@@ -944,7 +954,11 @@ final class TerminalManager: TerminalInputHandler {
             )
         }
         if bridgeQueriesEnabled, usesClientResize, let container {
-            syncClientSize(container: container, paneIds: paneIds)
+            syncClientSize(
+                container: container,
+                paneIds: paneIds,
+                force: forceClientResize
+            )
         }
     }
 
@@ -972,12 +986,24 @@ final class TerminalManager: TerminalInputHandler {
         views.values.first?.themeHexColors()
     }
 
-    private func syncClientSize(container: NSView, paneIds: Set<UInt32>) {
+    private func syncClientSize(
+        container: NSView,
+        paneIds: Set<UInt32>,
+        force: Bool = false
+    ) {
         guard bridgeQueriesEnabled else { return }
         guard let size = clientGridSize(container: container, paneIds: paneIds) else {
             return
         }
-        guard ClientGridHysteresis.shouldSend(current: lastClientSize, next: size) else { return }
+        let changed = lastClientSize?.0 != size.0 || lastClientSize?.1 != size.1
+        guard changed else { return }
+        let isRetinaError = lastClientSize.map {
+            ClientGridHysteresis.isRetinaDoubleCount(from: $0, to: size)
+        } ?? false
+        guard !isRetinaError else { return }
+        guard force || ClientGridHysteresis.shouldSend(current: lastClientSize, next: size) else {
+            return
+        }
         guard pendingClientSize?.0 != size.0 || pendingClientSize?.1 != size.1 else { return }
 
         pendingClientSize = size
@@ -986,7 +1012,11 @@ final class TerminalManager: TerminalInputHandler {
             guard let self, let container else { return }
             self.pendingClientSize = nil
             self.clientResizeWorkItem = nil
-            self.sendClientResize(container: container, paneIds: paneIds)
+            self.sendClientResize(
+                container: container,
+                paneIds: paneIds,
+                force: force
+            )
         }
         clientResizeWorkItem = work
         // live resize 每个像素都会触发 layout；延迟一个短帧，只把最终
@@ -994,12 +1024,24 @@ final class TerminalManager: TerminalInputHandler {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.04, execute: work)
     }
 
-    private func sendClientResize(container: NSView, paneIds: Set<UInt32>) {
+    private func sendClientResize(
+        container: NSView,
+        paneIds: Set<UInt32>,
+        force: Bool = false
+    ) {
         guard bridgeQueriesEnabled else { return }
         guard let size = clientGridSize(container: container, paneIds: paneIds) else {
             return
         }
-        guard ClientGridHysteresis.shouldSend(current: lastClientSize, next: size) else { return }
+        let changed = lastClientSize?.0 != size.0 || lastClientSize?.1 != size.1
+        guard changed else { return }
+        let isRetinaError = lastClientSize.map {
+            ClientGridHysteresis.isRetinaDoubleCount(from: $0, to: size)
+        } ?? false
+        guard !isRetinaError else { return }
+        guard force || ClientGridHysteresis.shouldSend(current: lastClientSize, next: size) else {
+            return
+        }
         let failureMessage = MuxtermI18n.shared.tr(.errorResizeClient)
         if enqueueCoreOperation(
             .resize(.client(cols: size.0, rows: size.1)),
@@ -1025,8 +1067,10 @@ final class TerminalManager: TerminalInputHandler {
         let scale = container.window?.backingScaleFactor
             ?? NSScreen.main?.backingScaleFactor
             ?? 1
+        let contentSize = (container as? TerminalClientContentSizing)?.terminalClientContentSize
+            ?? container.bounds.size
         return MuxTerminalGridMetrics.clientSize(
-            bounds: container.bounds.size,
+            bounds: contentSize,
             family: fontFamily,
             size: fontSize,
             backingScale: scale

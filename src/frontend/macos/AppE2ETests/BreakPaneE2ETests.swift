@@ -5,6 +5,72 @@ import MuxtermChrome
 
 /// 把 pane 拖成新 tab = tmux `break-pane`（iTerm2 breakOutWindowPane / MoveSessionToNewTab）。
 final class BreakPaneE2ETests: XCTestCase {
+    func testPaneTitleReservationFollowsSplitAxis() {
+        let first = LayoutNode.leaf(paneId: 1)
+        let second = LayoutNode.leaf(paneId: 2)
+        let horizontal = LayoutNode.split(
+            horizontal: true,
+            ratio: 500,
+            first: first,
+            second: second
+        )
+        let vertical = LayoutNode.split(
+            horizontal: false,
+            ratio: 500,
+            first: first,
+            second: second
+        )
+
+        XCTAssertEqual(
+            PaneTitleBarGeometry.reservedHeight(for: first, showsTitles: false),
+            0
+        )
+        XCTAssertEqual(
+            PaneTitleBarGeometry.reservedHeight(for: horizontal, showsTitles: true),
+            PaneTitleBarGeometry.height,
+            "左右分屏的标题栏在同一纵向层级，只扣除一次固定高度"
+        )
+        XCTAssertEqual(
+            PaneTitleBarGeometry.reservedHeight(for: vertical, showsTitles: true),
+            PaneTitleBarGeometry.height * 2,
+            "上下分屏的两个标题栏都必须从 client 高度中扣除"
+        )
+        XCTAssertEqual(
+            PaneTitleBarGeometry.reservedHeight(
+                for: .split(
+                    horizontal: true,
+                    ratio: 500,
+                    first: vertical,
+                    second: .leaf(paneId: 3)
+                ),
+                showsTitles: true
+            ),
+            PaneTitleBarGeometry.height * 2,
+            "嵌套布局按最深的纵向标题链计算"
+        )
+    }
+
+    func testPaneTitleOffersSplitAndCloseActions() {
+        AppE2E.ensureApp()
+        let terminal = MuxTerminalView(
+            paneId: 7,
+            frame: NSRect(x: 0, y: 0, width: 400, height: 200)
+        )
+        let host = PaneHostView(paneId: 7, title: "shell", terminal: terminal)
+        host.setShowsTitleBar(true)
+        var actions: [(UInt32, PaneTitleAction)] = []
+        host.onTitleAction = { actions.append(($0, $1)) }
+
+        XCTAssertEqual(
+            host.titleActionsForTesting,
+            [.splitHorizontal, .splitVertical, .close]
+        )
+        host.triggerTitleAction(.splitVertical)
+        XCTAssertEqual(actions.count, 1)
+        XCTAssertEqual(actions.first?.0, 7)
+        XCTAssertEqual(actions.first?.1, .splitVertical)
+    }
+
     func testPaneTitlesAppearOnlyForSplitTabs() throws {
         let single = OnePaneCat(label: "pane-title-single")
         let singleApp = try AppE2E.attachWindow(socket: single.socket, session: single.session)
@@ -32,6 +98,13 @@ final class BreakPaneE2ETests: XCTestCase {
                 "标题条必须占据独立布局行，不能悬浮覆盖 terminal"
             )
         }
+        XCTAssertEqual(
+            splitApp.testPaneLayoutFrame().height
+                - splitApp.testTerminalClientContentSize().height,
+            PaneTitleBarGeometry.height,
+            accuracy: 1,
+            "左右分屏必须用扣除标题栏后的高度计算 tmux client 字符格"
+        )
     }
 
     func testBreakPaneCreatesNewTabWithoutExtraHierarchy() throws {
