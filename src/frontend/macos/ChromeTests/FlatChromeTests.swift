@@ -531,6 +531,42 @@ final class PaneOutputFeedPolicyTests: XCTestCase {
         XCTAssertTrue(scheduler.isEmpty)
     }
 
+    func testFairPaneFeedSchedulerCompactsOnlyAtCompleteRedrawBoundary() {
+        var scheduler = FairPaneFeedScheduler()
+        scheduler.append(paneID: 1, data: Data("stale\u{1b}[38;2;10;".utf8))
+        scheduler.append(paneID: 2, data: Data("other-pane".utf8))
+
+        XCTAssertTrue(
+            scheduler.compactToLatestFullRedraw(
+                paneID: 1,
+                incoming: Data("20mold\u{1b}[H\u{1b}[2JNEW_FRAME".utf8),
+                maxBytes: 64
+            )
+        )
+        XCTAssertEqual(
+            scheduler.pendingBytes(for: 1),
+            Data("\u{1b}[H\u{1b}[2JNEW_FRAME".utf8).count
+        )
+
+        let other = scheduler.pop(maxBytes: 64)
+        let compacted = scheduler.pop(maxBytes: 64)
+        XCTAssertEqual(String(data: other?.data ?? Data(), encoding: .utf8), "other-pane")
+        XCTAssertEqual(
+            String(data: compacted?.data ?? Data(), encoding: .utf8),
+            "\u{1b}[H\u{1b}[2JNEW_FRAME"
+        )
+
+        scheduler.append(paneID: 3, data: Data("unterminated\u{1b}]1337;x=".utf8))
+        XCTAssertFalse(
+            scheduler.compactToLatestFullRedraw(
+                paneID: 3,
+                incoming: Data("still-not-a-frame".utf8),
+                maxBytes: 64
+            ),
+            "没有完整清屏边界时不能把任意 suffix 喂给 VT parser"
+        )
+    }
+
     func testSurfaceEventBatchPolicyHonoursCallerBudget() {
         XCTAssertFalse(
             SurfaceEventBatchPolicy.shouldYield(
@@ -602,6 +638,26 @@ final class PaneOutputFeedPolicyTests: XCTestCase {
         XCTAssertEqual(
             SurfaceEventBatchPolicy.catchUpInterval,
             FlatChrome.eventPollInterval
+        )
+    }
+
+    func testFullRedrawBoundaryKeepsLatestCompleteFrame() {
+        let stream = Data(
+            "prefix\u{1b}[2J\u{1b}[HOLD\u{1b}[1;1H\u{1b}[2JLATEST\u{1b}[31".utf8
+        )
+        XCTAssertEqual(
+            TerminalRedrawBoundary.latestFullRedrawSuffix(in: stream, maxBytes: 64),
+            Data("\u{1b}[1;1H\u{1b}[2JLATEST\u{1b}[31".utf8)
+        )
+        XCTAssertNil(
+            TerminalRedrawBoundary.latestFullRedrawSuffix(
+                in: Data("prefix\u{1b}[2Jcontent-without-home".utf8),
+                maxBytes: 64
+            )
+        )
+        XCTAssertNil(
+            TerminalRedrawBoundary.latestFullRedrawSuffix(in: stream, maxBytes: 8),
+            "单个完整新帧仍超过队列上限时必须走权威 snapshot"
         )
     }
 

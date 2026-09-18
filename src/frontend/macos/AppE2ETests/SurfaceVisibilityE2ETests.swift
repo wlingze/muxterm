@@ -506,6 +506,49 @@ final class SurfaceVisibilityE2ETests: XCTestCase {
         XCTAssertFalse(text.contains("xxxxxxxx"), "overflow bytes must never enter the VT parser")
     }
 
+    func testHighVolumeFullRedrawCompactsWithoutBlockingAnotherPane() throws {
+        AppE2E.ensureApp()
+        let bridge = try CoreBridge(backendType: "local")
+        defer { bridge.shutdown() }
+        let manager = TerminalManager(bridge: bridge, runtimeID: "tmux")
+        var requested: [UInt32] = []
+        manager.onAuthoritativeSnapshotRequired = { pane in
+            requested.append(pane)
+            return true
+        }
+
+        let busy = manager.view(for: 7)
+        let interactive = manager.view(for: 8)
+        manager.handleOutput(paneId: 7, data: Data("BUSY_BASELINE".utf8))
+        manager.handleOutput(paneId: 8, data: Data("INTERACTIVE_BASELINE".utf8))
+        manager.testFlushFeeds()
+
+        manager.testQueueSurfaceLiveOutput(
+            paneId: 7,
+            data: Data(repeating: 0x78, count: 2 * 1024 * 1024 - 32)
+        )
+        manager.testQueueSurfaceLiveOutput(
+            paneId: 8,
+            data: Data("\r\nOTHER_PANE_READY".utf8)
+        )
+        manager.testQueueSurfaceLiveOutput(
+            paneId: 7,
+            data: Data("stale-tail\u{1b}[H\u{1b}[2JLATEST_CURSOR_FRAME".utf8)
+        )
+
+        manager.testFlushFeeds()
+        XCTAssertTrue(
+            interactive.visibleScreenText().contains("OTHER_PANE_READY"),
+            "busy pane 压缩后必须先把时间片让给已经等待的 pane"
+        )
+        for _ in 0..<8 {
+            manager.testFlushFeeds()
+        }
+        XCTAssertTrue(busy.visibleScreenText().contains("LATEST_CURSOR_FRAME"))
+        XCTAssertFalse(busy.visibleScreenText().contains("xxxxxxxx"))
+        XCTAssertTrue(requested.isEmpty, "完整 redraw 可安全压缩，不应触发 snapshot 循环")
+    }
+
     func testBackgroundOutputOverflowRejectedRequestUsesOnlySafeBaseline() throws {
         let (bridge, manager) = try makeManager()
         defer { bridge.shutdown() }

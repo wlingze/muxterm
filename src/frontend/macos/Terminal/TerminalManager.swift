@@ -598,10 +598,21 @@ final class TerminalManager: TerminalInputHandler {
         if !isDirectPtyTerminal {
             let pending = pendingFeeds.pendingBytes(for: paneId)
             if data.count > Self.liveOutputCap - min(pending, Self.liveOutputCap) {
-                pendingFeeds.remove(paneID: paneId)
-                markNeedsAuthoritativeSnapshot(paneId: paneId)
-                requestAuthoritativeSnapshotsIfNeeded()
-                return
+                if pendingFeeds.compactToLatestFullRedraw(
+                    paneID: paneId,
+                    incoming: data,
+                    maxBytes: Self.liveOutputCap
+                ) {
+                    appendSnippet(data)
+                    recordTraffic(bytes: data.count)
+                    scheduleFeedFlush()
+                    return
+                } else {
+                    pendingFeeds.remove(paneID: paneId)
+                    markNeedsAuthoritativeSnapshot(paneId: paneId)
+                    requestAuthoritativeSnapshotsIfNeeded()
+                    return
+                }
             }
         }
         pendingFeeds.append(paneID: paneId, data: data)
@@ -759,17 +770,23 @@ final class TerminalManager: TerminalInputHandler {
         view.prependHistoryLines(lines)
     }
 
-    private func scheduleFeedFlush() {
+    private func scheduleFeedFlush(immediate: Bool = false) {
         guard feedFlushWorkItem == nil else { return }
         let work = DispatchWorkItem { [weak self] in
             self?.feedFlushWorkItem = nil
             self?.flushPendingFeeds()
         }
         feedFlushWorkItem = work
-        DispatchQueue.main.asyncAfter(
-            deadline: .now() + Self.feedFlushInterval,
-            execute: work
-        )
+        if immediate {
+            // 每轮仍受 feedTimeBudget 和逐 Pane round-robin 约束；这里只移除
+            // 积压期间额外的 16ms 空窗，让 Cursor/Pi 重绘不会持续追上上限。
+            DispatchQueue.main.async(execute: work)
+        } else {
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + Self.feedFlushInterval,
+                execute: work
+            )
+        }
     }
 
     func testFlushFeeds() {
@@ -847,7 +864,7 @@ final class TerminalManager: TerminalInputHandler {
             }
         }
         if !pendingFeeds.isEmpty {
-            scheduleFeedFlush()
+            scheduleFeedFlush(immediate: true)
         }
     }
 

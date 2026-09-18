@@ -514,6 +514,46 @@ public struct FairPaneFeedScheduler {
         order.removeAll(keepingCapacity: true)
     }
 
+    /// 高流量 TUI 的旧待绘帧已经没有展示价值时，只能从一个完整的
+    /// `home + ED2` 边界开始保留最新帧。任意 byte suffix 可能从 CSI/OSC
+    /// 中间开始，必须交给调用方走权威 snapshot fence。
+    public mutating func compactToLatestFullRedraw(
+        paneID: UInt32,
+        incoming: Data,
+        maxBytes: Int
+    ) -> Bool {
+        var combined = Data()
+        if let buffer = buffers[paneID] {
+            combined.reserveCapacity(buffer.byteCount + incoming.count)
+            for index in buffer.chunkIndex..<buffer.chunks.count {
+                let chunk = buffer.chunks[index]
+                let start = index == buffer.chunkIndex ? buffer.offset : 0
+                if start < chunk.count {
+                    combined.append(chunk[start...])
+                }
+            }
+        }
+        combined.append(incoming)
+        guard let suffix = TerminalRedrawBoundary.latestFullRedrawSuffix(
+            in: combined,
+            maxBytes: maxBytes
+        ) else {
+            return false
+        }
+
+        buffers[paneID] = Buffer(
+            chunks: [suffix],
+            chunkIndex: 0,
+            offset: 0,
+            byteCount: suffix.count
+        )
+        // 已经等待的其他 pane 先获得一个时间片，持续重绘的 pane 不能因为
+        // 每次压缩都重新占据队首而拖住整个 Workspace。
+        order.removeAll { $0 == paneID }
+        order.append(paneID)
+        return true
+    }
+
     /// Return one chunk from the first ready pane. Rejected panes rotate
     /// without consuming data, so seed/snapshot work cannot reorder live VT.
     public mutating func pop(
@@ -624,6 +664,55 @@ public enum SurfaceOutputCoalescePolicy {
             return .keepNewest
         }
         return .combine
+    }
+}
+
+/// 在原始 VT 字节中定位可独立解析的完整全屏重绘。
+///
+/// Cursor/Pi 一类程序通常以 `CSI H` + `CSI 2J`（顺序也可能相反）开始
+/// 新帧。只有这种明确边界允许高水位队列淘汰旧帧；帧尾即使暂时停在半截
+/// CSI，也会和后续 `%output` 继续拼接，不能再从尾部任意裁剪。
+public enum TerminalRedrawBoundary {
+    private static let clear: [UInt8] = [0x1b, 0x5b, 0x32, 0x4a]
+    private static let shortHome: [UInt8] = [0x1b, 0x5b, 0x48]
+    private static let explicitHome: [UInt8] = [0x1b, 0x5b, 0x31, 0x3b, 0x31, 0x48]
+
+    public static func latestFullRedrawSuffix(
+        in data: Data,
+        maxBytes: Int
+    ) -> Data? {
+        let bytes = [UInt8](data)
+        guard let start = lastFullRedrawStart(in: bytes) else { return nil }
+        let suffix = Data(bytes[start...])
+        guard suffix.count <= max(1, maxBytes) else { return nil }
+        return suffix
+    }
+
+    private static func lastFullRedrawStart(in bytes: [UInt8]) -> Int? {
+        guard bytes.count >= clear.count else { return nil }
+        var last: Int?
+        for clearAt in 0...(bytes.count - clear.count) {
+            guard matches(clear, in: bytes, at: clearAt) else { continue }
+            if clearAt >= shortHome.count,
+               matches(shortHome, in: bytes, at: clearAt - shortHome.count)
+            {
+                last = clearAt - shortHome.count
+            } else if clearAt >= explicitHome.count,
+                      matches(explicitHome, in: bytes, at: clearAt - explicitHome.count)
+            {
+                last = clearAt - explicitHome.count
+            } else if matches(shortHome, in: bytes, at: clearAt + clear.count)
+                || matches(explicitHome, in: bytes, at: clearAt + clear.count)
+            {
+                last = clearAt
+            }
+        }
+        return last
+    }
+
+    private static func matches(_ needle: [UInt8], in bytes: [UInt8], at index: Int) -> Bool {
+        guard index >= 0, index <= bytes.count - needle.count else { return false }
+        return bytes[index..<(index + needle.count)].elementsEqual(needle)
     }
 }
 
