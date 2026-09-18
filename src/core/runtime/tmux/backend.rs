@@ -3090,17 +3090,21 @@ impl TmuxRuntime {
             if line.is_empty() {
                 continue;
             }
-            let pane = match extract_pane_id_from_default(line) {
-                Some(p) => p,
-                None => continue,
+            let (pane, active, cols, rows, title) = if let Some(row) = parse_pane_query_row(line) {
+                row
+            } else {
+                let pane = match extract_pane_id_from_default(line) {
+                    Some(p) => p,
+                    None => continue,
+                };
+                let (cols, rows) = extract_size_from_default(line);
+                (pane, line.contains("(active)"), cols, rows, String::new())
             };
-            let (cols, rows) = extract_size_from_default(line);
-            let active = line.contains("(active)");
             new_panes.push(PaneInfo {
                 id: pane,
                 tab: tab_id,
                 active,
-                title: String::new(),
+                title,
                 cols,
                 rows,
             });
@@ -3147,6 +3151,16 @@ impl TmuxRuntime {
         for np in &new_panes {
             let globally_active = tab_is_active && np.active;
             if let Some(existing) = self.panes.iter_mut().find(|p| p.id == np.id) {
+                if !np.title.is_empty() && existing.title != np.title {
+                    existing.title.clone_from(&np.title);
+                    Self::push_control(
+                        &mut self.events,
+                        ControlEvent::PaneTitleChanged {
+                            pane: np.id,
+                            title: np.title.clone(),
+                        },
+                    );
+                }
                 if existing.cols != np.cols || existing.rows != np.rows {
                     size_changed.push(np.id);
                 }
@@ -3368,13 +3382,16 @@ impl TmuxRuntime {
 
     /// 发送 list-panes 查询（异步，通过 cmd_tx）。
     fn query_list_panes(&mut self, tab: TabId) {
-        // 用 list-panes -t @N 查询单个 window 的 pane（默认格式不含 window_id）。
+        // 一次查询带回 Pane title，首屏标题条不必等待后续 title-change。
         if self.pending_queries.iter().any(
             |query| matches!(query, PendingQuery::ListPanes { tab: pending } if *pending == tab),
         ) {
             return;
         }
-        let line = format!("list-panes -t @{}\n", tab.0);
+        let line = format!(
+            "list-panes -t @{} -F '#{{pane_id}}|#{{pane_active}}|#{{pane_width}}|#{{pane_height}}|#{{pane_current_command}}'\n",
+            tab.0
+        );
         if self.dispatch_command(line).is_ok() {
             if self.is_attach_mode() && !self.attach_bootstrap_complete {
                 self.attach_bootstrap_pane_tabs.insert(tab);
@@ -4856,6 +4873,18 @@ fn extract_size_from_default(line: &str) -> (u16, u16) {
     (80, 24)
 }
 
+/// 解析 Muxterm 的稳定 list-panes 格式：
+/// `%pane|active|cols|rows|current_command`。最后一列允许为空。
+fn parse_pane_query_row(line: &str) -> Option<(PaneId, bool, u16, u16, String)> {
+    let mut fields = line.splitn(5, '|');
+    let pane = fields.next()?.strip_prefix('%')?.parse().ok()?;
+    let active = fields.next()? == "1";
+    let cols = fields.next()?.parse().ok()?;
+    let rows = fields.next()?.parse().ok()?;
+    let title = fields.next().unwrap_or_default().trim().to_string();
+    Some((PaneId(pane), active, cols, rows, title))
+}
+
 /// 把抽象 KeyEvent 转成 tmux Key。
 fn key_event_to_tmux_key(ev: &crate::protocol::terminal::input::KeyEvent) -> cmd::Key {
     use crate::protocol::terminal::input::{ArrowDir, KeyEvent};
@@ -6156,6 +6185,19 @@ mod tests {
         assert_eq!(parse_tmux_version("tmux 3.7b"), Some((3, 7)));
         assert_eq!(parse_tmux_version("tmux 2.9a"), Some((2, 9)));
         assert_eq!(parse_tmux_version("garbage"), None);
+    }
+
+    #[test]
+    fn list_panes_query_row_includes_initial_process_title() {
+        assert_eq!(
+            parse_pane_query_row("%118|1|93|51|pi"),
+            Some((PaneId(118), true, 93, 51, "pi".into()))
+        );
+        assert_eq!(
+            parse_pane_query_row("%122|0|80|24|zsh"),
+            Some((PaneId(122), false, 80, 24, "zsh".into()))
+        );
+        assert!(parse_pane_query_row("1: [80x24] %1 (active)").is_none());
     }
 
     #[test]

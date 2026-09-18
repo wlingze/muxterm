@@ -48,6 +48,39 @@ final class CommandPaletteParityE2ETests: XCTestCase {
         XCTAssertEqual(app.unifiedPanel.modelTab, .search)
     }
 
+    func testDetachClosesOnlyCurrentWorkspaceWhenPoolHasAnotherWorkspace() throws {
+        let first = OnePaneCat(label: "palette-detach-first")
+        let second = OnePaneCat(label: "palette-detach-second")
+        let app = try AppE2E.attachWindow(socket: first.socket, session: first.session)
+        defer { app.testShutdown() }
+        XCTAssertTrue(app.waitReady(minLeaves: 1))
+
+        let secondBridge = try CoreBridge(
+            backendType: "tmux",
+            socket: second.socket,
+            session: second.session
+        )
+        app.testActivateWorkspaceBridge(secondBridge, session: second.session)
+        XCTAssertTrue(AppE2E.wait(timeout: AppE2E.attachTimeout) {
+            app.testPollOnce()
+            return app.testWorkspaceCount() == 2
+                && app.testActiveWorkspaceSession() == second.session
+        })
+
+        app.testOpenCommandPalette()
+        AppE2E.pump(40)
+        XCTAssertTrue(app.testPaletteTitles().contains(MuxtermI18n.shared.tr(.detach)))
+        app.testSelectPaletteTitle(MuxtermI18n.shared.tr(.detach))
+
+        XCTAssertTrue(AppE2E.wait(timeout: AppE2E.attachTimeout) {
+            app.testPollOnce()
+            return app.testWorkspaceCount() == 1
+                && app.testActiveWorkspaceSession() == first.session
+        })
+        XCTAssertFalse(app.testWindowClosing())
+        XCTAssertFalse(app.testPaletteIsPresented())
+    }
+
     func testPaletteTabAndFontActionsUseProductionHandlers() throws {
         let config = try IsolatedMuxtermConfig(label: "palette-font", toml: """
         config_version = 1

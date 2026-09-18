@@ -17,6 +17,15 @@ struct Pane: Equatable {
     let cols: UInt16
     let rows: UInt16
     let isActive: Bool
+    let title: String
+
+    init(id: UInt32, cols: UInt16, rows: UInt16, isActive: Bool, title: String = "") {
+        self.id = id
+        self.cols = cols
+        self.rows = rows
+        self.isActive = isActive
+        self.title = title
+    }
 }
 
 /// 布局树（owned，对应 CLayoutNode）。
@@ -57,6 +66,7 @@ struct StateChange: Equatable {
     var isPaneHistory: Bool { type == STATE_PANE_HISTORY }
     var isPaneClosed: Bool { type == STATE_PANE_CLOSED }
     var isPaneAgentChanged: Bool { type == STATE_PANE_AGENT_CHANGED }
+    var isPaneTitleChanged: Bool { type == STATE_PANE_TITLE_CHANGED }
     var isTabClosed: Bool { type == STATE_TAB_CLOSED }
     var isTabOrderChanged: Bool { type == STATE_TAB_ORDER_CHANGED }
     var isBackendStatus: Bool { type == STATE_BACKEND_STATUS }
@@ -1860,7 +1870,13 @@ final class CoreBridge {
         let n = muxterm_get_panes(handle, tabId, &buf, Int32(buf.count))
         guard n > 0 else { return [] }
         return buf.prefix(Int(n)).map { p in
-            Pane(id: p.id, cols: p.cols, rows: p.rows, isActive: p.is_active != 0)
+            Pane(
+                id: p.id,
+                cols: p.cols,
+                rows: p.rows,
+                isActive: p.is_active != 0,
+                title: Self.string(from: p.title)
+            )
         }
     }
 
@@ -1921,7 +1937,8 @@ final class CoreBridge {
                     id: pane.id,
                     cols: pane.cols,
                     rows: pane.rows,
-                    isActive: pane.is_active != 0
+                    isActive: pane.is_active != 0,
+                    title: Self.string(from: pane.title)
                 )
             }
         }
@@ -2185,7 +2202,7 @@ private extension CTab {
 
 private extension CPane {
     init() {
-        self.init(id: 0, cols: 0, rows: 0, is_active: 0)
+        self.init(id: 0, cols: 0, rows: 0, title: nil, is_active: 0)
     }
 }
 

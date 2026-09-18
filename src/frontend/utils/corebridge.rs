@@ -20,9 +20,9 @@ use crate::protocol::ffi::{
     STATE_ACTIVE_PANE_CHANGED, STATE_ACTIVE_TAB_CHANGED, STATE_BACKEND_STATUS,
     STATE_LAYOUT_CHANGED, STATE_MUTATION_SETTLED, STATE_OTHER, STATE_PANE_ADDED,
     STATE_PANE_AGENT_CHANGED, STATE_PANE_CLOSED, STATE_PANE_FRAME, STATE_PANE_HISTORY,
-    STATE_PANE_OUTPUT, STATE_PANE_RESIZED, STATE_PANE_SNAPSHOT, STATE_POOL_CHANGED,
-    STATE_STATUS_SUBSCRIPTION, STATE_TAB_ADDED, STATE_TAB_CLOSED, STATE_TAB_ORDER_CHANGED,
-    STATE_TAB_RENAMED, STATE_WORKSPACE_RENAMED,
+    STATE_PANE_OUTPUT, STATE_PANE_RESIZED, STATE_PANE_SNAPSHOT, STATE_PANE_TITLE_CHANGED,
+    STATE_POOL_CHANGED, STATE_STATUS_SUBSCRIPTION, STATE_TAB_ADDED, STATE_TAB_CLOSED,
+    STATE_TAB_ORDER_CHANGED, STATE_TAB_RENAMED, STATE_WORKSPACE_RENAMED,
 };
 
 const DISCOVERY_TIMEOUT_MS: u32 = 10_000;
@@ -657,6 +657,7 @@ impl ClientEvent {
             STATE_WORKSPACE_RENAMED => "workspace_renamed",
             STATE_POOL_CHANGED => "pool_changed",
             STATE_PANE_AGENT_CHANGED => "pane_agent_changed",
+            STATE_PANE_TITLE_CHANGED => "pane_title_changed",
             STATE_MUTATION_SETTLED => "mutation_settled",
             STATE_OTHER => "other",
             _ => "unknown",
@@ -688,6 +689,7 @@ impl ClientEvent {
                 | STATE_ACTIVE_PANE_CHANGED
                 | STATE_TAB_RENAMED
                 | STATE_PANE_RESIZED
+                | STATE_PANE_TITLE_CHANGED
                 | STATE_WORKSPACE_RENAMED
                 | STATE_POOL_CHANGED
                 | STATE_TAB_ORDER_CHANGED
@@ -1876,6 +1878,7 @@ impl CoreBridge {
             id: 0,
             cols: 0,
             rows: 0,
+            title: ptr::null(),
             is_active: 0,
         }; PANE_CAPACITY];
         let count = unsafe {
@@ -1896,7 +1899,7 @@ impl CoreBridge {
                 cols: pane.cols,
                 rows: pane.rows,
                 is_active: pane.is_active != 0,
-                title: String::new(),
+                title: copy_c_string(pane.title),
             })
             .collect()
     }
@@ -1908,6 +1911,7 @@ impl CoreBridge {
             id: 0,
             cols: 0,
             rows: 0,
+            title: ptr::null(),
             is_active: 0,
         }; PANE_CAPACITY];
         let count = unsafe {
@@ -1929,7 +1933,7 @@ impl CoreBridge {
                 cols: pane.cols,
                 rows: pane.rows,
                 is_active: pane.is_active != 0,
-                title: String::new(),
+                title: copy_c_string(pane.title),
             })
             .collect()
     }

@@ -231,6 +231,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         var themeName = "light"
         var statusBarMode = StatusBarMode.tmux
         var tabBarPosition = TabBarPosition.bottom
+        var tabBarStyle = TabBarStyle.equalWidth
         var poolMaxSlots = MuxtermConfig.defaultPoolMaxSlots
         var projects: [TargetConfig] = []
     }
@@ -255,10 +256,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
            let parsed = StatusBarMode(rawValue: mode) {
             resolved.statusBarMode = parsed
         }
-        if let ui = values["ui"] as? [String: Any],
-           let position = ui["tab_bar_position"] as? String,
-           let parsed = TabBarPosition(rawValue: position) {
-            resolved.tabBarPosition = parsed
+        if let ui = values["ui"] as? [String: Any] {
+            if let position = ui["tab_bar_position"] as? String,
+               let parsed = TabBarPosition(rawValue: position) {
+                resolved.tabBarPosition = parsed
+            }
+            if let style = ui["tab_bar_style"] as? String,
+               let parsed = TabBarStyle(rawValue: style) {
+                resolved.tabBarStyle = parsed
+            }
         }
         if let pool = values["pool"] as? [String: Any] {
             resolved.poolMaxSlots = pool["max_slots"] as? Int ?? resolved.poolMaxSlots
@@ -298,6 +304,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         self.content = ContentView(terminalManager: terminalManager)
         content.statusBar.setDebug(debug)
         content.statusBar.colorMode = resolved.statusBarMode
+        content.statusBar.tabBarStyle = resolved.tabBarStyle
         content.applyTabBarPosition(resolved.tabBarPosition)
         sceneStack = SceneStack(
             policy: SceneStackPolicy(maxScenes: resolved.poolMaxSlots)
@@ -455,6 +462,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         unifiedPanel.onWorkspaceActivate = { [weak self] workspaceId in
             self?.activateSidebarWorkspace(workspaceId)
         }
+        unifiedPanel.onWorkspaceClose = { [weak self] workspaceId in
+            self?.closeWorkspace(workspaceId)
+        }
         unifiedPanel.onConnect = { [weak self] config in
             self?.connect(config: config)
         }
@@ -555,6 +565,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             guard let self else { return }
             self.performIfWindowOpen { [weak self] in
                 guard let self else { return }
+                self.activatePaneLocally(paneId)
                 self.focusPaneTerminal(paneId)
                 _ = self.enqueueCoreTask(
                     MuxTask.switchPane(paneId),
@@ -1104,6 +1115,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             }
         )
         settingsWindow = controller
+        controller.onApplied = { [weak self] operations in
+            for operation in operations {
+                guard operation["path"] as? String == "/ui/tab_bar_style",
+                      let value = operation["value"] as? String,
+                      let style = TabBarStyle(rawValue: value)
+                else { continue }
+                self?.content.statusBar.tabBarStyle = style
+            }
+        }
         controller.showWindow(self)
     }
 
@@ -2281,6 +2301,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             }
         }
         refreshWorkspaceSidebar(force: true)
+        unifiedPanel.refreshData()
     }
 
     /// 容量是 soft limit：超过阈值时只提醒用户，绝不静默移除后台 Workspace。
@@ -2697,23 +2718,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         )
         // select-pane 的状态事件可能被 Surface catch-up 推迟；先乐观
         // 更新快照和焦点，与 nextPane 同语义。Core snapshot 在下一轮事件泵对齐。
-        lastSnapshot.activePane = paneId
-        lastSnapshot.panes = lastSnapshot.panes.map { pane in
-            Pane(
-                id: pane.id,
-                cols: pane.cols,
-                rows: pane.rows,
-                isActive: pane.id == paneId
-            )
-        }
-        content.paneLayout.markActivePane(paneId)
-        terminalManager.focusTarget = terminalManager.view(for: paneId)
-        workspaceSidebar.setActiveTarget(
-            workspaceId: activeWorkspaceReplicaID,
-            tabId: resolvedTab ?? lastSnapshot.activeTab,
-            paneId: paneId,
-            workspaceSelectionId: presentedWorkspaceSelectionID
-        )
+        activatePaneLocally(paneId, tabId: resolvedTab)
         needsLayoutReload = true
         restoreTerminalFocusIfAllowed()
         if seq > 0 || !query.isEmpty {
@@ -3904,24 +3909,32 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
         // select-pane 的状态事件稍后才会到达；先乐观更新焦点、tab pane
         // 高亮和快照，连续 Cmd/Alt+[ ] 因而不依赖下一次远端 poll。
-        lastSnapshot.activePane = target
+        activatePaneLocally(target)
+        restoreTerminalFocusIfAllowed()
+    }
+
+    /// Core 的 active-pane 事件可能落后一轮远端 poll。所有本地选择入口先
+    /// 同步同一份产品状态，确保高亮、键盘输入和 Cmd-Enter 缩放目标一致。
+    private func activatePaneLocally(_ paneId: UInt32, tabId: UInt32? = nil) {
+        guard lastSnapshot.panes.contains(where: { $0.id == paneId }) else { return }
+        lastSnapshot.activePane = paneId
         lastSnapshot.panes = lastSnapshot.panes.map { pane in
             Pane(
                 id: pane.id,
                 cols: pane.cols,
                 rows: pane.rows,
-                isActive: pane.id == target
+                isActive: pane.id == paneId,
+                title: pane.title
             )
         }
-        content.paneLayout.markActivePane(target)
-        terminalManager.focusTarget = terminalManager.view(for: target)
+        content.paneLayout.markActivePane(paneId)
+        terminalManager.focusTarget = terminalManager.view(for: paneId)
         workspaceSidebar.setActiveTarget(
             workspaceId: activeWorkspaceReplicaID,
-            tabId: lastSnapshot.activeTab,
-            paneId: target,
+            tabId: tabId ?? lastSnapshot.activeTab,
+            paneId: paneId,
             workspaceSelectionId: presentedWorkspaceSelectionID
         )
-        restoreTerminalFocusIfAllowed()
     }
 
     // MARK: - 命令面板
@@ -4133,7 +4146,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
 
         // detach 只对 tmux/SSH 控制 client 有意义；local shell 不能显示这个命令。
-        // 关闭窗口时 CoreBridge.shutdown() 会发送 detach-client，保留 tmux session。
+        // 多 Workspace 时只关闭当前 Scene/Core Workspace；最后一个仍走显式
+        // Task::Detach 关闭窗口并保留 tmux session。
         if terminalManager.usesClientResize {
             items.insert(
                 PaletteItem(
@@ -4225,7 +4239,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             closeActiveWindow()
         case .command(.detach):
             commandPalette.dismiss()
-            detachSessionWindow()
+            detachCurrentWorkspace()
         case .command(.language):
             showLanguageOptions()
         case .command(.increaseFontSize):
@@ -4867,6 +4881,18 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 statusBarNeedsRefresh = true
             } else if ev.isWorkspaceRenamed {
                 applyWorkspaceRename(ev.name)
+            } else if ev.isPaneTitleChanged {
+                lastSnapshot.panes = lastSnapshot.panes.map { pane in
+                    guard pane.id == ev.paneId else { return pane }
+                    return Pane(
+                        id: pane.id,
+                        cols: pane.cols,
+                        rows: pane.rows,
+                        isActive: pane.isActive,
+                        title: ev.name
+                    )
+                }
+                content.paneLayout.updatePaneTitle(paneId: ev.paneId, title: ev.name)
             } else if ev.type == STATE_PANE_RESIZED {
                 // pane 格子变了：立刻把 SwiftTerm 模型对齐（含缩小）。
                 // 不能只记轻量更新，否则 attach 的 128x63 会钉在 93x51
@@ -5659,6 +5685,18 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// 通过 core 的独立 detach FFI 关闭控制 client，保留 tmux session。
+    private func detachCurrentWorkspace() {
+        guard terminalManager.usesClientResize else { return }
+        if runtimeSidebarItems().count > 1,
+           let workspaceID = activeWorkspaceReplicaID
+        {
+            closeWorkspace(workspaceID)
+        } else {
+            detachSessionWindow()
+        }
+    }
+
+    /// 通过 core 的独立 detach FFI 关闭最后一个控制 client，保留 tmux session。
     private func detachSessionWindow() {
         guard terminalManager.usesClientResize else { return }
         guard !isClosing else { return }

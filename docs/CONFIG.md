@@ -139,7 +139,7 @@ frontend 不再维护第二套连接池。
 | `pane` | `default_command`、`workdir` |
 | `behavior` | `on_last_pane_exit`、`on_program_exit_abnormal` |
 | `attention` | `enabled`、`blocked_regex`、`debounce_ms` |
-| `ui` | `tab_bar_position`、`tab_bar_height`、`show_title_bar`、`borderless` |
+| `ui` | `tab_bar_position`、`tab_bar_style`、`tab_bar_height`、`show_title_bar`、`borderless` |
 
 `tmux` / `ssh` / `pane` 这些分组是**序列化记录**，给 resolver 写成 `WorkspaceSpec`。
 Runtime / Transport 实现不得打开 `config.toml`。frontend 不直接检查 runtime 字符串，

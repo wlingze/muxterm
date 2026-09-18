@@ -211,6 +211,7 @@ final class WorkspaceScene: SceneProtocol {
             || type == STATE_ACTIVE_TAB_CHANGED
             || type == STATE_ACTIVE_PANE_CHANGED
             || type == STATE_PANE_RESIZED
+            || type == STATE_PANE_TITLE_CHANGED
             || type == STATE_TAB_RENAMED
     }
 
@@ -281,12 +282,27 @@ final class WorkspaceScene: SceneProtocol {
                         name: previous.name
                     )
                 case .keepNewest:
-                    // 旧合并缓冲已被更新的 TUI 帧取代；保留最新一段，避免
-                    // overflow → pause/capture 中途撕帧。
-                    viewStore.pendingSurfaceEvents.removeAll { candidate in
-                        candidate.paneId == paneId && candidate.isPaneOutput
+                    let combined = Self.appendedData(previous.data, event.data)
+                    if let redraw = TerminalRedrawBoundary.latestFullRedrawSuffix(
+                        in: combined,
+                        maxBytes: SurfaceEventBatchPolicy.maxCoalescedOutputBytes
+                    ) {
+                        // 只从完整全屏重绘边界淘汰旧帧；不能把可能位于
+                        // CSI/OSC 中间的最新事件直接当成独立 VT 流。
+                        viewStore.pendingSurfaceEvents[index] = StateChange(
+                            type: previous.type,
+                            paneId: previous.paneId,
+                            tabId: previous.tabId,
+                            windowId: previous.windowId,
+                            data: redraw,
+                            name: previous.name
+                        )
+                    } else {
+                        viewStore.pendingSurfaceEvents.removeAll { candidate in
+                            candidate.paneId == paneId && candidate.isPaneOutput
+                        }
+                        viewStore.pendingSurfaceOverflowPanes.insert(paneId)
                     }
-                    viewStore.pendingSurfaceEvents.append(event)
                 case .markOverflow:
                     viewStore.pendingSurfaceEvents.removeAll { candidate in
                         candidate.paneId == paneId && candidate.isPaneOutput

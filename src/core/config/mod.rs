@@ -283,6 +283,9 @@ pub struct UiConfig {
     /// tab 栏位置：`"bottom"`（默认，像 tmux）或 `"top"`。
     #[serde(default = "default_tab_bar_position")]
     pub tab_bar_position: String,
+    /// tab 样式：`"equal_width"`（iTerm2 风格铺满）或 `"compact"`。
+    #[serde(default = "default_tab_bar_style")]
+    pub tab_bar_style: String,
     /// tab 栏高度（像素）。
     #[serde(default = "default_tab_bar_height")]
     pub tab_bar_height: u32,
@@ -296,6 +299,9 @@ pub struct UiConfig {
 fn default_tab_bar_position() -> String {
     "bottom".into()
 }
+fn default_tab_bar_style() -> String {
+    "equal_width".into()
+}
 fn default_tab_bar_height() -> u32 {
     24
 }
@@ -306,6 +312,7 @@ impl Default for UiConfig {
     fn default() -> Self {
         UiConfig {
             tab_bar_position: default_tab_bar_position(),
+            tab_bar_style: default_tab_bar_style(),
             tab_bar_height: default_tab_bar_height(),
             show_title_bar: true,
             borderless: false,
@@ -903,6 +910,7 @@ key_path = "~/.ssh/id_rsa"
         let raw = r##"
 [ui]
 tab_bar_position = "top"
+tab_bar_style = "compact"
 tab_bar_height = 28
 show_title_bar = false
 borderless = true
@@ -917,6 +925,7 @@ on_program_exit_abnormal = "close"
 "##;
         let c = parse_config_toml(raw).unwrap();
         assert_eq!(c.ui.tab_bar_position, "top");
+        assert_eq!(c.ui.tab_bar_style, "compact");
         assert_eq!(c.ui.tab_bar_height, 28);
         assert!(!c.ui.show_title_bar);
         assert!(c.ui.borderless);
@@ -934,6 +943,7 @@ on_program_exit_abnormal = "close"
     fn parse_ui_pane_behavior_defaults() {
         let c = parse_config_toml("").unwrap();
         assert_eq!(c.ui.tab_bar_position, "bottom");
+        assert_eq!(c.ui.tab_bar_style, "equal_width");
         assert_eq!(c.ui.tab_bar_height, 24);
         assert!(c.ui.show_title_bar);
         assert!(!c.ui.borderless);
