@@ -3,7 +3,8 @@ import XCTest
 @testable import MuxtermAppLib
 import MuxtermChrome
 
-/// 很多 tab 时 status-right 与右侧 chrome 必须仍可见；tab 用固定宽度溢出。
+/// 很多 tab 时 status-right 与右侧 chrome 必须仍可见；tmux 标题保持自然宽度，
+/// 超出中间 viewport 的部分只被裁剪，不能挤动两侧控制区。
 final class StatusBarOverflowE2ETests: XCTestCase {
     func testManyTabsDoNotCrushStatusRight() throws {
         AppE2E.requireTmux()
@@ -48,13 +49,7 @@ final class StatusBarOverflowE2ETests: XCTestCase {
         )
         let widths = app.testTabButtonWidths()
         XCTAssertFalse(widths.isEmpty, "必须画出 tab 按钮")
-        for width in widths {
-            XCTAssertLessThanOrEqual(
-                width,
-                StatusBarTabOverflow.fixedTabWidth + 1,
-                "tab 必须固定宽度（溢出滚动），不得无限变宽。widths=\(widths)"
-            )
-        }
+        XCTAssertTrue(widths.allSatisfy { $0 > 0 }, "tmux title 必须产生自然宽度。widths=\(widths)")
         let rightView = app.testView(identifier: "muxterm.statusRight")
         XCTAssertNotNil(rightView, "muxterm.statusRight 必须存在")
         XCTAssertFalse(rightView?.isHidden ?? true, "status-right 不得隐藏")
