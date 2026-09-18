@@ -947,4 +947,98 @@ final class WorkspaceSidebarModelTests: XCTestCase {
         )
         XCTAssertEqual(AttentionList.rows(from: attention, query: "").count, 1)
     }
+
+    func testTabActivitiesReuseAgentAndCommandProjectionPriority() {
+        let workspace = WorkspaceSidebarItem(
+            workspaceId: "ssh@ryzen@dev",
+            name: "dev",
+            runtime: "tmux",
+            transport: "ryzen",
+            isActive: true,
+            structuredAgents: [
+                StructuredPaneAgent(
+                    paneId: 11,
+                    displayName: "Codex",
+                    title: nil,
+                    name: "codex",
+                    kind: "codex",
+                    status: .working
+                ),
+            ],
+            tabNumberByPane: [11: 1, 12: 1, 21: 2, 31: 3],
+            tabIdByPane: [11: 101, 12: 101, 21: 202, 31: 303]
+        )
+        let attention = AttentionSnapshot(
+            blockedCount: 1,
+            workspaces: [
+                WorkspaceAttention(
+                    workspaceId: workspace.workspaceId,
+                    blocked: 1,
+                    done: 1,
+                    working: 2,
+                    panes: [
+                        PaneAttention(
+                            paneId: 11,
+                            status: .working,
+                            lastLine: "thinking",
+                            seq: 1,
+                            processName: "codex",
+                            processIsAgent: true
+                        ),
+                        PaneAttention(
+                            paneId: 12,
+                            status: .blocked,
+                            lastLine: "input required",
+                            seq: 2,
+                            processName: "cargo"
+                        ),
+                        PaneAttention(
+                            paneId: 21,
+                            status: .done,
+                            lastLine: "finished",
+                            seq: 3,
+                            processName: "make"
+                        ),
+                        PaneAttention(
+                            paneId: 31,
+                            status: .idle,
+                            lastLine: "",
+                            seq: 4,
+                            processName: "zsh"
+                        ),
+                    ]
+                ),
+            ]
+        )
+
+        let activities = WorkspaceSidebarProjection.tabActivities(
+            workspaces: [workspace],
+            attention: attention
+        )
+
+        XCTAssertEqual(
+            activities[WorkspaceTabActivityKey(workspaceId: workspace.workspaceId, tabId: 101)],
+            .blocked,
+            "同一 Tab 的 blocked 应覆盖 working"
+        )
+        XCTAssertEqual(
+            activities[WorkspaceTabActivityKey(workspaceId: workspace.workspaceId, tabId: 202)],
+            .done
+        )
+        XCTAssertNil(
+            activities[WorkspaceTabActivityKey(workspaceId: workspace.workspaceId, tabId: 303)],
+            "idle pane 不应点亮 Tab"
+        )
+
+        let hidden = WorkspaceSidebarProjection.tabActivities(
+            workspaces: [workspace],
+            attention: attention,
+            hidden: [AttentionVisibilityKey(workspaceId: workspace.workspaceId, paneId: 12)]
+        )
+        XCTAssertEqual(
+            hidden[WorkspaceTabActivityKey(workspaceId: workspace.workspaceId, tabId: 101)],
+            .working,
+            "隐藏的 pane 不再影响 Tab 标记"
+        )
+    }
 }

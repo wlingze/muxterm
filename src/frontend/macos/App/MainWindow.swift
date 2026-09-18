@@ -589,6 +589,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         content.paneLayout.onMovePaneToNewTab = { [weak self] paneId in
             _ = self?.movePaneToNewTab(paneId)
         }
+        content.paneLayout.onPaneTitleAction = { [weak self] paneId, action in
+            guard let self else { return }
+            switch action {
+            case .splitHorizontal:
+                self.splitPane(paneId, horizontal: true)
+            case .splitVertical:
+                self.splitPane(paneId, horizontal: false)
+            case .close:
+                self.closePane(paneId)
+            }
+        }
         content.paneLayout.allowsPaneBreak = terminalManager.usesClientResize
         content.paneLayout.onResizeDivider = { [weak self] paneId, horizontal, size in
             guard let self, self.terminalManager.usesClientResize else { return }
@@ -860,6 +871,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         guard let pane = lastSnapshot.panes.first(where: \.isActive)?.id ?? lastSnapshot.panes.first?.id else {
             return
         }
+        closePane(pane)
+    }
+
+    private func closePane(_ pane: UInt32) {
         // 唯一 pane 时关 pane 会触发后端关 window；UI 侧随后收到 Exited 再关窗口。
         _ = enqueueCoreTask(
             MuxTask.closePane(pane),
@@ -1995,6 +2010,40 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         )
     }
 
+    private func presentedTabActivities() -> [UInt32: AgentSidebarIndicator] {
+        let workspaces = runtimeSidebarItems()
+        let source = WorkspaceSidebarProjection.tabActivities(
+            workspaces: workspaces,
+            attention: attentionSnapshotForPanel(),
+            hidden: hiddenAttentionKeys
+        )
+        func indicator(workspaceId: String, tabId: UInt32) -> AgentSidebarIndicator? {
+            source[WorkspaceTabActivityKey(workspaceId: workspaceId, tabId: tabId)]
+        }
+
+        switch workspacePresentation {
+        case .workspace:
+            guard let workspaceId = activeWorkspaceReplicaID else { return [:] }
+            return Dictionary(uniqueKeysWithValues: lastSnapshot.tabs.compactMap { tab in
+                indicator(workspaceId: workspaceId, tabId: tab.id).map { (tab.id, $0) }
+            })
+        case .shells:
+            return Dictionary(uniqueKeysWithValues: shellAggregateTabs().compactMap { tab in
+                indicator(workspaceId: tab.workspaceId, tabId: tab.sourceTabId).map {
+                    (tab.displayId, $0)
+                }
+            })
+        case .agents:
+            return Dictionary(uniqueKeysWithValues: agentAggregateTabs().compactMap { tab in
+                indicator(workspaceId: tab.workspaceId, tabId: tab.sourceTabId).map {
+                    (tab.displayId, $0)
+                }
+            })
+        case .connecting:
+            return [:]
+        }
+    }
+
     private func agentAggregateTabs(
         agents: [AgentSidebarItem]? = nil
     ) -> [AgentAggregateTab] {
@@ -2056,6 +2105,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             tabs = presentedTabs()
         }
         content.updateTabs(tabs)
+        content.statusBar.setTabActivities(presentedTabActivities())
         switch workspacePresentation {
         case .workspace:
             content.statusBar.setWorkspacePresentation(.workspace)
@@ -3841,6 +3891,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         guard let pane = lastSnapshot.panes.first(where: \.isActive)?.id ?? lastSnapshot.panes.first?.id else {
             return
         }
+        splitPane(pane, horizontal: horizontal)
+    }
+
+    private func splitPane(_ pane: UInt32, horizontal: Bool) {
         _ = enqueueCoreTask(
             MuxTask.splitPane(targetPane: pane, horizontal: horizontal),
             failureMessage: MuxtermI18n.shared.tr(
@@ -5140,6 +5194,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         content.statusBar.setAttention(StatusBarAttention(
             indicators: visibleRows.map(\.indicator)
         ))
+        content.statusBar.setTabActivities(presentedTabActivities())
         refreshWorkspaceSidebar()
     }
 

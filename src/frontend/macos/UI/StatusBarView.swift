@@ -90,9 +90,7 @@ final class StatusBarView: NSView {
     var allowsTabReordering = false {
         didSet {
             guard allowsTabReordering != oldValue else { return }
-            rebuildTabButtons(currentTabs.map {
-                TabBarItem(id: $0.id, index: nil, name: $0.name, active: $0.isActive)
-            })
+            rebuildCurrentTabs()
         }
     }
     var tabBarStyle: TabBarStyle = .equalWidth {
@@ -101,10 +99,17 @@ final class StatusBarView: NSView {
             rebuildCurrentTabs()
         }
     }
-    var colorMode: StatusBarMode = .tmux
+    var colorMode: StatusBarMode = .tmux {
+        didSet {
+            guard colorMode != oldValue else { return }
+            rebuildCurrentTabs()
+        }
+    }
 
-    // 左→右：侧栏 → tab 列表 → tmux-left → tmux-right → 状态点 → 通知 → 新建
+    // 左→右：固定侧栏入口 → [tmux-left | tab 列表 | tmux-right] → 固定状态/工作区/通知/新建
     private let sidebarToggleButton = NSButton()
+    private let middleStack = NSView()
+    private let tabViewport = NSView()
     private let tabStack = NSStackView()
     private let leftLabel = NSTextField(labelWithString: "")
     private let rightLabel = NSTextField(labelWithString: "")
@@ -113,22 +118,26 @@ final class StatusBarView: NSView {
     private let attentionButton = AttentionBellButton()
     private let newTabButton = NSButton()
     private let edgeLine = CALayer()
+    private var edgeLineThickness: CGFloat = 1
 
     // 状态点弹出框（点击展开 debug 信息）
     private var statusPopover: NSPopover?
     private var statusPopoverText = ""
     private var statusPopoverValues: [String: NSTextField] = [:]
 
-    private var justifyConstraints: [NSLayoutConstraint] = []
     private var heightConstraint: NSLayoutConstraint!
     private var sidebarLeadingConstraint: NSLayoutConstraint!
-    private var tabFillWidthConstraint: NSLayoutConstraint!
+    private var tabStackTrailingConstraint: NSLayoutConstraint!
+    private var rightMinWidthConstraint: NSLayoutConstraint!
+    private var muxtermMiddleConstraints: [NSLayoutConstraint] = []
+    private var tmuxMiddleConstraints: [NSLayoutConstraint] = []
     private var lastTmuxSnapshot: StatusBarSnapshot?
     private var lastBase = StatusBarTextStyle.default
     private var lastLeftStyle = "default"
     private var lastRightStyle = "default"
     private var lastPlainForeground: NSColor?
     private var currentTabs: [Tab] = []
+    private var currentTabActivities: [UInt32: AgentSidebarIndicator] = [:]
     private var workspacePresentation: StatusBarWorkspacePresentation = .workspace
     private var tmuxStatusEnabled = false
     private var edgeAtBottom = false
@@ -171,6 +180,18 @@ final class StatusBarView: NSView {
         sidebarToggleButton.setAccessibilityIdentifier("muxterm.sidebar.toggle")
         sidebarToggleButton.translatesAutoresizingMaskIntoConstraints = false
         updateSidebarPresentation()
+
+        // 中间内容区独占左右固定控制区之间的空间。tmux 模式在这里按
+        // status-left | tabs | status-right 排列；Muxterm 模式隐藏两侧文本，
+        // tabs 等分铺满整个 viewport。
+        middleStack.wantsLayer = true
+        middleStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        middleStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        tabViewport.wantsLayer = true
+        tabViewport.layer?.masksToBounds = true
+        tabViewport.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        tabViewport.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         // tab 列表
         tabStack.orientation = .horizontal
@@ -229,8 +250,15 @@ final class StatusBarView: NSView {
         newTabButton.setAccessibilityIdentifier("muxterm.newTabButton")
         newTabButton.translatesAutoresizingMaskIntoConstraints = false
 
+        tabStack.translatesAutoresizingMaskIntoConstraints = false
+        tabViewport.addSubview(tabStack)
+        for view in [leftLabel, tabViewport, rightLabel] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            middleStack.addSubview(view)
+        }
+
         for view in [
-            sidebarToggleButton, tabStack, leftLabel, rightLabel,
+            sidebarToggleButton, middleStack,
             statusDot, workspaceButton, attentionButton, newTabButton,
         ] {
             view.translatesAutoresizingMaskIntoConstraints = false
@@ -244,20 +272,23 @@ final class StatusBarView: NSView {
             lessThanOrEqualTo: widthAnchor, multiplier: StatusBarLayoutPolicy.sideMaxFraction
         )
 
-        let tabMaxWidth = tabStack.widthAnchor.constraint(
-            lessThanOrEqualTo: widthAnchor,
-            constant: -(StatusBarTabOverflow.statusRightMinWidth
-                + StatusBarTabOverflow.chromeWidth + 16)
+        tabStackTrailingConstraint = tabStack.trailingAnchor.constraint(
+            equalTo: tabViewport.trailingAnchor
         )
-        tabFillWidthConstraint = tabStack.widthAnchor.constraint(
-            equalTo: widthAnchor,
-            constant: -(StatusBarTabOverflow.statusRightMinWidth
-                + StatusBarTabOverflow.chromeWidth + 48)
-        )
-        tabFillWidthConstraint.priority = .defaultHigh
-        let rightMinWidth = rightLabel.widthAnchor.constraint(
+        rightMinWidthConstraint = rightLabel.widthAnchor.constraint(
             greaterThanOrEqualToConstant: StatusBarTabOverflow.statusRightMinWidth
         )
+        rightMinWidthConstraint.priority = .defaultHigh
+        muxtermMiddleConstraints = [
+            tabViewport.leadingAnchor.constraint(equalTo: middleStack.leadingAnchor),
+            tabViewport.trailingAnchor.constraint(equalTo: middleStack.trailingAnchor),
+        ]
+        tmuxMiddleConstraints = [
+            leftLabel.leadingAnchor.constraint(equalTo: middleStack.leadingAnchor),
+            tabViewport.leadingAnchor.constraint(equalTo: leftLabel.trailingAnchor, constant: 6),
+            rightLabel.leadingAnchor.constraint(equalTo: tabViewport.trailingAnchor, constant: 6),
+            rightLabel.trailingAnchor.constraint(equalTo: middleStack.trailingAnchor),
+        ]
 
         sidebarLeadingConstraint = sidebarToggleButton.leadingAnchor.constraint(
             equalTo: leadingAnchor,
@@ -271,20 +302,20 @@ final class StatusBarView: NSView {
             sidebarToggleButton.widthAnchor.constraint(equalToConstant: 24),
             sidebarToggleButton.heightAnchor.constraint(equalToConstant: 20),
 
-            // tab 列表紧跟侧栏按钮；最大宽度给 right+chrome 留空间（W19-F）。
-            tabStack.leadingAnchor.constraint(equalTo: sidebarToggleButton.trailingAnchor, constant: 4),
-            tabStack.centerYAnchor.constraint(equalTo: centerYAnchor),
-            tabMaxWidth,
+            // 中间区严格夹在左右固定控制区之间。
+            middleStack.leadingAnchor.constraint(equalTo: sidebarToggleButton.trailingAnchor, constant: 6),
+            middleStack.trailingAnchor.constraint(equalTo: statusDot.leadingAnchor, constant: -6),
+            middleStack.centerYAnchor.constraint(equalTo: centerYAnchor),
+            middleStack.heightAnchor.constraint(equalToConstant: 20),
 
-            // tmux-left 在 tab 右侧。
-            leftLabel.leadingAnchor.constraint(equalTo: tabStack.trailingAnchor, constant: 8),
-            leftLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            tabStack.leadingAnchor.constraint(equalTo: tabViewport.leadingAnchor),
+            tabStack.centerYAnchor.constraint(equalTo: tabViewport.centerYAnchor),
+            tabStack.heightAnchor.constraint(equalTo: tabViewport.heightAnchor),
 
-            // tmux-right：最小 64pt，不能被 tab 挤没。
-            rightLabel.leadingAnchor.constraint(greaterThanOrEqualTo: leftLabel.trailingAnchor, constant: 8),
-            rightLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
-            rightLabel.trailingAnchor.constraint(lessThanOrEqualTo: statusDot.leadingAnchor, constant: -6),
-            rightMinWidth,
+            leftLabel.centerYAnchor.constraint(equalTo: middleStack.centerYAnchor),
+            tabViewport.topAnchor.constraint(equalTo: middleStack.topAnchor),
+            tabViewport.bottomAnchor.constraint(equalTo: middleStack.bottomAnchor),
+            rightLabel.centerYAnchor.constraint(equalTo: middleStack.centerYAnchor),
 
             // 最右侧三个图标：状态点 → 通知 → 新建。
             newTabButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
@@ -308,6 +339,7 @@ final class StatusBarView: NSView {
 
             leftMaxWidth, rightMaxWidth,
         ])
+        NSLayoutConstraint.activate(muxtermMiddleConstraints)
         refreshLocalization()
     }
 
@@ -318,8 +350,13 @@ final class StatusBarView: NSView {
 
     override func layout() {
         super.layout()
-        let y: CGFloat = edgeAtBottom ? bounds.height - 1 : 0
-        edgeLine.frame = CGRect(x: 0, y: y, width: bounds.width, height: 1)
+        let y: CGFloat = edgeAtBottom ? bounds.height - edgeLineThickness : 0
+        edgeLine.frame = CGRect(
+            x: 0,
+            y: y,
+            width: bounds.width,
+            height: edgeLineThickness
+        )
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -353,7 +390,12 @@ final class StatusBarView: NSView {
     }
 
     func setWorkspacePresentation(_ presentation: StatusBarWorkspacePresentation) {
+        let presentationChanged = workspacePresentation != presentation
         workspacePresentation = presentation
+        let aggregate = AggregateWorkspaceAppearance(presentation: presentation)
+        edgeLineThickness = aggregate == nil ? 1 : 2
+        edgeLine.backgroundColor = (aggregate?.accentColor.withAlphaComponent(0.72)
+            ?? NSColor.separatorColor).cgColor
         let symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 11, weight: .medium)
         workspaceButton.imagePosition = .imageOnly
         workspaceButton.image = nil
@@ -371,18 +413,20 @@ final class StatusBarView: NSView {
             layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
         case .shells:
             workspaceButton.imagePosition = .noImage
-            workspaceButton.title = "S"
-            workspaceButton.contentTintColor = .systemTeal
-            workspaceButton.layer?.backgroundColor = NSColor.systemTeal.withAlphaComponent(0.16).cgColor
+            workspaceButton.title = aggregate?.symbol ?? "S"
+            workspaceButton.contentTintColor = aggregate?.accentColor
+            workspaceButton.layer?.backgroundColor = aggregate?.accentColor
+                .withAlphaComponent(0.24).cgColor
             workspaceButton.toolTip = "Shells · Cmd-Ctrl-S"
-            layer?.backgroundColor = NSColor.systemTeal.withAlphaComponent(0.045).cgColor
+            layer?.backgroundColor = aggregate?.accentColor.withAlphaComponent(0.09).cgColor
         case .agents:
             workspaceButton.imagePosition = .noImage
-            workspaceButton.title = "A"
-            workspaceButton.contentTintColor = .systemPurple
-            workspaceButton.layer?.backgroundColor = NSColor.systemPurple.withAlphaComponent(0.17).cgColor
+            workspaceButton.title = aggregate?.symbol ?? "A"
+            workspaceButton.contentTintColor = aggregate?.accentColor
+            workspaceButton.layer?.backgroundColor = aggregate?.accentColor
+                .withAlphaComponent(0.25).cgColor
             workspaceButton.toolTip = "Agents · Cmd-Ctrl-A"
-            layer?.backgroundColor = NSColor.systemPurple.withAlphaComponent(0.05).cgColor
+            layer?.backgroundColor = aggregate?.accentColor.withAlphaComponent(0.10).cgColor
         case .opening:
             workspaceButton.image = NSImage(
                 systemSymbolName: "ellipsis",
@@ -394,6 +438,10 @@ final class StatusBarView: NSView {
             layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
         }
         workspaceButton.setAccessibilityLabel(workspaceButton.toolTip)
+        needsLayout = true
+        if presentationChanged {
+            rebuildCurrentTabs()
+        }
     }
 
     // MARK: - Tab 列表
@@ -403,10 +451,20 @@ final class StatusBarView: NSView {
         rebuildCurrentTabs()
     }
 
+    /// Activity is projected from the same Core-backed model as the sidebar.
+    /// Updating a status only touches the existing indicator views; it does not
+    /// rebuild the tab strip or start a frontend polling timer.
+    func setTabActivities(_ activities: [UInt32: AgentSidebarIndicator]) {
+        let visible = activities.filter { $0.value != .idle }
+        guard visible != currentTabActivities else { return }
+        currentTabActivities = visible
+        for button in tabStack.arrangedSubviews.compactMap({ $0 as? StatusTabButton }) {
+            button.configureActivity(currentTabActivities[UInt32(button.tag)])
+        }
+    }
+
     private func rebuildCurrentTabs() {
-        rebuildTabButtons(currentTabs.map {
-            TabBarItem(id: $0.id, index: nil, name: $0.name, active: $0.isActive)
-        })
+        rebuildTabButtons(tabBarItems())
     }
 
     func applyTmuxSnapshot(_ snapshot: StatusBarSnapshot?, enabled: Bool) {
@@ -422,8 +480,8 @@ final class StatusBarView: NSView {
             // 会让 tab 文字和状态点看不清。bar 本身始终用原生窗口背景色，
             // tmux left/right 文字保留各自的 fg/bg 样式。
             layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
-            leftLabel.isHidden = false
-            rightLabel.isHidden = false
+            leftLabel.isHidden = !useTmuxColors
+            rightLabel.isHidden = !useTmuxColors
             leftLabel.attributedStringValue = Self.attributed(
                 StatusBarStyleParser.parseInline(text: snapshot.left, base: merged(lastBase, snapshot.leftStyle)),
                 font: leftLabel.font ?? NSFont.systemFont(ofSize: 11),
@@ -436,16 +494,12 @@ final class StatusBarView: NSView {
             )
             // Tab 拓扑和顺序来自 Core snapshot；tmux status 只提供
             // left/right 文案与样式，不能在这里重建第二份窗口列表。
-            rebuildTabButtons(currentTabs.map {
-                TabBarItem(id: $0.id, index: nil, name: $0.name, active: $0.isActive)
-            })
+            rebuildTabButtons(tabBarItems())
         } else {
             leftLabel.isHidden = true
             rightLabel.isHidden = true
             layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
-            rebuildTabButtons(currentTabs.map {
-                TabBarItem(id: $0.id, index: nil, name: $0.name, active: $0.isActive)
-            })
+            rebuildTabButtons(tabBarItems())
         }
         // tmux status 更新只改变 left/right 文案；聚合槽身份必须保持。
         setWorkspacePresentation(workspacePresentation)
@@ -742,8 +796,9 @@ final class StatusBarView: NSView {
 
     private struct TabBarItem {
         let id: UInt32
-        let index: UInt32?
-        let name: String
+        let title: String
+        let attributedTitle: NSAttributedString?
+        let tmuxStyle: StatusBarTextStyle?
         let active: Bool
     }
 
@@ -751,33 +806,76 @@ final class StatusBarView: NSView {
         StatusBarTabTitle.display(index: tab.id, name: tab.name)
     }
 
+    private func tabBarItems(activeOverride: UInt32? = nil) -> [TabBarItem] {
+        let windowsByID = Dictionary(
+            uniqueKeysWithValues: (lastTmuxSnapshot?.windows ?? []).map { ($0.windowId, $0) }
+        )
+        let useTmuxTitles = tmuxStatusEnabled && colorMode == .tmux
+        return currentTabs.enumerated().map { position, tab in
+            let active = activeOverride.map { tab.id == $0 } ?? tab.isActive
+            if useTmuxTitles, let window = windowsByID[tab.id] {
+                let styleText = active
+                    ? lastTmuxSnapshot?.windowCurrentStyle ?? ""
+                    : lastTmuxSnapshot?.windowStyle ?? ""
+                let style = merged(lastBase, styleText)
+                let attributed = Self.attributed(
+                    StatusBarStyleParser.parseInline(text: window.text, base: style),
+                    font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+                )
+                return TabBarItem(
+                    id: tab.id,
+                    title: attributed.string,
+                    attributedTitle: attributed,
+                    tmuxStyle: style,
+                    active: active
+                )
+            }
+            return TabBarItem(
+                id: tab.id,
+                title: StatusBarTabTitle.display(
+                    index: UInt32(position + 1),
+                    name: tab.name
+                ),
+                attributedTitle: nil,
+                tmuxStyle: nil,
+                active: active
+            )
+        }
+    }
+
     private func rebuildTabButtons(_ items: [TabBarItem]) {
         tabStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        tabStack.distribution = tabBarStyle == .equalWidth ? .fillEqually : .fill
-        tabStack.spacing = tabBarStyle == .equalWidth ? 1 : 3
+        let equalWidth = tmuxStatusEnabled
+            ? colorMode == .theme
+            : tabBarStyle == .equalWidth
+        tabStack.distribution = equalWidth ? .fillEqually : .fill
+        tabStack.spacing = equalWidth ? 1 : 3
         tabStack.setContentHuggingPriority(
-            tabBarStyle == .equalWidth ? .defaultLow : .defaultHigh,
+            equalWidth ? .defaultLow : .defaultHigh,
             for: .horizontal
         )
-        tabFillWidthConstraint.isActive = tabBarStyle == .equalWidth && !items.isEmpty
+        tabStackTrailingConstraint.isActive = equalWidth && !items.isEmpty
+        let showsTmuxSegments = tmuxStatusEnabled && colorMode == .tmux
+        if showsTmuxSegments {
+            NSLayoutConstraint.deactivate(muxtermMiddleConstraints)
+            NSLayoutConstraint.activate(tmuxMiddleConstraints)
+        } else {
+            NSLayoutConstraint.deactivate(tmuxMiddleConstraints)
+            NSLayoutConstraint.activate(muxtermMiddleConstraints)
+        }
+        rightMinWidthConstraint.isActive = showsTmuxSegments
         var firstEqualWidthButton: StatusTabButton?
         for (position, item) in items.enumerated() {
             let button = StatusTabButton()
-            // tmux 使用真实 window_index；local shell 没有该字段时才回退
-            // 到列表位置。稳定 window_id 只放在 tag 里用于执行任务。
-            button.title = StatusBarTabTitle.display(
-                index: item.index ?? UInt32(position + 1),
-                name: item.name
+            button.configureTitle(
+                item.title,
+                attributed: item.attributedTitle,
+                tmuxStyle: item.tmuxStyle
             )
             // 等宽约束连接两个按钮，必须先让它们拥有共同父视图；否则
             // AppKit 会在约束激活时抛出 NSGenericException。
             tabStack.addArrangedSubview(button)
-            if tabBarStyle == .compact {
-                // 固定 tab 宽度（溢出裁剪），不得无限变宽挤掉 status-right。
-                button.widthAnchor.constraint(
-                    equalToConstant: StatusBarTabOverflow.fixedTabWidth
-                ).isActive = true
-            } else {
+            if equalWidth {
                 if let firstEqualWidthButton {
                     button.widthAnchor.constraint(equalTo: firstEqualWidthButton.widthAnchor).isActive = true
                 } else {
@@ -788,10 +886,14 @@ final class StatusBarView: NSView {
                 minimum.isActive = true
             }
             button.tag = Int(item.id)
+            button.aggregateAppearance = AggregateWorkspaceAppearance(
+                presentation: workspacePresentation
+            )
             button.target = self
             button.action = #selector(tabClicked(_:))
             button.setAccessibilityIdentifier("muxterm.tab.\(item.id)")
             button.isActiveTab = item.active
+            button.configureActivity(currentTabActivities[item.id])
             button.configureClose(tabID: item.id, visible: allowsTabClosing) { [weak self] in
                 self?.onCloseTab?(item.id)
             }
@@ -909,9 +1011,7 @@ final class StatusBarView: NSView {
         guard tmuxStatusEnabled else { return }
         // 切换确认事件到达前先更新高亮，但仍沿用 Core 的 tab 顺序、id
         // 与名称；status snapshot 不能把 UI 排序带回另一套窗口列表。
-        rebuildTabButtons(currentTabs.map {
-            TabBarItem(id: $0.id, index: nil, name: $0.name, active: $0.id == windowId)
-        })
+        rebuildTabButtons(tabBarItems(activeOverride: windowId))
     }
 
     func setAttention(_ attention: StatusBarAttention) {
@@ -1034,6 +1134,27 @@ final class StatusBarView: NSView {
         }
     }
 
+    func testTabAggregateAppearance(_ tabId: UInt32) -> String? {
+        tabStack.arrangedSubviews
+            .compactMap { $0 as? StatusTabButton }
+            .first(where: { $0.tag == Int(tabId) })?
+            .aggregateAppearance?.rawValue
+    }
+
+    func testTabActivity(_ tabId: UInt32) -> AgentSidebarIndicator? {
+        tabStack.arrangedSubviews
+            .compactMap { $0 as? StatusTabButton }
+            .first(where: { $0.tag == Int(tabId) })?
+            .activityForTesting
+    }
+
+    func testTabActivityAnimating(_ tabId: UInt32) -> Bool {
+        tabStack.arrangedSubviews
+            .compactMap { $0 as? StatusTabButton }
+            .first(where: { $0.tag == Int(tabId) })?
+            .activityAnimatingForTesting == true
+    }
+
     func testTabWidths() -> [CGFloat] {
         layoutSubtreeIfNeeded()
         return tabStack.arrangedSubviews.map(\.frame.width)
@@ -1071,6 +1192,13 @@ final class StatusBarView: NSView {
         tabStack.arrangedSubviews.compactMap { $0 as? NSButton }
             .first(where: { $0.tag == Int(tabId) })?
             .title ?? ""
+    }
+
+    func testTabIDs() -> [UInt32] {
+        tabStack.arrangedSubviews.compactMap { view in
+            guard let button = view as? StatusTabButton else { return nil }
+            return UInt32(button.tag)
+        }
     }
 
     func testMoveTab(from: UInt32, target: UInt32, before: Bool) {
@@ -1127,6 +1255,21 @@ final class StatusBarView: NSView {
     func testTabButtonWidths() -> [CGFloat] {
         layoutSubtreeIfNeeded()
         return tabStack.arrangedSubviews.map(\.frame.width)
+    }
+
+    func testMiddleFrame() -> NSRect {
+        layoutSubtreeIfNeeded()
+        return middleStack.frame
+    }
+
+    func testTabViewportFrame() -> NSRect {
+        layoutSubtreeIfNeeded()
+        return tabViewport.frame
+    }
+
+    func testTabStackFrame() -> NSRect {
+        layoutSubtreeIfNeeded()
+        return tabStack.frame
     }
 
     func testChromeMinX() -> CGFloat {
@@ -1248,10 +1391,16 @@ private final class AttentionBellButton: NSButton {
 /// iTerm2 风格 GUI tab：圆角色块 + 系统字体，不用 tmux 格式串。
 private final class StatusTabButton: NSButton {
     private let activeUnderline = CALayer()
+    private let activityView = TabActivityIndicatorView()
     private let closeButton = NSButton()
     private var onClose: (() -> Void)?
+    private var sourceAttributedTitle: NSAttributedString?
+    private var tmuxStyle: StatusBarTextStyle?
     var onDoubleClick: (() -> Void)?
     var onDragEnd: ((NSPoint) -> Void)?
+    var aggregateAppearance: AggregateWorkspaceAppearance? {
+        didSet { applyStyle() }
+    }
     var isActiveTab = false {
         didSet { applyStyle() }
     }
@@ -1273,6 +1422,10 @@ private final class StatusTabButton: NSButton {
         setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         setContentHuggingPriority(.defaultHigh, for: .horizontal)
 
+        activityView.translatesAutoresizingMaskIntoConstraints = false
+        activityView.isHidden = true
+        addSubview(activityView)
+
         closeButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: nil)
         closeButton.imagePosition = .imageOnly
         closeButton.imageScaling = .scaleProportionallyDown
@@ -1285,6 +1438,10 @@ private final class StatusTabButton: NSButton {
         closeButton.translatesAutoresizingMaskIntoConstraints = false
         addSubview(closeButton)
         NSLayoutConstraint.activate([
+            activityView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 7),
+            activityView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            activityView.widthAnchor.constraint(equalToConstant: 10),
+            activityView.heightAnchor.constraint(equalToConstant: 10),
             closeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
             closeButton.centerYAnchor.constraint(equalTo: centerYAnchor),
             closeButton.widthAnchor.constraint(equalToConstant: 16),
@@ -1323,6 +1480,23 @@ private final class StatusTabButton: NSButton {
         closeButton.setAccessibilityIdentifier("muxterm.tab.close.\(tabID)")
         closeButton.setAccessibilityLabel(MuxtermI18n.shared.tr(.closeTab))
         closeButton.toolTip = MuxtermI18n.shared.tr(.closeTab)
+    }
+
+    func configureTitle(
+        _ title: String,
+        attributed: NSAttributedString?,
+        tmuxStyle: StatusBarTextStyle?
+    ) {
+        self.title = title
+        sourceAttributedTitle = attributed
+        self.tmuxStyle = tmuxStyle
+        applyStyle()
+    }
+
+    func configureActivity(_ activity: AgentSidebarIndicator?) {
+        activityView.activity = activity
+        activityView.isHidden = activity == nil || activity == .idle
+        applyStyle()
     }
 
     @objc private func closeClicked() {
@@ -1371,32 +1545,164 @@ private final class StatusTabButton: NSButton {
 
     func applyStyle() {
         let font = NSFont.systemFont(ofSize: 11, weight: isActiveTab ? .semibold : .regular)
-        let fg = isActiveTab ? NSColor.labelColor : NSColor.secondaryLabelColor
+        let accent = aggregateAppearance?.accentColor
+        let fg = accent.map {
+            isActiveTab ? $0 : $0.withAlphaComponent(0.78)
+        } ?? (isActiveTab ? NSColor.labelColor : NSColor.secondaryLabelColor)
         self.font = font
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = .left
-        paragraph.headIndent = 8
-        paragraph.firstLineHeadIndent = 8
+        let leadingIndent: CGFloat = activityView.isHidden ? 8 : 21
+        paragraph.headIndent = leadingIndent
+        paragraph.firstLineHeadIndent = leadingIndent
         paragraph.tailIndent = closeButton.isHidden ? -8 : -24
-        attributedTitle = NSAttributedString(
-            string: attributedTitle.string.isEmpty ? title : attributedTitle.string,
-            attributes: [
-                .font: font,
-                .foregroundColor: fg,
-                .paragraphStyle: paragraph,
-            ]
+        if let sourceAttributedTitle {
+            let styled = NSMutableAttributedString(attributedString: sourceAttributedTitle)
+            styled.addAttribute(
+                .paragraphStyle,
+                value: paragraph,
+                range: NSRange(location: 0, length: styled.length)
+            )
+            attributedTitle = styled
+        } else {
+            attributedTitle = NSAttributedString(
+                string: title,
+                attributes: [
+                    .font: font,
+                    .foregroundColor: fg,
+                    .paragraphStyle: paragraph,
+                ]
+            )
+        }
+        if let tmuxStyle {
+            var foreground = tmuxStyle.fg.map(Self.color)
+            var background = tmuxStyle.bg.map(Self.color)
+            if tmuxStyle.reverse { swap(&foreground, &background) }
+            layer?.backgroundColor = (background ?? NSColor.clear).cgColor
+            activeUnderline.backgroundColor = (foreground ?? NSColor.controlAccentColor).cgColor
+            closeButton.contentTintColor = foreground ?? .tertiaryLabelColor
+            activeUnderline.isHidden = true
+        } else {
+            layer?.backgroundColor = if let accent {
+                accent.withAlphaComponent(isActiveTab ? 0.20 : 0.065).cgColor
+            } else {
+                (isActiveTab
+                    ? NSColor.selectedControlColor.withAlphaComponent(0.14)
+                    : NSColor.clear
+                ).cgColor
+            }
+            activeUnderline.backgroundColor = (accent ?? NSColor.controlAccentColor).cgColor
+            closeButton.contentTintColor = accent?.withAlphaComponent(0.82)
+                ?? .tertiaryLabelColor
+            activeUnderline.isHidden = !isActiveTab
+        }
+    }
+
+    private static func color(_ color: StatusBarColor) -> NSColor {
+        NSColor(
+            srgbRed: color.red,
+            green: color.green,
+            blue: color.blue,
+            alpha: 1
         )
-        layer?.backgroundColor = (isActiveTab
-            ? NSColor.selectedControlColor.withAlphaComponent(0.14)
-            : NSColor.clear
-        ).cgColor
-        activeUnderline.isHidden = !isActiveTab
     }
 
     var closeVisibleForTesting: Bool { !closeButton.isHidden }
+    var activityForTesting: AgentSidebarIndicator? { activityView.activity }
+    var activityAnimatingForTesting: Bool { activityView.isAnimating }
 
     func clickCloseForTesting() {
         closeButton.performClick(nil)
+    }
+}
+
+/// Compact iTerm-style tab activity mark. The working state rotates on Core
+/// Animation's render server, so multiple busy tabs do not create competing
+/// main-thread timers or increase the event-pump frequency.
+private final class TabActivityIndicatorView: NSView {
+    private let shape = CAShapeLayer()
+
+    var activity: AgentSidebarIndicator? {
+        didSet {
+            guard activity != oldValue else { return }
+            updateAppearance()
+        }
+    }
+
+    var isAnimating: Bool {
+        shape.animation(forKey: "muxterm.tab.activity.rotation") != nil
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        shape.contentsScale = NSScreen.main?.backingScaleFactor ?? 2
+        layer?.addSublayer(shape)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override func layout() {
+        super.layout()
+        shape.frame = bounds
+        updatePath()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        updateAnimation()
+    }
+
+    private func updateAppearance() {
+        let color: NSColor
+        switch activity {
+        case .working: color = .systemYellow
+        case .blocked: color = .systemPink
+        case .done: color = .systemTeal
+        case .idle, nil: color = .tertiaryLabelColor
+        }
+        shape.strokeColor = color.cgColor
+        shape.fillColor = activity == .working ? NSColor.clear.cgColor : color.cgColor
+        shape.lineWidth = activity == .working ? 1.5 : 1
+        shape.lineCap = .round
+        updatePath()
+        updateAnimation()
+    }
+
+    private func updatePath() {
+        let rect = bounds.insetBy(dx: 1.5, dy: 1.5)
+        guard rect.width > 0, rect.height > 0 else { return }
+        if activity == .working {
+            let path = CGMutablePath()
+            path.addArc(
+                center: CGPoint(x: rect.midX, y: rect.midY),
+                radius: min(rect.width, rect.height) / 2,
+                startAngle: -.pi / 2,
+                endAngle: .pi,
+                clockwise: false
+            )
+            shape.path = path
+        } else {
+            shape.path = CGPath(ellipseIn: rect, transform: nil)
+        }
+    }
+
+    private func updateAnimation() {
+        shape.removeAnimation(forKey: "muxterm.tab.activity.rotation")
+        guard activity == .working,
+              window != nil,
+              !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        else { return }
+        let animation = CABasicAnimation(keyPath: "transform.rotation.z")
+        animation.fromValue = 0
+        animation.toValue = Double.pi * 2
+        animation.duration = 0.9
+        animation.repeatCount = .infinity
+        animation.isRemovedOnCompletion = false
+        shape.add(animation, forKey: "muxterm.tab.activity.rotation")
     }
 }
 

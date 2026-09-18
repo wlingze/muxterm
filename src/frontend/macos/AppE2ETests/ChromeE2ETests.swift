@@ -57,8 +57,14 @@ final class ChromeE2ETests: XCTestCase {
 
         XCTAssertTrue(bar.testLeftText().contains("L"), "left 应含 L: \(bar.testLeftText())")
         XCTAssertTrue(bar.testRightText().contains("R"), "right 应含 R: \(bar.testRightText())")
-        XCTAssertEqual(bar.testTabTitle(18), "1  code")
-        XCTAssertEqual(bar.testTabTitle(21), "2  other")
+        XCTAssertEqual(
+            bar.testTabTitle(18).trimmingCharacters(in: .whitespaces),
+            "1:code"
+        )
+        XCTAssertEqual(
+            bar.testTabTitle(21).trimmingCharacters(in: .whitespaces),
+            "2:other"
+        )
         XCTAssertFalse(bar.testTabTitle(18).contains("#["), "GUI tab 不得渲染 tmux 格式串")
         XCTAssertFalse(bar.testTabTitle(21).contains("#["), "GUI tab 不得渲染 tmux 格式串")
         XCTAssertNotNil(find(bar, "muxterm.tab.18"))
@@ -68,14 +74,20 @@ final class ChromeE2ETests: XCTestCase {
     func testWorkspaceButtonShowsAggregatePresentationAndInvokesPanel() {
         let bar = StatusBarView(frame: .zero)
         window.contentView = bar
+        window.setContentSize(NSSize(width: 900, height: 24))
         window.orderFront(nil)
         var clicks = 0
         bar.onWorkspaceClick = { clicks += 1 }
 
         bar.setWorkspacePresentation(.shells)
         XCTAssertEqual(bar.testWorkspaceTitle(), "S")
+        bar.updateTabs([Tab(id: 7, name: "shell", isActive: true)])
+        XCTAssertEqual(bar.testTabAggregateAppearance(7), "shells")
         bar.setWorkspacePresentation(.agents)
         XCTAssertEqual(bar.testWorkspaceTitle(), "A")
+        XCTAssertEqual(bar.testTabAggregateAppearance(7), "agents")
+        bar.setWorkspacePresentation(.workspace)
+        XCTAssertNil(bar.testTabAggregateAppearance(7))
         bar.testClickWorkspace()
         XCTAssertEqual(clicks, 1)
     }
@@ -110,6 +122,28 @@ final class ChromeE2ETests: XCTestCase {
         XCTAssertEqual(bar.testAttentionIndicator(), .working)
     }
 
+    func testTabsShowSharedActivityStateAndWorkingSpinner() {
+        let bar = StatusBarView(frame: NSRect(x: 0, y: 0, width: 600, height: 24))
+        window.contentView = bar
+        window.orderFront(nil)
+        bar.updateTabs([
+            Tab(id: 1, name: "build", isActive: true),
+            Tab(id: 2, name: "review", isActive: false),
+        ])
+
+        bar.setTabActivities([1: .working, 2: .done])
+        AppE2E.pump(20)
+
+        XCTAssertEqual(bar.testTabActivity(1), .working)
+        XCTAssertTrue(bar.testTabActivityAnimating(1))
+        XCTAssertEqual(bar.testTabActivity(2), .done)
+        XCTAssertFalse(bar.testTabActivityAnimating(2))
+
+        bar.setTabActivities([2: .blocked])
+        XCTAssertNil(bar.testTabActivity(1))
+        XCTAssertEqual(bar.testTabActivity(2), .blocked)
+    }
+
     func testClickStatusTabInvokesSwitchWithWindowId() {
         let bar = StatusBarView(frame: .zero)
         window.contentView = bar
@@ -137,8 +171,15 @@ final class ChromeE2ETests: XCTestCase {
 
     func testTabStyleSwitchesBetweenEqualWidthAndCompactWithVisibleCloseButtons() {
         let bar = StatusBarView(frame: NSRect(x: 0, y: 0, width: 900, height: 24))
-        window.contentView = bar
-        window.orderFront(nil)
+        let host = NSView(frame: NSRect(x: 0, y: 0, width: 900, height: 24))
+        bar.translatesAutoresizingMaskIntoConstraints = false
+        host.addSubview(bar)
+        NSLayoutConstraint.activate([
+            bar.leadingAnchor.constraint(equalTo: host.leadingAnchor),
+            bar.trailingAnchor.constraint(equalTo: host.trailingAnchor),
+            bar.topAnchor.constraint(equalTo: host.topAnchor),
+            bar.bottomAnchor.constraint(equalTo: host.bottomAnchor),
+        ])
         let tabs = [
             Tab(id: 1, name: "one", isActive: true),
             Tab(id: 2, name: "two", isActive: false),
@@ -148,7 +189,8 @@ final class ChromeE2ETests: XCTestCase {
         bar.onCloseTab = { closed.append($0) }
         bar.tabBarStyle = .equalWidth
         bar.updateTabs(tabs)
-        AppE2E.pump(20)
+        host.updateConstraintsForSubtreeIfNeeded()
+        host.layoutSubtreeIfNeeded()
 
         let equalWidths = bar.testTabButtonWidths()
         XCTAssertEqual(equalWidths.count, 3)
@@ -158,10 +200,11 @@ final class ChromeE2ETests: XCTestCase {
         XCTAssertEqual(closed, [2], "关闭按钮必须直接关闭对应 Tab，不触发行选择")
 
         bar.tabBarStyle = .compact
-        AppE2E.pump(20)
-        XCTAssertTrue(bar.testTabButtonWidths().allSatisfy {
-            abs($0 - StatusBarTabOverflow.fixedTabWidth) < 1
-        })
+        host.updateConstraintsForSubtreeIfNeeded()
+        host.layoutSubtreeIfNeeded()
+        let naturalWidths = bar.testTabButtonWidths()
+        XCTAssertGreaterThan(naturalWidths[2], naturalWidths[0], "标题更长的 Tab 应自然更宽")
+        XCTAssertTrue(naturalWidths.allSatisfy { $0 < StatusBarTabOverflow.fixedTabWidth })
     }
 
     func testTmuxStatusDoesNotOverrideCoreTabOrder() {
@@ -185,8 +228,11 @@ final class ChromeE2ETests: XCTestCase {
         ), enabled: true)
         AppE2E.pump(40)
 
-        XCTAssertEqual(bar.testTabTitle(21), "1  core-first")
-        XCTAssertEqual(bar.testTabTitle(18), "2  core-second")
+        XCTAssertEqual(bar.testTabIDs(), [21, 18], "顺序仍必须跟随 Core")
+        XCTAssertEqual(bar.testTabTitle(21), "7:tmux-seven")
+        XCTAssertEqual(bar.testTabTitle(18), "1:tmux-one")
+        let widths = bar.testTabButtonWidths()
+        XCTAssertGreaterThan(widths[0], widths[1], "tmux 标题多大，Tab 就应按标题自然宽度显示")
     }
 
     func testStatusDotClickOpensPopoverWithSshSummary() {

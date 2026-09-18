@@ -1527,6 +1527,13 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         return cell.closeVisibleForTesting
     }
 
+    func testWorkspaceAggregateAppearance(matching title: String) -> String? {
+        guard let row = visibleItems.firstIndex(where: { $0.title == title }),
+              let cell = testWorkspaceCell(at: row)
+        else { return nil }
+        return cell.testAggregateAppearance()
+    }
+
     func testCloseWorkspaceItem(matching title: String) {
         guard let row = visibleItems.firstIndex(where: { $0.title == title }),
               let cell = testWorkspaceCell(at: row)

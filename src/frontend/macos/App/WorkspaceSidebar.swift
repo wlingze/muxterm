@@ -452,16 +452,21 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
         _ cell: WorkspaceSidebarCellView,
         item: WorkspaceSidebarItem
     ) {
+        let aggregateAppearance = AggregateWorkspaceAppearance(
+            workspaceID: item.workspaceId
+        )
         cell.set(
             marker: item.isOpening ? "◌" : (item.isAggregate ? "◆" : (item.isActive ? "●" : "○")),
             markerColor: item.isOpening
                 ? .systemYellow
-                : (item.isActive ? .controlAccentColor : .tertiaryLabelColor),
+                : (aggregateAppearance?.accentColor
+                    ?? (item.isActive ? .controlAccentColor : .tertiaryLabelColor)),
             title: item.name,
             detail: item.openingStage.map { "Opening · \($0)" }
                 ?? "\(item.runtime) @ \(item.transport)",
             shortcut: item.shortcutText,
             emphasized: item.isAggregate,
+            accentColor: aggregateAppearance?.accentColor,
             trailingSymbol: item.isClosable ? "xmark" : nil,
             trailingTooltip: item.isClosable ? "Close workspace" : nil,
             trailingAccessibilityID: item.isClosable
@@ -1059,6 +1064,7 @@ private final class WorkspaceSidebarCellView: NSTableCellView {
         detailColor: NSColor = .secondaryLabelColor,
         shortcut: String? = nil,
         emphasized: Bool = false,
+        accentColor: NSColor? = nil,
         closeAction: (() -> Void)? = nil,
         trailingSymbol: String? = nil,
         trailingTooltip: String? = nil,
@@ -1069,9 +1075,11 @@ private final class WorkspaceSidebarCellView: NSTableCellView {
         self.marker.stringValue = marker
         self.marker.textColor = markerColor
         shortcutLabel.stringValue = shortcut ?? ""
-        shortcutLabel.textColor = emphasized ? .controlAccentColor : .tertiaryLabelColor
+        shortcutLabel.textColor = accentColor
+            ?? (emphasized ? .controlAccentColor : .tertiaryLabelColor)
         titleLabel.stringValue = title
-        titleLabel.textColor = emphasized ? .controlAccentColor : .labelColor
+        titleLabel.textColor = accentColor
+            ?? (emphasized ? .controlAccentColor : .labelColor)
         detailLabel.stringValue = detail
         detailLabel.textColor = detailColor
         // NSTableView reuses cells. Always clear the text before applying an

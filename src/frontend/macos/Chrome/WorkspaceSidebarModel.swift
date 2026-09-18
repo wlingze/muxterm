@@ -358,6 +358,21 @@ public struct CommandSidebarItem: Sendable, Equatable {
     }
 }
 
+/// Stable identity for activity projected onto a real Runtime tab.
+///
+/// Tab ids are only unique inside one Workspace, so callers must keep both
+/// fields. Aggregate workspaces translate this source key to their display id
+/// only at the final presentation boundary.
+public struct WorkspaceTabActivityKey: Hashable, Sendable {
+    public let workspaceId: String
+    public let tabId: UInt32
+
+    public init(workspaceId: String, tabId: UInt32) {
+        self.workspaceId = workspaceId
+        self.tabId = tabId
+    }
+}
+
 /// 侧栏跳转：paneId 跨 Workspace 会重复，fallback 必须限定在目标 workspace。
 public enum PanelJumpRouting {
     public struct ScenePaneIndex: Sendable, Equatable {
@@ -562,6 +577,64 @@ public enum WorkspaceSidebarProjection {
             }
         }
         return result
+    }
+
+    /// Project the same Agents/Commands activity used by the sidebar onto tabs.
+    /// Idle entries do not light a tab. Multiple panes in one tab use the
+    /// established chrome priority: done, blocked, working, idle.
+    public static func tabActivities(
+        workspaces: [WorkspaceSidebarItem],
+        attention: AttentionSnapshot?,
+        hidden: Set<AttentionVisibilityKey> = []
+    ) -> [WorkspaceTabActivityKey: AgentSidebarIndicator] {
+        var result: [WorkspaceTabActivityKey: AgentSidebarIndicator] = [:]
+
+        func insert(
+            workspaceId: String,
+            tabId: UInt32?,
+            paneId: UInt32,
+            indicator: AgentSidebarIndicator
+        ) {
+            guard indicator != .idle,
+                  let tabId,
+                  !hidden.contains(AttentionVisibilityKey(
+                    workspaceId: workspaceId,
+                    paneId: paneId
+                  ))
+            else { return }
+            let key = WorkspaceTabActivityKey(workspaceId: workspaceId, tabId: tabId)
+            if let current = result[key], activityRank(current) <= activityRank(indicator) {
+                return
+            }
+            result[key] = indicator
+        }
+
+        for item in agents(workspaces: workspaces, attention: attention) {
+            insert(
+                workspaceId: item.workspaceId,
+                tabId: item.tabId,
+                paneId: item.paneId,
+                indicator: item.indicator
+            )
+        }
+        for item in commands(workspaces: workspaces, attention: attention) {
+            insert(
+                workspaceId: item.workspaceId,
+                tabId: item.tabId,
+                paneId: item.paneId,
+                indicator: item.indicator
+            )
+        }
+        return result
+    }
+
+    private static func activityRank(_ indicator: AgentSidebarIndicator) -> Int {
+        switch indicator {
+        case .done: return 0
+        case .blocked: return 1
+        case .working: return 2
+        case .idle: return 3
+        }
     }
 
     private static func nonEmptyProcessName(_ value: String?) -> String? {

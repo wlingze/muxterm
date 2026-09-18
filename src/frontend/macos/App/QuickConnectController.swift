@@ -320,6 +320,7 @@ final class QuickTargetCellView: NSTableCellView {
     private var badgeTrailingWithoutClose: NSLayoutConstraint!
     private var detailTrailingWithClose: NSLayoutConstraint!
     private var detailTrailingWithoutClose: NSLayoutConstraint!
+    private var aggregateAppearance: AggregateWorkspaceAppearance?
 
     /// 已打开 Workspace 直接消费侧边栏投影，避免 Quick Panel 再造一套
     /// 固定槽、顺序和编号。未打开的 Project 仍使用 `config`。
@@ -440,20 +441,22 @@ final class QuickTargetCellView: NSTableCellView {
     private func updateLayout() {
         let shortcutText: String?
         if let workspace {
+            aggregateAppearance = AggregateWorkspaceAppearance(
+                workspaceID: workspace.workspaceId
+            )
             titleLabel.stringValue = workspace.name
             titleLabel.toolTip = workspace.displayTitle
             detailLabel.stringValue = workspace.openingStage.map {
                 "Opening · \($0) · \(workspace.runtime) @ \(workspace.transport)"
             } ?? "\(workspace.runtime) @ \(workspace.transport)"
             shortcutText = workspace.shortcutText
-            titleLabel.textColor = workspace.isAggregate
-                ? .controlAccentColor
-                : (workspace.isOpening ? .systemYellow : .labelColor)
-            workspaceIndexLabel.textColor = workspace.isAggregate
-                ? .controlAccentColor
-                : .secondaryLabelColor
+            titleLabel.textColor = aggregateAppearance?.accentColor
+                ?? (workspace.isOpening ? .systemYellow : .labelColor)
+            workspaceIndexLabel.textColor = aggregateAppearance?.accentColor
+                ?? .secondaryLabelColor
             isCurrent = workspace.isActive
         } else if let config {
+            aggregateAppearance = nil
             titleLabel.stringValue = config.name
             titleLabel.toolTip = config.name
             shortcutText = workspaceIndex.map(String.init)
@@ -464,6 +467,7 @@ final class QuickTargetCellView: NSTableCellView {
             titleLabel.textColor = .labelColor
             workspaceIndexLabel.textColor = .controlAccentColor
         } else {
+            aggregateAppearance = nil
             return
         }
         workspaceIndexLabel.stringValue = shortcutText ?? ""
@@ -516,7 +520,8 @@ final class QuickTargetCellView: NSTableCellView {
         } else {
             alpha = 0
         }
-        layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(alpha).cgColor
+        let accent = aggregateAppearance?.accentColor ?? NSColor.controlAccentColor
+        layer?.backgroundColor = accent.withAlphaComponent(alpha).cgColor
     }
 
     func testTitleBoundsWidth() -> CGFloat {
@@ -546,6 +551,10 @@ final class QuickTargetCellView: NSTableCellView {
 
     func testWorkspaceShortcutText() -> String? {
         workspace?.shortcutText ?? workspaceIndex.map(String.init)
+    }
+
+    func testAggregateAppearance() -> String? {
+        aggregateAppearance?.rawValue
     }
 
     func testBadgeDotSizes() -> [CGSize] {
