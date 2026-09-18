@@ -231,6 +231,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         var themeName = "light"
         var statusBarMode = StatusBarMode.tmux
         var tabBarPosition = TabBarPosition.bottom
+        var tabBarStyle = TabBarStyle.equalWidth
         var poolMaxSlots = MuxtermConfig.defaultPoolMaxSlots
         var projects: [TargetConfig] = []
     }
@@ -255,10 +256,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
            let parsed = StatusBarMode(rawValue: mode) {
             resolved.statusBarMode = parsed
         }
-        if let ui = values["ui"] as? [String: Any],
-           let position = ui["tab_bar_position"] as? String,
-           let parsed = TabBarPosition(rawValue: position) {
-            resolved.tabBarPosition = parsed
+        if let ui = values["ui"] as? [String: Any] {
+            if let position = ui["tab_bar_position"] as? String,
+               let parsed = TabBarPosition(rawValue: position) {
+                resolved.tabBarPosition = parsed
+            }
+            if let style = ui["tab_bar_style"] as? String,
+               let parsed = TabBarStyle(rawValue: style) {
+                resolved.tabBarStyle = parsed
+            }
         }
         if let pool = values["pool"] as? [String: Any] {
             resolved.poolMaxSlots = pool["max_slots"] as? Int ?? resolved.poolMaxSlots
@@ -298,6 +304,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         self.content = ContentView(terminalManager: terminalManager)
         content.statusBar.setDebug(debug)
         content.statusBar.colorMode = resolved.statusBarMode
+        content.statusBar.tabBarStyle = resolved.tabBarStyle
         content.applyTabBarPosition(resolved.tabBarPosition)
         sceneStack = SceneStack(
             policy: SceneStackPolicy(maxScenes: resolved.poolMaxSlots)
@@ -1105,6 +1112,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             }
         )
         settingsWindow = controller
+        controller.onApplied = { [weak self] operations in
+            for operation in operations {
+                guard operation["path"] as? String == "/ui/tab_bar_style",
+                      let value = operation["value"] as? String,
+                      let style = TabBarStyle(rawValue: value)
+                else { continue }
+                self?.content.statusBar.tabBarStyle = style
+            }
+        }
         controller.showWindow(self)
     }
 

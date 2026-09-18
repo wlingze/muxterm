@@ -72,6 +72,7 @@ private func settingsFieldTitle(path: String, titleKey: String) -> String {
     case "/attention/blocked_regex": "Blocked output patterns"
     case "/attention/debounce_ms": "Notification delay"
     case "/ui/tab_bar_position": "Tab bar position"
+    case "/ui/tab_bar_style": "Tab width"
     case "/ui/tab_bar_height": "Tab bar height"
     case "/ui/show_title_bar": "Show title bar"
     case "/ui/borderless": "Borderless window"
@@ -116,6 +117,7 @@ private func settingsFieldDescription(path: String, titleKey: String) -> String 
     case "/attention/blocked_regex": "One regular expression per line that marks output as blocked."
     case "/attention/debounce_ms": "Wait this long before raising a new attention signal."
     case "/ui/tab_bar_position": "Place the workspace tab bar above or below the terminal."
+    case "/ui/tab_bar_style": "Use equal-width iTerm2-style tabs or compact fixed-width tabs."
     case "/ui/tab_bar_height": "Height of the compact tab bar in pixels."
     case "/ui/show_title_bar": "Keep the native window title visible."
     case "/ui/borderless": "Remove the outer window border when supported by the desktop."
@@ -155,6 +157,8 @@ private func settingsOptionLabel(path: String, value: String) -> String {
     case ("/statusbar/mode", "theme"): "Use Muxterm theme"
     case ("/ui/tab_bar_position", "top"): "Top"
     case ("/ui/tab_bar_position", "bottom"): "Bottom"
+    case ("/ui/tab_bar_style", "equal_width"): "Fill available width"
+    case ("/ui/tab_bar_style", "compact"): "Compact"
     case ("/behavior/on_last_pane_exit", "close_window"): "Close the window"
     case ("/behavior/on_last_pane_exit", "keep_empty"): "Keep an empty window"
     case ("/behavior/on_last_pane_exit", "new_shell"): "Open a new shell"
@@ -256,6 +260,7 @@ private func settingsStyleCard(_ view: NSView, fill: NSColor = .controlBackgroun
 final class SettingsWindowController: NSWindowController, NSWindowDelegate,
     NSTextFieldDelegate, NSSearchFieldDelegate, NSTableViewDataSource, NSTableViewDelegate
 {
+    var onApplied: (([[String: Any]]) -> Void)?
     private struct Category {
         let id: String
         let title: String
@@ -1175,12 +1180,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
     }
 
     @objc private func applySettings() {
+        let operations = collectOperations()
         let request = MuxtermConfigTransactionRequest(
-            operations: collectOperations(),
+            operations: operations,
             completion: { [weak self] result in
                 guard let self else { return }
                 switch result {
                 case .success:
+                    self.onApplied?(operations)
                     self.dirty = false
                     self.window?.close()
                 case .failure(let error):
