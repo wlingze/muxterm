@@ -121,4 +121,31 @@ final class ZoomE2ETests: XCTestCase {
             "Alt-[ 应切回上一个 pane，并继续保持全屏"
         )
     }
+
+    func testMouseActivatedPaneBecomesFullscreenTarget() throws {
+        let painted = PaintedWorkspace(label: "mouse-zoom")
+        let app = try AppE2E.attachWindow(socket: painted.socket, session: painted.session)
+        defer { app.testShutdown() }
+
+        XCTAssertTrue(app.waitReady(minTabs: 2, minLeaves: 3))
+        let paneIDs = painted.tab1Panes.compactMap { UInt32($0.dropFirst()) }
+        let secondPane = try XCTUnwrap(paneIDs.dropFirst().first)
+        app.testActivatePaneFromSurface(secondPane)
+
+        XCTAssertEqual(app.testActivePaneID(), secondPane, "鼠标点击必须立即更新产品 active pane")
+        XCTAssertEqual(app.testFocusTargetPaneID(), secondPane, "键盘焦点与缩放目标必须是同一 pane")
+
+        app.testTogglePaneFullscreen()
+        XCTAssertTrue(
+            AppE2E.wait(timeout: 5) {
+                app.testPollOnce()
+                return app.testLayoutLeafIDs() == [secondPane]
+                    && Tmux.out(
+                        socket: painted.socket,
+                        args: ["display-message", "-p", "-t", painted.session, "#{pane_id}"]
+                    ) == "%\(secondPane)"
+            },
+            "Cmd-Enter 应放大鼠标刚选择的 pane"
+        )
+    }
 }

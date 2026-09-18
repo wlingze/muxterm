@@ -555,6 +555,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             guard let self else { return }
             self.performIfWindowOpen { [weak self] in
                 guard let self else { return }
+                self.activatePaneLocally(paneId)
                 self.focusPaneTerminal(paneId)
                 _ = self.enqueueCoreTask(
                     MuxTask.switchPane(paneId),
@@ -2697,23 +2698,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         )
         // select-pane 的状态事件可能被 Surface catch-up 推迟；先乐观
         // 更新快照和焦点，与 nextPane 同语义。Core snapshot 在下一轮事件泵对齐。
-        lastSnapshot.activePane = paneId
-        lastSnapshot.panes = lastSnapshot.panes.map { pane in
-            Pane(
-                id: pane.id,
-                cols: pane.cols,
-                rows: pane.rows,
-                isActive: pane.id == paneId
-            )
-        }
-        content.paneLayout.markActivePane(paneId)
-        terminalManager.focusTarget = terminalManager.view(for: paneId)
-        workspaceSidebar.setActiveTarget(
-            workspaceId: activeWorkspaceReplicaID,
-            tabId: resolvedTab ?? lastSnapshot.activeTab,
-            paneId: paneId,
-            workspaceSelectionId: presentedWorkspaceSelectionID
-        )
+        activatePaneLocally(paneId, tabId: resolvedTab)
         needsLayoutReload = true
         restoreTerminalFocusIfAllowed()
         if seq > 0 || !query.isEmpty {
@@ -3904,24 +3889,31 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
         // select-pane 的状态事件稍后才会到达；先乐观更新焦点、tab pane
         // 高亮和快照，连续 Cmd/Alt+[ ] 因而不依赖下一次远端 poll。
-        lastSnapshot.activePane = target
+        activatePaneLocally(target)
+        restoreTerminalFocusIfAllowed()
+    }
+
+    /// Core 的 active-pane 事件可能落后一轮远端 poll。所有本地选择入口先
+    /// 同步同一份产品状态，确保高亮、键盘输入和 Cmd-Enter 缩放目标一致。
+    private func activatePaneLocally(_ paneId: UInt32, tabId: UInt32? = nil) {
+        guard lastSnapshot.panes.contains(where: { $0.id == paneId }) else { return }
+        lastSnapshot.activePane = paneId
         lastSnapshot.panes = lastSnapshot.panes.map { pane in
             Pane(
                 id: pane.id,
                 cols: pane.cols,
                 rows: pane.rows,
-                isActive: pane.id == target
+                isActive: pane.id == paneId
             )
         }
-        content.paneLayout.markActivePane(target)
-        terminalManager.focusTarget = terminalManager.view(for: target)
+        content.paneLayout.markActivePane(paneId)
+        terminalManager.focusTarget = terminalManager.view(for: paneId)
         workspaceSidebar.setActiveTarget(
             workspaceId: activeWorkspaceReplicaID,
-            tabId: lastSnapshot.activeTab,
-            paneId: target,
+            tabId: tabId ?? lastSnapshot.activeTab,
+            paneId: paneId,
             workspaceSelectionId: presentedWorkspaceSelectionID
         )
-        restoreTerminalFocusIfAllowed()
     }
 
     // MARK: - 命令面板

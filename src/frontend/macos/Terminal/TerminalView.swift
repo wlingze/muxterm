@@ -85,6 +85,9 @@ final class MuxTerminalView: TerminalView {
     private(set) var snapshotResetCount = 0
     /// 已经写入过 attach 前历史。snapshot reset 后清掉，允许再 prepend。
     private(set) var historyPrepended = false
+    /// 点击落在 SwiftTerm 子视图时，外层 PaneHost 收不到 mouseDown；
+    /// 在选择/鼠标协议处理前通知产品层同步 active pane。
+    var onActivatePane: ((UInt32) -> Void)?
     /// tmux 控制模式下，SwiftTerm 解析 pane 输出时生成的查询应答（OSC 10/11、
     /// CSI DA/DSR、DCS 等）必须丢弃：tmux 拥有 pane 的 PTY 与终端协议，应答
     /// 经 `send-keys -l` 回写会被 pane 回显并执行，造成 `git lg` 的
@@ -339,6 +342,7 @@ final class MuxTerminalView: TerminalView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        onActivatePane?(paneId)
         if handleProgressiveWordClick(event) {
             return
         }

@@ -254,6 +254,10 @@ extension MainWindowController {
         terminalManager.focusTarget?.paneId
     }
 
+    func testActivatePaneFromSurface(_ paneId: UInt32) {
+        terminalManager.view(for: paneId).onActivatePane?(paneId)
+    }
+
     func testFirstResponderIsTerminalView() -> Bool {
         window?.firstResponder is MuxTerminalView
     }

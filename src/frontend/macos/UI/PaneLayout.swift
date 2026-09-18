@@ -566,6 +566,9 @@ final class PaneHostView: NSView {
         } else if !subviews.contains(terminal) {
             addSubview(terminal)
         }
+        terminal.onActivatePane = { [weak self] id in
+            self?.onActivate?(id)
+        }
         NSLayoutConstraint.activate([
             terminal.leadingAnchor.constraint(equalTo: leadingAnchor),
             terminal.trailingAnchor.constraint(equalTo: trailingAnchor),
