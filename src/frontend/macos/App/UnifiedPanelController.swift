@@ -86,6 +86,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
 
     var onConnect: ((TargetConfig) -> Void)?
     var onWorkspaceActivate: ((String) -> Void)?
+    var onWorkspaceClose: ((String) -> Void)?
     var onLoadExistingConnections: ((@escaping (Result<[ExistingConnectionChoice], Error>) -> Void) -> Void)?
     var onLoadSSHAliases: ((@escaping (Result<[String], Error>) -> Void) -> Void)?
     var onAttachExistingConnection: ((ExistingConnectionChoice) -> Void)?
@@ -1168,6 +1169,11 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                 let cell = tableView.makeView(withIdentifier: id, owner: self) as? QuickTargetCellView
                     ?? QuickTargetCellView(identifier: id)
                 cell.workspace = workspace
+                cell.configureWorkspaceClose(
+                    workspace.isClosable ? workspace.workspaceId : nil
+                ) { [weak self] workspaceID in
+                    self?.onWorkspaceClose?(workspaceID)
+                }
                 return cell
             case .existingConnections:
                 let id = NSUserInterfaceItemIdentifier("ExistingConnectionsFolder")
@@ -1181,6 +1187,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                 let cell = tableView.makeView(withIdentifier: id, owner: self) as? QuickTargetCellView
                     ?? QuickTargetCellView(identifier: id)
                 cell.workspace = nil
+                cell.configureWorkspaceClose(nil, action: nil)
                 cell.config = config
                 cell.badges = badges
                 cell.isCurrent = isCurrent
@@ -1511,6 +1518,20 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         guard row >= 0, row < table.numberOfRows else { return nil }
         table.layoutSubtreeIfNeeded()
         return table.view(atColumn: 0, row: row, makeIfNecessary: true) as? QuickTargetCellView
+    }
+
+    func testWorkspaceCloseVisible(matching title: String) -> Bool {
+        guard let row = visibleItems.firstIndex(where: { $0.title == title }),
+              let cell = testWorkspaceCell(at: row)
+        else { return false }
+        return cell.closeVisibleForTesting
+    }
+
+    func testCloseWorkspaceItem(matching title: String) {
+        guard let row = visibleItems.firstIndex(where: { $0.title == title }),
+              let cell = testWorkspaceCell(at: row)
+        else { return }
+        cell.clickCloseForTesting()
     }
 
     func testWorkspaceIndex(matching title: String) -> Int? {

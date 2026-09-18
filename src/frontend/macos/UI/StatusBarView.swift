@@ -95,6 +95,12 @@ final class StatusBarView: NSView {
             })
         }
     }
+    var tabBarStyle: TabBarStyle = .equalWidth {
+        didSet {
+            guard tabBarStyle != oldValue else { return }
+            rebuildCurrentTabs()
+        }
+    }
     var colorMode: StatusBarMode = .tmux
 
     // 左→右：侧栏 → tab 列表 → tmux-left → tmux-right → 状态点 → 通知 → 新建
@@ -116,6 +122,7 @@ final class StatusBarView: NSView {
     private var justifyConstraints: [NSLayoutConstraint] = []
     private var heightConstraint: NSLayoutConstraint!
     private var sidebarLeadingConstraint: NSLayoutConstraint!
+    private var tabFillWidthConstraint: NSLayoutConstraint!
     private var lastTmuxSnapshot: StatusBarSnapshot?
     private var lastBase = StatusBarTextStyle.default
     private var lastLeftStyle = "default"
@@ -242,6 +249,12 @@ final class StatusBarView: NSView {
             constant: -(StatusBarTabOverflow.statusRightMinWidth
                 + StatusBarTabOverflow.chromeWidth + 16)
         )
+        tabFillWidthConstraint = tabStack.widthAnchor.constraint(
+            equalTo: widthAnchor,
+            constant: -(StatusBarTabOverflow.statusRightMinWidth
+                + StatusBarTabOverflow.chromeWidth + 48)
+        )
+        tabFillWidthConstraint.priority = .defaultHigh
         let rightMinWidth = rightLabel.widthAnchor.constraint(
             greaterThanOrEqualToConstant: StatusBarTabOverflow.statusRightMinWidth
         )
@@ -740,6 +753,14 @@ final class StatusBarView: NSView {
 
     private func rebuildTabButtons(_ items: [TabBarItem]) {
         tabStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        tabStack.distribution = tabBarStyle == .equalWidth ? .fillEqually : .fill
+        tabStack.spacing = tabBarStyle == .equalWidth ? 1 : 3
+        tabStack.setContentHuggingPriority(
+            tabBarStyle == .equalWidth ? .defaultLow : .defaultHigh,
+            for: .horizontal
+        )
+        tabFillWidthConstraint.isActive = tabBarStyle == .equalWidth && !items.isEmpty
+        var firstEqualWidthButton: StatusTabButton?
         for (position, item) in items.enumerated() {
             let button = StatusTabButton()
             // tmux 使用真实 window_index；local shell 没有该字段时才回退
@@ -748,15 +769,32 @@ final class StatusBarView: NSView {
                 index: item.index ?? UInt32(position + 1),
                 name: item.name
             )
-            // W19-F：固定 tab 宽度（溢出裁剪），不得无限变宽挤掉 status-right。
-            button.widthAnchor.constraint(
-                equalToConstant: StatusBarTabOverflow.fixedTabWidth
-            ).isActive = true
+            // 等宽约束连接两个按钮，必须先让它们拥有共同父视图；否则
+            // AppKit 会在约束激活时抛出 NSGenericException。
+            tabStack.addArrangedSubview(button)
+            if tabBarStyle == .compact {
+                // 固定 tab 宽度（溢出裁剪），不得无限变宽挤掉 status-right。
+                button.widthAnchor.constraint(
+                    equalToConstant: StatusBarTabOverflow.fixedTabWidth
+                ).isActive = true
+            } else {
+                if let firstEqualWidthButton {
+                    button.widthAnchor.constraint(equalTo: firstEqualWidthButton.widthAnchor).isActive = true
+                } else {
+                    firstEqualWidthButton = button
+                }
+                let minimum = button.widthAnchor.constraint(greaterThanOrEqualToConstant: 44)
+                minimum.priority = .defaultLow
+                minimum.isActive = true
+            }
             button.tag = Int(item.id)
             button.target = self
             button.action = #selector(tabClicked(_:))
             button.setAccessibilityIdentifier("muxterm.tab.\(item.id)")
             button.isActiveTab = item.active
+            button.configureClose(tabID: item.id, visible: allowsTabClosing) { [weak self] in
+                self?.onCloseTab?(item.id)
+            }
             button.onDoubleClick = allowsTabRenaming ? { [weak self] in
                 self?.onRenameTab?(item.id)
             } : nil
@@ -814,7 +852,6 @@ final class StatusBarView: NSView {
                 menu.addItem(close)
             }
             button.menu = menu.items.isEmpty ? nil : menu
-            tabStack.addArrangedSubview(button)
         }
     }
 
@@ -979,6 +1016,27 @@ final class StatusBarView: NSView {
             return
         }
         button.performClick(nil)
+    }
+
+    func testClickTabClose(_ tabId: UInt32) {
+        tabStack.arrangedSubviews
+            .compactMap { $0 as? StatusTabButton }
+            .first(where: { $0.tag == Int(tabId) })?
+            .clickCloseForTesting()
+    }
+
+    func testVisibleTabCloseIDs() -> [UInt32] {
+        tabStack.arrangedSubviews.compactMap { view in
+            guard let button = view as? StatusTabButton,
+                  button.closeVisibleForTesting
+            else { return nil }
+            return UInt32(button.tag)
+        }
+    }
+
+    func testTabWidths() -> [CGFloat] {
+        layoutSubtreeIfNeeded()
+        return tabStack.arrangedSubviews.map(\.frame.width)
     }
 
     func testClickStatusDot() {
@@ -1190,6 +1248,8 @@ private final class AttentionBellButton: NSButton {
 /// iTerm2 风格 GUI tab：圆角色块 + 系统字体，不用 tmux 格式串。
 private final class StatusTabButton: NSButton {
     private let activeUnderline = CALayer()
+    private let closeButton = NSButton()
+    private var onClose: (() -> Void)?
     var onDoubleClick: (() -> Void)?
     var onDragEnd: ((NSPoint) -> Void)?
     var isActiveTab = false {
@@ -1212,6 +1272,24 @@ private final class StatusTabButton: NSButton {
         cell?.truncatesLastVisibleLine = true
         setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         setContentHuggingPriority(.defaultHigh, for: .horizontal)
+
+        closeButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: nil)
+        closeButton.imagePosition = .imageOnly
+        closeButton.imageScaling = .scaleProportionallyDown
+        closeButton.bezelStyle = .shadowlessSquare
+        closeButton.isBordered = false
+        closeButton.focusRingType = .none
+        closeButton.contentTintColor = .tertiaryLabelColor
+        closeButton.target = self
+        closeButton.action = #selector(closeClicked)
+        closeButton.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(closeButton)
+        NSLayoutConstraint.activate([
+            closeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+            closeButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            closeButton.widthAnchor.constraint(equalToConstant: 16),
+            closeButton.heightAnchor.constraint(equalToConstant: 16),
+        ])
     }
 
     @available(*, unavailable)
@@ -1237,6 +1315,18 @@ private final class StatusTabButton: NSButton {
             width: max(0, bounds.width - 14),
             height: FlatChrome.activeTabUnderlineHeight
         )
+    }
+
+    func configureClose(tabID: UInt32, visible: Bool, action: @escaping () -> Void) {
+        onClose = action
+        closeButton.isHidden = !visible
+        closeButton.setAccessibilityIdentifier("muxterm.tab.close.\(tabID)")
+        closeButton.setAccessibilityLabel(MuxtermI18n.shared.tr(.closeTab))
+        closeButton.toolTip = MuxtermI18n.shared.tr(.closeTab)
+    }
+
+    @objc private func closeClicked() {
+        onClose?()
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -1283,11 +1373,17 @@ private final class StatusTabButton: NSButton {
         let font = NSFont.systemFont(ofSize: 11, weight: isActiveTab ? .semibold : .regular)
         let fg = isActiveTab ? NSColor.labelColor : NSColor.secondaryLabelColor
         self.font = font
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .left
+        paragraph.headIndent = 8
+        paragraph.firstLineHeadIndent = 8
+        paragraph.tailIndent = closeButton.isHidden ? -8 : -24
         attributedTitle = NSAttributedString(
             string: attributedTitle.string.isEmpty ? title : attributedTitle.string,
             attributes: [
                 .font: font,
                 .foregroundColor: fg,
+                .paragraphStyle: paragraph,
             ]
         )
         layer?.backgroundColor = (isActiveTab
@@ -1295,6 +1391,12 @@ private final class StatusTabButton: NSButton {
             : NSColor.clear
         ).cgColor
         activeUnderline.isHidden = !isActiveTab
+    }
+
+    var closeVisibleForTesting: Bool { !closeButton.isHidden }
+
+    func clickCloseForTesting() {
+        closeButton.performClick(nil)
     }
 }
 

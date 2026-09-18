@@ -112,6 +112,14 @@ extension MainWindowController {
         content.paneLayout.testPaneTitleVisible(paneId)
     }
 
+    func testPaneTitle(_ paneId: UInt32) -> String? {
+        content.paneLayout.testPaneTitle(paneId)
+    }
+
+    func testPaneTerminalHeight(_ paneId: UInt32) -> CGFloat {
+        content.paneLayout.testPaneTerminalHeight(paneId)
+    }
+
     func testPaneTerminalText(_ paneId: UInt32) -> String {
         terminalManager.view(for: paneId).visibleScreenText()
     }
@@ -252,6 +260,10 @@ extension MainWindowController {
 
     func testFocusTargetPaneID() -> UInt32? {
         terminalManager.focusTarget?.paneId
+    }
+
+    func testActivatePaneFromSurface(_ paneId: UInt32) {
+        terminalManager.view(for: paneId).onActivatePane?(paneId)
     }
 
     func testFirstResponderIsTerminalView() -> Bool {

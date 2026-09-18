@@ -135,6 +135,35 @@ final class ChromeE2ETests: XCTestCase {
         XCTAssertEqual(switched, [21], "回调应收到 21 而不是 1")
     }
 
+    func testTabStyleSwitchesBetweenEqualWidthAndCompactWithVisibleCloseButtons() {
+        let bar = StatusBarView(frame: NSRect(x: 0, y: 0, width: 900, height: 24))
+        window.contentView = bar
+        window.orderFront(nil)
+        let tabs = [
+            Tab(id: 1, name: "one", isActive: true),
+            Tab(id: 2, name: "two", isActive: false),
+            Tab(id: 3, name: "three", isActive: false),
+        ]
+        var closed: [UInt32] = []
+        bar.onCloseTab = { closed.append($0) }
+        bar.tabBarStyle = .equalWidth
+        bar.updateTabs(tabs)
+        AppE2E.pump(20)
+
+        let equalWidths = bar.testTabButtonWidths()
+        XCTAssertEqual(equalWidths.count, 3)
+        XCTAssertLessThan((equalWidths.max() ?? 0) - (equalWidths.min() ?? 0), 1)
+        XCTAssertEqual(bar.testVisibleTabCloseIDs(), [1, 2, 3])
+        bar.testClickTabClose(2)
+        XCTAssertEqual(closed, [2], "关闭按钮必须直接关闭对应 Tab，不触发行选择")
+
+        bar.tabBarStyle = .compact
+        AppE2E.pump(20)
+        XCTAssertTrue(bar.testTabButtonWidths().allSatisfy {
+            abs($0 - StatusBarTabOverflow.fixedTabWidth) < 1
+        })
+    }
+
     func testTmuxStatusDoesNotOverrideCoreTabOrder() {
         let bar = StatusBarView(frame: .zero)
         window.contentView = bar

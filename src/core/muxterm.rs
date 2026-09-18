@@ -82,6 +82,7 @@ pub struct Muxterm {
     pub(crate) event_data: Vec<Vec<u8>>,
     pub(crate) event_names: Vec<CString>,
     pub(crate) tab_names: Vec<CString>,
+    pub(crate) pane_names: Vec<CString>,
     pub(crate) layout_nodes: Vec<CLayoutNode>,
     /// Lane-separated batches waiting for the legacy C ABI conversion.
     pub(crate) deferred_batches: VecDeque<(crate::protocol::WorkspaceId, RuntimeBatch)>,

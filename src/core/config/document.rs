@@ -97,6 +97,12 @@ impl ConfigDocument {
         if !matches!(self.config.statusbar.mode.as_str(), "tmux" | "theme") {
             return Err(anyhow!("statusbar.mode 只能是 tmux 或 theme"));
         }
+        if !matches!(
+            self.config.ui.tab_bar_style.as_str(),
+            "compact" | "equal_width"
+        ) {
+            return Err(anyhow!("ui.tab_bar_style 只能是 compact 或 equal_width"));
+        }
         self.validate_projects()?;
         self.validate_templates()?;
         self.validate_shortcuts()?;
@@ -298,6 +304,7 @@ impl ConfigDocument {
                 ]},
                 {"id":"ui","title_key":"settings.ui","fields":[
                     {"path":"/ui/tab_bar_position","control":"select","options":["top","bottom"],"apply":"next_workspace","title_key":"settings.ui.tab_bar_position"},
+                    {"path":"/ui/tab_bar_style","control":"select","options":["equal_width","compact"],"apply":"immediate","title_key":"settings.ui.tab_bar_style"},
                     {"path":"/ui/tab_bar_height","control":"number","apply":"next_workspace","title_key":"settings.ui.tab_bar_height"},
                     {"path":"/ui/show_title_bar","control":"switch","apply":"next_workspace","title_key":"settings.ui.show_title_bar"},
                     {"path":"/ui/borderless","control":"switch","apply":"next_workspace","title_key":"settings.ui.borderless"}
@@ -606,6 +613,7 @@ fn validate_toml_shape(value: &toml::Value) -> Result<()> {
         "ui",
         &[
             "tab_bar_position",
+            "tab_bar_style",
             "tab_bar_height",
             "show_title_bar",
             "borderless",

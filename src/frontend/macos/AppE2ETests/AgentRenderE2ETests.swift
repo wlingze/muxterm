@@ -461,6 +461,31 @@ final class AgentRenderE2ETests: XCTestCase {
         XCTAssertEqual(handler.bytes, [0x15], "noop 必须静默忽略")
     }
 
+    func testTerminalMouseDownReportsPaneActivationBeforeSelectionHandling() throws {
+        AppE2E.ensureApp()
+        let view = MuxTerminalView(
+            paneId: 42,
+            frame: NSRect(x: 0, y: 0, width: 320, height: 180)
+        )
+        var activated: [UInt32] = []
+        view.onActivatePane = { activated.append($0) }
+        let event = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .leftMouseDown,
+            location: NSPoint(x: 12, y: 12),
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            eventNumber: 1,
+            clickCount: 1,
+            pressure: 1
+        ))
+
+        view.mouseDown(with: event)
+
+        XCTAssertEqual(activated, [42])
+    }
+
     /// 伪造 pi/Cursor 网格：顶栏 + 中间对话 + 底栏输入。历史 prepend 后
     /// 可见屏仍必须是顶+输入，不能只剩中间；上划后中文历史必须可读。
     func testForgedAgentGridKeepsTopAndInputAfterHistory() throws {
@@ -501,12 +526,13 @@ final class AgentRenderE2ETests: XCTestCase {
         manager.testFlushSurfaceSeeds()
         AppE2E.pump(40)
 
+        XCTAssertTrue(view.isAtLatest(), "Pi attach + history 回填后必须位于 native live tail")
         let visible = view.visibleScreenText()
         XCTAssertTrue(visible.contains("PI_STATUS"), "顶栏必须还在。got=\(visible)")
         XCTAssertTrue(visible.contains("PROMPT>"), "输入盒必须还在，不能只看到中间。got=\(visible)")
         XCTAssertFalse(
             visible.contains("HIST_ZHONG"),
-            "prepend 后不得 scrollToLatest 把历史尾卷进视口。got=\(visible)"
+            "live tail 不应显示离屏历史。got=\(visible)"
         )
 
         view.scrollLines(80)

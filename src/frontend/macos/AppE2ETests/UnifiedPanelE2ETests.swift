@@ -121,6 +121,16 @@ final class UnifiedPanelE2ETests: XCTestCase {
             2,
             "当前 Workspace 即使按 Recent 排在前面，也必须保留侧栏编号"
         )
+        XCTAssertFalse(app.unifiedPanel.testWorkspaceCloseVisible(matching: "Shells"))
+        XCTAssertFalse(app.unifiedPanel.testWorkspaceCloseVisible(matching: "Agents"))
+        XCTAssertTrue(app.unifiedPanel.testWorkspaceCloseVisible(matching: first.session))
+        XCTAssertTrue(app.unifiedPanel.testWorkspaceCloseVisible(matching: second.session))
+
+        app.unifiedPanel.testCloseWorkspaceItem(matching: first.session)
+        AppE2E.pump(40)
+        XCTAssertTrue(app.unifiedPanel.window?.isVisible == true)
+        XCTAssertFalse(app.unifiedPanel.testWorkspaceTitles().contains(first.session))
+        XCTAssertEqual(app.testActiveWorkspaceSession(), second.session)
     }
 
     func testAggregateRowsActivateTheSameSidebarDestinations() throws {
