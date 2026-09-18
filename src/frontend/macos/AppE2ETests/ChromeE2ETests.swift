@@ -26,6 +26,73 @@ final class ChromeE2ETests: XCTestCase {
         super.tearDown()
     }
 
+    func testMainWindowStartsWideAndRemainsHorizontallyResizable() throws {
+        let bridge = try CoreBridge(backendType: "local")
+        let app = MainWindowController(
+            bridge: bridge,
+            debug: true,
+            quickConnectStore: QuickConnectStore()
+        )
+        defer { app.testShutdown() }
+        guard let mainWindow = app.window else {
+            return XCTFail("主窗口必须存在")
+        }
+        mainWindow.orderFront(nil)
+        AppE2E.pump(80)
+
+        XCTAssertGreaterThanOrEqual(
+            mainWindow.frame.width,
+            900,
+            "初始 960pt 窗口不能被内容约束压到最小宽度"
+        )
+        for width in [720.0, 1180.0, 840.0] {
+            let frame = AppE2E.fixedWindowFrame(
+                width: width,
+                height: mainWindow.frame.height
+            )
+            mainWindow.setFrame(frame, display: true)
+            XCTAssertEqual(
+                mainWindow.frame.width,
+                width,
+                accuracy: 1,
+                "NSWindow 必须先接受用户请求的宽度"
+            )
+            AppE2E.pump(40)
+            XCTAssertEqual(
+                mainWindow.frame.width,
+                width,
+                accuracy: 1,
+                "状态栏和 split view 不能锁死用户设置的窗口宽度"
+            )
+            XCTAssertEqual(
+                app.content.frame.width,
+                mainWindow.contentLayoutRect.width,
+                accuracy: 1,
+                "终端内容区必须跟随窗口宽度"
+            )
+            XCTAssertEqual(
+                app.content.statusBar.testTabStackFrame().width,
+                app.content.statusBar.testTabViewportFrame().width,
+                accuracy: 1,
+                "等宽 Tab 必须继续铺满可用中间区"
+            )
+        }
+
+        app.content.statusBar.applyTmuxSnapshot(
+            Self.snapshot(left: "LEFT", right: "RIGHT", windows: []),
+            enabled: true
+        )
+        let tmuxFrame = AppE2E.fixedWindowFrame(width: 900, height: mainWindow.frame.height)
+        mainWindow.setFrame(tmuxFrame, display: true)
+        AppE2E.pump(40)
+        XCTAssertEqual(
+            mainWindow.frame.width,
+            tmuxFrame.width,
+            accuracy: 1,
+            "tmux 状态栏也不能覆盖用户调整的窗口宽度"
+        )
+    }
+
     func testStatusBarHasLeftCenterRightAndChromeButtons() {
         let bar = StatusBarView(frame: .zero)
         window.contentView = bar
@@ -194,7 +261,11 @@ final class ChromeE2ETests: XCTestCase {
 
         let equalWidths = bar.testTabButtonWidths()
         XCTAssertEqual(equalWidths.count, 3)
-        XCTAssertLessThan((equalWidths.max() ?? 0) - (equalWidths.min() ?? 0), 1)
+        XCTAssertLessThanOrEqual(
+            (equalWidths.max() ?? 0) - (equalWidths.min() ?? 0),
+            1,
+            "等宽布局允许 AppKit 在像素对齐时产生 1pt 取整差异"
+        )
         XCTAssertEqual(bar.testVisibleTabCloseIDs(), [1, 2, 3])
         bar.testClickTabClose(2)
         XCTAssertEqual(closed, [2], "关闭按钮必须直接关闭对应 Tab，不触发行选择")
