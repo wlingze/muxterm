@@ -98,6 +98,30 @@ impl LayoutHost {
         self.panes.get(&id)
     }
 
+    /// 同一水平带的标题只扣一次；上下叠放的标题高度相加。
+    pub fn title_height(&self) -> i32 {
+        fn height(widget: &Widget) -> i32 {
+            if let Some(paned) = widget.downcast_ref::<Paned>() {
+                let first = paned.start_child().as_ref().map(height).unwrap_or(0);
+                let second = paned.end_child().as_ref().map(height).unwrap_or(0);
+                if paned.orientation() == Orientation::Vertical {
+                    first + second
+                } else {
+                    first.max(second)
+                }
+            } else {
+                widget
+                    .first_child()
+                    .filter(|child| {
+                        child.has_css_class("muxterm-pane-header") && child.is_visible()
+                    })
+                    .map(|child| child.height())
+                    .unwrap_or(0)
+            }
+        }
+        self.active_root_widget().as_ref().map(height).unwrap_or(0)
+    }
+
     /// 测试用：已创建的 pane id（含后台 tab 像素缓存）。
     pub fn pane_ids(&self) -> Vec<u32> {
         let mut ids: Vec<u32> = self.panes.keys().copied().collect();
@@ -206,9 +230,11 @@ impl LayoutHost {
     where
         F: Fn(u32, &[u8]) + Clone + 'static,
     {
+        let mut source_ids = Vec::new();
+        collect_pane_ids(layout, &mut source_ids);
         let effective = match self.fullscreen_pane {
-            Some(id) => LayoutTree::Leaf(id),
-            None => layout.clone(),
+            Some(id) if source_ids.contains(&id) => LayoutTree::Leaf(id),
+            _ => layout.clone(),
         };
         // GtkWidget 同一时刻只能有一个 parent。Runtime 给出重复 leaf 时保留
         // 当前好布局并拒绝这帧，避免 gtk_paned_set_end_child critical。
@@ -283,6 +309,9 @@ impl LayoutHost {
         collect_pane_ids(&effective, &mut needed);
         for id in &needed {
             self.ensure_pane(*id, on_input);
+            if let Some(pane) = self.panes.get(id) {
+                pane.set_header_visible(needed.len() > 1);
+            }
         }
 
         let mut ratios = HashMap::new();

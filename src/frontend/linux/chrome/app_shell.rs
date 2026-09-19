@@ -58,7 +58,6 @@ impl AppShell {
         let sidebar = WorkspaceSidebar::new();
         let header = gtk4::HeaderBar::new();
         header.set_widget_name("muxterm-header-bar");
-        header.pack_start(&sidebar.toggle);
 
         let quick_connect_button = gtk4::Button::with_label("⚡");
         quick_connect_button.set_widget_name("muxterm-quick-connect-button");
@@ -78,6 +77,7 @@ impl AppShell {
         window.set_titlebar(Some(&header));
 
         let status = StatusBar::new(status_mode, theme);
+        status.container.prepend(&sidebar.toggle);
         status.container.add_css_class("status-bar");
         let overlay = OverlayLayer::new(scene);
 

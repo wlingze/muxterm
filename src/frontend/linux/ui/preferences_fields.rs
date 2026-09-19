@@ -352,6 +352,9 @@ pub(super) fn number_spec(path: &str, current: Option<&Value>) -> (f64, f64, f64
 
 pub(super) fn field_title(path: &str, title_key: &str) -> String {
     match path {
+        "/ui/tab_bar_style" => {
+            crate::frontend::utils::i18n::tr(crate::frontend::utils::i18n::Key::TabBarStyle)
+        }
         "/font/family" => "Font family".into(),
         "/font/size" => "Font size".into(),
         "/font/fallback" => "Fallback fonts".into(),
@@ -449,7 +452,10 @@ pub(super) fn apply_label(mode: &str) -> &'static str {
 }
 
 pub(super) fn option_label(path: &str, value: &str) -> String {
+    use crate::frontend::utils::i18n::{self, Key};
     match (path, value) {
+        ("/ui/tab_bar_style", "equal_width") => i18n::tr(Key::TabEqualWidth),
+        ("/ui/tab_bar_style", "compact") => i18n::tr(Key::TabCompact),
         ("/theme/name", "system") => "Follow system".into(),
         ("/theme/name", "black") => "Black".into(),
         ("/theme/name", "white") => "White".into(),

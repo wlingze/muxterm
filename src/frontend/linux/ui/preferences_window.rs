@@ -133,6 +133,7 @@ fn humanize_words(raw: &str) -> String {
 
 const PREFERENCES_CSS: &str = r#"
 .muxterm-preferences-window .prefs-root {
+    font-size: 14px;
     background-color: @theme_bg_color;
     color: @theme_fg_color;
 }
@@ -152,11 +153,11 @@ const PREFERENCES_CSS: &str = r#"
 }
 .muxterm-preferences-window .prefs-header-subtitle {
     color: alpha(@theme_fg_color, 0.72);
-    font-size: 12px;
+    font-size: 14px;
 }
 .muxterm-preferences-window .prefs-config-path {
     color: alpha(@theme_fg_color, 0.46);
-    font-size: 10px;
+    font-size: 12px;
 }
 .muxterm-preferences-window .prefs-search {
     min-height: 34px;
@@ -175,7 +176,7 @@ const PREFERENCES_CSS: &str = r#"
 .muxterm-preferences-window .prefs-sidebar-label {
     margin-left: 10px;
     color: alpha(@theme_fg_color, 0.48);
-    font-size: 10px;
+    font-size: 12px;
     font-weight: 700;
     letter-spacing: 0.08em;
 }
@@ -208,12 +209,12 @@ const PREFERENCES_CSS: &str = r#"
 }
 .muxterm-preferences-window .prefs-nav-title {
     color: @theme_fg_color;
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 600;
 }
 .muxterm-preferences-window .prefs-nav-hint {
     color: alpha(@theme_fg_color, 0.48);
-    font-size: 10px;
+    font-size: 12px;
 }
 .muxterm-preferences-window .prefs-page-title {
     font-size: 25px;
@@ -221,7 +222,7 @@ const PREFERENCES_CSS: &str = r#"
 }
 .muxterm-preferences-window .prefs-page-description {
     color: alpha(@theme_fg_color, 0.64);
-    font-size: 12px;
+    font-size: 14px;
 }
 .muxterm-preferences-window .prefs-card,
 .muxterm-preferences-window .prefs-preview-card {
@@ -231,24 +232,24 @@ const PREFERENCES_CSS: &str = r#"
 }
 .muxterm-preferences-window .prefs-card-title,
 .muxterm-preferences-window .prefs-preview-title {
-    font-size: 13px;
+    font-size: 15px;
     font-weight: 700;
 }
 .muxterm-preferences-window .prefs-card-hint,
 .muxterm-preferences-window .prefs-preview-summary {
     color: alpha(@theme_fg_color, 0.48);
-    font-size: 10px;
+    font-size: 12px;
 }
 .muxterm-preferences-window .prefs-setting-row {
     padding: 14px 16px;
 }
 .muxterm-preferences-window .prefs-setting-title {
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 600;
 }
 .muxterm-preferences-window .prefs-setting-description {
     color: alpha(@theme_fg_color, 0.58);
-    font-size: 11px;
+    font-size: 13px;
 }
 .muxterm-preferences-window .prefs-apply-badge {
     min-height: 18px;
@@ -256,7 +257,7 @@ const PREFERENCES_CSS: &str = r#"
     border-radius: 5px;
     background-color: alpha(@theme_selected_bg_color, 0.13);
     color: alpha(@theme_selected_bg_color, 0.88);
-    font-size: 9px;
+    font-size: 11px;
     font-weight: 700;
 }
 .muxterm-preferences-window .prefs-card-divider {
@@ -267,7 +268,7 @@ const PREFERENCES_CSS: &str = r#"
 .muxterm-preferences-window spinbutton.prefs-control,
 .muxterm-preferences-window combobox.prefs-control,
 .muxterm-preferences-window fontbutton.prefs-control {
-    min-height: 32px;
+    min-height: 36px;
 }
 .muxterm-preferences-window .prefs-text-editor {
     min-height: 104px;
@@ -287,7 +288,7 @@ const PREFERENCES_CSS: &str = r#"
 }
 .muxterm-preferences-window .prefs-footer-status {
     color: alpha(@theme_fg_color, 0.55);
-    font-size: 11px;
+    font-size: 13px;
 }
 .muxterm-preferences-window .prefs-footer-status.error {
     color: #d94841;
@@ -310,12 +311,12 @@ const PREFERENCES_CSS: &str = r#"
 }
 .muxterm-preferences-window .prefs-project-name,
 .muxterm-preferences-window .prefs-shortcut-name {
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 600;
 }
 .muxterm-preferences-window .prefs-project-detail {
     color: alpha(@theme_fg_color, 0.48);
-    font-size: 10px;
+    font-size: 12px;
 }
 .muxterm-preferences-window .prefs-keycap {
     min-width: 92px;

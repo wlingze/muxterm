@@ -75,9 +75,10 @@ impl OverlayLayer {
 
         let last_seen = gtk4::Button::with_label("上次看到这里");
         last_seen.set_widget_name("muxterm-last-seen");
-        last_seen.set_halign(gtk4::Align::Start);
-        last_seen.set_valign(gtk4::Align::Center);
-        last_seen.set_margin_start(4);
+        last_seen.set_halign(gtk4::Align::End);
+        last_seen.set_valign(gtk4::Align::Start);
+        last_seen.set_margin_end(12);
+        last_seen.set_margin_top(12);
         last_seen.add_css_class("muxterm-last-seen");
         last_seen.set_visible(false);
 

@@ -1,4 +1,9 @@
 {
+  "aggregate_shells": "Shell 终端",
+  "aggregate_agents": "Agent 终端",
+  "tab_bar_style": "标签页布局",
+  "tab_equal_width": "等宽铺满",
+  "tab_compact": "紧凑标题",
   "command_palette": "命令面板",
   "command_palette_placeholder": "输入命令或搜索...",
   "local": "本地",

@@ -1,5 +1,6 @@
 //! Linux chrome: shell, sidebar, overlays, command palette, status bar.
 
+pub mod aggregate;
 pub mod app_shell;
 pub(crate) mod attention_compat;
 pub mod attention_ui;

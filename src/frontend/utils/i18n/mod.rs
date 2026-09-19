@@ -33,6 +33,11 @@ macro_rules! define_text_keys {
 }
 
 define_text_keys! {
+    AggregateShells => "aggregate_shells",
+    AggregateAgents => "aggregate_agents",
+    TabBarStyle => "tab_bar_style",
+    TabEqualWidth => "tab_equal_width",
+    TabCompact => "tab_compact",
     Cancel => "cancel",
     ChooseDirectoryMessage => "choose_directory_message",
     ChooseRemoteDirectory => "choose_remote_directory",

@@ -19,7 +19,11 @@ pub(super) fn chrome_css(theme: &Theme) -> String {
     );
     format!(
         "
-        .muxterm-root {{ background: {bg}; }}
+        .muxterm-root {{ background: {bg}; font-size: 14px; }}
+        .muxterm-aggregate-shells, .muxterm-aggregate-agents {{ padding: 7px 12px; margin: 2px 8px; border-radius: 7px; background: transparent; border: none; box-shadow: none; font-weight: 600; }}
+        .muxterm-aggregate-shells {{ color: #89b4fa; }}
+        .muxterm-aggregate-agents {{ color: #cba6f7; }}
+        .muxterm-aggregate-shells.active, .muxterm-aggregate-agents.active {{ background: alpha({fg}, 0.10); }}
         .tab-bar {{ background: {bg}; }}
         button.tab-button {{
             background-image: none;
@@ -43,7 +47,7 @@ pub(super) fn chrome_css(theme: &Theme) -> String {
         .status-bar {{
             color: {fg};
             padding: 3px 8px;
-            font-size: 11px;
+            font-size: 13px;
             border-top: 1px solid alpha({fg}, 0.12);
         }}
         .muxterm-status-windows {{
@@ -56,9 +60,10 @@ pub(super) fn chrome_css(theme: &Theme) -> String {
             background-color: transparent;
             border: 1px solid transparent;
             box-shadow: none;
-            min-height: 20px;
-            padding: 1px 10px;
-            border-radius: 4px;
+            min-height: 26px;
+            min-width: 0;
+            padding: 2px 8px;
+            border-radius: 6px;
             color: {fg};
             font-weight: 500;
             opacity: 0.72;
@@ -74,30 +79,30 @@ pub(super) fn chrome_css(theme: &Theme) -> String {
             background-color: alpha({fg}, 0.20);
             box-shadow: inset 0 -3px 0 {fg};
         }}
-        .qc-badge {{ padding: 0 6px; border-radius: 4px; font-size: 9px; color: #fff; }}
+        .qc-badge {{ padding: 2px 7px; border-radius: 5px; font-size: 11px; color: #fff; }}
         .qc-badge-recent {{ background: #1e66f5; }}
         .qc-badge-project {{ background: #40a02b; }}
         .qc-badge-current {{ background: #df8e1d; }}
         .qc-current {{ background: alpha(#89b4fa, 0.18); }}
-        .muxterm-sidebar {{ background: {bg}; border-right: 1px solid alpha({fg}, 0.18); }}
+        .muxterm-sidebar {{ background: alpha({fg}, 0.025); border-right: 1px solid alpha({fg}, 0.10); }}
         .muxterm-sidebar-section-header {{
             background-image: none;
             background-color: alpha({fg}, 0.035);
             border: none;
             border-radius: 0;
-            min-height: 22px;
-            padding: 0;
+            min-height: 32px;
+            padding: 2px 6px;
             color: {fg};
         }}
         .muxterm-sidebar-section-header:hover {{ background-color: alpha({fg}, 0.09); }}
-        .muxterm-sidebar-title {{ color: {fg}; font-size: 9.5px; font-weight: 700; letter-spacing: 0.04em; }}
+        .muxterm-sidebar-title {{ color: {fg}; opacity: 0.65; font-size: 12px; font-weight: 600; letter-spacing: 0.04em; }}
         .muxterm-sidebar-section-arrow {{ color: {fg}; opacity: 0.72; }}
         .muxterm-sidebar-sections > separator {{
             min-height: 1px;
             background: alpha({fg}, 0.18);
         }}
-        .muxterm-sidebar-list {{ background: transparent; padding: 1px 3px 3px; }}
-        .muxterm-sidebar-row {{ border-radius: 4px; margin: 1px 0; }}
+        .muxterm-sidebar-list {{ background: transparent; padding: 4px 8px 8px; }}
+        .muxterm-sidebar-row {{ border-radius: 7px; margin: 2px 0; padding: 5px 4px; }}
         .muxterm-sidebar-row.active {{ background: alpha({fg}, 0.14); box-shadow: inset 2px 0 0 alpha({fg}, 0.72); }}
         .muxterm-sidebar-close {{
             min-width: 22px;
@@ -128,12 +133,12 @@ pub(super) fn chrome_css(theme: &Theme) -> String {
             opacity: 1;
             background-color: alpha({fg}, 0.12);
         }}
-        .muxterm-sidebar-row-name {{ color: {fg}; font-size: 11.5px; font-weight: 500; }}
-        .muxterm-sidebar-row-detail {{ color: {fg}; opacity: 0.55; font-size: 10px; }}
+        .muxterm-sidebar-row-name {{ color: {fg}; font-size: 14px; font-weight: 500; }}
+        .muxterm-sidebar-row-detail {{ color: {fg}; opacity: 0.65; font-size: 12px; }}
         .muxterm-sidebar-workspace-shortcut {{
             color: {fg};
             opacity: 0.52;
-            font-size: 11px;
+            font-size: 12px;
             font-weight: 600;
         }}
         .muxterm-sidebar-agent-dot {{ font-size: 10px; }}
@@ -162,8 +167,9 @@ pub(super) fn chrome_css(theme: &Theme) -> String {
             box-shadow: 0 18px 44px alpha(#000000, 0.54), inset 0 1px alpha({fg}, 0.08);
         }}
         .quick-pick-entry {{
-            min-height: 32px;
-            padding: 0 10px;
+            min-height: 40px;
+            padding: 2px 12px;
+            font-size: 15px;
             background-color: alpha({fg}, 0.065);
             color: {fg};
             border: 1px solid alpha({fg}, 0.20);
@@ -177,14 +183,23 @@ pub(super) fn chrome_css(theme: &Theme) -> String {
         .quick-pick-list {{ background-color: transparent; padding: 2px 6px 5px; }}
         .quick-pick-list row {{
             min-height: 0;
-            border-radius: 5px;
+            border-radius: 7px;
+            padding: 5px 4px;
             color: {fg};
         }}
         .quick-pick-list row:hover {{ background-color: alpha({fg}, 0.065); }}
         .quick-pick-list row:selected {{ background-color: alpha({fg}, 0.15); }}
-        .quick-pick-label, .qc-name {{ font-size: 13px; font-weight: 600; }}
-        .quick-pick-detail, .qc-sub {{ font-size: 11px; opacity: 0.62; }}
-        .qc-attention-count {{ font-size: 10px; opacity: 0.58; }}
+        .quick-pick-label, .qc-name {{ font-size: 15px; font-weight: 500; }}
+        .quick-pick-detail, .qc-sub {{ font-size: 13px; opacity: 0.68; }}
+        .qc-attention-count {{ font-size: 12px; opacity: 0.65; }}
+        .muxterm-status-windows .done {{ color: #179299; }}
+        .muxterm-status-windows .blocked {{ color: #e64553; }}
+        .muxterm-status-windows spinner {{ color: #df8e1d; }}
+        .muxterm-status-windows .idle {{ opacity: 0.6; }}
+        .muxterm-status-bar.shells {{ border-top-color: #89b4fa; }}
+        .muxterm-status-bar.agents {{ border-top-color: #cba6f7; }}
+        .muxterm-pane-header {{ min-height: 28px; padding: 0 8px; background: alpha({fg}, 0.045); border-bottom: 1px solid alpha({fg}, 0.10); font-size: 13px; }}
+        .muxterm-pane-header.active {{ background: alpha({fg}, 0.10); }}
         .quick-pick-root togglebutton {{
             min-height: 24px;
             padding: 1px 9px;

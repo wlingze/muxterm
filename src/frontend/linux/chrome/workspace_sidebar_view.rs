@@ -88,6 +88,8 @@ pub struct WorkspaceSidebar {
     pub command_section_toggle: ToggleButton,
     pub hidden_command_section_toggle: ToggleButton,
     pub toggle: ToggleButton,
+    pub shells: Button,
+    pub agents: Button,
     ids: Rc<RefCell<Vec<WorkspaceId>>>,
     agent_targets: Rc<RefCell<Vec<(WorkspaceId, u32)>>>,
     command_targets: Rc<RefCell<Vec<(WorkspaceId, u32)>>>,
@@ -143,6 +145,20 @@ impl WorkspaceSidebar {
             .build();
         workspace_section.set_widget_name("muxterm-sidebar-workspaces-section");
         workspace_section.append(&workspace_section_toggle);
+        let shells = Button::with_label(
+            &crate::frontend::linux::chrome::aggregate::AggregateKind::Shells.label(),
+        );
+        shells.set_widget_name("muxterm-sidebar-shells");
+        shells.set_can_focus(false);
+        shells.add_css_class("muxterm-aggregate-shells");
+        let agents = Button::with_label(
+            &crate::frontend::linux::chrome::aggregate::AggregateKind::Agents.label(),
+        );
+        agents.set_widget_name("muxterm-sidebar-agents");
+        agents.set_can_focus(false);
+        agents.add_css_class("muxterm-aggregate-agents");
+        workspace_section.append(&shells);
+        workspace_section.append(&agents);
         workspace_section.append(&scrolled);
 
         let agent_list = ListBox::builder()
@@ -394,9 +410,9 @@ impl WorkspaceSidebar {
             .reveal_child(false)
             .build();
         revealer.set_widget_name("muxterm-sidebar-revealer");
-        revealer.set_halign(Align::Start);
+        revealer.set_halign(Align::Fill);
         revealer.set_valign(Align::Fill);
-        revealer.set_hexpand(false);
+        revealer.set_hexpand(true);
         revealer.set_vexpand(true);
         // Paned 负责实际宽度；这里只保留可用下限，初始 280px 由 window 设置。
         revealer.set_size_request(180, -1);
@@ -490,6 +506,8 @@ impl WorkspaceSidebar {
         }
 
         Self {
+            shells,
+            agents,
             container,
             revealer,
             list,

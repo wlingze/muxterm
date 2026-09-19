@@ -88,7 +88,76 @@ pub(super) fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_
     if !window.is_visible() {
         window.present();
     }
-    crate::frontend::linux::quickconnect_panel::show(
+    let navigation = {
+        use crate::frontend::linux::chrome::aggregate::AggregateKind;
+        use crate::frontend::linux::workspace_sidebar::WorkspaceSidebarItem;
+        let s = state.borrow();
+        let mut items = vec![
+            (
+                "S".into(),
+                AggregateKind::Shells.label(),
+                s.aggregate.kind == Some(AggregateKind::Shells),
+                false,
+            ),
+            (
+                "A".into(),
+                AggregateKind::Agents.label(),
+                s.aggregate.kind == Some(AggregateKind::Agents),
+                false,
+            ),
+        ];
+        items.extend(
+            WorkspaceSidebarItem::from_views_with_active(
+                &s.view_store,
+                s.aggregate
+                    .kind
+                    .is_none()
+                    .then_some(s.active_workspace_key())
+                    .as_deref(),
+            )
+            .into_iter()
+            .map(|item| {
+                (
+                    item.id.as_str(),
+                    format!(
+                        "{} · {}",
+                        item.shortcut.map(|n| n.to_string()).unwrap_or_default(),
+                        item.name
+                    ),
+                    item.active,
+                    true,
+                )
+            }),
+        );
+        let activate_state = state.clone();
+        let close_state = state.clone();
+        crate::frontend::linux::quickconnect_panel::WorkspaceNavigation {
+            items,
+            activate: Rc::new(move |id| {
+                crate::frontend::linux::quickconnect_panel::close_current();
+                let mut s = activate_state.borrow_mut();
+                match id {
+                    "S" => super::window_aggregate::open(&mut s, AggregateKind::Shells),
+                    "A" => super::window_aggregate::open(&mut s, AggregateKind::Agents),
+                    _ => {
+                        if let Some(id) = parse_workspace_id(id) {
+                            activate_existing(&mut s, id);
+                        }
+                    }
+                }
+            }),
+            close: Rc::new(move |id| {
+                crate::frontend::linux::quickconnect_panel::close_current();
+                if let Some(id) = parse_workspace_id(id) {
+                    super::window_sidebar::close_sidebar_workspace(
+                        &mut close_state.borrow_mut(),
+                        &id,
+                    );
+                }
+            }),
+        }
+    };
+    crate::frontend::linux::quickconnect_panel::show_with_navigation(
         &win,
         crate::frontend::linux::quickconnect_panel::PanelShowArgs {
             initial_tab,
@@ -219,6 +288,7 @@ pub(super) fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_
                 })
             },
         },
+        navigation,
     );
 }
 

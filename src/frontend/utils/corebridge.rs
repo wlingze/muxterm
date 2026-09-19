@@ -552,6 +552,8 @@ impl Default for ClientBehaviorConfig {
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct ClientConfig {
     #[serde(default)]
+    pub ui: ClientUiConfig,
+    #[serde(default)]
     pub font: ClientFontConfig,
     #[serde(default)]
     pub theme: ClientThemeConfig,
@@ -569,6 +571,20 @@ pub struct ClientConfig {
     pub behavior: ClientBehaviorConfig,
     #[serde(default)]
     pub keybindings: Vec<ClientKeyBinding>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ClientUiConfig {
+    pub tab_bar_style: String,
+}
+
+impl Default for ClientUiConfig {
+    fn default() -> Self {
+        Self {
+            tab_bar_style: "equal_width".into(),
+        }
+    }
 }
 
 /// Product-level event kinds exposed to frontends instead of raw ABI numbers.
@@ -773,6 +789,8 @@ pub struct ClientSearchHit {
 /// Owned attention/activity state for one pane.
 #[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
 pub struct ClientAttentionPane {
+    #[serde(default)]
+    pub muted: bool,
     #[serde(default)]
     pub workspace_id: String,
     pub pane_id: u32,

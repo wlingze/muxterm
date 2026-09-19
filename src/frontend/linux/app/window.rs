@@ -63,6 +63,8 @@ use crate::protocol::WorkspaceId;
 mod window_actions;
 #[path = "window_activity.rs"]
 mod window_activity;
+#[path = "window_aggregate.rs"]
+mod window_aggregate;
 #[path = "window_appearance.rs"]
 mod window_appearance;
 #[path = "window_bootstrap.rs"]
@@ -124,6 +126,7 @@ struct UiState {
     view_store: ViewStore,
     /// 前端当前可见的 workspace；不等同于 Core snapshot 的 active 标记。
     visible_workspace: WorkspaceId,
+    aggregate: crate::frontend::linux::chrome::aggregate::AggregateSelection,
     /// 启动时读取的 provider 能力快照；切场景时不得再查询 Core。
     runtime_info: Vec<ClientRuntimeInfo>,
     /// 当前挂载到窗口的 LayoutHost 对应的工作区。

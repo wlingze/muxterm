@@ -158,6 +158,7 @@ impl AppWindow {
             overlay,
             header,
         } = AppShell::new(&window, &scene_stack_widget, status_mode, theme.clone());
+        status.set_tab_style(&cfg.ui.tab_bar_style);
 
         let keymap = KeyMap::from_bindings(&keybindings);
         let qc_store = QuickConnectStore::from_project_documents(&projects);
@@ -167,6 +168,7 @@ impl AppWindow {
             scenes,
             view_store,
             visible_workspace: startup_id.clone(),
+            aggregate: Default::default(),
             runtime_info,
             mounted_ws: Some(startup_id.clone()),
             snapshot_seeded_this_batch: HashSet::new(),
@@ -288,6 +290,31 @@ impl AppWindow {
 
         // status bar 业务入口 → 交给 frontend-visible scene / Core command queue。
         {
+            let shells_state = state.clone();
+            state.borrow().sidebar.shells.connect_clicked(move |_| {
+                super::window_aggregate::open(
+                    &mut shells_state.borrow_mut(),
+                    crate::frontend::linux::chrome::aggregate::AggregateKind::Shells,
+                );
+            });
+            let agents_state = state.clone();
+            state.borrow().sidebar.agents.connect_clicked(move |_| {
+                super::window_aggregate::open(
+                    &mut agents_state.borrow_mut(),
+                    crate::frontend::linux::chrome::aggregate::AggregateKind::Agents,
+                );
+            });
+            let close_state = state.clone();
+            state.borrow().status.connect_tab_close(move |tab_id| {
+                let mut s = close_state.borrow_mut();
+                if s.aggregate.kind.is_some() {
+                    super::window_aggregate::close(&mut s, tab_id);
+                    return;
+                }
+                let task = ClientTask::CloseTab { tab_id };
+                prepare_core_tab_mutation(&mut s, &task);
+                let _ = s.execute_active_task(task);
+            });
             let tab_state = state.clone();
             let attention_state = state.clone();
             let new_tab_state = state.clone();
@@ -297,7 +324,12 @@ impl AppWindow {
             let s = state.borrow();
             s.status.connect_actions(
                 move |tab_id| {
-                    request_switch_tab(&mut tab_state.borrow_mut(), tab_id);
+                    let mut s = tab_state.borrow_mut();
+                    if s.aggregate.kind.is_some() {
+                        super::window_aggregate::select(&mut s, tab_id);
+                    } else {
+                        request_switch_tab(&mut s, tab_id);
+                    }
                 },
                 move || {
                     let n = activity_snapshot(&attention_state.borrow()).blocked_count;
@@ -401,6 +433,22 @@ impl AppWindow {
             let st = state.clone();
             let window_for_palette = window.clone();
             connect_key_handler(&window, move |keyval, mods| {
+                if mods.contains(gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::ALT_MASK) {
+                    if keyval.to_unicode().is_some_and(|key| key.is_ascii_digit()) {
+                        crate::frontend::linux::quickconnect_panel::close_current();
+                    }
+                    use crate::frontend::linux::chrome::aggregate::AggregateKind;
+                    let kind = match keyval {
+                        gdk::Key::a | gdk::Key::A => Some(AggregateKind::Agents),
+                        gdk::Key::s | gdk::Key::S => Some(AggregateKind::Shells),
+                        _ => None,
+                    };
+                    if let Some(kind) = kind {
+                        crate::frontend::linux::quickconnect_panel::close_current();
+                        super::window_aggregate::open(&mut st.borrow_mut(), kind);
+                        return glib::Propagation::Stop;
+                    }
+                }
                 let action = {
                     let s = st.borrow();
                     s.keymap.lookup(keyval, mods)
@@ -491,11 +539,13 @@ impl AppWindow {
                         let events = poll_event_store(&mut s);
                         let structural = events.iter().any(|event| event.event.is_topology());
                         refresh_event_workspaces(&mut s, &events);
+                        super::window_aggregate::reconcile(&mut s);
                         // blocked 与 done 通知都要在 16ms poll 里收编（W17d）：
                         // test_poll_once 的 drain 可能在 16ms poll 应用信号之前运行，
                         // 只 drain blocked 会让后台 Done 的通知永远等不到下一次 poll。
                         drain_attention_notifications(&mut s);
                         sync_pane_outputs(&mut s);
+                        super::window_actions::sync_focused_pane(&mut s);
                         sync_window_size(&mut s);
                         // 输入必须在本轮 topology/snapshot/geometry 收编之后
                         // 写入，避免 attach 新 pane 尚未完成首帧时丢掉 send-keys。
