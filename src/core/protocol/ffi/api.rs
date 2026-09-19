@@ -15,6 +15,9 @@ pub use super::functions::catalog::{
     muxterm_candidates_json, muxterm_open_json, muxterm_workspace_open_target_json,
     muxterm_workspace_worktree_create_json,
 };
+pub use super::functions::clipboard::{
+    muxterm_image_paste_poll_json, muxterm_image_paste_start_json,
+};
 pub use super::functions::config::{
     muxterm_config_begin_json, muxterm_config_cancel_json, muxterm_config_commit_json,
     muxterm_config_describe_json, muxterm_config_events_json, muxterm_config_patch_json,

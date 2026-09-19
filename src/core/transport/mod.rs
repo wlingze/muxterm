@@ -17,6 +17,8 @@ pub mod registry;
 pub mod ssh;
 #[cfg(not(feature = "test-harness"))]
 mod ssh;
+#[cfg(unix)]
+mod temporary_file;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -88,6 +90,12 @@ pub trait ByteChannel: Send {
 
 /// Reusable target-level connection owned by the transport registry.
 pub trait TargetConnection: Send + Sync {
+    /// 写入目标机器私有临时文件；返回目标绝对路径，不注入终端输入。
+    fn store_temporary_file(&self, _bytes: &[u8], _extension: &str) -> TransportResult<String> {
+        Err(TransportError::message(
+            "target does not support temporary file transfer",
+        ))
+    }
     fn transport_id(&self) -> &str;
     fn target(&self) -> &str;
     fn open_channel(&self, request: ChannelRequest) -> TransportResult<Box<dyn ByteChannel>>;

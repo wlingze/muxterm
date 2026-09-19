@@ -3,6 +3,7 @@
 pub mod activity;
 pub mod attention;
 pub mod catalog;
+pub mod clipboard;
 pub mod config;
 pub mod events;
 pub mod handle;

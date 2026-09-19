@@ -33,6 +33,8 @@ macro_rules! define_text_keys {
 }
 
 define_text_keys! {
+    ImagePasteFailed => "image_paste_failed",
+    ImagePasteProgress => "image_paste_progress",
     SidebarWorkspaces => "sidebar_workspaces",
     SidebarAgents => "sidebar_agents",
     SidebarCommands => "sidebar_commands",

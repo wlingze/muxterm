@@ -219,6 +219,9 @@ struct UiState {
     /// Runtime 写入统一在 GTK poll 中完成，避免回调重入 UiState。
     surface_input_queue: Rc<RefCell<VecDeque<SurfaceInput>>>,
     reported_colour_panes: std::collections::HashSet<(String, u32)>,
+    image_paste_request: Option<(String, u32, Vec<u8>, gtk4::Widget)>,
+    image_paste_pending: bool,
+    image_paste_indicator: Option<gtk4::Label>,
     /// W17a 自动重连：是否已有重连线程在跑（防并发重连）。
     reconnecting: bool,
     /// 重连失败退避：下一次允许发起重连的时刻。

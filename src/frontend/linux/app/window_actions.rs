@@ -396,8 +396,46 @@ pub(super) fn paste_pane(s: &UiState, state: &Rc<RefCell<UiState>>, pane_id: u32
     };
     let pane_id = view.pane_id();
     let bracketed = view.bracketed_paste();
+    let owner = s.active_ws_id();
+    let workspace_id = owner.as_str();
     let st = Rc::downgrade(state);
     let clipboard = view.widget().clipboard();
+    if clipboard
+        .formats()
+        .contains_type(gtk4::gdk::Texture::static_type())
+    {
+        clipboard.read_texture_async(gtk4::gio::Cancellable::NONE, move |result| {
+            let Some(st) = st.upgrade() else {
+                return;
+            };
+            let mut s = st.borrow_mut();
+            if !resident_pane_view(&s, &owner, pane_id)
+                .is_some_and(|current| Rc::ptr_eq(&current, &view))
+            {
+                image_paste_error(&mut s, "Original pane was closed; image was not pasted.");
+                return;
+            }
+            let result = (|| -> anyhow::Result<Vec<u8>> {
+                let texture = result?.ok_or_else(|| anyhow::anyhow!("Clipboard has no image"))?;
+                let pixels = i64::from(texture.width()) * i64::from(texture.height());
+                if texture.width() > 16384 || texture.height() > 16384 || pixels > 64 * 1024 * 1024
+                {
+                    anyhow::bail!("Clipboard image is too large");
+                }
+                let pixbuf = gtk4::gdk::pixbuf_get_from_texture(&texture)
+                    .ok_or_else(|| anyhow::anyhow!("Cannot decode clipboard image"))?;
+                Ok(pixbuf.save_to_bufferv("png", &[])?)
+            })();
+            match result {
+                Ok(png) if !s.image_paste_pending && s.image_paste_request.is_none() => {
+                    s.image_paste_request = Some((workspace_id, pane_id, png, view.widget()));
+                }
+                Ok(_) => image_paste_error(&mut s, "An image paste is already in progress."),
+                Err(error) => image_paste_error(&mut s, &error.to_string()),
+            }
+        });
+        return;
+    }
     clipboard.read_text_async(gtk4::gio::Cancellable::NONE, move |result| {
         let Ok(Some(text)) = result else {
             return;
@@ -411,9 +449,80 @@ pub(super) fn paste_pane(s: &UiState, state: &Rc<RefCell<UiState>>, pane_id: u32
             return;
         };
         let s = st.borrow();
-        let workspace_id = active_workspace_key(&s);
+        if !resident_pane_view(&s, &owner, pane_id)
+            .is_some_and(|current| Rc::ptr_eq(&current, &view))
+        {
+            return;
+        }
         enqueue_workspace_input(&s, &workspace_id, pane_id, &data, false);
     });
+}
+
+fn image_paste_error(s: &mut UiState, message: &str) {
+    s.notification_log.push(format!("Image paste: {message}"));
+    let dialog = gtk4::MessageDialog::builder()
+        .text(crate::frontend::utils::i18n::tr(
+            crate::frontend::utils::i18n::TextKey::ImagePasteFailed,
+        ))
+        .secondary_text(message)
+        .buttons(gtk4::ButtonsType::Close)
+        .build();
+    if let Some(parent) = s
+        .scenes
+        .widget()
+        .root()
+        .and_then(|root| root.downcast::<gtk4::Window>().ok())
+    {
+        dialog.set_transient_for(Some(&parent));
+    }
+    dialog.connect_response(|dialog, _| dialog.close());
+    dialog.present();
+}
+
+pub(super) fn poll_image_paste(s: &mut UiState) {
+    if let Some((workspace, pane, png, widget)) = s.image_paste_request.take() {
+        if !parse_workspace_id(&workspace)
+            .and_then(|id| resident_pane_view(s, &id, pane))
+            .is_some_and(|view| view.widget() == widget)
+        {
+            image_paste_error(s, "Original pane was closed; image was not pasted.");
+            return;
+        }
+        match s
+            .event_pump
+            .client()
+            .start_image_paste(&workspace, pane, &png)
+        {
+            Ok(()) => {
+                s.image_paste_pending = true;
+                let indicator = gtk4::Label::new(Some(&crate::frontend::utils::i18n::tr(
+                    crate::frontend::utils::i18n::TextKey::ImagePasteProgress,
+                )));
+                indicator.set_widget_name("muxterm-image-paste-progress");
+                s.status.container.append(&indicator);
+                s.image_paste_indicator = Some(indicator);
+            }
+            Err(error) => image_paste_error(s, &error.to_string()),
+        }
+    }
+    if s.image_paste_pending {
+        match s.event_pump.client().poll_image_paste() {
+            Ok(None) => {}
+            Ok(Some(path)) => {
+                s.image_paste_pending = false;
+                s.notification_log.push(format!("Image pasted: {path}"));
+            }
+            Err(error) => {
+                s.image_paste_pending = false;
+                image_paste_error(s, &error.to_string());
+            }
+        }
+    }
+    if !s.image_paste_pending {
+        if let Some(indicator) = s.image_paste_indicator.take() {
+            s.status.container.remove(&indicator);
+        }
+    }
 }
 
 pub(super) fn copy_active_pane(s: &UiState) {

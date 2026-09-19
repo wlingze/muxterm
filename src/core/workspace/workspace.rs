@@ -129,6 +129,8 @@ pub struct Workspace {
     /// Catalog 打开时保存的规范化目标（W6 §11.2）。
     /// Recent/重连/高亮只读这份 Core 元数据，禁止从 WorkspaceId 反向猜。
     resolved_target: Option<crate::catalog::ResolvedTarget>,
+    /// 异步附件等操作绑定实例，关闭后以相同 ID 重开也不能收到旧输入。
+    instance_id: u64,
     /// 从解析后的打开 spec 复制的 Project/Worktree 归属。
     provenance: Option<WorkspaceProvenance>,
     /// 仅 create Workspace 使用的非阻塞模板应用器。
@@ -150,6 +152,7 @@ impl Workspace {
         runtime: Box<dyn Runtime>,
         scrollback_lines: usize,
     ) -> Self {
+        static NEXT_INSTANCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Self {
             id,
             name,
@@ -161,6 +164,7 @@ impl Workspace {
             pending_index_output: PaneIndexBacklog::default(),
             indexed_panes: HashSet::new(),
             resolved_target: None,
+            instance_id: NEXT_INSTANCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             provenance: None,
             template_application: None,
             template_apply_report: None,
@@ -170,6 +174,10 @@ impl Workspace {
     /// 稳定工作区 id。
     pub fn id(&self) -> &WorkspaceId {
         &self.id
+    }
+
+    pub(crate) fn instance_id(&self) -> u64 {
+        self.instance_id
     }
 
     /// Catalog 打开时保存的规范化目标（Core 唯一所有权；Recent/重连只读它）。

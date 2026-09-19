@@ -53,6 +53,11 @@ impl Connect {
 }
 
 impl TargetConnection for Connect {
+    #[cfg(unix)]
+    fn store_temporary_file(&self, bytes: &[u8], extension: &str) -> TransportResult<String> {
+        super::temporary_file::store(self.transport_id(), self.target(), bytes, extension)
+            .map_err(Into::into)
+    }
     fn transport_id(&self) -> &str {
         self.transport_id()
     }
