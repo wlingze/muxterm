@@ -42,6 +42,87 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 static TEST_TMUX_SOCKET_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 #[test]
+fn ffi_async_open_preserves_pool_and_background_activation() {
+    unsafe fn value(ptr: *mut c_char) -> serde_json::Value {
+        assert!(!ptr.is_null());
+        let result = serde_json::from_slice(CStr::from_ptr(ptr).to_bytes()).unwrap();
+        muxterm_free_string(ptr);
+        result
+    }
+    let h = muxterm_catalog_new();
+    unsafe {
+        (*h).projects = ProjectsService::in_memory();
+        let original = WorkspaceId::new("local", None, "async-open-original", "mock", "/");
+        (*h).pool.insert_connected(Workspace::new(
+            original.clone(),
+            "Original".into(),
+            Box::new(MockRuntime::new()),
+        ));
+        (*h).projects_mut()
+            .create_project(Project::new(
+                "async-project",
+                "Async",
+                ProjectTarget::new(TargetRuntime::Shell, TargetTransport::Local, "/tmp"),
+            ))
+            .unwrap();
+        let request = CString::new(r#"{"candidate":{"kind":"project","value":{"project_id":"async-project"}},"intent":"create_if_missing"}"#).unwrap();
+        assert_eq!(
+            value(muxterm_open_start_json(h, request.as_ptr()))["ok"],
+            true
+        );
+        assert_eq!((*h).pool.active_id(), Some(&original));
+        assert_eq!(
+            (*h).pool.len(),
+            1,
+            "background work must not take the resident pool"
+        );
+        assert_eq!(
+            value(muxterm_open_start_json(h, request.as_ptr()))["ok"],
+            false,
+            "duplicate open is rejected"
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let opened = loop {
+            let result = value(muxterm_open_poll_json(h, false));
+            assert_eq!(result["ok"], true, "{result}");
+            if result["pending"] != true {
+                break result;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        assert_eq!((*h).pool.len(), 2);
+        assert_eq!(
+            (*h).pool.active_id(),
+            Some(&original),
+            "background completion must not steal focus"
+        );
+        let opened_id = opened["id"].as_str().unwrap().to_owned();
+        assert_eq!(
+            value(muxterm_open_start_json(h, request.as_ptr()))["ok"],
+            true
+        );
+        loop {
+            let result = value(muxterm_open_poll_json(h, true));
+            assert_eq!(result["ok"], true, "{result}");
+            if result["pending"] != true {
+                assert_eq!(result["id"], opened_id);
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(
+            (*h).pool.len(),
+            2,
+            "reopening reuses the resident workspace"
+        );
+        assert_eq!((*h).pool.active_id().unwrap().as_str(), opened_id);
+        muxterm_free(h);
+    }
+}
+
+#[test]
 fn ffi_open_json_resolves_a_project_candidate() {
     let h = muxterm_catalog_new();
     assert!(!h.is_null());

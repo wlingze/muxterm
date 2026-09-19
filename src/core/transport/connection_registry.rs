@@ -6,12 +6,19 @@ use std::sync::Arc;
 use crate::transport::{TargetConnection, TransportResult};
 
 /// One reusable connection per `(transport_id, target)` identity.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct ConnectionRegistry {
     connections: HashMap<(String, String), Arc<dyn TargetConnection>>,
 }
 
 impl ConnectionRegistry {
+    /// 后台打开复用已有 Arc 连接；完成后只收编新目标，不替换正在使用的连接。
+    pub(crate) fn merge(&mut self, other: Self) {
+        for (key, connection) in other.connections {
+            self.connections.entry(key).or_insert(connection);
+        }
+    }
+
     pub fn new() -> Self {
         Self::default()
     }

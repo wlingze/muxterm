@@ -1696,6 +1696,26 @@ impl CoreBridge {
     }
 
     /// Open a selected Catalog candidate through the product-level resolver.
+    pub fn start_open(&self, request: &ClientOpenRequest) -> anyhow::Result<()> {
+        let request = cstring(&serde_json::to_string(request)?);
+        Self::discovery_json(|| unsafe {
+            ffi::muxterm_open_start_json(self.handle.as_ptr(), request.as_ptr())
+        })?;
+        Ok(())
+    }
+
+    pub fn poll_open(&self, activate: bool) -> anyhow::Result<Option<ClientOpenedWorkspace>> {
+        let value = Self::discovery_json(|| unsafe {
+            ffi::muxterm_open_poll_json(self.handle.as_ptr(), activate)
+        })?;
+        if value["pending"].as_bool() == Some(true) {
+            Ok(None)
+        } else {
+            Ok(Some(serde_json::from_value(value)?))
+        }
+    }
+
+    /// Synchronous compatibility path for noninteractive callers.
     pub fn open(&self, request: &ClientOpenRequest) -> anyhow::Result<ClientOpenedWorkspace> {
         let request = cstring(&serde_json::to_string(request)?);
         let value = Self::discovery_json(|| unsafe {
