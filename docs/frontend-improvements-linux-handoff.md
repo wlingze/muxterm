@@ -186,3 +186,82 @@ VTE 导出接口与 HTML 标签核对：
 [tmux refresh-client -r](https://github.com/tmux/tmux/blob/master/tmux.1)、
 [sRGB relative luminance](https://www.w3.org/WAI/WCAG22/Understanding/contrast-minimum.html)。
 对比度阈值是终端可读性保护策略，不声称整个终端达到 WCAG 合规。
+
+## Codex 星光、选区与显式颜色回归（2026-09-19 晚间）
+
+用户两张通过图片粘贴传来的截图均可读取：浅色 composer 底部模型栏破碎；另一张
+深色 composer 和 diff 混入浅色终端，显式浅色代码/深色输入文字接近不可见。
+`test_2026-0919-2231.log` 已成功上报 OSC 10/11，但多个 pane 的后端 65 行与
+前端分配 64 行不符。日志没有证明动画期间持续重新播种整屏。
+
+- 终端分配计算扣除 VTE CSS padding；共享 client 尺寸从实际叶子网格合成，
+  不再把 header 边框、GTK 装饰像素当成终端行。split 只加一个协议分隔格，
+  公共轴取各叶子可容纳的较小值。独立 pane resize 同用这个计算。
+- 前景保护覆盖显式 RGB/indexed/ANSI 色：只有对比度低于 2 的近乎不可见文字
+  才调整，沿原色向明/暗方向渐变到 4.5，而非直接纯白/纯黑；背景保持原样。
+  Braille 星点保留原始前景亮度，最多缓存一个 UTF-8 字符，跨包测试覆盖所有切点。
+- 原生 VTE 回归在字符高度整倍数边界核对网格；持续星点更新后模型栏、光标不变，
+  reset/seed 计数为零。隔离 Xvfb 下真实鼠标拖选历史，动画后选区内容仍保持。
+  指针测试须显式 `MUXTERM_XTEST_SELECTION=1`，只在专用 Xvfb 中使用：
+  `MUXTERM_XTEST_SELECTION=1 GDK_BACKEND=x11 xvfb-run -a cargo test --features gtk,test-harness --test linux_render_e2e`。
+
+旧 Codex 进程可能缓存启动时的底色；修正终端颜色上报不会强制刷新应用自己的缓存。
+保留旧应用的深色背景，但保证文字可读；不重启用户 agent，不清理用户会话。
+自动化回归不等于 archmini 上这两个已有会话的人工验收，需换新版 GUI 后确认。
+
+验证：隔离 Xvfb 的 35 个 terminal 单测、真实拖选/动画 render e2e、GTK 布局集成
+通过；lib 与上述两个测试 target 的 Clippy `-D warnings` 通过；Linux 构建通过。
+archmini 已原子替换 `/home/wlz/Downloads/muxterm`，保留
+`muxterm.before-20260919-2256`，产物 SHA-256
+`c158b90ae6ab4bea6247898fe23d5b50e4ab3416ccea444bfc62342130c6edbc`。
+未停止旧 GUI/agent/tmux；archmini 未安装 xvfb-run，原生自动化验证运行在 ryzen。
+
+官方源核对，时间基准 `2026-09-19T22:41:24+08:00`：
+[Codex 默认颜色缓存](https://github.com/openai/codex/blob/main/codex-rs/tui/src/terminal_palette.rs)、
+[星点只修改字符与前景](https://github.com/openai/codex/blob/main/codex-rs/tui/src/bottom_pane/chat_composer/sparkle_field.rs)、
+[VTE 仅在选中文本变化时取消选区](https://github.com/GNOME/vte/blob/master/src/vte.cc)、
+[XTest 指针测试接口](https://www.x.org/releases/current/doc/libXtst/xtestlib.html)。
+
+## 2300 日志：attach 控制序列与晚到历史（2026-09-19 23:20 +08:00）
+
+用户重启后的截图仍有数字泄漏、输入框重复和屏底散落黑块，说明上一轮修复不完整。
+`test_2026-0919-2300.log` 多数 pane 的高度已对齐 64 行；同时明确记录了先 seed/continue、
+后查询历史的顺序，不能继续仅归因于字符格尺寸。
+
+- 删除 Linux 快照后追加 `CUP 999;1H` 的光标补偿。快照已经包含权威光标及可能未结束的
+  live 尾部；额外 CUP 不仅移动光标，还会截断半条 CSI。新增回归在修复前实际输出
+  `3HX` 到底部，而不是在输入框第三列覆盖 `X`；移除补偿后通过。
+- Core 首次 attach 暂存待发布的 Surface baseline/live 事件，传输 continue 不等待历史；
+  历史完成后按 history → snapshot → 原样 live 顺序发布。最长等待 2 秒、每 pane 8 MiB，
+  超限释放原始流并忽略晚到历史，记录 warning，不能无限等待或事后重画活跃屏。
+  其他 pane 的输出与 control lane 不受这个初始发布顺序影响。
+- Linux 拒绝向已 seeded 的 live parser 插入历史，避免中途清屏、破坏选区以及覆盖应用
+  自己的 saved-cursor 槽。两种 seed 入口均在权威快照之前回填历史，不读取异步尚未更新
+  的首帧 HTML 来覆盖刚写入的画面。
+- Index 的消费顺序与 Surface 分开：先 replace_snapshot，再 prepend history，保持
+  离屏历史可搜索，不改变发布给前端的字节或顺序。
+- 验证包含故障前失败/修复后通过的分包 CSI 复现、晚到历史保护、真实鼠标拖选与动画；
+  本地/隔离 SSH attach 历史搜索与滚动、2 tab/3 pane attach 与持续输出均通过；
+  原先 ignored 的 pane history lifecycle 也显式运行通过。Clippy 与 Linux 构建通过。
+
+这轮不停止或重启用户 agent/tmux。archmini 的用户现场仍需新 GUI 验收，不能把隔离
+测试通过等同于两张截图中的真实进程已恢复。
+
+## 2342 日志后的颜色反馈：同步帧漏过修色（2026-09-19 23:45 +08:00）
+
+用户确认布局恢复，但 yaklang 的浅黄代码和黑底 placeholder 仍近乎不可读。
+原因是 ContrastGuard 使用 `vte::ansi::Processor` 默认同步帧缓存：遇到 DEC 2026
+时原始字节已经交给原生 VTE，SGR 回调却推迟到帧末，修正只看得到最后的 reset。
+普通 SGR 的旧测试因此通过，却没有覆盖 Codex 实际使用的同步刷新。
+
+- 属性过滤器使用不缓存同步帧的 Timeout 实现，逐条 SGR 边界及时修正；原始
+  `2026h/l` 标记仍交给原生 VTE，由唯一显示终端负责原子提交帧。
+- 新回归先在旧实现复现失败，再覆盖完整帧每个分包切点；原生 VTE 同时验证
+  浅黄代码、黑底 dim 输入提示、中文、Braille 与逐字节分包。布局/光标路径不改。
+- 黑色输入框底色仍尊重旧 Codex 缓存的配色；本次不重启 agent，也不擅自把应用
+  显式背景全部改成白色。解决的是文字看不见，不承诺强制统一旧应用内部主题。
+
+官方源核对，时间基准 `2026-09-19T23:45:20+08:00`：
+[Codex SynchronizedUpdate](https://github.com/openai/codex/blob/main/codex-rs/tui/src/tui.rs)、
+[vte Processor 同步缓冲](https://github.com/alacritty/vte/blob/master/src/ansi.rs)、
+[原生 VTE dim 对直接 RGB 的处理](https://github.com/GNOME/vte/blob/master/src/vte.cc)。

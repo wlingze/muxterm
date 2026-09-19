@@ -42,12 +42,18 @@ pub(super) fn sync_window_size(s: &mut UiState) {
         .workspace(&workspace_key)
         .and_then(|view| view.panes.get(&active_tab))
         .is_some_and(|panes| panes.len() > 1);
-    let cols = match ClientSizePolicy::cols(term.column_count(), allocated, root_w, cw, multi_pane)
+    let allocated_grid = s.active_layout().allocated_client_grid();
+    let cols = match allocated_grid
+        .map(|grid| grid.0)
+        .or_else(|| ClientSizePolicy::cols(term.column_count(), allocated, root_w, cw, multi_pane))
     {
         Some(cols) => cols,
         None => return,
     };
-    let rows = match ClientSizePolicy::rows(root_h, ch) {
+    let rows = match allocated_grid
+        .map(|grid| grid.1)
+        .or_else(|| ClientSizePolicy::rows(root_h, ch))
+    {
         Some(rows) => rows,
         None => return,
     };
@@ -100,8 +106,10 @@ pub(super) fn sync_visible_pane_sizes(s: &mut UiState) {
         if cw <= 0 || ch <= 0 || term.width() <= 0 || term.height() <= 0 {
             continue;
         }
-        let cols = (i64::from(term.width()) / cw).clamp(2, i64::from(u16::MAX)) as u16;
-        let rows = (i64::from(term.height()) / ch).clamp(1, i64::from(u16::MAX)) as u16;
+        let (cols, rows) = view.allocated_grid_size();
+        if cols < 2 || rows < 1 {
+            continue;
+        }
         view.ensure_grid_size(cols, rows);
         measured.push((pane, cols, rows));
         if pane == s.active_pane {

@@ -19,6 +19,119 @@ fn theme() -> Theme {
     load_theme()
 }
 
+fn attach_history_preserves_authoritative_cursor_and_partial_live_csi(view: &PaneView) {
+    let mut snapshot = b"\x1b[0m".to_vec();
+    for _ in 0..100 {
+        snapshot.extend_from_slice(b"old history\r\n");
+    }
+    snapshot.extend_from_slice(b"\x1b[2J\x1b[HHEADER\x1b[10;1HINPUT\x1b[15;1HMODEL_STATUS\x1b[10;");
+    let (cols, rows) = view.allocated_grid_size();
+    view.seed_raw(&snapshot, cols, rows);
+    // 旧后端/异常事件即使晚发历史，也不能在半条 CSI 中插入回填。
+    view.prepend_history(b"LATE_HISTORY_MUST_NOT_REPAINT\n");
+    view.feed_output(b"3HX");
+    view.flush_pending_feed();
+    pump_main_loop(80);
+    let screen = view.screen_text();
+    assert!(
+        screen
+            .lines()
+            .nth(9)
+            .unwrap_or_default()
+            .starts_with("INXUT"),
+        "attach must not inject CUP into unfinished live CSI: {screen:?}"
+    );
+    assert!(
+        !screen.contains("3HX"),
+        "CSI parameters leaked into text: {screen:?}"
+    );
+    assert!(
+        screen
+            .lines()
+            .nth(14)
+            .unwrap_or_default()
+            .starts_with("MODEL_STATUS"),
+        "{screen:?}"
+    );
+}
+
+fn sparkle_updates_keep_status_row(view: &PaneView) {
+    let terminal = view.terminal();
+    let rows = terminal.row_count();
+    view.feed_output(format!("\x1b[0m\x1b[2J\x1b[3J\x1b[HSELECTABLE_HISTORY\x1b[{};1H\x1b[48;2;31;31;31mCOMPOSER\x1b[0m\x1b[{};1HMODEL_STATUS", rows - 1, rows).as_bytes());
+    view.flush_pending_feed();
+    pump_main_loop(80);
+    // Xvfb 下真实拖选第一行，后续星光只更新倒数第二行。
+    // 只在调用方显式提供的隔离 Xvfb 中发送真实指针事件，不能碰桌面。
+    let selected = std::env::var("MUXTERM_XTEST_SELECTION").as_deref() == Ok("1");
+    if selected {
+        let y = terminal.char_height() / 2;
+        xtest_pointer(3, y, 1);
+        xtest_pointer(terminal.char_width() * 18, y, 0);
+        xtest_pointer(terminal.char_width() * 18, y, -1);
+        assert!(
+            terminal.has_selection(),
+            "native drag must establish selection"
+        );
+    }
+    let selection = view.selected_text();
+    let before = terminal.cursor_position();
+    view.clear_render_trace();
+    for column in 10..20 {
+        view.feed_output(
+            format!(
+                "\x1b7\x1b[{};{column}H\x1b[48;2;31;31;31m\x1b[38;2;40;40;40m⠁\x1b8",
+                rows - 1
+            )
+            .as_bytes(),
+        );
+        view.flush_pending_feed();
+        pump_main_loop(10);
+    }
+    assert_eq!(terminal.cursor_position(), before);
+    let text = view.screen_text();
+    assert!(
+        text.lines()
+            .last()
+            .unwrap_or_default()
+            .contains("MODEL_STATUS"),
+        "{text:?}"
+    );
+    assert!(text.contains("SELECTABLE_HISTORY"), "{text:?}");
+    assert_eq!(view.render_trace().resets, 0);
+    assert_eq!(view.render_trace().seeds, 0);
+    if selected {
+        assert!(
+            terminal.has_selection(),
+            "animation outside selection must not clear it"
+        );
+        assert_eq!(view.selected_text(), selection);
+        terminal.unselect_all();
+    }
+}
+
+fn xtest_pointer(x: i64, y: i64, button: i32) {
+    let result = std::process::Command::new("python3").args(["-c", r#"
+import ctypes, sys
+x = ctypes.CDLL('libX11.so.6')
+t = ctypes.CDLL('libXtst.so.6')
+x.XOpenDisplay.restype = ctypes.c_void_p
+x.XFlush.argtypes = [ctypes.c_void_p]
+x.XCloseDisplay.argtypes = [ctypes.c_void_p]
+t.XTestFakeMotionEvent.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_ulong]
+t.XTestFakeButtonEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
+d = x.XOpenDisplay(None)
+assert d
+t.XTestFakeMotionEvent(d, -1, int(sys.argv[1]), int(sys.argv[2]), 0)
+button = int(sys.argv[3])
+if button: t.XTestFakeButtonEvent(d, 1, int(button > 0), 0)
+x.XFlush(d)
+x.XCloseDisplay(d)
+"#, &x.to_string(), &y.to_string(), &button.to_string()]).status().unwrap();
+    assert!(result.success());
+    pump_main_loop(40);
+}
+
 /// S3→F5：首屏用 VTE 自身 scrollback 尾部，不重放 200 行历史。
 fn first_paint_uses_replica_tail_not_full_replay(view: &PaneView) {
     let mut bytes = Vec::new();
@@ -413,6 +526,25 @@ fn render_e2e_s3_s4() {
             .build();
         win.present();
         gtk4::test_widget_wait_for_draw(&win);
+        pump_main_loop(80);
+        win.set_default_size(640, view.terminal().char_height() as i32 * 36);
+        pump_main_loop(80);
+        assert_eq!(
+            view.allocated_grid_size(),
+            (
+                view.terminal().column_count() as u16,
+                view.terminal().row_count() as u16
+            ),
+            "reported geometry must exclude VTE padding"
+        );
+        sparkle_updates_keep_status_row(&view);
+        attach_history_preserves_authoritative_cursor_and_partial_live_csi(&view);
+        view.feed_output(b"\x1b[0m\x1b[2J\x1b[3J\x1b[H");
+        view.flush_pending_feed();
+        pump_main_loop(80);
+        view.clear_render_trace();
+        win.set_default_size(640, 640);
+        pump_main_loop(80);
         // 镜像 80×24：VTE 网格与 replica 一致，几何 dump 的 24 行全部可见。
         view.ensure_grid_size(80, 24);
         pump_main_loop(80);
@@ -453,7 +585,8 @@ fn render_e2e_s3_s4() {
             .unwrap()
             .to_string();
         assert!(
-            html.contains("#FFFFFF") && html.contains("background-color:#141414"),
+            !html.contains("color=\"#1F2328\">BLACK_INPUT")
+                && html.contains("background-color:#141414"),
             "black composer contrast: {html}"
         );
         assert!(
@@ -461,14 +594,40 @@ fn render_e2e_s3_s4() {
             "default foreground must restore: {html}"
         );
 
+        // 真实 Codex 用 DEC 2026 包住整帧。属性过滤器不能等帧末才修色；
+        // 同时覆盖 dim placeholder、浅黄代码、中文与星点的逐字节分包。
+        let frame = "\x1b[?2026h\x1b[0m\x1b[2J\x1b[H\x1b[38;2;248;248;180mCODE\x1b[0m\r\n\x1b[48;2;31;31;31m\x1b[2mINPUT中文⠁\x1b[0m\x1b[?2026l";
+        for byte in frame.as_bytes() {
+            view.feed_output(&[*byte]);
+            view.flush_pending_feed();
+        }
+        pump_main_loop(80);
+        let html = view
+            .terminal()
+            .text_format(vte4::Format::Html)
+            .unwrap()
+            .to_string();
+        assert!(
+            html.contains("#747454") && !html.contains("#F8F8B4"),
+            "synchronized light syntax: {html}"
+        );
+        assert!(
+            html.contains("#888A8D") && html.contains("INPUT中文"),
+            "synchronized dim composer: {html}"
+        );
+        assert!(
+            html.contains("background-color:#1F1F1F"),
+            "preserve application background: {html}"
+        );
+
         // Pi/Codex primary-screen 输入框使用相对光标重绘。历史回填不能
         // 把屏幕内的光标误当 scrollback 绝对行，也不能吞掉首帧。
         view.feed_output(b"\x1b[?1049l\x1b[2J\x1b[H");
         view.flush_pending_feed();
         pump_main_loop(80);
-        view.seed_raw(b"\x1b[2J\x1b[H\x1b[38;2;12;123;234mHEADER\x1b[0m\x1b[10;1HINPUT_BOX\x1b[10;10H\x1b[33m", 80, 24);
-        pump_main_loop(80);
+        view.begin_attach_generation();
         view.prepend_history(b"older command\nolder result\n");
+        view.seed_raw(b"\x1b[2J\x1b[H\x1b[38;2;12;123;234mHEADER\x1b[0m\x1b[10;1HINPUT_BOX\x1b[10;10H\x1b[33m", 80, 24);
         pump_main_loop(80);
         let html = view
             .terminal()
@@ -508,7 +667,7 @@ fn render_e2e_s3_s4() {
             paintable.snapshot(&snapshot, win.width() as f64, win.height() as f64);
             win.renderer()
                 .unwrap()
-                .render_texture(&snapshot.to_node().unwrap(), None)
+                .render_texture(snapshot.to_node().unwrap(), None)
                 .save_to_png(path)
                 .unwrap();
         }

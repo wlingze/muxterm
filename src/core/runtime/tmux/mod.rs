@@ -8,6 +8,7 @@
 pub mod backend;
 pub mod client;
 pub mod command;
+mod initial_history;
 pub mod pane_history;
 mod pane_process;
 pub mod protocol;
