@@ -159,6 +159,8 @@ pub enum PaneMenuAction {
     Paste,
     SplitVertical,
     SplitHorizontal,
+    Close,
+    Break,
 }
 
 /// 渲染痕迹：没有视觉时证明「不刷屏」。
@@ -176,6 +178,9 @@ pub struct PaneSurface {
 }
 
 struct PaneViewInner {
+    container: gtk4::Box,
+    header: gtk4::Box,
+    title: gtk4::Label,
     renderer: VteRenderer,
     pane_id: Cell<u32>,
     /// 仅跟踪影响 GTK 输入路由的模式；Core 拥有完整终端状态和 replies。
@@ -187,7 +192,7 @@ struct PaneViewInner {
     /// 正在把远端 pane 输出 feed 进 VTE（解析器应答只在这个窗口产生）。
     is_feeding_remote_output: Cell<bool>,
     /// 待合并的输出。
-    pending_feed: RefCell<Vec<u8>>,
+    pending_feed: RefCell<std::collections::VecDeque<u8>>,
     feed_flush_source: RefCell<Option<glib::SourceId>>,
     /// attach 历史批次。权威 Snapshot 会 reset native scrollback，所以
     /// 必须保留这些批次，按 Surface generation 重放。
@@ -237,14 +242,35 @@ impl PaneSurface {
         if let Ok(re) = vte4::Regex::for_match(r#"https?://[^\s<>"']+"#, 0x400) {
             renderer.terminal().match_add_regex(&re, 0);
         }
+        let container = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        container.set_hexpand(true);
+        container.set_vexpand(true);
+        let header = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+        header.set_widget_name(&format!("muxterm-pane-header-{pane_id}"));
+        header.add_css_class("muxterm-pane-header");
+        header.set_visible(false);
+        let title = gtk4::Label::new(None);
+        title.set_hexpand(true);
+        title.set_halign(gtk4::Align::Start);
+        title.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+        let menu_button = gtk4::Button::with_label("⋯");
+        menu_button.set_has_frame(false);
+        menu_button.set_can_focus(false);
+        header.append(&title);
+        header.append(&menu_button);
+        container.append(&header);
+        container.append(&renderer.widget());
         let inner = Rc::new(PaneViewInner {
+            container,
+            header,
+            title,
             renderer,
             pane_id: Cell::new(pane_id),
             input_state: RefCell::new(PaneInputState::default()),
             input_cb: RefCell::new(None),
             is_tmux_mirror: Cell::new(is_tmux_mirror),
             is_feeding_remote_output: Cell::new(false),
-            pending_feed: RefCell::new(Vec::new()),
+            pending_feed: RefCell::new(std::collections::VecDeque::new()),
             feed_flush_source: RefCell::new(None),
             history_batches: RefCell::new(Vec::new()),
             history_applied: Cell::new(0),
@@ -261,6 +287,37 @@ impl PaneSurface {
         });
         let view = PaneSurface { inner };
         view.install_context_menu();
+        let weak = Rc::downgrade(&view.inner);
+        menu_button.connect_clicked(move |_| {
+            if let Some(inner) = weak.upgrade() {
+                inner.renderer.terminal().grab_focus();
+                inner
+                    .menu
+                    .set_pointing_to(Some(&gdk::Rectangle::new(0, 0, 1, 1)));
+                inner.menu.popup();
+            }
+        });
+        let click = gtk4::GestureClick::new();
+        let weak = Rc::downgrade(&view.inner);
+        click.connect_pressed(move |_, _, _, _| {
+            if let Some(inner) = weak.upgrade() {
+                inner.renderer.terminal().grab_focus();
+            }
+        });
+        view.inner.header.add_controller(click);
+        let drag = gtk4::GestureDrag::new();
+        let weak = Rc::downgrade(&view.inner);
+        drag.connect_drag_end(move |_, x, y| {
+            if x.hypot(y) < 5.0 {
+                return;
+            }
+            if let Some(inner) = weak.upgrade() {
+                if let Some(callback) = inner.menu_cb.borrow().as_ref() {
+                    callback(inner.pane_id.get(), PaneMenuAction::Break);
+                }
+            }
+        });
+        view.inner.title.add_controller(drag);
         view.attach_scroll_controller();
         view.attach_pointer_controllers();
         view
@@ -296,6 +353,9 @@ impl PaneSurface {
         box_.append(&paste);
         box_.append(&split_vertical);
         box_.append(&split_horizontal);
+        let close = gtk4::Button::with_label("×");
+        close.set_widget_name("muxterm-pane-menu-close");
+        box_.append(&close);
         menu.set_child(Some(&box_));
 
         let callback = {
@@ -342,6 +402,13 @@ impl PaneSurface {
         }
 
         let gesture = gtk4::GestureClick::new();
+        {
+            let menu = menu.clone();
+            close.connect_clicked(move |_| {
+                callback(PaneMenuAction::Close);
+                menu.popdown();
+            });
+        }
         gesture.set_button(3);
         gesture.set_propagation_phase(gtk4::PropagationPhase::Capture);
         {
@@ -595,7 +662,21 @@ impl PaneSurface {
     }
 
     pub fn widget(&self) -> gtk4::Widget {
-        self.inner.renderer.widget()
+        self.inner.container.clone().upcast()
+    }
+
+    pub fn set_header_visible(&self, visible: bool) {
+        self.inner.header.set_visible(visible);
+    }
+
+    pub fn set_title(&self, title: &str, active: bool) {
+        self.inner.title.set_text(title);
+        self.inner.title.set_tooltip_text(Some(title));
+        if active {
+            self.inner.header.add_css_class("active");
+        } else {
+            self.inner.header.remove_css_class("active");
+        }
     }
 
     pub fn terminal(&self) -> &vte4::Terminal {
@@ -667,7 +748,7 @@ impl PaneSurface {
         if data.is_empty() {
             return;
         }
-        self.inner.pending_feed.borrow_mut().extend_from_slice(data);
+        self.inner.pending_feed.borrow_mut().extend(data);
         self.schedule_feed_flush_if_paintable();
     }
 
@@ -681,8 +762,8 @@ impl PaneSurface {
         self.inner
             .pending_feed
             .borrow_mut()
-            .extend_from_slice(b"\x1b[2J\x1b[H");
-        self.inner.pending_feed.borrow_mut().extend_from_slice(data);
+            .extend(b"\x1b[2J\x1b[H");
+        self.inner.pending_feed.borrow_mut().extend(data);
         self.schedule_feed_flush_if_paintable();
     }
 
@@ -756,7 +837,10 @@ impl PaneSurface {
                 std::time::Duration::from_millis(FEED_COALESCE_MS),
                 move || {
                     if let Some(inner) = weak.upgrade() {
-                        flush_pending_feed(&inner);
+                        flush_feed_bytes(&inner, 64 * 1024);
+                        if !inner.pending_feed.borrow().is_empty() {
+                            PaneSurface { inner }.schedule_feed_flush();
+                        }
                     }
                     glib::ControlFlow::Break
                 },
@@ -1061,8 +1145,16 @@ impl PaneSurface {
 }
 
 fn flush_pending_feed(inner: &PaneViewInner) {
+    flush_feed_bytes(inner, usize::MAX);
+}
+
+fn flush_feed_bytes(inner: &PaneViewInner, limit: usize) {
     *inner.feed_flush_source.borrow_mut() = None;
-    let data = std::mem::take(&mut *inner.pending_feed.borrow_mut());
+    let data: Vec<u8> = {
+        let mut pending = inner.pending_feed.borrow_mut();
+        let count = pending.len().min(limit);
+        pending.drain(..count).collect()
+    };
     if data.is_empty() {
         return;
     }
@@ -1363,6 +1455,39 @@ fn merge_grid_size(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feed_budget_preserves_pending_bytes_and_utf8_order() {
+        if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
+            return;
+        }
+        gtk4::test_synced(|| {
+            let view = PaneSurface::new(
+                1,
+                &crate::frontend::linux::theme::fallback_theme(),
+                &FontSettings::default(),
+                false,
+                100,
+            );
+            let bytes = "终端🙂".repeat(20_000).into_bytes();
+            view.inner.pending_feed.borrow_mut().extend(&bytes);
+            flush_feed_bytes(&view.inner, 64 * 1024);
+            assert_eq!(view.inner.render_trace.borrow().bytes_fed, 64 * 1024);
+            assert_eq!(
+                view.inner
+                    .pending_feed
+                    .borrow()
+                    .iter()
+                    .copied()
+                    .collect::<Vec<_>>(),
+                bytes[64 * 1024..]
+            );
+            flush_pending_feed(&view.inner);
+            assert!(view.inner.pending_feed.borrow().is_empty());
+            assert_eq!(view.inner.render_trace.borrow().bytes_fed, bytes.len());
+            assert_eq!(view.inner.render_trace.borrow().resets, 0);
+        });
+    }
 
     #[test]
     fn snapshot_grid_rows_counts_physical_lines() {

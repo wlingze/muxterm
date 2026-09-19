@@ -75,6 +75,7 @@ impl CompatibilityActivity {
             .entry((workspace_id.to_string(), pane_id))
             .or_insert_with(|| CompatibilityPane {
                 pane: ClientAttentionPane {
+                    muted: false,
                     workspace_id: workspace_id.to_string(),
                     pane_id,
                     status: status_name(ClientAttentionStatus::Unknown).to_string(),
@@ -208,10 +209,12 @@ impl CompatibilityActivity {
     pub(crate) fn snapshot(&self) -> Vec<ClientWorkspaceAttention> {
         let mut groups: HashMap<String, Vec<(ClientAttentionPane, bool)>> = HashMap::new();
         for entry in self.panes.values() {
+            let mut pane = entry.pane.clone();
+            pane.muted = is_muted(entry);
             groups
                 .entry(entry.pane.workspace_id.clone())
                 .or_default()
-                .push((entry.pane.clone(), is_muted(entry)));
+                .push((pane, is_muted(entry)));
         }
 
         let mut workspaces = groups

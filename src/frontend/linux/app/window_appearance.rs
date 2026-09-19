@@ -147,6 +147,7 @@ pub(super) fn apply_config_snapshot(s: &mut UiState, snapshot: ClientConfigSnaps
     s.status.apply_theme(&theme);
     s.status_mode = StatusBarMode::from_toml(Some(&cfg.statusbar.mode));
     s.status.set_mode(s.status_mode);
+    s.status.set_tab_style(&cfg.ui.tab_bar_style);
     report_all_pane_colours(s);
     maybe_refresh_status(s, true);
 }

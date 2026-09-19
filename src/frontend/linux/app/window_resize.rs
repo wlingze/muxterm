@@ -29,7 +29,8 @@ pub(super) fn sync_window_size(s: &mut UiState) {
         return;
     }
     let root_w = s.active_layout().root_box.width().max(0) as u64;
-    let root_h = s.active_layout().root_box.height().max(0) as u64;
+    let root_h =
+        (s.active_layout().root_box.height() - s.active_layout().title_height()).max(0) as u64;
     if root_w == 0 || root_h == 0 {
         return;
     }

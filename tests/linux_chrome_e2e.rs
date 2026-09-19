@@ -274,6 +274,30 @@ fn chrome_e2e_s5_s6_s13a() {
         status_bar_does_not_rebuild_buttons_when_tab_signature_unchanged(&bar, &win);
         status_dot_click_opens_popover_with_ssh_summary(&bar, &win);
 
+        // 关闭非当前 tab 使用明确身份，不触发切换；样式热切换保持可操作。
+        let closed = Rc::new(RefCell::new(None));
+        let target = closed.clone();
+        bar.connect_tab_close(move |id| *target.borrow_mut() = Some(id));
+        bar.set_tab_style("compact");
+        find_by_name(&win, "muxterm-status-tab-close-21")
+            .unwrap()
+            .downcast::<gtk4::Button>()
+            .unwrap()
+            .emit_clicked();
+        assert_eq!(*closed.borrow(), Some(21));
+        bar.set_tab_style("equal_width");
+        bar.apply(&snapshot(
+            "Workspace",
+            "Connected",
+            (0..30)
+                .map(|id| wnd(id, "a very long terminal title", id == 0))
+                .collect(),
+        ));
+        pump_main_loop(80);
+        assert!(win.width() <= 800, "tab 数量不得撑宽窗口");
+        assert!(bar.new_tab_widget().is_mapped());
+        assert!(bar.new_tab_widget().width() > 0);
+
         drop(bar);
         win.close();
         win.destroy();

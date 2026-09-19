@@ -65,6 +65,12 @@ pub(super) fn refresh_workspace_layout(s: &mut UiState, wid: &WorkspaceId, seed_
                 .collect()
         })
         .unwrap_or_default();
+    let titles: Vec<_> = view
+        .panes
+        .values()
+        .flatten()
+        .map(|pane| (pane.id, pane.title.clone(), pane.is_active))
+        .collect();
 
     s.scenes.ensure(wid);
 
@@ -92,6 +98,11 @@ pub(super) fn refresh_workspace_layout(s: &mut UiState, wid: &WorkspaceId, seed_
         if let Some(layout) = s.scenes.get_mut(wid) {
             for (tab, client_layout) in &layouts {
                 layout.apply_client_layout(*tab, client_layout, &input_cb);
+            }
+            for (id, title, active) in &titles {
+                if let Some(pane) = layout.pane(*id) {
+                    pane.set_title(title, *active);
+                }
             }
             // 全部 tab 常驻后，把 active tab 放回可见页（apply_layout 会
             // 依次 set_visible_child，最后一次调用决定显示页）。

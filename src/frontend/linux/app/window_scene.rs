@@ -19,6 +19,10 @@ use super::{active_workspace_key, parse_workspace_id, LayoutHost, UiState};
 use crate::frontend::utils::corebridge::ClientTask;
 
 pub(super) fn switch_tab_n(s: &mut UiState, n: usize) {
+    if s.aggregate.kind.is_some() {
+        super::window_aggregate::select(s, n as u32);
+        return;
+    }
     let workspace_id = active_workspace_key(s);
     if let Some(tab_id) = s
         .view_store
@@ -30,21 +34,17 @@ pub(super) fn switch_tab_n(s: &mut UiState, n: usize) {
 }
 
 pub(super) fn switch_workspace_n(s: &mut UiState, n: usize) {
+    let ordered =
+        crate::frontend::linux::workspace_sidebar::WorkspaceSidebarItem::from_views(&s.view_store);
     let target = if n == 0 {
-        s.view_store
-            .workspaces()
-            .last()
-            .and_then(|(_, view)| view.workspace.as_ref())
-            .and_then(|workspace| parse_workspace_id(&workspace.id))
+        ordered.last().map(|workspace| workspace.id.clone())
     } else {
-        s.view_store
-            .workspaces()
-            .nth(n.saturating_sub(1))
-            .and_then(|(_, view)| view.workspace.as_ref())
-            .and_then(|workspace| parse_workspace_id(&workspace.id))
+        ordered
+            .get(n.saturating_sub(1))
+            .map(|workspace| workspace.id.clone())
     };
     if let Some(target) = target {
-        if s.active_ws_id() != target {
+        if s.active_ws_id() != target || s.aggregate.kind.is_some() {
             activate_existing(s, target);
         }
     }
@@ -129,7 +129,11 @@ pub(super) fn request_switch_tab(s: &mut UiState, tab_id: u32) {
 }
 
 pub(super) fn activate_existing(s: &mut UiState, id: WorkspaceId) {
+    s.aggregate.kind = None;
+    maybe_refresh_status(s, true);
     if s.active_ws_id() == id {
+        let _ = s.scenes.show(&id);
+        refresh_sidebar_if_open(s);
         return;
     }
     let key = id.as_str();
@@ -163,6 +167,7 @@ pub(super) fn after_activate(s: &mut UiState) {
 
 /// 切工作区只改 GtkStack 可见页和前端缓存，不调用 Core。
 pub(super) fn show_workspace_scene(s: &mut UiState, id: WorkspaceId, seed_from_core: bool) {
+    s.aggregate.kind = None;
     s.visible_workspace = id.clone();
     s.scenes.ensure(&id);
     let _ = s.scenes.show(&id);

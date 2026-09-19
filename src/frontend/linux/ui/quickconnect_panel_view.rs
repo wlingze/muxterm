@@ -11,7 +11,6 @@ use crate::frontend::linux::quickconnect::existing::{ExistingEntry, ExistingTran
 use crate::frontend::linux::quickconnect::model::{
     QuickBadge, QuickConnect, QuickConnectEntry, TargetTransport,
 };
-use crate::frontend::linux::workspace_sidebar::ActivityIndicator;
 use crate::frontend::ssh_probe::{ssh_dot_css_class, ssh_dot_widget_name, SshReach};
 use crate::frontend::utils::i18n::{self, Key as TextKey};
 

@@ -55,7 +55,21 @@ pub use crate::frontend::linux::panel_model::{
 pub use crate::frontend::linux::panel_model::PanelShowArgs;
 
 pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
-    quickconnect_panel_ui::show(parent, args);
+    quickconnect_panel_ui::show(parent, args, None);
+}
+
+pub struct WorkspaceNavigation {
+    pub items: Vec<(String, String, bool, bool)>,
+    pub activate: std::rc::Rc<dyn Fn(&str)>,
+    pub close: std::rc::Rc<dyn Fn(&str)>,
+}
+
+pub fn show_with_navigation(
+    parent: &impl IsA<Window>,
+    args: PanelShowArgs,
+    navigation: WorkspaceNavigation,
+) {
+    quickconnect_panel_ui::show(parent, args, Some(navigation));
 }
 
 #[cfg(test)]

@@ -38,6 +38,7 @@ fn attention(
     line: &str,
 ) -> ClientAttentionPane {
     ClientAttentionPane {
+        muted: false,
         workspace_id: ws.into(),
         pane_id: pane,
         status: format!("{status:?}").to_lowercase(),
@@ -274,17 +275,17 @@ fn three_tab_panel_full_flow() {
             // 4. 清空 query：状态点正确；不创建小终端，Attention 提供静音动作。
             entry.set_text("");
             pump_main_loop(40);
-            let pi_row = list.row_at_index(1).expect("pi agent row");
+            let pi_row = list.row_at_index(2).expect("pi agent row");
             let pi_dot =
                 find_by_name(&pi_row, "muxterm-attention-status-dot").expect("pi status dot");
             assert!(
                 pi_dot.has_css_class("working"),
                 "Working agent 应显示黄色 working 状态 class"
             );
-            let done_row = list.row_at_index(2).expect("unread done row");
-            let done_dot = find_by_name(&done_row, "muxterm-attention-status-dot")
-                .expect("unread done status dot");
-            assert!(done_dot.has_css_class("done"));
+            let blocked_row = list.row_at_index(1).expect("blocked row precedes working");
+            let blocked_dot = find_by_name(&blocked_row, "muxterm-attention-status-dot")
+                .expect("blocked status dot");
+            assert!(blocked_dot.has_css_class("blocked"));
             assert!(find_by_name(&win, "muxterm-attention-peek").is_none());
             assert!(find_by_name(&win, "muxterm-attention-jump").is_none());
             let mute = find_by_name(&win, "muxterm-attention-mute").expect("静音动作应存在");

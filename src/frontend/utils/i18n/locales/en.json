@@ -1,4 +1,9 @@
 {
+  "aggregate_shells": "Shells",
+  "aggregate_agents": "Agents",
+  "tab_bar_style": "Tab layout",
+  "tab_equal_width": "Equal width",
+  "tab_compact": "Compact",
   "command_palette": "Command Palette",
   "command_palette_placeholder": "Type a command or search...",
   "local": "Local",

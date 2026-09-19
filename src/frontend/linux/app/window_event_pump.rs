@@ -201,17 +201,17 @@ pub(super) fn activity_snapshot(s: &UiState) -> ClientActivitySnapshot {
         workspace.blocked = workspace
             .panes
             .iter()
-            .filter(|pane| pane.status == "blocked" && !pane.acknowledged)
+            .filter(|pane| pane.status == "blocked" && !pane.acknowledged && !pane.muted)
             .count();
         workspace.done = workspace
             .panes
             .iter()
-            .filter(|pane| pane.status == "done" && !pane.acknowledged)
+            .filter(|pane| pane.status == "done" && !pane.acknowledged && !pane.muted)
             .count();
         workspace.working = workspace
             .panes
             .iter()
-            .filter(|pane| pane.status == "working")
+            .filter(|pane| pane.status == "working" && !pane.muted)
             .count();
     }
     let compatibility_blocked_count = snapshot

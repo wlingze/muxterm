@@ -302,14 +302,25 @@ pub(super) fn refresh_sidebar_if_open(s: &mut UiState) {
     }
     let activity = activity_snapshot(s);
     let active_workspace = s.active_workspace_key();
-    s.sidebar
-        .refresh_from_views(&s.view_store, Some(&active_workspace), &activity);
+    s.sidebar.refresh_from_views(
+        &s.view_store,
+        s.aggregate
+            .kind
+            .is_none()
+            .then_some(active_workspace.as_str()),
+        &activity,
+    );
 }
 
 pub(super) fn refresh_sidebar_workspaces_if_open(s: &UiState) {
     if s.sidebar.is_open() {
         let active_workspace = s.active_workspace_key();
-        s.sidebar
-            .refresh_workspaces_from_views(&s.view_store, Some(&active_workspace));
+        s.sidebar.refresh_workspaces_from_views(
+            &s.view_store,
+            s.aggregate
+                .kind
+                .is_none()
+                .then_some(active_workspace.as_str()),
+        );
     }
 }

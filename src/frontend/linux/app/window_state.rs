@@ -92,6 +92,15 @@ impl UiState {
     }
 
     pub(super) fn execute_active_task(&self, task: ClientTask) -> anyhow::Result<()> {
+        if self.aggregate.kind
+            == Some(crate::frontend::linux::chrome::aggregate::AggregateKind::Agents)
+            && matches!(task, ClientTask::NewTab)
+        {
+            return Ok(());
+        }
+        if self.aggregate.kind.is_some() && super::window_aggregate::tabs(self).is_empty() {
+            return Ok(());
+        }
         let workspace_id = self.active_workspace_key();
         if self.view_store.workspace(&workspace_id).is_none() {
             anyhow::bail!("没有激活的 workspace");

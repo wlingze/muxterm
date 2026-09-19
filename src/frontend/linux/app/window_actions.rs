@@ -33,6 +33,7 @@ pub(super) fn handle_action(
     window: &Window,
     state: &Rc<RefCell<UiState>>,
 ) {
+    sync_focused_pane(s);
     match action {
         Action::NewTab | Action::NewWindow => {
             prepare_core_tab_mutation(s, &ClientTask::NewTab);
@@ -119,6 +120,26 @@ pub(super) fn handle_action(
     refresh_ui(s);
 }
 
+pub(super) fn sync_focused_pane(s: &mut UiState) {
+    let key = s.active_workspace_key();
+    let focused = s
+        .view_store
+        .workspace(&key)
+        .and_then(|view| view.panes.get(&s.active_tab_id()))
+        .and_then(|panes| {
+            panes.iter().find(|pane| {
+                s.active_layout()
+                    .pane(pane.id)
+                    .is_some_and(|view| view.terminal().has_focus())
+            })
+        })
+        .map(|pane| pane.id);
+    if let Some(pane_id) = focused.filter(|pane| *pane != s.active_pane) {
+        s.active_pane = pane_id;
+        let _ = s.execute_active_task(ClientTask::SwitchPane { pane_id });
+    }
+}
+
 /// 与 macOS `movePane` 对齐：用当前 tab 快照算目标，发 SwitchPane。
 /// 不要发 NextPane——tmux 布局树若没解析完会落到无效的
 /// `select-pane -t @N -N/-P`（2219.log 14:41:29）。
@@ -137,6 +158,10 @@ fn switch_pane_offset(s: &mut UiState, forward: bool) {
         .map(|pane| pane.id)
         .unwrap_or(s.active_pane);
     if let Some(target) = cycle_pane_id(&ids, active, forward) {
+        s.active_pane = target;
+        if let Some(view) = s.active_layout().pane(target) {
+            view.grab_focus();
+        }
         let _ = s.execute_active_task(ClientTask::SwitchPane { pane_id: target });
     }
 }
@@ -187,15 +212,9 @@ pub(super) fn run_palette_command(
             });
         }
         PaletteAction::TmuxDetach => {
-            // 命令先入队；下一轮 GTK poll flush 后再关闭，避免 close 直接
-            // 销毁窗口而丢掉尚未提交的 detach。
-            {
-                let mut s = state.borrow_mut();
-                let accepted = s.execute_active_task(ClientTask::Detach).is_ok();
-                if accepted {
-                    s.pending_close = true;
-                }
-            }
+            let mut s = state.borrow_mut();
+            let id = s.active_ws_id();
+            super::window_sidebar::close_sidebar_workspace(&mut s, &id);
         }
         PaletteAction::SshDisconnect => {
             let s = state.borrow();
@@ -264,6 +283,16 @@ pub(super) fn run_palette_command(
         }
         PaletteAction::CloseTab => {
             let mut s = state.borrow_mut();
+            if s.aggregate.kind.is_some() {
+                let index = super::window_aggregate::tabs(&s).iter().position(|tab| {
+                    tab.source.workspace == s.active_workspace_key()
+                        && tab.source.tab == s.active_tab_id()
+                });
+                if let Some(index) = index {
+                    super::window_aggregate::close(&mut s, index as u32 + 1);
+                }
+                return;
+            }
             let tab = s.active_tab;
             let task = ClientTask::CloseTab { tab_id: tab };
             prepare_core_tab_mutation(&mut s, &task);
@@ -401,6 +430,18 @@ pub(super) fn handle_pane_menu_action(
     action: PaneMenuAction,
 ) {
     match action {
+        PaneMenuAction::Break => {
+            let s = state.borrow();
+            if s.aggregate.kind.is_none()
+                && s.active_supports(ClientRuntimeCapability::SharedClientResize)
+            {
+                let _ = s.execute_active_task(ClientTask::BreakPane { pane_id });
+            }
+        }
+        PaneMenuAction::Close => {
+            let s = state.borrow();
+            let _ = s.execute_active_task(ClientTask::ClosePane { pane_id });
+        }
         PaneMenuAction::Copy => {
             let s = state.borrow();
             copy_pane(&s, pane_id);

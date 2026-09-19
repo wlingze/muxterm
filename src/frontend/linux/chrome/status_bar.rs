@@ -4,7 +4,8 @@
 //! 左/中/右同步 tmux status；最右三个按钮是 Muxterm chrome，永远可见。
 //! tab 按钮只在 tab 集合/当前 tab 变化时重建（SSH 16ms 轮询不得拆按钮）。
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use gtk4::gdk;
@@ -17,6 +18,7 @@ use crate::frontend::linux::quickconnect::status_style::{
     StatusBarMode, StatusBarSnapshot, StatusBarStyleParser,
 };
 use crate::frontend::linux::theme::Theme;
+use crate::frontend::linux::workspace_sidebar::ActivityIndicator;
 
 #[path = "status_bar_model.rs"]
 mod status_bar_model;
@@ -50,6 +52,9 @@ pub struct StatusBar {
     worktree_create: Button,
     popover: Popover,
     on_window_activate: WindowActivateCb,
+    on_tab_close: WindowActivateCb,
+    equal_width: Cell<bool>,
+    tab_activity: RefCell<BTreeMap<u32, ActivityIndicator>>,
     on_notify_activate: NotifyActivateCb,
     on_new_tab: NewTabCb,
     on_worktree_create: WorktreeCreateCb,
@@ -79,6 +84,8 @@ impl StatusBar {
         left.set_valign(Align::Center);
         left.set_hexpand(false);
         left.add_css_class("muxterm-status-text");
+        left.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+        left.set_max_width_chars(18);
 
         let tabs = GtkBox::builder()
             .orientation(Orientation::Horizontal)
@@ -87,12 +94,24 @@ impl StatusBar {
             .build();
         tabs.set_widget_name("muxterm-status-tabs");
         tabs.add_css_class("muxterm-status-windows");
+        tabs.set_hexpand(true);
+        tabs.set_homogeneous(true);
+        let tab_scroll = gtk4::ScrolledWindow::builder()
+            .hexpand(true)
+            .hscrollbar_policy(gtk4::PolicyType::External)
+            .vscrollbar_policy(gtk4::PolicyType::Never)
+            .propagate_natural_width(false)
+            .child(&tabs)
+            .build();
+        tab_scroll.set_widget_name("muxterm-status-tab-scroll");
 
         let right = Label::new(None);
         right.set_widget_name("muxterm-status-right");
         right.set_halign(Align::End);
         right.set_valign(Align::Center);
-        right.set_hexpand(true);
+        right.set_hexpand(false);
+        right.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+        right.set_max_width_chars(12);
         right.add_css_class("muxterm-status-text");
 
         // Muxterm chrome：状态点 / 通知面板 / 新建 tab（永远可见）。
@@ -135,7 +154,7 @@ impl StatusBar {
         worktree_create.set_visible(false);
 
         container.append(&left);
-        container.append(&tabs);
+        container.append(&tab_scroll);
         container.append(&right);
         container.append(&dot);
         container.append(&notify);
@@ -160,6 +179,9 @@ impl StatusBar {
             worktree_create,
             popover,
             on_window_activate: Rc::new(RefCell::new(None)),
+            on_tab_close: Rc::new(RefCell::new(None)),
+            equal_width: Cell::new(true),
+            tab_activity: RefCell::new(BTreeMap::new()),
             on_notify_activate: Rc::new(RefCell::new(None)),
             on_new_tab: Rc::new(RefCell::new(None)),
             on_worktree_create: Rc::new(RefCell::new(None)),
@@ -210,6 +232,27 @@ impl StatusBar {
 
     pub fn connect_window_activate<F: Fn(u32) + 'static>(&self, f: F) {
         *self.on_window_activate.borrow_mut() = Some(Box::new(f));
+    }
+
+    pub fn connect_tab_close<F: Fn(u32) + 'static>(&self, f: F) {
+        *self.on_tab_close.borrow_mut() = Some(Box::new(f));
+    }
+
+    pub fn set_tab_style(&self, style: &str) {
+        let equal = style != "compact";
+        if self.equal_width.replace(equal) != equal {
+            self.tabs.set_homogeneous(equal);
+            *self.last_tab_signature.borrow_mut() = None;
+            self.render();
+        }
+    }
+
+    pub fn set_tab_activity(&self, activity: BTreeMap<u32, ActivityIndicator>) {
+        if *self.tab_activity.borrow() != activity {
+            *self.tab_activity.borrow_mut() = activity;
+            *self.last_tab_signature.borrow_mut() = None;
+            self.render();
+        }
     }
 
     /// 通知/面板按钮点击回调（window 侧决定 Workspaces 或 Attention tab）。
@@ -426,10 +469,14 @@ impl StatusBar {
         }
 
         // justify 只影响中区。
-        self.tabs.set_halign(match snapshot.justify.as_str() {
-            "left" => Align::Start,
-            "right" => Align::End,
-            _ => Align::Center,
+        self.tabs.set_halign(if self.equal_width.get() {
+            Align::Fill
+        } else {
+            match snapshot.justify.as_str() {
+                "left" => Align::Start,
+                "right" => Align::End,
+                _ => Align::Center,
+            }
         });
 
         // chrome 永远可见；左/中/右跟随 tmux status on/off。
@@ -464,15 +511,6 @@ impl StatusBar {
             self.tabs.remove(&child);
         }
         for (i, win) in snapshot.windows.iter().enumerate() {
-            if i > 0 {
-                let sep = Label::new(Some(&if snapshot.separator.is_empty() {
-                    " ".to_string()
-                } else {
-                    snapshot.separator.clone()
-                }));
-                sep.add_css_class("muxterm-status-text");
-                self.tabs.append(&sep);
-            }
             let style_name = if win.current {
                 &snapshot.window_current_style
             } else {
@@ -509,7 +547,26 @@ impl StatusBar {
             label_widget.set_markup(&markup);
             // Label 不抢点击（GTK4 会把点击吃掉）。
             label_widget.set_can_target(false);
-            button.set_child(Some(&label_widget));
+            label_widget.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+            label_widget.set_max_width_chars(24);
+            let content = GtkBox::new(Orientation::Horizontal, 4);
+            if let Some(indicator) = self.tab_activity.borrow().get(&win.window_id) {
+                if *indicator == ActivityIndicator::Working {
+                    let spinner = gtk4::Spinner::new();
+                    spinner.start();
+                    content.append(&spinner);
+                } else if let Some(marker) = indicator.marker() {
+                    let marker = Label::new(Some(marker));
+                    if let Some(class) = indicator.css_class() {
+                        marker.add_css_class(class);
+                    }
+                    content.append(&marker);
+                }
+            }
+            content.append(&label_widget);
+            button.set_child(Some(&content));
+            button.set_hexpand(self.equal_width.get());
+            button.set_tooltip_text(Some(raw));
             let cb = self.on_window_activate.clone();
             let id = win.window_id;
             button.connect_clicked(move |_| {
@@ -517,7 +574,21 @@ impl StatusBar {
                     cb(id);
                 }
             });
-            self.tabs.append(&button);
+            let group = GtkBox::new(Orientation::Horizontal, 0);
+            group.set_hexpand(self.equal_width.get());
+            group.append(&button);
+            let close = Button::with_label("×");
+            close.set_widget_name(&format!("muxterm-status-tab-close-{id}"));
+            close.set_has_frame(false);
+            close.set_can_focus(false);
+            let cb = self.on_tab_close.clone();
+            close.connect_clicked(move |_| {
+                if let Some(cb) = cb.borrow().as_ref() {
+                    cb(id);
+                }
+            });
+            group.append(&close);
+            self.tabs.append(&group);
         }
     }
 

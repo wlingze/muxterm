@@ -8,6 +8,7 @@ use gtk4::Window;
 use crate::frontend::linux::attention_ui::window_title;
 use crate::frontend::linux::quickconnect::status_style::StatusBarSnapshot;
 use crate::frontend::linux::status_bar::ConnectionSummary;
+use crate::frontend::linux::workspace_sidebar::{ActivityIndicator, AgentSidebarItem};
 use crate::frontend::utils::i18n::{self, Key};
 
 use super::window_event_pump::activity_snapshot;
@@ -115,6 +116,46 @@ pub(super) fn maybe_refresh_status(s: &mut UiState, force: bool) {
         .iter()
         .map(|tab| (tab.id, tab.name.clone(), tab.id == active_tab))
         .collect();
+    let agents = AgentSidebarItem::from_views(&s.view_store, &activity_snapshot(s));
+    let indicator_for = |workspace: &str, tab_id: u32| {
+        let indicator = agents
+            .iter()
+            .filter(|agent| agent.workspace_id.as_str() == workspace)
+            .filter(|agent| {
+                s.view_store
+                    .workspace(workspace)
+                    .and_then(|view| view.panes.get(&tab_id))
+                    .is_some_and(|panes| panes.iter().any(|pane| pane.id == agent.pane_id))
+            })
+            .map(|agent| agent.indicator)
+            .min_by_key(|indicator| match indicator {
+                ActivityIndicator::Done => 0,
+                ActivityIndicator::Blocked => 1,
+                ActivityIndicator::Working => 2,
+                ActivityIndicator::Idle => 3,
+                ActivityIndicator::None => 4,
+            })
+            .unwrap_or(ActivityIndicator::None);
+        indicator
+    };
+    let indicators = if s.aggregate.kind.is_some() {
+        super::window_aggregate::tabs(s)
+            .iter()
+            .enumerate()
+            .map(|(index, tab)| {
+                (
+                    index as u32 + 1,
+                    indicator_for(&tab.source.workspace, tab.source.tab),
+                )
+            })
+            .collect()
+    } else {
+        view.tabs
+            .iter()
+            .map(|tab| (tab.id, indicator_for(&workspace_key, tab.id)))
+            .collect()
+    };
+    s.status.set_tab_activity(indicators);
     let mut snap = if s.uses_tmux() {
         crate::frontend::linux::quickconnect::status_style::snapshot_from_tabs(
             &session, npanes, &rows,
@@ -130,11 +171,56 @@ pub(super) fn maybe_refresh_status(s: &mut UiState, force: bool) {
         snap.right = right.to_string();
     }
     let _ = force;
+    if let Some(kind) = s.aggregate.kind {
+        let aggregate_tabs = super::window_aggregate::tabs(s);
+        let rows: Vec<_> = aggregate_tabs
+            .iter()
+            .enumerate()
+            .map(|(index, tab)| {
+                (
+                    index as u32 + 1,
+                    tab.title.clone(),
+                    tab.source.workspace == workspace_key && tab.source.tab == active_tab,
+                )
+            })
+            .collect();
+        snap = crate::frontend::linux::quickconnect::status_style::snapshot_from_tabs(
+            &kind.label(),
+            npanes,
+            &rows,
+        );
+        snap.left = kind.label();
+        snap.right.clear();
+    }
     s.status.apply(&snap);
     sync_chrome_visibility(s);
 }
 
 pub(super) fn sync_chrome_visibility(s: &UiState) {
+    use crate::frontend::linux::chrome::aggregate::AggregateKind;
+    for (class, kind) in [
+        ("shells", AggregateKind::Shells),
+        ("agents", AggregateKind::Agents),
+    ] {
+        if s.aggregate.kind == Some(kind) {
+            s.status.container.add_css_class(class);
+        } else {
+            s.status.container.remove_css_class(class);
+        }
+    }
+    for (button, kind) in [
+        (&s.sidebar.shells, AggregateKind::Shells),
+        (&s.sidebar.agents, AggregateKind::Agents),
+    ] {
+        if s.aggregate.kind == Some(kind) {
+            button.add_css_class("active");
+        } else {
+            button.remove_css_class("active");
+        }
+    }
+    s.status.new_tab_widget().set_sensitive(
+        s.aggregate.kind != Some(crate::frontend::linux::chrome::aggregate::AggregateKind::Agents),
+    );
     // 唯一 chrome：status bar 永远可见，没有第二条 tab 带。
     // worktree 创建入口只按 support() 露出（禁止 if runtime == "herdr"）。
     let worktree = s.active_supports(ClientRuntimeCapability::WorktreeList);

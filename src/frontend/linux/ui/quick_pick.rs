@@ -29,6 +29,18 @@ pub use quick_pick_model::{
 const PANEL_TOP_MARGIN: i32 = 28;
 const ROW_VERTICAL_MARGIN: i32 = 2;
 
+pub(crate) fn navigation_key(key: Key, mods: gtk4::gdk::ModifierType) -> Key {
+    if mods.contains(gtk4::gdk::ModifierType::CONTROL_MASK) {
+        match key {
+            Key::n | Key::N => Key::Down,
+            Key::p | Key::P => Key::Up,
+            _ => key,
+        }
+    } else {
+        key
+    }
+}
+
 /// 弹出 Quick Pick。`on_done(None)` 表示取消；`Some(item)` 表示选中。
 pub fn show<F>(parent: &impl IsA<Window>, placeholder: &str, items: Vec<QuickPickItem>, on_done: F)
 where
@@ -220,7 +232,8 @@ where
         let entry_for_keys = entry.clone();
         let controller = EventControllerKey::new();
         controller.set_propagation_phase(gtk4::PropagationPhase::Capture);
-        controller.connect_key_pressed(move |_c, keyval, _keycode, _mods| {
+        controller.connect_key_pressed(move |_c, keyval, _keycode, mods| {
+            let keyval = navigation_key(keyval, mods);
             if keyval == Key::Escape {
                 finish(None);
                 return glib::Propagation::Stop;
@@ -469,7 +482,8 @@ pub fn show_freeform<F>(
         let entry = entry.clone();
         let controller = EventControllerKey::new();
         controller.set_propagation_phase(gtk4::PropagationPhase::Capture);
-        controller.connect_key_pressed(move |_c, keyval, _keycode, _mods| {
+        controller.connect_key_pressed(move |_c, keyval, _keycode, mods| {
+            let keyval = navigation_key(keyval, mods);
             if keyval == Key::Escape {
                 finish(None);
                 return glib::Propagation::Stop;

@@ -128,7 +128,11 @@ fn reveal_selected_row(scroller: &ScrolledWindow, list: &ListBox, row: &ListBoxR
 }
 
 /// 弹出三 tab QuickConnect 面板（普通 Overlay，不构造 AppWindow）。
-pub(super) fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
+pub(super) fn show(
+    parent: &impl IsA<Window>,
+    args: PanelShowArgs,
+    navigation: Option<super::WorkspaceNavigation>,
+) {
     let parent = parent.as_ref();
     let parent_h = parent.height().max(400);
     let (panel_h, list_h) = quick_pick::panel_list_heights(parent_h);
@@ -210,6 +214,53 @@ pub(super) fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
     tab_bar.append(&tab_attention);
     tab_bar.append(&tab_search);
     panel.append(&tab_bar);
+    if let Some(navigation) = navigation {
+        let rows = GtkBox::new(Orientation::Vertical, 2);
+        rows.set_widget_name("muxterm-panel-workspace-navigation");
+        for (id, title, active, closeable) in navigation.items {
+            let row = GtkBox::new(Orientation::Horizontal, 4);
+            let button = Button::with_label(&title);
+            if let Some(label) = button
+                .child()
+                .and_then(|child| child.downcast::<Label>().ok())
+            {
+                label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+                label.set_max_width_chars(40);
+                label.set_xalign(0.0);
+            }
+            button.set_hexpand(true);
+            button.set_has_frame(false);
+            button.set_widget_name(&format!("muxterm-panel-workspace-{id}"));
+            if active {
+                button.add_css_class("suggested-action");
+            }
+            let target = id.clone();
+            let activate = navigation.activate.clone();
+            button.connect_clicked(move |_| activate(&target));
+            row.append(&button);
+            if closeable {
+                let close = Button::with_label("×");
+                close.set_widget_name(&format!("muxterm-panel-workspace-close-{id}"));
+                close.set_has_frame(false);
+                let callback = navigation.close.clone();
+                close.connect_clicked(move |_| callback(&id));
+                row.append(&close);
+            }
+            rows.append(&row);
+        }
+        let scroll = ScrolledWindow::builder()
+            .child(&rows)
+            .hscrollbar_policy(gtk4::PolicyType::Never)
+            .vscrollbar_policy(gtk4::PolicyType::Automatic)
+            .min_content_height(100)
+            .max_content_height(150)
+            .propagate_natural_height(true)
+            .build();
+        scroll.set_visible(initial_tab == PanelTab::Workspaces);
+        let target = scroll.clone();
+        tab_workspaces.connect_toggled(move |button| target.set_visible(button.is_active()));
+        panel.append(&scroll);
+    }
 
     let list = ListBox::new();
     list.set_selection_mode(SelectionMode::Browse);
@@ -1006,73 +1057,81 @@ pub(super) fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
         let completion_popover = completion_popover.clone();
         let completion_values = completion_values.clone();
         let controller = EventControllerKey::new();
-        controller.connect_key_pressed(move |_c, key, _code, mods| match key {
-            Key::Escape => {
-                dismiss();
-                glib::Propagation::Stop
-            }
-            Key::Tab => {
-                let query = entry_for_keys.text().to_string();
-                let aliases = {
-                    let ex = existing.borrow();
-                    let mut aliases = ex.ssh_aliases.clone();
-                    aliases.extend(ex.hosts.iter().cloned());
-                    aliases
-                };
-                let candidates = if model.borrow().tab == PanelTab::Workspaces {
-                    WorkspaceQuery::completion_candidates(&query, &aliases)
-                } else {
-                    Vec::new()
-                };
-                if let Some(replacement) = candidates.first() {
-                    let completed = WorkspaceQuery::replace_current_token(&query, replacement);
-                    // 完整 token 再按 Tab 应回到面板 tab 切换；否则
-                    // `@tmux` 会被原样替换并吞掉每次 Tab。
-                    if completed != query {
-                        entry_for_keys.set_text(&completed);
-                        entry_for_keys.set_position(-1);
-                        completion_values.borrow_mut().clear();
-                        completion_popover.popdown();
-                        schedule_rebuild();
+        controller.connect_key_pressed(move |_c, key, _code, mods| {
+            match crate::frontend::linux::quick_pick::navigation_key(key, mods) {
+                Key::Escape => {
+                    dismiss();
+                    glib::Propagation::Stop
+                }
+                Key::Tab => {
+                    let query = entry_for_keys.text().to_string();
+                    let aliases = {
+                        let ex = existing.borrow();
+                        let mut aliases = ex.ssh_aliases.clone();
+                        aliases.extend(ex.hosts.iter().cloned());
+                        aliases
+                    };
+                    let candidates = if model.borrow().tab == PanelTab::Workspaces {
+                        WorkspaceQuery::completion_candidates(&query, &aliases)
+                    } else {
+                        Vec::new()
+                    };
+                    if let Some(replacement) = candidates.first() {
+                        let completed = WorkspaceQuery::replace_current_token(&query, replacement);
+                        // 完整 token 再按 Tab 应回到面板 tab 切换；否则
+                        // `@tmux` 会被原样替换并吞掉每次 Tab。
+                        if completed != query {
+                            entry_for_keys.set_text(&completed);
+                            entry_for_keys.set_position(-1);
+                            completion_values.borrow_mut().clear();
+                            completion_popover.popdown();
+                            schedule_rebuild();
+                            return glib::Propagation::Stop;
+                        }
+                    }
+                    model
+                        .borrow_mut()
+                        .cycle_tab(mods.contains(gtk4::gdk::ModifierType::SHIFT_MASK));
+                    schedule_rebuild();
+                    glib::Propagation::Stop
+                }
+                Key::Up | Key::Down => {
+                    let mut rows = 0i32;
+                    while list.row_at_index(rows).is_some() {
+                        rows += 1;
+                    }
+                    if rows == 0 {
                         return glib::Propagation::Stop;
                     }
-                }
-                model
-                    .borrow_mut()
-                    .cycle_tab(mods.contains(gtk4::gdk::ModifierType::SHIFT_MASK));
-                schedule_rebuild();
-                glib::Propagation::Stop
-            }
-            Key::Up | Key::Down => {
-                let mut rows = 0i32;
-                while list.row_at_index(rows).is_some() {
-                    rows += 1;
-                }
-                if rows == 0 {
-                    return glib::Propagation::Stop;
-                }
-                let step = if key == Key::Down { 1 } else { -1 };
-                let mut next = if let Some(row) = list.selected_row() {
-                    row.index() + step
-                } else if step > 0 {
-                    0
-                } else {
-                    rows - 1
-                };
-                while next >= 0 && next < rows {
-                    let Some(row) = list.row_at_index(next) else {
-                        break;
+                    let step = if crate::frontend::linux::quick_pick::navigation_key(key, mods)
+                        == Key::Down
+                    {
+                        1
+                    } else {
+                        -1
                     };
-                    if row.is_activatable() {
-                        list.select_row(Some(&row));
-                        break;
+                    let mut next = if let Some(row) = list.selected_row() {
+                        row.index() + step
+                    } else if step > 0 {
+                        0
+                    } else {
+                        rows - 1
+                    };
+                    while next >= 0 && next < rows {
+                        let Some(row) = list.row_at_index(next) else {
+                            break;
+                        };
+                        if row.is_activatable() {
+                            list.select_row(Some(&row));
+                            break;
+                        }
+                        next += step;
                     }
-                    next += step;
+                    entry_for_keys.grab_focus();
+                    glib::Propagation::Stop
                 }
-                entry_for_keys.grab_focus();
-                glib::Propagation::Stop
+                _ => glib::Propagation::Proceed,
             }
-            _ => glib::Propagation::Proceed,
         });
         entry.add_controller(controller);
     }

@@ -461,6 +461,7 @@ pub fn filter_attention_rows(panes: &[ClientAttentionPane], query: &str) -> Vec<
     let q = query.trim().to_lowercase();
     let mut rows: Vec<AttentionRow> = panes
         .iter()
+        .filter(|pane| !pane.muted)
         .filter(|p| match p.status_kind() {
             ClientAttentionStatus::Working => true,
             ClientAttentionStatus::Blocked | ClientAttentionStatus::Done => !p.acknowledged,
@@ -521,6 +522,9 @@ pub fn filter_attention_panel_rows(
         let key = (workspace_id.clone(), agent.pane_id);
         agent_keys.insert(key.clone());
         let linked = pane_by_key.get(&key).copied();
+        if linked.is_some_and(|pane| pane.muted) {
+            continue;
+        }
         let matches = q.is_empty()
             || workspace_id.to_lowercase().contains(&q)
             || agent.title.to_lowercase().contains(&q)
@@ -580,6 +584,13 @@ pub fn filter_attention_panel_rows(
                 }
             }),
     );
+    rows.sort_by_key(|row| match row.indicator {
+        ActivityIndicator::Done => 0,
+        ActivityIndicator::Blocked => 1,
+        ActivityIndicator::Working => 2,
+        ActivityIndicator::Idle => 3,
+        ActivityIndicator::None => 4,
+    });
     rows
 }
 
@@ -612,6 +623,7 @@ mod tests {
         seq: u64,
     ) -> ClientAttentionPane {
         ClientAttentionPane {
+            muted: false,
             workspace_id: ws.into(),
             pane_id: pane,
             status: format!("{status:?}").to_lowercase(),
@@ -636,6 +648,14 @@ mod tests {
         assert_eq!(m.tab, PanelTab::Workspaces);
         m.cycle_tab(true);
         assert_eq!(m.tab, PanelTab::Search);
+    }
+
+    #[test]
+    fn muted_attention_does_not_reappear_in_the_panel() {
+        let mut pane = attention("local", 1, ClientAttentionStatus::Done, 2);
+        pane.muted = true;
+        assert!(filter_attention_rows(&[pane.clone()], "").is_empty());
+        assert!(filter_attention_panel_rows(&[], &[pane], "").is_empty());
     }
 
     #[test]
@@ -713,9 +733,9 @@ mod tests {
             2,
             "read agents leave Attention and panes must not duplicate"
         );
-        assert_eq!(rows[0].title, "pi");
-        assert_eq!(rows[0].indicator, ActivityIndicator::Working);
-        assert_eq!(rows[1].workspace_id, "plain@local");
+        assert_eq!(rows[1].title, "pi");
+        assert_eq!(rows[1].indicator, ActivityIndicator::Working);
+        assert_eq!(rows[0].workspace_id, "plain@local");
 
         let filtered = filter_attention_panel_rows(&agents, &panes, "feature/panel");
         assert!(
