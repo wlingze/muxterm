@@ -125,6 +125,9 @@ impl VteRenderer {
         if !font.family.is_empty() {
             let mut families = Vec::with_capacity(1 + font.fallback.len());
             families.push(font.family.clone());
+            // 单点 Braille 星光不能落到绘制全部空心点的通用 fallback。
+            // Symbols2 仅补主字体缺少的符号，不改变终端正文的等宽字体。
+            families.push("Noto Sans Symbols2".into());
             families.extend(
                 font.fallback
                     .iter()
@@ -831,20 +834,24 @@ impl PaneSurface {
 
     /// 调度合并 flush（25ms 窗口）。
     fn schedule_feed_flush(&self) {
+        self.schedule_feed_flush_after(FEED_COALESCE_MS);
+    }
+
+    fn schedule_feed_flush_after(&self, delay_ms: u64) {
         if self.inner.feed_flush_source.borrow().is_none() {
             let weak = Rc::downgrade(&self.inner);
-            let id = glib::timeout_add_local(
-                std::time::Duration::from_millis(FEED_COALESCE_MS),
-                move || {
+            let id =
+                glib::timeout_add_local(std::time::Duration::from_millis(delay_ms), move || {
                     if let Some(inner) = weak.upgrade() {
                         flush_feed_bytes(&inner, 64 * 1024);
                         if !inner.pending_feed.borrow().is_empty() {
-                            PaneSurface { inner }.schedule_feed_flush();
+                            // 大批量输出逐块让回 GTK，但不每块再等待合并窗口，
+                            // 避免把持续输出限速为 64KiB / 25ms 后无限积压。
+                            PaneSurface { inner }.schedule_feed_flush_after(1);
                         }
                     }
                     glib::ControlFlow::Break
-                },
-            );
+                });
             *self.inner.feed_flush_source.borrow_mut() = Some(id);
         }
     }
@@ -885,13 +892,10 @@ impl PaneSurface {
             prefix.extend_from_slice(b"\x1b[3J");
         }
         with_remote_feed(&self.inner, || {
-            self.inner.renderer.terminal().feed(&prefix);
-            feed_input_state(&self.inner, &prefix);
+            feed_remote_bytes(&self.inner, &prefix);
             if !data.is_empty() {
-                self.inner.renderer.terminal().feed(data);
-                feed_input_state(&self.inner, data);
+                feed_remote_bytes(&self.inner, data);
             }
-            apply_mirror_mouse_policy(&self.inner);
         });
         if !data.is_empty() {
             // reattach 时新 control client 的尺寸校准（refresh-client -C）
@@ -940,9 +944,7 @@ impl PaneSurface {
         flush_unapplied_history(&self.inner);
         if !data.is_empty() {
             with_remote_feed(&self.inner, || {
-                self.inner.renderer.terminal().feed(data);
-                feed_input_state(&self.inner, data);
-                apply_mirror_mouse_policy(&self.inner);
+                feed_remote_bytes(&self.inner, data);
             });
             // 与 seed_snapshot 相同：快照网格可能大于 VTE 可见行数，
             // 末尾 CUP 越界会让光标/viewport 停在错误位置，shell 重绘或
@@ -1145,6 +1147,9 @@ impl PaneSurface {
 }
 
 fn flush_pending_feed(inner: &PaneViewInner) {
+    if let Some(id) = inner.feed_flush_source.borrow_mut().take() {
+        id.remove();
+    }
     flush_feed_bytes(inner, usize::MAX);
 }
 
@@ -1162,9 +1167,7 @@ fn flush_feed_bytes(inner: &PaneViewInner, limit: usize) {
     // 半帧（1365/2730）必须都留下；CUP 风暴由 VTE 自己演到末帧。
     // 不得在这里标 seeded：live 抢先 flush 会挡住后续 seed_raw（Cursor 丢首屏）。
     with_remote_feed(inner, || {
-        inner.renderer.terminal().feed(&data);
-        feed_input_state(inner, &data);
-        apply_mirror_mouse_policy(inner);
+        feed_remote_bytes(inner, &data);
     });
     let mut trace = inner.render_trace.borrow_mut();
     trace.feeds += 1;
@@ -1270,10 +1273,7 @@ fn prepend_history_seeded(inner: &Rc<PaneViewInner>, data: &[u8], clear_scrollba
 
     let (rows, visible_overlay) = visible_overlay_ansi(inner);
 
-    let replay = history_replay_ansi(&lines, rows, &visible_overlay);
-    if clear_scrollback {
-        inner.renderer.terminal().reset(true, true);
-    }
+    let replay = history_replay_ansi(&lines, rows, &visible_overlay, clear_scrollback);
     feed_direct(inner, &replay);
     if let Some(adj) = inner.renderer.terminal().vadjustment() {
         let bottom = (adj.upper() - adj.page_size()).max(adj.lower());
@@ -1288,7 +1288,6 @@ fn feed_direct(inner: &PaneViewInner, bytes: &[u8]) {
     }
     with_remote_feed(inner, || {
         inner.renderer.terminal().feed(bytes);
-        apply_mirror_mouse_policy(inner);
     });
     let mut trace = inner.render_trace.borrow_mut();
     trace.feeds += 1;
@@ -1318,18 +1317,13 @@ fn visible_overlay_ansi(inner: &PaneViewInner) -> (usize, Vec<u8>) {
         .collect::<Vec<_>>();
     lines.resize(rows, String::new());
 
-    let (cursor_col, cursor_row) = terminal.cursor_position();
-    let cursor_row = cursor_row.clamp(0, rows.saturating_sub(1) as i64) as usize;
-    let cursor_col = cursor_col.max(0) as usize;
     let mut overlay = Vec::new();
     overlay.extend_from_slice(b"\x1b[H\x1b[?7l");
     for (index, line) in lines.iter().enumerate() {
         overlay.extend_from_slice(format!("\x1b[{};1H", index + 1).as_bytes());
         overlay.extend_from_slice(line.as_bytes());
     }
-    overlay.extend_from_slice(
-        format!("\x1b[{};{}H\x1b[?7h", cursor_row + 1, cursor_col + 1).as_bytes(),
-    );
+    overlay.extend_from_slice(b"\x1b[?7h");
     (rows, overlay)
 }
 
@@ -1342,7 +1336,12 @@ fn history_replay_allowed(alternate_screen: bool) -> bool {
     !alternate_screen
 }
 
-fn history_replay_ansi(lines: &[String], rows: usize, visible_overlay: &[u8]) -> Vec<u8> {
+fn history_replay_ansi(
+    lines: &[String],
+    rows: usize,
+    visible_overlay: &[u8],
+    clear_scrollback: bool,
+) -> Vec<u8> {
     let text_bytes = lines.iter().map(String::len).sum::<usize>();
     let mut replay = Vec::with_capacity(
         b"\x1b[H\x1b[2J".len()
@@ -1350,7 +1349,14 @@ fn history_replay_ansi(lines: &[String], rows: usize, visible_overlay: &[u8]) ->
             + (lines.len() + rows) * b"\r\n".len()
             + visible_overlay.len(),
     );
-    replay.extend_from_slice(b"\x1b[H\x1b[2J");
+    // 让原生 VT 保存屏幕相对光标和 SGR；cursor_position 的绝对行号
+    // 不能直接用于 CUP，scrollback 截断后也不能从滚动条反推。
+    replay.extend_from_slice(b"\x1b7\x1b[H\x1b[2J");
+    if clear_scrollback {
+        // ED2 可能先把旧屏推进历史；必须在它之后清历史，避免旧屏排在
+        // attach 历史前面。不能 reset，否则会丢失 TUI 模式和光标。
+        replay.extend_from_slice(b"\x1b[3J");
+    }
     for line in lines {
         replay.extend_from_slice(line.as_bytes());
         replay.extend_from_slice(b"\r\n");
@@ -1362,13 +1368,24 @@ fn history_replay_ansi(lines: &[String], rows: usize, visible_overlay: &[u8]) ->
     // 批次残留在底部 viewport 里。
     replay.extend_from_slice(b"\x1b[2J\x1b[H");
     replay.extend_from_slice(visible_overlay);
+    replay.extend_from_slice(b"\x1b8");
     replay
 }
 
-fn apply_mirror_mouse_policy(inner: &PaneViewInner) {
-    // 只关 VTE 本地跟踪，方便无 mouse 时拖选复制。应用自己的
-    // 1000/1003/1006 留在 input-state，滚轮/悬浮/点击才能穿透给 grok。
-    inner.renderer.terminal().feed(DISABLE_MOUSE_TRACKING);
+fn feed_remote_bytes(inner: &PaneViewInner, data: &[u8]) {
+    // 只在完整鼠标模式 CSI 结束处关闭 VTE 本地跟踪。绝不能在任意
+    // 分包末尾插入 ESC：它会截断尚未完成的 UTF-8、CSI 或 OSC。
+    let boundaries = feed_input_state(inner, data);
+    let terminal = inner.renderer.terminal();
+    let mut start = 0;
+    for end in boundaries {
+        terminal.feed(&data[start..end]);
+        terminal.feed(DISABLE_MOUSE_TRACKING);
+        start = end;
+    }
+    if start < data.len() {
+        terminal.feed(&data[start..]);
+    }
 }
 
 fn send_input_bytes(inner: &PaneViewInner, bytes: &[u8]) {
@@ -1386,25 +1403,25 @@ fn with_remote_feed(inner: &PaneViewInner, f: impl FnOnce()) {
     inner.is_feeding_remote_output.set(false);
 }
 
-fn feed_input_state(inner: &PaneViewInner, data: &[u8]) {
+fn feed_input_state(inner: &PaneViewInner, data: &[u8]) -> Vec<usize> {
     if data.is_empty() {
-        return;
+        return Vec::new();
     }
     let mut state = inner.input_state.borrow_mut();
     // 输入模式 tracker 不应把解析异常带出 GTK 主循环；失败时丢弃镜像，
     // 下一帧输出会重新播种模式。
-    let fed = crate::frontend::linux::fault_gtk::run("pane_view.feed_input_state", || {
-        state.feed(data);
-    });
-    if fed.is_none() {
+    let fed =
+        crate::frontend::linux::fault_gtk::run("pane_view.feed_input_state", || state.feed(data));
+    let Some(boundaries) = fed else {
         *state = PaneInputState::default();
-        return;
-    }
+        return Vec::new();
+    };
     let clipboard = state.take_clipboard_set();
     drop(state);
     if let Some(text) = clipboard {
         inner.renderer.terminal().clipboard().set_text(&text);
     }
+    boundaries
 }
 
 /// Compatibility policy helper for callers that classify parser replies.
@@ -1573,10 +1590,11 @@ mod tests {
         let overlay = b"\x1b[H\x1b[?7l\x1b[1;1HTAIL_VISIBLE\x1b[2;1H\x1b[3;1H\x1b[1;13H\x1b[?7h";
         let lines = vec!["HIST_OFFSCREEN".into(), String::new(), "pad-01".into()];
 
-        let replay = history_replay_ansi(&lines, 3, overlay);
+        let replay = history_replay_ansi(&lines, 3, overlay, true);
         assert!(!replay.windows(2).any(|bytes| bytes == b"\x1bc"));
-        assert!(replay.starts_with(b"\x1b[H\x1b[2JHIST_OFFSCREEN\r\n\r\npad-01\r\n"));
-        assert!(replay.ends_with(overlay));
+        assert!(replay.starts_with(b"\x1b7\x1b[H\x1b[2J\x1b[3JHIST_OFFSCREEN\r\n\r\npad-01\r\n"));
+        assert!(replay.ends_with(b"\x1b8"));
+        assert!(replay.windows(overlay.len()).any(|bytes| bytes == overlay));
     }
 
     #[test]

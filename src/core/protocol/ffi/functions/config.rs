@@ -21,6 +21,27 @@ fn config_json_error(error: impl std::fmt::Display) -> *mut c_char {
     }))
 }
 
+fn refresh_project_catalog(handle: &mut MuxtermHandle) -> anyhow::Result<()> {
+    let mut store = crate::projects::ProjectStore::from_settings(&handle.settings)?;
+    // 配置更新只替换持久化投影；保留未改变 Worktree 的 live 关联。
+    for previous in handle.projects.list_projects() {
+        if let Some(project) = store.get_mut(&previous.id) {
+            if project.target == previous.target {
+                for worktree in &mut project.worktrees {
+                    if let Some(old) = previous
+                        .worktree(&worktree.id)
+                        .filter(|old| old.path == worktree.path)
+                    {
+                        worktree.open_workspace.clone_from(&old.open_workspace);
+                    }
+                }
+            }
+        }
+    }
+    *handle.projects.store_mut() = store;
+    Ok(())
+}
+
 fn rgb_json(color: Rgb) -> serde_json::Value {
     serde_json::json!([color.0, color.1, color.2])
 }
@@ -184,9 +205,12 @@ pub unsafe extern "C" fn muxterm_config_commit_json(
             return config_json_error("transaction 为空");
         };
         match (&mut *h).settings.commit(&transaction) {
-            Ok(revision) => json_string(
-                serde_json::json!({"ok": true, "data": {"revision": revision}, "warnings": []}),
-            ),
+            Ok(revision) => match refresh_project_catalog(&mut *h) {
+                Ok(()) => json_string(
+                    serde_json::json!({"ok": true, "data": {"revision": revision}, "warnings": []}),
+                ),
+                Err(error) => config_json_error(error),
+            },
             Err(error) => config_json_error(error),
         }
     }))
@@ -229,9 +253,12 @@ pub unsafe extern "C" fn muxterm_config_reload_json(h: *mut MuxtermHandle) -> *m
             return config_json_error("handle 为空");
         }
         match (&mut *h).settings.reload() {
-            Ok(revision) => json_string(
-                serde_json::json!({"ok": true, "data": {"revision": revision}, "warnings": []}),
-            ),
+            Ok(revision) => match refresh_project_catalog(&mut *h) {
+                Ok(()) => json_string(
+                    serde_json::json!({"ok": true, "data": {"revision": revision}, "warnings": []}),
+                ),
+                Err(error) => config_json_error(error),
+            },
             Err(error) => config_json_error(error),
         }
     }))

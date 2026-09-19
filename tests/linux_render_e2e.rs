@@ -390,6 +390,7 @@ fn render_e2e_s3_s4() {
     }
     gtk4::test_synced(|| {
         gtk_test_framework_smoke();
+        muxterm::test_support::frontend::linux::font_registry::register_bundled_fonts().unwrap();
 
         // 本机 Monospace 12pt 下 VTE 实际网格只有 79x21，装不下 80x24 fixture
         // （头部会被滚出可见区）。用 10pt 让网格 >= 80x24，断言不变。
@@ -397,7 +398,7 @@ fn render_e2e_s3_s4() {
             1,
             &theme(),
             &FontSettings {
-                family: "Monospace".into(),
+                family: "JetBrains Mono".into(),
                 size: 10.0,
                 fallback: Vec::new(),
             },
@@ -440,6 +441,49 @@ fn render_e2e_s3_s4() {
         surface_live_feed_does_not_reset(&view);
         surface_consecutive_full_frames_replace_without_reset(&view);
         surface_codex_fixture_raw_feed(&view);
+
+        // Pi/Codex primary-screen 输入框使用相对光标重绘。历史回填不能
+        // 把屏幕内的光标误当 scrollback 绝对行，也不能吞掉首帧。
+        view.feed_output(b"\x1b[?1049l\x1b[2J\x1b[H");
+        view.flush_pending_feed();
+        pump_main_loop(80);
+        view.seed_raw(b"\x1b[2J\x1b[HHEADER\x1b[10;1HINPUT_BOX\x1b[10;10H", 80, 24);
+        pump_main_loop(80);
+        view.prepend_history(b"older command\nolder result\n");
+        pump_main_loop(80);
+        view.feed_output(b"\r\x1b[2KINPUT_UPDATED ");
+        // 刻意在 UTF-8 字符中间分包，覆盖星光/中文的字节边界。
+        for byte in "✦ ✧ ⋆ ⠿ 中文".as_bytes() {
+            view.feed_output(&[*byte]);
+            view.flush_pending_feed();
+        }
+        pump_main_loop(80);
+        let screen = view.screen_text();
+        assert!(screen.contains("HEADER"), "{screen:?}");
+        assert!(
+            !screen.contains("INPUT_BOX"),
+            "history moved the cursor: {screen:?}"
+        );
+        assert!(screen.contains("INPUT_UPDATED ✦ ✧ ⋆ ⠿ 中文"), "{screen:?}");
+        view.feed_output(b"\x1b[15;1H");
+        for byte in "\x1b[?1003h\x1b[38;2;50;100;150m⠁ ⠂ ⠄ ⠈ ⠐ ⠠ ⡀ ⢀\x1b[0m".as_bytes()
+        {
+            view.feed_output(&[*byte]);
+            view.flush_pending_feed();
+        }
+        pump_main_loop(80);
+        assert!(view.screen_text().contains("⠁ ⠂ ⠄ ⠈ ⠐ ⠠ ⡀ ⢀"));
+        if let Some(path) = std::env::var_os("MUXTERM_RENDER_SCREENSHOT") {
+            gtk4::test_widget_wait_for_draw(&win);
+            let paintable = gtk4::WidgetPaintable::new(Some(&win));
+            let snapshot = gtk4::Snapshot::new();
+            paintable.snapshot(&snapshot, win.width() as f64, win.height() as f64);
+            win.renderer()
+                .unwrap()
+                .render_texture(&snapshot.to_node().unwrap(), None)
+                .save_to_png(path)
+                .unwrap();
+        }
 
         win.close();
         win.destroy();

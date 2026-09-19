@@ -216,11 +216,13 @@ mod tests {
 
     #[test]
     fn workspace_rows_use_owned_topology_and_preserve_shortcuts() {
-        let alpha = workspace_id("local", None, "alpha", "shell", "/work/alpha");
+        let alpha = workspace_id("local", None, "alpha", "tmux", "/work/alpha");
         let beta = workspace_id("ssh", Some("archmini"), "default", "herdr", "/work/beta");
         let mut store = ViewStore::default();
         add_workspace(&mut store, &beta, "beta", false);
         add_workspace(&mut store, &alpha, "alpha", true);
+        let shell = workspace_id("local", None, "backing-shell", "shell", "/work/shell");
+        add_workspace(&mut store, &shell, "backing-shell", false);
 
         let items = WorkspaceSidebarItem::from_views(&store);
         assert_eq!(

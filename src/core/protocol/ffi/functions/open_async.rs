@@ -18,7 +18,7 @@ enum Opened {
 
 pub(crate) struct PendingOpen {
     receiver: Receiver<(ConnectionRegistry, anyhow::Result<Opened>)>,
-    request: OpenRequest,
+    request: Option<OpenRequest>,
 }
 
 /// Start one asynchronous open without moving or borrowing the live pool.
@@ -37,7 +37,7 @@ pub unsafe extern "C" fn muxterm_open_start_json(
         if handle.pending_open.is_some() {
             return json_error("a workspace open is already pending");
         }
-        let request: OpenRequest = match CStr::from_ptr(request)
+        let value: serde_json::Value = match CStr::from_ptr(request)
             .to_str()
             .ok()
             .and_then(|text| serde_json::from_str(text).ok())
@@ -45,6 +45,19 @@ pub unsafe extern "C" fn muxterm_open_start_json(
             Some(request) => request,
             None => return json_error("invalid open request"),
         };
+        let target = value
+            .get("target")
+            .and_then(super::catalog::target_config_from_json);
+        let request: Option<OpenRequest> = serde_json::from_value(value.clone()).ok();
+        if target.is_none() && request.is_none() {
+            return json_error("invalid open request or target");
+        }
+        let intent =
+            if value.get("intent").and_then(|value| value.as_str()) == Some("create_if_missing") {
+                crate::protocol::candidate::ResolveIntent::CreateIfMissing
+            } else {
+                crate::protocol::candidate::ResolveIntent::AttachOnly
+            };
         let runtimes = handle.runtime_registry.clone();
         let transports = handle.transport_registry.clone();
         let catalog =
@@ -66,12 +79,18 @@ pub unsafe extern "C" fn muxterm_open_start_json(
             .spawn(move || {
                 let _runtime_context = executor.enter();
                 let result = catch_unwind(AssertUnwindSafe(|| -> anyhow::Result<Opened> {
-                    let resolved = catalog.resolve_open_request_with_recent(
-                        &mut connections,
-                        &worker_request,
-                        &projects,
-                        &recent,
-                    )?;
+                    let resolved = if let Some(target) = &target {
+                        catalog.resolve_target(&mut connections, target, intent)?
+                    } else {
+                        catalog.resolve_open_request_with_recent(
+                            &mut connections,
+                            worker_request
+                                .as_ref()
+                                .expect("validated candidate request"),
+                            &projects,
+                            &recent,
+                        )?
+                    };
                     if recent
                         .iter()
                         .any(|old| old.workspace_id() == resolved.workspace_id())
@@ -162,7 +181,7 @@ pub unsafe extern "C" fn muxterm_open_poll_json(
             }
         }
         if activate { handle.pool.activate(&id); }
-        if let CandidateRef::Worktree { project_id, worktree_id } = pending.request.candidate {
+        if let Some(OpenRequest { candidate: CandidateRef::Worktree { project_id, worktree_id }, .. }) = pending.request {
             if let Some(worktree) = handle.projects.store_mut()
                 .get_mut(&crate::projects::ProjectId::from(project_id.as_str()))
                 .and_then(|project| project.worktree_mut(&crate::projects::WorktreeId::from(worktree_id.as_str()))) {

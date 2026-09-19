@@ -36,6 +36,8 @@ impl WorkspaceSidebarItem {
         let mut workspaces: Vec<&ClientWorkspace> = store
             .workspaces()
             .filter_map(|(_, view)| view.workspace.as_ref())
+            // Shell 的真实 Scene 由固定 S 入口呈现，不再占用数字入口。
+            .filter(|workspace| workspace.runtime != "shell")
             .collect();
         workspaces.sort_by(|left, right| left.id.cmp(&right.id));
         workspaces
@@ -264,12 +266,13 @@ fn activity_by_pane(
 }
 
 fn client_status_label(attention: &ClientAttentionPane) -> &'static str {
-    match attention.status.as_str() {
-        "working" => "working",
-        "blocked" => "blocked",
-        "done" if !attention.acknowledged => "done",
-        _ => "idle",
-    }
+    use crate::frontend::utils::i18n::{tr_static, Key};
+    tr_static(match attention.status.as_str() {
+        "working" => Key::ActivityWorking,
+        "blocked" => Key::ActivityBlocked,
+        "done" if !attention.acknowledged => Key::ActivityDone,
+        _ => Key::ActivityIdle,
+    })
 }
 
 fn client_attention_indicator(attention: &ClientAttentionPane) -> ActivityIndicator {

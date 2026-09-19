@@ -10,7 +10,7 @@ use crate::frontend::linux::quickconnect::model::TargetConfigDraft;
 
 use super::window_actions::apply_config_snapshot;
 use super::window_overlay::open_quick_connect;
-use super::{persist_config, FfiClient, UiState};
+use super::{FfiClient, UiState};
 use crate::frontend::linux::preferences_window::ConfigApi;
 
 /// 打开配置页：保存/热加载后重读 config.toml 并应用主题/字体/attention。
@@ -92,6 +92,9 @@ pub(super) fn open_target_config(
     editing: Option<TargetConfigDraft>,
 ) {
     let store = state.borrow().qc_store.clone();
+    let editing_id = editing
+        .as_ref()
+        .and_then(|draft| store.project_id_for(draft));
     let hosts = FfiClient::discover_ssh_hosts().unwrap_or_default();
     let runtimes = FfiClient::discover_runtimes().unwrap_or_default();
     let st = state.clone();
@@ -107,16 +110,33 @@ pub(super) fn open_target_config(
             let win = win.clone();
             move |saved| {
                 let mut s = st.borrow_mut();
-                s.qc_store.upsert_project(&saved);
-                match serde_json::to_value(s.qc_store.project_documents()) {
-                    Ok(projects) => {
-                        persist_config(s.event_pump.client(), "projects", projects);
-                    }
-                    Err(error) => tracing::warn!(
-                        target = "muxterm::config",
-                        "序列化 Project 配置失败: {error}"
-                    ),
+                let mut next = s.qc_store.clone();
+                next.save_project(&saved, editing_id.as_deref());
+                let result = serde_json::to_value(next.project_documents())
+                    .map_err(anyhow::Error::from)
+                    .and_then(|projects| {
+                        s.event_pump
+                            .client()
+                            .config_apply_path("projects", projects)
+                            .map(|_| ())
+                    });
+                if let Err(error) = result {
+                    use gtk4::prelude::*;
+                    let detail = error.to_string();
+                    s.notification_log.push(format!("Project: {detail}"));
+                    drop(s);
+                    let dialog = gtk4::MessageDialog::builder()
+                        .transient_for(&win)
+                        .modal(true)
+                        .message_type(gtk4::MessageType::Error)
+                        .buttons(gtk4::ButtonsType::Close)
+                        .text(&detail)
+                        .build();
+                    dialog.connect_response(|dialog, _| dialog.close());
+                    dialog.present();
+                    return;
                 }
+                s.qc_store = next;
                 drop(s);
                 open_quick_connect(&st, &win);
             }

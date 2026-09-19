@@ -1488,6 +1488,17 @@ impl TmuxRuntime {
         if data.is_empty() {
             return;
         }
+        // new-session 从首字节开始拥有完整流，不需要 capture；明确发布
+        // 空起点，前端才不会把输出尾缓存误当首帧或永远等不到首帧。
+        if !self.is_attach_mode() && self.initial_capture_done.insert(pane) {
+            Self::push_render(
+                &mut self.events,
+                RenderEvent::PaneSnapshot {
+                    pane,
+                    data: Vec::new(),
+                },
+            );
+        }
         // Surface seed 锁定后 outputs 保持权威快照；live 只经 PaneOutput 进 VTE。
         if !self.surface_seed_locked.contains(&pane) {
             append_capped(
@@ -8509,6 +8520,32 @@ mod tests {
             })
             .unwrap();
         assert!(matches!(outcome, TaskOutcome::Rejected { .. }));
+    }
+
+    #[test]
+    fn new_session_output_publishes_empty_baseline_once() {
+        let mut runtime = TmuxRuntime::new(None);
+        let pane = PaneId(42);
+        runtime.push_pane_output(pane, b"first".to_vec());
+        runtime.push_pane_output(pane, b"second".to_vec());
+        let events = runtime.take_events();
+        assert!(
+            matches!(events.first(), Some(StateChange::PaneSnapshot { pane: id, data }) if *id == pane && data.is_empty())
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, StateChange::PaneSnapshot { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, StateChange::PaneOutput { .. }))
+                .count(),
+            2
+        );
     }
 
     /// 回归：大量 %output 不得把 outputs/events 撑到数 GB（曾观测挂起时 ~20GB）。

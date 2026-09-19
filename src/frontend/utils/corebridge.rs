@@ -1696,6 +1696,22 @@ impl CoreBridge {
     }
 
     /// Open a selected Catalog candidate through the product-level resolver.
+    pub fn start_open_target(
+        &self,
+        target: &ClientTarget,
+        intent: ClientOpenIntent,
+    ) -> anyhow::Result<()> {
+        let request = cstring(
+            &serde_json::json!({"target": client_target_json(target), "intent": intent})
+                .to_string(),
+        );
+        Self::discovery_json(|| unsafe {
+            ffi::muxterm_open_start_json(self.handle.as_ptr(), request.as_ptr())
+        })?;
+        Ok(())
+    }
+
+    /// Open a selected Catalog candidate through the product-level resolver.
     pub fn start_open(&self, request: &ClientOpenRequest) -> anyhow::Result<()> {
         let request = cstring(&serde_json::to_string(request)?);
         Self::discovery_json(|| unsafe {

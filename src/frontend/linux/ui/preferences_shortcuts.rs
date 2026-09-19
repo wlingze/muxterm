@@ -42,7 +42,9 @@ pub(super) fn show_shortcut_manager(
 ) {
     install_preferences_css();
     let win = Window::builder()
-        .title("Shortcuts")
+        .title(crate::frontend::utils::i18n::tr_static(
+            crate::frontend::utils::i18n::Key::SettingsShortcuts,
+        ))
         .transient_for(app)
         .modal(true)
         .default_width(720)
@@ -60,8 +62,12 @@ pub(super) fn show_shortcut_manager(
         .build();
     root.add_css_class("prefs-subwindow");
     root.append(&subwindow_header(
-        "Shortcuts",
-        "Customize actions without touching GTK key codes.",
+        crate::frontend::utils::i18n::tr_static(
+            crate::frontend::utils::i18n::Key::SettingsShortcuts,
+        ),
+        crate::frontend::utils::i18n::tr_static(
+            crate::frontend::utils::i18n::Key::SettingsCustomizeActionsWithoutTouchingGtkKeyCodes,
+        ),
     ));
 
     let list = ListBox::new();
@@ -79,7 +85,9 @@ pub(super) fn show_shortcut_manager(
         .spacing(8)
         .halign(Align::End)
         .build();
-    let close = Button::with_label("Close");
+    let close = Button::with_label(crate::frontend::utils::i18n::tr_static(
+        crate::frontend::utils::i18n::Key::SettingsClose,
+    ));
     close.add_css_class("prefs-secondary-action");
     actions.append(&close);
     root.append(&actions);
@@ -126,7 +134,9 @@ pub(super) fn show_shortcut_manager(
                     &override_item
                         .map(|item| {
                             if item.bindings.is_empty() {
-                                "disabled".into()
+                                crate::frontend::utils::i18n::tr(
+                                    crate::frontend::utils::i18n::Key::SettingsDisabled,
+                                )
                             } else {
                                 item.bindings
                                     .iter()
@@ -135,16 +145,24 @@ pub(super) fn show_shortcut_manager(
                                     .join(", ")
                             }
                         })
-                        .unwrap_or_else(|| "default".into()),
+                        .unwrap_or_else(|| {
+                            crate::frontend::utils::i18n::tr(
+                                crate::frontend::utils::i18n::Key::SettingsDefault,
+                            )
+                        }),
                 ));
                 summary.set_halign(Align::Start);
                 summary.set_hexpand(true);
                 summary.add_css_class("prefs-keycap");
                 row.append(&summary);
 
-                let bind = Button::with_label("Bind…");
+                let bind = Button::with_label(crate::frontend::utils::i18n::tr_static(
+                    crate::frontend::utils::i18n::Key::SettingsBind,
+                ));
                 bind.add_css_class("prefs-inline-action");
-                let unbind = Button::with_label("Unbind");
+                let unbind = Button::with_label(crate::frontend::utils::i18n::tr_static(
+                    crate::frontend::utils::i18n::Key::SettingsUnbind,
+                ));
                 unbind.add_css_class("prefs-inline-action");
                 let action_id = action.id.clone();
                 let config_for_bind = config.clone();
@@ -245,7 +263,9 @@ pub(super) fn show_shortcut_manager(
 /// 打开按键捕获窗口：下一次非 Escape 按键返回 (key, modifiers)。
 fn capture_shortcut(parent: &impl IsA<Window>, on_capture: impl Fn(String, Vec<String>) + 'static) {
     let win = Window::builder()
-        .title("Bind shortcut")
+        .title(crate::frontend::utils::i18n::tr_static(
+            crate::frontend::utils::i18n::Key::SettingsBindShortcut,
+        ))
         .transient_for(parent)
         .modal(true)
         .default_width(360)
@@ -260,10 +280,14 @@ fn capture_shortcut(parent: &impl IsA<Window>, on_capture: impl Fn(String, Vec<S
         .margin_start(16)
         .margin_end(16)
         .build();
-    let label = Label::new(Some("Press the key combination…"));
+    let label = Label::new(Some(crate::frontend::utils::i18n::tr_static(
+        crate::frontend::utils::i18n::Key::SettingsPressTheKeyCombination,
+    )));
     label.set_halign(Align::Start);
     root.append(&label);
-    let cancel = Button::with_label("Cancel");
+    let cancel = Button::with_label(&crate::frontend::utils::i18n::tr(
+        crate::frontend::utils::i18n::Key::Cancel,
+    ));
     cancel.set_halign(Align::End);
     root.append(&cancel);
     win.set_child(Some(&root));
@@ -347,8 +371,44 @@ fn gdk_key_to_binding(keyval: gdk::Key, mods: gdk::ModifierType) -> Option<(Stri
 }
 
 fn action_title(title_key: &str) -> String {
+    use crate::frontend::utils::i18n::{self, Key};
     let raw = title_key.strip_prefix("action.").unwrap_or(title_key);
     let raw = raw.strip_suffix(".title").unwrap_or(raw);
+    let key = match raw {
+        "new_window" => Some(Key::SettingsNewWindow),
+        "new_tab" => Some(Key::NewTab),
+        "new_pane" => Some(Key::CmdNewPane),
+        "new_pane_vertical" => Some(Key::CmdNewPaneVertical),
+        "switch_pane_next" => Some(Key::CmdSwitchPaneNext),
+        "switch_pane_prev" => Some(Key::CmdSwitchPanePrevious),
+        "search" => Some(Key::CmdSearchPanes),
+        "command_palette" => Some(Key::CommandPalette),
+        "quick_connect" => Some(Key::QuickConnect),
+        "quit" => Some(Key::QuitMuxterm),
+        "increase_font_size" => Some(Key::MenuIncreaseFontSize),
+        "decrease_font_size" => Some(Key::MenuDecreaseFontSize),
+        "reset_font_size" => Some(Key::MenuResetFontSize),
+        "toggle_pane_fullscreen" => Some(Key::TogglePaneFullscreen),
+        "copy" => Some(Key::MenuCopy),
+        "paste" => Some(Key::MenuPaste),
+        _ => None,
+    };
+    if let Some(key) = key {
+        return i18n::tr(key);
+    }
+    for (prefix, key) in [
+        ("switch_tab_", Key::MenuSwitchTab),
+        ("switch_workspace_", Key::SettingsSwitchWorkspace),
+    ] {
+        if let Some(index) = raw.strip_prefix(prefix) {
+            let index = if index == "last" {
+                i18n::tr(Key::SettingsLast)
+            } else {
+                index.to_owned()
+            };
+            return format!("{} · {index}", i18n::tr(key));
+        }
+    }
     humanize_words(raw)
 }
 

@@ -71,13 +71,18 @@ impl QuickConnectStore {
     }
 
     pub fn upsert_project(&mut self, config: &TargetConfigDraft) -> bool {
+        self.save_project(config, None)
+    }
+
+    pub fn save_project(&mut self, config: &TargetConfigDraft, editing_id: Option<&str>) -> bool {
         let id = QuickConnect::unique_id(config);
         let mut document = ProjectDocument::from_draft(config);
         if let Some(index) = self.projects.iter().position(|project| {
-            project
-                .to_draft()
-                .ok()
-                .is_some_and(|target| QuickConnect::unique_id(&target) == id)
+            editing_id == Some(project.id.as_str())
+                || project
+                    .to_draft()
+                    .ok()
+                    .is_some_and(|target| QuickConnect::unique_id(&target) == id)
         }) {
             let previous = &self.projects[index];
             document.id.clone_from(&previous.id);
@@ -96,6 +101,17 @@ impl QuickConnectStore {
             self.projects[index] = document;
             false
         } else {
+            // 相同显示名不等于相同 target，避免不同 host/path 生成重名 Project ID。
+            let base = document.id.clone();
+            let mut suffix = 2;
+            while self
+                .projects
+                .iter()
+                .any(|project| project.id == document.id)
+            {
+                document.id = format!("{base}-{suffix}");
+                suffix += 1;
+            }
             self.projects.push(document);
             true
         }
@@ -195,5 +211,31 @@ mod tests {
 
         assert_eq!(store.project_documents(), vec![invalid]);
         assert!(store.project_targets().is_empty());
+    }
+
+    #[test]
+    fn same_name_different_targets_have_unique_ids_and_edit_keeps_identity() {
+        let mut store = QuickConnectStore::in_memory();
+        let first = config("shared");
+        let mut second = first.clone();
+        second.transport = super::super::model::TargetTransport::Ssh {
+            name: "other-host".into(),
+        };
+        store.upsert_project(&first);
+        store.upsert_project(&second);
+        let ids: Vec<_> = store
+            .project_documents()
+            .into_iter()
+            .map(|project| project.id)
+            .collect();
+        assert_ne!(ids[0], ids[1]);
+        let mut third = second.clone();
+        third.transport = super::super::model::TargetTransport::Ssh {
+            name: "third-host".into(),
+        };
+        store.save_project(&third, Some(&ids[1]));
+        assert_eq!(store.project_documents().len(), 2);
+        assert_eq!(store.project_documents()[1].id, ids[1]);
+        assert_eq!(store.project_targets()[1], third);
     }
 }

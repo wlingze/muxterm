@@ -58,9 +58,7 @@ Herdr 测试只用独立命名 session，不操作用户默认 server。
   调整间距、圆角、选中态与分隔线。终端字体继续遵循已有配置。
 - Ctrl-N/P 面板导航、Attention 四态排序与静音过滤、每次定时 feed 限制 64KiB，保留全部剩余字节。
 
-仍需后续对齐/验收：Project 异步加载页（当前 GTK open 仍同步调用 FFI）、设置页既有英文文案的
-完整 i18n、Last Seen 的显示时机与短暂提示、真实 SSH 重复 pane ID 和持续高流量交互验收。
-这些项目尚不能据本轮的模型测试或 Xvfb 结果宣称完成。
+以上是首个提交的范围；下方补齐记录覆盖当时留下的异步打开、i18n、Last Seen 与集成验收。
 
 验证：GTK chrome、pane/聚合、快速面板、设置保存、侧栏/隔离 tmux Agent 生命周期共 13 个
 集成用例通过；chrome 模型 61、Surface 10、i18n 4 个定向单测通过；架构 25 项检查通过。
@@ -71,3 +69,71 @@ unused-import warning，未改动无关 Runtime。
 布局 API 已核对 [GTK ScrolledWindow 官方文档](https://docs.gtk.org/gtk4/class.ScrolledWindow.html)：
 中部滚动容器不传播内容的自然宽度，避免长标题扩大窗口最小宽度。
 本轮时间校验：`2026-09-19T15:25:35+08:00`（Asia/Shanghai）。
+
+## Linux 完整对齐与性能补齐（2026-09-19）
+
+- Project / Worktree / Existing / Recent 的统一打开请求经非阻塞 C FFI 执行；Core 后台仅拥有
+  待连接 Workspace 和连接引用快照，不移动 resident pool，不共享裸 FFI handle。完成后在
+  owner 线程收编，复用已有 Workspace。GTK 立即显示独立加载页，可切回终端，后台完成不抢焦点。
+  失败保留错误说明与返回入口；同时重复打开不会创建第二个并发任务。
+- Last Seen 使用完整 Workspace 身份、pane 与稳定行号，离开后有新输出才提示；显示四秒，
+  临时行映射失败有一秒容错；点击或超时消费本次提示。搜索、命令刻度与 Last Seen 统一将
+  Core 的距尾部偏移转换到 VTE adjustment，不再按重复命令文本或错误的距顶部偏移定位。
+- 搜索 pane/workspace/all 范围复用同一次查询的结果；本地和 SSH 的重复数字 pane ID 不串台。
+- 状态栏、聚合校准、命令标记、侧栏等辅助展示按 100ms 刷新，结构变化和主动导航立即刷新；
+  输入、输出、拓扑与尺寸仍逐帧消费。状态栏一次刷新复用一个 Activity snapshot。
+- 输出初次合并窗口维持 25ms，每次最多 feed 64KiB；积压块让回 GTK 后按 1ms 继续，避免
+  每块再等待 25ms 造成限速积压。显式 flush 取消旧定时器，保留字节顺序且不 reset Surface。
+- 放大中切换 pane 会更新实际显示的 leaf 与输入焦点；后台异步打开创建常驻隐藏 Scene。
+- 设置分类、标题、说明、选项、项目/快捷键编辑器及 action 文案接入全局中英文 catalog；
+  侧栏分类、活动状态和历史提示也使用全局文案。搜索框垂直居中，辅助文字与正文保持字号层级。
+- 浅/深主题使用不同聚合强调色，改善浅色背景下对比度；细化分隔线、标签选中态、关闭按钮，
+  成功/失败命令标记不再重叠。保持用户已有终端字号，不覆盖个人配置。
+
+### 本地验证证据
+
+- 10 个 GTK integration targets，共 20 个用例通过：chrome、context menu、panel、preferences、
+  titlebar/sidebar、render、search scope、search jump、SSH、Existing Herdr。
+- 新增异步打开导航用例；新增隔离 tmux 持续输出、邻 pane 逐字输入、侧栏切换、GLib 心跳与
+  Last Seen 点击回看用例；SSH 测试用独立 loopback sshd 和两个隔离 tmux socket，让本地与远端
+  pane ID 相同，通过真实搜索面板双向跳转验证身份。Herdr 使用测试命名服务，不操作默认服务。
+- Chrome 模型 63、Surface 10、i18n catalog 4、Core 异步打开 1 个定向单测通过。
+- `cargo clippy --features gtk,test-harness --lib -- -D warnings`、架构 25 项检查及 diff 检查通过。
+- `bash scripts/build-linux.sh` 生成 `build/linux/muxterm`；普通 gtk 构建仍有原有
+  `core/runtime/shell/daemon.rs` unused-import warning，不影响构建。
+- 实际 GTK 截图：`build/linux/frontend-preview-wide.png`、`build/linux/preferences-zh-preview.png`。
+  本机默认 Xvfb 屏幕只有 640×480；正常尺寸验证明确使用
+  `GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1600x1000x24'`，同时保留窄窗口回归。
+
+这些是本地 Linux/X11、隔离 tmux/Herdr 与 loopback SSH 证据，不代表远端 CI、真实 WAN SSH、
+Wayland/多屏缩放或 macOS 构建已重新验证。没有推送分支。
+
+## 实际使用反馈修复（2026-09-19）
+
+- 快速面板取消独立的 S/A/数字按钮区：聚合入口和真实 Workspace 共用列表、搜索、
+  键盘导航及选中样式；已打开目标不再以 Recent/Existing 重复显示。侧栏隐藏 Shell
+  backing workspace，再为真实 Workspace 编号。Shell 青色、Agent 紫色贯穿侧栏、面板和状态栏。
+- 空 Shells 经统一异步 target FFI 打开本地 shell，创建默认 Tab；“＋”定位本地 Shell
+  源 Workspace 新建 Tab，Agent 仍禁止新建。启动和切换到 shell 时同步聚合身份。
+- Project 保存/重载同步 Core ProjectsService 和 GTK 候选列表；保留未变更 Worktree 的
+  live Workspace 关联。编辑保留 ID，新目标同名时分配不同 ID，保存失败展示错误。
+- 不再把有界原始输出尾缓存当作首屏。新建 shell/tmux 明确发布空基线，attach 等待权威
+  Snapshot；History 在首屏之前排队，后续 Snapshot 正常投递，不重置常驻 Surface。
+- 修复每个任意字节包后追加鼠标控制序列造成的 UTF-8/CSI/OSC 截断；现在仅在完整鼠标
+  模式 CSI 结束处插入。历史回填保留原生光标/模式，并在清可见屏之后清旧历史，避免
+  输入框跳行以及旧尾屏排在最早历史前面。
+- 打包并在进程内注册 JetBrains Mono 和 Noto Sans Symbols2。后者补 Braille 字形，
+  修复 Astra 星光显示为整格空心点；不安装系统字体、不改用户字号。来源与许可证见
+  `assets/fonts/README.md`。
+
+验证：7 个 GTK integration targets 共 16 个用例通过（panel、render、context menu、
+titlebar/sidebar、attach history、SSH history、config hot apply），覆盖 Project 保存后
+实际打开、Shell 默认/新增 Tab、逐字节中文/符号/CSI、输入框原位更新与 SSH 历史回看。
+tmux backend 145、terminal 27、Project store 4 个单测通过；Clippy、架构 25 项检查及
+`scripts/build-linux.sh` 通过。普通 gtk 构建仍有上述既有 unused-import warning。
+截图：`build/linux/quick-panel-preview.png`、`build/linux/symbol-render-preview.png`。
+
+核对时间 `2026-09-19T17:54:34+08:00`：
+[Codex 官方 sparkle_field.rs](https://github.com/openai/codex/blob/main/codex-rs/tui/src/bottom_pane/chat_composer/sparkle_field.rs)
+中的 DOTS 使用八个单点 Braille 字符，不是方块。用户真实 yaklang/muxterm/timepulse
+会话尚未用新二进制重新打开验收；没有停止或重启用户默认 tmux/Herdr 服务。

@@ -30,6 +30,7 @@ pub(crate) struct PaneInputState {
     clipboard_set: Option<String>,
     processor: Processor,
     osc: OscScanner,
+    mouse_mode_changed: bool,
 }
 
 impl PaneInputState {
@@ -38,13 +39,18 @@ impl PaneInputState {
     }
 
     /// Feed remote output only to the mode tracker and OSC 52 scanner.
-    pub(crate) fn feed(&mut self, bytes: &[u8]) {
+    pub(crate) fn feed(&mut self, bytes: &[u8]) -> Vec<usize> {
         let mut processor = std::mem::take(&mut self.processor);
-        for &byte in bytes {
+        let mut boundaries = Vec::new();
+        for (index, &byte) in bytes.iter().enumerate() {
             self.osc.advance(byte, &mut self.clipboard_set);
             processor.advance(self, byte);
+            if std::mem::take(&mut self.mouse_mode_changed) {
+                boundaries.push(index + 1);
+            }
         }
         self.processor = processor;
+        boundaries
     }
 
     pub(crate) fn take_clipboard_set(&mut self) -> Option<String> {
@@ -52,6 +58,7 @@ impl PaneInputState {
     }
 
     fn sync_mouse_reporting(&mut self) {
+        self.mouse_mode_changed = true;
         self.modes.mouse_reporting = self.modes.mouse_clicks
             || self.modes.mouse_button_motion
             || self.modes.mouse_all_motion;
@@ -251,6 +258,17 @@ fn decode_base64(input: &[u8]) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::{PaneInputModes, PaneInputState};
+
+    #[test]
+    fn mouse_policy_injection_only_follows_complete_mode_sequence() {
+        let mut state = PaneInputState::default();
+        assert!(state.feed(b"\xe2").is_empty());
+        assert!(state.feed(b"\x9c\xa6\x1b[?100").is_empty());
+        assert_eq!(state.feed(b"3h\x1b[31"), vec![2]);
+        assert!(state.feed(b"mstar\x1b]52;c;").is_empty());
+        assert!(state.feed(b"aGVsbG8=\x07").is_empty());
+        assert!(state.modes().mouse_reporting);
+    }
 
     #[test]
     fn tracks_input_modes_without_screen_state() {

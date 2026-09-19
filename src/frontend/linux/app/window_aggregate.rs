@@ -50,9 +50,38 @@ pub(super) fn open(s: &mut UiState, kind: AggregateKind) {
         s.aggregate.hidden_agents.clear();
     }
     show(s, kind);
+    if kind == AggregateKind::Shells && tabs(s).is_empty() {
+        super::window_connection::open_local_shell(s);
+    }
+}
+
+pub(super) fn new_tab(s: &mut UiState) {
+    use crate::frontend::utils::corebridge::ClientTask;
+    if s.aggregate.kind == Some(AggregateKind::Agents) {
+        return;
+    }
+    if s.aggregate.kind == Some(AggregateKind::Shells) {
+        let local = tabs(s)
+            .into_iter()
+            .find(|tab| tab.source.workspace.starts_with("local/"));
+        let Some(local) = local else {
+            super::window_connection::open_local_shell(s);
+            return;
+        };
+        select_source(s, &local);
+    }
+    super::window_actions::prepare_core_tab_mutation(s, &ClientTask::NewTab);
+    if let Err(error) = s.execute_active_task(ClientTask::NewTab) {
+        s.notification_log.push(format!("new tab: {error}"));
+    }
 }
 
 pub(super) fn reconcile(s: &mut UiState) {
+    if s.pending_open.is_some()
+        && s.scenes.widget().visible_child_name().as_deref() == Some("workspace-loading")
+    {
+        return;
+    }
     let Some(kind) = s.aggregate.kind else {
         return;
     };

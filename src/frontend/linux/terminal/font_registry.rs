@@ -11,12 +11,27 @@ use std::path::{Path, PathBuf};
 /// Absolute path to the bundled JetBrains Mono font. In a packaged app this
 /// should be replaced by the installed resource directory at build time.
 pub fn bundled_font_path() -> PathBuf {
+    if let Some(path) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| {
+            exe.parent()
+                .map(|dir| dir.join("assets/fonts/JetBrainsMono-Regular.ttf"))
+        })
+        .filter(|path| path.is_file())
+    {
+        return path;
+    }
     Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts/JetBrainsMono-Regular.ttf")
 }
 
 /// Register the bundled font with the current fontconfig configuration.
 pub fn register_bundled_fonts() -> Result<()> {
-    let path = bundled_font_path();
+    let primary = bundled_font_path();
+    register_font(&primary)?;
+    register_font(&primary.with_file_name("NotoSansSymbols2-Regular.ttf"))
+}
+
+fn register_font(path: &Path) -> Result<()> {
     if !path.exists() {
         return Err(anyhow!("bundled font missing: {}", path.display()));
     }
@@ -51,5 +66,8 @@ mod tests {
     #[test]
     fn bundled_font_asset_is_present() {
         assert!(bundled_font_path().exists());
+        assert!(bundled_font_path()
+            .with_file_name("NotoSansSymbols2-Regular.ttf")
+            .exists());
     }
 }

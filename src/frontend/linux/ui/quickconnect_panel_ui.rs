@@ -44,6 +44,7 @@ const PANEL_REBUILD_DEBOUNCE_MS: u64 = 24;
 
 #[derive(Clone)]
 pub(super) enum VisibleAction {
+    Workspace(String),
     Connect(ClientOpenRequest),
     ExistingConnect(ClientOpenRequest),
     NewProject,
@@ -204,6 +205,7 @@ pub(super) fn show(
         .margin_end(10)
         .margin_top(6)
         .build();
+    tab_bar.add_css_class("quick-pick-tabs");
     let tab_workspaces = gtk4::ToggleButton::with_label(&i18n::tr(TextKey::PanelTabWorkspaces));
     tab_workspaces.set_widget_name("muxterm-panel-tab-workspaces");
     let tab_attention = gtk4::ToggleButton::with_label(&i18n::tr(TextKey::PanelTabAttention));
@@ -213,54 +215,10 @@ pub(super) fn show(
     tab_bar.append(&tab_workspaces);
     tab_bar.append(&tab_attention);
     tab_bar.append(&tab_search);
-    panel.append(&tab_bar);
-    if let Some(navigation) = navigation {
-        let rows = GtkBox::new(Orientation::Vertical, 2);
-        rows.set_widget_name("muxterm-panel-workspace-navigation");
-        for (id, title, active, closeable) in navigation.items {
-            let row = GtkBox::new(Orientation::Horizontal, 4);
-            let button = Button::with_label(&title);
-            if let Some(label) = button
-                .child()
-                .and_then(|child| child.downcast::<Label>().ok())
-            {
-                label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
-                label.set_max_width_chars(40);
-                label.set_xalign(0.0);
-            }
-            button.set_hexpand(true);
-            button.set_has_frame(false);
-            button.set_widget_name(&format!("muxterm-panel-workspace-{id}"));
-            if active {
-                button.add_css_class("suggested-action");
-            }
-            let target = id.clone();
-            let activate = navigation.activate.clone();
-            button.connect_clicked(move |_| activate(&target));
-            row.append(&button);
-            if closeable {
-                let close = Button::with_label("×");
-                close.set_widget_name(&format!("muxterm-panel-workspace-close-{id}"));
-                close.set_has_frame(false);
-                let callback = navigation.close.clone();
-                close.connect_clicked(move |_| callback(&id));
-                row.append(&close);
-            }
-            rows.append(&row);
-        }
-        let scroll = ScrolledWindow::builder()
-            .child(&rows)
-            .hscrollbar_policy(gtk4::PolicyType::Never)
-            .vscrollbar_policy(gtk4::PolicyType::Automatic)
-            .min_content_height(100)
-            .max_content_height(150)
-            .propagate_natural_height(true)
-            .build();
-        scroll.set_visible(initial_tab == PanelTab::Workspaces);
-        let target = scroll.clone();
-        tab_workspaces.connect_toggled(move |button| target.set_visible(button.is_active()));
-        panel.append(&scroll);
+    for button in [&tab_workspaces, &tab_attention, &tab_search] {
+        button.set_hexpand(true);
     }
+    panel.append(&tab_bar);
 
     let list = ListBox::new();
     list.set_selection_mode(SelectionMode::Browse);
@@ -498,6 +456,7 @@ pub(super) fn show(
     let selected_attention = Rc::new(RefCell::new(None::<(String, u32)>));
     let visible_actions = Rc::new(RefCell::new(Vec::<VisibleAction>::new()));
     let rebuild = {
+        let navigation = navigation.clone();
         let list = list.clone();
         let model = model.clone();
         let all = all.clone();
@@ -562,6 +521,77 @@ pub(super) fn show(
             scope_all.set_active(scope == SearchScope::All);
             match tab {
                 PanelTab::Workspaces => {
+                    if existing.borrow().nav == ExistingNav::Root {
+                        if let Some(navigation) = &navigation {
+                            for (id, title, active, closeable) in &navigation.items {
+                                let detail =
+                                    navigation.details.get(id).map(String::as_str).unwrap_or("");
+                                let search_text = format!("{title} {id} {detail}").to_lowercase();
+                                if !query.split_whitespace().all(|part| {
+                                    search_text
+                                        .contains(&part.trim_start_matches('@').to_lowercase())
+                                }) {
+                                    continue;
+                                }
+                                let row = ListBoxRow::new();
+                                row.set_widget_name(&format!("muxterm-panel-workspace-{id}"));
+                                let content = GtkBox::new(Orientation::Horizontal, 10);
+                                content.set_margin_start(12);
+                                content.set_margin_end(12);
+                                content.set_margin_top(7);
+                                content.set_margin_bottom(7);
+                                let (shortcut, name) =
+                                    title.split_once(" · ").unwrap_or(("", title));
+                                let badge = Label::new(Some(shortcut));
+                                badge.add_css_class("workspace-badge");
+                                if id == "S" {
+                                    row.add_css_class("shells");
+                                }
+                                if id == "A" {
+                                    row.add_css_class("agents");
+                                }
+                                content.append(&badge);
+                                let label = Label::new(Some(name));
+                                label.set_xalign(0.0);
+                                label.set_hexpand(true);
+                                label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+                                label.add_css_class("quick-pick-label");
+                                let labels = GtkBox::new(Orientation::Vertical, 3);
+                                labels.set_hexpand(true);
+                                labels.append(&label);
+                                if !detail.is_empty() {
+                                    let subtitle = Label::new(Some(detail));
+                                    subtitle.set_xalign(0.0);
+                                    subtitle.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+                                    subtitle.add_css_class("quick-pick-detail");
+                                    labels.append(&subtitle);
+                                }
+                                content.append(&labels);
+                                if *active {
+                                    row.add_css_class("qc-current");
+                                    content.append(&Label::new(Some("●")));
+                                }
+                                if *closeable {
+                                    let close = Button::from_icon_name("window-close-symbolic");
+                                    close.set_widget_name(&format!(
+                                        "muxterm-panel-workspace-close-{id}"
+                                    ));
+                                    close.set_has_frame(false);
+                                    close.add_css_class("muxterm-sidebar-close");
+                                    let callback = navigation.close.clone();
+                                    let id = id.clone();
+                                    close.connect_clicked(move |_| callback(&id));
+                                    content.append(&close);
+                                }
+                                row.set_child(Some(&content));
+                                list.append(&row);
+                                actions.push(VisibleAction::Workspace(id.clone()));
+                                if *active || list.selected_row().is_none() {
+                                    list.select_row(Some(&row));
+                                }
+                            }
+                        }
+                    }
                     let rows = filter_workspace_rows(&all, &query, |item| {
                         let id = match item {
                             PanelItem::Target(entry, _) => QuickConnect::unique_id(&entry.draft),
@@ -570,6 +600,20 @@ pub(super) fn show(
                         workspace_status.get(&id).copied()
                     });
                     for (i, row) in rows.iter().enumerate() {
+                        if existing.borrow().nav == ExistingNav::Root {
+                            if let Some(navigation) = &navigation {
+                                let target = match &row.item {
+                                    PanelItem::Target(entry, _) => {
+                                        Some(QuickConnect::unique_id(&entry.draft))
+                                    }
+                                    PanelItem::Existing(entry) => Some(entry.identity_key()),
+                                    _ => None,
+                                };
+                                if target.is_some_and(|id| navigation.target_ids.contains(&id)) {
+                                    continue;
+                                }
+                            }
+                        }
                         let row_widget = ListBoxRow::new();
                         row_widget.set_activatable(true);
                         actions.push(visible_action_for_item(&row.item, &existing.borrow().nav));
@@ -711,7 +755,7 @@ pub(super) fn show(
                             }
                         }
                         list.append(&row_widget);
-                        if i == 0 {
+                        if i == 0 && list.selected_row().is_none() {
                             list.select_row(Some(&row_widget));
                         }
                     }
@@ -977,6 +1021,11 @@ pub(super) fn show(
         let schedule_rebuild = schedule_rebuild.clone();
         let entry = entry.clone();
         move |action: VisibleAction| match action {
+            VisibleAction::Workspace(id) => {
+                if let Some(navigation) = &navigation {
+                    (navigation.activate)(&id);
+                }
+            }
             VisibleAction::Connect(config) => {
                 dismiss();
                 (callbacks.on_connect)(config);

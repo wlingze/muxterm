@@ -565,6 +565,12 @@ impl ShellRuntime {
             _process_watch: Some(process_watch),
         };
         self.panes.push(pane);
+        // 新 PTY 的起点就是空屏；后续原始字节全部排在此基线之后。
+        // 不得让 frontend 用截断的 output ring 猜首屏。
+        self.push_render(RenderEvent::PaneSnapshot {
+            pane: pane_id,
+            data: Vec::new(),
+        });
         Ok(pane_id)
     }
 
@@ -647,6 +653,10 @@ impl ShellRuntime {
             writer: None,
             pid: 0,
             _process_watch: process_watch,
+        });
+        self.push_render(RenderEvent::PaneSnapshot {
+            pane: pane_id,
+            data: Vec::new(),
         });
         Ok(pane_id)
     }
@@ -1433,6 +1443,21 @@ mod tests {
         assert_eq!(b.panes.len(), 1);
         // 事件
         let events = b.take_events();
+        let baseline = events
+            .iter()
+            .position(
+                |event| matches!(event, StateChange::PaneSnapshot { data, .. } if data.is_empty()),
+            )
+            .expect("new PTY has an explicit empty baseline");
+        if let Some(output) = events
+            .iter()
+            .position(|event| matches!(event, StateChange::PaneOutput { .. }))
+        {
+            assert!(
+                baseline < output,
+                "initial baseline must precede raw output"
+            );
+        }
         assert!(events.iter().any(|e| matches!(
             e,
             StateChange::BackendStatusChanged(BackendStatus::Connected)

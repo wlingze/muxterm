@@ -5,6 +5,27 @@
 
 use super::*;
 
+pub(super) fn update_last_seen(s: &mut UiState) {
+    if s.scenes.widget().visible_child_name().as_deref() == Some("workspace-loading") {
+        s.overlay.last_seen.set_visible(false);
+        return;
+    }
+    let key = (active_workspace_key(s), s.active_pane);
+    let workspace = active_workspace_key(s);
+    let latest = s
+        .event_pump
+        .client()
+        .workspace_pane_latest_line_seq(&workspace, key.1);
+    s.last_seen.observe(key.clone(), latest);
+    let offset = s.last_seen.baseline(&key).and_then(|seq| {
+        s.event_pump
+            .client()
+            .workspace_pane_viewport_for_seq(&workspace, key.1, seq)
+    });
+    let visible = s.last_seen.target(&key, offset, Instant::now()).is_some();
+    s.overlay.last_seen.set_visible(visible);
+}
+
 /// 回底按钮可见性：VTE 滚离底部时显示，回到尾部隐藏（W16a）。
 /// 把当前 pane 滚到包含指定文本的行（命令刻度 / 上次看到这里共用）。
 pub(super) fn scroll_to_command_text(
@@ -17,17 +38,31 @@ pub(super) fn scroll_to_command_text(
     };
     let pane = s.active_pane;
     let workspace_id = active_workspace_key(&s);
-    let lines = s
+    let marks = s
         .event_pump
         .client()
-        .workspace_pane_last_n_lines(&workspace_id, pane, 10_000)
+        .workspace_pane_command_marks(&workspace_id, pane)
         .unwrap_or_default();
-    if let Some(row) = lines.iter().position(|l| l.contains(&text)) {
+    if let Some(offset) = marks
+        .iter()
+        .rev()
+        .find(|mark| mark.command == text)
+        .and_then(|mark| {
+            s.event_pump
+                .client()
+                .workspace_pane_viewport_for_seq(&workspace_id, pane, mark.seq)
+        })
+    {
         if let Some(view) = s.active_layout().pane(pane).cloned() {
-            if let Some(adj) = view.terminal().vadjustment() {
-                adj.set_value(adj.lower() + row as f64);
-            }
+            scroll_to_history_offset(&view, offset);
         }
+    }
+}
+
+/// Core 偏移以 live tail 为零点；GTK adjustment 以历史起点为零点。
+pub(super) fn scroll_to_history_offset(view: &PaneSurface, offset: u32) {
+    if let Some(adj) = view.terminal().vadjustment() {
+        adj.set_value((adj.upper() - adj.page_size() - f64::from(offset)).max(adj.lower()));
     }
 }
 

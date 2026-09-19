@@ -36,8 +36,7 @@ pub(super) fn handle_action(
     sync_focused_pane(s);
     match action {
         Action::NewTab | Action::NewWindow => {
-            prepare_core_tab_mutation(s, &ClientTask::NewTab);
-            let _ = s.execute_active_task(ClientTask::NewTab);
+            super::window_aggregate::new_tab(s);
             // Accepted 不得手工 refresh：等 16ms 批里 LayoutChanged/MutationSettled。
             return;
         }
@@ -152,13 +151,22 @@ fn switch_pane_offset(s: &mut UiState, forward: bool) {
         .cloned()
         .unwrap_or_default();
     let ids: Vec<u32> = panes.iter().map(|pane| pane.id).collect();
-    let active = panes
-        .iter()
-        .find(|pane| pane.is_active)
-        .map(|pane| pane.id)
-        .unwrap_or(s.active_pane);
+    let active = if ids.contains(&s.active_pane) {
+        s.active_pane
+    } else {
+        panes
+            .iter()
+            .find(|pane| pane.is_active)
+            .map(|pane| pane.id)
+            .unwrap_or(s.active_pane)
+    };
     if let Some(target) = cycle_pane_id(&ids, active, forward) {
         s.active_pane = target;
+        if s.active_layout().fullscreen_pane().is_some() {
+            s.active_layout_mut().set_fullscreen_pane(Some(target));
+            refresh_ui(s);
+            s.active_pane = target;
+        }
         if let Some(view) = s.active_layout().pane(target) {
             view.grab_focus();
         }
@@ -255,8 +263,7 @@ pub(super) fn run_palette_command(
         }
         PaletteAction::NewTab => {
             let mut s = state.borrow_mut();
-            prepare_core_tab_mutation(&mut s, &ClientTask::NewTab);
-            let _ = s.execute_active_task(ClientTask::NewTab);
+            super::window_aggregate::new_tab(&mut s);
             // Accepted 不得手工 refresh：等 LayoutChanged/MutationSettled。
         }
         PaletteAction::NewPane => {

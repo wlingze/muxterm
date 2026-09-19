@@ -223,7 +223,8 @@ impl AppWindow {
             reconnect_retry_at: None,
             reconnect_attempts: 0,
             overlay,
-            last_seen: std::collections::HashMap::new(),
+            last_seen: Default::default(),
+            pending_open: None,
             scrollback_lines: cfg.scrollback.lines,
             default_socket: socket.clone(),
             self_weak: std::rc::Weak::new(),
@@ -233,6 +234,14 @@ impl AppWindow {
         {
             let st = state.clone();
             let mut s = state.borrow_mut();
+            if s.view_store
+                .workspace(&startup_id.as_str())
+                .and_then(|view| view.workspace.as_ref())
+                .is_some_and(|workspace| workspace.runtime == "shell")
+            {
+                s.aggregate.kind =
+                    Some(crate::frontend::linux::chrome::aggregate::AggregateKind::Shells);
+            }
             if let Some(layout) = s.scenes.get_mut(&startup_id) {
                 layout.set_menu_callback(move |pane_id, action| {
                     handle_pane_menu_action(&st, pane_id, action);
@@ -342,8 +351,7 @@ impl AppWindow {
                 },
                 move || {
                     let mut s = new_tab_state.borrow_mut();
-                    prepare_core_tab_mutation(&mut s, &ClientTask::NewTab);
-                    let _ = s.execute_active_task(ClientTask::NewTab);
+                    super::window_aggregate::new_tab(&mut s);
                 },
                 move || {
                     show_worktree_create_dialog(&worktree_state, &worktree_window);
@@ -365,23 +373,21 @@ impl AppWindow {
                 move || scroll_to_command_text(&ok_state, &ok_text),
                 move || scroll_to_command_text(&fail_state, &fail_text),
                 move || {
-                    let s = last_seen_state.borrow();
-                    let ws = active_workspace_id(&s);
+                    let mut s = last_seen_state.borrow_mut();
+                    let ws = active_workspace_key(&s);
                     let pane = s.active_pane;
-                    if let Some(text) = s.last_seen.get(&(ws.clone(), pane)).cloned() {
-                        let lines = s
-                            .event_pump
-                            .client()
-                            .workspace_pane_last_n_lines(&ws, pane, 10_000)
-                            .unwrap_or_default();
-                        if let Some(row) = lines.iter().position(|l| l.contains(&text)) {
+                    if let Some(seq) = s.last_seen.baseline(&(ws.clone(), pane)) {
+                        if let Some(row) = s.event_pump.client().workspace_pane_viewport_for_seq(
+                            &active_workspace_key(&s),
+                            pane,
+                            seq,
+                        ) {
                             if let Some(view) = s.active_layout().pane(pane).cloned() {
-                                if let Some(adj) = view.terminal().vadjustment() {
-                                    adj.set_value(adj.lower() + row as f64);
-                                }
+                                super::window_activity::scroll_to_history_offset(&view, row);
                             }
                         }
                     }
+                    s.last_seen.dismiss(&(ws, pane));
                     s.overlay.last_seen.set_visible(false);
                 },
                 move |query| {
@@ -409,9 +415,7 @@ impl AppWindow {
                             hit.seq,
                         ) {
                             if let Some(view) = s.active_layout().pane(pane).cloned() {
-                                if let Some(adj) = view.terminal().vadjustment() {
-                                    adj.set_value(adj.lower() + row as f64);
-                                }
+                                super::window_activity::scroll_to_history_offset(&view, row);
                             }
                         }
                     }
@@ -515,6 +519,8 @@ impl AppWindow {
         {
             let st_weak = Rc::downgrade(&state);
             let win_weak = window.downgrade();
+            let mut chrome_refresh_at = Instant::now();
+            let mut chrome_owner = None;
             let id = glib::timeout_add_local(Duration::from_millis(16), move || {
                 // W19e：glib trampoline 不能 unwind；panic 先在这里接住，
                 // 报告 + 弹窗后继续轮询（Break 会让轮询停掉 = 假死）。
@@ -533,13 +539,16 @@ impl AppWindow {
                             maybe_warn_workspace_capacity(&st, &w);
                         }
                         let mut s = st.borrow_mut();
+                        super::window_connection::poll_pending_open(&mut s);
                         sync_render_policies(&mut s);
                         // EventPump 是唯一事件消费者：Core 的 workspace 批次先写入
                         // owned ViewStore，再由常驻 Scene 消费 render mailbox。
                         let events = poll_event_store(&mut s);
                         let structural = events.iter().any(|event| event.event.is_topology());
                         refresh_event_workspaces(&mut s, &events);
-                        super::window_aggregate::reconcile(&mut s);
+                        if structural || Instant::now() >= chrome_refresh_at {
+                            super::window_aggregate::reconcile(&mut s);
+                        }
                         // blocked 与 done 通知都要在 16ms poll 里收编（W17d）：
                         // test_poll_once 的 drain 可能在 16ms poll 应用信号之前运行，
                         // 只 drain blocked 会让后台 Done 的通知永远等不到下一次 poll。
@@ -551,14 +560,25 @@ impl AppWindow {
                         // 写入，避免 attach 新 pane 尚未完成首帧时丢掉 send-keys。
                         drain_surface_input(&mut s);
                         flush_command_queue(&s);
-                        maybe_refresh_status(&mut s, structural);
-                        refresh_connection_summary(&mut s);
-                        update_command_marks(&s);
-                        update_jump_latest(&s);
-                        refresh_sidebar_if_open(&mut s);
-                        if let Some(w) = win_weak.upgrade() {
-                            refresh_attention_chrome(&s, &w);
+                        let owner = (active_workspace_key(&s), s.active_pane);
+                        let now = Instant::now();
+                        // 输入、输出与布局仍逐帧消费；辅助 chrome 最多每秒刷新十次。
+                        if structural
+                            || chrome_owner.as_ref() != Some(&owner)
+                            || now >= chrome_refresh_at
+                        {
+                            maybe_refresh_status(&mut s, structural);
+                            refresh_connection_summary(&mut s);
+                            update_command_marks(&s);
+                            super::window_activity::update_last_seen(&mut s);
+                            refresh_sidebar_if_open(&mut s);
+                            if let Some(w) = win_weak.upgrade() {
+                                refresh_attention_chrome(&s, &w);
+                            }
+                            chrome_owner = Some(owner);
+                            chrome_refresh_at = now + Duration::from_millis(100);
                         }
+                        update_jump_latest(&s);
                         let close = s.pending_close;
                         if close {
                             s.pending_close = false;

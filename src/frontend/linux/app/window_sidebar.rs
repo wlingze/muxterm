@@ -193,9 +193,7 @@ pub(super) fn close_sidebar_workspace(s: &mut UiState, id: &WorkspaceId) {
         return;
     }
 
-    let replica_id = id.replica_id();
-    s.last_seen
-        .retain(|(workspace, _), _| workspace != &replica_id);
+    s.last_seen.remove_workspace(&workspace_key);
     s.surface_input_queue
         .borrow_mut()
         .retain(|input| &input.workspace != id);

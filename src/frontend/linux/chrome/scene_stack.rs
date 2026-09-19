@@ -126,6 +126,14 @@ impl SceneStackView {
     }
 
     /// Add a workspace page once, then make it visible.
+    pub fn add_hidden_page(&mut self, workspace_id: &str, root: &impl IsA<gtk4::Widget>) {
+        self.model.ensure(workspace_id);
+        if self.stack.child_by_name(workspace_id).is_none() {
+            self.stack.add_named(root, Some(workspace_id));
+        }
+    }
+
+    /// Add a workspace page once, then make it visible.
     pub fn add_page(&mut self, workspace_id: &str, root: &impl IsA<gtk4::Widget>) {
         self.model.ensure(workspace_id);
         if self.stack.child_by_name(workspace_id).is_none() {

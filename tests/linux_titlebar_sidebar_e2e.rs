@@ -244,18 +244,16 @@ fn title_bar_actions_and_workspace_sidebar() {
             .expect("workspace list")
             .downcast::<gtk4::ListBox>()
             .expect("workspace list type");
-        let first_workspace = workspace_list
-            .row_at_index(0)
-            .expect("startup workspace row");
+        let first_workspace =
+            find_by_name(&app.window, "muxterm-sidebar-shells").expect("fixed Shells row");
         assert!(
             first_workspace.allocated_height() > 0,
             "workspace row widgets must receive height, got {}",
             first_workspace.allocated_height()
         );
-        let sidebar_labels = widget_label_texts(&workspace_list);
         assert!(
-            sidebar_labels.iter().any(|label| label == "shell @ local"),
-            "workspace subtitle must be runtime @ transport: {sidebar_labels:?}"
+            workspace_list.row_at_index(0).is_none(),
+            "backing shell must not duplicate S"
         );
         let command_list = find_by_name(&app.window, "muxterm-sidebar-command-list")
             .expect("command list")
@@ -270,6 +268,15 @@ fn title_bar_actions_and_workspace_sidebar() {
             "idle shells and pane titles must not create command rows"
         );
 
+        command_section_toggle.set_active(false);
+        hidden_command_section_toggle.set_active(false);
+        pump_main_loop(120);
+        assert!(
+            lower_sections.height() - lower_sections.position() <= 80,
+            "collapsed command headers must stay at bottom: height={} divider={}",
+            lower_sections.height(),
+            lower_sections.position()
+        );
         command_section_toggle.set_active(true);
         pump_main_loop(100);
         let divider = sections.position();
@@ -491,15 +498,20 @@ fn title_bar_actions_and_workspace_sidebar() {
             .and_then(|widget| widget.ancestor(gtk4::Widget::static_type()))
             .expect("sidebar widget has an ancestor");
         let _ = (sidebar_panel, terminal);
-        assert_eq!(
-            count_widget_names(&app.window, "muxterm-sidebar-row"),
-            1,
-            "startup shell workspace must be listed"
-        );
-
+        assert_eq!(count_widget_names(&app.window, "muxterm-sidebar-row"), 0);
+        let server = TmuxServerGuard::new("sidebar-workspaces");
+        create_session(server.socket(), "first", 100, 30);
+        create_session(server.socket(), "second", 100, 30);
+        app.test_open_spec(WorkspaceSpec::local_tmux(
+            Some("first".into()),
+            Some(server.socket().into()),
+        ));
+        pump_main_loop(200);
         let original_workspaces = app.test_workspace_replica_ids();
-        app.test_open_spec(WorkspaceSpec::local_shell(
-            "/tmp/muxterm-sidebar-second-workspace",
+        let first_workspace_id = app.test_active_workspace_replica_id();
+        app.test_open_spec(WorkspaceSpec::local_tmux(
+            Some("second".into()),
+            Some(server.socket().into()),
         ));
         pump_main_loop(200);
         assert_eq!(
@@ -513,7 +525,7 @@ fn title_bar_actions_and_workspace_sidebar() {
             .expect("workspace scene host must be a Stack");
         assert_eq!(
             scene_stack.pages().n_items(),
-            2,
+            3,
             "opening a workspace must retain both scene pages"
         );
         let second_scene_page = scene_stack
@@ -531,6 +543,7 @@ fn title_bar_actions_and_workspace_sidebar() {
             );
         }
         let ordered_workspaces = app.test_workspace_replica_ids();
+        let numbered_workspaces = [first_workspace_id, app.test_active_workspace_replica_id()];
         let ctrl = window_key_controller(&app.window).expect("window key controller");
         let workspace_mods = gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::ALT_MASK;
         let switch_started = std::time::Instant::now();
@@ -547,7 +560,7 @@ fn title_bar_actions_and_workspace_sidebar() {
         pump_main_loop(100);
         assert_eq!(
             app.test_active_workspace_replica_id(),
-            ordered_workspaces[0],
+            numbered_workspaces[0],
             "Ctrl+Alt+1 must activate the first workspace"
         );
         assert_ne!(
@@ -574,7 +587,7 @@ fn title_bar_actions_and_workspace_sidebar() {
         pump_main_loop(100);
         assert_eq!(
             app.test_active_workspace_replica_id(),
-            ordered_workspaces[1],
+            numbered_workspaces[1],
             "Ctrl+Alt+2 must activate the second workspace"
         );
         assert_eq!(
@@ -603,7 +616,7 @@ fn title_bar_actions_and_workspace_sidebar() {
         );
         assert_eq!(
             scene_stack.pages().n_items(),
-            1,
+            2,
             "closing a workspace must remove only its scene page"
         );
         assert_eq!(
@@ -645,6 +658,273 @@ fn title_bar_actions_and_workspace_sidebar() {
         pump_main_loop(100);
         assert!(app.test_panel_open(), "title-bar quick connect must work");
 
+        app.shutdown();
+        pump_main_loop(100);
+    });
+}
+
+#[test]
+fn asynchronous_open_has_navigable_loading_page() {
+    if !enter_isolated("asynchronous_open_has_navigable_loading_page") {
+        return;
+    }
+    assert!(tmux_available());
+    gtk4::test_synced(|| {
+        use muxterm::test_support::frontend::utils::corebridge::{
+            ClientCandidateRef, ClientExistingCandidateRef, ClientOpenIntent, ClientOpenRequest,
+        };
+        gtk_test_framework_smoke();
+        let server = TmuxServerGuard::new("linux-async-open");
+        std::env::set_var("MUXTERM_TEST_LOCAL_TMUX_SOCKET", server.socket());
+        create_session(server.socket(), "async", 100, 30);
+        let app = AppWindow::new(Config::default(), load_theme());
+        app.window.present();
+        gtk4::test_widget_wait_for_draw(&app.window);
+        let original = app.test_active_workspace_replica_id();
+        let request = ClientOpenRequest {
+            candidate: ClientCandidateRef::Existing {
+                identity: ClientExistingCandidateRef {
+                    runtime_id: "tmux".into(),
+                    transport_id: "local".into(),
+                    target: "".into(),
+                    session: Some("async".into()),
+                    socket: Some(server.socket().into()),
+                    workspace_id: None,
+                },
+            },
+            intent: ClientOpenIntent::AttachOnly,
+            template: None,
+            activate: true,
+        };
+        app.test_start_open(request.clone());
+        assert!(
+            app.test_open_pending(),
+            "opening must return before GTK polling"
+        );
+        app.test_activate_workspace(&original);
+        assert!(
+            app.test_active_terminal_has_focus(),
+            "leaving loading restores terminal input focus"
+        );
+        wait_for(
+            std::time::Duration::from_secs(10),
+            "background async open",
+            || {
+                pump_main_loop(20);
+                !app.test_open_pending()
+            },
+        );
+        assert_eq!(
+            app.test_workspace_replica_ids().len(),
+            2,
+            "{:?}",
+            app.test_notifications_recorded()
+        );
+        assert_eq!(
+            app.test_active_workspace_replica_id(),
+            original,
+            "completion must preserve navigation"
+        );
+        app.test_start_open(request);
+        wait_for(
+            std::time::Duration::from_secs(10),
+            "foreground async open",
+            || {
+                pump_main_loop(20);
+                !app.test_open_pending()
+            },
+        );
+        assert_ne!(app.test_active_workspace_replica_id(), original);
+        assert_eq!(app.test_workspace_replica_ids().len(), 2);
+        app.shutdown();
+        pump_main_loop(100);
+    });
+}
+
+#[test]
+fn empty_shells_opens_local_shell_and_plus_creates_real_tab() {
+    if !enter_isolated("empty_shells_opens_local_shell_and_plus_creates_real_tab") {
+        return;
+    }
+    gtk4::test_synced(|| {
+        gtk_test_framework_smoke();
+        let server = TmuxServerGuard::new("shells-default-tab");
+        create_session(server.socket(), "source", 100, 30);
+        let mut cfg = Config::default();
+        cfg.tmux.socket = server.socket().into();
+        cfg.tmux.default_session = "source".into();
+        let app = AppWindow::new(cfg, load_theme());
+        app.window.present();
+        gtk4::test_widget_wait_for_draw(&app.window);
+        assert_eq!(app.test_active_workspace_runtime(), "tmux");
+        find_by_name(&app.window, "muxterm-sidebar-shells")
+            .unwrap()
+            .downcast::<gtk4::Button>()
+            .unwrap()
+            .emit_clicked();
+        for _ in 0..100 {
+            pump_main_loop(50);
+            if !app.test_open_pending()
+                && app.test_active_workspace_runtime() == "shell"
+                && app.test_active_pane_seeded()
+            {
+                break;
+            }
+        }
+        assert_eq!(app.test_active_workspace_runtime(), "shell");
+        assert!(app.test_active_pane_seeded());
+        let before = app.test_tab_names().len();
+        assert!(before > 0, "Shells must open with a usable default tab");
+        find_by_name(&app.window, "muxterm-new-tab")
+            .unwrap()
+            .downcast::<gtk4::Button>()
+            .unwrap()
+            .emit_clicked();
+        for _ in 0..100 {
+            pump_main_loop(30);
+            if app.test_tab_names().len() > before {
+                break;
+            }
+        }
+        assert_eq!(app.test_tab_names().len(), before + 1);
+        app.test_open_panel(0);
+        pump_main_loop(100);
+        let list = find_by_name(&app.window, "muxterm-panel-list")
+            .unwrap()
+            .downcast::<gtk4::ListBox>()
+            .unwrap();
+        assert_eq!(
+            list.row_at_index(0).unwrap().widget_name(),
+            "muxterm-panel-workspace-S"
+        );
+        assert_eq!(
+            list.row_at_index(1).unwrap().widget_name(),
+            "muxterm-panel-workspace-A"
+        );
+        // S + A + one tmux workspace + Existing + New Project, no Recent duplicates.
+        assert!(list.row_at_index(4).is_some());
+        assert!(list.row_at_index(5).is_none());
+        app.shutdown();
+        pump_main_loop(100);
+    });
+}
+
+#[test]
+fn sustained_output_keeps_neighbor_input_and_chrome_responsive() {
+    if !enter_isolated("sustained_output_keeps_neighbor_input_and_chrome_responsive") {
+        return;
+    }
+    assert!(tmux_available());
+    gtk4::test_synced(|| {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        use std::time::{Duration, Instant};
+        gtk_test_framework_smoke();
+        let server = TmuxServerGuard::new("linux-flood-ui");
+        create_session(server.socket(), "flood", 100, 30);
+        tmux_ok(
+            server.socket(),
+            &["split-window", "-h", "-t", "flood", "/bin/cat"],
+        );
+        let panes = list_pane_ids(server.socket(), "flood");
+        assert_eq!(panes.len(), 2);
+        let mut cfg = Config::default();
+        cfg.tmux.socket = server.socket().into();
+        cfg.tmux.default_session = "flood".into();
+        let app = AppWindow::new(cfg, load_theme());
+        app.window.present();
+        pump_main_loop(400);
+        app.test_switch_pane(panes[1]);
+        pump_main_loop(100);
+        send_keys_line(server.socket(), &format!("%{}", panes[0]),
+            "/bin/sh -c 'i=0; while [ \"$i\" -lt 150 ]; do seq 1 500; i=$((i+1)); sleep 0.02; done'");
+        let last_tick = Rc::new(Cell::new(Instant::now()));
+        let worst_gap = Rc::new(Cell::new(Duration::ZERO));
+        let ticks = Rc::new(Cell::new(0usize));
+        let heartbeat = {
+            let last = last_tick.clone();
+            let gap = worst_gap.clone();
+            let ticks = ticks.clone();
+            gtk4::glib::timeout_add_local(Duration::from_millis(10), move || {
+                let now = Instant::now();
+                gap.set(gap.get().max(now.duration_since(last.replace(now))));
+                ticks.set(ticks.get() + 1);
+                gtk4::glib::ControlFlow::Continue
+            })
+        };
+        let token = "FLOOD_NEIGHBOR_INPUT_0123456789";
+        for ch in token.chars() {
+            assert!(app.test_emit_active_pane_commit(&ch.to_string()));
+            pump_main_loop(35);
+        }
+        app.test_send_input(b"\r");
+        for step in 0..12 {
+            let toggle = find_by_name(&app.window, "muxterm-sidebar-toggle")
+                .unwrap()
+                .downcast::<ToggleButton>()
+                .unwrap();
+            toggle.set_active(step % 2 == 0);
+            pump_main_loop(100);
+        }
+        wait_for(
+            Duration::from_secs(5),
+            "neighbor input remains visible during flood",
+            || {
+                pump_main_loop(30);
+                app.test_pane_vte_buffer_text(panes[1]).contains(token)
+            },
+        );
+        heartbeat.remove();
+        assert!(
+            ticks.get() >= 30,
+            "GTK heartbeat must continue during output"
+        );
+        assert!(
+            worst_gap.get() < Duration::from_secs(1),
+            "GTK stalled for {:?}",
+            worst_gap.get()
+        );
+        support::tmux_test_support::wait_capture_contains(
+            server.socket(),
+            &format!("%{}", panes[1]),
+            token,
+            Duration::from_secs(3),
+        );
+        // 离开后增加历史，再返回：短时提示只能定位该 pane 的稳定行号。
+        app.test_switch_pane(panes[0]);
+        pump_main_loop(150);
+        let history = (0..80)
+            .map(|line| format!("LASTSEEN_BACKGROUND_{line}\n"))
+            .collect::<String>();
+        send_keys_line(server.socket(), &format!("%{}", panes[1]), &history);
+        pump_main_loop(300);
+        app.test_switch_pane(panes[1]);
+        wait_for(
+            Duration::from_secs(3),
+            "last seen offer after returning",
+            || {
+                pump_main_loop(30);
+                find_by_name(&app.window, "muxterm-last-seen")
+                    .unwrap()
+                    .is_visible()
+            },
+        );
+        find_by_name(&app.window, "muxterm-last-seen")
+            .unwrap()
+            .downcast::<gtk4::Button>()
+            .unwrap()
+            .emit_clicked();
+        pump_main_loop(150);
+        assert!(
+            !find_by_name(&app.window, "muxterm-last-seen")
+                .unwrap()
+                .is_visible(),
+            "click consumes the offer"
+        );
+        assert!(
+            app.test_pane_scroll_offset(panes[1]) > 0.0,
+            "last seen scrolls away from live tail"
+        );
         app.shutdown();
         pump_main_loop(100);
     });

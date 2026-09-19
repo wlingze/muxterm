@@ -3,6 +3,7 @@
 //! 这里只负责把 Settings Manifest 字段投影成 GTK 控件，并记录打开设置页
 //! 时的 baseline；draft transaction 和页面导航仍由父设置页持有。
 
+use crate::frontend::utils::i18n::{tr_static as text, Key as TextKey};
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{
@@ -290,7 +291,7 @@ pub(super) fn control_row(field: &Value, values: &Value) -> (GtkBox, Option<Fiel
             Some(tracked_field(path, ControlKind::StringList(widget)))
         }
         "project_editor" => {
-            let widget = Button::with_label("Manage projects");
+            let widget = Button::with_label(text(TextKey::SettingsManageProjects));
             widget.set_widget_name(&widget_name);
             widget.set_halign(Align::End);
             widget.add_css_class("prefs-control");
@@ -299,7 +300,7 @@ pub(super) fn control_row(field: &Value, values: &Value) -> (GtkBox, Option<Fiel
             Some(tracked_field(path, ControlKind::Summary(widget)))
         }
         "shortcut_editor" => {
-            let widget = Button::with_label("Manage shortcuts");
+            let widget = Button::with_label(text(TextKey::SettingsManageShortcuts));
             widget.set_widget_name(&widget_name);
             widget.set_halign(Align::End);
             widget.add_css_class("prefs-control");
@@ -355,39 +356,41 @@ pub(super) fn field_title(path: &str, title_key: &str) -> String {
         "/ui/tab_bar_style" => {
             crate::frontend::utils::i18n::tr(crate::frontend::utils::i18n::Key::TabBarStyle)
         }
-        "/font/family" => "Font family".into(),
-        "/font/size" => "Font size".into(),
-        "/font/fallback" => "Fallback fonts".into(),
-        "/theme/name" => "Theme".into(),
-        "/theme/light" => "Light theme".into(),
-        "/theme/dark" => "Dark theme".into(),
-        "/statusbar/mode" => "Status bar appearance".into(),
-        "/tmux/auto_mouse" => "Enable tmux mouse mode".into(),
-        "/tmux/default_session" => "Default workspace".into(),
-        "/tmux/socket" => "tmux socket".into(),
-        "/pool/max_slots" => "Workspace reminder limit".into(),
-        "/scrollback/lines" => "Scrollback lines".into(),
-        "/pane/default_command" => "Default shell command".into(),
-        "/pane/workdir" => "Initial working directory".into(),
-        "/attention/enabled" => "Workspace attention".into(),
-        "/attention/blocked_regex" => "Blocked output patterns".into(),
-        "/attention/debounce_ms" => "Notification delay".into(),
-        "/ui/tab_bar_position" => "Tab bar position".into(),
-        "/ui/tab_bar_height" => "Tab bar height".into(),
-        "/ui/show_title_bar" => "Show title bar".into(),
-        "/ui/borderless" => "Borderless window".into(),
-        "/ssh/host" => "Default SSH host".into(),
-        "/ssh/port" => "SSH port".into(),
-        "/ssh/user" => "SSH user".into(),
-        "/ssh/key_path" => "SSH private key".into(),
-        "/behavior/on_last_pane_exit" => "When the last pane exits".into(),
-        "/behavior/on_program_exit_abnormal" => "When a command fails".into(),
-        "/platform/linux/client_side_decorations" => "Client-side decorations".into(),
-        "/platform/macos/option_as_alt" => "Treat Option as Alt".into(),
-        "/shortcuts/preset" => "Keyboard layout".into(),
-        "/shortcuts/primary_key" => "Primary modifier".into(),
-        "/projects" => "Saved projects".into(),
-        "/shortcuts/overrides" => "Custom shortcuts".into(),
+        "/font/family" => text(TextKey::SettingsFontFamily).into(),
+        "/font/size" => text(TextKey::SettingsFontSize).into(),
+        "/font/fallback" => text(TextKey::SettingsFallbackFonts).into(),
+        "/theme/name" => text(TextKey::SettingsTheme).into(),
+        "/theme/light" => text(TextKey::SettingsLightTheme).into(),
+        "/theme/dark" => text(TextKey::SettingsDarkTheme).into(),
+        "/statusbar/mode" => text(TextKey::SettingsStatusBarAppearance).into(),
+        "/tmux/auto_mouse" => text(TextKey::SettingsEnableTmuxMouseMode).into(),
+        "/tmux/default_session" => text(TextKey::SettingsDefaultWorkspace).into(),
+        "/tmux/socket" => text(TextKey::SettingsTmuxSocket).into(),
+        "/pool/max_slots" => text(TextKey::SettingsWorkspaceReminderLimit).into(),
+        "/scrollback/lines" => text(TextKey::SettingsScrollbackLines).into(),
+        "/pane/default_command" => text(TextKey::SettingsDefaultShellCommand).into(),
+        "/pane/workdir" => text(TextKey::SettingsInitialWorkingDirectory).into(),
+        "/attention/enabled" => text(TextKey::SettingsWorkspaceAttention).into(),
+        "/attention/blocked_regex" => text(TextKey::SettingsBlockedOutputPatterns).into(),
+        "/attention/debounce_ms" => text(TextKey::SettingsNotificationDelay).into(),
+        "/ui/tab_bar_position" => text(TextKey::SettingsTabBarPosition).into(),
+        "/ui/tab_bar_height" => text(TextKey::SettingsTabBarHeight).into(),
+        "/ui/show_title_bar" => text(TextKey::SettingsShowTitleBar).into(),
+        "/ui/borderless" => text(TextKey::SettingsBorderlessWindow).into(),
+        "/ssh/host" => text(TextKey::SettingsDefaultSshHost).into(),
+        "/ssh/port" => text(TextKey::SettingsSshPort).into(),
+        "/ssh/user" => text(TextKey::SettingsSshUser).into(),
+        "/ssh/key_path" => text(TextKey::SettingsSshPrivateKey).into(),
+        "/behavior/on_last_pane_exit" => text(TextKey::SettingsWhenTheLastPaneExits).into(),
+        "/behavior/on_program_exit_abnormal" => text(TextKey::SettingsWhenACommandFails).into(),
+        "/platform/linux/client_side_decorations" => {
+            text(TextKey::SettingsClientSideDecorations).into()
+        }
+        "/platform/macos/option_as_alt" => text(TextKey::SettingsTreatOptionAsAlt).into(),
+        "/shortcuts/preset" => text(TextKey::SettingsKeyboardLayout).into(),
+        "/shortcuts/primary_key" => text(TextKey::SettingsPrimaryModifier).into(),
+        "/projects" => text(TextKey::SettingsSavedProjects).into(),
+        "/shortcuts/overrides" => text(TextKey::SettingsCustomShortcuts).into(),
         _ => {
             let raw = title_key
                 .strip_prefix("settings.")
@@ -400,54 +403,79 @@ pub(super) fn field_title(path: &str, title_key: &str) -> String {
 
 pub(super) fn field_description(path: &str) -> &'static str {
     match path {
-        "/font/family" => "The typeface used to draw terminal text.",
-        "/font/size" => "Adjust the terminal scale without changing your display settings.",
+        "/ui/tab_bar_style" => text(TextKey::SettingsTabLayoutSizing),
+        "/font/family" => text(TextKey::SettingsTheTypefaceUsedToDrawTerminalText),
+        "/font/size" => {
+            text(TextKey::SettingsAdjustTheTerminalScaleWithoutChangingYourDisplaySettings)
+        }
         "/font/fallback" => {
-            "Comma-separated fonts used when the primary family is missing a glyph."
+            text(TextKey::SettingsCommaSeparatedFontsUsedWhenThePrimaryFamilyIsMissingAGlyph)
         }
-        "/theme/name" => "Choose a fixed theme or follow your system appearance.",
-        "/theme/light" => "Theme used when the system is in light mode.",
-        "/theme/dark" => "Theme used when the system is in dark mode.",
-        "/statusbar/mode" => "Use tmux colors or keep the status bar in the Muxterm theme.",
-        "/tmux/auto_mouse" => "Forward mouse interactions to attached tmux workspaces.",
-        "/tmux/default_session" => "Workspace to attach on launch; leave empty to start locally.",
-        "/tmux/socket" => "Optional named tmux socket. Empty uses the default server.",
-        "/pool/max_slots" => "Show a reminder when this many warm workspaces are open.",
-        "/scrollback/lines" => "History kept for each newly created pane.",
-        "/pane/default_command" => "Command started for a new local pane.",
-        "/pane/workdir" => "Directory used when a new local pane starts.",
-        "/attention/enabled" => "Show attention badges when a workspace is waiting for you.",
+        "/theme/name" => text(TextKey::SettingsChooseAFixedThemeOrFollowYourSystemAppearance),
+        "/theme/light" => text(TextKey::SettingsThemeUsedWhenTheSystemIsInLightMode),
+        "/theme/dark" => text(TextKey::SettingsThemeUsedWhenTheSystemIsInDarkMode),
+        "/statusbar/mode" => {
+            text(TextKey::SettingsUseTmuxColorsOrKeepTheStatusBarInTheMuxtermTheme)
+        }
+        "/tmux/auto_mouse" => {
+            text(TextKey::SettingsForwardMouseInteractionsToAttachedTmuxWorkspaces)
+        }
+        "/tmux/default_session" => {
+            text(TextKey::SettingsWorkspaceToAttachOnLaunchLeaveEmptyToStartLocally)
+        }
+        "/tmux/socket" => text(TextKey::SettingsOptionalNamedTmuxSocketEmptyUsesTheDefaultServer),
+        "/pool/max_slots" => text(TextKey::SettingsShowAReminderWhenThisManyWarmWorkspacesAreOpen),
+        "/scrollback/lines" => text(TextKey::SettingsHistoryKeptForEachNewlyCreatedPane),
+        "/pane/default_command" => text(TextKey::SettingsCommandStartedForANewLocalPane),
+        "/pane/workdir" => text(TextKey::SettingsDirectoryUsedWhenANewLocalPaneStarts),
+        "/attention/enabled" => {
+            text(TextKey::SettingsShowAttentionBadgesWhenAWorkspaceIsWaitingForYou)
+        }
         "/attention/blocked_regex" => {
-            "One regular expression per line that marks output as blocked."
+            text(TextKey::SettingsOneRegularExpressionPerLineThatMarksOutputAsBlocked)
         }
-        "/attention/debounce_ms" => "Wait this long before raising a new attention signal.",
-        "/ui/tab_bar_position" => "Place the workspace tab bar above or below the terminal.",
-        "/ui/tab_bar_height" => "Height of the compact tab bar in pixels.",
-        "/ui/show_title_bar" => "Keep the native window title visible.",
-        "/ui/borderless" => "Remove the outer window border when supported by the desktop.",
-        "/ssh/host" => "Fallback SSH host used by remote connections.",
-        "/ssh/port" => "TCP port used for the default SSH connection.",
-        "/ssh/user" => "Remote user name; empty uses the current local user.",
-        "/ssh/key_path" => "Private key path; empty allows ssh-agent to provide credentials.",
-        "/behavior/on_last_pane_exit" => "Choose what remains after the final pane closes.",
+        "/attention/debounce_ms" => {
+            text(TextKey::SettingsWaitThisLongBeforeRaisingANewAttentionSignal)
+        }
+        "/ui/tab_bar_position" => {
+            text(TextKey::SettingsPlaceTheWorkspaceTabBarAboveOrBelowTheTerminal)
+        }
+        "/ui/tab_bar_height" => text(TextKey::SettingsHeightOfTheCompactTabBarInPixels),
+        "/ui/show_title_bar" => text(TextKey::SettingsKeepTheNativeWindowTitleVisible),
+        "/ui/borderless" => {
+            text(TextKey::SettingsRemoveTheOuterWindowBorderWhenSupportedByTheDesktop)
+        }
+        "/ssh/host" => text(TextKey::SettingsFallbackSshHostUsedByRemoteConnections),
+        "/ssh/port" => text(TextKey::SettingsTcpPortUsedForTheDefaultSshConnection),
+        "/ssh/user" => text(TextKey::SettingsRemoteUserNameEmptyUsesTheCurrentLocalUser),
+        "/ssh/key_path" => {
+            text(TextKey::SettingsPrivateKeyPathEmptyAllowsSshAgentToProvideCredentials)
+        }
+        "/behavior/on_last_pane_exit" => {
+            text(TextKey::SettingsChooseWhatRemainsAfterTheFinalPaneCloses)
+        }
         "/behavior/on_program_exit_abnormal" => {
-            "Choose how Muxterm handles a non-zero command exit."
+            text(TextKey::SettingsChooseHowMuxtermHandlesANonZeroCommandExit)
         }
-        "/platform/linux/client_side_decorations" => "Let Muxterm draw its own window controls.",
-        "/platform/macos/option_as_alt" => "Use the Option key as an Alt modifier on macOS.",
-        "/shortcuts/preset" => "Start from a QWERTY or Colemak action layout.",
-        "/shortcuts/primary_key" => "Modifier used for the primary shortcut set.",
-        "/projects" => "Reusable workspace launch profiles shared by Quick Connect.",
-        "/shortcuts/overrides" => "Override or disable individual action bindings.",
-        _ => "Configure this setting for new Muxterm sessions.",
+        "/platform/linux/client_side_decorations" => {
+            text(TextKey::SettingsLetMuxtermDrawItsOwnWindowControls)
+        }
+        "/platform/macos/option_as_alt" => {
+            text(TextKey::SettingsUseTheOptionKeyAsAnAltModifierOnMacos)
+        }
+        "/shortcuts/preset" => text(TextKey::SettingsStartFromAQwertyOrColemakActionLayout),
+        "/shortcuts/primary_key" => text(TextKey::SettingsModifierUsedForThePrimaryShortcutSet),
+        "/projects" => text(TextKey::SettingsReusableWorkspaceLaunchProfilesSharedByQuickConnect),
+        "/shortcuts/overrides" => text(TextKey::SettingsOverrideOrDisableIndividualActionBindings),
+        _ => text(TextKey::SettingsConfigureThisSettingForNewMuxtermSessions),
     }
 }
 
 pub(super) fn apply_label(mode: &str) -> &'static str {
     match mode {
-        "immediate" => "LIVE",
-        "next_workspace" => "NEXT WORKSPACE",
-        _ => "ON SAVE",
+        "immediate" => text(TextKey::SettingsLive),
+        "next_workspace" => text(TextKey::SettingsNextWorkspace),
+        _ => text(TextKey::SettingsOnSave),
     }
 }
 
@@ -456,24 +484,32 @@ pub(super) fn option_label(path: &str, value: &str) -> String {
     match (path, value) {
         ("/ui/tab_bar_style", "equal_width") => i18n::tr(Key::TabEqualWidth),
         ("/ui/tab_bar_style", "compact") => i18n::tr(Key::TabCompact),
-        ("/theme/name", "system") => "Follow system".into(),
-        ("/theme/name", "black") => "Black".into(),
-        ("/theme/name", "white") => "White".into(),
-        ("/theme/light", "white") => "White".into(),
-        ("/theme/light", "black") => "Black".into(),
-        ("/theme/dark", "white") => "White".into(),
-        ("/theme/dark", "black") => "Black".into(),
-        ("/statusbar/mode", "tmux") => "Match tmux".into(),
-        ("/statusbar/mode", "theme") => "Use Muxterm theme".into(),
-        ("/ui/tab_bar_position", "top") => "Top".into(),
-        ("/ui/tab_bar_position", "bottom") => "Bottom".into(),
-        ("/behavior/on_last_pane_exit", "close_window") => "Close the window".into(),
-        ("/behavior/on_last_pane_exit", "keep_empty") => "Keep an empty window".into(),
-        ("/behavior/on_last_pane_exit", "new_shell") => "Open a new shell".into(),
-        ("/behavior/on_program_exit_abnormal", "notify") => "Keep and notify".into(),
-        ("/behavior/on_program_exit_abnormal", "close") => "Close the pane".into(),
-        ("/behavior/on_program_exit_abnormal", "keep") => "Keep the pane".into(),
-        ("/shortcuts/primary_key", "auto") => "Automatic".into(),
+        ("/theme/name", "system") => text(TextKey::SettingsFollowSystem).into(),
+        ("/theme/name", "black") => text(TextKey::SettingsBlack).into(),
+        ("/theme/name", "white") => text(TextKey::SettingsWhite).into(),
+        ("/theme/light", "white") => text(TextKey::SettingsWhite).into(),
+        ("/theme/light", "black") => text(TextKey::SettingsBlack).into(),
+        ("/theme/dark", "white") => text(TextKey::SettingsWhite).into(),
+        ("/theme/dark", "black") => text(TextKey::SettingsBlack).into(),
+        ("/statusbar/mode", "tmux") => text(TextKey::SettingsMatchTmux).into(),
+        ("/statusbar/mode", "theme") => text(TextKey::SettingsUseMuxtermTheme).into(),
+        ("/ui/tab_bar_position", "top") => text(TextKey::SettingsTop).into(),
+        ("/ui/tab_bar_position", "bottom") => text(TextKey::SettingsBottom).into(),
+        ("/behavior/on_last_pane_exit", "close_window") => {
+            text(TextKey::SettingsCloseTheWindow).into()
+        }
+        ("/behavior/on_last_pane_exit", "keep_empty") => {
+            text(TextKey::SettingsKeepAnEmptyWindow).into()
+        }
+        ("/behavior/on_last_pane_exit", "new_shell") => text(TextKey::SettingsOpenANewShell).into(),
+        ("/behavior/on_program_exit_abnormal", "notify") => {
+            text(TextKey::SettingsKeepAndNotify).into()
+        }
+        ("/behavior/on_program_exit_abnormal", "close") => {
+            text(TextKey::SettingsCloseThePane).into()
+        }
+        ("/behavior/on_program_exit_abnormal", "keep") => text(TextKey::SettingsKeepThePane).into(),
+        ("/shortcuts/primary_key", "auto") => text(TextKey::SettingsAutomatic).into(),
         ("/shortcuts/primary_key", "alt") => "Alt".into(),
         ("/shortcuts/primary_key", "command") => "Command".into(),
         ("/shortcuts/primary_key", "control") => "Control".into(),
@@ -484,12 +520,12 @@ pub(super) fn option_label(path: &str, value: &str) -> String {
 
 pub(super) fn input_placeholder(path: &str) -> &'static str {
     match path {
-        "/tmux/default_session" => "workspace name",
-        "/tmux/socket" => "default socket",
+        "/tmux/default_session" => text(TextKey::SettingsWorkspaceName),
+        "/tmux/socket" => text(TextKey::SettingsDefaultSocket),
         "/pane/default_command" => "$SHELL",
         "/pane/workdir" => "$HOME",
         "/ssh/host" => "example.com",
-        "/ssh/user" => "optional",
+        "/ssh/user" => text(TextKey::SettingsOptional),
         "/ssh/key_path" => "~/.ssh/id_ed25519",
         _ => "",
     }

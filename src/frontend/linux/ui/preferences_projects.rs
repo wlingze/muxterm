@@ -37,7 +37,9 @@ pub(super) fn show_project_manager(
 ) {
     install_preferences_css();
     let win = Window::builder()
-        .title("Projects")
+        .title(crate::frontend::utils::i18n::tr_static(
+            crate::frontend::utils::i18n::Key::SettingsProjects,
+        ))
         .transient_for(parent)
         .modal(true)
         .default_width(560)
@@ -55,8 +57,12 @@ pub(super) fn show_project_manager(
         .build();
     root.add_css_class("prefs-subwindow");
     root.append(&subwindow_header(
-        "Projects",
-        "Saved workspace profiles for Quick Connect.",
+        crate::frontend::utils::i18n::tr_static(
+            crate::frontend::utils::i18n::Key::SettingsProjects,
+        ),
+        crate::frontend::utils::i18n::tr_static(
+            crate::frontend::utils::i18n::Key::SettingsSavedWorkspaceProfilesForQuickConnect,
+        ),
     ));
 
     let list = ListBox::new();
@@ -74,9 +80,13 @@ pub(super) fn show_project_manager(
         .spacing(8)
         .halign(Align::End)
         .build();
-    let add = Button::with_label("New project…");
+    let add = Button::with_label(crate::frontend::utils::i18n::tr_static(
+        crate::frontend::utils::i18n::Key::SettingsNewProject,
+    ));
     add.add_css_class("suggested-action");
-    let close = Button::with_label("Close");
+    let close = Button::with_label(crate::frontend::utils::i18n::tr_static(
+        crate::frontend::utils::i18n::Key::SettingsClose,
+    ));
     close.add_css_class("prefs-secondary-action");
     actions.append(&add);
     actions.append(&close);
@@ -134,9 +144,13 @@ pub(super) fn show_project_manager(
                 detail.add_css_class("prefs-project-detail");
                 copy.append(&detail);
                 row.append(&copy);
-                let edit = Button::with_label("Edit…");
+                let edit = Button::with_label(crate::frontend::utils::i18n::tr_static(
+                    crate::frontend::utils::i18n::Key::SettingsEdit,
+                ));
                 edit.add_css_class("prefs-inline-action");
-                let remove = Button::with_label("Remove");
+                let remove = Button::with_label(crate::frontend::utils::i18n::tr_static(
+                    crate::frontend::utils::i18n::Key::SettingsRemove,
+                ));
                 remove.add_css_class("destructive-action");
                 let project_for_edit = project.clone();
                 let config_api_for_edit = config.clone();

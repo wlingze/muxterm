@@ -116,6 +116,7 @@ impl WorkspaceSidebar {
 
         let toggle = ToggleButton::with_label("☰");
         toggle.set_widget_name("muxterm-sidebar-toggle");
+        toggle.add_css_class("muxterm-sidebar-toggle");
         toggle.set_has_frame(false);
         toggle.set_can_focus(false);
         toggle.set_active(false);
@@ -136,8 +137,12 @@ impl WorkspaceSidebar {
             .build();
         scrolled.set_widget_name("muxterm-sidebar-scroll");
 
-        let (workspace_section_toggle, workspace_arrow) =
-            section_header("WORKSPACES", "muxterm-sidebar-workspaces-toggle");
+        let (workspace_section_toggle, workspace_arrow) = section_header(
+            crate::frontend::utils::i18n::tr_static(
+                crate::frontend::utils::i18n::Key::SidebarWorkspaces,
+            ),
+            "muxterm-sidebar-workspaces-toggle",
+        );
         let workspace_section = GtkBox::builder()
             .orientation(Orientation::Vertical)
             .spacing(0)
@@ -157,6 +162,30 @@ impl WorkspaceSidebar {
         agents.set_widget_name("muxterm-sidebar-agents");
         agents.set_can_focus(false);
         agents.add_css_class("muxterm-aggregate-agents");
+        for (button, symbol, key) in [
+            (
+                &shells,
+                "S",
+                crate::frontend::utils::i18n::Key::AggregateShells,
+            ),
+            (
+                &agents,
+                "A",
+                crate::frontend::utils::i18n::Key::AggregateAgents,
+            ),
+        ] {
+            button.add_css_class("muxterm-sidebar-row");
+            button.add_css_class("muxterm-sidebar-workspace-row");
+            let row = GtkBox::new(Orientation::Horizontal, 8);
+            let badge = Label::new(Some(symbol));
+            badge.add_css_class("workspace-badge");
+            let label = Label::new(Some(&crate::frontend::utils::i18n::tr(key)));
+            label.set_xalign(0.0);
+            label.set_hexpand(true);
+            row.append(&badge);
+            row.append(&label);
+            button.set_child(Some(&row));
+        }
         workspace_section.append(&shells);
         workspace_section.append(&agents);
         workspace_section.append(&scrolled);
@@ -177,8 +206,12 @@ impl WorkspaceSidebar {
             .build();
         agent_scrolled.set_widget_name("muxterm-sidebar-agent-scroll");
 
-        let (agent_section_toggle, agent_arrow) =
-            section_header("AGENTS", "muxterm-sidebar-agents-toggle");
+        let (agent_section_toggle, agent_arrow) = section_header(
+            crate::frontend::utils::i18n::tr_static(
+                crate::frontend::utils::i18n::Key::SidebarAgents,
+            ),
+            "muxterm-sidebar-agents-toggle",
+        );
         let agent_section = GtkBox::builder()
             .orientation(Orientation::Vertical)
             .spacing(0)
@@ -204,8 +237,12 @@ impl WorkspaceSidebar {
             .build();
         command_scrolled.set_widget_name("muxterm-sidebar-command-scroll");
 
-        let (command_section_toggle, command_arrow) =
-            section_header("COMMANDS", "muxterm-sidebar-commands-toggle");
+        let (command_section_toggle, command_arrow) = section_header(
+            crate::frontend::utils::i18n::tr_static(
+                crate::frontend::utils::i18n::Key::SidebarCommands,
+            ),
+            "muxterm-sidebar-commands-toggle",
+        );
         command_section_toggle.set_active(false);
 
         let hidden_command_list = ListBox::builder()
@@ -224,8 +261,12 @@ impl WorkspaceSidebar {
             .build();
         hidden_command_scrolled.set_widget_name("muxterm-sidebar-hidden-command-scroll");
 
-        let (hidden_command_section_toggle, hidden_command_arrow) =
-            section_header("HIDDEN COMMANDS", "muxterm-sidebar-hidden-commands-toggle");
+        let (hidden_command_section_toggle, hidden_command_arrow) = section_header(
+            crate::frontend::utils::i18n::tr_static(
+                crate::frontend::utils::i18n::Key::SidebarHiddenCommands,
+            ),
+            "muxterm-sidebar-hidden-commands-toggle",
+        );
         hidden_command_section_toggle.set_active(false);
         let command_section = GtkBox::builder()
             .orientation(Orientation::Vertical)
@@ -350,11 +391,19 @@ impl WorkspaceSidebar {
         }
         {
             let update_sections = update_sections.clone();
-            sections.connect_notify_local(Some("height"), move |_, _| update_sections());
-        }
-        {
-            let update_sections = update_sections.clone();
-            lower_sections.connect_notify_local(Some("height"), move |_, _| update_sections());
+            let last_sizes = Cell::new((0, 0));
+            let lower = lower_sections.downgrade();
+            // Widget allocation 的 height 不是可 notify 的 GObject 属性。
+            // 首次分配和窗口缩放后再算折叠高度，避免沿用 realize 前的分割位置。
+            sections.add_tick_callback(move |sections, _| {
+                if let Some(lower) = lower.upgrade() {
+                    let sizes = (sections.height(), lower.height());
+                    if last_sizes.replace(sizes) != sizes {
+                        update_sections();
+                    }
+                }
+                gtk4::glib::ControlFlow::Continue
+            });
         }
         {
             let update_sections = update_sections.clone();
@@ -614,11 +663,11 @@ impl WorkspaceSidebar {
                 .hexpand(true)
                 .build();
 
-            let marker = if item.active { "●" } else { "○" };
             let name = Label::builder()
-                .label(format!("{marker} {}", item.name))
+                .label(&item.name)
                 .halign(Align::Start)
                 .xalign(0.0)
+                .ellipsize(gtk4::pango::EllipsizeMode::End)
                 .build();
             name.add_css_class("muxterm-sidebar-row-name");
 
@@ -626,6 +675,7 @@ impl WorkspaceSidebar {
                 .label(format!("{} @ {}", item.runtime, item.transport))
                 .halign(Align::Start)
                 .xalign(0.0)
+                .ellipsize(gtk4::pango::EllipsizeMode::End)
                 .build();
             detail.add_css_class("muxterm-sidebar-row-detail");
 
@@ -642,7 +692,9 @@ impl WorkspaceSidebar {
             close.set_focus_on_click(false);
             close.set_valign(Align::Center);
             close.set_margin_end(6);
-            close.set_tooltip_text(Some("Close workspace"));
+            close.set_tooltip_text(Some(crate::frontend::utils::i18n::tr_static(
+                crate::frontend::utils::i18n::Key::CloseWorkspace,
+            )));
             {
                 let id = item.id.clone();
                 let on_close = self.on_close.clone();
@@ -656,6 +708,7 @@ impl WorkspaceSidebar {
                 let badge = Label::new(Some(&shortcut.to_string()));
                 badge.set_widget_name(&format!("muxterm-sidebar-workspace-shortcut-{shortcut}"));
                 badge.add_css_class("muxterm-sidebar-workspace-shortcut");
+                badge.add_css_class("workspace-badge");
                 badge.set_width_chars(2);
                 badge.set_margin_start(6);
                 badge.set_tooltip_text(Some(&format!("Ctrl+Alt+{shortcut}")));

@@ -116,7 +116,16 @@ pub(super) fn maybe_refresh_status(s: &mut UiState, force: bool) {
         .iter()
         .map(|tab| (tab.id, tab.name.clone(), tab.id == active_tab))
         .collect();
-    let agents = AgentSidebarItem::from_views(&s.view_store, &activity_snapshot(s));
+    let activity = activity_snapshot(s);
+    let agents = AgentSidebarItem::from_views(&s.view_store, &activity);
+    let aggregate_tabs = s.aggregate.kind.map(|kind| {
+        crate::frontend::linux::chrome::aggregate::project(
+            kind,
+            &s.view_store,
+            &activity,
+            &s.aggregate.hidden_agents,
+        )
+    });
     let indicator_for = |workspace: &str, tab_id: u32| {
         let indicator = agents
             .iter()
@@ -138,8 +147,8 @@ pub(super) fn maybe_refresh_status(s: &mut UiState, force: bool) {
             .unwrap_or(ActivityIndicator::None);
         indicator
     };
-    let indicators = if s.aggregate.kind.is_some() {
-        super::window_aggregate::tabs(s)
+    let indicators = if let Some(aggregate_tabs) = &aggregate_tabs {
+        aggregate_tabs
             .iter()
             .enumerate()
             .map(|(index, tab)| {
@@ -172,7 +181,7 @@ pub(super) fn maybe_refresh_status(s: &mut UiState, force: bool) {
     }
     let _ = force;
     if let Some(kind) = s.aggregate.kind {
-        let aggregate_tabs = super::window_aggregate::tabs(s);
+        let aggregate_tabs = aggregate_tabs.as_deref().unwrap_or_default();
         let rows: Vec<_> = aggregate_tabs
             .iter()
             .enumerate()

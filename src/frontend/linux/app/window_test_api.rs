@@ -195,6 +195,15 @@ impl AppWindow {
         }
     }
 
+    pub fn test_pane_scroll_offset(&self, pane_id: u32) -> f64 {
+        let s = self._state.borrow();
+        s.active_layout()
+            .pane(pane_id)
+            .and_then(|view| view.terminal().vadjustment())
+            .map(|adjustment| adjustment.upper() - adjustment.page_size() - adjustment.value())
+            .unwrap_or(0.0)
+    }
+
     /// 测试用：指定 pane 的 VTE 文本。
     pub fn test_pane_vte_text(&self, pane_id: u32) -> String {
         let s = self._state.borrow();
@@ -704,6 +713,14 @@ impl AppWindow {
     /// 测试用：连接一个 QuickConnect 目标（走生产 connect_target 路径）。
     pub fn test_connect_target(&self, config: TargetConfigDraft) {
         connect_target(&self._state.clone(), config);
+    }
+
+    pub fn test_start_open(&self, request: crate::frontend::utils::corebridge::ClientOpenRequest) {
+        super::window_connection::connect_open_request(&self._state, request);
+    }
+
+    pub fn test_open_pending(&self) -> bool {
+        self._state.borrow().pending_open.is_some()
     }
 
     /// 测试用：通过 FFI semantic target attach（SSH loopback 必须带远端 `-L`）。

@@ -58,8 +58,11 @@ pub fn show(parent: &impl IsA<Window>, args: PanelShowArgs) {
     quickconnect_panel_ui::show(parent, args, None);
 }
 
+#[derive(Clone)]
 pub struct WorkspaceNavigation {
     pub items: Vec<(String, String, bool, bool)>,
+    pub target_ids: std::collections::HashSet<String>,
+    pub details: std::collections::HashMap<String, String>,
     pub activate: std::rc::Rc<dyn Fn(&str)>,
     pub close: std::rc::Rc<dyn Fn(&str)>,
 }
