@@ -52,6 +52,10 @@ impl WorkspaceScenes {
         self.stack.add_page(&key, root);
     }
 
+    pub fn add_hidden_page(&mut self, workspace_id: &WorkspaceId, root: &impl IsA<gtk4::Widget>) {
+        self.stack.add_hidden_page(&workspace_id.as_str(), root);
+    }
+
     /// 移除 workspace 的布局和 scene page；这是唯一的 workspace close 边界。
     pub fn remove(&mut self, workspace_id: &WorkspaceId) {
         self.layouts.remove(workspace_id);

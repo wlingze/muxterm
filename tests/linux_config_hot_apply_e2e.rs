@@ -72,6 +72,47 @@ fn config_changed_hot_applies_theme_font_and_shortcut_without_restart() {
             "ConfigChanged must hot-apply the shortcut without recreating AppWindow"
         );
 
+        // 保存后的 Project 必须进入面板，并经真实异步打开成为 Workspace。
+        use muxterm::test_support::frontend::linux::quickconnect::model::{
+            ProjectDocument, QuickConnect, TargetConfigDraft, TargetRuntime, TargetTransport,
+        };
+        use muxterm::test_support::frontend::linux::quickconnect_panel;
+        let server = support::tmux_test_support::TmuxServerGuard::new("panel-project-create");
+        let mut target = TargetConfigDraft::new(
+            "panel-project",
+            TargetRuntime::Tmux,
+            TargetTransport::Local,
+            "/tmp",
+        );
+        target.session = Some("panel-project".into());
+        target.socket = Some(server.socket().into());
+        app.test_commit_config_path(
+            "projects",
+            serde_json::json!([ProjectDocument::from_draft(&target)]),
+        )
+        .unwrap();
+        pump_main_loop(100);
+        quickconnect_panel::close_current();
+        app.test_open_panel(0);
+        pump_main_loop(100);
+        let row = find_by_name(&app.window, &QuickConnect::unique_id(&target))
+            .expect("saved project in panel")
+            .downcast::<gtk4::ListBoxRow>()
+            .unwrap();
+        let list = find_by_name(&app.window, "muxterm-panel-list")
+            .unwrap()
+            .downcast::<gtk4::ListBox>()
+            .unwrap();
+        list.emit_by_name::<()>("row-activated", &[&row]);
+        assert!(
+            wait_until_widget(6000, || app.test_active_workspace_runtime() == "tmux"
+                && app.test_active_pane_seeded()),
+            "runtime={} pending={} errors={:?}",
+            app.test_active_workspace_runtime(),
+            app.test_open_pending(),
+            app.test_notifications_recorded()
+        );
+
         app.shutdown();
         pump_main_loop(80);
         match previous_config_home {

@@ -19,6 +19,10 @@ fn pane_context_menu_splits_active_pane() {
     gtk4::test_synced(|| {
         gtk_test_framework_smoke();
         let app = AppWindow::new(Config::default(), load_theme());
+        app.window.set_default_size(1100, 720);
+        if std::env::var_os("MUXTERM_UI_SCREENSHOT").is_some() {
+            app.window.set_resizable(false);
+        }
         app.window.present();
         gtk4::test_widget_wait_for_draw(&app.window);
 
@@ -64,6 +68,16 @@ fn pane_context_menu_splits_active_pane() {
             app.test_gtk_paned_orientations().is_empty(),
             "放大后 GTK 只显示输入 pane"
         );
+        app.test_handle_action(
+            muxterm::test_support::frontend::linux::keymap::Action::SwitchPaneNext,
+        );
+        pump_main_loop(100);
+        assert_ne!(
+            app.test_active_pane_id(),
+            focus_pane,
+            "放大中可以切换输入 pane"
+        );
+        assert!(app.test_gtk_paned_orientations().is_empty());
         app.test_handle_action(
             muxterm::test_support::frontend::linux::keymap::Action::TogglePaneFullscreen,
         );
@@ -118,12 +132,21 @@ fn pane_context_menu_splits_active_pane() {
 
         app.test_open_panel(0);
         pump_main_loop(100);
-        assert!(find_by_name(&app.window, "muxterm-panel-workspace-navigation").is_some());
-        find_by_name(&app.window, "muxterm-panel-workspace-S")
+        assert!(find_by_name(&app.window, "muxterm-panel-workspace-navigation").is_none());
+        let shell_row = find_by_name(&app.window, "muxterm-panel-workspace-S")
             .unwrap()
-            .downcast::<gtk4::Button>()
+            .downcast::<gtk4::ListBoxRow>()
+            .unwrap();
+        let list = find_by_name(&app.window, "muxterm-panel-list")
             .unwrap()
-            .emit_clicked();
+            .downcast::<gtk4::ListBox>()
+            .unwrap();
+        assert_eq!(shell_row.parent(), Some(list.clone().upcast()));
+        assert_eq!(
+            list.row_at_index(1).unwrap().widget_name(),
+            "muxterm-panel-workspace-A"
+        );
+        list.emit_by_name::<()>("row-activated", &[&shell_row]);
         pump_main_loop(100);
         assert!(!app.test_panel_open());
         assert_eq!(app.test_active_tab_id(), source_tab);
@@ -137,6 +160,16 @@ fn pane_context_menu_splits_active_pane() {
         gtk4::test_widget_wait_for_draw(&app.window);
 
         if let Some(path) = std::env::var_os("MUXTERM_UI_SCREENSHOT") {
+            app.test_open_panel(0);
+            pump_main_loop(300);
+            gtk4::test_widget_wait_for_draw(&app.window);
+            eprintln!(
+                "preview allocation={}x{}, default={:?}, display={}",
+                app.window.width(),
+                app.window.height(),
+                app.window.default_size(),
+                gtk4::prelude::WidgetExt::display(&app.window).name()
+            );
             let paintable = gtk4::WidgetPaintable::new(Some(&app.window));
             let snapshot = gtk4::Snapshot::new();
             paintable.snapshot(

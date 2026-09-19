@@ -23,6 +23,9 @@ if [[ ! -f "$BIN" ]]; then
   exit 1
 fi
 cp -f "$BIN" "$OUT_DIR/$(binary_name)"
+mkdir -p "$OUT_DIR/assets/fonts"
+cp "$ROOT/assets/fonts/JetBrainsMono-Regular.ttf" "$ROOT/assets/fonts/OFL.txt" "$OUT_DIR/assets/fonts/"
+cp "$ROOT/assets/fonts/NotoSansSymbols2-Regular.ttf" "$ROOT/assets/fonts/Noto-OFL.txt" "$OUT_DIR/assets/fonts/"
 chmod +x "$OUT_DIR/$(binary_name)"
 echo "==> done"
 echo "    产物: $OUT_DIR/$(binary_name)"

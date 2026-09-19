@@ -4,6 +4,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use gtk4::prelude::*;
 use gtk4::Window;
 
 use crate::protocol::WorkspaceId;
@@ -87,6 +88,15 @@ pub(super) fn connect_target_with_intent(
 }
 
 pub(super) fn connect_open_request(state: &Rc<RefCell<UiState>>, request: ClientOpenRequest) {
+    if state.borrow().pending_open.is_some() {
+        // 一个待打开页面对应一个 Core 操作，重复点击不产生并发连接。
+        state
+            .borrow()
+            .scenes
+            .widget()
+            .set_visible_child_name("workspace-loading");
+        return;
+    }
     let request_socket = match &request.candidate {
         ClientCandidateRef::Existing { identity } => identity.socket.clone(),
         _ => None,
@@ -101,24 +111,48 @@ pub(super) fn connect_open_request(state: &Rc<RefCell<UiState>>, request: Client
     };
     let result = {
         let s = state.borrow();
-        s.event_pump.client().open(&request)
+        s.event_pump.client().start_open(&request)
     };
     match result {
-        Ok(opened) => {
-            let socket = request_socket.or_else(|| opened_workspace_socket(&opened));
+        Ok(()) => {
             let mut s = state.borrow_mut();
-            if let Some(id) = parse_workspace_id(&opened.id) {
-                s.workspace_sockets.insert(id, socket);
+            let stack = s.scenes.widget();
+            if let Some(old) = stack.child_by_name("workspace-loading") {
+                stack.remove(&old);
             }
-            if let Err(error) = sync_view_store(&mut s) {
-                tracing::warn!(
-                    target = "muxterm::linux",
-                    %error,
-                    "workspace snapshot refresh failed after existing attach"
-                );
-                return;
-            }
-            after_activate(&mut s);
+            let page = gtk4::Box::new(gtk4::Orientation::Vertical, 16);
+            page.set_halign(gtk4::Align::Center);
+            page.set_valign(gtk4::Align::Center);
+            let spinner = gtk4::Spinner::new();
+            spinner.set_size_request(32, 32);
+            spinner.start();
+            page.append(&spinner);
+            let heading = gtk4::Label::new(Some(&i18n::tr(Key::StatusConnecting)));
+            heading.add_css_class("title-2");
+            page.append(&heading);
+            let detail = gtk4::Label::new(Some(&label));
+            detail.set_ellipsize(gtk4::pango::EllipsizeMode::Middle);
+            detail.set_max_width_chars(50);
+            page.append(&detail);
+            let back = gtk4::Button::with_label(&i18n::tr(Key::ExistingBack));
+            let weak = Rc::downgrade(state);
+            back.connect_clicked(move |_| {
+                if let Some(state) = weak.upgrade() {
+                    let mut s = state.borrow_mut();
+                    let id = s.active_ws_id();
+                    super::window_scene::activate_existing(&mut s, id);
+                }
+            });
+            page.append(&back);
+            stack.add_named(&page, Some("workspace-loading"));
+            s.aggregate.kind = None;
+            stack.set_visible_child_name("workspace-loading");
+            s.pending_open = Some(PendingWorkspaceOpen {
+                label,
+                socket: request_socket,
+                activate: request.activate,
+                shells: false,
+            });
         }
         Err(error) => {
             let detail = error.to_string();
@@ -131,6 +165,120 @@ pub(super) fn connect_open_request(state: &Rc<RefCell<UiState>>, request: Client
                 .notification_log
                 .push(format!("{label}: connect failed: {detail}"));
         }
+    }
+}
+
+pub(super) struct PendingWorkspaceOpen {
+    label: String,
+    socket: Option<String>,
+    activate: bool,
+    shells: bool,
+}
+
+/// 空 Shells 入口与新建 Tab 共用异步打开路径；不在 GTK 线程连接。
+pub(super) fn open_local_shell(s: &mut UiState) {
+    if s.pending_open.is_some() {
+        return;
+    }
+    use crate::frontend::linux::quickconnect::model::{
+        TargetConfigDraft, TargetRuntime, TargetTransport,
+    };
+    let draft = TargetConfigDraft::new("local", TargetRuntime::Shell, TargetTransport::Local, "~");
+    match s.event_pump.client().start_open_target(
+        &client_target_from_config(&draft),
+        ClientOpenIntent::CreateIfMissing,
+    ) {
+        Ok(()) => {
+            let stack = s.scenes.widget();
+            if let Some(old) = stack.child_by_name("workspace-loading") {
+                stack.remove(&old);
+            }
+            let label = gtk4::Label::new(Some(&i18n::tr(Key::StatusConnecting)));
+            stack.add_named(&label, Some("workspace-loading"));
+            stack.set_visible_child_name("workspace-loading");
+            s.pending_open = Some(PendingWorkspaceOpen {
+                label: "local shell".into(),
+                socket: None,
+                activate: true,
+                shells: true,
+            });
+        }
+        Err(error) => s.notification_log.push(format!("local shell: {error}")),
+    }
+}
+
+pub(super) fn poll_pending_open(s: &mut UiState) {
+    let Some(pending) = &s.pending_open else {
+        return;
+    };
+    let stack = s.scenes.widget();
+    let showing_loading = stack.visible_child_name().as_deref() == Some("workspace-loading");
+    let activate = showing_loading && pending.activate;
+    let result = s.event_pump.client().poll_open(activate);
+    if matches!(result, Ok(None)) {
+        return;
+    }
+    let pending = s.pending_open.take().expect("pending open");
+    match result {
+        Ok(Some(opened)) => {
+            if let Some(id) = parse_workspace_id(&opened.id) {
+                s.workspace_sockets.insert(
+                    id,
+                    pending.socket.or_else(|| opened_workspace_socket(&opened)),
+                );
+            }
+            if let Err(error) = sync_view_store(s) {
+                s.notification_log
+                    .push(format!("{}: {error}", pending.label));
+            } else if activate {
+                after_activate(s);
+                if pending.shells {
+                    super::window_aggregate::show(
+                        s,
+                        crate::frontend::linux::chrome::aggregate::AggregateKind::Shells,
+                    );
+                }
+            } else if let Some(id) = parse_workspace_id(&opened.id) {
+                super::window_scene::ensure_background_scene(s, &id);
+                super::window_layout::refresh_workspace_layout(s, &id, true);
+            }
+        }
+        Err(error) => {
+            s.notification_log
+                .push(format!("{}: {error}", pending.label));
+            tracing::warn!(target = "muxterm::linux", %error, "asynchronous workspace open failed");
+            if showing_loading {
+                if let Some(page) = stack
+                    .child_by_name("workspace-loading")
+                    .and_then(|page| page.downcast::<gtk4::Box>().ok())
+                {
+                    let back = page.last_child();
+                    if let Some(back) = &back {
+                        page.remove(back);
+                    }
+                    while let Some(child) = page.first_child() {
+                        page.remove(&child);
+                    }
+                    let message = gtk4::Label::new(Some(&format!("{}\n{error}", pending.label)));
+                    message.set_wrap(true);
+                    message.set_max_width_chars(60);
+                    message.set_selectable(true);
+                    page.append(&message);
+                    if let Some(back) = back {
+                        page.append(&back);
+                    }
+                }
+                return;
+            }
+        }
+        Ok(None) => unreachable!(),
+    }
+    if showing_loading && !activate {
+        let id = s.active_ws_id();
+        let _ = s.scenes.show(&id);
+    }
+    if let Some(page) = stack.child_by_name("workspace-loading") {
+        stack.remove(&page);
     }
 }
 

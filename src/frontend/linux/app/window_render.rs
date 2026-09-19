@@ -191,6 +191,9 @@ pub(super) fn apply_attention_visibility_events(s: &UiState, events: &[ClientWor
 }
 
 pub(super) fn mark_active_attention_visible(s: &UiState) {
+    if s.scenes.widget().visible_child_name().as_deref() == Some("workspace-loading") {
+        return;
+    }
     let workspace_id = active_workspace_key(s);
     if workspace_id.is_empty() {
         return;

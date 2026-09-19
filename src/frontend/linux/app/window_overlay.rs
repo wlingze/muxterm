@@ -133,6 +133,27 @@ pub(super) fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_
         let close_state = state.clone();
         crate::frontend::linux::quickconnect_panel::WorkspaceNavigation {
             items,
+            details: WorkspaceSidebarItem::from_views(&s.view_store)
+                .into_iter()
+                .map(|item| {
+                    (
+                        item.id.as_str(),
+                        format!("{} @ {}", item.runtime, item.transport),
+                    )
+                })
+                .collect(),
+            target_ids: recent_workspaces(
+                &s.view_store,
+                &s.workspace_sockets,
+                s.view_store.workspace_ids().count(),
+            )
+            .iter()
+            .map(|recent| {
+                crate::frontend::linux::quickconnect::model::QuickConnect::unique_id(
+                    &recent.to_draft_config(),
+                )
+            })
+            .collect(),
             activate: Rc::new(move |id| {
                 crate::frontend::linux::quickconnect_panel::close_current();
                 let mut s = activate_state.borrow_mut();
@@ -235,19 +256,33 @@ pub(super) fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_
             },
             search: {
                 let st = st.clone();
+                // 范围只是同一份 Core 搜索结果的投影；切换范围不重新扫描历史。
+                let cache = RefCell::new(
+                    None::<(
+                        String,
+                        Vec<crate::frontend::utils::corebridge::ClientSearchHit>,
+                    )>,
+                );
                 std::boxed::Box::new(move |query, scope| {
                     // C8：空 query 不扫 replica（emulate 已返回空）。
                     if query.trim().is_empty() {
+                        *cache.borrow_mut() = None;
                         return Vec::new();
                     }
                     let s = st.borrow();
                     let workspace_replica = active_workspace_id(&s);
-                    let hits = s
-                        .event_pump
-                        .client()
-                        .search_all(query)
-                        .unwrap_or_default()
-                        .into_iter()
+                    let mut cache = cache.borrow_mut();
+                    if cache.as_ref().is_none_or(|(previous, _)| previous != query) {
+                        *cache = Some((
+                            query.to_owned(),
+                            s.event_pump.client().search_all(query).unwrap_or_default(),
+                        ));
+                    }
+                    let hits = cache
+                        .as_ref()
+                        .expect("search cache initialized")
+                        .1
+                        .iter()
                         .filter(|hit| match scope {
                             crate::frontend::linux::panel_model::SearchScope::Pane => {
                                 hit.workspace_id == workspace_replica
@@ -258,6 +293,7 @@ pub(super) fn open_panel(state: &Rc<RefCell<UiState>>, window: &Window, initial_
                             }
                             crate::frontend::linux::panel_model::SearchScope::All => true,
                         })
+                        .cloned()
                         .map(crate::frontend::linux::panel_model::SearchRow::from)
                         .collect();
                     hits
@@ -323,9 +359,7 @@ pub(super) fn jump_to_attention_pane(state: &Rc<RefCell<UiState>>, ws: &str, pan
             .workspace_pane_viewport_for_seq(&workspace_key, pane, seq);
         if let Some(row) = row {
             if let Some(view) = s.active_layout().pane(pane).cloned() {
-                if let Some(adj) = view.terminal().vadjustment() {
-                    adj.set_value(adj.lower() + row as f64);
-                }
+                super::window_activity::scroll_to_history_offset(&view, row);
                 s.overlay.search_highlight.set_visible(true);
             }
         }
@@ -335,9 +369,6 @@ pub(super) fn jump_to_attention_pane(state: &Rc<RefCell<UiState>>, ws: &str, pan
 }
 
 pub(super) fn activate_attention_workspace(s: &mut UiState, ws: &str) {
-    if active_workspace_id(s) == ws {
-        return;
-    }
     if let Some(id) = attention_workspace_id(s, ws) {
         activate_existing(s, id);
     }

@@ -91,13 +91,23 @@ fn linux_ssh_attach_restores_offscreen_history_and_jump_latest() {
             fx.token
         );
 
+        // Index 搜索就绪不代表 GTK 已消费并绘制异步 History 批次。
+        assert!(wait_until_widget(3000, || app
+            .test_pane_vte_buffer_text(pane)
+            .contains(&fx.token)));
+        pump_main_loop(100);
         app.test_scroll_pane_to_top(pane);
         pump_main_loop(80);
         app.test_flush_feeds();
         assert!(
             app.test_pane_vte_text(pane).contains(&fx.token),
-            "滚到顶之后 VTE 必须能看见离屏历史 {}",
-            fx.token
+            "滚到顶之后 VTE 必须能看见离屏历史 {}; buffer_has={} visible={:?}",
+            fx.token,
+            app.test_pane_vte_buffer_text(pane).contains(&fx.token),
+            app.test_pane_vte_text(pane)
+                .lines()
+                .take(8)
+                .collect::<Vec<_>>()
         );
 
         let jump = find_by_name(&app.test_window(), "muxterm-jump-latest")

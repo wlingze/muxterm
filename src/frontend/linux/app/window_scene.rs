@@ -44,9 +44,7 @@ pub(super) fn switch_workspace_n(s: &mut UiState, n: usize) {
             .map(|workspace| workspace.id.clone())
     };
     if let Some(target) = target {
-        if s.active_ws_id() != target || s.aggregate.kind.is_some() {
-            activate_existing(s, target);
-        }
+        activate_existing(s, target);
     }
 }
 
@@ -133,6 +131,11 @@ pub(super) fn activate_existing(s: &mut UiState, id: WorkspaceId) {
     maybe_refresh_status(s, true);
     if s.active_ws_id() == id {
         let _ = s.scenes.show(&id);
+        if s.panel_open.is_none() && !s.overlay.pane_find.is_visible() {
+            if let Some(view) = s.active_layout().pane(s.active_pane) {
+                view.grab_focus();
+            }
+        }
         refresh_sidebar_if_open(s);
         return;
     }
@@ -159,10 +162,41 @@ pub(super) fn after_activate(s: &mut UiState) {
         return;
     };
     show_workspace_scene(s, id, true);
+    if s.view_store
+        .workspace(&s.active_workspace_key())
+        .and_then(|view| view.workspace.as_ref())
+        .is_some_and(|workspace| workspace.runtime == "shell")
+    {
+        super::window_aggregate::show(
+            s,
+            crate::frontend::linux::chrome::aggregate::AggregateKind::Shells,
+        );
+    }
     mark_active_attention_visible(s);
     refresh_sidebar_if_open(s);
     report_all_pane_colours(s);
     maybe_refresh_status(s, true);
+}
+
+/// 切工作区只改 GtkStack 可见页和前端缓存，不调用 Core。
+pub(super) fn ensure_background_scene(s: &mut UiState, id: &WorkspaceId) {
+    if !s.scenes.contains(id) {
+        let mirror = s.workspace_supports(
+            &id.as_str(),
+            super::ClientRuntimeCapability::SharedClientResize,
+        );
+        let weak = s.self_weak.clone();
+        let mut layout =
+            LayoutHost::new(s.theme.clone(), s.font.clone(), mirror, s.scrollback_lines);
+        layout.set_menu_callback(move |pane_id, action| {
+            if let Some(state) = weak.upgrade() {
+                handle_pane_menu_action(&state, pane_id, action);
+            }
+        });
+        let root = layout.root_box.clone();
+        s.scenes.insert(id.clone(), layout);
+        s.scenes.add_hidden_page(id, &root);
+    }
 }
 
 /// 切工作区只改 GtkStack 可见页和前端缓存，不调用 Core。

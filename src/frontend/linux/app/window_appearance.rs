@@ -102,6 +102,17 @@ pub(super) fn toggle_theme(s: &mut UiState) {
 /// This is shared by the settings callback and the EventPump ConfigChanged
 /// path so external reloads and in-app edits have identical behavior.
 pub(super) fn apply_config_snapshot(s: &mut UiState, snapshot: ClientConfigSnapshot) {
+    if let Some(projects) = snapshot.values.get("projects").and_then(|value| {
+        serde_json::from_value::<Vec<crate::frontend::linux::quickconnect::model::ProjectDocument>>(
+            value.clone(),
+        )
+        .ok()
+    }) {
+        s.qc_store =
+            crate::frontend::linux::quickconnect::store::QuickConnectStore::from_project_documents(
+                &projects,
+            );
+    }
     let resolved_theme = snapshot.resolved_theme.clone();
     let effective_keybindings = snapshot.effective_keybindings.clone();
     let cfg = match serde_json::from_value::<ClientConfig>(snapshot.values) {

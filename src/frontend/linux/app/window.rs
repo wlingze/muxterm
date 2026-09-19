@@ -226,8 +226,9 @@ struct UiState {
     reconnect_attempts: u32,
     /// 终端区 Overlay：常驻 workspace scene stack 是主 child，覆盖层浮在上面。
     overlay: OverlayLayer,
-    /// 上次看到这里（W18g）：(workspace, pane) → 离开时的最后一行文本。
-    last_seen: std::collections::HashMap<(String, u32), String>,
+    /// 完整身份与稳定行号驱动的短时历史提示。
+    last_seen: crate::frontend::linux::chrome::last_seen::LastSeen,
+    pending_open: Option<window_connection::PendingWorkspaceOpen>,
     /// VTE scrollback 行数（新建 LayoutHost 时用）。
     scrollback_lines: u32,
     /// 启动配置的 tmux `-L` socket（本地 tmux 连接默认用它）。

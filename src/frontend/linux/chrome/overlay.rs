@@ -73,7 +73,9 @@ impl OverlayLayer {
         pane_find.append(&pane_find_entry);
         pane_find.set_visible(false);
 
-        let last_seen = gtk4::Button::with_label("上次看到这里");
+        let last_seen = gtk4::Button::with_label(&crate::frontend::utils::i18n::tr(
+            crate::frontend::utils::i18n::Key::SettingsLastSeen,
+        ));
         last_seen.set_widget_name("muxterm-last-seen");
         last_seen.set_halign(gtk4::Align::End);
         last_seen.set_valign(gtk4::Align::Start);
@@ -89,6 +91,7 @@ impl OverlayLayer {
         command_ok.set_halign(gtk4::Align::End);
         command_ok.set_valign(gtk4::Align::Center);
         command_ok.set_margin_end(2);
+        command_ok.set_margin_bottom(36);
         command_ok.add_css_class("muxterm-cmd-mark-ok");
         command_ok.set_visible(false);
         let command_fail = gtk4::Button::with_label("✗");
@@ -96,6 +99,7 @@ impl OverlayLayer {
         command_fail.set_halign(gtk4::Align::End);
         command_fail.set_valign(gtk4::Align::Center);
         command_fail.set_margin_end(2);
+        command_fail.set_margin_top(36);
         command_fail.add_css_class("muxterm-cmd-mark-fail");
         command_fail.set_visible(false);
 

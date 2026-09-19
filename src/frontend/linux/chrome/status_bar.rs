@@ -575,11 +575,16 @@ impl StatusBar {
                 }
             });
             let group = GtkBox::new(Orientation::Horizontal, 0);
+            group.add_css_class("muxterm-tab-group");
+            if win.current {
+                group.add_css_class("tab-active");
+            }
             group.set_hexpand(self.equal_width.get());
             group.append(&button);
             let close = Button::with_label("×");
             close.set_widget_name(&format!("muxterm-status-tab-close-{id}"));
             close.set_has_frame(false);
+            close.add_css_class("muxterm-tab-close");
             close.set_can_focus(false);
             let cb = self.on_tab_close.clone();
             close.connect_clicked(move |_| {

@@ -18,7 +18,7 @@ use serde_json::Value;
 use crate::frontend::utils::corebridge::{
     ClientConfigSnapshot, ClientJsonPatchOperation, ClientRuntimeInfo,
 };
-use crate::frontend::utils::i18n::{self, Key as TextKey};
+use crate::frontend::utils::i18n::{self, tr_static as text, Key as TextKey};
 
 use super::{
     control_row, field_description, field_title, install_preferences_css, option_label, pointer,
@@ -46,7 +46,7 @@ fn section(id: &str, title_key: &str) -> GtkBox {
     label.set_halign(Align::Start);
     label.add_css_class("prefs-card-title");
     header.append(&label);
-    let hint = Label::new(Some("Changes are staged until you save."));
+    let hint = Label::new(Some(text(TextKey::SettingsChangesAreStagedUntilYouSave)));
     hint.set_halign(Align::Start);
     hint.add_css_class("prefs-card-hint");
     header.append(&hint);
@@ -56,15 +56,15 @@ fn section(id: &str, title_key: &str) -> GtkBox {
 
 fn section_title(id: &str, title_key: &str) -> String {
     match id {
-        "appearance" => "Terminal".into(),
-        "runtime" => "Workspace defaults".into(),
-        "attention" => "Attention".into(),
-        "ui" => "Interface".into(),
-        "ssh" => "SSH defaults".into(),
-        "behavior" => "Exit behavior".into(),
-        "platform" => "Platform".into(),
-        "projects" => "Workspace profiles".into(),
-        "shortcuts" => "Keyboard shortcuts".into(),
+        "appearance" => text(TextKey::SettingsTerminal).into(),
+        "runtime" => text(TextKey::SettingsWorkspaceDefaults).into(),
+        "attention" => text(TextKey::SettingsAttention).into(),
+        "ui" => text(TextKey::SettingsInterface).into(),
+        "ssh" => text(TextKey::SettingsSshDefaults).into(),
+        "behavior" => text(TextKey::SettingsExitBehavior).into(),
+        "platform" => text(TextKey::SettingsPlatform).into(),
+        "projects" => text(TextKey::SettingsWorkspaceProfiles).into(),
+        "shortcuts" => text(TextKey::SettingsKeyboardShortcuts).into(),
         _ => category_title(id, title_key),
     }
 }
@@ -86,31 +86,33 @@ fn category_icon(id: &str) -> &'static str {
 
 fn category_hint(id: &str) -> &'static str {
     match id {
-        "appearance" => "Fonts & colors",
-        "runtime" => "Workspaces",
-        "attention" => "Agent signals",
-        "ui" => "Window chrome",
-        "ssh" => "Remote access",
-        "behavior" => "Exit rules",
-        "platform" => "Desktop specific",
-        "projects" => "Launch profiles",
-        "shortcuts" => "Keyboard",
-        _ => "General",
+        "appearance" => text(TextKey::SettingsFontsColors),
+        "runtime" => text(TextKey::SettingsWorkspaces),
+        "attention" => text(TextKey::SettingsAgentSignals),
+        "ui" => text(TextKey::SettingsWindowChrome),
+        "ssh" => text(TextKey::SettingsRemoteAccess),
+        "behavior" => text(TextKey::SettingsExitRules),
+        "platform" => text(TextKey::SettingsDesktopSpecific),
+        "projects" => text(TextKey::SettingsLaunchProfiles),
+        "shortcuts" => text(TextKey::SettingsKeyboard),
+        _ => text(TextKey::SettingsGeneral),
     }
 }
 
 fn category_description(id: &str) -> &'static str {
     match id {
-        "appearance" => "Tune the terminal you look at all day: type, scale, and color.",
-        "runtime" => "Set defaults for new workspaces, panes, and terminal history.",
-        "attention" => "Decide when Muxterm should surface work that needs your attention.",
-        "ui" => "Shape the surrounding window chrome and tab bar.",
-        "ssh" => "Defaults used when opening remote workspaces over SSH.",
-        "behavior" => "Choose what Muxterm does when panes or commands exit.",
-        "platform" => "Options specific to the desktop platform you are running on.",
-        "projects" => "Save the workspaces you return to most often.",
-        "shortcuts" => "Choose a keyboard preset and customize individual actions.",
-        _ => "Configure this part of Muxterm.",
+        "appearance" => text(TextKey::SettingsTuneTheTerminalYouLookAtAllDayTypeScaleAndColor),
+        "runtime" => text(TextKey::SettingsSetDefaultsForNewWorkspacesPanesAndTerminalHistory),
+        "attention" => {
+            text(TextKey::SettingsDecideWhenMuxtermShouldSurfaceWorkThatNeedsYourAttention)
+        }
+        "ui" => text(TextKey::SettingsShapeTheSurroundingWindowChromeAndTabBar),
+        "ssh" => text(TextKey::SettingsDefaultsUsedWhenOpeningRemoteWorkspacesOverSsh),
+        "behavior" => text(TextKey::SettingsChooseWhatMuxtermDoesWhenPanesOrCommandsExit),
+        "platform" => text(TextKey::SettingsOptionsSpecificToTheDesktopPlatformYouAreRunningOn),
+        "projects" => text(TextKey::SettingsSaveTheWorkspacesYouReturnToMostOften),
+        "shortcuts" => text(TextKey::SettingsChooseAKeyboardPresetAndCustomizeIndividualActions),
+        _ => text(TextKey::SettingsConfigureThisPartOfMuxterm),
     }
 }
 
@@ -129,11 +131,11 @@ fn appearance_preview(values: &Value) -> GtkBox {
         .margin_start(16)
         .margin_end(16)
         .build();
-    let title = Label::new(Some("Terminal preview"));
+    let title = Label::new(Some(text(TextKey::SettingsTerminalPreview)));
     title.set_halign(Align::Start);
     title.add_css_class("prefs-preview-title");
     header.append(&title);
-    let live = Label::new(Some("PREVIEW"));
+    let live = Label::new(Some(text(TextKey::SettingsPreview)));
     live.set_halign(Align::End);
     live.set_hexpand(true);
     live.add_css_class("prefs-apply-badge");
@@ -163,7 +165,7 @@ fn appearance_preview(values: &Value) -> GtkBox {
     prompt.set_halign(Align::Start);
     prompt.add_css_class("prefs-preview-prompt");
     terminal.append(&prompt);
-    let output = Label::new(Some("Connected  ·  2 panes  ·  waiting for input"));
+    let output = Label::new(Some(text(TextKey::SettingsConnected2PanesWaitingForInput)));
     output.set_halign(Align::Start);
     output.add_css_class("prefs-preview-output");
     terminal.append(&output);
@@ -177,7 +179,7 @@ fn appearance_preview(values: &Value) -> GtkBox {
     let theme = pointer(values, "/theme/name")
         .and_then(Value::as_str)
         .map(|value| option_label("/theme/name", value))
-        .unwrap_or_else(|| "Follow system".into());
+        .unwrap_or_else(|| text(TextKey::SettingsFollowSystem).into());
     let summary = Label::new(Some(&format!("{family}  ·  {size:.1} pt  ·  {theme}")));
     summary.set_halign(Align::Start);
     summary.add_css_class("prefs-preview-summary");
@@ -187,6 +189,20 @@ fn appearance_preview(values: &Value) -> GtkBox {
 }
 
 fn category_title(id: &str, title_key: &str) -> String {
+    if matches!(
+        id,
+        "appearance"
+            | "runtime"
+            | "attention"
+            | "ui"
+            | "ssh"
+            | "behavior"
+            | "platform"
+            | "projects"
+            | "shortcuts"
+    ) {
+        return section_title(id, title_key);
+    }
     let raw = title_key
         .strip_prefix("settings.")
         .filter(|title| !title.is_empty())
@@ -260,11 +276,15 @@ pub(super) fn show(
     header_title.set_halign(Align::Start);
     header_title.add_css_class("prefs-header-title");
     heading.append(&header_title);
-    let header_subtitle = Label::new(Some("Make Muxterm feel like yours."));
+    let header_subtitle = Label::new(Some(text(TextKey::SettingsMakeMuxtermFeelLikeYours)));
     header_subtitle.set_halign(Align::Start);
     header_subtitle.add_css_class("prefs-header-subtitle");
     heading.append(&header_subtitle);
-    let config_label = Label::new(Some(&format!("Config file  ·  {}", config_path.display())));
+    let config_label = Label::new(Some(&format!(
+        "{}  ·  {}",
+        text(TextKey::SettingsConfigFile),
+        config_path.display()
+    )));
     config_label.set_halign(Align::Start);
     config_label.add_css_class("prefs-config-path");
     heading.append(&config_label);
@@ -272,9 +292,10 @@ pub(super) fn show(
 
     let search = SearchEntry::new();
     search.set_widget_name("muxterm-prefs-search");
-    search.set_placeholder_text(Some("Search preferences"));
-    search.set_tooltip_text(Some("Search by setting name or keyword"));
+    search.set_placeholder_text(Some(text(TextKey::SettingsSearchPreferences)));
+    search.set_tooltip_text(Some(text(TextKey::SettingsSearchBySettingNameOrKeyword)));
     search.set_size_request(260, -1);
+    search.set_valign(Align::Center);
     search.add_css_class("prefs-search");
     header.append(&search);
     root.append(&header);
@@ -301,7 +322,7 @@ pub(super) fn show(
         .build();
     sidebar.set_size_request(220, -1);
     sidebar.add_css_class("prefs-sidebar");
-    let sidebar_label = Label::new(Some("CONFIGURATION"));
+    let sidebar_label = Label::new(Some(text(TextKey::SettingsConfiguration)));
     sidebar_label.set_halign(Align::Start);
     sidebar_label.add_css_class("prefs-sidebar-label");
     sidebar.append(&sidebar_label);
@@ -486,9 +507,9 @@ pub(super) fn show(
         .margin_end(28)
         .build();
     actions.add_css_class("prefs-footer");
-    let save_status = Label::new(Some(
-        "Changes are saved to config.toml when you click Save.",
-    ));
+    let save_status = Label::new(Some(text(
+        TextKey::SettingsChangesAreSavedToConfigTomlWhenYouClickSave,
+    )));
     save_status.set_halign(Align::Start);
     save_status.set_xalign(0.0);
     save_status.set_hexpand(true);
@@ -496,13 +517,13 @@ pub(super) fn show(
     save_status.set_widget_name("muxterm-prefs-status");
     save_status.add_css_class("prefs-footer-status");
     actions.append(&save_status);
-    let cancel = gtk4::Button::with_label("Cancel");
+    let cancel = gtk4::Button::with_label(text(TextKey::SettingsCancel));
     cancel.set_widget_name("muxterm-prefs-cancel");
     cancel.add_css_class("prefs-secondary-action");
     let save = gtk4::Button::with_label(&i18n::tr(TextKey::Save));
     save.set_widget_name("muxterm-prefs-save");
     save.add_css_class("suggested-action");
-    save.set_tooltip_text(Some("Write changes to config.toml"));
+    save.set_tooltip_text(Some(text(TextKey::SettingsWriteChangesToConfigToml)));
     actions.append(&cancel);
     actions.append(&save);
     root.append(&actions);
@@ -618,7 +639,10 @@ pub(super) fn show(
                 .collect();
             if let Err(error) = config.apply(&operations) {
                 tracing::error!(target = "muxterm::config", "保存设置失败: {error}");
-                save_status.set_text(&format!("Could not save settings: {error}"));
+                save_status.set_text(&format!(
+                    "{}: {error}",
+                    text(TextKey::SettingsCouldNotSaveSettings)
+                ));
                 save_status.add_css_class("error");
                 return;
             }
@@ -674,7 +698,9 @@ pub(super) fn show(
 fn confirm_discard(parent: &impl IsA<Window>, on_discard: impl Fn() + 'static) {
     let dialog = Window::builder()
         .modal(true)
-        .title("Discard unsaved changes?")
+        .title(crate::frontend::utils::i18n::tr_static(
+            crate::frontend::utils::i18n::Key::SettingsDiscardUnsavedChanges,
+        ))
         .default_width(380)
         .build();
     dialog.set_transient_for(Some(parent));
@@ -687,7 +713,9 @@ fn confirm_discard(parent: &impl IsA<Window>, on_discard: impl Fn() + 'static) {
         .margin_start(16)
         .margin_end(16)
         .build();
-    let label = Label::new(Some("Your edits have not been applied to config.toml."));
+    let label = Label::new(Some(crate::frontend::utils::i18n::tr_static(
+        crate::frontend::utils::i18n::Key::SettingsYourEditsHaveNotBeenAppliedToConfigToml,
+    )));
     label.set_wrap(true);
     label.set_halign(Align::Start);
     root.append(&label);
@@ -696,8 +724,10 @@ fn confirm_discard(parent: &impl IsA<Window>, on_discard: impl Fn() + 'static) {
         .spacing(8)
         .halign(Align::End)
         .build();
-    let cancel = Button::with_label("Cancel");
-    let discard = Button::with_label("Discard");
+    let cancel = Button::with_label(text(TextKey::SettingsCancel));
+    let discard = Button::with_label(crate::frontend::utils::i18n::tr_static(
+        crate::frontend::utils::i18n::Key::SettingsDiscard,
+    ));
     actions.append(&cancel);
     actions.append(&discard);
     root.append(&actions);
@@ -736,7 +766,7 @@ mod tests {
     fn category_title_humanizes_manifest_key() {
         assert_eq!(
             category_title("appearance", "settings.appearance"),
-            "Appearance"
+            super::text(super::TextKey::SettingsTerminal)
         );
         assert_eq!(category_title("tab_bar", ""), "Tab Bar");
     }

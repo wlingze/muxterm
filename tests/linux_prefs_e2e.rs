@@ -93,6 +93,21 @@ fn prefs_save_writes_font_size_and_preserves_comments() {
         );
         pump_main_loop(80);
 
+        if let Some(path) = std::env::var_os("MUXTERM_PREFS_SCREENSHOT") {
+            win.queue_draw();
+            gtk4::test_widget_wait_for_draw(&win);
+            pump_main_loop(200);
+            let paintable = gtk4::WidgetPaintable::new(Some(&win));
+            let snapshot = gtk4::Snapshot::new();
+            paintable.snapshot(&snapshot, f64::from(win.width()), f64::from(win.height()));
+            let node = snapshot.to_node().expect("rendered preferences");
+            win.renderer()
+                .unwrap()
+                .render_texture(&node, None)
+                .save_to_png(path)
+                .unwrap();
+        }
+
         // 按 widget_name 契约找控件（禁止下标 / 英文 Save）。
         let font_size = find_by_name(&win, "muxterm-prefs-font-size")
             .expect("font-size SpinButton 应存在")
@@ -212,12 +227,15 @@ fn prefs_window_exposes_project_and_shortcut_editors() {
             .expect("shortcut editor 入口应存在")
             .downcast::<gtk4::Button>()
             .expect("shortcut editor 应是 Button");
-        assert!(projects
-            .label()
-            .is_some_and(|label| label.contains("Manage projects")));
-        assert!(shortcuts
-            .label()
-            .is_some_and(|label| label.contains("Manage shortcuts")));
+        use muxterm::test_support::frontend::utils::i18n::{self, Key};
+        assert_eq!(
+            projects.label().as_deref(),
+            Some(i18n::tr_static(Key::SettingsManageProjects))
+        );
+        assert_eq!(
+            shortcuts.label().as_deref(),
+            Some(i18n::tr_static(Key::SettingsManageShortcuts))
+        );
 
         win.close();
         win.destroy();

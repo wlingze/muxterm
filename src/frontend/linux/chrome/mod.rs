@@ -6,6 +6,7 @@ pub(crate) mod attention_compat;
 pub mod attention_ui;
 pub mod command_palette;
 pub mod keymap;
+pub mod last_seen;
 pub mod overlay;
 pub mod panel_model;
 pub mod scene_stack;

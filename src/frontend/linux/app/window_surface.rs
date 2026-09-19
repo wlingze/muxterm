@@ -41,18 +41,19 @@ pub(super) fn seed_unseeded_pane_for(
         return;
     }
     let workspace_key = wid.as_str();
-    let bytes = s
-        .view_store
-        .take_pane_baseline(&workspace_key, pane_id)
-        .or_else(|| {
-            let bytes = s
-                .event_pump
-                .client()
-                .get_workspace_pane_output(&workspace_key, pane_id);
-            (!bytes.is_empty()).then_some(bytes)
-        });
+    let bytes = s.view_store.take_pane_baseline(&workspace_key, pane_id);
     if let Some(bytes) = bytes {
-        tracing::info!(
+        // 历史必须先进入尚未播种的 Surface。VTE feed 是异步的，首帧后
+        // 立刻回放历史会读到旧屏，再用旧屏覆盖权威光标与输入框。
+        let events = s
+            .view_store
+            .take_pane_render_events(&workspace_key, pane_id);
+        for event in &events {
+            if event.kind() == ClientEventKind::PaneHistory {
+                view.prepend_history(&event.data);
+            }
+        }
+        tracing::trace!(
             target: "muxterm::surface",
             pane = pane_id,
             bytes = bytes.len(),
@@ -60,12 +61,18 @@ pub(super) fn seed_unseeded_pane_for(
         );
         view.seed_raw(&bytes, cols, rows);
         s.snapshot_seeded_this_batch.insert(pane_id);
-        drain_view_store_render_events(s, wid, view, pane_id);
+        for event in events {
+            match event.kind() {
+                ClientEventKind::PaneFrame => view.feed_full(&event.data),
+                ClientEventKind::PaneOutput => view.feed_output(&event.data),
+                _ => {}
+            }
+        }
     } else {
-        tracing::info!(
+        tracing::trace!(
             target: "muxterm::surface",
             pane = pane_id,
-            "pane view unseeded and no queued or compatibility baseline is available"
+            "pane view awaiting authoritative baseline"
         );
     }
 }
@@ -84,10 +91,11 @@ pub(super) fn drain_view_store_render_events(
     {
         match event.kind() {
             ClientEventKind::PaneHistory => view.prepend_history(&event.data),
-            ClientEventKind::PaneFrame => view.feed_full(&event.data),
+            ClientEventKind::PaneFrame | ClientEventKind::PaneSnapshot => {
+                view.feed_full(&event.data)
+            }
             ClientEventKind::PaneOutput => view.feed_output(&event.data),
-            ClientEventKind::PaneSnapshot
-            | ClientEventKind::PaneClosed
+            ClientEventKind::PaneClosed
             | ClientEventKind::PaneResized
             | ClientEventKind::Other(_) => {}
         }
