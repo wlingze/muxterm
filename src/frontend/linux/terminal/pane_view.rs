@@ -52,6 +52,7 @@ pub trait TerminalRenderer {
 /// VTE4-backed renderer used by the Linux pane surface.
 pub struct VteRenderer {
     terminal: Terminal,
+    contrast: RefCell<super::contrast::ContrastGuard>,
 }
 
 impl TerminalRenderer for VteRenderer {
@@ -60,14 +61,19 @@ impl TerminalRenderer for VteRenderer {
         terminal.set_hexpand(true);
         terminal.set_vexpand(true);
         terminal.set_enable_fallback_scrolling(true);
-        Self { terminal }
+        Self {
+            terminal,
+            contrast: RefCell::new(super::contrast::ContrastGuard::new(
+                &crate::frontend::linux::theme::fallback_theme(),
+            )),
+        }
     }
 
     fn render(&mut self, output: &[u8], _cursor_pos: (u16, u16)) {
         if output.is_empty() {
             return;
         }
-        self.terminal.feed(output);
+        self.feed(output);
     }
 
     fn resize(&mut self, cols: u16, rows: u16) {
@@ -82,6 +88,10 @@ impl TerminalRenderer for VteRenderer {
 }
 
 impl VteRenderer {
+    fn feed(&self, bytes: &[u8]) {
+        self.terminal.feed(&self.contrast.borrow_mut().feed(bytes));
+    }
+
     pub fn terminal(&self) -> &Terminal {
         &self.terminal
     }
@@ -103,6 +113,7 @@ impl VteRenderer {
 
     /// Apply foreground/background/cursor/palette colors to VTE.
     pub fn apply_theme(&self, theme: &Theme) {
+        self.contrast.borrow_mut().set_theme(theme);
         let fg = rgba(theme.foreground);
         let bg = rgba(theme.background);
         let cursor = rgba(theme.cursor);
@@ -110,7 +121,7 @@ impl VteRenderer {
         let refs: Vec<&gtk4::gdk::RGBA> = palette.iter().collect();
         self.terminal.set_color_foreground(&fg);
         self.terminal.set_color_background(&bg);
-        self.terminal.set_color_bold(Some(&fg));
+        self.terminal.set_color_bold(None);
         self.terminal.set_color_cursor(Some(&cursor));
         self.terminal.set_color_cursor_foreground(Some(&bg));
         self.terminal.set_color_highlight(Some(&cursor));
@@ -1287,7 +1298,7 @@ fn feed_direct(inner: &PaneViewInner, bytes: &[u8]) {
         return;
     }
     with_remote_feed(inner, || {
-        inner.renderer.terminal().feed(bytes);
+        inner.renderer.feed(bytes);
     });
     let mut trace = inner.render_trace.borrow_mut();
     trace.feeds += 1;
@@ -1307,8 +1318,8 @@ fn visible_overlay_ansi(inner: &PaneViewInner) -> (usize, Vec<u8>) {
         .max(inner.grid_rows.get() as i64)
         .max(1) as usize;
     let text = terminal
-        .text_format(vte4::Format::Text)
-        .map(|text| text.to_string())
+        .text_format(vte4::Format::Html)
+        .map(|text| super::styled_text::html_to_ansi(text.as_str()))
         .unwrap_or_default();
     let mut lines = text
         .split('\n')
@@ -1357,6 +1368,7 @@ fn history_replay_ansi(
         // attach 历史前面。不能 reset，否则会丢失 TUI 模式和光标。
         replay.extend_from_slice(b"\x1b[3J");
     }
+    replay.extend_from_slice(b"\x1b[0m");
     for line in lines {
         replay.extend_from_slice(line.as_bytes());
         replay.extend_from_slice(b"\r\n");
@@ -1367,6 +1379,7 @@ fn history_replay_ansi(
     // 历史行已被推进 scrollback；先清掉当前屏再铺可见网格，避免短历史
     // 批次残留在底部 viewport 里。
     replay.extend_from_slice(b"\x1b[2J\x1b[H");
+    replay.extend_from_slice(b"\x1b[0m");
     replay.extend_from_slice(visible_overlay);
     replay.extend_from_slice(b"\x1b8");
     replay
@@ -1376,15 +1389,14 @@ fn feed_remote_bytes(inner: &PaneViewInner, data: &[u8]) {
     // 只在完整鼠标模式 CSI 结束处关闭 VTE 本地跟踪。绝不能在任意
     // 分包末尾插入 ESC：它会截断尚未完成的 UTF-8、CSI 或 OSC。
     let boundaries = feed_input_state(inner, data);
-    let terminal = inner.renderer.terminal();
     let mut start = 0;
     for end in boundaries {
-        terminal.feed(&data[start..end]);
-        terminal.feed(DISABLE_MOUSE_TRACKING);
+        inner.renderer.feed(&data[start..end]);
+        inner.renderer.feed(DISABLE_MOUSE_TRACKING);
         start = end;
     }
     if start < data.len() {
-        terminal.feed(&data[start..]);
+        inner.renderer.feed(&data[start..]);
     }
 }
 
@@ -1592,7 +1604,9 @@ mod tests {
 
         let replay = history_replay_ansi(&lines, 3, overlay, true);
         assert!(!replay.windows(2).any(|bytes| bytes == b"\x1bc"));
-        assert!(replay.starts_with(b"\x1b7\x1b[H\x1b[2J\x1b[3JHIST_OFFSCREEN\r\n\r\npad-01\r\n"));
+        assert!(
+            replay.starts_with(b"\x1b7\x1b[H\x1b[2J\x1b[3J\x1b[0mHIST_OFFSCREEN\r\n\r\npad-01\r\n")
+        );
         assert!(replay.ends_with(b"\x1b8"));
         assert!(replay.windows(overlay.len()).any(|bytes| bytes == overlay));
     }

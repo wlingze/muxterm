@@ -179,14 +179,41 @@ pub(super) fn toggle_status_mode(s: &mut UiState) {
 }
 
 pub(super) fn report_all_pane_colours(s: &mut UiState) {
-    if !s.uses_tmux() {
+    s.reported_colour_panes.clear();
+    let ids: Vec<_> = s.view_store.workspace_ids().map(str::to_owned).collect();
+    for id in ids {
+        report_workspace_pane_colours(s, &id);
+    }
+}
+
+pub(super) fn report_workspace_pane_colours(s: &mut UiState, workspace: &str) {
+    if !s.workspace_supports(
+        workspace,
+        crate::frontend::utils::corebridge::ClientRuntimeCapability::SharedClientResize,
+    ) {
         return;
     }
+    let panes: Vec<_> = s
+        .view_store
+        .workspace(workspace)
+        .map(|view| view.all_pane_ids().collect())
+        .unwrap_or_default();
+    s.reported_colour_panes
+        .retain(|(owner, pane)| owner != workspace || panes.contains(pane));
     let fg = s.theme.foreground;
     let bg = s.theme.background;
-    let _ = (fg, bg);
-    let _ = s.event_pump.client().report_all_pane_colours(
-        &format!("#{:02x}{:02x}{:02x}", fg.0, fg.1, fg.2),
-        &format!("#{:02x}{:02x}{:02x}", bg.0, bg.1, bg.2),
-    );
+    for pane_id in panes {
+        if s.reported_colour_panes
+            .insert((workspace.to_owned(), pane_id))
+        {
+            s.command_queue.borrow_mut().push(
+                crate::frontend::command_queue::ClientCommand::PaneColours {
+                    workspace_id: workspace.to_owned(),
+                    pane_id,
+                    fg: format!("#{:02x}{:02x}{:02x}", fg.0, fg.1, fg.2),
+                    bg: format!("#{:02x}{:02x}{:02x}", bg.0, bg.1, bg.2),
+                },
+            );
+        }
+    }
 }

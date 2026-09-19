@@ -137,3 +137,52 @@ tmux backend 145、terminal 27、Project store 4 个单测通过；Clippy、架�
 [Codex 官方 sparkle_field.rs](https://github.com/openai/codex/blob/main/codex-rs/tui/src/bottom_pane/chat_composer/sparkle_field.rs)
 中的 DOTS 使用八个单点 Braille 字符，不是方块。用户真实 yaklang/muxterm/timepulse
 会话尚未用新二进制重新打开验收；没有停止或重启用户默认 tmux/Herdr 服务。
+
+## 重启反馈与真实打开路径回归（2026-09-19 晚间）
+
+- 侧栏用实际分配尺寸变更更新折叠分割位置，不再监听不存在的 `height` 属性通知；
+  Commands / Hidden Commands 折叠后留在底部，Workspace/Agents 使用剩余高度。
+  S/A 和普通 Workspace 共用中性行/徽标/选中样式，不再单独染色。
+- 历史插入恢复当前屏时，从 VTE 自身 HTML 导出恢复颜色和常用文字样式，不再用纯文本
+  重画可见屏；插入历史先恢复默认 SGR，避免继承 Pi 当时的黄色。回归测试要求在应用
+  再次重绘之前就保留原屏 RGB 色。这里只修当前屏的回填恢复；既有离屏 PaneHistory
+  协议仍为纯文本，没有扩展跨平台的彩色历史协议。
+- 隐藏 SSH 场景继续合并并按序消费字节，不再 pause 后以 RequestPaneSnapshot 追帧；
+  避免聚合场景切换引发日志里的反复 `frontend-surface-overflow` 和重新抓屏。
+- tmux Project 经指定 socket 发现已有同 session/name 目标后 attach；确实缺失才创建。
+  未填写 session 时使用 Project 名称，命名创建也传首个 pane 的 cwd。修复被旧测试漏掉的
+  `panel-project|/home/wlz`，现在严格断言 `panel-project|/tmp` 以及重开不增加实例。
+- Herdr 明确区分已有和新建，不在 attach 后重套创建模板；指定 session/socket 时直接
+  查询目标服务，失效的显式 workspace ID 不退回同名创建。本地 named socket 和发现路径
+  遵循 XDG_CONFIG_HOME。编辑 Project 保留 session/socket/workspace ID，并提供可选身份字段。
+
+验证覆盖：tmux Project 创建/关闭/重新 attach；Herdr Project 本地和 loopback SSH
+创建/输入/关闭/重新 attach（检查 cwd 和服务端 Workspace 数量）；Existing 面板真实点击
+Herdr；折叠后的实际高度、颜色恢复、SSH 历史、连续输出及相邻输入。
+9 个 GTK targets 的 18 个用例及单独 GTK 编辑器/快捷键综合用例通过；Catalog 36、tmux
+backend 146、terminal 28、i18n 4、Herdr identity 4 个用例通过。
+
+VTE 导出接口与 HTML 标签核对：
+[get_text_format](https://gnome.pages.gitlab.gnome.org/vte/gtk4/method.Terminal.get_text_format.html)、
+[官方实现](https://github.com/GNOME/vte/blob/master/src/vte.cc)，时间
+`2026-09-19T20:57:16+08:00`。隔离测试不替代用户真实远端验证。
+最新用户日志 `test_2026-0919-2025.log` 仍报告字体文件缺失；分发时必须保留完整
+`build/linux/assets/fonts`，不能只复制可执行文件后依赖开发机源码路径。
+
+## Codex 黑底输入框（2026-09-19）
+
+- tmux 的颜色能力原先默认 false 且未执行探测，用户日志因此一直跳过 OSC 10/11
+  上报。改为现有控制通道查询 server version，未知时暂存最新颜色，旧版本不发无效命令。
+- Linux 按 workspace + pane 排队上报，覆盖新 tab、后台 workspace 和主题切换，
+  不再经 active-workspace FFI 同步上报到错误目标。
+- 旧 agent 仍可能保留黑色输入框：Linux Surface 对默认前景与显式背景冲突增加显示侧
+  对比度保护，正常显式文字色不改，背景/隐藏属性不改，不写回 tmux 色板。
+  只维护属性而非另一份屏幕，完整 CSI 边界插入，跨包 UTF-8/OSC 保持原样。
+- 验证：147 个 tmux backend 测试、4 个对比度测试、真实 VTE HTML 黑底白字/恢复默认色；
+  GTK Project 测试内实际 OSC 查询验证新 pane 和后台 workspace 黑白主题往返。
+  Clippy lib `-D warnings` 通过。尚不等于 archmini 上用户已有 Codex 会话的人工验收。
+
+本轮官方资料核对（时间基准 `2026-09-19T21:51:34+08:00`）：
+[tmux refresh-client -r](https://github.com/tmux/tmux/blob/master/tmux.1)、
+[sRGB relative luminance](https://www.w3.org/WAI/WCAG22/Understanding/contrast-minimum.html)。
+对比度阈值是终端可读性保护策略，不声称整个终端达到 WCAG 合规。

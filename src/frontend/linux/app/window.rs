@@ -218,6 +218,7 @@ struct UiState {
     /// VTE 输入回调只把 owner identity 和原始字节放入 FIFO；实际的
     /// Runtime 写入统一在 GTK poll 中完成，避免回调重入 UiState。
     surface_input_queue: Rc<RefCell<VecDeque<SurfaceInput>>>,
+    reported_colour_panes: std::collections::HashSet<(String, u32)>,
     /// W17a 自动重连：是否已有重连线程在跑（防并发重连）。
     reconnecting: bool,
     /// 重连失败退避：下一次允许发起重连的时刻。

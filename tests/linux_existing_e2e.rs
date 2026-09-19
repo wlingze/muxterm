@@ -68,9 +68,11 @@ fn linux_existing_panel_click_attaches_herdr() {
             .expect("面板列表应存在")
             .downcast::<gtk4::ListBox>()
             .expect("ListBox 类型");
-        find_by_name(&app.window, "muxterm-existing-connections").expect("根列表应有已有的连接");
-        let row = list.row_at_index(0).expect("Folder 行");
-        row.activate();
+        let row = find_by_name(&app.window, "muxterm-existing-connections")
+            .expect("根列表应有已有的连接")
+            .downcast::<gtk4::ListBoxRow>()
+            .unwrap();
+        list.emit_by_name::<()>("row-activated", &[&row]);
         pump_main_loop(60);
 
         let row_name = format!("muxterm-existing-row-herdr-local-{ws}-{}", herdr.name());
@@ -98,7 +100,7 @@ fn linux_existing_panel_click_attaches_herdr() {
             }
             idx += 1;
         };
-        herdr_row.activate();
+        list.emit_by_name::<()>("row-activated", &[&herdr_row]);
         pump_main_loop(80);
 
         assert!(wait_ready(&app), "面板 click 后应有 pane");
@@ -129,5 +131,7 @@ fn linux_existing_panel_click_attaches_herdr() {
         );
 
         std::env::remove_var("HERDR_SOCKET_PATH");
+        app.shutdown();
+        pump_main_loop(100);
     });
 }

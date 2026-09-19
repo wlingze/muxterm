@@ -58,6 +58,18 @@ pub trait RuntimeProvider: Send + Sync {
         namespace: Option<&str>,
     ) -> RuntimeResult<Vec<ExistingCandidate>>;
 
+    /// 在待打开目标的 socket/namespace 范围内发现，避免 Project 串到默认服务。
+    fn discover_scoped(
+        &self,
+        connection: &dyn TargetConnection,
+        spec: &RuntimeSpec,
+    ) -> RuntimeResult<Vec<ExistingCandidate>> {
+        self.discover(
+            connection,
+            (!spec.session.is_empty()).then_some(spec.session.as_str()),
+        )
+    }
+
     /// Construct an unconnected Runtime instance.
     fn new_instance(
         &self,

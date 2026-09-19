@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use crate::frontend::command_queue::ClientCommand;
 use crate::frontend::linux::view_store::PaneRenderPolicy;
 use crate::frontend::utils::corebridge::ClientTask;
+use crate::frontend::view_store::WorkspaceView;
 use crate::protocol::WorkspaceId;
 
 use super::window_event_pump::enqueue_workspace_input;
@@ -15,7 +16,6 @@ use super::{
     active_workspace_key, parse_workspace_id, resident_pane_view, ClientRuntimeCapability,
     ClientWorkspaceEvent, UiState,
 };
-use crate::frontend::view_store::WorkspaceView;
 
 /// Consume every opened scene's render mailbox without recapturing hidden
 /// workspaces. Resident surfaces keep feeding while their scene is hidden.
@@ -58,9 +58,9 @@ pub(super) fn sync_pane_outputs(s: &mut UiState) {
 
 /// Assign render delivery tiers from Scene visibility and transport cost.
 ///
-/// Visible scenes stay live. Hidden SSH scenes pause incremental output and
-/// resume from an asynchronous baseline; other hidden scenes coalesce adjacent
-/// output without dropping bytes.
+/// Hidden scenes coalesce adjacent output without dropping bytes. Aggregate
+/// scenes may display panes from several SSH workspaces at once; hiding a
+/// source workspace must never turn that pane's live stream into recaptures.
 pub(super) fn sync_render_policies(s: &mut UiState) {
     let visible_workspace = s.active_workspace_key();
     let targets: Vec<(String, u32, PaneRenderPolicy)> = s
@@ -92,18 +92,8 @@ pub(super) fn sync_render_policies(s: &mut UiState) {
     }
 }
 
-fn hidden_render_policy(view: &WorkspaceView) -> PaneRenderPolicy {
-    let transport = view
-        .workspace
-        .as_ref()
-        .and_then(|workspace| workspace.resolved_target.as_ref())
-        .and_then(|target| target.pointer("/canonical/transport"))
-        .and_then(serde_json::Value::as_str);
-    if transport == Some("ssh") {
-        PaneRenderPolicy::Pause
-    } else {
-        PaneRenderPolicy::Coalesce
-    }
+fn hidden_render_policy(_view: &WorkspaceView) -> PaneRenderPolicy {
+    PaneRenderPolicy::Coalesce
 }
 
 pub(super) fn refresh_event_workspaces(s: &mut UiState, events: &[ClientWorkspaceEvent]) {
@@ -290,10 +280,10 @@ mod tests {
     }
 
     #[test]
-    fn hidden_ssh_uses_pause_policy() {
+    fn hidden_ssh_keeps_ordered_bytes_without_recapture() {
         assert_eq!(
             hidden_render_policy(&workspace_with_transport("ssh")),
-            PaneRenderPolicy::Pause
+            PaneRenderPolicy::Coalesce
         );
     }
 

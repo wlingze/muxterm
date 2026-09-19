@@ -11,6 +11,12 @@ use crate::frontend::utils::corebridge::{ClientTask, FfiClient};
 /// One command waiting for the next frontend flush.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClientCommand {
+    PaneColours {
+        workspace_id: String,
+        pane_id: u32,
+        fg: String,
+        bg: String,
+    },
     Task {
         workspace_id: Option<String>,
         task: ClientTask,
@@ -101,6 +107,12 @@ fn coalesces(previous: &ClientCommand, next: &ClientCommand) -> bool {
 
 fn dispatch(client: &FfiClient, command: ClientCommand) -> i32 {
     match command {
+        ClientCommand::PaneColours {
+            workspace_id,
+            pane_id,
+            fg,
+            bg,
+        } => client.report_workspace_pane_colours(&workspace_id, pane_id, &fg, &bg),
         ClientCommand::Task { workspace_id, task } => workspace_id.map_or_else(
             || client.execute_task(task),
             |workspace_id| client.execute_workspace_task(&workspace_id, task),

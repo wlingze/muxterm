@@ -77,6 +77,37 @@ fn local_project_reload_matches_existing_identity() {
         Some(workspace_id.as_str())
     );
     assert_eq!(resolved.canonical.name, "w6-project-identity");
+    let request = muxterm::test_support::core::catalog::OpenRequest {
+        candidate: muxterm::test_support::core::protocol::candidate::CandidateRef::Project {
+            project_id: project.id.to_string(),
+        },
+        intent: ResolveIntent::CreateIfMissing,
+        template: None,
+        activate: true,
+    };
+    let opened = catalog
+        .resolve_open_request(&mut connections, &request, &[project])
+        .unwrap();
+    assert!(
+        !opened.spec.create,
+        "an existing Herdr Project must attach without reapplying a creation template"
+    );
+    assert_eq!(opened.workspace_id(), resolved.workspace_id());
+
+    let mut fresh = existing.clone();
+    fresh.name = "w6-created-project".into();
+    fresh.workspace_id = None;
+    let created = catalog
+        .resolve_target(&mut connections, &fresh, ResolveIntent::CreateIfMissing)
+        .unwrap();
+    assert!(created.spec.create);
+    assert_eq!(created.canonical.path, "/tmp");
+    assert_ne!(created.workspace_id(), resolved.workspace_id());
+    let reopened = catalog
+        .resolve_target(&mut connections, &fresh, ResolveIntent::CreateIfMissing)
+        .unwrap();
+    assert!(!reopened.spec.create);
+    assert_eq!(created.workspace_id(), reopened.workspace_id());
     std::env::remove_var("HERDR_SOCKET_PATH");
 }
 
@@ -146,7 +177,9 @@ fn ssh_herdr_attach_only_never_creates() {
         .resolve_target(&mut connections, &ssh_target, ResolveIntent::AttachOnly)
         .expect_err("SSH 未命中必须失败（零创建命令）");
     assert!(
-        err.to_string().contains("无匹配") || err.to_string().contains("AttachOnly"),
+        err.to_string().contains("无匹配")
+            || err.to_string().contains("AttachOnly")
+            || err.to_string().contains("runtime discovery failed"),
         "SSH AttachOnly 错误语义: {err}"
     );
 

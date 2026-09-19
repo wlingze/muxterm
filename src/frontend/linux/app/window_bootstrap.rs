@@ -219,6 +219,7 @@ impl AppWindow {
             pending_local_probe: std::collections::VecDeque::new(),
             last_raw_input: Vec::new(),
             surface_input_queue: Rc::new(RefCell::new(VecDeque::new())),
+            reported_colour_panes: Default::default(),
             reconnecting: false,
             reconnect_retry_at: None,
             reconnect_attempts: 0,

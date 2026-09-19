@@ -52,6 +52,8 @@ enum PendingQuery {
     /// 已取消命令的响应占位；迟到的 `%begin/%end` 只能消耗这个槽，不能
     /// 错配到后续真实查询，也不应再制造一条无意义的错误日志。
     Tombstone,
+    /// 在现有控制通道查询 server 版本，不额外建立 SSH 连接。
+    ServerVersion,
     /// 新建 attach pane 的 readiness probe（send Enter）。
     ReadyProbe { pane: PaneId },
     /// list-panes -t <tab> -F '...'：解析所有 pane（pane_id, tab_id, active, cols, rows）。
@@ -339,6 +341,7 @@ pub struct TmuxRuntime {
     capture_response_seen: HashSet<PaneId>,
     /// 是否支持 `refresh-client -r`（OSC 10/11 颜色上报；tmux < 3.5 不支持）。
     colour_report_supported: bool,
+    colour_report_detected: bool,
     colour_report_warned: bool,
     /// 是否支持 `refresh-client -B`（status bar 订阅；tmux ≥ 3.2，文档 §B+）。
     status_subscription_supported: bool,
@@ -372,7 +375,8 @@ impl Drop for TmuxRuntime {
 
 /// 解析 `tmux -V` 输出（如 `tmux 3.7b` / `tmux 2.9a`）。
 pub fn parse_tmux_version(text: &str) -> Option<(u32, u32)> {
-    let head = text.split_whitespace().nth(1)?;
+    let text = text.trim().strip_prefix("tmux ").unwrap_or(text.trim());
+    let head = text.split_whitespace().next()?;
     let digits: String = head
         .chars()
         .take_while(|c| c.is_ascii_digit() || *c == '.')
@@ -859,6 +863,7 @@ impl TmuxRuntime {
             // connect() 不额外执行 `tmux -V`，能力未知时必须关闭颜色上报；
             // 否则 tmux 3.4 及更早版本会为每个 pane 产生 `unknown flag -r`。
             colour_report_supported: false,
+            colour_report_detected: false,
             colour_report_warned: false,
             status_subscription_supported: false,
             status_subscriptions_active: false,
@@ -888,7 +893,14 @@ impl TmuxRuntime {
         cwd: Option<&str>,
     ) -> Self {
         let mut backend = match session.filter(|session| !session.is_empty()) {
-            Some(session) if create => Self::new_with_session_name(socket, session),
+            Some(session) if create => {
+                let mut backend = Self::new_with_session_name(socket, session);
+                backend.config.mode = Some(ConnectMode::NewSession {
+                    name: Some(session.to_string()),
+                    start_directory: cwd.filter(|cwd| !cwd.is_empty()).map(str::to_string),
+                });
+                backend
+            }
             Some(session) => Self::new_with_attach(socket, session),
             None => cwd.filter(|cwd| !cwd.is_empty()).map_or_else(
                 || Self::new(socket),
@@ -1626,6 +1638,7 @@ impl TmuxRuntime {
             | PendingQuery::ListPanes { .. }
             | PendingQuery::ListWindows
             | PendingQuery::ListSessions => None,
+            PendingQuery::ServerVersion => None,
         }
     }
 
@@ -2545,6 +2558,9 @@ impl TmuxRuntime {
         if let Some(query) = self.pending_by_number.remove(&number) {
             match query {
                 PendingQuery::Ignore { .. } | PendingQuery::Tombstone => {}
+                PendingQuery::ServerVersion => {
+                    self.finish_colour_detection(&lines.join("\n"));
+                }
                 PendingQuery::ReadyProbe { pane } => {
                     self.ready_probe_in_flight.remove(&pane);
                     self.ready_probe_acknowledged.insert(pane);
@@ -3081,6 +3097,7 @@ impl TmuxRuntime {
                     self.handle_command_error(number, command, &err_lines);
                 }
                 PendingQuery::Tombstone => {}
+                PendingQuery::ServerVersion => self.finish_colour_detection(""),
             }
         }
     }
@@ -3650,7 +3667,10 @@ impl TmuxRuntime {
     fn query_blocks_history(query: &PendingQuery) -> bool {
         !matches!(
             query,
-            PendingQuery::Ignore { .. } | PendingQuery::Tombstone | PendingQuery::ListSessions
+            PendingQuery::Ignore { .. }
+                | PendingQuery::Tombstone
+                | PendingQuery::ListSessions
+                | PendingQuery::ServerVersion
         )
     }
 
@@ -3677,7 +3697,27 @@ impl TmuxRuntime {
         self.attach_followup_held = false;
         self.query_list_sessions();
         self.setup_status_subscriptions();
+        self.flush_held_colour_reports();
+    }
+
+    fn finish_colour_detection(&mut self, version: &str) {
+        self.colour_report_detected = true;
+        self.colour_report_supported = supports_colour_report(parse_tmux_version(version));
+        tracing::debug!(
+            supported = self.colour_report_supported,
+            "tmux colour report capability resolved"
+        );
+        self.flush_held_colour_reports();
+    }
+
+    fn flush_held_colour_reports(&mut self) {
+        if !self.colour_report_detected || self.initial_seed_blocks_followup() {
+            return;
+        }
         let colours = std::mem::take(&mut self.held_colour_reports);
+        if !self.colour_report_supported {
+            return;
+        }
         for (pane, fg, bg) in colours {
             let _ = self.dispatch_tmux_command(&cmd::refresh_client_colour(pane, 10, fg));
             let _ = self.dispatch_tmux_command(&cmd::refresh_client_colour(pane, 11, bg));
@@ -4173,6 +4213,14 @@ impl Runtime for TmuxRuntime {
         }
 
         // 主动查询所有 window + pane，建立完整初始 state（attach 已有 session 必需）
+        if self
+            .dispatch_command("display-message -p '#{version}'\n".into())
+            .is_ok()
+        {
+            self.replace_last_pending(PendingQuery::ServerVersion);
+        } else {
+            self.finish_colour_detection("");
+        }
         self.query_list_windows();
         // 等待 list-windows 响应到达（最多 3 秒），拿到所有 window 列表后再等 pane 查询
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
@@ -4236,7 +4284,7 @@ impl Runtime for TmuxRuntime {
         }
         self.attach_bootstrap_complete = is_attach;
 
-        // 版本未知时颜色上报默认开；status 订阅已在首屏 seed 前标记为
+        // 颜色上报等待控制通道版本探测；status 订阅已在首屏 seed 前标记为
         // 可尝试，老 tmux 的 unknown flag 走 Ignore 槽，不会卡住控制通道。
         if is_attach && self.initial_seed_blocks_followup() {
             // display-message 还在路上：list-sessions / -B 放到可见
@@ -4405,6 +4453,12 @@ impl Runtime for TmuxRuntime {
                 TaskOutcome::Done
             }
             Task::ReportPaneColours { target, fg, bg } => {
+                if !self.colour_report_detected {
+                    self.held_colour_reports
+                        .retain(|(pane, _, _)| pane != target);
+                    self.held_colour_reports.push((*target, *fg, *bg));
+                    return Ok(TaskOutcome::Done);
+                }
                 if !self.colour_report_supported {
                     if !self.colour_report_warned {
                         self.colour_report_warned = true;
@@ -6765,6 +6819,7 @@ mod tests {
         b.status = BackendStatus::Connected;
         b.status_subscription_supported = true;
         b.colour_report_supported = true;
+        b.colour_report_detected = true;
         let pane = PaneId(79);
         b.panes.push(PaneInfo {
             id: pane,
@@ -7960,11 +8015,50 @@ mod tests {
     }
 
     #[test]
+    fn server_version_releases_latest_colours_without_an_extra_connection() {
+        for version in ["3.5", "3.7b", "tmux 3.7b", "3.4", "unknown"] {
+            let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+            let mut backend = TmuxRuntime::new(None);
+            backend.cmd_tx = Some(tx);
+            backend.status = BackendStatus::Connected;
+            for fg in [Rgb(255, 255, 255), Rgb(31, 35, 40)] {
+                backend
+                    .execute(&Task::ReportPaneColours {
+                        target: PaneId(7),
+                        fg,
+                        bg: Rgb(255, 255, 255),
+                    })
+                    .unwrap();
+            }
+            assert!(rx.try_recv().is_err(), "unknown capability must wait");
+            assert_eq!(backend.held_colour_reports.len(), 1);
+            backend
+                .pending_by_number
+                .insert(123, PendingQuery::ServerVersion);
+            backend.dispatch_response(123, vec![version.into()]);
+            let commands = drain_tmux_cmds(&mut rx);
+            if matches!(version, "3.4" | "unknown") {
+                assert!(commands.is_empty());
+            } else {
+                assert_eq!(
+                    commands,
+                    vec![
+                        cmd::refresh_client_colour(PaneId(7), 10, Rgb(31, 35, 40)).to_string(),
+                        cmd::refresh_client_colour(PaneId(7), 11, Rgb(255, 255, 255)).to_string(),
+                    ]
+                );
+            }
+            assert!(backend.held_colour_reports.is_empty());
+        }
+    }
+
+    #[test]
     fn unsupported_colour_report_does_not_queue_attach_followup() {
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         let mut backend = TmuxRuntime::new_with_attach(None, "existing");
         backend.cmd_tx = Some(tx);
         backend.status = BackendStatus::Connected;
+        backend.finish_colour_detection("3.4");
 
         let outcome = backend
             .execute(&Task::ReportPaneColours {
@@ -7997,6 +8091,7 @@ mod tests {
     fn rejected_colour_report_disables_future_reports() {
         let mut backend = TmuxRuntime::new(None);
         backend.colour_report_supported = true;
+        backend.colour_report_detected = true;
         backend.pending_by_number.insert(
             1,
             PendingQuery::Ignore {
@@ -9690,6 +9785,22 @@ mod tests {
             cmd.contains("Developer/self/muxterm") || cmd.contains("/muxterm"),
             "本地应展开或不丢路径: {cmd}"
         );
+    }
+
+    #[test]
+    fn named_project_creation_keeps_first_pane_directory() {
+        for transport in ["local", "ssh"] {
+            let runtime = TmuxRuntime::new_with_connection_and_cwd(
+                Connect::new(transport, "test-host"),
+                Some("isolated"),
+                Some("project"),
+                true,
+                Some("~/work/project"),
+            );
+            assert!(
+                matches!(runtime.config.mode, Some(ConnectMode::NewSession { name: Some(ref name), start_directory: Some(ref cwd) }) if name == "project" && cwd == "~/work/project")
+            );
+        }
     }
 
     #[test]
