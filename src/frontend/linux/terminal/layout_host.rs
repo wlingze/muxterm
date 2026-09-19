@@ -27,6 +27,14 @@ enum LayoutTree {
     },
 }
 
+fn combine_grid(a: (u16, u16), b: (u16, u16), horizontal: bool) -> (u16, u16) {
+    if horizontal {
+        (a.0.saturating_add(b.0).saturating_add(1), a.1.min(b.1))
+    } else {
+        (a.0.min(b.0), a.1.saturating_add(b.1).saturating_add(1))
+    }
+}
+
 /// 布局根：持有 pane_id → PaneSurface，以及当前根 widget。
 pub struct LayoutHost {
     pub root_box: gtk4::Box,
@@ -96,6 +104,28 @@ impl LayoutHost {
 
     pub fn pane(&self, id: u32) -> Option<&Rc<PaneSurface>> {
         self.panes.get(&id)
+    }
+
+    /// 从叶子的实际终端分配合成 client 网格，不能把 header 的边框、
+    /// GTK separator 等装饰像素算成终端行。上下 split 加一个协议分隔格。
+    pub fn allocated_client_grid(&self) -> Option<(u16, u16)> {
+        fn measure(host: &LayoutHost, widget: &Widget) -> Option<(u16, u16)> {
+            if let Some(paned) = widget.downcast_ref::<Paned>() {
+                let a = measure(host, &paned.start_child()?)?;
+                let b = measure(host, &paned.end_child()?)?;
+                return Some(combine_grid(
+                    a,
+                    b,
+                    paned.orientation() == Orientation::Horizontal,
+                ));
+            }
+            host.panes
+                .values()
+                .find(|pane| pane.widget() == *widget)
+                .map(|pane| pane.allocated_grid_size())
+                .filter(|&(cols, rows)| cols >= 2 && rows >= 1)
+        }
+        measure(self, &self.active_root_widget()?)
     }
 
     /// 同一水平带的标题只扣一次；上下叠放的标题高度相加。
@@ -598,6 +628,13 @@ fn layout_structure_signature(layout: &LayoutTree) -> String {
 mod tests {
     use super::*;
     use crate::protocol::PaneId;
+
+    #[test]
+    fn client_grid_uses_smallest_shared_axis_and_one_separator_cell() {
+        assert_eq!(combine_grid((142, 64), (141, 65), true), (284, 64));
+        assert_eq!(combine_grid((142, 31), (141, 32), false), (141, 64));
+        assert_eq!(combine_grid((142, 64), (141, 64), true), (284, 64));
+    }
 
     #[test]
     fn split_position_uses_ratio_not_one_pixel() {

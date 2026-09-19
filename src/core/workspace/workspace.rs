@@ -706,7 +706,19 @@ impl Workspace {
             }
         }
 
-        for event in &batch.render {
+        // Surface 先回填历史再接首帧；Index 的 replace_snapshot 会清空历史，
+        // 所以仅在 Index 消费时先替换快照，再插入历史。发布顺序保持原样。
+        for event in batch
+            .render
+            .iter()
+            .filter(|event| !matches!(event, RenderEvent::PaneHistory { .. }))
+            .chain(
+                batch
+                    .render
+                    .iter()
+                    .filter(|event| matches!(event, RenderEvent::PaneHistory { .. })),
+            )
+        {
             if !matches!(event, RenderEvent::PaneOutput { .. }) {
                 match event {
                     RenderEvent::PaneSnapshot { pane, .. }
@@ -1097,6 +1109,24 @@ mod tests {
             pane: PaneId(1),
             data: b"HIST_OFFSCREEN\npad-01".to_vec(),
         }]);
+        let text = w.pane_text(PaneId(1));
+        assert!(text.contains("HIST_OFFSCREEN"), "{text}");
+        assert!(text.contains("HIST_TAIL"), "{text}");
+    }
+
+    #[test]
+    fn initial_history_before_snapshot_remains_searchable() {
+        let mut w = workspace("ordered-history");
+        w.feed_events(&[
+            StateChange::PaneHistory {
+                pane: PaneId(1),
+                data: b"HIST_OFFSCREEN\npad-01".to_vec(),
+            },
+            StateChange::PaneSnapshot {
+                pane: PaneId(1),
+                data: b"HIST_TAIL\r\n".to_vec(),
+            },
+        ]);
         let text = w.pane_text(PaneId(1));
         assert!(text.contains("HIST_OFFSCREEN"), "{text}");
         assert!(text.contains("HIST_TAIL"), "{text}");

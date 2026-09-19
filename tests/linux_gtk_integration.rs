@@ -234,6 +234,13 @@ fn assert_pane_layout_widget() {
     gtk4::test_widget_wait_for_draw(&win);
     let paned = find_first_paned(&host.root_box).expect("Paned");
     assert_eq!(paned.orientation(), Orientation::Horizontal);
+    pump_main_loop(40);
+    let first = host.pane(1).unwrap().allocated_grid_size();
+    let second = host.pane(2).unwrap().allocated_grid_size();
+    assert_eq!(
+        host.allocated_client_grid(),
+        Some((first.0 + second.0 + 1, first.1.min(second.1)))
+    );
 
     // 两个 tab 的完整 GTK 根必须同时常驻；切换只改 Stack visible child，
     // 不能 unparent/reparent VTE 后把已显示内容弄空。

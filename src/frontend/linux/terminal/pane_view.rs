@@ -703,12 +703,16 @@ impl PaneSurface {
     }
 
     /// 当前 widget 分配折算成字符格；未 realize / 字号未知时返回 0。
-    fn allocated_grid_size(&self) -> (u16, u16) {
+    pub fn allocated_grid_size(&self) -> (u16, u16) {
         let terminal = self.inner.renderer.terminal();
         let cw = terminal.char_width();
         let ch = terminal.char_height();
-        let width = terminal.width();
-        let height = terminal.height();
+        // VTE 分配含 CSS padding；直接除字符高度会多报底部一行，
+        // CUP 被裁到末行后，composer 动画会覆盖 status 并触发滚屏。
+        #[allow(deprecated)]
+        let padding = terminal.style_context().padding();
+        let width = terminal.width() - i32::from(padding.left() + padding.right());
+        let height = terminal.height() - i32::from(padding.top() + padding.bottom());
         if cw <= 0 || ch <= 0 || width <= 0 || height <= 0 {
             return (0, 0);
         }
@@ -781,15 +785,21 @@ impl PaneSurface {
         self.schedule_feed_flush_if_paintable();
     }
 
-    /// attach 前历史按行写进 VTE scrollback，不 reset，也不把历史反喂成
-    /// input-state 的 VT 流。先刷完 live lane，再保存当前可见网格并重建
-    /// VTE；它只用于决定 alternate-screen 是否允许历史回放。首帧
-    /// 尚未播种时先排队；后到的 Snapshot reset 后按 generation 重放。
-    ///
-    /// alternate screen（TUI）上禁止 ESC[2J 回放：会清掉当前 Cursor/htop 屏。
-    /// 布局未就绪时只入队不 flush，等 seed / can_paint 后再回放。
+    /// attach 历史只在首次 baseline 前排队，播种入口先写历史再写快照。
+    /// 已播种后拒绝回填，禁止破坏 live parser、选区或应用保存的光标。
+    /// alternate screen 上不回填；不把历史反喂 input-state。
     pub fn prepend_history(&self, data: &[u8]) {
         if data.is_empty() {
+            return;
+        }
+        if self.inner.seeded.get() {
+            // Core 必须在首帧前发历史。绝不在 live 流（可能半条 CSI/UTF-8）
+            // 中插入 ESC7/清屏/重放；那还会覆盖应用自己保存的光标槽。
+            tracing::warn!(
+                pane = self.inner.pane_id.get(),
+                bytes = data.len(),
+                "ignoring late history after surface seed"
+            );
             return;
         }
         if !history_replay_allowed(self.inner.input_state.borrow().modes().alternate_screen) {
@@ -805,10 +815,7 @@ impl PaneSurface {
             }
             batches.push(data.to_vec());
         }
-        if !self.inner.seeded.get() || !self.can_paint_surface() {
-            return;
-        }
-        flush_unapplied_history(&self.inner);
+        // 只排队，由首帧入口先回填历史再喂权威快照。
     }
 
     /// 新一轮 attach 开始：清掉上一轮保留的历史批次。
@@ -820,6 +827,7 @@ impl PaneSurface {
     pub fn begin_attach_generation(&self) {
         self.inner.history_batches.borrow_mut().clear();
         self.inner.history_applied.set(0);
+        self.inner.seeded.set(false);
     }
 
     /// 布局变为可 paint 后补放暂存历史（seeded 后 width 才 >0 的情形）。
@@ -904,19 +912,14 @@ impl PaneSurface {
         }
         with_remote_feed(&self.inner, || {
             feed_remote_bytes(&self.inner, &prefix);
+        });
+        flush_unapplied_history(&self.inner);
+        with_remote_feed(&self.inner, || {
             if !data.is_empty() {
                 feed_remote_bytes(&self.inner, data);
             }
         });
-        if !data.is_empty() {
-            // reattach 时新 control client 的尺寸校准（refresh-client -C）
-            // 晚于首屏 capture：快照网格行数可能大于 VTE 当前可见行数，
-            // 快照末尾的 CUP 因此越界，光标落在错误位置。shell 随后因
-            // resize 重绘 prompt（`\r\r ESC M ESC M ESC[J`）会从错误位置
-            // 清掉整屏，刚 seed 的历史 token 随之丢失。把光标锚定到
-            // buffer 末尾，让重绘只影响底部几行。
-            anchor_snapshot_cursor(&self.inner, data);
-        }
+        // 快照包含权威光标和可能未结束的 live 控制序列；不能再插 CUP。
         self.inner.seeded.set(true);
         flush_unapplied_history(&self.inner);
         self.flush_deferred_history();
@@ -957,10 +960,6 @@ impl PaneSurface {
             with_remote_feed(&self.inner, || {
                 feed_remote_bytes(&self.inner, data);
             });
-            // 与 seed_snapshot 相同：快照网格可能大于 VTE 可见行数，
-            // 末尾 CUP 越界会让光标/viewport 停在错误位置，shell 重绘或
-            // 测试断言都看不到尾标。锚定到 buffer 末尾。
-            anchor_snapshot_cursor(&self.inner, data);
         }
         self.inner.render_trace.borrow_mut().seeds += 1;
         self.inner.seeded.set(true);
@@ -1185,24 +1184,6 @@ fn flush_feed_bytes(inner: &PaneViewInner, limit: usize) {
     trace.bytes_fed += data.len();
 }
 
-/// 快照网格行数：capture 网格是行以 `\r\n` join 的纯文本，`\n` 计数 + 1
-/// 即物理行数（CUP/模式序列里不会有 `\n`）。
-fn snapshot_grid_rows(data: &[u8]) -> usize {
-    data.iter().filter(|&&byte| byte == b'\n').count() + 1
-}
-
-/// alt-screen 快照（Cursor/htop 等）已带权威 CUP；禁止再用 `999;1H`
-/// 把光标拽到底——相对 CUU/EL 会画到错误行，黄色等候框整片错位。
-fn snapshot_is_alternate_screen(data: &[u8]) -> bool {
-    data.windows(b"\x1b[?1049h".len())
-        .any(|window| window == b"\x1b[?1049h")
-}
-
-/// 仅在 primary 屏、且快照行数大于可见行时才锚定光标。
-fn should_anchor_snapshot_cursor(data: &[u8], snapshot_rows: usize, visible_rows: usize) -> bool {
-    !snapshot_is_alternate_screen(data) && snapshot_rows > visible_rows
-}
-
 /// 在 feed 的 idle 处理完成后把 viewport 钉回底部。
 fn schedule_scroll_to_bottom(inner: &Rc<PaneViewInner>) {
     if !inner.scroll_to_bottom_pending.replace(true) {
@@ -1217,35 +1198,6 @@ fn schedule_scroll_to_bottom(inner: &Rc<PaneViewInner>) {
             }
             glib::ControlFlow::Break
         });
-    }
-}
-
-/// 快照网格大于 VTE 可见行数时，把光标锚定到 buffer 末尾。
-///
-/// 否则快照末尾 CUP 越界后光标停留在错误行，shell 的 prompt 重绘
-/// （resize 触发）会从错误位置 `ESC[J` 清掉刚 seed 的内容。
-///
-/// alternate screen（Cursor 等候框 / TUI）跳过：信任 tmux CUP。
-fn anchor_snapshot_cursor(inner: &Rc<PaneViewInner>, data: &[u8]) {
-    if snapshot_is_alternate_screen(data) {
-        return;
-    }
-    let terminal = inner.renderer.terminal();
-    // row_count()/vadjustment 在 VTE 0.84 里受 set_size 与 widget 分配
-    // 交互影响（模型 24 行时 row_count 可能 20 或 24，page_size 也可能
-    // 24）。唯一可靠的是 widget 实际像素高度 ÷ 字符高。reattach 时快照
-    // 网格常大于可见行数，末尾 CUP 越界后光标落在错误位置，shell 的
-    // prompt 重绘（resize 触发）会从错误位置 ESC[J 清掉刚 seed 的内容。
-    let char_h = terminal.char_height().max(1) as f64;
-    let widget_h = terminal.height().max(0) as f64;
-    let visible_rows = (widget_h / char_h).floor().max(1.0) as usize;
-    let snapshot_rows = snapshot_grid_rows(data);
-    if should_anchor_snapshot_cursor(data, snapshot_rows, visible_rows) {
-        // CUP 锚到 buffer 末尾：后续 shell 重绘只影响底部几行。
-        feed_direct(inner, b"\x1b[999;1H");
-        // feed 是异步的，且镜像模式 scroll-on-output=false；等本批 feed
-        // 处理完（下一个 idle）再把 view 钉到底部，保证 attach 后可见尾标。
-        schedule_scroll_to_bottom(inner);
     }
 }
 
@@ -1282,7 +1234,13 @@ fn prepend_history_seeded(inner: &Rc<PaneViewInner>, data: &[u8], clear_scrollba
     }
     flush_pending_feed(inner);
 
-    let (rows, visible_overlay) = visible_overlay_ansi(inner);
+    // 新 Surface 尚无 live 屏，不能在异步 feed 尚未解析完时读取旧 HTML
+    // 再覆盖权威首帧。历史入队后由调用方立即跟上 baseline。
+    let (rows, visible_overlay) = if inner.seeded.get() {
+        visible_overlay_ansi(inner)
+    } else {
+        (inner.grid_rows.get().max(1) as usize, Vec::new())
+    };
 
     let replay = history_replay_ansi(&lines, rows, &visible_overlay, clear_scrollback);
     feed_direct(inner, &replay);
@@ -1519,14 +1477,6 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_grid_rows_counts_physical_lines() {
-        assert_eq!(snapshot_grid_rows(b"a\r\nb\r\nc"), 3);
-        assert_eq!(snapshot_grid_rows(b""), 1);
-        assert_eq!(snapshot_grid_rows(b"\x1b[20;3H"), 1);
-        assert_eq!(snapshot_grid_rows(b"\r\n\r\n\r\n"), 4);
-    }
-
-    #[test]
     fn coalesce_window_is_25ms() {
         assert_eq!(FEED_COALESCE_MS, 25);
     }
@@ -1584,17 +1534,6 @@ mod tests {
             !state.modes().mouse_reporting,
             "常量仍能清 VTE；生产路径不得把它喂进 input-state"
         );
-    }
-
-    #[test]
-    fn alt_screen_snapshot_must_not_anchor_cursor_to_bottom() {
-        let alt = b"\x1b[?1049h\x1b[43m waiting \x1b[m\x1b[10;5H";
-        assert!(snapshot_is_alternate_screen(alt));
-        assert!(!should_anchor_snapshot_cursor(alt, 80, 24));
-        let primary = b"shell prompt$\nline2\nline3";
-        assert!(!snapshot_is_alternate_screen(primary));
-        assert!(should_anchor_snapshot_cursor(primary, 80, 24));
-        assert!(!should_anchor_snapshot_cursor(primary, 20, 24));
     }
 
     #[test]

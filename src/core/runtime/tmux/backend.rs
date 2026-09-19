@@ -272,6 +272,7 @@ pub struct TmuxRuntime {
     history_backfill_wanted: HashSet<PaneId>,
     /// 本轮 pump 里刚切了 tab / 刚种完可见屏。历史放到下一轮 poll。
     history_backfill_hold: bool,
+    initial_history: super::initial_history::InitialHistory,
     /// 初始 seed 仍 pause：等历史回填完成再 continue，避免 live 与
     /// history 重叠后 VTE ESC[2J 回放造成往上刷（dogfood 2030）。
     history_holds_pause: HashSet<PaneId>,
@@ -835,6 +836,7 @@ impl TmuxRuntime {
             history_backfill_pending: HashSet::new(),
             history_backfill_wanted: HashSet::new(),
             history_backfill_hold: false,
+            initial_history: Default::default(),
             history_holds_pause: HashSet::new(),
             alternate_screen_panes: HashSet::new(),
             surface_seed_locked: HashSet::new(),
@@ -3761,15 +3763,17 @@ impl TmuxRuntime {
 
     fn finish_pane_history_backfill(&mut self, pane: PaneId, lines: Vec<String>) {
         self.history_backfill_pending.remove(&pane);
-        self.history_backfill_done.insert(pane);
+        if self.history_holds_pause.remove(&pane) {
+            self.paused_panes.remove(&pane);
+            let _ = self.dispatch_tmux_command(&cmd::refresh_client_pause(pane, false));
+        }
+        if !self.history_backfill_done.insert(pane) {
+            return;
+        }
         let data = super::pane_history::PaneHistoryPolicy::encode(&lines);
         if !data.is_empty() {
             Self::push_render(&mut self.events, RenderEvent::PaneHistory { pane, data });
             self.trim_event_queue();
-        }
-        if self.history_holds_pause.remove(&pane) {
-            self.paused_panes.remove(&pane);
-            let _ = self.dispatch_tmux_command(&cmd::refresh_client_pause(pane, false));
         }
     }
 
@@ -4721,9 +4725,28 @@ impl Runtime for TmuxRuntime {
 
     fn drain_events(&mut self, out: &mut RuntimeBatch) {
         self.pump_events();
+        let mut batch_out = RuntimeBatch::default();
         for batch in self.events.drain(..) {
-            out.append(batch);
+            batch_out.append(batch);
         }
+        let waiting = self
+            .history_backfill_wanted
+            .union(&self.history_backfill_pending)
+            .filter(|pane| !self.history_backfill_done.contains(pane))
+            .copied()
+            .collect();
+        for pane in self
+            .initial_history
+            .project(&mut batch_out, &waiting, Instant::now())
+        {
+            self.history_backfill_done.insert(pane);
+            self.history_backfill_wanted.remove(&pane);
+            tracing::warn!(
+                pane = pane.0,
+                "initial history deadline or byte limit; releasing surface without late replay"
+            );
+        }
+        out.append(batch_out);
     }
 
     async fn shutdown(&mut self) -> crate::runtime::RuntimeResult<()> {
@@ -4752,6 +4775,7 @@ impl Runtime for TmuxRuntime {
         self.event_rx.take();
         self.outputs.clear();
         self.events.clear();
+        self.initial_history = Default::default();
         self.status = BackendStatus::Exited;
         Self::push_control(
             &mut self.events,

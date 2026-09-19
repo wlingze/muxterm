@@ -107,8 +107,8 @@ fn linux_attach_preexist_2tab_3pane_is_usable() {
         let paned = count_paned(&app.test_window());
         assert!(paned >= 2, "3 pane 应有 ≥2 个 GtkPaned，实际 {paned}");
 
-        let vte = all_visible_vte(&app);
-        assert!(!vte.trim().is_empty(), "attach 后 VTE 不能空（1820 白屏）");
+        // 拓扑就绪早于异步 history + baseline；按原有 ATTACH_TIMEOUT
+        // 等待真实内容，而不是把“控件已创建”当成“首帧已交付”。
         for token in &painted.tab1_tokens {
             assert!(
                 wait_vte_contains(&app, token),
@@ -116,6 +116,8 @@ fn linux_attach_preexist_2tab_3pane_is_usable() {
                 all_visible_vte(&app)
             );
         }
+        let vte = all_visible_vte(&app);
+        assert!(!vte.trim().is_empty(), "attach 后 VTE 不能空（1820 白屏）");
 
         let tabs = app.test_tab_ids();
         let current = app.test_active_tab_id();
