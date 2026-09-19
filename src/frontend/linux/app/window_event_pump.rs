@@ -94,6 +94,7 @@ pub(super) fn take_surface_input(
 }
 
 pub(super) fn poll_event_store(s: &mut UiState) -> Vec<ClientWorkspaceEvent> {
+    super::window_actions::poll_image_paste(s);
     let event_pump = &s.event_pump;
     let events = event_pump.poll_into_with_events(&mut s.view_store);
     poll_config_events(s);

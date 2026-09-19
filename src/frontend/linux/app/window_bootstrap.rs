@@ -220,6 +220,9 @@ impl AppWindow {
             last_raw_input: Vec::new(),
             surface_input_queue: Rc::new(RefCell::new(VecDeque::new())),
             reported_colour_panes: Default::default(),
+            image_paste_request: None,
+            image_paste_pending: false,
+            image_paste_indicator: None,
             reconnecting: false,
             reconnect_retry_at: None,
             reconnect_attempts: 0,
@@ -438,6 +441,29 @@ impl AppWindow {
             let st = state.clone();
             let window_for_palette = window.clone();
             connect_key_handler(&window, move |keyval, mods| {
+                // agent 常用 Ctrl+V 读图片：有图片且焦点在终端时由宿主上传，
+                // 其它 Ctrl+V 仍保留 shell/应用的原始控制键语义。
+                if matches!(keyval, gdk::Key::v | gdk::Key::V)
+                    && mods.contains(gdk::ModifierType::CONTROL_MASK)
+                    && !mods.intersects(
+                        gdk::ModifierType::SHIFT_MASK
+                            | gdk::ModifierType::ALT_MASK
+                            | gdk::ModifierType::SUPER_MASK,
+                    )
+                {
+                    let s = st.borrow();
+                    if s.active_layout().pane(s.active_pane).is_some_and(|view| {
+                        view.terminal().has_focus()
+                            && view
+                                .widget()
+                                .clipboard()
+                                .formats()
+                                .contains_type(gdk::Texture::static_type())
+                    }) {
+                        super::window_actions::paste_active_pane(&s, &st);
+                        return glib::Propagation::Stop;
+                    }
+                }
                 if mods.contains(gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::ALT_MASK) {
                     if keyval.to_unicode().is_some_and(|key| key.is_ascii_digit()) {
                         crate::frontend::linux::quickconnect_panel::close_current();

@@ -90,6 +90,7 @@ pub struct Muxterm {
     pub(crate) deferred_activity_events: VecDeque<(crate::protocol::WorkspaceId, ActivityEvent)>,
     pub(crate) workspace_ids: Vec<CString>,
     pub(crate) pending_open: Option<crate::protocol::ffi::functions::open_async::PendingOpen>,
+    pub(crate) pending_image_paste: Option<crate::clipboard::PendingImagePaste>,
 }
 
 impl Muxterm {

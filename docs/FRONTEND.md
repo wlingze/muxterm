@@ -1,5 +1,7 @@
 # FRONTEND.md — 前端契约
 
+图片粘贴（Core 文件传输 + frontend 剪贴板）：[`CLIPBOARD.md`](CLIPBOARD.md)。
+
 产品树：[`WORKSPACE.md`](WORKSPACE.md)。像素定律：[`SURFACE.md`](SURFACE.md)。
 配置：[`CONFIG.md`](CONFIG.md)。打开路径：[`CATALOG.md`](CATALOG.md)。
 施工：[`../TASKS.md`](../TASKS.md) Phase 7 / 9。

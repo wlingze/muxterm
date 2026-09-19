@@ -1,4 +1,6 @@
 {
+  "image_paste_failed": "Image paste failed",
+  "image_paste_progress": "Uploading clipboard image…",
   "sidebar_workspaces": "WORKSPACES",
   "sidebar_agents": "AGENTS",
   "sidebar_commands": "COMMANDS",

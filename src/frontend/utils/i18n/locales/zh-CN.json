@@ -1,4 +1,6 @@
 {
+  "image_paste_failed": "图片粘贴失败",
+  "image_paste_progress": "正在上传剪贴板图片…",
   "sidebar_workspaces": "工作区",
   "sidebar_agents": "AGENT",
   "sidebar_commands": "命令",

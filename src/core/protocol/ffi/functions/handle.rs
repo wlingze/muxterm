@@ -252,6 +252,7 @@ fn boxed_handle(
         deferred_activity_events: std::collections::VecDeque::new(),
         workspace_ids: Vec::new(),
         pending_open: None,
+        pending_image_paste: None,
     }))
 }
 

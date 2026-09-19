@@ -1146,6 +1146,36 @@ pub struct CoreBridge {
 pub type FfiClient = CoreBridge;
 
 impl CoreBridge {
+    pub fn start_image_paste(&self, workspace: &str, pane: u32, png: &[u8]) -> anyhow::Result<()> {
+        let workspace = cstring(workspace);
+        Self::discovery_json(|| unsafe {
+            ffi::muxterm_image_paste_start_json(
+                self.handle.as_ptr(),
+                workspace.as_ptr(),
+                pane,
+                png.as_ptr(),
+                png.len(),
+            )
+        })?;
+        Ok(())
+    }
+
+    pub fn poll_image_paste(&self) -> anyhow::Result<Option<String>> {
+        let value = Self::discovery_json(|| unsafe {
+            ffi::muxterm_image_paste_poll_json(self.handle.as_ptr())
+        })?;
+        if value["pending"].as_bool() == Some(true) {
+            Ok(None)
+        } else {
+            Ok(Some(
+                value["path"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("missing image path"))?
+                    .to_owned(),
+            ))
+        }
+    }
+
     /// Create a handle for catalog-only queries without opening a workspace.
     pub fn new_catalog() -> anyhow::Result<Self> {
         Self::from_raw(ffi::muxterm_catalog_new())

@@ -19,6 +19,9 @@ pub mod activity;
 pub mod buffer_cap;
 #[path = "core/catalog/mod.rs"]
 pub mod catalog;
+#[cfg(feature = "ffi")]
+#[path = "core/clipboard.rs"]
+pub mod clipboard;
 #[path = "core/config/mod.rs"]
 pub mod config;
 #[path = "core/discovery/mod.rs"]
