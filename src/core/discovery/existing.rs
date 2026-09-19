@@ -121,6 +121,16 @@ pub fn discover_local_herdr(config_dir: Option<&Path>) -> Vec<ExistingEntry> {
 
 /// 本地正在运行的 Herdr namespace。即使 session 暂时没有 workspace，也
 /// 必须出现在 create target 选择中。
+pub(crate) fn local_herdr_config_dir() -> PathBuf {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config")
+        })
+        .join("herdr")
+}
+
 pub(crate) fn discover_local_herdr_namespaces(config_dir: Option<&Path>) -> Vec<(String, String)> {
     let mut sockets: Vec<PathBuf> = Vec::new();
     // 测试 override：设了 HERDR_SOCKET_PATH 就只扫它，禁止连用户默认。
@@ -130,10 +140,9 @@ pub(crate) fn discover_local_herdr_namespaces(config_dir: Option<&Path>) -> Vec<
             return scan_running_sockets(sockets, None);
         }
     }
-    let base = config_dir.map(Path::to_path_buf).unwrap_or_else(|| {
-        let home = std::env::var("HOME").unwrap_or_default();
-        PathBuf::from(home).join(".config/herdr")
-    });
+    let base = config_dir
+        .map(Path::to_path_buf)
+        .unwrap_or_else(local_herdr_config_dir);
     let default = base.join("herdr.sock");
     if default.exists() {
         sockets.push(default.clone());

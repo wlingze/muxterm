@@ -265,6 +265,57 @@ pub(super) fn show(
     root.append(&name_entry);
     root.append(&name_hint);
 
+    // 所有 runtime 共用 typed 身份字段；编辑不能只保存 name/path 而丢掉
+    // namespace/socket/workspace_id，也允许在多个服务并存时显式选择目标。
+    let identity = GtkBox::new(Orientation::Vertical, 6);
+    let session_entry = Entry::builder()
+        .text(
+            editing
+                .as_ref()
+                .and_then(|c| c.session.as_deref())
+                .unwrap_or_default(),
+        )
+        .build();
+    let socket_entry = Entry::builder()
+        .text(
+            editing
+                .as_ref()
+                .and_then(|c| c.socket.as_deref())
+                .unwrap_or_default(),
+        )
+        .build();
+    let instance_entry = Entry::builder()
+        .text(
+            editing
+                .as_ref()
+                .and_then(|c| c.workspace_id.as_deref())
+                .unwrap_or_default(),
+        )
+        .build();
+    for (entry, key, name) in [
+        (
+            &session_entry,
+            Key::TargetNamespace,
+            "muxterm-target-session",
+        ),
+        (&socket_entry, Key::TargetSocket, "muxterm-target-socket"),
+        (
+            &instance_entry,
+            Key::TargetInstanceId,
+            "muxterm-target-instance",
+        ),
+    ] {
+        identity.append(&section_label(&i18n::tr(key)));
+        entry.set_widget_name(name);
+        identity.append(entry);
+    }
+    let identity_expander = gtk4::Expander::builder()
+        .label(i18n::tr(Key::TargetIdentity))
+        .child(&identity)
+        .build();
+    identity_expander.set_widget_name("muxterm-target-identity");
+    root.append(&identity_expander);
+
     let buttons = GtkBox::builder()
         .orientation(Orientation::Horizontal)
         .spacing(10)
@@ -526,8 +577,15 @@ pub(super) fn show(
             } else {
                 TargetTransport::Local
             };
-            let cfg =
+            let mut cfg =
                 TargetConfigDraft::new(name, s.selection.runtime, transport, s.path.text.clone());
+            let optional = |entry: &Entry| {
+                let value = entry.text().trim().to_string();
+                (!value.is_empty()).then_some(value)
+            };
+            cfg.session = optional(&session_entry);
+            cfg.socket = optional(&socket_entry);
+            cfg.workspace_id = optional(&instance_entry);
             drop(s);
             let mut store = store.clone();
             store.upsert_project(&cfg);

@@ -2257,6 +2257,27 @@ impl CoreBridge {
         }
     }
 
+    pub fn report_workspace_pane_colours(
+        &self,
+        workspace_id: &str,
+        pane_id: u32,
+        fg_hex: &str,
+        bg_hex: &str,
+    ) -> i32 {
+        let workspace = cstring(workspace_id);
+        let fg = cstring(fg_hex);
+        let bg = cstring(bg_hex);
+        unsafe {
+            ffi::muxterm_workspace_report_pane_colours(
+                self.handle.as_ptr(),
+                workspace.as_ptr(),
+                pane_id,
+                fg.as_ptr(),
+                bg.as_ptr(),
+            )
+        }
+    }
+
     /// Read the owned activity/attention aggregate across all workspaces.
     pub fn activity_snapshot(&self) -> anyhow::Result<ClientActivitySnapshot> {
         let value = Self::discovery_json(|| unsafe {

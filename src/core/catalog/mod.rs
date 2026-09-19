@@ -328,7 +328,10 @@ impl Catalog {
                     .expect("刚检查过的 Herdr RuntimeProvider 必须仍在");
                 let namespace = normalized_optional(&descriptor.session);
                 let candidates = driver
-                    .discover(connect.as_ref(), namespace.as_deref())
+                    .discover_scoped(
+                        connect.as_ref(),
+                        &descriptor_to_spec(descriptor).runtime_spec(),
+                    )
                     .map_err(|error| resolver::ResolveError::Discovery {
                         runtime_id: "herdr".to_string(),
                         transport_id: transport.to_string(),
@@ -379,7 +382,14 @@ impl Catalog {
                                     .collect(),
                             });
                         }
-                        _ => {}
+                        _ => {
+                            // 显式 workspace 身份失效时不可退回同名匹配或创建。
+                            // 否则保存的 Project 会悄悄连到另一个 workspace。
+                            return Err(resolver::ResolveError::NoMatch {
+                                identity,
+                                intent: format!("{intent:?}"),
+                            });
+                        }
                     }
                 }
                 // name/label 命中；同名两候选 → ambiguity。
@@ -462,7 +472,8 @@ impl Catalog {
                                 canonical.session = Some(created.session.clone());
                             }
                             canonical.socket = created.socket.clone();
-                            let spec = descriptor_to_spec(&canonical);
+                            let mut spec = descriptor_to_spec(&canonical);
+                            spec.create = true;
                             Ok(ResolvedTarget { canonical, spec })
                         }
                     },
@@ -476,9 +487,58 @@ impl Catalog {
                     }),
                 }
             }
-            _ => {
-                // shell/tmux：不建 Runtime，只做规范化 spec 转换。
-                let spec = descriptor_to_spec(descriptor);
+            TargetRuntime::Tmux => {
+                let mut canonical = descriptor.clone();
+                let session = normalized_optional(&canonical.session)
+                    .unwrap_or_else(|| canonical.name.trim().replace(['.', ':'], "-"));
+                if session.is_empty() {
+                    return Err(resolver::ResolveError::NoMatch {
+                        identity,
+                        intent: "missing tmux session or project name".into(),
+                    });
+                }
+                canonical.session = Some(session.clone());
+                if canonical.path.trim().is_empty() {
+                    canonical.path = "~".into();
+                }
+                let mut spec = descriptor_to_spec(&canonical);
+                let connect = self
+                    .connect(
+                        connections,
+                        &spec.transport,
+                        spec.alias.as_deref().unwrap_or_default(),
+                    )
+                    .map_err(|error| resolver::ResolveError::TargetConnection {
+                        transport_id: spec.transport.clone(),
+                        target: spec.alias.clone().unwrap_or_default(),
+                        message: format!("{error:#}"),
+                    })?;
+                let driver = self
+                    .runtime("tmux")
+                    .ok_or_else(|| resolver::ResolveError::UnknownRuntime { id: "tmux".into() })?;
+                let candidates = driver
+                    .discover_scoped(connect.as_ref(), &spec.runtime_spec())
+                    .map_err(|error| resolver::ResolveError::Discovery {
+                        runtime_id: "tmux".into(),
+                        transport_id: spec.transport.clone(),
+                        target: spec.alias.clone().unwrap_or_default(),
+                        message: error.to_string(),
+                    })?;
+                let exists = candidates.iter().any(|candidate| {
+                    candidate.session.as_deref().unwrap_or(&candidate.name) == session
+                });
+                if !exists && intent == ResolveIntent::AttachOnly {
+                    return Err(resolver::ResolveError::NoMatch {
+                        identity,
+                        intent: format!("{intent:?}"),
+                    });
+                }
+                spec.create = !exists;
+                Ok(ResolvedTarget { canonical, spec })
+            }
+            TargetRuntime::Shell => {
+                let mut spec = descriptor_to_spec(descriptor);
+                spec.create = intent == ResolveIntent::CreateIfMissing;
                 Ok(ResolvedTarget {
                     canonical: descriptor.clone(),
                     spec,
@@ -529,7 +589,6 @@ impl Catalog {
                 resolved.spec.template = requested_template
                     .clone()
                     .or_else(|| project.template.clone());
-                resolved.spec.create = request.intent == ResolveIntent::CreateIfMissing;
                 Ok(resolved)
             }
             CandidateRef::Worktree {
@@ -567,9 +626,6 @@ impl Catalog {
                 }
 
                 let mut resolved = self.resolve_descriptor(connections, &target, request.intent)?;
-                if request.intent == ResolveIntent::CreateIfMissing {
-                    resolved.spec.create = true;
-                }
                 resolved.spec.provenance = Some(project.worktree_provenance(&worktree.id));
                 resolved.spec.template = requested_template
                     .clone()

@@ -17,7 +17,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 fn count_widget_names(root: &impl IsA<Widget>, prefix: &str) -> usize {
     let root = root.as_ref();
-    let mut n = usize::from(root.widget_name().starts_with(prefix));
+    let mut n = usize::from(
+        root.widget_name()
+            .strip_prefix(prefix)
+            .is_some_and(|suffix| suffix.parse::<u32>().is_ok()),
+    );
     let mut child = root.first_child();
     while let Some(c) = child {
         n += count_widget_names(&c, prefix);
@@ -36,7 +40,9 @@ use muxterm::test_support::core::config::Config;
 use muxterm::test_support::frontend::linux::keymap::{default_keybindings, Action, KeyMap};
 use muxterm::test_support::frontend::linux::layout_host::LayoutHost;
 use muxterm::test_support::frontend::linux::quickconnect::font::FontSettings;
-use muxterm::test_support::frontend::linux::quickconnect::model::TargetRuntime;
+use muxterm::test_support::frontend::linux::quickconnect::model::{
+    TargetConfigDraft, TargetRuntime,
+};
 use muxterm::test_support::frontend::linux::quickconnect::store::QuickConnectStore;
 use muxterm::test_support::frontend::linux::target_config_window;
 use muxterm::test_support::frontend::linux::window::AppWindow;
@@ -106,7 +112,7 @@ fn assert_target_config_herdr_card_saves() {
     parent.present();
     gtk4::test_widget_wait_for_draw(&parent);
 
-    let saved = Rc::new(RefCell::new(None::<TargetRuntime>));
+    let saved = Rc::new(RefCell::new(None::<TargetConfigDraft>));
     let s = saved.clone();
     let dialog = target_config_window::show(
         &parent,
@@ -115,7 +121,7 @@ fn assert_target_config_herdr_card_saves() {
         vec![],
         FfiClient::discover_runtimes().expect("runtime metadata through FFI"),
         move |cfg| {
-            *s.borrow_mut() = Some(cfg.runtime);
+            *s.borrow_mut() = Some(cfg);
         },
         || {},
     );
@@ -130,6 +136,23 @@ fn assert_target_config_herdr_card_saves() {
     herdr.set_active(true);
     pump_main_loop(40);
     assert!(herdr.is_active(), "点 Herdr 卡后应保持选中");
+    find_by_name(&dialog, "muxterm-target-identity")
+        .unwrap()
+        .downcast::<gtk4::Expander>()
+        .unwrap()
+        .set_expanded(true);
+    pump_main_loop(40);
+    for (name, value) in [
+        ("muxterm-target-session", "test-namespace"),
+        ("muxterm-target-socket", "/tmp/test-only.sock"),
+        ("muxterm-target-instance", "w7"),
+    ] {
+        find_by_name(&dialog, name)
+            .unwrap()
+            .downcast::<gtk4::Entry>()
+            .unwrap()
+            .set_text(value);
+    }
 
     let save = find_by_name(&dialog, "muxterm-target-config-save")
         .expect("保存按钮应存在")
@@ -138,10 +161,15 @@ fn assert_target_config_herdr_card_saves() {
     save.emit_clicked();
     pump_main_loop(40);
     assert_eq!(
-        *saved.borrow(),
+        saved.borrow().as_ref().map(|cfg| cfg.runtime),
         Some(TargetRuntime::Herdr),
         "保存后 on_save 必须收到 TargetRuntime::Herdr"
     );
+    let saved = saved.borrow();
+    let saved = saved.as_ref().unwrap();
+    assert_eq!(saved.session.as_deref(), Some("test-namespace"));
+    assert_eq!(saved.socket.as_deref(), Some("/tmp/test-only.sock"));
+    assert_eq!(saved.workspace_id.as_deref(), Some("w7"));
 
     dialog.close();
     dialog.destroy();

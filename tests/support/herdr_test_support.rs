@@ -189,10 +189,13 @@ impl IsolatedHerdr {
         if !name.starts_with("muxterm-test-") {
             panic!("herdr fixture 名称必须以 muxterm-test- 开头: {name}");
         }
-        // herdr server 固定用 ~/.config/herdr（不认 HERDR_CONFIG_DIR），
-        // 夹具必须按真实位置等 socket。
+        // 跟随运行环境的 XDG_CONFIG_HOME；配置隔离测试不能误等 HOME 下的 socket。
         let home = std::env::var("HOME").unwrap_or_else(|_| "/home/wlz".into());
-        let base = PathBuf::from(home).join(".config/herdr");
+        let base = std::env::var_os("XDG_CONFIG_HOME")
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(home).join(".config"))
+            .join("herdr");
         let session_dir = base.join("sessions").join(&name);
         let socket_path = session_dir.join("herdr.sock");
         let client_socket_path = session_dir.join("herdr-client.sock");

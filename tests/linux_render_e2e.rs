@@ -442,15 +442,43 @@ fn render_e2e_s3_s4() {
         surface_consecutive_full_frames_replace_without_reset(&view);
         surface_codex_fixture_raw_feed(&view);
 
+        // 浅色主题中，旧 Codex 会话可能仍画黑底输入框。必须在真实 VTE
+        // 中显示浅字，不改黑底，也不把输入框外的默认文字一起变白。
+        view.feed_output(b"\x1b[0m\x1b[2J\x1b[H\x1b[48;2;20;20;20mBLACK_INPUT\x1b[49m NORMAL_TEXT");
+        view.flush_pending_feed();
+        pump_main_loop(80);
+        let html = view
+            .terminal()
+            .text_format(vte4::Format::Html)
+            .unwrap()
+            .to_string();
+        assert!(
+            html.contains("#FFFFFF") && html.contains("background-color:#141414"),
+            "black composer contrast: {html}"
+        );
+        assert!(
+            html.contains("</font></span> NORMAL_TEXT"),
+            "default foreground must restore: {html}"
+        );
+
         // Pi/Codex primary-screen 输入框使用相对光标重绘。历史回填不能
         // 把屏幕内的光标误当 scrollback 绝对行，也不能吞掉首帧。
         view.feed_output(b"\x1b[?1049l\x1b[2J\x1b[H");
         view.flush_pending_feed();
         pump_main_loop(80);
-        view.seed_raw(b"\x1b[2J\x1b[HHEADER\x1b[10;1HINPUT_BOX\x1b[10;10H", 80, 24);
+        view.seed_raw(b"\x1b[2J\x1b[H\x1b[38;2;12;123;234mHEADER\x1b[0m\x1b[10;1HINPUT_BOX\x1b[10;10H\x1b[33m", 80, 24);
         pump_main_loop(80);
         view.prepend_history(b"older command\nolder result\n");
         pump_main_loop(80);
+        let html = view
+            .terminal()
+            .text_format(vte4::Format::Html)
+            .unwrap()
+            .to_string();
+        assert!(
+            html.contains("#0C7BEA"),
+            "history must preserve live colors before any repaint: {html}"
+        );
         view.feed_output(b"\r\x1b[2KINPUT_UPDATED ");
         // 刻意在 UTF-8 字符中间分包，覆盖星光/中文的字节边界。
         for byte in "✦ ✧ ⋆ ⠿ 中文".as_bytes() {

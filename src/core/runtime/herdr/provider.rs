@@ -27,8 +27,7 @@ fn local_herdr_socket_for(session: &str) -> String {
             return path.to_string();
         }
     }
-    let home = std::env::var("HOME").unwrap_or_default();
-    let base = std::path::PathBuf::from(home).join(".config/herdr");
+    let base = crate::discovery::existing::local_herdr_config_dir();
     if session.is_empty() || session == "default" {
         base.join("herdr.sock").to_string_lossy().into_owned()
     } else {
@@ -153,6 +152,41 @@ impl RuntimeProvider for HerdrDriver {
         )
     }
 
+    fn discover_scoped(
+        &self,
+        connect: &dyn TargetConnection,
+        spec: &RuntimeSpec,
+    ) -> RuntimeResult<Vec<ExistingCandidate>> {
+        let Some(socket) = spec.socket.as_deref().filter(|_| !spec.session.is_empty()) else {
+            return self.discover(
+                connect,
+                (!spec.session.is_empty()).then_some(spec.session.as_str()),
+            );
+        };
+        // 显式身份必须查询它自己的服务，不能扫描默认目录后误判为缺失。
+        let session = HerdrSession::with_connection(
+            Connect::new(connect.transport_id(), connect.target()),
+            &spec.session,
+            socket,
+        );
+        Ok(session
+            .workspace_list()
+            .map_err(RuntimeError::message)?
+            .into_iter()
+            .map(|workspace| ExistingCandidate {
+                runtime_id: "herdr".into(),
+                transport_id: connect.transport_id().into(),
+                target: connect.target().into(),
+                namespace: Some(spec.session.clone()),
+                name: workspace.label,
+                extra: workspace.workspace_id.clone(),
+                session: Some(spec.session.clone()),
+                socket: Some(socket.into()),
+                workspace_id: Some(workspace.workspace_id),
+            })
+            .collect())
+    }
+
     fn new_instance(
         &self,
         connect: Arc<dyn TargetConnection>,
@@ -165,10 +199,7 @@ impl RuntimeProvider for HerdrDriver {
         };
         let socket = match spec.socket.clone() {
             Some(socket) => socket,
-            None if connect.transport_id() == "local" => {
-                let home = std::env::var("HOME").unwrap_or_default();
-                format!("{home}/.config/herdr/herdr.sock")
-            }
+            None if connect.transport_id() == "local" => local_herdr_socket_for(session_name),
             None => return Err(anyhow!("SSH Herdr 缺远端 socket 路径").into()),
         };
         let session = HerdrSession::shared_with_connection(connect, session_name, socket);

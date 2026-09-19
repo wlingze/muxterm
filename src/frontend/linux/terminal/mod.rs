@@ -1,5 +1,6 @@
 //! Linux terminal surfaces: pane widgets, layout host, scrollback.
 
+mod contrast;
 #[cfg(test)]
 pub(crate) mod event_batch;
 pub mod font_registry;
@@ -10,3 +11,4 @@ pub mod pane_switcher;
 pub mod pane_view;
 pub mod scroll_policy;
 pub mod scrollback_view;
+mod styled_text;

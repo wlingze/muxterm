@@ -73,6 +73,7 @@ pub(super) fn refresh_workspace_layout(s: &mut UiState, wid: &WorkspaceId, seed_
         .collect();
 
     s.scenes.ensure(wid);
+    super::window_appearance::report_workspace_pane_colours(s, &workspace_key);
 
     if is_active {
         // tab 列表由 status bar 中区渲染（apply 时按签名重建），这里只维护
