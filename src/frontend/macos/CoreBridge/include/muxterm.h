@@ -135,6 +135,9 @@ char* muxterm_workspace_open_target_json(
     struct MuxtermHandle* h, const char* target_json, const char* intent);
 char* muxterm_candidates_json(struct MuxtermHandle* h, uint32_t recent_limit);
 char* muxterm_open_json(struct MuxtermHandle* h, const char* request_json);
+// Nonblocking open. Poll on the handle owner thread; pending=true means retry later.
+char* muxterm_open_start_json(struct MuxtermHandle* h, const char* request_json);
+char* muxterm_open_poll_json(struct MuxtermHandle* h, bool activate);
 char* muxterm_workspace_list(struct MuxtermHandle* h);
 int muxterm_workspace_activate(struct MuxtermHandle* h, const char* id);
 int muxterm_workspace_close(struct MuxtermHandle* h, const char* id);

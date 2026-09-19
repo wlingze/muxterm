@@ -25,6 +25,7 @@ pub use super::functions::handle::{
     muxterm_catalog_new, muxterm_free, muxterm_free_string, muxterm_init_logging,
     muxterm_log_message, muxterm_new, muxterm_new_connect, muxterm_new_connect_sized,
 };
+pub use super::functions::open_async::{muxterm_open_poll_json, muxterm_open_start_json};
 pub use super::functions::runtime::{
     muxterm_connect, muxterm_detach, muxterm_runtime_list_json, muxterm_shutdown,
     muxterm_status_subscription_active, muxterm_traffic_down, muxterm_traffic_up,

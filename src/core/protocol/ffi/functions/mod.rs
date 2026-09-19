@@ -6,6 +6,7 @@ pub mod catalog;
 pub mod config;
 pub mod events;
 pub mod handle;
+pub mod open_async;
 pub mod runtime;
 pub mod search;
 pub mod snapshot;

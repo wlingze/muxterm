@@ -89,6 +89,7 @@ pub struct Muxterm {
     /// Product Activity lane events waiting for the Activity FFI poll.
     pub(crate) deferred_activity_events: VecDeque<(crate::protocol::WorkspaceId, ActivityEvent)>,
     pub(crate) workspace_ids: Vec<CString>,
+    pub(crate) pending_open: Option<crate::protocol::ffi::functions::open_async::PendingOpen>,
 }
 
 impl Muxterm {
