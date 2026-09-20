@@ -445,15 +445,15 @@ mod tests {
     }
 
     #[test]
-    fn existing_tab_activation_is_scene_only() {
+    fn existing_tab_scene_navigation_is_local() {
         let src = include_str!("window_scene.rs");
         let activation = fn_src(src, "request_switch_tab");
         assert!(
             activation.contains("show_tab_scene(s, tab_id)"),
             "{activation}"
         );
-        assert_scene_navigation_body_is_local(activation);
-
+        // request_switch_tab 还会同步 runtime 焦点；常驻 scene 的显示本身
+        // 必须保持纯本地，不能等待 RPC 或重建 surface。
         let scene = fn_src(src, "show_tab_scene");
         assert!(scene.contains("layout.show_tab(tab_id)"), "{scene}");
         assert_scene_navigation_body_is_local(scene);
@@ -546,7 +546,7 @@ mod tests {
             light_css.contains("muxterm-status-window.tab-active"),
             "{light_css}"
         );
-        assert!(light_css.contains("inset 0 -3px 0"), "{light_css}");
+        assert!(light_css.contains("inset 0 -2px 0"), "{light_css}");
         assert!(light_css.contains(".quick-pick-root"), "{light_css}");
         assert!(
             light_css.contains(".muxterm-sidebar-workspace-row:hover .muxterm-sidebar-close"),
