@@ -877,11 +877,23 @@ final class MuxTerminalView: TerminalView {
         setFrameSize(size)
         let term = getTerminal()
         guard term.cols >= 2, term.rows >= 1 else { return false }
-        minimumModelCols = term.cols
-        minimumModelRows = term.rows
+        let allocated: (cols: Int, rows: Int)
+        if let cell = terminalCellSizeInPoints(), cell.width > 0, cell.height > 0 {
+            allocated = (
+                cols: max(2, Int((size.width / cell.width).rounded(.down))),
+                rows: max(1, Int((size.height / cell.height).rounded(.down)))
+            )
+        } else {
+            allocated = (cols: term.cols, rows: term.rows)
+        }
+        // 全屏切换时 host 已经变大，必须跟着放大；缩小仍由 tmux 尺寸事件负责。
+        let targetCols = max(term.cols, allocated.cols)
+        let targetRows = max(term.rows, allocated.rows)
+        minimumModelCols = targetCols
+        minimumModelRows = targetRows
         return syncSizeToPty(
             notifyResize: false,
-            exactGrid: (cols: term.cols, rows: term.rows)
+            exactGrid: (cols: targetCols, rows: targetRows)
         )
     }
 

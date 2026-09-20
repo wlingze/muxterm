@@ -173,12 +173,15 @@ final class ZoomE2ETests: XCTestCase {
             },
             "Cmd-] 应切到下一个 pane，并继续保持全屏"
         )
-        AppE2E.pump(80)
-        let secondGridAfterZoom = app.testPaneGrid(secondPane)
         XCTAssertTrue(
-            secondGridAfterZoom.cols > secondGridBeforeZoom.cols
-                || secondGridAfterZoom.rows > secondGridBeforeZoom.rows,
-            "目标 Surface 必须从 split grid 放大到全屏 allocation。before=\(secondGridBeforeZoom) after=\(secondGridAfterZoom)"
+            AppE2E.wait(timeout: 5) {
+                app.testPollOnce()
+                AppE2E.pump(30)
+                let after = app.testPaneGrid(secondPane)
+                return after.cols > secondGridBeforeZoom.cols
+                    || after.rows > secondGridBeforeZoom.rows
+            },
+            "目标 Surface 必须从 split grid 放大到全屏 allocation。before=\(secondGridBeforeZoom) after=\(app.testPaneGrid(secondPane))"
         )
 
         let previous = try XCTUnwrap(
