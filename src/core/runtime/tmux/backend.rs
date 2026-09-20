@@ -759,6 +759,28 @@ fn build_pane_snapshot(
 }
 
 impl TmuxRuntime {
+    /// 重连建立新的 control 协议流，旧响应序号、查询队列和 seed 门不能
+    /// 带过去。保留产品拓扑/已有画面供权威 list/capture 对账，以及用户
+    /// 配置和已回填历史；旧 control client 的 Drop 不影响 tmux session。
+    fn reset_connection_state(&mut self) {
+        let mut fresh = Self::new(None);
+        fresh.config = self.config.clone();
+        fresh.target_connection = self.target_connection.clone();
+        fresh.workspace_name = self.workspace_name.clone();
+        fresh.workspace_workdir = self.workspace_workdir.clone();
+        fresh.scrollback_lines = self.scrollback_lines;
+        fresh.client_size_from_ui = self.client_size_from_ui;
+        fresh.tabs = std::mem::take(&mut self.tabs);
+        fresh.panes = std::mem::take(&mut self.panes);
+        fresh.layouts = std::mem::take(&mut self.layouts);
+        fresh.outputs = std::mem::take(&mut self.outputs);
+        fresh.history_backfill_done = std::mem::take(&mut self.history_backfill_done);
+        fresh.initial_history = std::mem::take(&mut self.initial_history);
+        fresh.output_gap_count = self.output_gap_count;
+        fresh.output_gap_recovery_count = self.output_gap_recovery_count;
+        *self = fresh;
+    }
+
     // ── 层级映射（docs/LAYER-MAPPING.md 权威定义）──────────
     //
     // muxterm: Workspace → Tab → Pane  (3 层)
@@ -4113,6 +4135,9 @@ impl Runtime for TmuxRuntime {
         if self.status == BackendStatus::Connected {
             return Ok(());
         }
+        if self.event_rx.is_some() {
+            self.reset_connection_state();
+        }
         self.status = BackendStatus::Connecting;
         Self::push_control(
             &mut self.events,
@@ -5024,6 +5049,41 @@ impl TmuxRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reconnect_discards_old_protocol_state_but_keeps_owned_surface() {
+        let mut backend = TmuxRuntime::new(Some("muxterm-test-reconnect-state"));
+        backend.config.cols = Some(180);
+        backend.config.rows = Some(50);
+        backend.client_size_from_ui = true;
+        backend.active_session = Some(TmuxSessionId(7));
+        backend
+            .pending_queries
+            .push_back(PendingQuery::ServerVersion);
+        backend
+            .pending_by_number
+            .insert(12, PendingQuery::ServerVersion);
+        backend.response_accum.insert(12, vec!["stale".into()]);
+        backend.expected_panes_per_window.insert(TabId(2), 1);
+        backend.initial_capture_done.insert(PaneId(3));
+        backend.history_backfill_done.insert(PaneId(3));
+        backend
+            .outputs
+            .insert(PaneId(3), b"existing screen".to_vec());
+        backend.status_subscriptions_active = true;
+        backend.reset_connection_state();
+        assert_eq!(backend.config.cols, Some(180));
+        assert!(backend.client_size_from_ui);
+        assert!(backend.active_session.is_none());
+        assert!(backend.pending_queries.is_empty());
+        assert!(backend.pending_by_number.is_empty());
+        assert!(backend.response_accum.is_empty());
+        assert!(backend.expected_panes_per_window.is_empty());
+        assert!(backend.initial_capture_done.is_empty());
+        assert!(!backend.status_subscriptions_active);
+        assert!(backend.history_backfill_done.contains(&PaneId(3)));
+        assert_eq!(backend.outputs[&PaneId(3)], b"existing screen");
+    }
 
     #[test]
     fn logged_multi_pane_redraw_is_bounded_and_byte_exact() {
