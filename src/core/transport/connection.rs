@@ -358,29 +358,62 @@ impl Drop for UnixSocketByteChannel {
 
 #[cfg(unix)]
 #[derive(Debug)]
+struct SshForwardDirectory(PathBuf);
+
+#[cfg(unix)]
+impl SshForwardDirectory {
+    fn create() -> io::Result<Self> {
+        use std::os::unix::fs::DirBuilderExt;
+
+        // macOS 的 TMPDIR 很长；socket 路径不能再拼 alias 和长时间戳。
+        // 使用短路径下的独占私有目录，创建失败时不触碰已有目录。
+        let mut random = [0u8; 8];
+        std::fs::File::open("/dev/urandom")?.read_exact(&mut random)?;
+        let token = u64::from_ne_bytes(random);
+        let path = PathBuf::from(format!("/tmp/mt-fwd-{}-{token:016x}", std::process::id()));
+        std::fs::DirBuilder::new().mode(0o700).create(&path)?;
+        Ok(Self(path))
+    }
+
+    fn socket_path(&self) -> PathBuf {
+        self.0.join("s")
+    }
+}
+
+#[cfg(unix)]
+impl Drop for SshForwardDirectory {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[cfg(unix)]
+#[derive(Debug)]
 struct SshUnixSocketForward {
     child: Child,
     local_path: PathBuf,
+    _directory: SshForwardDirectory,
 }
 
 #[cfg(unix)]
 impl SshUnixSocketForward {
     fn start(alias: &str, remote_path: &Path) -> anyhow::Result<Self> {
+        Self::start_command(alias, remote_path, Command::new("ssh"))
+    }
+
+    fn start_command(
+        alias: &str,
+        remote_path: &Path,
+        mut command: Command,
+    ) -> anyhow::Result<Self> {
         let remote_path = remote_path
             .to_str()
             .ok_or_else(|| anyhow::anyhow!("SSH UnixSocket path 不是 UTF-8"))?;
-        let local_path = std::env::temp_dir().join(format!(
-            "muxterm-transport-fwd-{}-{}-{}.sock",
-            alias.replace(|character: char| !character.is_ascii_alphanumeric(), "-"),
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|duration| duration.as_nanos())
-                .unwrap_or_default()
-        ));
-        let _ = std::fs::remove_file(&local_path);
-
-        let mut command = Command::new("ssh");
+        let directory = SshForwardDirectory::create()?;
+        let local_path = directory.socket_path();
+        // 文件位于 0700 私有目录；避免管道写满让 ssh 卡住，失败时仅读取有限诊断。
+        let stderr_path = directory.0.join("stderr");
+        let stderr = std::fs::File::create(&stderr_path)?;
         command.args([
             "-nNT",
             "-o",
@@ -398,27 +431,39 @@ impl SshUnixSocketForward {
             .arg(format!("{}:{}", local_path.display(), remote_path))
             .arg(alias)
             .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .stderr(Stdio::from(stderr));
         let mut child = command
             .spawn()
             .map_err(|error| anyhow::anyhow!("spawn SSH UnixSocket forwarding 失败: {error}"))?;
 
         let deadline = Instant::now() + Duration::from_secs(5);
+        let mut exit_status = None;
         while Instant::now() < deadline {
-            if local_path.exists() {
-                return Ok(Self { child, local_path });
-            }
-            if let Ok(Some(_)) = child.try_wait() {
+            if let Ok(Some(status)) = child.try_wait() {
+                exit_status = Some(status);
                 break;
+            }
+            if local_path.exists() {
+                return Ok(Self {
+                    child,
+                    local_path,
+                    _directory: directory,
+                });
             }
             std::thread::sleep(Duration::from_millis(50));
         }
 
         let _ = child.kill();
         let _ = child.wait();
-        let _ = std::fs::remove_file(&local_path);
+        let mut diagnostic = Vec::new();
+        if let Ok(file) = std::fs::File::open(&stderr_path) {
+            let _ = file.take(4096).read_to_end(&mut diagnostic);
+        }
+        let reason =
+            exit_status.map_or_else(|| "等待超时".to_string(), |status| status.to_string());
         Err(anyhow::anyhow!(
-            "SSH UnixSocket forwarding 未就绪（alias={alias}, remote={remote_path})"
+            "SSH UnixSocket forwarding 未就绪（alias={alias}, remote={remote_path}, {reason}）: {}",
+            String::from_utf8_lossy(&diagnostic).trim()
         ))
     }
 }
@@ -428,13 +473,61 @@ impl Drop for SshUnixSocketForward {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
-        let _ = std::fs::remove_file(&self.local_path);
+        // 字段随后 drop：先停止 ssh，再移除该转发独占的临时目录。
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn ssh_forward_socket_binds_in_private_directory_and_is_cleaned_up() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::net::UnixListener;
+
+        let directory = SshForwardDirectory::create().unwrap();
+        let second = SshForwardDirectory::create().unwrap();
+        let path = directory.socket_path();
+        assert_ne!(path, second.socket_path());
+        assert_eq!(
+            std::fs::metadata(&directory.0)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        let listener = UnixListener::bind(&path).expect("SSH local socket path must be bindable");
+        let mut client = UnixStream::connect(&path).unwrap();
+        client.write_all(b"ping").unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        let mut data = [0; 4];
+        server.read_exact(&mut data).unwrap();
+        assert_eq!(&data, b"ping");
+        drop(listener);
+        drop(directory);
+        assert!(!path.parent().unwrap().exists());
+        assert!(second.0.exists(), "cleanup must not remove another forward");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ssh_forward_failure_preserves_stderr_and_exit_status() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "printf 'forward bind failed' >&2; exit 42"]);
+        let error = SshUnixSocketForward::start_command(
+            "test-alias",
+            Path::new("/remote/test.sock"),
+            command,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("forward bind failed"), "{error}");
+        assert!(error.contains("42"), "{error}");
+        assert!(error.contains("test-alias"), "{error}");
+    }
 
     #[test]
     fn connection_preserves_transport_and_target_identity() {
