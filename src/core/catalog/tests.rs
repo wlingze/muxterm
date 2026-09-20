@@ -248,6 +248,33 @@ fn herdr_candidate(session: &str, socket: &str, workspace_id: &str) -> ExistingC
 }
 
 #[test]
+fn provisional_herdr_project_attaches_matching_label_without_creating() {
+    let mut candidate = herdr_candidate("default", "/run/herdr.sock", "w8");
+    candidate.name = "legion".into();
+    let (catalog, create_calls, _) = herdr_resolver_catalog(Vec::new(), vec![candidate]);
+    let target = TargetConfig::new(
+        "legion",
+        TargetRuntime::Herdr,
+        TargetTransport::Ssh {
+            name: "ryzen".into(),
+        },
+        "~/Developer/work/legion",
+    );
+    let resolved = catalog
+        .resolve_target(
+            &mut ConnectionRegistry::new(),
+            &target,
+            ResolveIntent::CreateIfMissing,
+        )
+        .unwrap();
+    assert_eq!(resolved.canonical.workspace_id.as_deref(), Some("w8"));
+    assert_eq!(resolved.canonical.path, target.path);
+    assert_eq!(resolved.spec.path, "w8");
+    assert!(!resolved.spec.create);
+    assert_eq!(create_calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
 fn provisional_herdr_project_without_running_namespace_requires_a_choice() {
     let (catalog, create_calls, _) = herdr_resolver_catalog(Vec::new(), Vec::new());
     let mut connections = ConnectionRegistry::new();

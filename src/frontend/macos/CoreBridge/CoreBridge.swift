@@ -547,10 +547,10 @@ struct FrameSnapshot {
 /// 与 TUI 的共享 `FfiClient`/view-model 路径保持同一套 FFI 语义。
 final class CoreBridge {
     private var handle: OpaquePointer?
-    /// Frontend routing context for legacy-shaped convenience methods.  It is
-    /// not a Core activation call; workspace-scoped C functions remain the
-    /// source of truth and switching this value is local and synchronous.
+    /// Frontend routing context; selection queues Core activation for the
+    /// existing event pump rather than calling FFI in the click handler.
     private(set) var activeWorkspaceID: String?
+    private var pendingWorkspaceActivation: String?
     /// 当前连接的后端类型；tmux/ssh 都通过控制 client 同步整体尺寸。
     let backendType: String
     /// tmux `-L` socket 名（可选）。
@@ -1340,10 +1340,20 @@ final class CoreBridge {
         }
     }
 
-    /// Change only the frontend's routing context for convenience methods.
-    /// This does not activate or query Core, so scene switching remains local.
+    /// Scene 切换立即更新路由，前台意图由事件泵提交；连续切换只保留最后一个。
     func selectWorkspace(_ workspaceID: String?) {
         activeWorkspaceID = workspaceID
+        pendingWorkspaceActivation = workspaceID
+    }
+
+    /// 必须先于本轮 input/resize；否则 Herdr 仍处于后台 Observe 模式。
+    func flushWorkspaceSelection() {
+        guard let workspaceID = pendingWorkspaceActivation, let handle else { return }
+        pendingWorkspaceActivation = nil
+        let result = workspaceID.withCString { muxterm_workspace_activate(handle, $0) }
+        if result != 0 {
+            pendingError = MuxtermI18n.shared.tr(.errorCoreUnavailable) + ": " + workspaceID
+        }
     }
 
     private var cachedRuntimeInfo: [CoreRuntimeInfo]?
@@ -1634,6 +1644,7 @@ final class CoreBridge {
 
     /// 唯一的 workspace-event 消费入口；所有事件在返回前已复制成 owned DTO。
     func pollWorkspaceEvents(maxCount: Int = 64) -> [WorkspaceStateChange] {
+        flushWorkspaceSelection()
         let count = min(max(maxCount, 1), 64)
         var events = Array(pendingWorkspaceEvents.prefix(count))
         if !events.isEmpty {

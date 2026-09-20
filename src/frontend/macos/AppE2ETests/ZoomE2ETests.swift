@@ -4,6 +4,46 @@ import XCTest
 
 /// 先前 macOS bug：Alt/Cmd+Enter 后 tmux 已 zoom，GUI 仍显示多 pane。
 final class ZoomE2ETests: XCTestCase {
+    func testRepeatedFullscreenSnapshotsKeepTheSameHost() throws {
+        AppE2E.ensureApp()
+        let bridge = try CoreBridge(backendType: "local")
+        defer { bridge.shutdown() }
+        let manager = TerminalManager(bridge: bridge)
+        let layout = PaneLayoutView(terminalManager: manager)
+        layout.frame = NSRect(x: 0, y: 0, width: 1000, height: 600)
+        let panes = [Pane(id: 1, cols: 80, rows: 24, isActive: true),
+                     Pane(id: 2, cols: 80, rows: 24, isActive: false)]
+        let split = LayoutNode.split(horizontal: false, ratio: 500,
+            first: .leaf(paneId: 1), second: .leaf(paneId: 2))
+        XCTAssertTrue(layout.apply(layout: split, panes: panes, tabId: 1))
+        layout.toggleFullscreen(paneId: 1)
+        let host = try XCTUnwrap(layout.testHost(for: 1))
+        for _ in 0..<3 {
+            XCTAssertTrue(layout.apply(layout: split, panes: panes, tabId: 1))
+            XCTAssertTrue(layout.testHost(for: 1) === host,
+                "全屏投影只有一个 pane，不能拿完整 tab 的两个 pane 判定缓存失效")
+        }
+        let other = [Pane(id: 3, cols: 80, rows: 24, isActive: true)]
+        XCTAssertTrue(layout.apply(layout: .leaf(paneId: 3), panes: other, tabId: 2))
+        XCTAssertNotNil(layout.revealCachedTab(1))
+        XCTAssertTrue(layout.apply(layout: split, panes: panes, tabId: 1))
+        XCTAssertTrue(layout.testHost(for: 1) === host)
+    }
+
+    func testRuntimeZoomProjectionKeepsTheSameHost() throws {
+        AppE2E.ensureApp()
+        let bridge = try CoreBridge(backendType: "local")
+        defer { bridge.shutdown() }
+        let layout = PaneLayoutView(terminalManager: TerminalManager(bridge: bridge))
+        let panes = [Pane(id: 1, cols: 178, rows: 50, isActive: true),
+                     Pane(id: 2, cols: 88, rows: 24, isActive: false)]
+        XCTAssertTrue(layout.apply(layout: .leaf(paneId: 1), panes: panes, tabId: 1))
+        let host = try XCTUnwrap(layout.testHost(for: 1))
+        XCTAssertTrue(layout.apply(layout: .leaf(paneId: 1), panes: panes, tabId: 1))
+        XCTAssertTrue(layout.testHost(for: 1) === host)
+        XCTAssertFalse(layout.testPaneTitleVisible(1))
+    }
+
     func testAltEnterCollapsesLayoutToSingleLeaf() throws {
         let painted = PaintedWorkspace(label: "zoom")
         let app = try AppE2E.attachWindow(socket: painted.socket, session: painted.session)

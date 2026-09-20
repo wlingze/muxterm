@@ -1061,14 +1061,13 @@ impl HerdrRuntime {
         }
     }
 
-    /// 期望模式：in-flight mutation 已知目标时，目标 pane 独占 Control；
-    /// 否则 Pool 前台 active pane = Control，其余 pane/后台 workspace = Observe。
-    ///
-    /// GTK preferred 未到前一律 Observe：Control Hello 默认 80×24 会对长期
-    /// 运行的 htop 发 SIGWINCH，把 PTY 锁死在小屏（dogfood 2030 单 pane）。
-    /// mutation expected_focus 也必须等 preferred，否则 split/NewTab 立刻
-    /// Control→Observe→Control 三代 Hello（dogfood 2105 layout thrash）。
+    /// 可见 tab 中已有本 pane allocation 的分屏各自持有 Control，保证
+    /// 非焦点 pane 的 PTY 也能 resize；隐藏 tab/workspace 只 Observe。
+    /// 首次 focus/mutation 的兼容路径仍须等 preferred size，不能以 80×24 接管。
     fn desired_mode_for(&self, pane: &PaneInfo) -> StreamMode {
+        if !self.foreground {
+            return StreamMode::Observe;
+        }
         let has_pending_resize = self
             .stream_slots
             .get(&pane.id)
@@ -1076,25 +1075,26 @@ impl HerdrRuntime {
         if self.preferred_client_size.is_none() && !has_pending_resize {
             return StreamMode::Observe;
         }
-        // pane.split/tab.create 的直接响应可能早于权威 snapshot。只要
-        // 已知道目标 Herdr pane，就先按 mutation intent 计算最终 mode，
-        // 避免新 pane 先 Observe、旧 active 仍 Control，随后反复 takeover。
-        if let Some(expected_focus) = self
+        let focused = self
             .mutation_queue
             .in_flight()
             .and_then(|pending| pending.expected_focus.as_deref())
+            .and_then(|expected| {
+                self.panes.iter().find(|candidate| {
+                    self.pane_to_herdr_pane
+                        .get(&candidate.id)
+                        .is_some_and(|wire| wire == expected)
+                })
+            })
+            .or_else(|| {
+                self.panes
+                    .iter()
+                    .find(|candidate| Some(candidate.id) == self.active_pane)
+            });
+        let visible_tab = focused.map(|focused| focused.tab).or(self.active_tab);
+        if focused.is_some_and(|focused| focused.id == pane.id)
+            || (visible_tab == Some(pane.tab) && self.pane_client_sizes.contains_key(&pane.id))
         {
-            let is_expected = self
-                .pane_to_herdr_pane
-                .get(&pane.id)
-                .is_some_and(|herdr_pane| herdr_pane == expected_focus);
-            return if is_expected {
-                StreamMode::Control
-            } else {
-                StreamMode::Observe
-            };
-        }
-        if self.foreground && Some(pane.id) == self.active_pane {
             StreamMode::Control
         } else {
             StreamMode::Observe
@@ -1172,7 +1172,10 @@ impl HerdrRuntime {
                 if slot.actual_mode == Some(effective) && slot.state == SlotState::Live {
                     return None;
                 }
-                let takeover = effective == StreamMode::Control && slot.may_takeover();
+                // 布局给非焦点 pane 建 Control 时不得沿用过去 focus 的接管许可。
+                let takeover = effective == StreamMode::Control
+                    && self.active_pane == Some(pane.id)
+                    && slot.may_takeover();
                 Some((pane.id, effective, takeover))
             })
             .collect();
@@ -1363,9 +1366,9 @@ impl HerdrRuntime {
         let first_preferred = self.preferred_client_size.is_none();
         let (cols, rows) = normalize_pane_size(cols, rows, None);
         self.preferred_client_size = Some((cols, rows));
-        self.pane_client_sizes.insert(pane, (cols, rows));
+        let first_allocation = self.pane_client_sizes.insert(pane, (cols, rows)).is_none();
         let Some(slot) = self.stream_slots.get_mut(&pane) else {
-            if first_preferred {
+            if first_preferred || first_allocation {
                 self.reconcile_stream_modes();
             }
             return Err(anyhow!("pane {pane} 不存在"));
@@ -1383,7 +1386,7 @@ impl HerdrRuntime {
                 Ok(())
             }
             _ => {
-                let needs_reconcile = self.active_pane == Some(pane);
+                let needs_reconcile = self.active_pane == Some(pane) || first_allocation;
                 slot.pending_resize = Some((cols, rows));
                 if needs_reconcile {
                     // active pane 需要 control 才能收 PTY resize；无 intent 时
@@ -1394,7 +1397,7 @@ impl HerdrRuntime {
                 Ok(())
             }
         };
-        if first_preferred {
+        if first_preferred || first_allocation {
             self.reconcile_stream_modes();
         }
         result
@@ -3918,9 +3921,17 @@ mod tests {
             Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
             "w2",
         );
-        // 已有 viewport，避免测试触发真实流协调。
+        // 使用 Starting slot 模拟异步握手，协调不启动真实 socket。
         runtime.preferred_client_size = Some((80, 24));
         for (id, size) in [(PaneId(1), (160, 48)), (PaneId(2), (80, 23))] {
+            runtime.panes.push(PaneInfo {
+                id,
+                tab: TabId(1),
+                active: id == PaneId(1),
+                title: String::new(),
+                cols: size.0,
+                rows: size.1,
+            });
             let mut slot = PaneStreamSlot::new(id, format!("w2:p{}", id.0), StreamMode::Observe);
             slot.state = SlotState::Starting;
             runtime.stream_slots.insert(id, slot);
@@ -4000,6 +4011,51 @@ mod tests {
         assert!(!agent_source_handoff_is_bootstrap(Some(true), Some(true)));
         assert!(!agent_source_handoff_is_bootstrap(None, Some(false)));
         assert!(!agent_source_handoff_is_bootstrap(Some(false), None));
+    }
+
+    #[test]
+    fn allocated_visible_splits_keep_control_without_promoting_hidden_panes() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w1",
+        );
+        runtime.foreground = true;
+        runtime.preferred_client_size = Some((178, 23));
+        runtime.active_tab = Some(TabId(1));
+        runtime.active_pane = Some(PaneId(2));
+        for (id, tab) in [(1, 1), (2, 1), (3, 2), (4, 1)] {
+            runtime.panes.push(PaneInfo {
+                id: PaneId(id),
+                tab: TabId(tab),
+                active: id == 2,
+                title: String::new(),
+                cols: 80,
+                rows: 24,
+            });
+        }
+        for id in 1..=3 {
+            runtime.pane_client_sizes.insert(PaneId(id), (178, 23));
+        }
+        assert_eq!(
+            runtime.desired_mode_for(&runtime.panes[0]),
+            StreamMode::Control
+        );
+        assert_eq!(
+            runtime.desired_mode_for(&runtime.panes[1]),
+            StreamMode::Control
+        );
+        assert_eq!(
+            runtime.desired_mode_for(&runtime.panes[2]),
+            StreamMode::Observe
+        );
+        assert_eq!(
+            runtime.desired_mode_for(&runtime.panes[3]),
+            StreamMode::Observe
+        );
+        runtime.foreground = false;
+        for pane in &runtime.panes {
+            assert_eq!(runtime.desired_mode_for(pane), StreamMode::Observe);
+        }
     }
 
     #[test]

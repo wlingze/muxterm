@@ -210,7 +210,9 @@ final class PaneLayoutView: NSView, TerminalClientContentSizing {
             tree = .leaf(paneId: full)
         }
 
-        let expectedIds = Set(expectedPaneIDs)
+        // 缓存记录的是实际可见投影；zoom 时完整 pane 快照仍含隐藏兄弟。
+        // 用完整列表比较会在每次快照/切 tab 时拆树，反复改变终端 allocation。
+        let expectedIds = Set(tree?.leafPaneIDs() ?? [])
         let active = panes.first(where: \.isActive)?.id ?? panes.first?.id ?? 0
         if !forceRebuild, tabId == currentTabId, tree == currentLayout, expectedIds == currentPaneIds {
             markActivePane(active)

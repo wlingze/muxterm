@@ -91,6 +91,9 @@ AppWindow
 
 - 切 workspace / tab：只改 SceneStack 可见子树 + focus，零 Core 调用。
 - 命令合并：同一目标的连续 SwitchTab / activate 只发最后一个。
+- workspace 的前台意图必须在下一次事件泵中、input/resize 之前调用 Core Pool activate；
+  不能只更新前端路由，否则 Herdr 会一直保持后台 Observe。点击路径仍不调用 FFI，
+  不查询快照、不重新连接、不做前台校准。
 - focus：Scene 变可见 → focus 其 active pane；键盘只路由给可见 Scene 的 focus pane。
 - 关闭：close workspace 是 Scene 的唯一销毁点。detach ≠ destroy。
 - 嵌套分割：每次只替换当前叶子 pane，不重新平铺全树。

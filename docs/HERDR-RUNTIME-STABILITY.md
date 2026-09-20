@@ -37,7 +37,7 @@ pane 的旧事件和新事件不可区分，这足以解释 takeover 风暴和 C
 ### 2.1 目标
 
 1. 一个 Herdr pane 在任意时刻至多有一个 Muxterm stream transition 在执行。
-2. 当前前台 pane 持有 writable control；所有后台 pane 使用 read-only observe。
+2. 前台 tab 中已分配 UI 尺寸的 pane 各自持有 writable control；隐藏 tab/workspace 使用 read-only observe。
 3. 旧 stream 的 Frame/Closed/Error 永远不能修改新 stream 的状态或像素。
 4. `pane.read`、`terminal.frame`、Workspace Index 和原生 VTE 各自职责明确。
 5. tab/pane 创建只在 Herdr 权威 snapshot 收敛后宣告成功；不能靠一次响应猜最终布局。
@@ -184,12 +184,13 @@ Muxterm 的策略锁死为（这是 **Herdr adapter 内部** 的 wire mode，不
 | Workspace/Pane 状态 | desired mode |
 |---|---|
 | 可见 Scene 的 focus pane | Control |
-| 已打开但未 focus 的 pane（含隐藏 tab / 隐藏 Scene） | Observe |
+| 同一可见 tab 内已获得自身 UI allocation 的非 focus pane | Control（初次申请不 takeover） |
+| 未获得 allocation 的非 focus pane、隐藏 tab / 隐藏 Scene | Observe |
 | detach/shutdown/已关闭 pane | Stopped，无 stream |
 
 所有已打开 Workspace 的产品事件仍然常流（Control / Activity / Render 三条 lane）。
 frontend 不调用 `set_foreground`。HerdrRuntime 根据 Pool 给出的 focus pane 自己算
-desired mode。tmux/shell 不需要实现特殊行为。
+desired mode；同 tab 的可见分屏通过已有 ResizePane 提供各自 allocation。tmux/shell 不需要实现特殊行为。
 
 切 tab、切 pane 和切可见 Scene 都执行一次 reconciliation：先算出所有 pane 的
 desired mode，再对实际 registry 做最小变更。禁止在多个事件 handler 中分别
@@ -217,10 +218,11 @@ Control handshake 使用 `takeover=true`；第一笔 input 进入 intent-bound q
   权威 focus snapshot 不能冒充这个 edge。suppression 清除后、同一 intent 的
   Starting/Backoff 期间继续到达的输入只追加到该 intent 的有界队列，不能每个 write 都再建
   一个 intent 或重新启动 stream。
-- 向非 active pane 写输入前，产品焦点必须先切到该 pane；Runtime 不能在后台静默保留
-  第二个 controller。
-- resize 只发给当前 control stream。observe 收到的 frame 自带 width/height，但不能
-  反向抢占 resize 权。
+- 向非 active pane 写输入前，产品焦点必须先切到该 pane；
+  输入仍只发往用户选择的 pane；同 tab 其它 controller 仅维持各自 PTY 尺寸。
+- 可见 pane 的 resize 发给自身 control stream；observe 的 Resize 仅改变读取画布，不能改变 PTY。
+  非焦点 pane 首次申请 control 必须 `takeover=false`，外部 takeover suppression 仍按 pane 保留，
+  layout/resize 不得清除 suppression。切同 tab 内焦点不重建已有 controller。
 
 stream start/handshake 必须由 generation-tagged worker 完成，GTK/Core poll 线程只登记
 `Starting`，不能同步等 socket。用户在 Control `Starting/Backoff` 期间产生的 input 按原始
@@ -782,3 +784,11 @@ capture 尚未完成时不得直接 send-keys；单轮 probe、没有 ack 的 ou
 该 contract 由 tmux backend 单元测试和 GTK `attach_then_mutate_existing` 覆盖；GTK 测试
 必须通过 Existing Connections 生产入口，执行 attach→Alt+S→Alt+V→`+`→echo，并同时断言
 server、Core topology、pane geometry 与目标 VTE 文本。
+
+### 2026-09-20：可见分屏尺寸修正
+
+旧的“仅焦点 pane Control”规则会让同 tab 的非焦点 pane 只有大画布、没有对应的
+PTY resize；程序仍按旧列数换行，留下半幅空白。现在每个已分配尺寸的可见分屏
+独立持有 control，仍保持每个 Herdr terminal 至多一个 controller、generation 过滤、
+隐藏 tab 降 Observe，以及外部接管后不自动反抢。真实 named-session 回归通过
+`stty size` 验证上下 pane 的 PTY，另验证同 tab 切焦点不重建 stream。

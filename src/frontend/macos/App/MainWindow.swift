@@ -3545,7 +3545,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         )
     }
 
-    /// 激活一个常驻 Workspace scene：只切换 AppKit 的渲染源，不调用 Core。
+    /// 激活常驻 scene：立即切换渲染源，Core 前台意图排到事件泵提交。
     /// Core event pump 已经持续维护所有 scene 的快照，因此不存在前台校准。
     func activate(slot: WorkspaceScene) {
         if slot.targetConfig.runtime == .shell {
@@ -4767,6 +4767,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // UI actions only enqueue.  This is the single command boundary next
         // to the single workspace-event drain, so Core never races a click
         // handler or needs a frontend lock.
+        bridge.flushWorkspaceSelection()
         flushDeferredSceneBridgeWork()
         // Resuming a scene may enqueue deferred input/resize work collected
         // while bridge queries were paused, so flush after the resume as well.
