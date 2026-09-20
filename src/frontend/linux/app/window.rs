@@ -193,8 +193,6 @@ struct UiState {
     /// 已针对该 slot 数量显示过一次容量提醒；用户选择保留后不在每个
     /// poll 重复打断，数量变化（新建或关闭）后才重新评估。
     capacity_warning_presented_for_slot_count: Option<usize>,
-    /// 最近一次 STATE_BACKEND_STATUS 的 pane_id 编码（连接状态）。
-    runtime_status: u32,
     /// tmux status-left/right 订阅推送值（覆盖默认状态栏文案）。
     status_left: Option<String>,
     status_right: Option<String>,

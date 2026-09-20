@@ -417,8 +417,19 @@ pub(super) fn drain_existing_ssh(state: &Rc<RefCell<UiState>>) {
 pub(super) fn maybe_schedule_reconnect(state: &Rc<RefCell<UiState>>) {
     let should_retry = {
         let mut s = state.borrow_mut();
+        let id = s.active_ws_id();
+        let status = s
+            .view_store
+            .workspace(&id.as_str())
+            .and_then(|view| view.backend_status);
+        use crate::protocol::ffi::types::{
+            BACKEND_STATUS_DISCONNECTED, BACKEND_STATUS_ERROR, BACKEND_STATUS_EXITED,
+        };
         if s.reconnecting
-            || s.runtime_status == crate::protocol::ffi::types::BACKEND_STATUS_CONNECTED
+            || !matches!(
+                status,
+                Some(BACKEND_STATUS_DISCONNECTED | BACKEND_STATUS_ERROR | BACKEND_STATUS_EXITED)
+            )
         {
             return;
         }
@@ -426,7 +437,6 @@ pub(super) fn maybe_schedule_reconnect(state: &Rc<RefCell<UiState>>) {
         if s.reconnect_retry_at.is_some_and(|at| now < at) {
             return;
         }
-        let id = s.active_ws_id();
         if !s.workspace_supports(&id.as_str(), ClientRuntimeCapability::SharedClientResize) {
             return;
         }

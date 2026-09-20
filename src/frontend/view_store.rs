@@ -36,6 +36,8 @@ pub enum PaneRenderPolicy {
 #[derive(Debug, Default)]
 pub struct WorkspaceView {
     pub workspace: Option<ClientWorkspace>,
+    /// 每个 workspace 独立的连接状态；未知不能当作已连接。
+    pub backend_status: Option<u32>,
     pub tabs: Vec<ClientTab>,
     pub panes: HashMap<u32, Vec<ClientPane>>,
     /// One owned layout tree per tab. Layouts are part of the control snapshot
@@ -248,6 +250,10 @@ impl ViewStore {
     /// render-data events enter the pane mailbox here.
     pub fn apply_workspace_event(&mut self, event: ClientWorkspaceEvent) {
         let workspace_id = event.workspace_id;
+        if event.event.type_ == crate::protocol::ffi::types::STATE_BACKEND_STATUS {
+            self.ensure_workspace(&workspace_id).backend_status = Some(event.event.pane_id);
+            return;
+        }
         self.push_render_event(&workspace_id, event.event);
     }
 
@@ -386,6 +392,43 @@ mod tests {
 
     fn event(type_: u32, pane_id: u32, byte: u8) -> ClientEvent {
         event_with_data(type_, pane_id, vec![byte])
+    }
+
+    #[test]
+    fn connection_health_is_owned_by_each_workspace() {
+        use crate::frontend::utils::corebridge::ClientWorkspaceEvent;
+        let mut store = ViewStore::default();
+        for (workspace, status) in [
+            ("local//one/shell/", types::BACKEND_STATUS_CONNECTED),
+            ("ssh/ryzen/legion/herdr/", types::BACKEND_STATUS_CONNECTING),
+            ("ssh/ryzen/legion/herdr/", types::BACKEND_STATUS_ERROR),
+        ] {
+            store.apply_workspace_event(ClientWorkspaceEvent {
+                workspace_id: workspace.into(),
+                event: event_with_data(types::STATE_BACKEND_STATUS, status, Vec::new()),
+            });
+        }
+        assert_eq!(
+            store.workspace("local//one/shell/").unwrap().backend_status,
+            Some(types::BACKEND_STATUS_CONNECTED)
+        );
+        assert_eq!(
+            store
+                .workspace("ssh/ryzen/legion/herdr/")
+                .unwrap()
+                .backend_status,
+            Some(types::BACKEND_STATUS_ERROR)
+        );
+        assert!(store
+            .take_pane_render_events("ssh/ryzen/legion/herdr/", types::BACKEND_STATUS_ERROR)
+            .is_empty());
+        store.remove_workspace("ssh/ryzen/legion/herdr/");
+        assert_eq!(
+            store
+                .ensure_workspace("ssh/ryzen/legion/herdr/")
+                .backend_status,
+            None
+        );
     }
 
     #[test]

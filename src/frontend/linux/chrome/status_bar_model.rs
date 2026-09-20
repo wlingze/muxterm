@@ -14,4 +14,5 @@ pub struct ConnectionSummary {
     pub down_rate: u64,
     /// 瞬时上行字节/秒。
     pub up_rate: u64,
+    pub connections: Vec<String>,
 }
