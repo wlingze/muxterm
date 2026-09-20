@@ -1489,7 +1489,13 @@ mod tests {
             .control
             .iter()
             .any(|event| matches!(event, crate::runtime::ControlEvent::PaneAdded { .. })));
-        assert!(batch.render.is_empty());
+        assert!(
+            batch.render.iter().all(|event| {
+                matches!(event, RenderEvent::PaneSnapshot { data, .. } if data.is_empty())
+            }),
+            "connect may emit an empty PaneSnapshot baseline, but must not reclassify topology onto the render lane: {:?}",
+            batch.render
+        );
         assert!(batch.signals.is_empty());
         b.shutdown().await.unwrap();
     }
