@@ -641,3 +641,150 @@ fn visible_split_panes_keep_independent_pty_sizes() -> Result<()> {
     )?;
     Ok(())
 }
+
+#[test]
+fn server_scroll_reaches_history_before_and_after_attach() -> Result<()> {
+    let executor = tokio::runtime::Runtime::new()?;
+    let _entered = executor.enter();
+    let herdr = IsolatedHerdr::start("scroll");
+    let (workspace_id, _, wire) = herdr.create_workspace("/tmp", "scroll");
+    let session = muxterm::test_support::core::runtime::herdr::session::HerdrSession::new(
+        herdr.name(),
+        herdr.socket_path(),
+    );
+    session.pane_send_text(
+        &wire,
+        "for i in $(seq 1 150); do printf 'HISTORY-%s\\n' \"$i\"; done\r",
+    )?;
+    let spec = WorkspaceSpec::herdr(
+        herdr.name(),
+        &workspace_id,
+        herdr.socket_path().to_string_lossy(),
+    );
+    let catalog = Catalog::with_builtins();
+    let mut connections = ConnectionRegistry::new();
+    let mut pool = WorkspacePool::default();
+    let runtime = Muxterm::new_runtime(&catalog, &mut connections, &spec)?;
+    let workspace = executor.block_on(pool.open_spec_with_runtime(&spec, runtime))?;
+    let pane = active_pane(workspace)?;
+    done(
+        workspace,
+        Task::ResizePane {
+            target: pane,
+            cols: 100,
+            rows: 24,
+        },
+        "allocate",
+    )?;
+    wait_actual_mode(workspace, pane, StreamMode::Control, "controller")?;
+    wait_until(workspace, "history populated", |_| {
+        session
+            .pane_read_recent_ansi_lines(&wire, 200)
+            .is_ok_and(|bytes| String::from_utf8_lossy(&bytes).contains("HISTORY-150"))
+    })?;
+    for after_attach in [false, true] {
+        if after_attach {
+            session.pane_send_text(
+                &wire,
+                "for i in $(seq 1 100); do printf 'NEW-%s\\n' \"$i\"; done\r",
+            )?;
+            wait_until(workspace, "new output", |_| {
+                session
+                    .pane_read_recent_ansi(&wire)
+                    .is_ok_and(|bytes| String::from_utf8_lossy(&bytes).contains("NEW-100"))
+            })?;
+        }
+        done(
+            workspace,
+            Task::ScrollPane {
+                target: pane,
+                lines: 30,
+            },
+            "scroll up",
+        )?;
+        wait_until(workspace, "server viewport moves into history", |_| {
+            session.snapshot().is_ok_and(|snapshot| {
+                snapshot.panes.iter().any(|p| {
+                    p.pane_id == wire
+                        && p.scroll
+                            .as_ref()
+                            .is_some_and(|s| s.offset_from_bottom >= 30)
+                })
+            })
+        })?;
+        done(
+            workspace,
+            Task::ScrollPane {
+                target: pane,
+                lines: -65535,
+            },
+            "scroll back down",
+        )?;
+        wait_until(workspace, "server viewport returns to latest", |_| {
+            session.snapshot().is_ok_and(|snapshot| {
+                snapshot.panes.iter().any(|p| {
+                    p.pane_id == wire
+                        && p.scroll.as_ref().is_some_and(|s| s.offset_from_bottom == 0)
+                })
+            })
+        })?;
+    }
+    Ok(())
+}
+
+#[test]
+fn cached_tab_switches_do_not_publish_smaller_control_frames() -> Result<()> {
+    use muxterm::test_support::core::protocol::state::StateChange;
+    let executor = tokio::runtime::Runtime::new()?;
+    let _entered = executor.enter();
+    let herdr = IsolatedHerdr::start("switch-grid");
+    let (workspace_id, _, _) = herdr.create_workspace("/tmp", "switch-grid");
+    herdr_tab_create(&herdr, &workspace_id, "second");
+    let spec = WorkspaceSpec::herdr(
+        herdr.name(),
+        &workspace_id,
+        herdr.socket_path().to_string_lossy(),
+    );
+    let catalog = Catalog::with_builtins();
+    let mut connections = ConnectionRegistry::new();
+    let mut pool = WorkspacePool::default();
+    let runtime = Muxterm::new_runtime(&catalog, &mut connections, &spec)?;
+    let workspace = executor.block_on(pool.open_spec_with_runtime(&spec, runtime))?;
+    let tabs: Vec<_> = workspace.state().tabs().iter().map(|tab| tab.id).collect();
+    let mut panes = Vec::new();
+    for tab in &tabs {
+        done(workspace, Task::SwitchTab { target: *tab }, "initial tab")?;
+        let pane = active_pane(workspace)?;
+        panes.push(pane);
+        done(
+            workspace,
+            Task::ResizePane {
+                target: pane,
+                cols: 178,
+                rows: 50,
+            },
+            "allocate",
+        )?;
+        wait_until(workspace, "allocated frame", |ws| {
+            ws.state()
+                .active_pane()
+                .is_some_and(|p| p.cols == 178 && p.rows == 50)
+        })?;
+    }
+    for tab in tabs.iter().cycle().take(6) {
+        done(workspace, Task::SwitchTab { target: *tab }, "cached switch")?;
+        let deadline = Instant::now() + Duration::from_millis(350);
+        while Instant::now() < deadline {
+            for event in workspace.refresh() {
+                if let StateChange::PaneResized { pane, cols, rows } = event {
+                    ensure!(
+                        !panes.contains(&pane) || (cols, rows) == (178, 50),
+                        "switch shrank pane {pane}: {cols}x{rows}"
+                    );
+                }
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    Ok(())
+}

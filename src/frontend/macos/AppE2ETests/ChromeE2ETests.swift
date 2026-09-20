@@ -205,6 +205,35 @@ final class ChromeE2ETests: XCTestCase {
         XCTAssertEqual(bar.testAttentionIndicator(), .working)
     }
 
+    func testStatusButtonsReceivePhysicalHitTesting() throws {
+        let bar = StatusBarView(frame: NSRect(x: 0, y: 0, width: 900, height: 28))
+        window.contentView = bar
+        window.orderFront(nil)
+        bar.layoutSubtreeIfNeeded()
+        for identifier in ["muxterm.statusDot", "muxterm.statusAttention"] {
+            let button = try XCTUnwrap(bar.subviews.first { $0.accessibilityIdentifier() == identifier })
+            let point = bar.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), from: button)
+            XCTAssertTrue(bar.hitTest(bar.convert(point, to: bar.superview)) === button,
+                          "真正点击右侧按钮必须命中按钮，不能落到状态栏拖窗")
+        }
+    }
+
+    func testWorkingSpinnerSurvivesTabTitleAndSelectionUpdates() {
+        let bar = StatusBarView(frame: NSRect(x: 0, y: 0, width: 900, height: 28))
+        window.contentView = bar
+        window.orderFront(nil)
+        bar.updateTabs([Tab(id: 1, name: "codex", isActive: true)])
+        bar.setTabActivities([1: .working])
+        let identity = bar.testTabActivityIdentity(1)
+        for i in 0..<5 {
+            bar.updateTabs([Tab(id: 1, name: "codex \(i)", isActive: i % 2 == 0),
+                            Tab(id: 2, name: "shell", isActive: i % 2 != 0)])
+            XCTAssertEqual(bar.testTabActivityIdentity(1), identity,
+                           "状态栏刷新不能销毁转圈视图并把动画重置到起点")
+            XCTAssertTrue(bar.testTabActivityAnimating(1))
+        }
+    }
+
     func testTabsShowSharedActivityStateAndWorkingSpinner() {
         let bar = StatusBarView(frame: NSRect(x: 0, y: 0, width: 600, height: 24))
         window.contentView = bar
@@ -374,6 +403,31 @@ final class ChromeE2ETests: XCTestCase {
         XCTAssertEqual(bar.testPopoverValue("muxterm.statusPopover.received"), "1.0 TB")
         XCTAssertNil(bar.testPopoverValue("muxterm.statusPopover.sendRate"))
         XCTAssertNil(bar.testPopoverValue("muxterm.statusPopover.sent"))
+    }
+
+    func testConnectionPopoverUpdatesAndRefreshesWithoutReopening() throws {
+        let bar = StatusBarView(frame: .zero)
+        window.contentView = bar
+        window.orderFront(nil)
+        var refreshes = 0
+        bar.onConnectionRefresh = { refreshes += 1 }
+        bar.updateConnectionStatus((type: "ssh", host: "ryzen", status: "connected"),
+                                   trafficRate: 1024, totalBytes: 2048)
+        bar.testClickStatusDot()
+        AppE2E.pump(30)
+        XCTAssertEqual(refreshes, 1)
+        bar.updateConnectionStatus((type: "ssh", host: "ryzen", status: "connected"),
+                                   trafficRate: 3072, totalBytes: 4096)
+        XCTAssertEqual(bar.testPopoverValue("muxterm.statusPopover.receiveRate"), "3.0 KB/s")
+        XCTAssertEqual(bar.testPopoverValue("muxterm.statusPopover.received"), "4.0 KB")
+        func findRefresh(_ view: NSView) -> NSButton? {
+            if view.accessibilityIdentifier() == "muxterm.statusPopover.refresh" { return view as? NSButton }
+            return view.subviews.lazy.compactMap(findRefresh).first
+        }
+        let content = try XCTUnwrap(bar.testPopoverContentView())
+        try XCTUnwrap(findRefresh(content)).performClick(nil)
+        XCTAssertEqual(refreshes, 2)
+        XCTAssertTrue(bar.testPopoverVisible())
     }
 
     func testConnectionErrorUsesNativeErrorIconAndDetailRow() {

@@ -1,10 +1,64 @@
 import AppKit
+import CMuxterm
+import MuxtermChrome
 import XCTest
 @testable import MuxtermAppLib
 
 /// Surface seed 的 AppKit 可见性契约：host 不能在 SwiftTerm 分块恢复期间
 /// 暴露空白/半截帧，seed 与同期间 live catch-up 完成后才一次性显示。
 final class SurfaceVisibilityE2ETests: XCTestCase {
+
+    func testBackgroundFrameUsesItsSourceGridBeforePainting() throws {
+        let (bridge, manager) = try makeManager()
+        defer { bridge.shutdown() }
+        manager.updatePaneSizes([Pane(id: 6, cols: 80, rows: 24, isActive: true)])
+        let view = manager.view(for: 6)
+        let scene = WorkspaceScene(
+            key: SceneKey(transport: "local", alias: nil, session: "", runtime: "shell", path: ""),
+            bridge: bridge, workspaceID: "replay", terminalManager: manager, now: 0)
+        // 1406/1411: pane 6 的 controller 为 178x50；隐藏 scene 收到尺寸及 full。
+        scene.ingestSharedEvents([
+            StateChange(type: STATE_PANE_RESIZED, paneId: 6, tabId: 4, windowId: 0,
+                        data: Data([178, 0, 50, 0]), name: ""),
+            StateChange(type: STATE_PANE_FRAME, paneId: 6, tabId: 4, windowId: 0,
+                        data: Data("\u{1b}[1;1HTOP\u{1b}[50;170HEDGE".utf8), name: "")
+        ])
+        _ = scene.applyPendingSurfaceEvents()
+        XCTAssertEqual(view.renderedGridSize.cols, 178)
+        XCTAssertEqual(view.renderedGridSize.rows, 50)
+        XCTAssertTrue(view.visibleScreenText().contains("TOP"))
+        XCTAssertTrue(view.visibleScreenText().contains("EDGE"))
+    }
+
+    func testResizeBatchKeepsFrameAndDiffOrder() throws {
+        AppE2E.ensureApp()
+        let bridge = try CoreBridge.connect(backendType: "local")
+        let app = MainWindowController(bridge: bridge, debug: true)
+        defer { app.testShutdown() }
+        app.showWindow(nil)
+        XCTAssertTrue(app.waitReady())
+        let pane = app.testActivePaneID()
+        let tab = try XCTUnwrap(app.testTabIDs().first)
+        func event(_ type: UInt32, _ text: String) -> StateChange {
+            StateChange(type: type, paneId: pane, tabId: tab, windowId: 0,
+                        data: type == STATE_PANE_RESIZED ? Data([178, 0, 50, 0]) : Data(text.utf8), name: "")
+        }
+        for boundary in [STATE_PANE_RESIZED, STATE_ACTIVE_TAB_CHANGED] {
+            // Herdr full/diff 与尺寸事件同批；旧增量必须被后面的完整帧覆盖。
+            app.applyPolledEvents([
+                event(STATE_PANE_FRAME, "OLD_FRAME"),
+                event(STATE_PANE_OUTPUT, "\u{1b}[1;1HSTALE_DIFF"),
+                event(boundary, ""),
+                event(STATE_PANE_FRAME, "LATEST_FRAME"),
+                event(STATE_PANE_OUTPUT, "\u{1b}[2;1HNEW_INPUT")
+            ])
+            app.testFlushFeeds()
+            let text = app.testPaneTerminalText(pane)
+            XCTAssertTrue(text.contains("LATEST_FRAME"), text)
+            XCTAssertTrue(text.contains("NEW_INPUT"), text)
+            XCTAssertFalse(text.contains("STALE_DIFF"), text)
+        }
+    }
     func testAllocatedSizeRestoresGridAfterStaleRemoteFrame() {
         AppE2E.ensureApp()
         let view = MuxTerminalView(paneId: 1, frame: NSRect(x: 0, y: 0, width: 1000, height: 600))

@@ -168,6 +168,7 @@ final class WorkspaceScene: SceneProtocol {
                 || event.isPaneSnapshot
                 || event.isPaneHistory
                 || event.isPaneClosed
+                || event.type == STATE_PANE_RESIZED
             {
                 surface.append(event)
             }
@@ -382,6 +383,9 @@ final class WorkspaceScene: SceneProtocol {
             for ev in events {
                 if ev.isPaneClosed {
                     terminalManager.removePane(ev.paneId)
+                } else if ev.type == STATE_PANE_RESIZED,
+                          let grid = PaneGridSyncPolicy.grid(fromResizeEvent: ev.data) {
+                    terminalManager.handleResize(paneId: ev.paneId, cols: grid.cols, rows: grid.rows)
                 } else if ev.isPaneSnapshot {
                     terminalManager.handleSnapshot(paneId: ev.paneId, data: ev.data)
                 } else if ev.isPaneFrame {

@@ -613,7 +613,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         content.statusBar.onSelectWindow = { [weak self] tabId in
             self?.requestSwitchTab(tabId)
         }
-        // 铃铛始终是 Notifications 入口；Quick Connect 由 Cmd-P / 独立菜单负责。
+        content.statusBar.onConnectionRefresh = { [weak self] in
+            self?.updateTrafficMonitor()
+        }
+        // 铃铛始终打开 Attention 面板。
         content.statusBar.onAttentionClick = { [weak self] in
             self?.openAttentionPanel()
         }
@@ -4717,6 +4720,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                                 || event.isPaneSnapshot
                                 || event.isPaneHistory
                                 || event.isPaneClosed
+                                || event.type == STATE_PANE_RESIZED
                             {
                                 surface.append(event)
                             } else {
@@ -4784,11 +4788,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             retryPendingPanelJump()
             return
         }
-        terminalManager.beginEventBatch()
-        defer { terminalManager.endEventBatch() }
         resolvePendingLastSeen()
         let activeSlot = sceneStack.activeKey.flatMap { sceneStack.scenes[$0] }
         let events = pollSharedWorkspaceEvents(activeSlot: activeSlot)
+        applyPolledEvents(events)
+    }
+
+    /// 生产事件批次入口；回归测试直接重放同一条路径。
+    func applyPolledEvents(_ events: [StateChange]) {
+        terminalManager.beginEventBatch()
+        defer { terminalManager.endEventBatch() }
         if events.contains(where: { Self.tabNumberTopologyEvents.contains($0.type) }),
            let activeSlot = sceneStack.activeKey.flatMap({ sceneStack.scenes[$0] })
         {
@@ -4812,10 +4821,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let deferSurfaceEvents = deferOutputs || events.contains(where: {
             $0.type == STATE_PANE_RESIZED
         })
-        var pendingSnapshots: [(paneId: UInt32, data: Data)] = []
-        var pendingFrames: [(paneId: UInt32, data: Data)] = []
-        var pendingHistory: [(paneId: UInt32, data: Data)] = []
-        var pendingOutputs: [(paneId: UInt32, data: Data)] = []
+        // 同批 full/snapshot 和 diff 必须保持 wire 顺序，不能按类型重排。
+        var pendingSurfaceEvents: [StateChange] = []
         for ev in events {
             if ev.isPaneClosed {
                 // pane 真正关闭才销毁视图；切 tab / 布局变化保留视图状态。
@@ -4831,7 +4838,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 // 结构/尺寸事件先同步模型和布局，再 reset + feed snapshot，
                 // 否则 Cursor/htop 的 CUP 会按旧网格重放。
                 if deferSurfaceEvents {
-                    pendingSnapshots.append((paneId: ev.paneId, data: ev.data))
+                    pendingSurfaceEvents.append(ev)
                 } else {
                     terminalManager.handleSnapshot(paneId: ev.paneId, data: ev.data)
                 }
@@ -4842,7 +4849,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 // full frame 和 snapshot 一样必须等结构/尺寸收敛后再进
                 // SwiftTerm；但它只清可见网格，不 reset native scrollback。
                 if deferSurfaceEvents {
-                    pendingFrames.append((paneId: ev.paneId, data: ev.data))
+                    pendingSurfaceEvents.append(ev)
                 } else {
                     terminalManager.handleFrame(paneId: ev.paneId, data: ev.data)
                 }
@@ -4852,7 +4859,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     continue
                 }
                 if deferSurfaceEvents {
-                    pendingHistory.append((paneId: ev.paneId, data: ev.data))
+                    pendingSurfaceEvents.append(ev)
                 } else {
                     terminalManager.handleHistory(paneId: ev.paneId, data: ev.data)
                 }
@@ -4863,8 +4870,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 // 同批有结构事件（如窗口 resize 的 %layout-change）时，htop
                 // 的新尺寸重绘帧会先于模型 resize 到达，必须先收集、等布局
                 // 同步完再喂；纯输出批次直接喂，避免额外延迟。
-                if deferOutputs {
-                    pendingOutputs.append((paneId: ev.paneId, data: ev.data))
+                if deferSurfaceEvents {
+                    pendingSurfaceEvents.append(ev)
                 } else {
                     terminalManager.handleOutput(paneId: ev.paneId, data: ev.data)
                 }
@@ -4959,16 +4966,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 }
                 content.paneLayout.updatePaneTitle(paneId: ev.paneId, title: ev.name)
             } else if ev.type == STATE_PANE_RESIZED {
-                // pane 格子变了：立刻把 SwiftTerm 模型对齐（含缩小）。
-                // 不能只记轻量更新，否则 attach 的 128x63 会钉在 93x51
-                // 窗口上，prompt 掉到可见区域下面。
-                if let grid = PaneGridSyncPolicy.grid(fromResizeEvent: ev.data) {
-                    terminalManager.applyPaneGrid(
-                        paneId: ev.paneId,
-                        cols: grid.cols,
-                        rows: grid.rows
-                    )
-                }
+                // 格子与 Surface 字节一同按源顺序交付，不能先套用批次末尺寸。
+                pendingSurfaceEvents.append(ev)
                 needsLightweightUpdate = true
             }
             if ev.isBackendStatus {
@@ -5015,24 +5014,18 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             refreshStatusBar(force: true)
         }
         // 布局/尺寸同步完成后再喂输出，避免 resize 竞态。
-        for item in pendingSnapshots {
-            if shouldHandleSurfaceEvent(paneId: item.paneId) {
-                terminalManager.handleSnapshot(paneId: item.paneId, data: item.data)
-            }
-        }
-        for item in pendingFrames {
-            if shouldHandleSurfaceEvent(paneId: item.paneId) {
-                terminalManager.handleFrame(paneId: item.paneId, data: item.data)
-            }
-        }
-        for item in pendingHistory {
-            if shouldHandleSurfaceEvent(paneId: item.paneId) {
-                terminalManager.handleHistory(paneId: item.paneId, data: item.data)
-            }
-        }
-        for item in pendingOutputs {
-            if shouldHandleSurfaceEvent(paneId: item.paneId) {
-                terminalManager.handleOutput(paneId: item.paneId, data: item.data)
+        for event in pendingSurfaceEvents where shouldHandleSurfaceEvent(paneId: event.paneId) {
+            if event.type == STATE_PANE_RESIZED,
+               let grid = PaneGridSyncPolicy.grid(fromResizeEvent: event.data) {
+                terminalManager.handleResize(paneId: event.paneId, cols: grid.cols, rows: grid.rows)
+            } else if event.isPaneSnapshot {
+                terminalManager.handleSnapshot(paneId: event.paneId, data: event.data)
+            } else if event.isPaneFrame {
+                terminalManager.handleFrame(paneId: event.paneId, data: event.data)
+            } else if event.isPaneHistory {
+                terminalManager.handleHistory(paneId: event.paneId, data: event.data)
+            } else if event.isPaneOutput {
+                terminalManager.handleOutput(paneId: event.paneId, data: event.data)
             }
         }
         // 结构事件同批的 snapshot 在 refreshUI 之后才喂。seed 可能还要

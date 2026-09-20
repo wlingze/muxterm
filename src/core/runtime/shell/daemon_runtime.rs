@@ -368,7 +368,8 @@ impl DaemonRuntime {
             Task::NextPane
             | Task::PrevPane
             | Task::ResizePaneStep { .. }
-            | Task::ReportPaneColours { .. } => None,
+            | Task::ReportPaneColours { .. }
+            | Task::ScrollPane { .. } => None,
             // A short-lived CLI client may have missed the daemon's earlier
             // render events.  Ask the host for one raw pane baseline so the
             // client can resume from the current output before deltas.

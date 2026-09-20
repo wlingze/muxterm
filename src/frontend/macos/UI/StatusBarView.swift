@@ -65,6 +65,7 @@ final class StatusBarView: NSView {
     var onMoveTab: ((UInt32, UInt32, Bool) -> Void)?
     var onWorkspaceClick: (() -> Void)?
     var onAttentionClick: (() -> Void)?
+    var onConnectionRefresh: (() -> Void)?
     var sidebarOpen = false {
         didSet {
             sidebarToggleButton.state = sidebarOpen ? .on : .off
@@ -111,6 +112,7 @@ final class StatusBarView: NSView {
     private let middleStack = NSView()
     private let tabViewport = NSView()
     private let tabStack = NSStackView()
+    private var tabWidthConstraints: [NSLayoutConstraint] = []
     private let leftLabel = NSTextField(labelWithString: "")
     private let rightLabel = NSTextField(labelWithString: "")
     private let statusDot = StatusDotButton()
@@ -537,6 +539,7 @@ final class StatusBarView: NSView {
         self.upRate = upRate
         self.upBytes = upBytes
         updateStatusDotColor()
+        refreshConnectionDetails()
     }
 
     /// 更新 debug 摘要文本（tabs/panes/pane:@N）。
@@ -719,12 +722,26 @@ final class StatusBarView: NSView {
         return rows
     }
 
+    private func refreshConnectionDetails() {
+        guard statusPopover != nil else { return }
+        statusPopoverText = statusDotAccessibilityLabel
+        for row in connectionDetailRows() {
+            statusPopoverValues[row.identifier]?.stringValue = row.value
+        }
+    }
+
+    @objc private func refreshConnectionClicked() {
+        onConnectionRefresh?()
+        refreshConnectionDetails()
+    }
+
     /// 点击连接图标 → 原生键值弹层（连接状态 + SSH 流量 + 可选 debug 信息）。
     @objc private func statusDotClicked() {
         // 如果已有弹出框，先关闭再开（避免重复）。
         statusPopover?.close()
         statusPopover = nil
 
+        onConnectionRefresh?()
         let rows = connectionDetailRows()
         statusPopoverText = statusDotAccessibilityLabel
         statusPopoverValues.removeAll()
@@ -782,6 +799,11 @@ final class StatusBarView: NSView {
         grid.column(at: 0).xPlacement = .trailing
         grid.column(at: 1).xPlacement = .leading
         root.addArrangedSubview(grid)
+        let refresh = NSButton(title: MuxtermI18n.shared.tr(.statusRefresh),
+                               target: self, action: #selector(refreshConnectionClicked))
+        refresh.bezelStyle = .rounded
+        refresh.setAccessibilityIdentifier("muxterm.statusPopover.refresh")
+        root.addArrangedSubview(refresh)
 
         if isDebug, !debugText.isEmpty {
             let separator = NSBox()
@@ -869,7 +891,15 @@ final class StatusBarView: NSView {
     }
 
     private func rebuildTabButtons(_ items: [TabBarItem]) {
-        tabStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        // 标题/状态刷新复用按钮，避免 working 动画每次从零开始。
+        let existing = Dictionary(uniqueKeysWithValues: tabStack.arrangedSubviews
+            .compactMap { $0 as? StatusTabButton }.map { (UInt32($0.tag), $0) })
+        let ids = Set(items.map(\.id))
+        NSLayoutConstraint.deactivate(tabWidthConstraints)
+        tabWidthConstraints.removeAll()
+        for (id, button) in existing where !ids.contains(id) {
+            button.removeFromSuperview()
+        }
         let equalWidth = tmuxStatusEnabled
             ? colorMode == .theme
             : tabBarStyle == .equalWidth
@@ -882,7 +912,7 @@ final class StatusBarView: NSView {
         tabStackTrailingConstraint.isActive = equalWidth && !items.isEmpty
         var firstEqualWidthButton: StatusTabButton?
         for (position, item) in items.enumerated() {
-            let button = StatusTabButton()
+            let button = existing[item.id] ?? StatusTabButton()
             button.configureTitle(
                 item.title,
                 attributed: item.attributedTitle,
@@ -890,16 +920,22 @@ final class StatusBarView: NSView {
             )
             // 等宽约束连接两个按钮，必须先让它们拥有共同父视图；否则
             // AppKit 会在约束激活时抛出 NSGenericException。
-            tabStack.addArrangedSubview(button)
+            if position >= tabStack.arrangedSubviews.count
+                || tabStack.arrangedSubviews[position] !== button {
+                if tabStack.arrangedSubviews.contains(where: { $0 === button }) {
+                    tabStack.removeArrangedSubview(button)
+                }
+                tabStack.insertArrangedSubview(button, at: position)
+            }
             if equalWidth {
                 if let firstEqualWidthButton {
-                    button.widthAnchor.constraint(equalTo: firstEqualWidthButton.widthAnchor).isActive = true
+                    tabWidthConstraints.append(button.widthAnchor.constraint(equalTo: firstEqualWidthButton.widthAnchor))
                 } else {
                     firstEqualWidthButton = button
                 }
                 let minimum = button.widthAnchor.constraint(greaterThanOrEqualToConstant: 44)
                 minimum.priority = .defaultLow
-                minimum.isActive = true
+                tabWidthConstraints.append(minimum)
             }
             button.tag = Int(item.id)
             button.aggregateAppearance = AggregateWorkspaceAppearance(
@@ -916,6 +952,7 @@ final class StatusBarView: NSView {
             button.onDoubleClick = allowsTabRenaming ? { [weak self] in
                 self?.onRenameTab?(item.id)
             } : nil
+            button.onDragEnd = nil
             if allowsTabReordering {
                 button.onDragEnd = { [weak self, weak button] location in
                     guard let self, let button else { return }
@@ -972,6 +1009,7 @@ final class StatusBarView: NSView {
             button.menu = menu.items.isEmpty ? nil : menu
         }
         needsLayout = true
+        NSLayoutConstraint.activate(tabWidthConstraints)
     }
 
     private func finishTabDrag(source: StatusTabButton, locationInWindow: NSPoint) {
@@ -1166,6 +1204,11 @@ final class StatusBarView: NSView {
             .activityForTesting
     }
 
+    func testTabActivityIdentity(_ tabId: UInt32) -> ObjectIdentifier? {
+        tabStack.arrangedSubviews.compactMap { $0 as? StatusTabButton }
+            .first(where: { $0.tag == Int(tabId) }).map { $0.activityIdentityForTesting }
+    }
+
     func testTabActivityAnimating(_ tabId: UInt32) -> Bool {
         tabStack.arrangedSubviews
             .compactMap { $0 as? StatusTabButton }
@@ -1315,7 +1358,7 @@ private final class StatusDotButton: NSButton {
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        bounds.contains(point) ? self : nil
+        super.hitTest(point) == nil ? nil : self
     }
 
     @available(*, unavailable)
@@ -1376,7 +1419,7 @@ private final class AttentionBellButton: NSButton {
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        bounds.contains(point) ? self : nil
+        super.hitTest(point) == nil ? nil : self
     }
 
     var countText: String {
@@ -1628,6 +1671,7 @@ private final class StatusTabButton: NSButton {
     var closeVisibleForTesting: Bool { !closeButton.isHidden }
     var activityForTesting: AgentSidebarIndicator? { activityView.activity }
     var activityAnimatingForTesting: Bool { activityView.isAnimating }
+    var activityIdentityForTesting: ObjectIdentifier { ObjectIdentifier(activityView) }
 
     func clickCloseForTesting() {
         closeButton.performClick(nil)
@@ -1709,15 +1753,19 @@ private final class TabActivityIndicatorView: NSView {
     }
 
     private func updateAnimation() {
-        shape.removeAnimation(forKey: "muxterm.tab.activity.rotation")
         guard activity == .working,
               window != nil,
               !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        else { return }
+        else {
+            shape.removeAnimation(forKey: "muxterm.tab.activity.rotation")
+            return
+        }
+        guard !isAnimating else { return }
         let animation = CABasicAnimation(keyPath: "transform.rotation.z")
         animation.fromValue = 0
         animation.toValue = Double.pi * 2
         animation.duration = 0.9
+        animation.timingFunction = CAMediaTimingFunction(name: .linear)
         animation.repeatCount = .infinity
         animation.isRemovedOnCompletion = false
         shape.add(animation, forKey: "muxterm.tab.activity.rotation")

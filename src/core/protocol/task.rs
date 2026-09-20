@@ -85,6 +85,9 @@ pub enum Task {
     /// 重命名当前 Workspace。
     RenameWorkspace { name: String },
 
+    /// 滚动由 Runtime 持有的终端历史；正数向上，负数向下。
+    ScrollPane { target: PaneId, lines: i32 },
+
     // ── 输入 ──────────────────────────────────────────────
     /// 向 pane 发送按键序列（tmux send-keys / 本地 pty write）。
     SendKeys { target: PaneId, keys: Vec<KeyEvent> },

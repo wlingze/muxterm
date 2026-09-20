@@ -6,6 +6,44 @@ import MuxtermChrome
 /// 生产日志 `test-2026-0817-1457.log`：attach 后 `refresh-client -r` 上报
 /// OSC 10/11。主题与终端颜色绑定：默认浅色是黑字白底；深色才是浅字深底。
 final class AgentRenderE2ETests: XCTestCase {
+
+    func testPartialPaintMatchesFullPaintAtFractionalRowBoundary() throws {
+        AppE2E.ensureApp()
+        let view = MuxTerminalView(paneId: 163, frame: NSRect(x: 0, y: 0, width: 980, height: 507))
+        view.applyPalette(.light)
+        view.syncSizeToPty(notifyResize: false)
+        let rows = view.getTerminal().rows
+        let contents = (1...rows).map { row in
+            "\u{1b}[\(row);1H\u{1b}[48;2;30;30;30m\u{1b}[38;2;128;128;128m" +
+            "test 切换tab 无论是否放大都会出现bug row=\(row) g he " + String(repeating: " ", count: 30)
+        }.joined()
+        view.feedOutput(Data(contents.utf8))
+        func bitmap() throws -> NSBitmapImageRep {
+            try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 980,
+                pixelsHigh: 507, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 3920, bitsPerPixel: 32))
+        }
+        func paint(_ bitmap: NSBitmapImageRep, rect: NSRect) throws {
+            let graphics = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: bitmap))
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = graphics
+            graphics.cgContext.saveGState()
+            graphics.cgContext.clip(to: rect)
+            view.draw(rect)
+            graphics.cgContext.restoreGState()
+            NSGraphicsContext.restoreGraphicsState()
+        }
+        let full = try bitmap()
+        try paint(full, rect: view.bounds)
+        let partial = try bitmap()
+        for y in stride(from: 0, to: 507, by: 13) {
+            try paint(partial, rect: NSRect(x: 0, y: y, width: 980, height: min(13, 507-y)))
+        }
+        let count = full.bytesPerRow * full.pixelsHigh
+        let a = Data(bytes: try XCTUnwrap(full.bitmapData), count: count)
+        let b = Data(bytes: try XCTUnwrap(partial.bitmapData), count: count)
+        XCTAssertTrue(a == b, "局部重绘不得切掉字形；结果必须与一次完整绘制一致")
+    }
     func testReportedOscColorsFollowActivePalette() throws {
         AppE2E.ensureApp()
         MuxtermTerminalColors.activePalette = .light
@@ -328,6 +366,43 @@ final class AgentRenderE2ETests: XCTestCase {
     /// 真实 AppKit 事件路径回归：不能只调用 `scrollUp()`，必须由
     /// `NSWindow.sendEvent` 命中 terminal view 后进入 SwiftTerm 的
     /// `scrollWheel(with:)`。
+    /// 从 test-2026-0920-1406.log 提取的 51 次滚轮任务；此前每次都夹带 pane.focus。
+    func testRecordedHerdrWheelBurstDoesNotQueueFocusRpc() throws {
+        AppE2E.ensureApp()
+        let view = MuxTerminalView(paneId: 6, frame: NSRect(x: 0, y: 0, width: 980, height: 507))
+        let deltas: [Int32] = [1, 14, 6, 7, 6, -30, 13, 9, -1, -4, -5, -7, -7, -7, -41, 31, -3, -19, -1, -21, 1, 6, 4, 4, 1, 5, 4, -4, -5, -1, -29, -1, -30, -8, 2, 8, 10, 3, -4, -6, -7, -8, -8, 22, 8, -31, -8, -1, -39, -1, -3]
+        var received: [Int] = []
+        var focusRequests = 0
+        view.onActivatePane = { _ in focusRequests += 1 }
+        view.onServerScroll = { received.append($0) }
+        for delta in deltas {
+            let event = try XCTUnwrap(CGEvent(scrollWheelEvent2Source: nil, units: .line,
+                wheelCount: 1, wheel1: delta, wheel2: 0, wheel3: 0).flatMap(NSEvent.init(cgEvent:)))
+            view.scrollWheel(with: event)
+        }
+        XCTAssertEqual(received, deltas.map(Int.init))
+        XCTAssertEqual(focusRequests, 0)
+    }
+
+    func testServerScrollUsesWheelDirectionWithoutLocalHistory() throws {
+        AppE2E.ensureApp()
+        let view = MuxTerminalView(paneId: 31, frame: NSRect(x: 0, y: 0, width: 640, height: 240))
+        var received: [Int] = []
+        view.onServerScroll = { received.append($0) }
+        var activations = 0
+        view.onActivatePane = { _ in activations += 1 }
+        XCTAssertFalse(view.canScroll)
+        for delta: Int32 in [4, -3] {
+            let event = try XCTUnwrap(CGEvent(scrollWheelEvent2Source: nil, units: .line,
+                wheelCount: 1, wheel1: delta, wheel2: 0, wheel3: 0).flatMap(NSEvent.init(cgEvent:)))
+            view.scrollWheel(with: event)
+        }
+        XCTAssertEqual(received, [4, -3])
+        XCTAssertEqual(activations, 0, "滚动不能为每个 tick 再排队一次同步远端 focus")
+        XCTAssertTrue(view.lastScrollWheelRoutedToRuntime)
+        XCTAssertFalse(view.canScroll, "服务端历史不得伪装成本地重放的 scrollback")
+    }
+
     func testAlternateAgentScrollRoutesToRuntimeNotLocalHistory() {
         AppE2E.ensureApp()
         let view = MuxTerminalView(

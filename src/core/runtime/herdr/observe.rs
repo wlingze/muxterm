@@ -334,6 +334,33 @@ impl ObserveStream {
         .context("写 Herdr terminal input 失败")
     }
 
+    pub fn scroll(&mut self, lines: i32) -> Result<()> {
+        use super::wire::{AttachScrollDirection, AttachScrollSource};
+        if lines == 0 {
+            return Ok(());
+        }
+        let stream = self
+            .command_stream
+            .as_mut()
+            .context("Herdr control stream 已关闭")?;
+        write_message(
+            stream,
+            &ClientMessage::AttachScroll {
+                source: AttachScrollSource::Wheel,
+                direction: if lines > 0 {
+                    AttachScrollDirection::Up
+                } else {
+                    AttachScrollDirection::Down
+                },
+                lines: lines.unsigned_abs().min(u16::MAX as u32) as u16,
+                column: None,
+                row: None,
+                modifiers: 0,
+            },
+        )
+        .context("写 Herdr terminal scroll 失败")
+    }
+
     pub fn resize(&mut self, cols: u16, rows: u16) -> Result<()> {
         let stream = self
             .command_stream

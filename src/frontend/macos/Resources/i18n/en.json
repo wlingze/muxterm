@@ -119,6 +119,7 @@
   "status_attention": "Messages",
   "status_attention_count": "{{count}} pending messages",
   "status_attention_none": "No pending messages",
+  "status_refresh": "Refresh",
   "status_connection_details": "Connection",
   "status_error_details": "Error details",
   "status_host": "Host",

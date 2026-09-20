@@ -519,6 +519,11 @@ struct MuxTask {
         )
     }
 
+    static func scrollPane(_ paneId: UInt32, lines: Int) -> QueuedMuxTask {
+        QueuedMuxTask(type: TASK_SCROLL_PANE, targetPane: paneId,
+            targetTab: UInt32(clamping: lines.magnitude), dir: lines > 0 ? 0 : 1)
+    }
+
     /// Runtime 重新发送指定 pane 的权威 Surface baseline。
     static func requestPaneSnapshot(_ paneId: UInt32) -> MuxTask {
         MuxTask(

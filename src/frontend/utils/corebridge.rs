@@ -1014,6 +1014,7 @@ pub struct ClientRuntimeInfo {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClientRuntimeCapability {
     PersistDetach,
+    ServerScroll,
     Discover,
     MultiTab,
     SplitPane,
@@ -1028,6 +1029,7 @@ impl ClientRuntimeCapability {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::PersistDetach => "PersistDetach",
+            Self::ServerScroll => "ServerScroll",
             Self::Discover => "Discover",
             Self::MultiTab => "MultiTab",
             Self::SplitPane => "SplitPane",
