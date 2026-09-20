@@ -191,6 +191,8 @@ pub struct PaneSurface {
     inner: Rc<PaneViewInner>,
 }
 
+type ServerScrollCallback = Rc<dyn Fn(u32, i32)>;
+
 struct PaneViewInner {
     container: gtk4::Box,
     header: gtk4::Box,
@@ -201,6 +203,7 @@ struct PaneViewInner {
     input_state: RefCell<PaneInputState>,
     /// 用户输入回调（connect_input 注册；测试可经 test_emit_input 触发）。
     input_cb: RefCell<Option<InputCallback>>,
+    server_scroll_cb: RefCell<Option<ServerScrollCallback>>,
     /// tmux/SSH 镜像模式：feed 期间解析器应答一律丢弃。
     is_tmux_mirror: Cell<bool>,
     /// 正在把远端 pane 输出 feed 进 VTE（解析器应答只在这个窗口产生）。
@@ -232,6 +235,7 @@ struct PaneViewInner {
     last_pointer_cell: Cell<(u16, u16)>,
     /// 当前按下的 GTK 按钮（1=左 2=中 3=右），1002 motion 用。
     pointer_buttons: Cell<u32>,
+    primary_press: Cell<Option<(f64, f64)>>,
 }
 
 impl PaneSurface {
@@ -282,6 +286,7 @@ impl PaneSurface {
             pane_id: Cell::new(pane_id),
             input_state: RefCell::new(PaneInputState::default()),
             input_cb: RefCell::new(None),
+            server_scroll_cb: RefCell::new(None),
             is_tmux_mirror: Cell::new(is_tmux_mirror),
             is_feeding_remote_output: Cell::new(false),
             pending_feed: RefCell::new(std::collections::VecDeque::new()),
@@ -298,6 +303,7 @@ impl PaneSurface {
             menu_cb: RefCell::new(None),
             last_pointer_cell: Cell::new((1, 1)),
             pointer_buttons: Cell::new(0),
+            primary_press: Cell::new(None),
         });
         let view = PaneSurface { inner };
         view.install_context_menu();
@@ -467,6 +473,20 @@ impl PaneSurface {
             let modes = self.inner.input_state.borrow().modes();
             (modes.alternate_screen, modes.mouse_reporting && !shift)
         };
+        // 应用明确请求鼠标时保留应用滚轮；否则 ServerScroll 的历史在
+        // 服务端，不能去滚没有历史内容的本地 VTE adjustment。
+        if !mouse_reporting {
+            if let Some(callback) = self.inner.server_scroll_cb.borrow().as_ref() {
+                if delta_y.is_finite() && delta_y != 0.0 {
+                    let lines = crate::frontend::mouse::wheel_notches(delta_y) as i32;
+                    callback(
+                        self.inner.pane_id.get(),
+                        if delta_y < 0.0 { lines } else { -lines },
+                    );
+                }
+                return;
+            }
+        }
         let cell = self.inner.last_pointer_cell.get();
         let Some(action) = wheel_action(alternate_screen, mouse_reporting, delta_y, cell) else {
             return;
@@ -512,7 +532,8 @@ impl PaneSurface {
             }
             glib::Propagation::Stop
         });
-        self.widget().add_controller(controller);
+        controller.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        self.terminal().add_controller(controller);
     }
 
     /// 点击/悬浮：应用开了 1000/1002/1003 时写成 SGR 交给 pane。
@@ -532,11 +553,78 @@ impl PaneSurface {
                 view.handle_pointer_motion(x, y, shift);
             });
         }
-        self.widget().add_controller(motion);
+        self.terminal().add_controller(motion);
 
-        for button in [1_u32, 2] {
+        // 主屏 agent 的拖拽留给原生选区；未拖动的点击在松开后成对上报。
+        // Legacy capture 不参与手势抢占，VTE 建立选区后仍能收到 release。
+        let pointer = gtk4::EventControllerLegacy::new();
+        pointer.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        let weak = Rc::downgrade(&self.inner);
+        pointer.connect_event(move |_, event| {
+            let Some(inner) = weak.upgrade() else {
+                return glib::Propagation::Proceed;
+            };
+            let Some(button) = event.downcast_ref::<gdk::ButtonEvent>() else {
+                return glib::Propagation::Proceed;
+            };
+            if button.button() != 1 {
+                return glib::Propagation::Proceed;
+            }
+            let Some((x, y)) = event.position() else {
+                return glib::Propagation::Proceed;
+            };
+            let view = PaneSurface { inner };
+            // GDK event 坐标相对 native surface，转换到终端 widget。
+            let Some(native) = view.terminal().native() else {
+                return glib::Propagation::Proceed;
+            };
+            let (surface_x, surface_y) = native.surface_transform();
+            let native_widget = native.upcast::<gtk4::Widget>();
+            let Some(point) = native_widget.compute_point(
+                view.terminal(),
+                &gtk4::graphene::Point::new((x + surface_x) as f32, (y + surface_y) as f32),
+            ) else {
+                return glib::Propagation::Proceed;
+            };
+            let (x, y) = (f64::from(point.x()), f64::from(point.y()));
+            let press = event.event_type() == gdk::EventType::ButtonPress;
+            let modes = view.inner.input_state.borrow().modes();
+            if press
+                && modes.mouse_reporting
+                && !modes.alternate_screen
+                && !event
+                    .modifier_state()
+                    .contains(gdk::ModifierType::SHIFT_MASK)
+            {
+                view.inner.primary_press.set(Some((x, y)));
+                return glib::Propagation::Proceed;
+            }
+            if !press {
+                if let Some((start_x, start_y)) = view.inner.primary_press.take() {
+                    if (x - start_x).hypot(y - start_y) < 5.0 && !view.terminal().has_selection() {
+                        view.forward_mouse_button(
+                            1,
+                            true,
+                            start_x,
+                            start_y,
+                            event.modifier_state(),
+                        );
+                        view.forward_mouse_button(1, false, x, y, event.modifier_state());
+                    }
+                    return glib::Propagation::Proceed;
+                }
+            }
+            if view.forward_mouse_button(1, press, x, y, event.modifier_state()) {
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
+        });
+        self.terminal().add_controller(pointer);
+
+        {
             let gesture = gtk4::GestureClick::new();
-            gesture.set_button(button);
+            gesture.set_button(2);
             gesture.set_propagation_phase(gtk4::PropagationPhase::Capture);
             {
                 let weak = Rc::downgrade(&self.inner);
@@ -560,15 +648,17 @@ impl PaneSurface {
                     view.forward_mouse_button(g.button(), false, x, y, g.current_event_state());
                 });
             }
-            self.widget().add_controller(gesture);
+            self.terminal().add_controller(gesture);
         }
     }
 
     fn pointer_cell(&self, x: f64, y: f64) -> (u16, u16) {
         let terminal = self.inner.renderer.terminal();
+        #[allow(deprecated)]
+        let padding = terminal.style_context().padding();
         pixel_to_cell(
-            x,
-            y,
+            x - f64::from(padding.left()),
+            y - f64::from(padding.top()),
             terminal.char_width() as f64,
             terminal.char_height() as f64,
             self.inner.grid_cols.get(),
@@ -580,7 +670,7 @@ impl PaneSurface {
     fn handle_pointer_motion(&self, x: f64, y: f64, shift: bool) {
         let cell = self.pointer_cell(x, y);
         let previous = self.inner.last_pointer_cell.replace(cell);
-        if shift || previous == cell {
+        if shift || previous == cell || self.inner.primary_press.get().is_some() {
             return;
         }
         let modes = self.inner.input_state.borrow().modes();
@@ -633,6 +723,11 @@ impl PaneSurface {
     /// W21 测试钩子：模拟一次滚轮（与生产 EventControllerScroll 同一函数）。
     pub fn test_emit_scroll(&self, delta_y: f64) {
         self.handle_scroll(delta_y, false);
+    }
+
+    /// 有 ServerScroll 能力时，历史视口属于 Runtime，不能滚本地空缓冲。
+    pub fn connect_server_scroll(&self, callback: impl Fn(u32, i32) + 'static) {
+        *self.inner.server_scroll_cb.borrow_mut() = Some(Rc::new(callback));
     }
 
     /// 测试钩子：当前 input-state 是否在上报鼠标。
@@ -777,10 +872,13 @@ impl PaneSurface {
         if data.is_empty() {
             return;
         }
+        // ED 用当前背景擦除；上一帧可能停在 htop 的绿色选中行。
+        // 必须先恢复默认属性，否则新 full 未覆盖的空白整片继承绿色。
+        // full 内自己的 SGR 会重新设置应用背景，不能在 live diff 中插入。
         self.inner
             .pending_feed
             .borrow_mut()
-            .extend(b"\x1b[2J\x1b[H");
+            .extend(b"\x1b[0m\x1b[2J\x1b[H");
         self.inner.pending_feed.borrow_mut().extend(data);
         self.schedule_feed_flush_if_paintable();
     }

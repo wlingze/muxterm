@@ -166,7 +166,7 @@ impl AppWindow {
         let qc_store = QuickConnectStore::from_project_documents(&projects);
         let state = Rc::new(RefCell::new(UiState {
             event_pump,
-            command_queue: RefCell::new(CommandQueue::default()),
+            command_queue: Rc::new(RefCell::new(CommandQueue::default())),
             scenes,
             view_store,
             visible_workspace: startup_id.clone(),

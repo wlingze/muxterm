@@ -254,6 +254,15 @@ impl AppWindow {
             .unwrap_or(0)
     }
 
+    pub fn test_pane_allocated_grid(&self, pane_id: u32) -> (u16, u16) {
+        self._state
+            .borrow()
+            .active_layout()
+            .pane(pane_id)
+            .map(|view| view.allocated_grid_size())
+            .unwrap_or_default()
+    }
+
     /// 测试用：当前 tab 布局 leaf pane id。
     pub fn test_layout_leaf_ids(&self) -> Vec<u32> {
         let s = self._state.borrow();

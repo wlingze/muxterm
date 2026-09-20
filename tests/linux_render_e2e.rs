@@ -19,6 +19,124 @@ fn theme() -> Theme {
     load_theme()
 }
 
+fn primary_mouse_click_and_native_drag(view: &PaneView, win: &gtk4::Window) {
+    if std::env::var("MUXTERM_XTEST_SELECTION").as_deref() != Ok("1") {
+        return;
+    }
+    use std::{cell::RefCell, rc::Rc};
+    let input = Rc::new(RefCell::new(Vec::new()));
+    let captured = input.clone();
+    view.connect_input(move |_, bytes| captured.borrow_mut().extend_from_slice(bytes));
+    view.set_header_visible(true);
+    view.feed_output(
+        b"\x1b[?1049l\x1b[0m\x1b[2J\x1b[3J\x1b[HSELECTABLE_GROK_TEXT\x1b[?1003h\x1b[?1006h",
+    );
+    view.flush_pending_feed();
+    pump_main_loop(100);
+    let term = view.terminal();
+    #[allow(deprecated)]
+    let padding = term.style_context().padding();
+    let point = term
+        .compute_point(
+            win,
+            &gtk4::graphene::Point::new(
+                (term.char_width() * 4 + term.char_width() / 2 + i64::from(padding.left())) as f32,
+                (term.char_height() / 2 + i64::from(padding.top())) as f32,
+            ),
+        )
+        .unwrap();
+    input.borrow_mut().clear();
+    xtest_pointer(point.x() as i64, point.y() as i64, 1);
+    xtest_pointer(point.x() as i64, point.y() as i64, -1);
+    let reports = input.borrow().clone();
+    assert!(
+        reports
+            .windows(b"\x1b[<0;5;1M".len())
+            .any(|b| b == b"\x1b[<0;5;1M"),
+        "click must exclude title bar and padding: {reports:?}"
+    );
+    assert!(reports.ends_with(b"\x1b[<0;5;1m"));
+    input.borrow_mut().clear();
+    xtest_pointer(point.x() as i64, point.y() as i64, 1);
+    xtest_pointer(
+        point.x() as i64 + term.char_width() * 10,
+        point.y() as i64,
+        0,
+    );
+    xtest_pointer(
+        point.x() as i64 + term.char_width() * 10,
+        point.y() as i64,
+        -1,
+    );
+    assert!(
+        term.has_selection(),
+        "Grok primary-screen drag must select text"
+    );
+    assert!(view.selected_text().is_some_and(|text| !text.is_empty()));
+    assert!(
+        input.borrow().is_empty(),
+        "drag must not also click in the app"
+    );
+    term.unselect_all();
+    view.feed_output(b"\x1b[?1003l\x1b[?1006l");
+    view.flush_pending_feed();
+    view.set_header_visible(false);
+    pump_main_loop(50);
+}
+
+fn full_frame_clears_with_default_background(view: &PaneView, win: &gtk4::Window) {
+    view.feed_output(b"\x1b[0m\x1b[42mGREEN");
+    view.flush_pending_feed();
+    pump_main_loop(50);
+    view.feed_full(b"\x1b[H\x1b[0mHTOP\x1b[2;1HAFTER_CLEAR");
+    view.flush_pending_feed();
+    pump_main_loop(50);
+    let html = view.terminal().text_format(vte4::Format::Html).unwrap();
+    // 新帧未覆盖的空格也不能继承上一帧 htop 选中行的绿色背景。
+    assert!(
+        !html.contains("background-color:"),
+        "full-frame clear leaked old green background: {html}"
+    );
+    // HTML 不包含行尾空格的底色，必须看真正的空白区域像素。
+    gtk4::test_widget_wait_for_draw(win);
+    let terminal = view.terminal();
+    let paintable = gtk4::WidgetPaintable::new(Some(terminal));
+    let snapshot = gtk4::Snapshot::new();
+    paintable.snapshot(&snapshot, terminal.width() as f64, terminal.height() as f64);
+    let texture = win
+        .renderer()
+        .unwrap()
+        .render_texture(snapshot.to_node().unwrap(), None);
+    let stride = texture.width() as usize * 4;
+    let mut pixels = vec![0; stride * texture.height() as usize];
+    texture.download(&mut pixels, stride);
+    let offset = texture.height() as usize / 2 * stride + texture.width() as usize / 2 * 4;
+    let pixel = &pixels[offset..offset + 4];
+    assert!(
+        pixel[1] <= pixel[0].saturating_add(20) || pixel[1] <= pixel[2].saturating_add(20),
+        "full-frame blank region retained previous green background: {pixel:?}"
+    );
+}
+
+fn reverse_video_preserves_application_background(view: &PaneView) {
+    view.feed_full(b"\x1b[0;38;2;248;248;180m\x1b[7mREVERSED\x1b[27mNORMAL\x1b[0m");
+    view.flush_pending_feed();
+    pump_main_loop(50);
+    let html = view.terminal().text_format(vte4::Format::Html).unwrap();
+    assert!(
+        html.contains("background-color:#F8F8B4"),
+        "reverse background must use original application color: {html}"
+    );
+    assert!(
+        !html.contains("background-color:#747454"),
+        "foreground correction must not paint a background: {html}"
+    );
+    assert!(
+        html.contains("color=\"#747454\""),
+        "normal foreground must remain readable: {html}"
+    );
+}
+
 fn attach_history_preserves_authoritative_cursor_and_partial_live_csi(view: &PaneView) {
     let mut snapshot = b"\x1b[0m".to_vec();
     for _ in 0..100 {
@@ -538,6 +656,9 @@ fn render_e2e_s3_s4() {
             "reported geometry must exclude VTE padding"
         );
         sparkle_updates_keep_status_row(&view);
+        primary_mouse_click_and_native_drag(&view, &win);
+        full_frame_clears_with_default_background(&view, &win);
+        reverse_video_preserves_application_background(&view);
         attach_history_preserves_authoritative_cursor_and_partial_live_csi(&view);
         view.feed_output(b"\x1b[0m\x1b[2J\x1b[3J\x1b[H");
         view.flush_pending_feed();
