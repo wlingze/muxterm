@@ -312,10 +312,8 @@ pub(crate) fn target_config_from_json(
         .get("workspace_id")
         .and_then(serde_json::Value::as_str)
         .map(str::to_string);
-    // WorkspaceSpec::herdr stores the Herdr workspace id in `path`.
-    if config.workspace_id.is_none() && runtime == TargetRuntime::Herdr && !config.path.is_empty() {
-        config.workspace_id = Some(config.path.clone());
-    }
+    // Target 的 path 是工作目录；旧 path=wN 的兼容由 Catalog 在发现
+    // 候选后精确匹配，FFI 不能把任意目录伪造成 workspace 身份。
     Some(config)
 }
 
@@ -354,4 +352,32 @@ pub(crate) fn resolved_target_json(resolved: &crate::catalog::ResolvedTarget) ->
             "template": resolved.spec.template.as_ref().map(ToString::to_string),
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::target_config_from_json;
+
+    #[test]
+    fn provisional_herdr_project_path_is_not_a_workspace_identity() {
+        let target = target_config_from_json(&serde_json::json!({
+            "name": "legion", "runtime": "herdr", "transport": "ssh",
+            "target": "ryzen", "path": "~/Developer/work/legion"
+        }))
+        .unwrap();
+        assert_eq!(target.path, "~/Developer/work/legion");
+        assert_eq!(target.workspace_id, None);
+    }
+
+    #[test]
+    fn explicit_herdr_identity_keeps_the_project_directory() {
+        let target = target_config_from_json(&serde_json::json!({
+            "name": "legion", "runtime": "herdr", "transport": "ssh",
+            "target": "ryzen", "path": "~/Developer/work/legion",
+            "session": "default", "socket": "/run/herdr.sock", "workspace_id": "w8"
+        }))
+        .unwrap();
+        assert_eq!(target.path, "~/Developer/work/legion");
+        assert_eq!(target.workspace_id.as_deref(), Some("w8"));
+    }
 }

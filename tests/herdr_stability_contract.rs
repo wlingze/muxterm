@@ -166,7 +166,7 @@ fn wait_actual_mode(
     })
 }
 
-/// 核心场景：只 active pane 持有 controller，其余 observe；takeover 后有界。
+/// 核心场景：可见且有 allocation 的 pane 持有 controller；takeover 后有界。
 fn run_stability_case(
     rt: &tokio::runtime::Runtime,
     sshd: &LoopbackSshd,
@@ -271,18 +271,41 @@ fn run_stability_case(
         );
     }
 
-    // 3) 连续 focus 所有 pane：每次只有新 active 是 Control，旧 active 降 Observe。
+    // 3) 连续 focus：已有 allocation 的 first_active 在同 tab 内保留 Control，
+    // 切到其它 tab 才降 Observe；没有 allocation 的隐藏 pane 不能接管尺寸。
+    let first_tab = workspace
+        .state()
+        .tabs()
+        .iter()
+        .find(|tab| {
+            workspace
+                .state()
+                .panes(&tab.id)
+                .iter()
+                .any(|pane| pane.id == first_active)
+        })
+        .map(|tab| tab.id)
+        .context("missing first tab")?;
     for pane in &all_panes {
         if *pane == first_active {
             continue;
         }
         switch_pane(workspace, *pane, &format!("focus {pane}"))?;
         wait_actual_mode(workspace, *pane, StreamMode::Control, "新 active → Control")?;
+        let first_visible = workspace
+            .state()
+            .panes(&first_tab)
+            .iter()
+            .any(|p| p.id == *pane);
         wait_actual_mode(
             workspace,
             first_active,
-            StreamMode::Observe,
-            "旧 active → Observe",
+            if first_visible {
+                StreamMode::Control
+            } else {
+                StreamMode::Observe
+            },
+            "previous pane follows tab visibility",
         )?;
         let wire = herdr_runtime(workspace)?
             .test_herdr_pane_id(*pane)
@@ -292,14 +315,14 @@ fn run_stability_case(
             !raw_control_attempt(&client_socket, &wire, false)?,
             "新 active pane 的 raw takeover=false 必须被拒"
         );
-        // 每次最多一个 controller：旧 active 现在应能被接管。
+        // 同 tab 分屏保留各自 controller；隐藏 tab 释放。
         let old_wire = herdr_runtime(workspace)?
             .test_herdr_pane_id(first_active)
             .context("旧 active 缺 wire id")?
             .to_string();
         ensure!(
-            raw_control_attempt(&client_socket, &old_wire, false)?,
-            "每次最多一个 controller：旧 active 应已释放控制权"
+            raw_control_attempt(&client_socket, &old_wire, false)? != first_visible,
+            "previous pane ownership must follow tab visibility"
         );
     }
 
@@ -488,4 +511,133 @@ fn local_and_ssh_herdr_stream_stability_contract() {
         run_stability_case(&rt, &sshd, transport)
             .unwrap_or_else(|error| panic!("Herdr {transport} stability contract: {error:#}"));
     }
+}
+
+/// 可见分屏的非焦点 pane 也必须拥有实际 PTY 尺寸，不能只扩大 observer 画布。
+#[test]
+fn visible_split_panes_keep_independent_pty_sizes() -> Result<()> {
+    ensure!(herdr_available(), "this regression requires Herdr 0.8.0");
+    let executor = tokio::runtime::Runtime::new()?;
+    let _entered = executor.enter();
+    let herdr = IsolatedHerdr::start("split-size");
+    let (workspace_id, _, upper_wire) = herdr.create_workspace("/tmp", "split-size");
+    let lower_wire = herdr.split_pane(&upper_wire, "down");
+    let spec = WorkspaceSpec::herdr(
+        herdr.name(),
+        &workspace_id,
+        herdr.socket_path().to_string_lossy(),
+    );
+    let catalog = Catalog::with_builtins();
+    let mut connections = ConnectionRegistry::new();
+    let mut pool = WorkspacePool::default();
+    let runtime = Muxterm::new_runtime(&catalog, &mut connections, &spec)?;
+    let workspace = executor.block_on(pool.open_spec_with_runtime(&spec, runtime))?;
+    let find_pane = |wire: &str| -> Result<PaneId> {
+        workspace
+            .state()
+            .tabs()
+            .iter()
+            .flat_map(|tab| workspace.state().panes(&tab.id))
+            .find(|pane| {
+                herdr_runtime(workspace)
+                    .unwrap()
+                    .test_herdr_pane_id(pane.id)
+                    == Some(wire)
+            })
+            .map(|pane| pane.id)
+            .context("missing split pane")
+    };
+    let upper = find_pane(&upper_wire)?;
+    let lower = find_pane(&lower_wire)?;
+    switch_pane(workspace, lower, "focus lower split")?;
+    for (pane, cols, rows) in [(upper, 178, 21), (lower, 178, 23)] {
+        done(
+            workspace,
+            Task::ResizePane {
+                target: pane,
+                cols,
+                rows,
+            },
+            "allocate split",
+        )?;
+    }
+    wait_actual_mode(workspace, lower, StreamMode::Control, "lower controller")?;
+    wait_actual_mode(workspace, upper, StreamMode::Control, "upper controller")?;
+    // 从实际 shell 的 stty 读取 PTY 尺寸，而不是检查 observer frame 的宽高。
+    let session = herdr_runtime(workspace)?.session_arc().clone();
+    for (wire, rows, cols) in [(&upper_wire, 21, 178), (&lower_wire, 23, 178)] {
+        session.pane_send_text(wire, "stty size\r")?;
+        let expected = format!("{rows} {cols}");
+        wait_until(workspace, &format!("PTY {wire} = {expected}"), |_| {
+            session
+                .pane_read_recent_ansi(wire)
+                .is_ok_and(|bytes| String::from_utf8_lossy(&bytes).contains(&expected))
+        })?;
+    }
+    let generation = herdr_runtime(workspace)?.test_stream_starts(upper);
+    switch_pane(workspace, upper, "focus upper split")?;
+    switch_pane(workspace, lower, "return to lower split")?;
+    ensure!(
+        herdr_runtime(workspace)?.test_stream_starts(upper) == generation,
+        "focus within the same visible tab must not restart the upper stream"
+    );
+    done(
+        workspace,
+        Task::ResizePane {
+            target: upper,
+            cols: 132,
+            rows: 17,
+        },
+        "resize unfocused upper",
+    )?;
+    session.pane_send_text(&upper_wire, "stty size\r")?;
+    wait_until(workspace, "resized upper PTY = 17 132", |_| {
+        session
+            .pane_read_recent_ansi(&upper_wire)
+            .is_ok_and(|bytes| String::from_utf8_lossy(&bytes).contains("17 132"))
+    })?;
+    // 外部接管非焦点 pane 后，后续布局 resize 不得抢回 controller。
+    let client_socket = session.client_socket_path();
+    ensure!(
+        raw_control_attempt(client_socket, &upper_wire, true)?,
+        "external takeover"
+    );
+    wait_until(workspace, "upper takeover suppression", |ws| {
+        herdr_runtime(ws).is_ok_and(|runtime| runtime.test_takeover_suppressed(upper))
+    })?;
+    wait_actual_mode(
+        workspace,
+        upper,
+        StreamMode::Observe,
+        "upper yields ownership",
+    )?;
+    let starts = herdr_runtime(workspace)?.test_stream_starts(upper);
+    done(
+        workspace,
+        Task::ResizePane {
+            target: upper,
+            cols: 140,
+            rows: 19,
+        },
+        "resize suppressed pane",
+    )?;
+    for _ in 0..5 {
+        workspace.refresh();
+    }
+    ensure!(
+        herdr_runtime(workspace)?.test_takeover_suppressed(upper),
+        "resize must not clear suppression"
+    );
+    ensure!(
+        herdr_runtime(workspace)?.test_stream_starts(upper) == starts,
+        "resize must not reacquire control"
+    );
+    switch_pane(workspace, upper, "explicit focus rearms upper")?;
+    wait_actual_mode(
+        workspace,
+        upper,
+        StreamMode::Control,
+        "explicit focus restores control",
+    )?;
+    Ok(())
 }

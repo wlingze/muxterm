@@ -5,6 +5,32 @@ import MuxtermChrome
 
 /// W13：attach 已有 2tab/3pane，SwiftTerm 非空、几何 ≥ 40px、切 tab 像素还在、CUP 洪水有上界。
 final class AttachE2ETests: XCTestCase {
+    func testSelectingCachedWorkspaceRestoresCoreForeground() throws {
+        let fixture = OnePaneCat(label: "workspace-foreground")
+        let bridge = try CoreBridge(backendType: "local")
+        defer { bridge.shutdown() }
+        let first = try XCTUnwrap(bridge.workspaceList().first(where: \.active)).id
+        let second = try bridge.openWorkspace(
+            target: TargetConfig(
+                name: fixture.session, runtime: .tmux, transport: .local,
+                path: "", session: fixture.session, socket: fixture.socket
+            ),
+            intent: .attachOnly,
+            initialClientSize: (80, 24)
+        ).id
+        XCTAssertEqual(bridge.workspaceList().first(where: \.active)?.id, second)
+        for target in [first, second, first, first] {
+            let before = bridge.workspaceList().filter(\.active).map(\.id)
+            bridge.selectWorkspace(target)
+            XCTAssertEqual(bridge.workspaceList().filter(\.active).map(\.id), before,
+                "点击路径不调用 Core")
+            _ = bridge.pollWorkspaceEvents()
+            XCTAssertEqual(bridge.workspaceList().filter(\.active).map(\.id), [target],
+                "切换缓存 scene 必须同步 Core 前台，否则 Herdr 永远停在 Observe")
+        }
+        XCTAssertEqual(Set(bridge.workspaceList().map(\.id)), Set([first, second]))
+    }
+
     /// 重构后生产路径是共享 `local` handle + `openWorkspace`，不再走
     /// `muxterm_new_connect_sized`。未 `ResizeClient` 时 attach seed 会一直
     /// 推迟，画面全白（test-2026-0911-1709.log）。
