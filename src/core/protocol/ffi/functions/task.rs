@@ -13,7 +13,8 @@ use super::super::types::{
     CTask, DIR_HORIZONTAL, DIR_VERTICAL, TAB_MOVE_BEFORE, TASK_BREAK_PANE, TASK_CLOSE_PANE,
     TASK_CLOSE_TAB, TASK_DETACH, TASK_MOVE_TAB, TASK_NEW_TAB, TASK_NEXT_PANE, TASK_PREV_PANE,
     TASK_REFRESH_TABS, TASK_RENAME_TAB, TASK_RENAME_WORKSPACE, TASK_REQUEST_PANE_SNAPSHOT,
-    TASK_SHUTDOWN, TASK_SPLIT_PANE, TASK_SWITCH_PANE, TASK_SWITCH_TAB, TASK_TOGGLE_PANE_FULLSCREEN,
+    TASK_SCROLL_PANE, TASK_SHUTDOWN, TASK_SPLIT_PANE, TASK_SWITCH_PANE, TASK_SWITCH_TAB,
+    TASK_TOGGLE_PANE_FULLSCREEN,
 };
 use super::support::{
     cstr_opt, json_error, json_string, parse_workspace_id, resolve_c_io_pane, MuxtermHandle,
@@ -88,6 +89,11 @@ pub(crate) fn ctask_to_task(task: &CTask, ws: &Workspace) -> Option<Task> {
             name,
         }),
         TASK_RENAME_WORKSPACE => name.map(|name| Task::RenameWorkspace { name }),
+        TASK_SCROLL_PANE => Some(Task::ScrollPane {
+            target: resolve_c_task_pane(task.target_pane, ws),
+            lines: (task.target_tab.min(u16::MAX as u32) as i32)
+                * if task.dir == 0 { 1 } else { -1 },
+        }),
         TASK_REQUEST_PANE_SNAPSHOT => Some(Task::RequestPaneSnapshot {
             target: resolve_c_task_pane(task.target_pane, ws),
         }),
@@ -460,6 +466,10 @@ fn task_from_json(ws: &Workspace, value: &serde_json::Value) -> Option<Task> {
         "write_raw" => Some(Task::WriteRaw {
             target: target_pane(obj)?,
             data: opt_string(obj.get("data"))?.into_bytes(),
+        }),
+        "scroll_pane" => Some(Task::ScrollPane {
+            target: target_pane(obj)?,
+            lines: obj.get("lines")?.as_i64()?.clamp(-65535, 65535) as i32,
         }),
         "send_keys" => Some(Task::SendKeys {
             target: target_pane(obj)?,

@@ -18,6 +18,8 @@ pub enum RuntimeCapability {
     SplitPane,
     /// Runtime 的全部 pane 共享一个 client viewport。
     SharedClientResize,
+    /// Runtime 持有终端历史，滚动通过 ScrollPane 返回权威画面。
+    ServerScroll,
     /// 能列出当前仓库的 checkout。
     WorktreeList,
     /// 能建 checkout 并打开成新 Workspace。

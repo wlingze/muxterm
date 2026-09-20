@@ -119,6 +119,7 @@
   "status_attention": "消息提醒",
   "status_attention_count": "{{count}} 条待处理消息",
   "status_attention_none": "没有待处理消息",
+  "status_refresh": "刷新",
   "status_connection_details": "连接状态",
   "status_error_details": "错误详情",
   "status_host": "主机",

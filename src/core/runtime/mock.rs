@@ -472,6 +472,9 @@ impl Runtime for MockRuntime {
                 });
                 TaskOutcome::Done
             }
+            Task::ScrollPane { .. } => TaskOutcome::Rejected {
+                reason: "Runtime does not support server scrolling".into(),
+            },
             Task::RequestPaneSnapshot { target } => {
                 let Some(data) = self
                     .outputs

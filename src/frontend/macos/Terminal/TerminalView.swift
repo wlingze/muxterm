@@ -105,6 +105,9 @@ final class MuxTerminalView: TerminalView {
     var onImagePaste: ((Data) -> Void)?
     var onImagePasteError: ((String) -> Void)?
     private var encodingClipboardImage = false
+    /// 服务端维护 viewport 的 runtime 通过任务接收滚轮，不滚动本地缓冲。
+    var onServerScroll: ((Int) -> Void)?
+    private var serverScrollRemainder: CGFloat = 0
     /// 原生 SwiftTerm scrollback 位置变化；TerminalManager 将其镜像到 core。
     var onScrollPositionChanged: ((UInt32, Double, Bool) -> Void)?
     /// 诊断/回归测试：Surface seed 之外不允许发生 reset。
@@ -351,6 +354,20 @@ final class MuxTerminalView: TerminalView {
     }
 
     override func scrollWheel(with event: NSEvent) {
+        if let onServerScroll {
+            lastScrollWheelRoutedToRuntime = true
+            let cellHeight = terminalCellSizeInPoints()?.height ?? 16
+            serverScrollRemainder += event.hasPreciseScrollingDeltas
+                ? event.scrollingDeltaY / max(1, cellHeight) : event.scrollingDeltaY
+            let lines = Int(serverScrollRemainder)
+            if lines != 0 {
+                serverScrollRemainder -= CGFloat(lines)
+                // ScrollPane 在 Core 内按需切焦点；每个滚轮都另发 SwitchPane
+                // 会同步等待 SSH pane.focus，把连续滚动降到网络往返速度。
+                onServerScroll(lines)
+            }
+            return
+        }
         // tmux 的 agent TUI（Codex/Cursor）在 alternate screen 中自己维护
         // 历史。此时本地 SwiftTerm scrollback 没有意义，把鼠标上报保持打开，
         // 让 tmux/agent 的滚轮绑定处理；不回写 core viewport。

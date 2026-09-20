@@ -4491,6 +4491,9 @@ impl Runtime for TmuxRuntime {
                 }
                 TaskOutcome::Done
             }
+            Task::ScrollPane { .. } => TaskOutcome::Rejected {
+                reason: "Runtime does not support server scrolling".into(),
+            },
             Task::RequestPaneSnapshot { target } => {
                 if self.pane(target).is_none() {
                     return Ok(TaskOutcome::Rejected {

@@ -4,6 +4,44 @@ import XCTest
 
 /// 先前 macOS bug：Alt/Cmd+Enter 后 tmux 已 zoom，GUI 仍显示多 pane。
 final class ZoomE2ETests: XCTestCase {
+
+    func testCachedTabRevealKeepsAllocatedGridAndContents() throws {
+        AppE2E.ensureApp()
+        let bridge = try CoreBridge(backendType: "local")
+        defer { bridge.shutdown() }
+        let manager = TerminalManager(bridge: bridge)
+        manager.setBridgeQueriesEnabled(false)
+        let layout = PaneLayoutView(terminalManager: manager)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 600),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = layout
+        window.orderFront(nil)
+        defer { window.orderOut(nil) }
+        let panes = [Pane(id: 1, cols: 178, rows: 23, isActive: true),
+                     Pane(id: 2, cols: 178, rows: 23, isActive: false)]
+        let split = LayoutNode.split(horizontal: false, ratio: 500,
+            first: .leaf(paneId: 1), second: .leaf(paneId: 2))
+        layout.apply(layout: split, panes: panes, tabId: 1)
+        let other = [Pane(id: 3, cols: 178, rows: 50, isActive: true)]
+        for fullscreen in [false, true] {
+            if fullscreen { layout.toggleFullscreen(paneId: 1) }
+            AppE2E.pump(100)
+            let view = manager.view(for: 1)
+            let before = view.renderedGridSize
+            view.feedOutput(Data("\u{1b}[H\u{1b}[2JTOP\u{1b}[\(before.rows);1HBOTTOM".utf8))
+            for _ in 0..<3 {
+                layout.apply(layout: .leaf(paneId: 3), panes: other, tabId: 2)
+                AppE2E.pump(30)
+                XCTAssertNotNil(layout.revealCachedTab(1))
+                XCTAssertEqual(view.renderedGridSize.cols, before.cols)
+                XCTAssertEqual(view.renderedGridSize.rows, before.rows)
+                AppE2E.pump(60)
+                XCTAssertEqual(view.renderedGridSize.cols, before.cols)
+                XCTAssertEqual(view.renderedGridSize.rows, before.rows)
+                XCTAssertTrue(view.visibleScreenText().contains("BOTTOM"))
+            }
+        }
+    }
     func testRepeatedFullscreenSnapshotsKeepTheSameHost() throws {
         AppE2E.ensureApp()
         let bridge = try CoreBridge(backendType: "local")

@@ -461,6 +461,12 @@ final class TerminalManager: TerminalInputHandler {
             fontSize: fontSize
         )
         view.inputHandler = self
+        if bridge?.runtimeSupports(runtimeID ?? "", capability: "ServerScroll") == true {
+            view.onServerScroll = { [weak self] lines in
+                guard let self else { return }
+                _ = self.enqueueCoreOperation(.task(MuxTask.scrollPane(paneId, lines: lines)), failureMessage: MuxtermI18n.shared.tr(.errorCommandFailed))
+            }
+        }
         let imageWorkspaceID = workspaceID
         view.onImagePaste = { [weak self, weak view] png in
             guard let self, let view, self.views[paneId] === view else { return }
@@ -564,6 +570,21 @@ final class TerminalManager: TerminalInputHandler {
         for (paneId, size) in expectedPaneSizes {
             applyPaneGrid(paneId: paneId, cols: size.cols, rows: size.rows)
         }
+    }
+
+    /// resize 是 VT 流中的有序边界：前面的字节仍属于旧网格。
+    func handleResize(paneId: UInt32, cols: Int, rows: Int) {
+        if pendingSeeds[paneId] != nil {
+            flushSeedsNow(paneIds: [paneId])
+        }
+        if let view = views[paneId] {
+            while let (_, data) = pendingFeeds.pop(
+                maxBytes: Self.feedChunkBytes, accepting: { $0 == paneId }
+            ) {
+                view.feedOutput(data)
+            }
+        }
+        applyPaneGrid(paneId: paneId, cols: cols, rows: rows)
     }
 
     /// tmux `PANE_RESIZED`：隐藏 tab 的 Surface 也要缩小，不能等切过去再靠像素。

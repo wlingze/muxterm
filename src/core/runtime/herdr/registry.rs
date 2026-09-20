@@ -133,6 +133,7 @@ pub struct PaneStreamSlot {
     pub pending_input_bytes: usize,
     /// intent-bound 的 latest resize。
     pub pending_resize: Option<(u16, u16)>,
+    pub pending_scroll: i32,
     /// 生命周期诊断（W0 字段；测试可读取确定性计数）。
     pub transitions: Vec<String>,
 }
@@ -164,6 +165,7 @@ impl PaneStreamSlot {
             pending_input: VecDeque::new(),
             pending_input_bytes: 0,
             pending_resize: None,
+            pending_scroll: 0,
             transitions: Vec::new(),
         }
     }
@@ -277,6 +279,7 @@ impl PaneStreamSlot {
         self.pending_input.clear();
         self.pending_input_bytes = 0;
         self.pending_resize = None;
+        self.pending_scroll = 0;
         self.transitions
             .push(format!("input-not-delivered:{reason}:{dropped}"));
         dropped

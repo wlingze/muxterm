@@ -195,6 +195,7 @@ enum MuxtermTextKey: CaseIterable {
     case statusAttention
     case statusAttentionCount
     case statusAttentionNone
+    case statusRefresh
     case statusConnectionDetails
     case statusDone
     case statusErrorDetails
@@ -424,6 +425,7 @@ enum MuxtermTextKey: CaseIterable {
         case .statusAttention: return "status_attention"
         case .statusAttentionCount: return "status_attention_count"
         case .statusAttentionNone: return "status_attention_none"
+        case .statusRefresh: return "status_refresh"
         case .statusConnectionDetails: return "status_connection_details"
         case .statusDone: return "status_done"
         case .statusErrorDetails: return "status_error_details"

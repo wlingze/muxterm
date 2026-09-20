@@ -1132,6 +1132,9 @@ impl Runtime for ShellRuntime {
 
             // direct PTY 没有 Runtime 侧 VT 网格；平台应继续持有自己的
             // SwiftTerm/VTE Surface，不能把 byte ring 冒充权威快照。
+            Task::ScrollPane { .. } => TaskOutcome::Rejected {
+                reason: "Runtime does not support server scrolling".into(),
+            },
             Task::RequestPaneSnapshot { .. } => TaskOutcome::Rejected {
                 reason: "ShellRuntime 无法重建 pane Surface".into(),
             },
