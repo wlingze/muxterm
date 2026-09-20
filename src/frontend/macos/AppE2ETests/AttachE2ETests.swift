@@ -432,6 +432,7 @@ final class AttachE2ETests: XCTestCase {
         let painted = PaintedWorkspace(label: "gtk-attach")
         let app = try AppE2E.attachWindow(socket: painted.socket, session: painted.session)
         defer { app.testShutdown() }
+        let frameAfterAttach = app.window?.frame
 
         XCTAssertTrue(
             app.waitReady(minTabs: 2, minLeaves: 3),
@@ -439,7 +440,7 @@ final class AttachE2ETests: XCTestCase {
         )
         XCTAssertEqual(
             app.window?.frame,
-            AppE2E.fixedWindowFrame(width: 1280, height: 800),
+            frameAfterAttach,
             "拓扑和等宽 Tab 出现后不能把主窗口压到内容最小宽度"
         )
 

@@ -1557,6 +1557,7 @@ private final class StatusTabButton: NSButton {
     func configureActivity(_ activity: AgentSidebarIndicator?) {
         activityView.activity = activity
         activityView.isHidden = activity == nil || activity == .idle
+        activityView.ensureAnimation()
         applyStyle()
     }
 
@@ -1693,6 +1694,10 @@ private final class TabActivityIndicatorView: NSView {
 
     var isAnimating: Bool {
         shape.animation(forKey: "muxterm.tab.activity.rotation") != nil
+    }
+
+    func ensureAnimation() {
+        updateAnimation()
     }
 
     override init(frame frameRect: NSRect) {

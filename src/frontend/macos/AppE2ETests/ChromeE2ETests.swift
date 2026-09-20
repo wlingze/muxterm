@@ -224,13 +224,19 @@ final class ChromeE2ETests: XCTestCase {
         window.orderFront(nil)
         bar.updateTabs([Tab(id: 1, name: "codex", isActive: true)])
         bar.setTabActivities([1: .working])
+        bar.layoutSubtreeIfNeeded()
         let identity = bar.testTabActivityIdentity(1)
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         for i in 0..<5 {
             bar.updateTabs([Tab(id: 1, name: "codex \(i)", isActive: i % 2 == 0),
                             Tab(id: 2, name: "shell", isActive: i % 2 != 0)])
+            bar.layoutSubtreeIfNeeded()
             XCTAssertEqual(bar.testTabActivityIdentity(1), identity,
                            "状态栏刷新不能销毁转圈视图并把动画重置到起点")
-            XCTAssertTrue(bar.testTabActivityAnimating(1))
+            XCTAssertTrue(
+                bar.testTabActivityAnimating(1) || reduceMotion,
+                "working tab 必须保持转圈；Reduce Motion 下允许静态指示"
+            )
         }
     }
 
@@ -244,10 +250,15 @@ final class ChromeE2ETests: XCTestCase {
         ])
 
         bar.setTabActivities([1: .working, 2: .done])
+        bar.layoutSubtreeIfNeeded()
         AppE2E.pump(20)
 
         XCTAssertEqual(bar.testTabActivity(1), .working)
-        XCTAssertTrue(bar.testTabActivityAnimating(1))
+        XCTAssertTrue(
+            bar.testTabActivityAnimating(1)
+                || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
+            "working tab 必须转圈；Reduce Motion 下允许静态指示"
+        )
         XCTAssertEqual(bar.testTabActivity(2), .done)
         XCTAssertFalse(bar.testTabActivityAnimating(2))
 
