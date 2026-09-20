@@ -161,11 +161,9 @@ CI 跑 [`docs/TESTING.md`](docs/TESTING.md) 的结构门禁。
    `frontend/utils/{corebridge,i18n}`；Linux `app/chrome/terminal/ui`。~~
    见 [`docs/MODULE-SURFACE.md`](docs/MODULE-SURFACE.md)。
 
-重构合入后不要 rebase `feature/dogfood-0907`。按行为重做，需求在
-[`docs/dogfood-0907-replay.md`](docs/dogfood-0907-replay.md) 与
-[`docs/PRODUCT-1.0-REMAINING.md`](docs/PRODUCT-1.0-REMAINING.md)。
+重构合入后按 [`docs/PRODUCT-1.0-REMAINING.md`](docs/PRODUCT-1.0-REMAINING.md) 收口。
 
-8. 迁 0907 已落地行为（§2–§11；顺序见 dogfood §12）。
+8. 迁已落地的日用行为到新树。
 9. B 闭环 + Tab/Pane 状态 + 设置页（同一条状态管道）。
 10. ~~Shells + Cmd-K（macOS）。~~ Linux 聚合 Scene 与配置绑定待对齐。
 11. ~~Agents 槽（macOS）。~~ 地标、搜索坐标、图、端口、Cmd-W、选词仍待做。
