@@ -8,6 +8,37 @@ import XCTest
 /// 暴露空白/半截帧，seed 与同期间 live catch-up 完成后才一次性显示。
 final class SurfaceVisibilityE2ETests: XCTestCase {
 
+    func testTopologySizeUpdateDoesNotReinterpretQueuedOutput() throws {
+        let (bridge, manager) = try makeManager()
+        defer { bridge.shutdown() }
+        manager.setBridgeQueriesEnabled(false)
+        manager.updatePaneSizes([Pane(id: 6, cols: 178, rows: 50, isActive: true)])
+        let view = manager.view(for: 6)
+        manager.handleOutput(paneId: 6, data: Data("\u{1b}[1;1HOLD_TOP".utf8))
+        // refreshUI 的 snapshot 更新可能早于定时 feed flush。
+        manager.updatePaneSizes([Pane(id: 6, cols: 178, rows: 23, isActive: true)])
+        XCTAssertTrue(view.visibleScreenText().contains("OLD_TOP"),
+                      "旧网格的输出必须在改变尺寸前进入 VT")
+    }
+
+    func testTmuxAllocationDoesNotResizeAuthoritativeGrid() throws {
+        AppE2E.ensureApp()
+        let bridge = try CoreBridge(backendType: "tmux")
+        defer { bridge.shutdown() }
+        let manager = TerminalManager(bridge: bridge)
+        manager.setBridgeQueriesEnabled(false)
+        manager.updatePaneSizes([Pane(id: 6, cols: 178, rows: 50, isActive: true)])
+        let view = manager.view(for: 6)
+        view.feedOutput(Data("\u{1b}[1;170HEDGE\u{1b}[50;1HBOTTOM".utf8))
+        for size in [NSSize(width: 400, height: 300), NSSize(width: 1200, height: 800)] {
+            view.setFrameSize(size)
+            XCTAssertEqual(view.renderedGridSize.cols, 178)
+            XCTAssertEqual(view.renderedGridSize.rows, 50)
+            XCTAssertTrue(view.visibleScreenText().contains("EDGE"))
+            XCTAssertTrue(view.visibleScreenText().contains("BOTTOM"))
+        }
+    }
+
     func testBackgroundFrameUsesItsSourceGridBeforePainting() throws {
         let (bridge, manager) = try makeManager()
         defer { bridge.shutdown() }

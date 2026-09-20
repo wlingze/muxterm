@@ -7,6 +7,49 @@ import MuxtermChrome
 /// OSC 10/11。主题与终端颜色绑定：默认浅色是黑字白底；深色才是浅字深底。
 final class AgentRenderE2ETests: XCTestCase {
 
+    func testSelectionDuringSynchronizedOutputKeepsLastCompletePixels() throws {
+        AppE2E.ensureApp()
+        let view = MuxTerminalView(paneId: 163, frame: NSRect(x: 0, y: 0, width: 640, height: 360))
+        view.applyPalette(.light)
+        view.feedOutput(Data("\u{1b}[HWorking 完整帧\u{1b}[10;1H\u{1b}[48;2;30;30;30mAsk Codex to do anything".utf8))
+        func pixels() throws -> Data {
+            let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 640,
+                pixelsHigh: 360, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 2560, bitsPerPixel: 32))
+            let graphics = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: bitmap))
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = graphics
+            view.draw(view.bounds)
+            NSGraphicsContext.restoreGraphicsState()
+            return Data(bytes: try XCTUnwrap(bitmap.bitmapData), count: bitmap.bytesPerRow * bitmap.pixelsHigh)
+        }
+        let complete = try pixels()
+        // TUI 的一帧分成两次输出；鼠标选区会在 updateDisplay 以外请求重绘。
+        view.feedOutput(Data("\u{1b}[?2026h\u{1b}[H\u{1b}[2JHALF_FRAME".utf8))
+        XCTAssertTrue(view.getTerminal().synchronizedOutputActive)
+        view.setSelectionRange(start: .init(col: 0, row: 0), end: .init(col: 4, row: 0))
+        XCTAssertEqual(try pixels(), complete, "选区重绘不能暴露尚未完成的同步帧")
+        view.feedOutput(Data("\u{1b}[0m\u{1b}[H\u{1b}[2JCOMPLETE_NEW_FRAME\u{1b}[?2026l".utf8))
+        XCTAssertFalse(view.getTerminal().synchronizedOutputActive)
+        XCTAssertNotEqual(try pixels(), complete)
+        XCTAssertTrue(view.visibleScreenText().contains("COMPLETE_NEW_FRAME"))
+    }
+
+    func testSynchronizedOutputTimeoutDoesNotBlockOtherPane() throws {
+        AppE2E.ensureApp()
+        let first = MuxTerminalView(paneId: 1, frame: NSRect(x: 0, y: 0, width: 640, height: 360))
+        let second = MuxTerminalView(paneId: 2, frame: first.frame)
+        first.feedOutput(Data("\u{1b}[?2026hWAITING_FOR_END".utf8))
+        second.feedOutput(Data("OTHER_PANE_CONTINUES".utf8))
+        XCTAssertTrue(first.getTerminal().synchronizedOutputActive)
+        XCTAssertFalse(second.getTerminal().synchronizedOutputActive)
+        XCTAssertTrue(second.visibleScreenText().contains("OTHER_PANE_CONTINUES"))
+        XCTAssertTrue(AppE2E.wait(timeout: 2) {
+            !first.getTerminal().synchronizedOutputActive
+        }, "缺少同步帧结束标记时，已有超时必须继续释放绘制")
+        XCTAssertTrue(first.visibleScreenText().contains("WAITING_FOR_END"))
+    }
+
     func testPartialPaintMatchesFullPaintAtFractionalRowBoundary() throws {
         AppE2E.ensureApp()
         let view = MuxTerminalView(paneId: 163, frame: NSRect(x: 0, y: 0, width: 980, height: 507))

@@ -366,5 +366,37 @@ if "MUXTERM_SET_SELECTION" not in mac_text:
     print("==> applied SwiftTerm setSelectionRange patch")
 else:
     print("==> SwiftTerm setSelectionRange patch already applied")
+# 由 Runtime 提供网格时，像素布局不得触发一次临时 reflow。
+if "MUXTERM_GRID_AUTHORITY" not in mac_text:
+    old = "    open override func setFrameSize(_ newSize: NSSize) {"
+    new = """    // MUXTERM_GRID_AUTHORITY: false keeps the VT grid owned by the runtime.
+    public var muxtermResizeGridWithView = true
+
+""" + old
+    if old not in mac_text:
+        sys.exit("ERROR: SwiftTerm setFrameSize changed; update grid authority patch")
+    mac_text = mac_text.replace(old, new, 1)
+
+apple_text = apple.read_text()
+if "MUXTERM_GRID_AUTHORITY" not in apple_text:
+    old = """    func processSizeChange (newSize: CGSize) -> Bool {
+"""
+    new = old + """        #if os(macOS)
+        // MUXTERM_GRID_AUTHORITY: layout and the remote VT grid are independent.
+        guard muxtermResizeGridWithView else { return false }
+        #endif
+"""
+    if old not in apple_text:
+        sys.exit("ERROR: SwiftTerm processSizeChange changed; update grid authority patch")
+    apple.write_text(apple_text.replace(old, new, 1))
+
+# AppKit 可因选区/窗口曝光直接 draw，前端要保护同步帧提交边界。
+old = "    override public func draw (_ dirtyRect: NSRect) {"
+new = "    override open func draw (_ dirtyRect: NSRect) {"
+if old in mac_text:
+    mac_text = mac_text.replace(old, new, 1)
+elif new not in mac_text:
+    sys.exit("ERROR: SwiftTerm draw changed; update synchronized paint patch")
+
 mac.write_text(mac_text)
 PY

@@ -566,8 +566,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             guard let self else { return }
             self.performIfWindowOpen { [weak self] in
                 guard let self else { return }
+                let changed = self.lastSnapshot.activePane != paneId
                 self.activatePaneLocally(paneId)
                 self.focusPaneTerminal(paneId)
+                // 同一 pane 内的点击/拖选只恢复原生焦点，不重复请求远端切换。
+                guard changed else { return }
                 _ = self.enqueueCoreTask(
                     MuxTask.switchPane(paneId),
                     failureMessage: MuxtermI18n.shared.tr(
@@ -5697,6 +5700,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         RunLoop.main.add(timer, forMode: .common)
         statusRefreshTimer = timer
     }
+
+    func testQueuedCommandCount() -> Int { commandQueue.count }
 
     /// 测试用：关掉桥接和窗口，不走 Exited 业务路径。
     func testShutdown() {

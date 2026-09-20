@@ -487,6 +487,44 @@ final class MuxTerminalView: TerminalView {
         return nil
     }
 
+    /// AppKit 的选区/曝光重绘不经过 SwiftTerm.updateDisplay。保留已提交
+    /// 像素，避免这些重绘把 DEC 2026 同步帧的中间状态暴露出来。
+    private var committedPaint: CGLayer?
+    private var committedPaintScale: CGFloat = 0
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let graphics = NSGraphicsContext.current else { return }
+        let context = graphics.cgContext
+        if getTerminal().synchronizedOutputActive {
+            context.clear(dirtyRect)
+            if let committedPaint {
+                context.draw(committedPaint, in: bounds)
+            }
+            return
+        }
+        let scale = window?.backingScaleFactor ?? 1
+        let recreate = committedPaint?.size != bounds.size || committedPaintScale != scale
+        if recreate {
+            committedPaint = CGLayer(context, size: bounds.size, auxiliaryInfo: nil)
+            committedPaintScale = scale
+        }
+        guard let committedPaint, let paintContext = committedPaint.context else {
+            super.draw(dirtyRect)
+            return
+        }
+        // 保留局部绘制：普通输出只更新 dirtyRect，切勿每个字节全屏重画。
+        let region = recreate ? bounds : dirtyRect
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: paintContext, flipped: false)
+        paintContext.saveGState()
+        paintContext.clip(to: region)
+        super.draw(region)
+        paintContext.restoreGState()
+        NSGraphicsContext.restoreGraphicsState()
+        context.clear(dirtyRect)
+        context.draw(committedPaint, in: bounds)
+    }
+
     /// 将 FFI 输出喂给终端引擎，并更新 AX 值供 UITest 断言「确实渲染到了」。
     func feedOutput(
         _ data: Data,

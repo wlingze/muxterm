@@ -460,6 +460,7 @@ final class TerminalManager: TerminalInputHandler {
             fontFamily: fontFamily,
             fontSize: fontSize
         )
+        view.muxtermResizeGridWithView = !usesClientResize
         view.inputHandler = self
         if bridge?.runtimeSupports(runtimeID ?? "", capability: "ServerScroll") == true {
             view.onServerScroll = { [weak self] lines in
@@ -574,6 +575,11 @@ final class TerminalManager: TerminalInputHandler {
 
     /// resize 是 VT 流中的有序边界：前面的字节仍属于旧网格。
     func handleResize(paneId: UInt32, cols: Int, rows: Int) {
+        flushOutputBeforeResize(paneId: paneId)
+        applyPaneGrid(paneId: paneId, cols: cols, rows: rows)
+    }
+
+    private func flushOutputBeforeResize(paneId: UInt32) {
         if pendingSeeds[paneId] != nil {
             flushSeedsNow(paneIds: [paneId])
         }
@@ -584,7 +590,6 @@ final class TerminalManager: TerminalInputHandler {
                 view.feedOutput(data)
             }
         }
-        applyPaneGrid(paneId: paneId, cols: cols, rows: rows)
     }
 
     /// tmux `PANE_RESIZED`：隐藏 tab 的 Surface 也要缩小，不能等切过去再靠像素。
@@ -594,6 +599,10 @@ final class TerminalManager: TerminalInputHandler {
         }
         expectedPaneSizes[paneId] = (target.cols, target.rows)
         guard let view = views[paneId] else { return }
+        if view.renderedGridSize.cols != target.cols || view.renderedGridSize.rows != target.rows {
+            // snapshot 刷新和有序 resize 事件必须使用同一个输出屏障。
+            flushOutputBeforeResize(paneId: paneId)
+        }
         view.applyGridSize(
             cols: target.cols,
             rows: target.rows,
