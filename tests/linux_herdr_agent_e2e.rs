@@ -1309,7 +1309,6 @@ fn herdr_agent_lifecycle_after_commands() {
                 candidate.test_attention_done_count() == 1
                     && notification_count(candidate, ": task complete") == 1
             })?;
-            ctx.agent_command.stop();
             let authority = Authority {
                 session: &ctx.session,
                 workspace_id: &ctx.workspace_id,
@@ -1334,6 +1333,9 @@ fn herdr_agent_lifecycle_after_commands() {
                 candidate.test_attention_blocked_workspaces() == 0
                     && candidate.test_attention_done_count() == 0
             })?;
+            // 先让看见 Done 把未读清掉，再停进程。SSH 上 stop 的退出输出
+            // 会在切 tab 前再次点亮 Done，导致「聚焦后清零」永远等不到。
+            ctx.agent_command.stop();
             let after_tokens = exercise_all_panes(
                 &ctx.app,
                 &ctx.session,
