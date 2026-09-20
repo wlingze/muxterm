@@ -22,6 +22,36 @@ pub fn tmux_available() -> bool {
         .unwrap_or(false)
 }
 
+/// 解析 `tmux -V`（如 `tmux 3.7b` / `tmux 3.4`）。
+pub fn tmux_version() -> Option<(u32, u32)> {
+    let output = Command::new("tmux").arg("-V").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_tmux_version_text(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn parse_tmux_version_text(text: &str) -> Option<(u32, u32)> {
+    let text = text.trim().strip_prefix("tmux ").unwrap_or(text.trim());
+    let head = text.split_whitespace().next()?;
+    let digits: String = head
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    let mut parts = digits.split('.');
+    let major: u32 = parts.next()?.parse().ok()?;
+    let minor: u32 = parts.next()?.parse().ok()?;
+    Some((major, minor))
+}
+
+/// `refresh-client -r` 颜色上报需要 tmux >= 3.5。Ubuntu 24.04 CI 是 3.4。
+pub fn tmux_supports_colour_report() -> bool {
+    matches!(
+        tmux_version(),
+        Some((major, minor)) if major > 3 || (major == 3 && minor >= 5)
+    )
+}
+
 /// RAII guard for one uniquely named isolated tmux server.
 ///
 /// Tests still create sessions explicitly, but every unwind path cleans the

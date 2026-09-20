@@ -209,47 +209,59 @@ fn config_changed_hot_applies_theme_font_and_shortcut_without_restart() {
         );
 
         // 真实 server 的 OSC 代答颜色必须跟随前端；不能只检查 GTK 主题名字。
+        // tmux < 3.5 没有 `refresh-client -r`，Core 会跳过上报。Ubuntu 24.04 CI
+        // 是 tmux 3.4，这时查询会得到默认黑底，不能当成主题热应用失败。
         let first_pane = app.test_active_pane_id();
-        assert_osc_colours(
-            server.socket(),
-            first_pane,
-            "10;rgb:1f1f/2323/2828",
-            "11;rgb:ffff/ffff/ffff",
-        );
         let tmux_workspace = app.test_active_workspace_replica_id();
         app.test_handle_action(muxterm::test_support::frontend::linux::keymap::Action::NewTab);
         assert!(wait_until_widget(5000, || app.test_active_pane_id()
             != first_pane
             && app.test_active_pane_seeded()));
         let second_pane = app.test_active_pane_id();
-        assert_osc_colours(
-            server.socket(),
-            second_pane,
-            "10;rgb:1f1f/2323/2828",
-            "11;rgb:ffff/ffff/ffff",
-        );
-        app.test_activate_workspace(&shell_workspace);
-        app.test_commit_config_path("theme.name", serde_json::json!("black"))
-            .unwrap();
-        pump_main_loop(100);
-        for pane in [first_pane, second_pane] {
+        if support::tmux_test_support::tmux_supports_colour_report() {
             assert_osc_colours(
                 server.socket(),
-                pane,
-                "10;rgb:e6e6/e8e8/ebeb",
-                "11;rgb:0b0b/0d0d/1010",
-            );
-        }
-        app.test_commit_config_path("theme.name", serde_json::json!("white"))
-            .unwrap();
-        pump_main_loop(100);
-        for pane in [first_pane, second_pane] {
-            assert_osc_colours(
-                server.socket(),
-                pane,
+                first_pane,
                 "10;rgb:1f1f/2323/2828",
                 "11;rgb:ffff/ffff/ffff",
             );
+            assert_osc_colours(
+                server.socket(),
+                second_pane,
+                "10;rgb:1f1f/2323/2828",
+                "11;rgb:ffff/ffff/ffff",
+            );
+            app.test_activate_workspace(&shell_workspace);
+            app.test_commit_config_path("theme.name", serde_json::json!("black"))
+                .unwrap();
+            pump_main_loop(100);
+            for pane in [first_pane, second_pane] {
+                assert_osc_colours(
+                    server.socket(),
+                    pane,
+                    "10;rgb:e6e6/e8e8/ebeb",
+                    "11;rgb:0b0b/0d0d/1010",
+                );
+            }
+            app.test_commit_config_path("theme.name", serde_json::json!("white"))
+                .unwrap();
+            pump_main_loop(100);
+            for pane in [first_pane, second_pane] {
+                assert_osc_colours(
+                    server.socket(),
+                    pane,
+                    "10;rgb:1f1f/2323/2828",
+                    "11;rgb:ffff/ffff/ffff",
+                );
+            }
+        } else {
+            app.test_activate_workspace(&shell_workspace);
+            app.test_commit_config_path("theme.name", serde_json::json!("black"))
+                .unwrap();
+            pump_main_loop(100);
+            app.test_commit_config_path("theme.name", serde_json::json!("white"))
+                .unwrap();
+            pump_main_loop(100);
         }
         app.test_activate_workspace(&tmux_workspace);
 
