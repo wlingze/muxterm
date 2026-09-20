@@ -142,6 +142,7 @@ final class StatusBarView: NSView {
     // debug / 状态信息（点击状态点时弹出显示）
     private var isDebug = false
     private var debugText = ""
+    private var imagePasteInProgress = false
     private var errorText: String?
     private var layoutSyncMessage = ""
 
@@ -555,6 +556,11 @@ final class StatusBarView: NSView {
         }
     }
 
+    func setImagePasteInProgress(_ active: Bool) {
+        imagePasteInProgress = active
+        updateStatusDotColor()
+    }
+
     func showError(_ message: String) {
         errorText = message
         updateStatusDotColor()
@@ -585,7 +591,11 @@ final class StatusBarView: NSView {
     private func updateStatusDotColor() {
         let color: NSColor
         let symbolName: String
-        if let errorText {
+        if imagePasteInProgress {
+            color = .systemBlue
+            symbolName = "arrow.up.circle.fill"
+            statusDot.toolTip = MuxtermI18n.shared.tr(.imagePasteProgress)
+        } else if let errorText {
             color = .systemRed
             symbolName = "exclamationmark.circle.fill"
             statusDot.toolTip = "\(MuxtermI18n.shared.tr(.statusError)): \(errorText) · \(MuxtermI18n.shared.tr(.statusShowConnectionDetails))"

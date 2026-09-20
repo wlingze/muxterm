@@ -73,6 +73,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private var hiddenAttentionKeys = Set<AttentionVisibilityKey>()
     private var structuredAgentTestOverrides: [String: [StructuredPaneAgent]] = [:]
     private var quickConnectStore: QuickConnectStore!
+    private var imagePasteBridge: CoreBridge?
     private var pollTimer: Timer?
     /// 主窗口 local key monitor 的 token；独立 NSPanel 的事件不能进入这里。
     private var keyMonitor: Any?
@@ -636,9 +637,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         terminalManager.onOutputSnippetChanged = { [weak self] snippet in
             self?.content.statusBar.updateOutputSnippet(snippet)
-        }
-        terminalManager.onError = { [weak self] message in
-            self?.reportStatusError(message)
         }
 
         // 启动时由 AppDelegate 创建的首个连接也属于当前 Workspace。
@@ -1582,6 +1580,21 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 } else {
                     result = bridge.execute(task: task)
                 }
+            case .imagePaste(let paneID, let png):
+                do {
+                    guard imagePasteBridge == nil else {
+                        throw CoreBridgeDiscoveryError.message(MuxtermI18n.shared.tr(.imagePasteBusy))
+                    }
+                    guard let workspaceID = command.workspaceID else {
+                        throw CoreBridgeDiscoveryError.message(MuxtermI18n.shared.tr(.errorCoreUnavailable))
+                    }
+                    try bridge.startImagePaste(workspaceID: workspaceID, paneID: paneID, png: png)
+                    imagePasteBridge = bridge
+                    content.statusBar.setImagePasteInProgress(true)
+                } catch {
+                    reportStatusError(MuxtermI18n.shared.tr(.imagePasteFailed) + ": " + error.localizedDescription)
+                }
+                result = 0
             case .input(let paneID, let data, let quiet):
                 if let workspaceID = command.workspaceID {
                     if quiet {
@@ -1805,6 +1818,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             attentionPanelRefreshPending = false
             unifiedPanel.refreshData()
         }
+    }
+
+    private func pollImagePaste() {
+        guard let source = imagePasteBridge else { return }
+        do {
+            guard try source.pollImagePaste() != nil else { return }
+        } catch {
+            reportStatusError(MuxtermI18n.shared.tr(.imagePasteFailed) + ": " + error.localizedDescription)
+        }
+        imagePasteBridge = nil
+        content.statusBar.setImagePasteInProgress(false)
     }
 
     private func reorderWorkspaces(_ workspaceIds: [String]) {
@@ -3018,6 +3042,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func wireTerminalManagerCallbacks() {
+        terminalManager.onError = { [weak self] message in
+            self?.reportStatusError(message)
+        }
         terminalManager.enqueueCoreCommand = { [weak self] command in
             self?.enqueueCoreCommand(command) ?? false
         }
@@ -4743,6 +4770,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // Resuming a scene may enqueue deferred input/resize work collected
         // while bridge queries were paused, so flush after the resume as well.
         flushCoreCommandQueue()
+        pollImagePaste()
         // 后台排空的事件必须先于 active bridge 的新事件交付。否则切回
         // Workspace 后，新的 PaneOutput 可能越过尚未应用的旧队列。
         if flushActiveSurfaceCatchUpBeforePoll() {

@@ -1,4 +1,6 @@
 {
+  "image_paste_busy": "已有图片正在粘贴，请稍候。",
+  "image_paste_invalid": "无法粘贴此图片。请使用 PNG 或 TIFF，最大 20 MiB、6400 万像素。",
   "image_paste_failed": "图片粘贴失败",
   "image_paste_progress": "正在上传剪贴板图片…",
   "sidebar_workspaces": "工作区",

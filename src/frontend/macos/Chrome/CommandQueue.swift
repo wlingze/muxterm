@@ -46,6 +46,7 @@ public enum QueuedMuxOperation: Equatable, Sendable {
     case config(QueuedMuxConfig)
     case search(QueuedMuxSearch)
     case paneOutput(QueuedMuxPaneOutput)
+    case imagePaste(paneID: UInt32, png: Data)
 
     private var coalescingKey: CoalescingKey? {
         switch self {
@@ -69,7 +70,7 @@ public enum QueuedMuxOperation: Equatable, Sendable {
             case .acknowledge, .mute:
                 return nil
             }
-        case .task, .input, .closeWorkspace, .config, .search, .paneOutput:
+        case .task, .input, .closeWorkspace, .config, .search, .paneOutput, .imagePaste:
             return nil
         }
     }
