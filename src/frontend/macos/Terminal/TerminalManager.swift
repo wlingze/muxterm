@@ -461,6 +461,16 @@ final class TerminalManager: TerminalInputHandler {
             fontSize: fontSize
         )
         view.inputHandler = self
+        let imageWorkspaceID = workspaceID
+        view.onImagePaste = { [weak self, weak view] png in
+            guard let self, let view, self.views[paneId] === view else { return }
+            _ = self.enqueueCoreCommand?(QueuedMuxCommand(
+                workspaceID: imageWorkspaceID,
+                operation: .imagePaste(paneID: paneId, png: png),
+                failureMessage: MuxtermI18n.shared.tr(.imagePasteFailed)
+            ))
+        }
+        view.onImagePasteError = { [weak self] message in self?.onError?(message) }
         view.onScrollPositionChanged = { [weak self] paneId, position, _ in
             self?.handleNativeScroll(paneId: paneId, position: position)
         }

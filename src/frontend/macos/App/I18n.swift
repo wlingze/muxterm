@@ -2,6 +2,10 @@ import Foundation
 
 /// JSON catalog 的 typed id。业务代码只能引用这个 enum，避免手写 key。
 enum MuxtermTextKey: CaseIterable {
+    case imagePasteFailed
+    case imagePasteProgress
+    case imagePasteBusy
+    case imagePasteInvalid
     case attentionJump
     case attentionHide
     case attentionMute
@@ -227,6 +231,10 @@ enum MuxtermTextKey: CaseIterable {
 
     var id: String {
         switch self {
+        case .imagePasteFailed: return "image_paste_failed"
+        case .imagePasteProgress: return "image_paste_progress"
+        case .imagePasteBusy: return "image_paste_busy"
+        case .imagePasteInvalid: return "image_paste_invalid"
         case .attentionJump: return "attention_jump"
         case .attentionHide: return "attention_hide"
         case .attentionMute: return "attention_mute"

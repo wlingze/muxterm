@@ -1,4 +1,6 @@
 {
+  "image_paste_busy": "An image paste is already in progress.",
+  "image_paste_invalid": "Cannot paste this image. Use PNG or TIFF, up to 20 MiB and 64 megapixels.",
   "image_paste_failed": "Image paste failed",
   "image_paste_progress": "Uploading clipboard image…",
   "sidebar_workspaces": "WORKSPACES",

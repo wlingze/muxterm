@@ -2,6 +2,7 @@
 #define muxterm_h
 
 #include <stdint.h>
+#include <stdbool.h>
 #include <stddef.h>
 
 // ── C 友好类型 ──

@@ -1391,6 +1391,37 @@ final class CoreBridge {
         }
     }
 
+    private struct ImagePasteResponse: Decodable {
+        let ok: Bool
+        let pending: Bool?
+        let path: String?
+        let error: CoreWireError?
+    }
+
+    func startImagePaste(workspaceID: String, paneID: UInt32, png: Data) throws {
+        guard let handle else { throw CoreBridgeDiscoveryError.message("Core handle unavailable") }
+        let pointer = workspaceID.withCString { workspace in
+            png.withUnsafeBytes { bytes in
+                muxterm_image_paste_start_json(
+                    handle, workspace, paneID, bytes.bindMemory(to: UInt8.self).baseAddress, png.count
+                )
+            }
+        }
+        let response: ImagePasteResponse = try Self.decodeDiscoveryJSON(pointer)
+        guard response.ok else {
+            throw CoreBridgeDiscoveryError.message(response.error?.message ?? "Image paste failed")
+        }
+    }
+
+    func pollImagePaste() throws -> String? {
+        guard let handle else { throw CoreBridgeDiscoveryError.message("Core handle unavailable") }
+        let response: ImagePasteResponse = try Self.decodeDiscoveryJSON(muxterm_image_paste_poll_json(handle))
+        guard response.ok else {
+            throw CoreBridgeDiscoveryError.message(response.error?.message ?? "Image paste failed")
+        }
+        return response.pending == true ? nil : response.path
+    }
+
     /// Open a target in this handle's WorkspacePool.  New workspaces share the
     /// existing Core event stream; the frontend does not create another C
     /// handle for a second scene.

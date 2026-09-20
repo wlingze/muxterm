@@ -1,6 +1,29 @@
 import AppKit
+import ImageIO
 import MuxtermChrome
 import SwiftTerm
+
+/// 系统剪贴板图片在后台归一化为 PNG；上传与输入目标由 Core 管理。
+enum ClipboardImageCodec {
+    static let maxBytes = 20 * 1024 * 1024
+
+    static func png(from data: Data) throws -> Data {
+        guard data.count <= maxBytes,
+              let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? Int,
+              let height = properties[kCGImagePropertyPixelHeight] as? Int,
+              width > 0, height > 0, width <= 16384, height <= 16384,
+              width * height <= 64 * 1024 * 1024,
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil),
+              let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]),
+              png.count <= maxBytes
+        else { throw InvalidImage() }
+        return png
+    }
+
+    struct InvalidImage: Error {}
+}
 
 /// 与 SwiftTerm `computeFontDimensions()` 相同的首屏字符格估算。
 /// 已创建的 view 直接读取 SwiftTerm 实际 backing-pixel 尺寸；这里只供
@@ -79,6 +102,9 @@ final class MuxTerminalView: TerminalView {
     private var fontFamily: String
     private(set) var fontSize: CGFloat
     weak var inputHandler: TerminalInputHandler?
+    var onImagePaste: ((Data) -> Void)?
+    var onImagePasteError: ((String) -> Void)?
+    private var encodingClipboardImage = false
     /// 原生 SwiftTerm scrollback 位置变化；TerminalManager 将其镜像到 core。
     var onScrollPositionChanged: ((UInt32, Double, Bool) -> Void)?
     /// 诊断/回归测试：Surface seed 之外不允许发生 reset。
@@ -399,7 +425,35 @@ final class MuxTerminalView: TerminalView {
     }
 
     override func paste(_ sender: Any?) {
-        let text = NSPasteboard.general.string(forType: .string) ?? ""
+        paste(from: .general)
+    }
+
+    func paste(from pasteboard: NSPasteboard) {
+        if let type = pasteboard.availableType(from: [.png, .tiff]) {
+            guard !encodingClipboardImage else {
+                onImagePasteError?(MuxtermI18n.shared.tr(.imagePasteBusy))
+                return
+            }
+            guard let data = pasteboard.data(forType: type), let handler = onImagePaste else {
+                onImagePasteError?(MuxtermI18n.shared.tr(.imagePasteInvalid))
+                return
+            }
+            encodingClipboardImage = true
+            // 先复制剪贴板和目标回调；异步编码期间切换 pane 不改变目的地。
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                let result = Result { try ClipboardImageCodec.png(from: data) }
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    self.encodingClipboardImage = false
+                    switch result {
+                    case .success(let png): handler(png)
+                    case .failure: self.onImagePasteError?(MuxtermI18n.shared.tr(.imagePasteInvalid))
+                    }
+                }
+            }
+            return
+        }
+        let text = pasteboard.string(forType: .string) ?? ""
         guard !text.isEmpty else { return }
         if getTerminal().bracketedPasteMode {
             send(data: EscapeSequences.bracketedPasteStart[...])

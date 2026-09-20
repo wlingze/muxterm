@@ -164,7 +164,7 @@ mod tests {
 
     #[test]
     fn completion_targets_original_workspace_and_rejects_reopened_instances() {
-        use crate::runtime::mock::MockRuntime;
+        use crate::runtime::MockRuntime;
         use crate::workspace::Workspace;
         use std::sync::{Arc, Mutex};
         for replace_original in [false, true] {

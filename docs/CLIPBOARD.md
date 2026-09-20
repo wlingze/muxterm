@@ -4,6 +4,10 @@
 
 Linux 从截图工具、浏览器等复制**图片内容**后，在终端按 Ctrl+Shift+V 或右键粘贴。
 焦点在终端且剪贴板包含图片时，Ctrl+V 也走图片通路；其它 Ctrl+V 保持应用原有语义。
+
+macOS 从截图或浏览器复制图片后，按 Cmd+V 或使用粘贴菜单。支持 PNG/TIFF 剪贴板内容，
+后台转换成 PNG；上传期间状态栏显示蓝色上传图标，悬停可查看状态，失败显示错误。
+
 文本粘贴不变。文件管理器复制文件路径/URI 不等于复制图片像素，本轮不做文件拖放。
 
 前端读取图片并转成 PNG；Core 将文件存到 workspace 所在机器，再粘贴绝对路径。
@@ -33,7 +37,8 @@ SSH 目标来自 Core 打开的 workspace，不从终端内容、进程名或用
 - C ABI：`muxterm_image_paste_start_json(handle, workspace, pane, png, len)` 复制输入后返回；
   `muxterm_image_paste_poll_json(handle)` 返回 pending 或目标 path，完成时由 Core 注入原 pane。
   调用均由 frontend event owner 串行进行。Rust CoreBridge 和公共 C 头已暴露此接口，
-  其它前端可复用；本轮实际连接系统剪贴板的前端是 Linux，未改 macOS 的粘贴 UI。
+  Linux 与 macOS 均已接入系统剪贴板；macOS 通过主窗口命令队列与轮询调用，
+  编码开始时绑定原 workspace/pane，切换页面不改变上传目的地。
 
 ## 限制与生命周期
 
@@ -64,3 +69,11 @@ Clippy `--lib --test linux_image_paste_e2e -D warnings` 通过；全 tests lint 
 官方接口核对（本轮机器时间基准 `2026-09-19T22:07:29+08:00`）：
 [GDK read_texture_async](https://docs.gtk.org/gdk4/method.Clipboard.read_texture_async.html)、
 [OpenSSH -T](https://man.openbsd.org/ssh.1#T)。
+
+2026-09-20 macOS 验证：图片粘贴、命令队列与 Chrome 回归共 34 项通过；包含 TIFF 转 PNG、
+无效图片拒绝、文本 bracketed paste，以及隔离 tmux 中切换 workspace 后仍向原 pane
+写入图片路径并核对文件字节。Core 图片生命周期/引用测试 3 项通过。
+
+Apple 接口核对（机器时间 `2026-09-20T10:59:22+08:00`）：
+[NSPasteboard PNG](https://developer.apple.com/documentation/appkit/nspasteboard/pasteboardtype/png)、
+[ImageIO 图片属性](https://developer.apple.com/documentation/imageio/cgimagesourcecopypropertiesatindex(_:_:_:))。
