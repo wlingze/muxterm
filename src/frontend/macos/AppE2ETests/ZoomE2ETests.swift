@@ -200,6 +200,19 @@ final class ZoomE2ETests: XCTestCase {
         )
     }
 
+    func testRepeatedMouseSelectionDoesNotQueuePaneFocus() throws {
+        let painted = PaintedWorkspace(label: "mouse-repeat")
+        let app = try AppE2E.attachWindow(socket: painted.socket, session: painted.session)
+        defer { app.testShutdown() }
+        XCTAssertTrue(app.waitReady(minTabs: 2, minLeaves: 3))
+        let pane = app.testActivePaneID()
+        let count = app.testQueuedCommandCount()
+        for _ in 0..<30 { app.testActivatePaneFromSurface(pane) }
+        XCTAssertEqual(app.testQueuedCommandCount(), count,
+                       "已经激活的 pane 上选区点击不能再发远端 select/focus")
+        XCTAssertEqual(app.testFocusTargetPaneID(), pane)
+    }
+
     func testMouseActivatedPaneBecomesFullscreenTarget() throws {
         let painted = PaintedWorkspace(label: "mouse-zoom")
         let app = try AppE2E.attachWindow(socket: painted.socket, session: painted.session)
