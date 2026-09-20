@@ -72,6 +72,11 @@ pub(super) fn refresh_workspace_layout(s: &mut UiState, wid: &WorkspaceId, seed_
         .map(|pane| (pane.id, pane.title.clone(), pane.is_active))
         .collect();
 
+    let server_scroll = s.workspace_supports(
+        &workspace_key,
+        crate::frontend::utils::corebridge::ClientRuntimeCapability::ServerScroll,
+    );
+
     s.scenes.ensure(wid);
     super::window_appearance::report_workspace_pane_colours(s, &workspace_key);
 
@@ -103,6 +108,22 @@ pub(super) fn refresh_workspace_layout(s: &mut UiState, wid: &WorkspaceId, seed_
             for (id, title, active) in &titles {
                 if let Some(pane) = layout.pane(*id) {
                     pane.set_title(title, *active);
+                    if server_scroll {
+                        let queue = s.command_queue.clone();
+                        let workspace_id = workspace_key.clone();
+                        pane.connect_server_scroll(move |pane_id, lines| {
+                            queue.borrow_mut().push(
+                                crate::frontend::command_queue::ClientCommand::Task {
+                                    workspace_id: Some(workspace_id.clone()),
+                                    task:
+                                        crate::frontend::utils::corebridge::ClientTask::ScrollPane {
+                                            pane_id,
+                                            lines,
+                                        },
+                                },
+                            );
+                        });
+                    }
                 }
             }
             // 全部 tab 常驻后，把 active tab 放回可见页（apply_layout 会

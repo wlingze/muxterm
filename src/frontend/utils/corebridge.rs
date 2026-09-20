@@ -1171,6 +1171,7 @@ pub enum ClientTask {
     BreakPane { pane_id: u32 },
     RefreshTabs,
     RequestPaneSnapshot { pane_id: u32 },
+    ScrollPane { pane_id: u32, lines: i32 },
     Detach,
     Shutdown,
 }
@@ -2758,6 +2759,12 @@ fn task_to_ffi(task: ClientTask) -> CTask {
         ClientTask::RequestPaneSnapshot { pane_id } => {
             (ffi::TASK_REQUEST_PANE_SNAPSHOT, pane_id, 0, 0)
         }
+        ClientTask::ScrollPane { pane_id, lines } => (
+            ffi::TASK_SCROLL_PANE,
+            pane_id,
+            lines.unsigned_abs().min(u16::MAX as u32),
+            u32::from(lines < 0),
+        ),
         ClientTask::Detach => (ffi::TASK_DETACH, 0, 0, 0),
         ClientTask::Shutdown => (ffi::TASK_SHUTDOWN, 0, 0, 0),
     };
@@ -3065,6 +3072,17 @@ mod tests {
         );
         assert_eq!(task_to_ffi(ClientTask::Detach).type_, ffi::TASK_DETACH);
         assert_eq!(task_to_ffi(ClientTask::Shutdown).type_, ffi::TASK_SHUTDOWN);
+    }
+
+    #[test]
+    fn frontend_scroll_preserves_direction_and_clamps_line_count() {
+        for lines in [3, -3, 0, i32::MIN, i32::MAX] {
+            let task = task_to_ffi(ClientTask::ScrollPane { pane_id: 14, lines });
+            assert_eq!(task.type_, ffi::TASK_SCROLL_PANE);
+            assert_eq!(task.target_pane, 14);
+            assert_eq!(task.target_tab, lines.unsigned_abs().min(u16::MAX as u32));
+            assert_eq!(task.dir, u32::from(lines < 0));
+        }
     }
 
     #[test]

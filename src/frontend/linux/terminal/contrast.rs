@@ -24,6 +24,7 @@ impl Timeout for ImmediateAttributes {
 struct Style {
     fg: Color,
     bg: Color,
+    reverse: bool,
     correction: Option<Rgb>,
 }
 
@@ -32,6 +33,7 @@ impl Default for Style {
         Self {
             fg: Color::Named(NamedColor::Foreground),
             bg: Color::Named(NamedColor::Background),
+            reverse: false,
             correction: None,
         }
     }
@@ -120,8 +122,12 @@ impl ContrastGuard {
     }
 
     fn correct(&mut self, out: &mut Vec<u8>) {
-        let correction =
-            readable_foreground(self.resolve(self.style.fg), self.resolve(self.style.bg));
+        // 反色时逻辑前景是实际背景；修正它会给 htop 选中行/色条重新涂底。
+        let correction = if self.style.reverse {
+            None
+        } else {
+            readable_foreground(self.resolve(self.style.fg), self.resolve(self.style.bg))
+        };
         if correction == self.style.correction {
             return;
         }
@@ -193,6 +199,8 @@ impl Handler for ContrastGuard {
                 self.style.correction = None;
             }
             Attr::Background(color) => self.style.bg = color,
+            Attr::Reverse => self.style.reverse = true,
+            Attr::CancelReverse => self.style.reverse = false,
             _ => {}
         }
         self.changed = true;
@@ -215,6 +223,16 @@ impl Handler for ContrastGuard {
 mod tests {
     use super::*;
     use crate::frontend::linux::theme::fallback_theme;
+
+    #[test]
+    fn reverse_video_keeps_application_background_and_restores_correction() {
+        let mut guard = ContrastGuard::new(&fallback_theme());
+        guard.feed(b"\x1b[38;2;248;248;180m");
+        let reversed = guard.feed(b"\x1b[7mHTOP");
+        assert_eq!(reversed, b"\x1b[7m\x1b[38;2;248;248;180mHTOP");
+        let normal = guard.feed(b"\x1b[27mTEXT");
+        assert_eq!(normal, b"\x1b[27m\x1b[38;2;116;116;84mTEXT");
+    }
 
     #[test]
     fn synchronized_codex_frame_corrects_colors_before_text_not_after_frame() {

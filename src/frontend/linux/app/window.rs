@@ -122,7 +122,7 @@ struct UiState {
     /// 唯一 Core owner：生产 GTK 不再直接持有 WorkspacePool。
     event_pump: EventPump,
     /// UI → Core 的唯一命令出口；由 GTK poll owner 批量 flush。
-    command_queue: RefCell<CommandQueue>,
+    command_queue: Rc<RefCell<CommandQueue>>,
     /// 每个 workspace 的常驻 LayoutHost 与 GTK Scene 由同一个 owner 管理。
     scenes: WorkspaceScenes,
     /// 前端拥有的 workspace topology/render 快照；Core 不持有其引用。
