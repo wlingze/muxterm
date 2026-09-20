@@ -430,7 +430,7 @@ fn macos_ffi_attach_search_attention_and_done() {
             &cmd
         ]
     ));
-    let ok = poll_until(h, Duration::from_secs(5), || {
+    let ok = poll_until(h, Duration::from_secs(10), || {
         let notifications = take_notifications(h);
         notifications["done"]
             .as_array()

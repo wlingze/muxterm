@@ -13,11 +13,13 @@ import time
 
 def main() -> None:
     out = sys.stdout
+    # pane-cmd 可能把 python 当成 CommandStart，和第一批 OSC 落在同一轮 Core
+    # poll。先越过 COMMAND_VISIBLE_AFTER（400ms）和 CI 调度余量，避免 OSC 133 D
+    # 被当成闪过去的短命令而变成已读 Idle。
+    time.sleep(1.5)
     out.write("\x1b]133;C\x07")
     out.write("TASK_DONE_TOKEN")
     out.flush()
-    # Cross the ordinary-command visibility threshold so this fixture tests
-    # an observable completed task instead of the intentional flash filter.
     time.sleep(0.5)
     out.write("\x1b]133;D;0\x07")
     out.flush()

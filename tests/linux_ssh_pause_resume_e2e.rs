@@ -1,4 +1,4 @@
-//! 隐藏 SSH pane 的 Pause → Live 恢复：先保留最后已知帧，再异步补 baseline。
+//! 隐藏 SSH pane 继续按序消费输出，切回时不能白屏，也不再 pause 后抓 snapshot。
 
 #![cfg(feature = "gtk")]
 
@@ -84,18 +84,17 @@ fn hidden_ssh_pane_keeps_last_frame_before_async_resume_baseline() {
         fx.send_keys_line(&hidden_marker);
         pump_main_loop(80);
 
-        // Scene 切换本身不 poll Core，也不等待 snapshot；最后已知帧必须仍在。
+        // 隐藏 SSH 继续按序消费字节，不再 pause 后 RequestPaneSnapshot。
+        // 切回时画面可以已经含隐藏期间的输出，但不能是空屏。
         app.test_activate_workspace(&ssh_replica);
-        let before_baseline = app.test_pane_vte_text(pane);
+        let shown = app.test_pane_vte_text(pane);
         assert!(
-            before_baseline.contains(&fx.token),
-            "切回隐藏 SSH pane 时应先显示最后已知帧，不能白屏: {before_baseline:?}"
+            !shown.trim().is_empty(),
+            "切回隐藏 SSH pane 不能白屏: {shown:?}"
         );
-
-        // 下一轮 poll 发出 RequestPaneSnapshot，随后 baseline 覆盖并带上隐藏期间的输出。
         assert!(
             wait_for_text(&app, pane, &hidden_marker, SSH_TIMEOUT),
-            "异步 baseline 后应出现隐藏期间的新内容 {hidden_marker}，got={:?}",
+            "隐藏期间的输出必须已经按序到达 {hidden_marker}，got={:?}",
             app.test_pane_vte_text(pane)
         );
 
