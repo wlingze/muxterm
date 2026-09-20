@@ -471,8 +471,8 @@ final class TerminalManager: TerminalInputHandler {
             ))
         }
         view.onImagePasteError = { [weak self] message in self?.onError?(message) }
-        view.onScrollPositionChanged = { [weak self] paneId, position, _ in
-            self?.handleNativeScroll(paneId: paneId, position: position)
+        view.onScrollPositionChanged = { [weak self] paneId, position, atLatest in
+            self?.handleNativeScroll(paneId: paneId, position: position, atLatest: atLatest)
         }
         // 非直接 PTY 终端模拟器（tmux 控制模式 / daemon 代理）下禁止把
         // SwiftTerm 解析 pane 输出时生成的查询应答回写 pane。
@@ -1215,13 +1215,14 @@ final class TerminalManager: TerminalInputHandler {
         unseenLines[paneId] ?? 0
     }
 
-    private func handleNativeScroll(paneId: UInt32, position: Double) {
+    private func handleNativeScroll(paneId: UInt32, position: Double, atLatest: Bool) {
         guard bridgeQueriesEnabled, !applyingNativeScroll.contains(paneId) else { return }
         let rows = UInt32(max(1, expectedPaneSizes[paneId]?.rows ?? 24))
         let rawMax = paneHistoryMaxOffset(paneId: paneId, rows: rows)
         let maxOffset = rawMax < 0 ? 0 : UInt32(rawMax)
         let clamped = min(max(position, 0), 1)
-        let offset = clamped >= 0.999 || maxOffset == 0
+        // alternate screen / 无历史时 position=0，仍然在最新位置。
+        let offset = atLatest || maxOffset == 0
             ? 0
             : UInt32((Double(maxOffset) * (1 - clamped)).rounded())
         _ = setPaneViewport(paneId: paneId, offset: offset)

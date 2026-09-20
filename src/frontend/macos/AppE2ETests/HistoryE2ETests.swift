@@ -8,6 +8,62 @@ import MuxtermChrome
 /// 触控板由 SwiftTerm native scrollback 处理；attach 之后的 live 字节无论
 /// 当前视口位置都必须继续进 SwiftTerm。
 final class HistoryE2ETests: XCTestCase {
+    /// Codex 重绘/alternate screen 的 position=0 不代表用户离开底部。
+    func testAgentRedrawAtLatestNeverOffersJumpLatest() throws {
+        let fx = OffscreenHistory(label: "latest-redraw")
+        let app = try AppE2E.attachWindow(socket: fx.socket, session: fx.session)
+        defer { app.testShutdown() }
+        XCTAssertTrue(app.waitTerminalContains(fx.tailMark, timeout: AppE2E.featureTimeout))
+        let view = app.testActiveTerminalView()
+        app.testClickJumpLatest()
+        var offeredDuringRedraw = false
+        let callback = view.onScrollPositionChanged
+        view.onScrollPositionChanged = { pane, position, latest in
+            callback?(pane, position, latest)
+            offeredDuringRedraw = offeredDuringRedraw || app.testJumpLatestVisible()
+        }
+        for _ in 0..<8 {
+            view.feedOutput(Data("\u{1b}[?1049h\u{1b}[2J\u{1b}[Hagent redraw\r\n".utf8))
+            // SwiftTerm 的 alternate display 没有可上翻的历史，position 却是 0。
+            view.scrolled(source: view, position: view.scrollPosition)
+            XCTAssertTrue(view.isAtLatest())
+            XCTAssertFalse(app.testJumpLatestVisible())
+            view.feedOutput(Data("\u{1b}[?1049l".utf8))
+            view.scrollToLatest()
+        }
+        XCTAssertFalse(offeredDuringRedraw, "渲染过程不能发布中间态的回底按钮")
+        view.scrollUp(lines: 5)
+        XCTAssertTrue(app.testJumpLatestVisible(), "主动上翻仍应显示按钮")
+        app.testClickJumpLatest()
+        XCTAssertFalse(app.testJumpLatestVisible())
+    }
+
+    func testBackgroundPaneCannotChangeActiveJumpLatestButton() throws {
+        let fx = OffscreenHistory(label: "latest-background")
+        let app = try AppE2E.attachWindow(socket: fx.socket, session: fx.session)
+        defer { app.testShutdown() }
+        XCTAssertTrue(app.waitReady())
+        app.testClickJumpLatest()
+        let active = app.testActivePaneID()
+        app.terminalManager.onViewportChanged?(active &+ 1000, 50)
+        XCTAssertFalse(app.testJumpLatestVisible(), "后台 pane 的历史位置不能控制当前按钮")
+        app.terminalManager.onViewportChanged?(active, 50)
+        XCTAssertTrue(app.testJumpLatestVisible())
+        app.terminalManager.onViewportChanged?(active &+ 1000, 0)
+        XCTAssertTrue(app.testJumpLatestVisible(), "后台 pane 回底不能隐藏当前按钮")
+
+        let previousManager = app.terminalManager
+        let other = OnePaneCat(label: "latest-other-workspace")
+        let bridge = try CoreBridge(backendType: "tmux", socket: other.socket, session: other.session)
+        app.testActivateWorkspaceBridge(bridge, session: other.session)
+        XCTAssertTrue(app.waitReady())
+        app.testClickJumpLatest()
+        // 不同 workspace 的 pane ID 可以相同；必须连同 manager 身份一起判断。
+        previousManager.onViewportChanged?(app.testActivePaneID(), 50)
+        previousManager.onUnseenLinesChanged?(app.testActivePaneID(), 10)
+        XCTAssertFalse(app.testJumpLatestVisible(), "旧 workspace 回调不能污染新 workspace")
+    }
+
     func testAttachRestoresOffscreenHistoryAndJumpLatest() throws {
         let fx = OffscreenHistory(label: "gtk-hist")
         let app = try AppE2E.attachWindow(socket: fx.socket, session: fx.session)

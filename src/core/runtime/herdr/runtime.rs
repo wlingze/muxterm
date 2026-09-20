@@ -79,6 +79,8 @@ pub struct HerdrRuntime {
     /// GTK 分配的 client viewport（ResizePane 写入）。Hello 用它，不用
     /// snapshot 的 split-cell rect（76×12 会让 htop Observe 永远缩在小格子里）。
     preferred_client_size: Option<(u16, u16)>,
+    /// 每个 pane 最后收到的 UI allocation；不能随 intent/stream 切换丢掉。
+    pane_client_sizes: HashMap<PaneId, (u16, u16)>,
     outputs: HashMap<PaneId, Vec<u8>>,
     agents: HashMap<PaneId, PaneAgentInfo>,
     /// 最近一次接受的 agent 版本（含已释放 agent 的墓碑）。旧 snapshot
@@ -145,6 +147,7 @@ impl HerdrRuntime {
             snapshot_active: HashMap::new(),
             frame_sizes: HashMap::new(),
             preferred_client_size: None,
+            pane_client_sizes: HashMap::new(),
             outputs: HashMap::new(),
             agents: HashMap::new(),
             agent_versions: HashMap::new(),
@@ -1125,6 +1128,8 @@ impl HerdrRuntime {
     /// - `Degraded` 只由新用户 intent 重新武装（new_user_intent 会解除）。
     fn reconcile_stream_modes(&mut self) {
         let in_topology: HashSet<PaneId> = self.panes.iter().map(|p| p.id).collect();
+        self.pane_client_sizes
+            .retain(|pane, _| in_topology.contains(pane));
         self.stream_slots.retain(|pane, slot| {
             if !in_topology.contains(pane) {
                 slot.state = SlotState::Stopped;
@@ -1213,6 +1218,8 @@ impl HerdrRuntime {
             generation = generation,
             mode = ?mode,
             takeover = takeover,
+            cols,
+            rows,
             "start pane stream"
         );
         if let Some(slot) = self.stream_slots.get_mut(&pane) {
@@ -1269,14 +1276,19 @@ impl HerdrRuntime {
         if self.active_pane != Some(pane) {
             self.execute(&Task::SwitchPane { target: pane })?;
         }
-        let pane_size = self.preferred_client_size.unwrap_or_else(|| {
-            self.panes
-                .iter()
-                .find(|candidate| candidate.id == pane)
-                .filter(|candidate| candidate.cols >= 2 && candidate.rows >= 1)
-                .map(|candidate| (candidate.cols, candidate.rows))
-                .unwrap_or((DEFAULT_HERDR_COLS, DEFAULT_HERDR_ROWS))
-        });
+        let pane_size = self
+            .pane_client_sizes
+            .get(&pane)
+            .copied()
+            .or(self.preferred_client_size)
+            .unwrap_or_else(|| {
+                self.panes
+                    .iter()
+                    .find(|candidate| candidate.id == pane)
+                    .filter(|candidate| candidate.cols >= 2 && candidate.rows >= 1)
+                    .map(|candidate| (candidate.cols, candidate.rows))
+                    .unwrap_or((DEFAULT_HERDR_COLS, DEFAULT_HERDR_ROWS))
+            });
         if self.preferred_client_size.is_none() {
             self.preferred_client_size = Some(pane_size);
         }
@@ -1325,7 +1337,7 @@ impl HerdrRuntime {
         Ok(())
     }
 
-    /// Hello / Observe viewport 尺寸：GTK preferred → pending_resize → 默认。
+    /// Hello / Observe viewport：pending resize → 本 pane allocation → 首次 fallback。
     /// 绝不用 snapshot split-cell rect（否则 htop 会锁在 76×12）。
     fn hello_client_size(&self, pane: PaneId) -> (u16, u16) {
         if let Some(slot) = self.stream_slots.get(&pane) {
@@ -1333,7 +1345,12 @@ impl HerdrRuntime {
                 return normalize_pane_size(cols, rows, None);
             }
         }
-        if let Some((cols, rows)) = self.preferred_client_size {
+        if let Some((cols, rows)) = self
+            .pane_client_sizes
+            .get(&pane)
+            .copied()
+            .or(self.preferred_client_size)
+        {
             return normalize_pane_size(cols, rows, None);
         }
         (DEFAULT_HERDR_COLS, DEFAULT_HERDR_ROWS)
@@ -1346,6 +1363,7 @@ impl HerdrRuntime {
         let first_preferred = self.preferred_client_size.is_none();
         let (cols, rows) = normalize_pane_size(cols, rows, None);
         self.preferred_client_size = Some((cols, rows));
+        self.pane_client_sizes.insert(pane, (cols, rows));
         let Some(slot) = self.stream_slots.get_mut(&pane) else {
             if first_preferred {
                 self.reconcile_stream_modes();
@@ -3892,6 +3910,30 @@ mod tests {
                 .map(|p| (p.cols, p.rows)),
             Some((132, 41))
         );
+    }
+
+    #[test]
+    fn stream_restart_keeps_each_panes_allocated_size() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w2",
+        );
+        // 已有 viewport，避免测试触发真实流协调。
+        runtime.preferred_client_size = Some((80, 24));
+        for (id, size) in [(PaneId(1), (160, 48)), (PaneId(2), (80, 23))] {
+            let mut slot = PaneStreamSlot::new(id, format!("w2:p{}", id.0), StreamMode::Observe);
+            slot.state = SlotState::Starting;
+            runtime.stream_slots.insert(id, slot);
+            runtime.resize_control_stream(id, size.0, size.1).unwrap();
+            // 发出 resize 或 mode 切换后 pending 会清空；已知尺寸必须保留。
+            runtime
+                .stream_slots
+                .get_mut(&id)
+                .unwrap()
+                .drop_pending_input("mode-switch");
+        }
+        assert_eq!(runtime.hello_client_size(PaneId(1)), (160, 48));
+        assert_eq!(runtime.hello_client_size(PaneId(2)), (80, 23));
     }
 
     #[test]
