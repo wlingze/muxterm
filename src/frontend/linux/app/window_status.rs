@@ -39,20 +39,31 @@ pub(super) fn refresh_connection_summary(s: &mut UiState) {
     let Some(id) = parse_workspace_id(&workspace.id) else {
         return;
     };
-    let kind = match id.runtime.as_str() {
-        "tmux-ssh" | "ssh" => "ssh",
-        "tmux" => "tmux",
-        _ => "local",
-    };
-    let host = id
-        .alias
-        .clone()
-        .or_else(|| (!id.session.is_empty()).then(|| id.session.clone()));
-    let status = match s.runtime_status {
-        crate::protocol::ffi::types::BACKEND_STATUS_CONNECTED => "connected",
-        crate::protocol::ffi::types::BACKEND_STATUS_CONNECTING => "connecting",
-        _ => "disconnected",
-    };
+    let kind = id.transport.as_str();
+    let host = id.alias.clone();
+    let backend_status = s
+        .view_store
+        .workspace(&workspace_id)
+        .and_then(|view| view.backend_status);
+    let status = connection_status(backend_status);
+    let mut connections = Vec::new();
+    for (key, view) in s.view_store.workspaces() {
+        let Some(id) = parse_workspace_id(key) else {
+            continue;
+        };
+        connections.push(format!(
+            "{}{} · {} {} · {} · {}",
+            if key == workspace_id { "● " } else { "  " },
+            view.workspace
+                .as_ref()
+                .map(|workspace| workspace.name.as_str())
+                .unwrap_or(&id.session),
+            id.transport,
+            id.alias.as_deref().unwrap_or("local"),
+            id.runtime,
+            connection_status(view.backend_status)
+        ));
+    }
     let (down, up) = s.event_pump.client().traffic_bytes();
     let now = Instant::now();
     let (down_rate, up_rate) = match (s.last_traffic, s.last_traffic_at) {
@@ -75,7 +86,19 @@ pub(super) fn refresh_connection_summary(s: &mut UiState) {
         up,
         down_rate,
         up_rate,
+        connections,
     });
+}
+
+fn connection_status(status: Option<u32>) -> &'static str {
+    use crate::protocol::ffi::types::*;
+    match status {
+        Some(BACKEND_STATUS_CONNECTED) => "connected",
+        Some(BACKEND_STATUS_CONNECTING) => "connecting",
+        Some(BACKEND_STATUS_DISCONNECTED) => "disconnected",
+        Some(_) => "error",
+        None => "unknown",
+    }
 }
 
 pub(super) fn local_status_snapshot(

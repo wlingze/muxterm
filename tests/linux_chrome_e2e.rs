@@ -179,6 +179,7 @@ fn status_dot_click_opens_popover_with_ssh_summary(bar: &StatusBar, win: &gtk4::
         up: 56,
         down_rate: 1536,
         up_rate: 56,
+        connections: vec!["● ssh 127.0.0.1 · herdr · connected".into()],
     });
     pump_main_loop(40);
 
@@ -203,6 +204,7 @@ fn status_dot_click_opens_popover_with_ssh_summary(bar: &StatusBar, win: &gtk4::
     assert!(text.contains("type=ssh"), "应含 type=ssh: {text}");
     assert!(text.contains("host=127.0.0.1"), "应含 host: {text}");
     assert!(text.contains("status=connected"), "应含 status: {text}");
+    assert!(text.contains("● ssh 127.0.0.1 · herdr · connected"));
     assert!(
         !text.contains("1536B/s") && !text.contains("1234B/s"),
         "禁止把累计字节标成 B/s: {text}"
@@ -216,6 +218,30 @@ fn status_dot_click_opens_popover_with_ssh_summary(bar: &StatusBar, win: &gtk4::
         "必须有人类可读累计（1.5 KB 和 56 B）: {text}"
     );
     popover.popdown();
+
+    for (status, class, rgb) in [
+        ("connecting", "status-warn", (243.0, 156.0, 18.0)),
+        ("disconnected", "status-err", (192.0, 57.0, 43.0)),
+        ("connected", "status-ok", (39.0, 174.0, 96.0)),
+    ] {
+        bar.set_connection_summary(&ConnectionSummary {
+            kind: "ssh".into(),
+            host: Some("ryzen".into()),
+            status: status.into(),
+            ..ConnectionSummary::default()
+        });
+        pump_main_loop(40);
+        assert!(dot.has_css_class(class));
+        let label = dot.child().unwrap().downcast::<gtk4::Label>().unwrap();
+        #[allow(deprecated)]
+        let color = label.style_context().color();
+        assert!(
+            (color.red() * 255.0 - rgb.0).abs() < 1.0
+                && (color.green() * 255.0 - rgb.1).abs() < 1.0
+                && (color.blue() * 255.0 - rgb.2).abs() < 1.0,
+            "status label must really change color: {status} {color:?}"
+        );
+    }
 
     // CSS 数据必须含真实颜色（status-ok 绿）。
     let css = muxterm::test_support::frontend::linux::status_bar::status_dot_css();

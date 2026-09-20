@@ -35,9 +35,9 @@ type WorktreeCreateCb = Rc<RefCell<Option<Box<dyn Fn()>>>>;
 
 /// 状态点三色 CSS（测试与实现同一常量）。
 pub fn status_dot_css() -> &'static str {
-    ".muxterm-status-dot.status-ok { color: #27ae60; }\n\
-     .muxterm-status-dot.status-warn { color: #f39c12; }\n\
-     .muxterm-status-dot.status-err { color: #c0392b; }"
+    ".muxterm-status-dot.status-ok, .muxterm-status-dot.status-ok label { color: #27ae60; }\n\
+     .muxterm-status-dot.status-warn, .muxterm-status-dot.status-warn label { color: #f39c12; }\n\
+     .muxterm-status-dot.status-err, .muxterm-status-dot.status-err label { color: #c0392b; }"
 }
 
 /// muxterm status bar（唯一 chrome）。
@@ -121,12 +121,12 @@ impl StatusBar {
         dot.set_can_focus(false);
         dot.set_size_request(18, 18);
         dot.add_css_class("muxterm-status-dot");
-        dot.add_css_class("status-ok");
+        dot.add_css_class("status-warn");
 
         let popover = Popover::new();
         popover.set_widget_name("muxterm-status-popover");
         popover.set_parent(&dot);
-        let pop_label = Label::new(Some("type=local status=connected"));
+        let pop_label = Label::new(Some("status=unknown"));
         pop_label.set_widget_name("muxterm-status-popover-label");
         pop_label.set_margin_top(8);
         pop_label.set_margin_bottom(8);
@@ -388,12 +388,12 @@ impl StatusBar {
         self.dot.remove_css_class("status-err");
         match summary.status.as_str() {
             "connected" => self.dot.add_css_class("status-ok"),
-            "connecting" => self.dot.add_css_class("status-warn"),
+            "connecting" | "unknown" => self.dot.add_css_class("status-warn"),
             _ => self.dot.add_css_class("status-err"),
         }
         let host = summary.host.as_deref().unwrap_or("");
         // 速率与累计分开：禁止把累计字节标成 `B/s`（W15a）。
-        let text = format!(
+        let mut text = format!(
             "type={} status={}{}\n↓ {}  ↑ {}\ntotal ↓ {}  ↑ {}",
             summary.kind,
             summary.status,
@@ -407,6 +407,14 @@ impl StatusBar {
             format_bytes(summary.down),
             format_bytes(summary.up),
         );
+        self.dot.set_tooltip_text(Some(&format!(
+            "{} {} · {}",
+            summary.kind, host, summary.status
+        )));
+        if !summary.connections.is_empty() {
+            text.push_str("\n\n");
+            text.push_str(&summary.connections.join("\n"));
+        }
         if let Some(label) = self
             .popover
             .child()

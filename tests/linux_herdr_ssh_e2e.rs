@@ -108,5 +108,19 @@ fn linux_ssh_herdr_vte_input_executes_remote_command() {
             app.test_pane_vte_text(pane),
             app.test_search_all(output_token)
         );
+        let status = find_by_name(&app.window, "muxterm-status-popover-label")
+            .unwrap()
+            .downcast::<gtk4::Label>()
+            .unwrap()
+            .text();
+        assert!(
+            status.contains("type=ssh")
+                && status.contains(&format!("host={}", sshd.alias))
+                && status.contains("status=connected"),
+            "current SSH Herdr connection must be shown: {status}"
+        );
+        let dot = find_by_name(&app.window, "muxterm-status-dot").unwrap();
+        assert!(dot.has_css_class("status-ok"));
+        app.window.close();
     });
 }
