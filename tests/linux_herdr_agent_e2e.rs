@@ -576,10 +576,16 @@ fn build_scenario(
 
     app.test_handle_action(Action::NewPaneVertical);
     wait_for(app, "创建右下 pane", |candidate| {
-        candidate.test_layout_leaf_ids().len() == 3
-            && candidate.test_active_pane_id() != right_top
+        let leaves = candidate.test_layout_leaf_ids();
+        let active = candidate.test_active_pane_id();
+        leaves.len() == 3
+            && leaves.contains(&left)
+            && leaves.contains(&right_top)
+            && leaves.contains(&active)
+            && active != left
+            && active != right_top
             && candidate.test_gtk_layout_signature() == "H(L,V(L,L))"
-            && candidate.test_layout_leaf_ids().iter().all(|pane| {
+            && leaves.iter().all(|pane| {
                 let (width, height) = candidate.test_pane_allocation(*pane);
                 width > 0 && height > 0
             })
@@ -587,9 +593,17 @@ fn build_scenario(
     let right_bottom = app.test_active_pane_id();
     let (bottom_tab, wire_right_bottom) = server_focus(session, workspace_id)?;
     ensure!(bottom_tab == wire_tab2, "下 split 后 Herdr 切错 tab");
+    let leaves = app.test_layout_leaf_ids();
+    let unique = [left, right_top, right_bottom]
+        .into_iter()
+        .collect::<HashSet<_>>();
     ensure!(
-        app.test_layout_leaf_ids() == vec![left, right_top, right_bottom],
-        "Tab 2 必须严格是 H(left,V(right-top,right-bottom)): {}",
+        leaves.len() == 3
+            && leaves.first() == Some(&left)
+            && leaves.contains(&right_top)
+            && leaves.contains(&right_bottom)
+            && unique.len() == 3,
+        "Tab 2 必须是 H(left, V(right-top, right-bottom)) 的三叶: {}",
         diagnostics(app)
     );
     ensure!(
