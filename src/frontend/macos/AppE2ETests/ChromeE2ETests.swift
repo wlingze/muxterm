@@ -30,16 +30,32 @@ final class ChromeE2ETests: XCTestCase {
         let bridge = try CoreBridge(backendType: "local")
         let app = MainWindowController(
             bridge: bridge,
-            debug: true,
+            debug: false,
             quickConnectStore: QuickConnectStore()
         )
         defer { app.testShutdown() }
         guard let mainWindow = app.window else {
             return XCTFail("主窗口必须存在")
         }
-        mainWindow.orderFront(nil)
-        AppE2E.pump(80)
+        app.showWindow(nil)
+        XCTAssertTrue(app.waitReady())
+        AppE2E.pump(200)
 
+        let rootView = try XCTUnwrap(mainWindow.contentView)
+        XCTAssertEqual(
+            app.content.frame.width, rootView.bounds.width, accuracy: 1,
+            "首次显示时内容必须铺满窗口，不能依赖手动 resize"
+        )
+        XCTAssertEqual(
+            app.content.frame.height, rootView.bounds.height, accuracy: 1,
+            "首次显示时终端区域必须获得完整高度"
+        )
+        XCTAssertEqual(app.content.statusBar.frame.width, app.content.bounds.width, accuracy: 1)
+        XCTAssertEqual(
+            app.content.paneLayout.frame.height,
+            app.content.bounds.height - app.content.statusBar.frame.height,
+            accuracy: 1
+        )
         XCTAssertGreaterThanOrEqual(
             mainWindow.frame.width,
             900,
