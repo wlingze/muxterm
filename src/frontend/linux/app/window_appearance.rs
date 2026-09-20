@@ -127,6 +127,11 @@ pub(super) fn apply_config_snapshot(s: &mut UiState, snapshot: ClientConfigSnaps
     };
 
     s.keymap = KeyMap::from_bindings(&effective_keybindings);
+    let capacity_limit = cfg.pool.max_slots.max(1) as usize;
+    if s.capacity_limit != capacity_limit {
+        s.capacity_limit = capacity_limit;
+        s.capacity_warning_presented_for_slot_count = None;
+    }
     let attention_config = cfg.attention.clone();
     if let Err(error) = s.event_pump.client().configure_attention(&attention_config) {
         tracing::warn!(

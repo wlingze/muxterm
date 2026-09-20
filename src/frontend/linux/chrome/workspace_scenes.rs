@@ -19,6 +19,9 @@ pub struct WorkspaceScenes {
 }
 
 impl WorkspaceScenes {
+    pub fn oldest_hidden(&self) -> impl Iterator<Item = &str> {
+        self.stack.oldest_hidden()
+    }
     /// 创建启动 workspace，并把它作为第一个可见 scene。
     pub fn new(startup_id: WorkspaceId, layout: LayoutHost) -> Self {
         let startup_key = startup_id.as_str();

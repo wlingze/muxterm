@@ -12,6 +12,7 @@ use gtk4::prelude::*;
 pub struct SceneStack {
     order: Vec<String>,
     visible: Option<String>,
+    usage_order: Vec<String>,
 }
 
 impl SceneStack {
@@ -25,6 +26,7 @@ impl SceneStack {
         let workspace_id = workspace_id.into();
         Self {
             order: vec![workspace_id.clone()],
+            usage_order: vec![workspace_id.clone()],
             visible: Some(workspace_id),
         }
     }
@@ -33,6 +35,7 @@ impl SceneStack {
     pub fn ensure(&mut self, workspace_id: &str) {
         if !self.order.iter().any(|id| id == workspace_id) {
             self.order.push(workspace_id.to_string());
+            self.usage_order.insert(0, workspace_id.to_string());
         }
     }
 
@@ -42,12 +45,15 @@ impl SceneStack {
             return false;
         }
         self.visible = Some(workspace_id.to_string());
+        self.usage_order.retain(|id| id != workspace_id);
+        self.usage_order.push(workspace_id.to_string());
         true
     }
 
     /// Remove a scene at the single workspace-close lifecycle boundary.
     pub fn remove(&mut self, workspace_id: &str) {
         self.order.retain(|id| id != workspace_id);
+        self.usage_order.retain(|id| id != workspace_id);
         if self.visible.as_deref() == Some(workspace_id) {
             self.visible = self.order.last().cloned();
         }
@@ -59,6 +65,13 @@ impl SceneStack {
 
     pub fn visible_id(&self) -> Option<&str> {
         self.visible.as_deref()
+    }
+
+    pub fn oldest_hidden(&self) -> impl Iterator<Item = &str> {
+        self.usage_order
+            .iter()
+            .map(String::as_str)
+            .filter(|id| Some(*id) != self.visible_id())
     }
 
     pub fn ids(&self) -> impl Iterator<Item = &str> {
@@ -90,6 +103,9 @@ pub struct SceneStackView {
 }
 
 impl SceneStackView {
+    pub fn oldest_hidden(&self) -> impl Iterator<Item = &str> {
+        self.model.oldest_hidden()
+    }
     pub fn new(startup_id: &str, root: &impl IsA<gtk4::Widget>) -> Self {
         let stack = gtk4::Stack::builder()
             .hexpand(true)
@@ -168,6 +184,27 @@ impl SceneStackView {
 #[cfg(test)]
 mod tests {
     use super::SceneStack;
+
+    #[test]
+    fn capacity_candidates_follow_usage_and_never_include_active_scene() {
+        let mut stack = SceneStack::with_visible("z-old");
+        stack.ensure("a-new");
+        stack.show("a-new");
+        stack.ensure("m-active");
+        stack.show("m-active");
+        assert_eq!(
+            stack.oldest_hidden().collect::<Vec<_>>(),
+            ["z-old", "a-new"]
+        );
+        stack.show("z-old");
+        assert_eq!(
+            stack.oldest_hidden().collect::<Vec<_>>(),
+            ["a-new", "m-active"]
+        );
+        stack.remove("a-new");
+        assert_eq!(stack.oldest_hidden().collect::<Vec<_>>(), ["m-active"]);
+        assert_eq!(stack.ids().collect::<Vec<_>>(), ["z-old", "m-active"]);
+    }
 
     #[test]
     fn scenes_stay_resident_until_explicitly_removed() {

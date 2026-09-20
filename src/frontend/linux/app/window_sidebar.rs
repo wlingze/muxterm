@@ -59,7 +59,13 @@ pub(super) fn maybe_warn_workspace_capacity(state: &Rc<RefCell<UiState>>, parent
                     })
                 })
                 .collect();
-            candidates.sort_by_key(|candidate| candidate.id.as_str());
+            let usage: Vec<_> = s.scenes.oldest_hidden().collect();
+            candidates.sort_by_key(|candidate| {
+                usage
+                    .iter()
+                    .position(|id| *id == candidate.id.as_str())
+                    .unwrap_or(usize::MAX)
+            });
             candidates.truncate(overflow.min(MAX_CANDIDATES));
             if candidates.is_empty() {
                 None
