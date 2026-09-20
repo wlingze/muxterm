@@ -3048,26 +3048,27 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         terminalManager.enqueueCoreCommand = { [weak self] command in
             self?.enqueueCoreCommand(command) ?? false
         }
-        terminalManager.onViewportChanged = { [weak self] paneId, offset in
-            guard let self else { return }
+        terminalManager.onViewportChanged = { [weak self, weak manager = terminalManager] paneId, offset in
+            guard let self, let manager, manager === self.terminalManager else { return }
             self.viewportOffsets[paneId] = offset
             // 用户滚轮/触控板改变视口时，下一次命令导航应从当前状态重新开始；
             // 程序化 command jump 只保留刚设置的游标一次。
             if self.commandNavigationPanes.remove(paneId) == nil {
                 self.commandTimelineCursor.removeValue(forKey: paneId)
             }
+            // 隐藏 tab/pane 的输出仍会滚动，只更新它自己的位置，不能动当前按钮。
+            guard paneId == self.activePaneID else { return }
             self.content.setJumpLatestVisible(
                 offset > 0,
-                unseenLines: self.terminalManager.unseenLineCount(paneId: paneId)
+                unseenLines: manager.unseenLineCount(paneId: paneId)
             )
-            guard paneId == self.activePaneID else { return }
             if self.lastSeenVisiblePane == paneId {
                 self.dismissLastSeenOffer(for: paneId)
             }
             self.refreshHistoryChrome(for: paneId)
         }
-        terminalManager.onUnseenLinesChanged = { [weak self] paneId, count in
-            guard let self,
+        terminalManager.onUnseenLinesChanged = { [weak self, weak manager = terminalManager] paneId, count in
+            guard let self, let manager, manager === self.terminalManager,
                   paneId == self.activePaneID
             else { return }
             let offset = self.viewportOffsets[paneId] ?? 0

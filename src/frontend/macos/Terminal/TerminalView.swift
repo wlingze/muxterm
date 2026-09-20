@@ -124,6 +124,7 @@ final class MuxTerminalView: TerminalView {
     var suppressOutputDrivenResponses = false
     /// 正在 feed 远端 pane 输出（解析器应答只在这个窗口内产生）。
     private var isFeedingRemoteOutput = false
+    private var pendingOutputScrollNotification = false
     /// `scrollWheel` / 点击临时放行的用户 mouse report。SwiftTerm 把鼠标
     /// 上报也交给 `send(source: Terminal)`；它不能和 pane 输出解析器应答
     /// 走同一条丢弃策略，否则 htop 点击、TUI 滚轮都到不了 tmux。
@@ -504,6 +505,10 @@ final class MuxTerminalView: TerminalView {
         isFeedingRemoteOutput = true
         feed(byteArray: bytes[...])
         isFeedingRemoteOutput = false
+        if pendingOutputScrollNotification {
+            pendingOutputScrollNotification = false
+            scrolled(source: self, position: scrollPosition)
+        }
         if Self.renderDebugURL != nil {
             let after = getTerminal().getCursorLocation()
             let dims = getTerminal().getDims()
@@ -532,10 +537,7 @@ final class MuxTerminalView: TerminalView {
     /// 用户当前历史容量。Herdr 的 full frame 通常不自带清屏序列，若直接
     /// append 到旧屏幕，Cursor/Pi 的历史帧就会逐帧堆叠。
     func feedFull(_ data: Data) {
-        var frame = Data(capacity: data.count + 7)
-        frame.append(contentsOf: [0x1b, 0x5b, 0x32, 0x4a, 0x1b, 0x5b, 0x48])
-        frame.append(data)
-        feedOutput(frame)
+        feedOutput(PaneSnapshotPaintPolicy.baseline(data: data, existingSurface: true))
     }
 
     /// attach 前历史写入 native scrollback。不得 reset，也不得当 VT 流重放。
@@ -754,8 +756,9 @@ final class MuxTerminalView: TerminalView {
         let positionBeforeResize = scrollPosition
         let atLatestBeforeResize = isAtLatest()
 
-        // SwiftTerm setFrameSize 会 processSizeChange；这里只调用一次，避免重复回调。
-        if frame.size != size {
+        // 非 exact grid 的终端由 UI allocation 决定尺寸。缓存 view 的 frame
+        // 可能未变，但旧远端 frame 已缩小模型；仍需重算，不能等窗口 resize。
+        if exactGrid == nil || frame.size != size {
             setFrameSize(size)
         }
 
@@ -772,8 +775,10 @@ final class MuxTerminalView: TerminalView {
             minimumModelCols = target.cols
             minimumModelRows = target.rows
         } else {
-            modelCols = max(term.cols, minimumModelCols)
-            modelRows = max(term.rows, minimumModelRows)
+            modelCols = term.cols
+            modelRows = term.rows
+            minimumModelCols = modelCols
+            minimumModelRows = modelRows
         }
         if term.cols != modelCols || term.rows != modelRows {
             term.resize(cols: modelCols, rows: modelRows)
@@ -956,6 +961,11 @@ extension MuxTerminalView: TerminalViewDelegate {
     }
 
     func scrolled(source: TerminalView, position: Double) {
+        // 同一段重绘可能先切屏/清屏再回到尾部，只向 chrome 发布解析后的最终位置。
+        if isFeedingRemoteOutput {
+            pendingOutputScrollNotification = true
+            return
+        }
         onScrollPositionChanged?(paneId, position, isAtLatest())
     }
 

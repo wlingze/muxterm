@@ -109,6 +109,35 @@ final class AgentRenderE2ETests: XCTestCase {
 
     /// Herdr 的连续 `terminal.frame(full=true)` 必须替换当前屏幕；它不是
     /// `PaneOutput`，也不能走 SwiftTerm reset（否则 native scrollback 会丢）。
+    func testRestoredSnapshotDoesNotInheritPreviousBackground() {
+        AppE2E.ensureApp()
+        let view = MuxTerminalView(paneId: 3, frame: NSRect(x: 0, y: 0, width: 800, height: 400))
+        view.feedOutput(Data("\u{1b}[40mOLD".utf8))
+        view.feedOutput(PaneSnapshotPaintPolicy.baseline(
+            data: Data("\u{1b}[2;2HRESTORED".utf8), existingSurface: true
+        ))
+        let term = view.getTerminal()
+        XCTAssertEqual(term.getLine(row: 0)?[0].attribute.bg, .defaultColor,
+                       "清屏不能用上一帧留下的黑色背景填充空白格")
+        XCTAssertEqual(term.getLine(row: 1)?[1].attribute.bg, .defaultColor,
+                       "capture 中省略默认 SGR 的文字不能继承上一帧颜色")
+        XCTAssertEqual(view.snapshotResetCount, 0)
+    }
+
+    func testFullFrameClearsOldBackgroundAndKeepsNewRenditionForDiff() {
+        AppE2E.ensureApp()
+        let view = MuxTerminalView(paneId: 3, frame: NSRect(x: 0, y: 0, width: 800, height: 400))
+        view.feedOutput(Data("\u{1b}[40mOLD".utf8))
+        view.feedFull(Data("\u{1b}[2;2HFRAME\u{1b}[44m".utf8))
+        view.feedOutput(Data("DIFF".utf8))
+        let term = view.getTerminal()
+        XCTAssertEqual(term.getLine(row: 0)?[0].attribute.bg, .defaultColor)
+        XCTAssertEqual(term.getLine(row: 1)?[1].attribute.bg, .defaultColor)
+        XCTAssertEqual(term.getLine(row: 1)?[6].attribute.bg, .ansi256(code: 4),
+                       "后续增量应继承新 full frame 的属性，不能每次 live feed 都 reset")
+        XCTAssertEqual(view.snapshotResetCount, 0)
+    }
+
     func testFullFramesReplaceScreenAndDiffFollowsWithoutReset() {
         AppE2E.ensureApp()
         let view = MuxTerminalView(

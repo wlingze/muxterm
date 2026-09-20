@@ -1033,9 +1033,11 @@ public enum PaneSnapshotPaintPolicy {
         data: Data,
         existingSurface: Bool
     ) -> Data {
-        guard existingSurface, !data.isEmpty else { return data }
-        var baseline = Data(capacity: data.count + 7)
-        baseline.append(contentsOf: [0x1b, 0x5b, 0x32, 0x4a, 0x1b, 0x5b, 0x48])
+        guard existingSurface else { return data }
+        // ED 使用当前背景色填空白；必须先结束旧 rendition，再清屏并铺新 baseline。
+        // 仅在完整画面边界复位 SGR，后续 live/diff 仍保留新画面末尾的属性。
+        var baseline = Data(capacity: data.count + 11)
+        baseline.append(contentsOf: [0x1b, 0x5b, 0x30, 0x6d, 0x1b, 0x5b, 0x32, 0x4a, 0x1b, 0x5b, 0x48])
         baseline.append(data)
         return baseline
     }

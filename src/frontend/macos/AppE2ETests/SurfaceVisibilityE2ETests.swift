@@ -5,6 +5,20 @@ import XCTest
 /// Surface seed 的 AppKit 可见性契约：host 不能在 SwiftTerm 分块恢复期间
 /// 暴露空白/半截帧，seed 与同期间 live catch-up 完成后才一次性显示。
 final class SurfaceVisibilityE2ETests: XCTestCase {
+    func testAllocatedSizeRestoresGridAfterStaleRemoteFrame() {
+        AppE2E.ensureApp()
+        let view = MuxTerminalView(paneId: 1, frame: NSRect(x: 0, y: 0, width: 1000, height: 600))
+        XCTAssertTrue(view.syncToAllocatedGrid())
+        let allocated = view.renderedGridSize
+        view.applyGridSize(cols: allocated.cols / 2, rows: allocated.rows, followTail: true)
+        XCTAssertTrue(view.syncSizeToPty(notifyResize: false))
+        XCTAssertEqual(view.renderedGridSize.cols, allocated.cols, "缓存 view frame 未变也必须恢复 allocation 网格")
+        view.applyGridSize(cols: allocated.cols * 2, rows: allocated.rows * 2, followTail: true)
+        XCTAssertTrue(view.syncSizeToPty(notifyResize: false))
+        XCTAssertEqual(view.renderedGridSize.cols, allocated.cols)
+        XCTAssertEqual(view.renderedGridSize.rows, allocated.rows)
+    }
+
     func testPaneHostClipsTerminalGlyphsAtSplitBoundary() {
         AppE2E.ensureApp()
         let view = MuxTerminalView(
