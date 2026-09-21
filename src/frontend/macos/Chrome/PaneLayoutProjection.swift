@@ -88,6 +88,22 @@ public enum StateEventPolicy {
     }
 }
 
+/// 拖标题栏改布局：落到另一 pane 上交换，落到空白处拆到新 tab。
+public enum PaneDragLayoutPolicy {
+    public enum Action: Equatable {
+        case swap(UInt32)
+        case moveToNewTab
+        case cancel
+    }
+
+    public static func action(source: UInt32, destination: UInt32?) -> Action {
+        if let destination {
+            return destination == source ? .cancel : .swap(destination)
+        }
+        return .moveToNewTab
+    }
+}
+
 /// 标题栏「移动」菜单：最上面固定「新建 tab」，其余是其它 tab。
 public enum PaneMoveMenuPolicy {
     public static func destinations(

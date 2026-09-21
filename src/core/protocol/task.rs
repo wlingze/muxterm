@@ -57,6 +57,8 @@ pub enum Task {
     BreakPane { target: PaneId },
     /// 把 pane 并入已有 tab（tmux `join-pane`；Herdr `pane.move`）。
     JoinPane { pane: PaneId, tab: TabId },
+    /// 交换同一 tab 里两个 pane 的位置（tmux `swap-pane`；Herdr `pane.swap`）。
+    SwapPane { a: PaneId, b: PaneId },
     /// 重新查询 window/pane 列表（外部 tmux 变更后同步 GUI）。
     RefreshTabs,
 

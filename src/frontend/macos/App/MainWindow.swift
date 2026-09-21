@@ -593,6 +593,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         content.paneLayout.onMovePaneToNewTab = { [weak self] paneId in
             _ = self?.movePane(paneId, toTab: nil)
         }
+        content.paneLayout.onSwapPanes = { [weak self] a, b in
+            _ = self?.swapPanes(a, b)
+        }
         content.paneLayout.moveDestinationsProvider = { [weak self] in
             self?.paneMoveDestinations() ?? []
         }
@@ -868,6 +871,21 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         guard let pane = lastSnapshot.panes.first(where: \.isActive)?.id
             ?? lastSnapshot.panes.first?.id else { return }
         _ = movePaneToNewTab(pane)
+    }
+
+    @discardableResult
+    func swapPanes(_ a: UInt32, _ b: UInt32) -> Bool {
+        guard a != b,
+              lastSnapshot.panes.contains(where: { $0.id == a }),
+              lastSnapshot.panes.contains(where: { $0.id == b })
+        else { return false }
+        guard enqueueCoreTask(
+            MuxTask.swapPanes(a, b),
+            failureMessage: MuxtermI18n.shared.tr(.errorCommandFailed)
+        ) else { return false }
+        needsLayoutReload = true
+        scheduleStatusBarRefresh()
+        return true
     }
 
     @discardableResult

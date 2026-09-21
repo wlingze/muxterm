@@ -147,6 +147,28 @@ impl LayoutNode {
             .map(|i| leaves[(i + leaves.len() - 1) % leaves.len()])
     }
 
+    /// 交换两个叶子的位置，分割方向和比例不变。
+    pub fn swap_leaves(&mut self, a: PaneId, b: PaneId) -> bool {
+        if a == b || !self.contains(a) || !self.contains(b) {
+            return false;
+        }
+        self.retarget_leaf(a, PaneId(u32::MAX));
+        self.retarget_leaf(b, a);
+        self.retarget_leaf(PaneId(u32::MAX), b);
+        true
+    }
+
+    fn retarget_leaf(&mut self, from: PaneId, to: PaneId) {
+        match self {
+            Self::Leaf(pane) if *pane == from => *pane = to,
+            Self::Split { first, second, .. } => {
+                first.retarget_leaf(from, to);
+                second.retarget_leaf(from, to);
+            }
+            Self::Leaf(_) => {}
+        }
+    }
+
     /// 连续分割深度（叶子到根的最大边数）。
     pub fn depth(&self) -> usize {
         match self {
@@ -255,6 +277,18 @@ mod tests {
         assert_eq!(t.prev_leaf(p(1)), Some(p(3))); // 循环
         assert_eq!(t.prev_leaf(p(2)), Some(p(1)));
         assert_eq!(t.prev_leaf(p(3)), Some(p(2)));
+    }
+
+    #[test]
+    fn swap_leaves_preserves_split_shape() {
+        let mut t = LayoutNode::leaf(p(1));
+        t.split_at(p(1), p(2), SplitDir::Horizontal);
+        t.split_at(p(2), p(3), SplitDir::Vertical);
+        assert_eq!(t.leaves(), vec![p(1), p(2), p(3)]);
+        assert!(t.swap_leaves(p(1), p(3)));
+        assert_eq!(t.leaves(), vec![p(3), p(2), p(1)]);
+        assert!(!t.swap_leaves(p(1), p(1)));
+        assert!(!t.swap_leaves(p(1), p(99)));
     }
 
     #[test]

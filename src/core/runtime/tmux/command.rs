@@ -305,6 +305,14 @@ pub fn break_pane(pane: PaneId) -> TmuxCommand {
     build(&[format!("-s %{}", pane.0)], "break-pane")
 }
 
+/// 交换两个 pane 的位置，保留分割形状。
+pub fn swap_pane(a: PaneId, b: PaneId) -> TmuxCommand {
+    build(
+        &[format!("-s %{}", a.0), format!("-t %{}", b.0)],
+        "swap-pane",
+    )
+}
+
 /// 把源 pane 并入目标 pane 所在 window（`join-pane -s %src -t %dst`）。
 pub fn join_pane(src: PaneId, dst: PaneId, dir: crate::protocol::layout::SplitDir) -> TmuxCommand {
     let flag = match dir {
@@ -759,6 +767,14 @@ mod tests {
             )
             .as_str(),
             "join-pane -v -s %2 -t %5"
+        );
+    }
+
+    #[test]
+    fn swap_pane_uses_source_and_target_ids() {
+        assert_eq!(
+            swap_pane(PaneId(2), PaneId(7)).as_str(),
+            "swap-pane -s %2 -t %7"
         );
     }
 

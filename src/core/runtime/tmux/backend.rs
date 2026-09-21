@@ -4657,6 +4657,24 @@ impl Runtime for TmuxRuntime {
                 self.query_list_windows();
                 TaskOutcome::Done
             }
+            Task::SwapPane { a, b } => {
+                if a == b {
+                    return Ok(TaskOutcome::Done);
+                }
+                if self.pane(a).is_none() || self.pane(b).is_none() {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: "swap 的 pane 不存在".into(),
+                    });
+                }
+                let c = cmd::swap_pane(*a, *b);
+                if self.dispatch_tmux_command(&c).is_err() {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: "发送命令失败".into(),
+                    });
+                }
+                self.query_list_windows();
+                TaskOutcome::Done
+            }
             Task::RefreshTabs => {
                 // 外部 tmux 变更后强制重查 window/pane，同步 GUI 标签。
                 self.query_list_windows();
