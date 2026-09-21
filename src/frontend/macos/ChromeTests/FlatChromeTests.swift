@@ -1266,6 +1266,33 @@ final class PaneLayoutProjectionTests: XCTestCase {
             ClientGridHysteresis.shouldSend(current: nil, next: (94, 51)),
             "从未把尺寸交给 Core 时必须发送 ResizeClient，否则 attach seed 会一直推迟"
         )
+        XCTAssertFalse(TreeChangeClientResizePolicy.shouldForceClientResize())
+        XCTAssertFalse(
+            TreeChangeClientResizePolicy.shouldSend(
+                previous: (178, 49),
+                next: (178, 49),
+                treeChanged: true
+            ),
+            "标题栏扣完后格子没变，不得再 resize"
+        )
+        XCTAssertTrue(
+            TreeChangeClientResizePolicy.shouldSend(
+                previous: (178, 50),
+                next: (178, 49),
+                treeChanged: true
+            ),
+            "叠标题少了一行必须一次发给 Runtime"
+        )
+        XCTAssertFalse(
+            TreeChangeClientResizePolicy.shouldSend(
+                previous: (178, 49),
+                next: (178, 48),
+                treeChanged: false
+            ),
+            "同一棵树的 ±1 行抖动仍走 hysteresis"
+        )
+        XCTAssertTrue(PaneTitleLayoutPolicy.showsTitleBar(visiblePaneCount: 2))
+        XCTAssertFalse(PaneTitleLayoutPolicy.showsTitleBar(visiblePaneCount: 1))
     }
 
     func testPaneDragSwapsOnDropAndBreaksWhenDroppedOutside() {
