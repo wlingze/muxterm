@@ -30,7 +30,7 @@ use crate::buffer_cap::{append_capped, MAX_PANE_OUTPUT_BYTES, MAX_STATE_EVENTS};
 use crate::executable::{
     expand_config_value, parse_command_argv, prepare_pane_argv_for_platform, program_basename,
 };
-use crate::protocol::layout::{LayoutNode, TabLayout};
+use crate::protocol::layout::{LayoutNode, SplitDir, TabLayout};
 #[cfg(test)]
 use crate::protocol::state::StateChange;
 use crate::protocol::state::{BackendStatus, PaneInfo, State, TabInfo};
@@ -697,6 +697,134 @@ impl ShellRuntime {
         Ok((tab_id, pane_id))
     }
 
+    /// 从当前 tab 布局摘下 pane，不杀进程。最后一个叶子不能摘。
+    fn detach_pane_from_layout(&mut self, pane: PaneId) -> Result<TabId, String> {
+        let tab_id = self
+            .tab_of_pane(pane)
+            .ok_or_else(|| format!("pane {pane} 不存在"))?;
+        let pane_count = self
+            .panes
+            .iter()
+            .filter(|candidate| candidate.info.tab == tab_id)
+            .count();
+        if pane_count <= 1 {
+            return Err("不能移动 tab 里最后一个 pane".into());
+        }
+        let Some(tab) = self.tabs.iter_mut().find(|tab| tab.info.id == tab_id) else {
+            return Err(format!("tab {tab_id} 不存在"));
+        };
+        tab.layout
+            .tree
+            .remove(pane)
+            .map_err(|_| "不能移除布局树唯一的叶子".to_string())?;
+        let layout = tab.layout.clone();
+        let remaining = tab.layout.tree.leaves();
+        self.push_control(ControlEvent::LayoutChanged {
+            tab: tab_id,
+            layout,
+        });
+        if let Some(active) = remaining.first().copied() {
+            self.set_active_pane(tab_id, active);
+            self.push_control(ControlEvent::ActivePaneChanged {
+                tab: tab_id,
+                pane: active,
+            });
+        }
+        Ok(tab_id)
+    }
+
+    fn break_pane_internal(&mut self, pane: PaneId) -> Result<(), String> {
+        self.detach_pane_from_layout(pane)?;
+        let tab_id = self.alloc_tab_id();
+        for tab in self.tabs.iter_mut() {
+            tab.info.active = false;
+        }
+        if let Some(info) = self
+            .panes
+            .iter_mut()
+            .find(|candidate| candidate.info.id == pane)
+        {
+            info.info.tab = tab_id;
+            info.info.active = true;
+        }
+        self.tabs.push(LocalTab {
+            info: TabInfo {
+                id: tab_id,
+                name: format!("t{}", tab_id.0),
+                active: true,
+            },
+            layout: TabLayout {
+                tab: tab_id,
+                tree: LayoutNode::leaf(pane),
+                active: pane,
+            },
+        });
+        self.push_control(ControlEvent::TabAdded { tab: tab_id });
+        self.push_control(ControlEvent::LayoutChanged {
+            tab: tab_id,
+            layout: TabLayout {
+                tab: tab_id,
+                tree: LayoutNode::leaf(pane),
+                active: pane,
+            },
+        });
+        self.push_control(ControlEvent::ActiveTabChanged { tab: tab_id });
+        self.set_active_pane(tab_id, pane);
+        self.push_control(ControlEvent::ActivePaneChanged { tab: tab_id, pane });
+        Ok(())
+    }
+
+    fn join_pane_internal(&mut self, pane: PaneId, tab: TabId) -> Result<(), String> {
+        let source_tab = self
+            .tab_of_pane(pane)
+            .ok_or_else(|| format!("pane {pane} 不存在"))?;
+        if source_tab == tab {
+            return Err("pane 已在目标 tab".into());
+        }
+        let dest_leaf = self
+            .tabs
+            .iter()
+            .find(|candidate| candidate.info.id == tab)
+            .and_then(|candidate| candidate.layout.tree.leaves().first().copied())
+            .ok_or_else(|| format!("tab {tab} 没有可并入的 pane"))?;
+        let source_count = self
+            .panes
+            .iter()
+            .filter(|candidate| candidate.info.tab == source_tab)
+            .count();
+        if source_count <= 1 {
+            self.tabs
+                .retain(|candidate| candidate.info.id != source_tab);
+            self.push_control(ControlEvent::TabClosed { tab: source_tab });
+        } else {
+            self.detach_pane_from_layout(pane)?;
+        }
+        if let Some(info) = self
+            .panes
+            .iter_mut()
+            .find(|candidate| candidate.info.id == pane)
+        {
+            info.info.tab = tab;
+        }
+        let Some(dest) = self
+            .tabs
+            .iter_mut()
+            .find(|candidate| candidate.info.id == tab)
+        else {
+            return Err(format!("tab {tab} 不存在"));
+        };
+        dest.layout
+            .tree
+            .split_at(dest_leaf, pane, SplitDir::Horizontal);
+        dest.layout.active = pane;
+        let layout = dest.layout.clone();
+        self.push_control(ControlEvent::LayoutChanged { tab, layout });
+        self.set_active_pane(tab, pane);
+        self.push_control(ControlEvent::ActiveTabChanged { tab });
+        self.push_control(ControlEvent::ActivePaneChanged { tab, pane });
+        Ok(())
+    }
+
     /// 找 pane 所在 tab。
     fn tab_of_pane(&self, pane: PaneId) -> Option<TabId> {
         self.panes
@@ -983,13 +1111,18 @@ impl Runtime for ShellRuntime {
                 TaskOutcome::Done
             }
 
-            Task::TogglePaneFullscreen { .. }
-            | Task::MoveTab { .. }
-            | Task::BreakPane { .. }
-            | Task::RefreshTabs => {
+            Task::TogglePaneFullscreen { .. } | Task::MoveTab { .. } | Task::RefreshTabs => {
                 // 本地 shell：全屏由前端布局实现，后端只确认成功。
                 TaskOutcome::Done
             }
+            Task::BreakPane { target } => match self.break_pane_internal(*target) {
+                Ok(()) => TaskOutcome::Done,
+                Err(reason) => TaskOutcome::Rejected { reason },
+            },
+            Task::JoinPane { pane, tab } => match self.join_pane_internal(*pane, *tab) {
+                Ok(()) => TaskOutcome::Done,
+                Err(reason) => TaskOutcome::Rejected { reason },
+            },
 
             Task::ClosePane { target } => {
                 if self.tab_of_pane(*target).is_none() {
@@ -1938,6 +2071,50 @@ mod tests {
         // 再确认 tab2 仍是激活 tab，且 active pane 属于 tab2
         assert_eq!(b.active_tab().map(|t| t.id), Some(tab2));
         assert_eq!(b.tab_of_pane(after_prev), Some(tab2));
+    }
+
+    #[tokio::test]
+    async fn break_and_join_pane_move_between_tabs() {
+        let mut b = runtime();
+        b.connect().await.unwrap();
+        let _ = b.take_events();
+        let first = b.active_pane_id().unwrap();
+        b.execute(&Task::SplitPane {
+            target: Some(first),
+            dir: SplitDir::Horizontal,
+            command: Some(vec!["sleep".into(), "60".into()]),
+            workdir: None,
+        })
+        .unwrap();
+        let _ = b.take_events();
+        let second = b.active_pane_id().unwrap();
+        assert_eq!(b.tabs.len(), 1);
+        assert_eq!(b.panes.len(), 2);
+
+        assert!(matches!(
+            b.execute(&Task::BreakPane { target: second }).unwrap(),
+            TaskOutcome::Done
+        ));
+        assert_eq!(b.tabs.len(), 2, "break-pane 必须长出新 tab");
+        assert_eq!(b.tab_of_pane(second), b.active_tab().map(|tab| tab.id));
+        assert_eq!(
+            b.layout(&b.active_tab().unwrap().id)
+                .map(|layout| layout.tree.leaves()),
+            Some(vec![second])
+        );
+
+        let dest = b.tab_of_pane(first).expect("first pane 仍在原 tab");
+        assert!(matches!(
+            b.execute(&Task::JoinPane {
+                pane: second,
+                tab: dest
+            })
+            .unwrap(),
+            TaskOutcome::Done
+        ));
+        assert_eq!(b.tab_of_pane(second), Some(dest));
+        let leaves = b.layout(&dest).map(|layout| layout.tree.leaves()).unwrap();
+        assert!(leaves.contains(&first) && leaves.contains(&second));
     }
 
     #[tokio::test]

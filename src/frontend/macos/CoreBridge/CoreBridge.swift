@@ -488,6 +488,17 @@ struct MuxTask {
         )
     }
 
+    /// 把 pane 并入已有 tab。
+    static func joinPane(_ paneId: UInt32, tabId: UInt32) -> MuxTask {
+        MuxTask(
+            type: TASK_JOIN_PANE,
+            targetPane: paneId,
+            targetTab: tabId,
+            dir: 0,
+            name: nil
+        )
+    }
+
     /// 重新查询 window/pane 列表（外部 tmux 变更后同步 GUI）。
     static func refreshTabs() -> MuxTask {
         MuxTask(

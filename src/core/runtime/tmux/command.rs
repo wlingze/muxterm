@@ -305,6 +305,22 @@ pub fn break_pane(pane: PaneId) -> TmuxCommand {
     build(&[format!("-s %{}", pane.0)], "break-pane")
 }
 
+/// 把源 pane 并入目标 pane 所在 window（`join-pane -s %src -t %dst`）。
+pub fn join_pane(src: PaneId, dst: PaneId, dir: crate::protocol::layout::SplitDir) -> TmuxCommand {
+    let flag = match dir {
+        crate::protocol::layout::SplitDir::Horizontal => "-h",
+        crate::protocol::layout::SplitDir::Vertical => "-v",
+    };
+    build(
+        &[
+            flag.to_string(),
+            format!("-s %{}", src.0),
+            format!("-t %{}", dst.0),
+        ],
+        "join-pane",
+    )
+}
+
 /// 调整 tmux 控制模式 client 的字符格尺寸。
 pub fn refresh_client_size(cols: u32, rows: u32) -> TmuxCommand {
     build(&[format!("-C {cols}x{rows}")], "refresh-client")
@@ -722,6 +738,28 @@ mod tests {
     fn zoom_pane_toggles_fullscreen() {
         let c = zoom_pane(PaneId(1));
         assert_eq!(c.as_str(), "resize-pane -Z -t %1");
+    }
+
+    #[test]
+    fn join_pane_uses_source_and_destination_ids() {
+        assert_eq!(
+            join_pane(
+                PaneId(2),
+                PaneId(5),
+                crate::protocol::layout::SplitDir::Horizontal
+            )
+            .as_str(),
+            "join-pane -h -s %2 -t %5"
+        );
+        assert_eq!(
+            join_pane(
+                PaneId(2),
+                PaneId(5),
+                crate::protocol::layout::SplitDir::Vertical
+            )
+            .as_str(),
+            "join-pane -v -s %2 -t %5"
+        );
     }
 
     #[test]

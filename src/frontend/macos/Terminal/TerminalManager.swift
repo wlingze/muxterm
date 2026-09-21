@@ -967,6 +967,13 @@ final class TerminalManager: TerminalInputHandler {
     /// 问 Catalog `SharedClientResize`，不要看共享 handle 的 constructor
     /// `backendType`：产品句柄永远是 `local`，按它判断会永远不发
     /// `refresh-client -C`，attach seed 被推迟，画面全白。
+    var supportsMultiTab: Bool {
+        if let runtimeID {
+            return bridge?.runtimeSupports(runtimeID, capability: "MultiTab") ?? false
+        }
+        return usesClientResize
+    }
+
     var usesClientResize: Bool {
         if let runtimeID {
             return bridge?.runtimeSupports(runtimeID, capability: "SharedClientResize") ?? false

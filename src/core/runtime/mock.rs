@@ -357,6 +357,7 @@ impl Runtime for MockRuntime {
             Task::TogglePaneFullscreen { .. }
             | Task::MoveTab { .. }
             | Task::BreakPane { .. }
+            | Task::JoinPane { .. }
             | Task::RefreshTabs => TaskOutcome::Done,
             Task::ResizePane { target, cols, rows } => {
                 if !self.panes.iter().any(|p| p.id == *target) {

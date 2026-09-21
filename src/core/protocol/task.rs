@@ -55,6 +55,8 @@ pub enum Task {
     },
     /// 把 pane 拆成新 window/tab（tmux `break-pane -s %pane`）。
     BreakPane { target: PaneId },
+    /// 把 pane 并入已有 tab（tmux `join-pane`；Herdr `pane.move`）。
+    JoinPane { pane: PaneId, tab: TabId },
     /// 重新查询 window/pane 列表（外部 tmux 变更后同步 GUI）。
     RefreshTabs,
 

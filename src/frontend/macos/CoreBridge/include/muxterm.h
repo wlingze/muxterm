@@ -95,6 +95,7 @@ struct CLayoutNode {
 #define TASK_RENAME_WORKSPACE 15u
 #define TASK_REQUEST_PANE_SNAPSHOT 16u
 #define TASK_SCROLL_PANE 17u
+#define TASK_JOIN_PANE 18u
 
 #define DIR_HORIZONTAL 0u
 #define DIR_VERTICAL   1u
