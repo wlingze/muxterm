@@ -1246,6 +1246,27 @@ final class PaneLayoutProjectionTests: XCTestCase {
         )
     }
 
+    func testMoveMenuPinsNewTabFirstAndSkipsCurrentTab() {
+        XCTAssertEqual(
+            PaneMoveMenuPolicy.destinations(
+                tabIds: [1, 2, 3],
+                currentTabId: 2,
+                paneCountInCurrentTab: 1
+            ),
+            [],
+            "单 pane tab 不能移动"
+        )
+        XCTAssertEqual(
+            PaneMoveMenuPolicy.destinations(
+                tabIds: [1, 2, 3],
+                currentTabId: 2,
+                paneCountInCurrentTab: 2
+            ),
+            [nil, 1, 3],
+            "最上面固定新建，其余是其它 tab"
+        )
+    }
+
     func testRemainingPaneUsesAllocatedGridAfterTreeChange() {
         XCTAssertTrue(
             RemainingPaneGridPolicy.usesAllocatedGridAfterTreeChange(true),

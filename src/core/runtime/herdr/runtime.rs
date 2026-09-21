@@ -3553,6 +3553,54 @@ impl Runtime for HerdrRuntime {
                 );
                 Ok(TaskOutcome::Done)
             }
+            Task::BreakPane { target } => {
+                let Some(herdr_pane) = self.herdr_pane(*target).map(ToOwned::to_owned) else {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: format!("pane {target} 不存在"),
+                    });
+                };
+                self.session
+                    .call(
+                        "pane.move",
+                        serde_json::json!({
+                            "pane_id": herdr_pane,
+                            "destination": {
+                                "type": "new_tab",
+                                "workspace_id": self.workspace_id,
+                            },
+                            "focus": true,
+                        }),
+                    )
+                    .map_err(|e| anyhow!("pane.move 到新 tab 失败: {e}"))?;
+                Ok(TaskOutcome::Done)
+            }
+            Task::JoinPane { pane, tab } => {
+                let Some(herdr_pane) = self.herdr_pane(*pane).map(ToOwned::to_owned) else {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: format!("pane {pane} 不存在"),
+                    });
+                };
+                let Some(herdr_tab) = self.tab_to_herdr_tab.get(tab).cloned() else {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: format!("tab {tab} 不存在"),
+                    });
+                };
+                self.session
+                    .call(
+                        "pane.move",
+                        serde_json::json!({
+                            "pane_id": herdr_pane,
+                            "destination": {
+                                "type": "tab",
+                                "tab_id": herdr_tab,
+                                "split": "right",
+                            },
+                            "focus": true,
+                        }),
+                    )
+                    .map_err(|e| anyhow!("pane.move 失败: {e}"))?;
+                Ok(TaskOutcome::Done)
+            }
             _ => Ok(TaskOutcome::Rejected {
                 reason: format!("Herdr v1 未实现 Task {task:?}"),
             }),

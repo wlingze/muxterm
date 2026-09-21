@@ -1169,6 +1169,7 @@ pub enum ClientTask {
     SwitchPane { pane_id: u32 },
     TogglePaneFullscreen { pane_id: u32 },
     BreakPane { pane_id: u32 },
+    JoinPane { pane_id: u32, tab_id: u32 },
     RefreshTabs,
     RequestPaneSnapshot { pane_id: u32 },
     ScrollPane { pane_id: u32, lines: i32 },
@@ -2755,6 +2756,7 @@ fn task_to_ffi(task: ClientTask) -> CTask {
             (ffi::TASK_TOGGLE_PANE_FULLSCREEN, pane_id, 0, 0)
         }
         ClientTask::BreakPane { pane_id } => (ffi::TASK_BREAK_PANE, pane_id, 0, 0),
+        ClientTask::JoinPane { pane_id, tab_id } => (ffi::TASK_JOIN_PANE, pane_id, tab_id, 0),
         ClientTask::RefreshTabs => (ffi::TASK_REFRESH_TABS, 0, 0, 0),
         ClientTask::RequestPaneSnapshot { pane_id } => {
             (ffi::TASK_REQUEST_PANE_SNAPSHOT, pane_id, 0, 0)
@@ -3054,6 +3056,14 @@ mod tests {
         let fullscreen = task_to_ffi(ClientTask::TogglePaneFullscreen { pane_id: 12 });
         assert_eq!(fullscreen.type_, ffi::TASK_TOGGLE_PANE_FULLSCREEN);
         assert_eq!(fullscreen.target_pane, 12);
+
+        let join = task_to_ffi(ClientTask::JoinPane {
+            pane_id: 8,
+            tab_id: 3,
+        });
+        assert_eq!(join.type_, ffi::TASK_JOIN_PANE);
+        assert_eq!(join.target_pane, 8);
+        assert_eq!(join.target_tab, 3);
     }
 
     #[test]

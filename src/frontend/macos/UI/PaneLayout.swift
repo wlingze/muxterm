@@ -5,6 +5,8 @@ enum PaneTitleAction: Equatable {
     case splitHorizontal
     case splitVertical
     case fullscreen
+    case moveToNewTab
+    case moveToTab(UInt32)
     case close
 }
 
@@ -72,6 +74,8 @@ final class PaneLayoutView: NSView, TerminalClientContentSizing {
     var onActivatePane: ((UInt32) -> Void)?
     var onMovePaneToNewTab: ((UInt32) -> Void)?
     var onPaneTitleAction: ((UInt32, PaneTitleAction) -> Void)?
+    /// 标题栏「移动」菜单在弹出时询问最新目标。nil tab = 新建。
+    var moveDestinationsProvider: (() -> [(tabId: UInt32?, title: String)])?
     var allowsPaneBreak = false {
         didSet {
             for host in hostByPane.values {
@@ -574,6 +578,9 @@ final class PaneLayoutView: NSView, TerminalClientContentSizing {
             wrap.onTitleAction = { [weak self] id, action in
                 self?.onPaneTitleAction?(id, action)
             }
+            wrap.moveDestinationsProvider = { [weak self] in
+                self?.moveDestinationsProvider?() ?? []
+            }
             wrap.setAllowsMoveToNewTab(false)
             wrap.setShowsTitleBar(false)
             wrap.setTitleDragEnabled(false)
@@ -645,6 +652,9 @@ final class PaneHostView: NSView {
     var onActivate: ((UInt32) -> Void)?
     var onMoveToNewTab: ((UInt32) -> Void)?
     var onTitleAction: ((UInt32, PaneTitleAction) -> Void)?
+    var moveDestinationsProvider: (() -> [(tabId: UInt32?, title: String)])? {
+        didSet { titleBar.moveDestinationsProvider = moveDestinationsProvider }
+    }
     private var isPaneActive = false
     private let moveToNewTabItem: NSMenuItem
     private let moveSeparator: NSMenuItem
@@ -697,6 +707,7 @@ final class PaneHostView: NSView {
             guard let self else { return }
             self.onTitleAction?(self.paneId, action)
         }
+        titleBar.moveDestinationsProvider = moveDestinationsProvider
         addSubview(titleBar)
         titleBarHeightConstraint = titleBar.heightAnchor.constraint(equalToConstant: 0)
         NSLayoutConstraint.activate([
@@ -827,14 +838,22 @@ private final class PaneTitleBarView: NSView {
     var onActivate: (() -> Void)?
     var onDragOut: (() -> Void)?
     var onAction: ((PaneTitleAction) -> Void)?
+    var moveDestinationsProvider: (() -> [(tabId: UInt32?, title: String)])?
     var dragEnabled = false
     private let label = NSTextField(labelWithString: "")
     private let actionButton = NSButton()
     private let actionMenu = NSMenu()
+    private let moveMenu = NSMenu()
+    private let moveItem: NSMenuItem
     private let paneId: UInt32
 
     init(paneId: UInt32, title: String) {
         self.paneId = paneId
+        self.moveItem = NSMenuItem(
+            title: MuxtermI18n.shared.tr(.movePane),
+            action: nil,
+            keyEquivalent: ""
+        )
         super.init(frame: .zero)
         wantsLayer = true
         layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
@@ -898,7 +917,16 @@ private final class PaneTitleBarView: NSView {
 
     var titleForTesting: String { label.stringValue }
     var actionsForTesting: [PaneTitleAction] {
-        [.splitHorizontal, .splitVertical, .fullscreen, .close]
+        var items: [PaneTitleAction] = [.splitHorizontal, .splitVertical, .fullscreen]
+        for destination in moveDestinationsProvider?() ?? [] {
+            if let tabId = destination.tabId {
+                items.append(.moveToTab(tabId))
+            } else {
+                items.append(.moveToNewTab)
+            }
+        }
+        items.append(.close)
+        return items
     }
 
     private func configureActionMenu() {
@@ -917,6 +945,10 @@ private final class PaneTitleBarView: NSView {
         )
         vertical.target = self
         actionMenu.addItem(vertical)
+        actionMenu.addItem(.separator())
+
+        moveItem.submenu = moveMenu
+        actionMenu.addItem(moveItem)
         actionMenu.addItem(.separator())
 
         let fullscreen = NSMenuItem(
@@ -939,11 +971,38 @@ private final class PaneTitleBarView: NSView {
 
     @objc private func showActionMenu(_ sender: NSButton) {
         onActivate?()
+        rebuildMoveMenu()
         actionMenu.popUp(
             positioning: nil,
             at: NSPoint(x: sender.bounds.maxX, y: sender.bounds.minY),
             in: sender
         )
+    }
+
+    private func rebuildMoveMenu() {
+        moveMenu.removeAllItems()
+        let destinations = moveDestinationsProvider?() ?? []
+        moveItem.isHidden = destinations.isEmpty
+        for destination in destinations {
+            let item = NSMenuItem(
+                title: destination.title,
+                action: #selector(movePane(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            if let tabId = destination.tabId {
+                item.representedObject = NSNumber(value: tabId)
+            }
+            moveMenu.addItem(item)
+        }
+    }
+
+    @objc private func movePane(_ sender: NSMenuItem) {
+        if let tabId = (sender.representedObject as? NSNumber)?.uint32Value {
+            onAction?(.moveToTab(tabId))
+        } else {
+            onAction?(.moveToNewTab)
+        }
     }
 
     @objc private func splitHorizontal(_ sender: Any?) {

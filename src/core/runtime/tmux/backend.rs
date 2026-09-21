@@ -4632,6 +4632,31 @@ impl Runtime for TmuxRuntime {
                 self.query_list_windows();
                 TaskOutcome::Done
             }
+            Task::JoinPane { pane, tab } => {
+                if self.pane(pane).is_none() {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: format!("pane {pane} 不存在"),
+                    });
+                }
+                let Some(dst) = self
+                    .panes
+                    .iter()
+                    .find(|candidate| candidate.tab == *tab && candidate.id != *pane)
+                    .map(|candidate| candidate.id)
+                else {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: format!("tab {tab} 没有可并入的 pane"),
+                    });
+                };
+                let c = cmd::join_pane(*pane, dst, SplitDir::Horizontal);
+                if self.dispatch_tmux_command(&c).is_err() {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: "发送命令失败".into(),
+                    });
+                }
+                self.query_list_windows();
+                TaskOutcome::Done
+            }
             Task::RefreshTabs => {
                 // 外部 tmux 变更后强制重查 window/pane，同步 GUI 标签。
                 self.query_list_windows();

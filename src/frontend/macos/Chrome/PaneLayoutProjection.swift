@@ -88,6 +88,20 @@ public enum StateEventPolicy {
     }
 }
 
+/// 标题栏「移动」菜单：最上面固定「新建 tab」，其余是其它 tab。
+public enum PaneMoveMenuPolicy {
+    public static func destinations(
+        tabIds: [UInt32],
+        currentTabId: UInt32,
+        paneCountInCurrentTab: Int
+    ) -> [UInt32?] {
+        guard paneCountInCurrentTab > 1 else { return [] }
+        var items: [UInt32?] = [nil]
+        items.append(contentsOf: tabIds.filter { $0 != currentTabId }.map { Optional($0) })
+        return items
+    }
+}
+
 /// 一批事件里是否存在结构/布局类事件。
 ///
 /// 存在时，同一批的 PaneOutput 必须延迟到 `refreshUI` 完成模型尺寸同步后

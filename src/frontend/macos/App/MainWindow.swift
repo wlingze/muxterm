@@ -591,7 +591,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             self.focusPaneTerminal(paneId)
         }
         content.paneLayout.onMovePaneToNewTab = { [weak self] paneId in
-            _ = self?.movePaneToNewTab(paneId)
+            _ = self?.movePane(paneId, toTab: nil)
+        }
+        content.paneLayout.moveDestinationsProvider = { [weak self] in
+            self?.paneMoveDestinations() ?? []
         }
         content.paneLayout.onPaneTitleAction = { [weak self] paneId, action in
             guard let self else { return }
@@ -602,11 +605,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 self.splitPane(paneId, horizontal: false)
             case .fullscreen:
                 self.togglePaneFullscreen(paneId)
+            case .moveToNewTab:
+                _ = self.movePane(paneId, toTab: nil)
+            case .moveToTab(let tabId):
+                _ = self.movePane(paneId, toTab: tabId)
             case .close:
                 self.closePane(paneId)
             }
         }
-        content.paneLayout.allowsPaneBreak = terminalManager.usesClientResize
+        content.paneLayout.allowsPaneBreak = terminalManager.supportsMultiTab
         content.paneLayout.onResizeDivider = { [weak self] paneId, horizontal, size in
             guard let self, self.terminalManager.usesClientResize else { return }
             _ = self.terminalManager.resizePaneAxis(
@@ -865,18 +872,46 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     @discardableResult
     func movePaneToNewTab(_ paneId: UInt32) -> Bool {
+        movePane(paneId, toTab: nil)
+    }
+
+    @discardableResult
+    func movePane(_ paneId: UInt32, toTab tabId: UInt32?) -> Bool {
         guard case .workspace = workspacePresentation,
-              terminalManager.usesClientResize,
+              terminalManager.supportsMultiTab,
               lastSnapshot.panes.count > 1,
               lastSnapshot.panes.contains(where: { $0.id == paneId })
         else { return false }
+        let task: MuxTask
+        if let tabId {
+            guard lastSnapshot.tabs.contains(where: { $0.id == tabId }) else { return false }
+            task = MuxTask.joinPane(paneId, tabId: tabId)
+        } else {
+            task = MuxTask.breakPane(paneId)
+        }
         guard enqueueCoreTask(
-            MuxTask.breakPane(paneId),
+            task,
             failureMessage: MuxtermI18n.shared.tr(.errorCommandFailed)
         ) else { return false }
         needsLayoutReload = true
         scheduleStatusBarRefresh()
         return true
+    }
+
+    private func paneMoveDestinations() -> [(tabId: UInt32?, title: String)] {
+        let tabs = lastSnapshot.tabs
+        let destinations = PaneMoveMenuPolicy.destinations(
+            tabIds: tabs.map(\.id),
+            currentTabId: lastSnapshot.activeTab,
+            paneCountInCurrentTab: lastSnapshot.panes.count
+        )
+        return destinations.map { tabId in
+            if let tabId {
+                let title = tabs.first(where: { $0.id == tabId })?.name ?? "Tab"
+                return (tabId, title)
+            }
+            return (nil, MuxtermI18n.shared.tr(.movePaneToNewTab))
+        }
     }
 
     @objc func closeActivePane() {
@@ -2145,7 +2180,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             content.statusBar.allowsTabRenaming = true
             content.statusBar.allowsTabClosing = true
             content.statusBar.allowsTabReordering = terminalManager.usesClientResize
-            content.paneLayout.allowsPaneBreak = terminalManager.usesClientResize
+            content.paneLayout.allowsPaneBreak = terminalManager.supportsMultiTab
         case .shells:
             content.statusBar.setWorkspacePresentation(.shells)
             content.statusBar.allowsTabCreation = true
@@ -3626,7 +3661,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             except: Array(sceneStack.scenes.values.map(\.terminalManager))
         )
         content.statusBar.allowsTabReordering = terminalManager.usesClientResize
-        content.paneLayout.allowsPaneBreak = terminalManager.usesClientResize
+        content.paneLayout.allowsPaneBreak = terminalManager.supportsMultiTab
         // scene 的 TerminalManager 各自保存字体状态：切回时沿用当前字号，
         // 避免旧 slot 还是切换前的小字体。字号没变就不要 resetFont，那会清选区。
         terminalManager.setFont(

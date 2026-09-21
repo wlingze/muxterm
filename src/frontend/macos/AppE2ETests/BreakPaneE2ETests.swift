@@ -73,6 +73,31 @@ final class BreakPaneE2ETests: XCTestCase {
         XCTAssertEqual(actions.last?.1, .splitVertical)
     }
 
+    func testPaneTitleMoveMenuPinsNewTabThenOtherTabs() {
+        AppE2E.ensureApp()
+        let terminal = MuxTerminalView(
+            paneId: 4,
+            frame: NSRect(x: 0, y: 0, width: 400, height: 200)
+        )
+        let host = PaneHostView(paneId: 4, title: "shell", terminal: terminal)
+        host.setShowsTitleBar(true)
+        host.moveDestinationsProvider = {
+            [(nil, "New Tab"), (9, "logs"), (12, "main")]
+        }
+        XCTAssertEqual(
+            host.titleActionsForTesting,
+            [
+                .splitHorizontal,
+                .splitVertical,
+                .fullscreen,
+                .moveToNewTab,
+                .moveToTab(9),
+                .moveToTab(12),
+                .close,
+            ]
+        )
+    }
+
     func testPaneTitlesAppearOnlyForSplitTabs() throws {
         let single = OnePaneCat(label: "pane-title-single")
         let singleApp = try AppE2E.attachWindow(socket: single.socket, session: single.session)
