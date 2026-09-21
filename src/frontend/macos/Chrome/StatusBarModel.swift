@@ -120,9 +120,8 @@ public enum StatusBarTabOverflow {
     }
 }
 
-/// 提醒位（文档 §B.1）：状态栏上一个常驻位置，面积趋近于零；
-/// count > 0 时变红点，表示「我是瓶颈」的工作区数量（绝不因新输出点亮）。
-/// 消息弹窗 / 通知列表后续复用这个位置，这里先预留。
+/// 提醒位：状态栏铃铛。颜色取最高优先级状态（done > blocked > working > idle），
+/// `count` 是**该颜色**的条目数，不是全部注意力条目的总数。
 public struct StatusBarAttention: Equatable, Sendable {
     public let count: Int
     public let indicator: AgentSidebarIndicator?
@@ -133,8 +132,9 @@ public struct StatusBarAttention: Equatable, Sendable {
     }
 
     public init(indicators: [AgentSidebarIndicator]) {
-        count = indicators.count
-        indicator = indicators.min { Self.rank($0) < Self.rank($1) }
+        let dominant = indicators.min { Self.rank($0) < Self.rank($1) }
+        indicator = dominant
+        count = dominant.map { color in indicators.filter { $0 == color }.count } ?? 0
     }
 
     public var isActive: Bool { count > 0 }

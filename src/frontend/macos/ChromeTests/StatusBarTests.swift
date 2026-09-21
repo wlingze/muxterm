@@ -249,9 +249,26 @@ final class StatusBarAttentionTests: XCTestCase {
 
     func testDominantActivityUsesSidebarPriority() {
         let mixed = StatusBarAttention(indicators: [.working, .blocked, .done, .idle])
-        XCTAssertEqual(mixed.count, 4)
         XCTAssertEqual(mixed.indicator, .done)
         XCTAssertEqual(StatusBarAttention(indicators: [.working, .idle]).indicator, .working)
+    }
+
+    func testCountMatchesDominantColorNotTotal() {
+        let mixed = StatusBarAttention(indicators: [
+            .working, .blocked, .blocked, .blocked, .done, .idle,
+        ])
+        XCTAssertEqual(mixed.indicator, .done)
+        XCTAssertEqual(mixed.count, 1, "铃铛是完成色时数字必须是完成数，不是 6")
+
+        let blocked = StatusBarAttention(indicators: [
+            .blocked, .blocked, .working, .working, .working,
+        ])
+        XCTAssertEqual(blocked.indicator, .blocked)
+        XCTAssertEqual(blocked.count, 2, "铃铛是阻塞色时数字必须是阻塞数，不是 5")
+
+        let working = StatusBarAttention(indicators: [.working, .working, .working])
+        XCTAssertEqual(working.indicator, .working)
+        XCTAssertEqual(working.count, 3)
     }
 }
 
