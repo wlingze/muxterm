@@ -749,6 +749,33 @@ public enum PaneGridSyncPolicy {
     }
 }
 
+/// 多 pane 标题栏必须在 host 进树之前就占好高度。
+/// 先进树再 `setShowsTitleBar` 会让未切分的兄弟先按整格高度 layout，再缩回去。
+public enum PaneTitleLayoutPolicy {
+    public static func showsTitleBar(visiblePaneCount: Int) -> Bool {
+        visiblePaneCount > 1
+    }
+}
+
+/// 换树后的 client resize：格子没变就不要发给 Runtime。
+///
+/// `force` 只用于 SwiftTerm 钉本地格子。用它绕过 hysteresis 会让 tmux/herdr
+/// 在标题栏 ±1 行之间来回 `refresh-client -C` / SIGWINCH。
+public enum TreeChangeClientResizePolicy {
+    public static func shouldForceClientResize() -> Bool { false }
+
+    public static func shouldSend(
+        previous: (UInt16, UInt16)?,
+        next: (UInt16, UInt16),
+        treeChanged: Bool
+    ) -> Bool {
+        guard let previous else { return true }
+        if previous == next { return false }
+        if treeChanged { return true }
+        return ClientGridHysteresis.shouldSend(current: previous, next: next)
+    }
+}
+
 /// `refresh-client -C` 的发送门禁。
 ///
 /// Auto Layout 在切 tab 时会把测量抖 ±1 列；retina 下如果把 point 格再

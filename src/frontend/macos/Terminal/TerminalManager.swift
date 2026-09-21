@@ -1030,7 +1030,7 @@ final class TerminalManager: TerminalInputHandler {
             syncClientSize(
                 container: container,
                 paneIds: paneIds,
-                force: forceClientResize
+                treeChanged: forceClientResize
             )
         }
     }
@@ -1066,7 +1066,7 @@ final class TerminalManager: TerminalInputHandler {
     private func syncClientSize(
         container: NSView,
         paneIds: Set<UInt32>,
-        force: Bool = false
+        treeChanged: Bool = false
     ) {
         guard bridgeQueriesEnabled else { return }
         guard let size = clientGridSize(container: container, paneIds: paneIds) else {
@@ -1078,7 +1078,11 @@ final class TerminalManager: TerminalInputHandler {
             ClientGridHysteresis.isRetinaDoubleCount(from: $0, to: size)
         } ?? false
         guard !isRetinaError else { return }
-        guard force || ClientGridHysteresis.shouldSend(current: lastClientSize, next: size) else {
+        guard TreeChangeClientResizePolicy.shouldSend(
+            previous: lastClientSize,
+            next: size,
+            treeChanged: treeChanged
+        ) else {
             return
         }
         guard pendingClientSize?.0 != size.0 || pendingClientSize?.1 != size.1 else { return }
@@ -1092,7 +1096,7 @@ final class TerminalManager: TerminalInputHandler {
             self.sendClientResize(
                 container: container,
                 paneIds: paneIds,
-                force: force
+                treeChanged: treeChanged
             )
         }
         clientResizeWorkItem = work
@@ -1104,7 +1108,7 @@ final class TerminalManager: TerminalInputHandler {
     private func sendClientResize(
         container: NSView,
         paneIds: Set<UInt32>,
-        force: Bool = false
+        treeChanged: Bool = false
     ) {
         guard bridgeQueriesEnabled else { return }
         guard let size = clientGridSize(container: container, paneIds: paneIds) else {
@@ -1116,7 +1120,11 @@ final class TerminalManager: TerminalInputHandler {
             ClientGridHysteresis.isRetinaDoubleCount(from: $0, to: size)
         } ?? false
         guard !isRetinaError else { return }
-        guard force || ClientGridHysteresis.shouldSend(current: lastClientSize, next: size) else {
+        guard TreeChangeClientResizePolicy.shouldSend(
+            previous: lastClientSize,
+            next: size,
+            treeChanged: treeChanged
+        ) else {
             return
         }
         let failureMessage = MuxtermI18n.shared.tr(.errorResizeClient)

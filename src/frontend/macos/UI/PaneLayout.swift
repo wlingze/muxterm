@@ -247,14 +247,14 @@ final class PaneLayoutView: NSView, TerminalClientContentSizing {
 
         currentLayout = tree
         hostByPane.removeAll()
-        let built = build(node: tree)
+        let ids = Set(collectPaneIds(tree))
+        let showsTitles = PaneTitleLayoutPolicy.showsTitleBar(visiblePaneCount: ids.count)
+        let built = build(node: tree, showsTitles: showsTitles)
         attachRoot(built)
 
-        let ids = Set(collectPaneIds(tree))
         currentPaneIds = ids
         for host in hostByPane.values {
             host.setAllowsMoveToNewTab(allowsPaneBreak && ids.count > 1)
-            host.setShowsTitleBar(ids.count > 1)
             host.setTitleDragEnabled(allowsPaneBreak && ids.count > 1)
         }
         markActivePane(active)
@@ -272,6 +272,8 @@ final class PaneLayoutView: NSView, TerminalClientContentSizing {
         // 的像素重算 SwiftTerm 格子，否则切 tab 后字体/结构会错，
         // 直到用户再点一下 pane。
         if TabGeometrySyncPolicy.needsPaneGridSync(treeChanged: true) {
+            // force 只钉 SwiftTerm 本地格子；client resize 由
+            // TreeChangeClientResizePolicy 决定，格子没变就不发。
             scheduleGeometrySync(paneIds: ids, forceClientResize: true)
         }
         return true
@@ -375,9 +377,12 @@ final class PaneLayoutView: NSView, TerminalClientContentSizing {
         currentPaneIds = cached.paneIds
         // 不要在这里写 lastLayoutBounds：窗口外框没变时 layout() 会跳过，
         // 但停驻树可能是 0×0 建的，必须按现在的 host 像素重算格子。
+        let showsTitles = PaneTitleLayoutPolicy.showsTitleBar(
+            visiblePaneCount: currentPaneIds.count
+        )
         for host in hostByPane.values {
             host.setAllowsMoveToNewTab(allowsPaneBreak && currentPaneIds.count > 1)
-            host.setShowsTitleBar(currentPaneIds.count > 1)
+            host.setShowsTitleBar(showsTitles)
             host.setTitleDragEnabled(allowsPaneBreak && currentPaneIds.count > 1)
         }
         markActivePane(cached.activePaneId)
@@ -589,7 +594,7 @@ final class PaneLayoutView: NSView, TerminalClientContentSizing {
         }
     }
 
-    private func build(node: LayoutNode) -> NSView {
+    private func build(node: LayoutNode, showsTitles: Bool) -> NSView {
         switch node {
         case .leaf(let paneId):
             let term = terminalManager.view(for: paneId)
@@ -616,7 +621,7 @@ final class PaneLayoutView: NSView, TerminalClientContentSizing {
                 self?.moveDestinationsProvider?() ?? []
             }
             wrap.setAllowsMoveToNewTab(false)
-            wrap.setShowsTitleBar(false)
+            wrap.setShowsTitleBar(showsTitles)
             wrap.setTitleDragEnabled(false)
             hostByPane[paneId] = wrap
             return wrap
@@ -626,8 +631,8 @@ final class PaneLayoutView: NSView, TerminalClientContentSizing {
             return SplitContainerView(
                 horizontal: horizontal,
                 ratio: CGFloat(ratio) / 1000.0,
-                first: build(node: first),
-                second: build(node: second),
+                first: build(node: first, showsTitles: showsTitles),
+                second: build(node: second, showsTitles: showsTitles),
                 firstPaneID: firstPaneID,
                 onResize: { [weak self] paneID, isHorizontal, extent in
                     self?.commitDividerResize(
