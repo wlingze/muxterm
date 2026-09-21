@@ -17,6 +17,7 @@ public enum KeyBindingsConfig {
         case "new_window", "new_tab": return .newTab
         case "new_pane": return .splitHorizontal
         case "new_pane_vertical": return .splitVertical
+        case "split_auto", "new_pane_auto": return .splitAuto
         case "switch_pane_prev": return .prevPane
         case "switch_pane_next": return .nextPane
         case "previous_command", "command_prev": return .previousCommand

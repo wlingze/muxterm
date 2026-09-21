@@ -5,6 +5,7 @@ public enum KeyAction: Equatable, Sendable {
     case newTab
     case splitHorizontal
     case splitVertical
+    case splitAuto
     case closeWindow
     case closePane
     case switchTab(Int) // 1-based
@@ -74,9 +75,17 @@ public enum KeyBindings {
         if chord.command, !chord.shift, !chord.option, key == "t" {
             return .newTab
         }
-        // Cmd+D 上下（竖直）/ Cmd+Shift+D 水平
-        if chord.command, !chord.option, key == "d" {
-            return chord.shift ? .splitHorizontal : .splitVertical
+        // Cmd-V 上下、Cmd-S 左右、Cmd-D 按当前 pane 形状自动切分。
+        if chord.command, !chord.option, !chord.control {
+            if key == "v", !chord.shift {
+                return .splitVertical
+            }
+            if key == "s", !chord.shift {
+                return .splitHorizontal
+            }
+            if key == "d" {
+                return chord.shift ? .splitHorizontal : .splitAuto
+            }
         }
         // Cmd+W 只关当前层；整个窗口显式使用 Cmd+Shift+W。
         if chord.command, !chord.option, !chord.control, key == "w" {

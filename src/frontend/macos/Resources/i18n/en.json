@@ -40,6 +40,7 @@
   "ssh_hosts": "Choose an SSH host, then a remote tmux session",
   "new_tab": "New Tab",
   "new_tab_detail": "Create a local tab",
+  "menu_split_auto": "Split Automatically",
   "split_pane_horizontal": "Split Pane Horizontally",
   "split_pane_horizontal_detail": "Split the current pane horizontally",
   "split_pane_vertical": "Split Pane Vertically",

@@ -1039,6 +1039,22 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         splitActivePane(horizontal: false)
     }
 
+    @objc func splitAuto() {
+        splitActivePaneAuto()
+    }
+
+    private func splitActivePaneAuto() {
+        guard let pane = lastSnapshot.panes.first(where: \.isActive)?.id
+            ?? lastSnapshot.panes.first?.id
+        else {
+            return
+        }
+        let size = lastSnapshot.panes.first(where: { $0.id == pane })
+        let cols = Int(size?.cols ?? 80)
+        let rows = Int(size?.rows ?? 24)
+        splitPane(pane, horizontal: AutoSplitPolicy.horizontal(cols: cols, rows: rows))
+    }
+
     /// 当前 pane 全屏切换：tmux/ssh 发 `resize-pane -Z`，本地 shell 用布局全屏。
     @objc func toggleActivePaneFullscreen() {
         guard let pane = lastSnapshot.panes.first(where: \.isActive)?.id
@@ -6072,6 +6088,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             splitActivePane(horizontal: true)
         case .splitVertical:
             splitActivePane(horizontal: false)
+        case .splitAuto:
+            splitActivePaneAuto()
         case .closeWindow:
             closeActiveWindow()
         case .closePane:
