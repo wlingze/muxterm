@@ -84,6 +84,7 @@ private func settingsFieldTitle(path: String, titleKey: String) -> String {
     case "/behavior/on_program_exit_abnormal": "When a command fails"
     case "/platform/linux/client_side_decorations": "Client-side decorations"
     case "/platform/macos/option_as_alt": "Treat Option as Alt"
+    case "macos.developer_tools": "Developer Tools"
     case "/shortcuts/preset": "Keyboard layout"
     case "/shortcuts/primary_key": "Primary modifier"
     case "/projects": "Saved projects"
@@ -129,6 +130,8 @@ private func settingsFieldDescription(path: String, titleKey: String) -> String 
     case "/behavior/on_program_exit_abnormal": "Choose how Muxterm handles a non-zero command exit."
     case "/platform/linux/client_side_decorations": "Let Muxterm draw its own window controls."
     case "/platform/macos/option_as_alt": "Use the Option key as an Alt modifier on macOS."
+    case "macos.developer_tools":
+        "Lets Muxterm run locally built, unsigned tools. macOS will list this app under Privacy & Security → Developer Tools; you still have to turn the switch on."
     case "/shortcuts/preset": "Start from a QWERTY or Colemak action layout."
     case "/shortcuts/primary_key": "Modifier used for the primary shortcut set."
     case "/projects": "Reusable workspace launch profiles shared by Quick Connect."
@@ -143,6 +146,7 @@ private func settingsApplyLabel(_ mode: String) -> String {
     switch mode {
     case "immediate": fallback = "LIVE"
     case "next_workspace": fallback = "NEXT WORKSPACE"
+    case "macos": fallback = "macOS"
     default: fallback = "ON SAVE"
     }
     return settingsText("settings.apply.\(mode)", fallback: fallback)
@@ -293,6 +297,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
     private var pages: [String: NSScrollView] = [:]
     private var projectEditorView: SettingsProjectEditorView?
     private var activeProjectEditor: TargetConfigWindow?
+    private var developerToolsStatusLabel: NSTextField?
+    private var developerToolsButton: NSButton?
 
     init(
         bridge: CoreBridge,
@@ -397,6 +403,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         loadSnapshotAndBuild()
         super.showWindow(sender)
         window?.makeKeyAndOrderFront(sender)
+        refreshDeveloperToolsStatus()
+    }
+
+    func windowDidBecomeKey(_ notification: Notification) {
+        refreshDeveloperToolsStatus()
     }
 
     // MARK: - Manifest rendering
@@ -467,6 +478,17 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
                 if let options = field["options"] as? [String] {
                     searchParts += options.flatMap { [$0, settingsOptionLabel(path: path, value: $0)] }
                 }
+            }
+            if id == "platform" {
+                searchParts += [
+                    "developer tools",
+                    "开发者工具",
+                    settingsFieldTitle(path: "macos.developer_tools", titleKey: "settings.platform.developer_tools"),
+                    settingsFieldDescription(
+                        path: "macos.developer_tools",
+                        titleKey: "settings.platform.developer_tools"
+                    ),
+                ]
             }
             categories.append(Category(
                 id: id,
@@ -755,6 +777,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
             let preview = settingsAppearancePreview(values: values)
             stack.addArrangedSubview(preview)
             preview.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: contentWidth).isActive = true
+        }
+        if category.id == "platform" {
+            let row = makeDeveloperToolsRow()
+            stack.addArrangedSubview(row)
+            row.widthAnchor.constraint(
+                equalTo: stack.widthAnchor,
+                constant: contentWidth
+            ).isActive = true
         }
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .vertical)
@@ -1364,6 +1394,76 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         selectCategory(id)
     }
 
+    private func makeDeveloperToolsRow() -> NSView {
+        let status = NSTextField(labelWithString: "")
+        status.font = .systemFont(ofSize: 11)
+        status.textColor = .secondaryLabelColor
+        status.lineBreakMode = .byTruncatingTail
+        status.setAccessibilityIdentifier("muxterm.settings.developerTools.status")
+        developerToolsStatusLabel = status
+
+        let button = NSButton(
+            title: DeveloperToolAccessPolicy.actionTitle(authorized: false),
+            target: self,
+            action: #selector(requestDeveloperTools(_:))
+        )
+        button.bezelStyle = .rounded
+        button.setAccessibilityIdentifier("muxterm.settings.developerTools.action")
+        developerToolsButton = button
+
+        let control = NSStackView(views: [status, button])
+        control.orientation = .vertical
+        control.alignment = .trailing
+        control.spacing = 6
+
+        let row = settingRow(
+            title: settingsFieldTitle(
+                path: "macos.developer_tools",
+                titleKey: "settings.platform.developer_tools"
+            ),
+            description: settingsFieldDescription(
+                path: "macos.developer_tools",
+                titleKey: "settings.platform.developer_tools"
+            ),
+            apply: settingsApplyLabel("macos"),
+            path: "macos.developer_tools",
+            control: control
+        )
+        settingsStyleCard(row, fill: NSColor.controlBackgroundColor.withAlphaComponent(0.44))
+        refreshDeveloperToolsStatus()
+        return row
+    }
+
+    private func refreshDeveloperToolsStatus() {
+        let status = DeveloperToolAccess.status()
+        let authorized = DeveloperToolAccessPolicy.isAuthorized(status)
+        developerToolsButton?.title = settingsText(
+            authorized
+                ? "settings.platform.developer_tools.open"
+                : "settings.platform.developer_tools.request",
+            fallback: DeveloperToolAccessPolicy.actionTitle(authorized: authorized)
+        )
+        let statusKey = "settings.platform.developer_tools.status.\(status.rawValue)"
+        let fallback: String = switch status {
+        case .authorized: "Allowed"
+        case .denied: "Denied — enable it in System Settings"
+        case .restricted: "Restricted by a profile or parental controls"
+        case .notDetermined: "Not listed yet — request access to add Muxterm"
+        }
+        developerToolsStatusLabel?.stringValue = settingsText(statusKey, fallback: fallback)
+    }
+
+    @objc private func requestDeveloperTools(_ sender: Any?) {
+        DeveloperToolAccess.request { granted in
+            DispatchQueue.main.async { [weak self] in
+                self?.refreshDeveloperToolsStatus()
+                if DeveloperToolAccessPolicy.shouldOpenSettings(afterRequestGranted: granted) {
+                    DeveloperToolAccess.openSystemSettings()
+                }
+            }
+        }
+    }
+
     func testTextField(path: String) -> NSTextField? {
         textField(at: path)
     }
@@ -1422,6 +1522,34 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
     func testApplySettings() {
         applySettings()
     }
+
+    func testDeveloperToolsRowVisible() -> Bool {
+        findSettingsView(
+            pages["platform"]?.documentView,
+            id: "muxterm.settings.row.macos.developer_tools"
+        ) != nil
+    }
+
+    func testDeveloperToolsActionTitle() -> String? {
+        developerToolsButton?.title
+    }
+
+    func testDeveloperToolsStatusText() -> String? {
+        developerToolsStatusLabel?.stringValue
+    }
+
+    @objc func testRequestDeveloperTools() {
+        requestDeveloperTools(nil)
+    }
+}
+
+private func findSettingsView(_ root: NSView?, id: String) -> NSView? {
+    guard let root else { return nil }
+    if root.accessibilityIdentifier() == id { return root }
+    for child in root.subviews {
+        if let hit = findSettingsView(child, id: id) { return hit }
+    }
+    return nil
 }
 
 private func settingsInputPlaceholder(_ path: String) -> String? {

@@ -128,6 +128,30 @@ final class SettingsWindowE2ETests: XCTestCase {
         }
     }
 
+    func testPlatformPageExposesDeveloperToolsAccess() throws {
+        AppE2E.ensureApp()
+        let bridge = try CoreBridge(backendType: "local")
+        let settings = SettingsWindowController(bridge: bridge)
+        defer {
+            settings.window?.orderOut(nil)
+            bridge.shutdown()
+        }
+
+        settings.showWindow(nil)
+        AppE2E.pump(50)
+        settings.testSelectCategory("platform")
+        XCTAssertTrue(
+            settings.testDeveloperToolsRowVisible(),
+            "Platform 页必须有 Developer Tools 权限行"
+        )
+        XCTAssertFalse((settings.testDeveloperToolsActionTitle() ?? "").isEmpty)
+        XCTAssertFalse((settings.testDeveloperToolsStatusText() ?? "").isEmpty)
+
+        settings.testSetSearchQuery("developer tools")
+        XCTAssertEqual(settings.testVisibleCategoryIDs(), ["platform"])
+        XCTAssertEqual(settings.testSelectedCategoryID(), "platform")
+    }
+
     func testCategoryTitleHumanizesManifestKey() {
         let previous = MuxtermI18n.shared.language
         _ = MuxtermI18n.shared.setLanguage(.english)
