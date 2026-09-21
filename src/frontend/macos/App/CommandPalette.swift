@@ -108,6 +108,7 @@ enum PaletteCommand: Equatable {
     case tabBarTop
     case tabBarBottom
     case togglePaneFullscreen
+    case cycleLayout
     case increaseFontSize
     case decreaseFontSize
     case resetFontSize

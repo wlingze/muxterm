@@ -74,6 +74,8 @@
   "rename_tab_detail": "Change the current tab name",
   "rename_workspace": "Rename Workspace…",
   "rename_workspace_detail": "Change the current workspace name",
+  "cycle_layout": "Cycle Layout",
+  "cycle_layout_detail": "Switch the current tab between side-by-side and stacked splits",
   "move_pane": "Move Pane",
   "move_pane_to_new_tab": "Move Pane to New Tab",
   "move_pane_to_new_tab_detail": "Detach the current pane into its own tab",

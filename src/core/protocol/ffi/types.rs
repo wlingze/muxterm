@@ -70,6 +70,8 @@ pub const TASK_SCROLL_PANE: u32 = 17;
 pub const TASK_JOIN_PANE: u32 = 18;
 /// target_pane = 源 pane；target_tab 字段复用为另一个 pane id。
 pub const TASK_SWAP_PANE: u32 = 19;
+/// target_tab = 目标 tab。
+pub const TASK_CYCLE_LAYOUT: u32 = 20;
 
 // ── Split dir / layout node ────────────────────────────────
 pub const DIR_HORIZONTAL: u32 = 0;

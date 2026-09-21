@@ -122,6 +122,8 @@ enum MuxtermTextKey: CaseIterable {
     case tabBarBottomDetail
     case menuView
     case menuWindow
+    case cycleLayout
+    case cycleLayoutDetail
     case movePane
     case movePaneToNewTab
     case movePaneToNewTabDetail
@@ -364,6 +366,8 @@ enum MuxtermTextKey: CaseIterable {
         case .tabBarBottomDetail: return "tab_bar_bottom_detail"
         case .menuView: return "menu_view"
         case .menuWindow: return "menu_window"
+        case .cycleLayout: return "cycle_layout"
+        case .cycleLayoutDetail: return "cycle_layout_detail"
         case .movePane: return "move_pane"
         case .movePaneToNewTab: return "move_pane_to_new_tab"
         case .movePaneToNewTabDetail: return "move_pane_to_new_tab_detail"

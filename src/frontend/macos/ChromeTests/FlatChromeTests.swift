@@ -183,6 +183,13 @@ final class KeyBindingsTests: XCTestCase {
         )
     }
 
+    func testCmdShiftLCyclesLayout() {
+        XCTAssertEqual(
+            KeyBindings.action(for: KeyChord(command: true, shift: true, key: "l")),
+            .cycleLayout
+        )
+    }
+
     func testCmdEnterTogglesPaneFullscreen() {
         XCTAssertEqual(
             KeyBindings.action(for: KeyChord(command: true, key: "\r")),

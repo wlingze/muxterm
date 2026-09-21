@@ -3626,6 +3626,72 @@ impl Runtime for HerdrRuntime {
                     .map_err(|e| anyhow!("pane.swap 失败: {e}"))?;
                 Ok(TaskOutcome::Done)
             }
+            Task::CycleLayout { tab } => {
+                let Some(layout) = self.layouts.get(tab) else {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: format!("tab {tab} 不存在"),
+                    });
+                };
+                let pane = layout.active;
+                let Some(sibling) = layout.tree.sibling_leaf(pane) else {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: "当前 pane 没有可翻转的兄弟叶子".into(),
+                    });
+                };
+                let Some(dir) = layout.tree.parent_dir(pane) else {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: "当前 pane 没有父 split".into(),
+                    });
+                };
+                let split = match dir.opposite() {
+                    SplitDir::Horizontal => "right",
+                    SplitDir::Vertical => "down",
+                };
+                let Some(herdr_pane) = self.herdr_pane(pane).map(ToOwned::to_owned) else {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: format!("pane {pane} 不存在"),
+                    });
+                };
+                let Some(herdr_sibling) = self.herdr_pane(sibling).map(ToOwned::to_owned) else {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: format!("pane {sibling} 不存在"),
+                    });
+                };
+                let Some(herdr_tab) = self.tab_to_herdr_tab.get(tab).cloned() else {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: format!("tab {tab} 不存在"),
+                    });
+                };
+                self.session
+                    .call(
+                        "pane.move",
+                        serde_json::json!({
+                            "pane_id": herdr_pane,
+                            "destination": {
+                                "type": "new_tab",
+                                "workspace_id": self.workspace_id,
+                            },
+                            "focus": true,
+                        }),
+                    )
+                    .map_err(|e| anyhow!("pane.move 暂存失败: {e}"))?;
+                self.session
+                    .call(
+                        "pane.move",
+                        serde_json::json!({
+                            "pane_id": herdr_pane,
+                            "destination": {
+                                "type": "tab",
+                                "tab_id": herdr_tab,
+                                "target_pane_id": herdr_sibling,
+                                "split": split,
+                            },
+                            "focus": true,
+                        }),
+                    )
+                    .map_err(|e| anyhow!("pane.move 回挂失败: {e}"))?;
+                Ok(TaskOutcome::Done)
+            }
             _ => Ok(TaskOutcome::Rejected {
                 reason: format!("Herdr v1 未实现 Task {task:?}"),
             }),
