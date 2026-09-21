@@ -12,7 +12,6 @@ use crate::protocol::task::Task;
 use crate::protocol::terminal::input::KeyEvent;
 
 pub use crate::protocol::command::CliCommand;
-pub use crate::protocol::daemon::{OutputFormat, Request, Response, TopologySnapshot};
 
 /// Map a daemon wire command to a shell-runtime Task.
 ///
