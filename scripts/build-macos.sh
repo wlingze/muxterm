@@ -33,10 +33,10 @@ OUT_DIR="$(build_os_dir)"   # -> build/macos
 TARGET_DIR="$(cargo_target_dir)"
 mkdir -p "$OUT_DIR" "$TARGET_DIR"
 
-echo "==> cargo build ffi $RELEASE (静态库供 Swift 链接)"
-# Swift 端静态链接 libmuxterm.a。tui CLI 必须在 Swift 链接之后再编，
-# 否则这次 ffi 构建会覆盖 target/*/muxterm，把带 tui 的 CLI 丢掉。
-cargo build --no-default-features --features ffi $RELEASE
+echo "==> cargo build tui+ffi $RELEASE (静态库供 Swift 链接，同时产出 CLI)"
+# `tui` feature 已包含 `ffi`。一次编出 libmuxterm.a 和带 tui 的 muxterm，
+# 避免先 ffi 再 tui 把同一 crate 编译两遍。
+cargo build --no-default-features --features tui $RELEASE
 
 # Vendor 软链（指向实际 target dir）
 mkdir -p "$MACOS_DIR/Vendor"
@@ -116,10 +116,8 @@ codesign --force --deep --sign "$CODESIGN_IDENTITY" "$APP"
 codesign --verify --deep --strict --verbose=4 "$APP"
 test -d "$APP/Contents/_CodeSignature"
 
-# Rust CLI 最后装：带 tui/gui，且换 inode + ad-hoc 签名，避免 `zsh: killed`。
+# Rust CLI 最后拷贝：换 inode + ad-hoc 签名，避免 `zsh: killed`。二进制已在开头编好。
 cd "$ROOT"
-echo "==> cargo build (tui + ffi) $RELEASE"
-cargo build --no-default-features --features tui $RELEASE
 RUST_BIN="$(cargo_bin_path "$PROFILE")"
 if [[ ! -f "$RUST_BIN" ]]; then
   echo "ERROR: $RUST_BIN not found after cargo build" >&2
