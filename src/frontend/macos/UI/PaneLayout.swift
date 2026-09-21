@@ -499,10 +499,11 @@ final class PaneLayoutView: NSView, TerminalClientContentSizing {
         }
     }
 
-    /// 更新活跃 pane 高亮与 AX（供 Cmd+[ / ] 焦点跟随断言）。
+    /// 更新活跃 pane 高亮、未聚焦蒙层与 AX（供 Cmd+[ / ] 焦点跟随断言）。
     func markActivePane(_ paneId: UInt32) {
+        let visibleCount = hostByPane.count
         for (id, host) in hostByPane {
-            host.setActive(id == paneId)
+            host.setActive(id == paneId, visiblePaneCount: visibleCount)
         }
         if let tabId = currentTabId, var cached = tabTrees[tabId] {
             cached.activePaneId = paneId
@@ -679,6 +680,24 @@ final class PaneLayoutView: NSView, TerminalClientContentSizing {
     }
 }
 
+/// 点穿的黑色蒙层：视觉上把未聚焦 pane 向黑色插值，不截获鼠标。
+private final class InactivePaneDimView: NSView {
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.black.withAlphaComponent(
+            InactivePaneDimmingPolicy.amount
+        ).cgColor
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { nil }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+}
+
 /// 承载单个终端；暴露几何 AX 供布局比例测试。
 final class PaneHostView: NSView {
     let paneId: UInt32
@@ -691,10 +710,12 @@ final class PaneHostView: NSView {
         didSet { titleBar.moveDestinationsProvider = moveDestinationsProvider }
     }
     private var isPaneActive = false
+    private var visiblePaneCount = 1
     private let moveToNewTabItem: NSMenuItem
     private let moveSeparator: NSMenuItem
     private let titleBar: PaneTitleBarView
     private let terminal: MuxTerminalView
+    private let dimOverlay = InactivePaneDimView()
     private var titleBarHeightConstraint: NSLayoutConstraint!
 
     init(paneId: UInt32, title: String = "", terminal: MuxTerminalView) {
@@ -754,6 +775,9 @@ final class PaneHostView: NSView {
         }
         titleBar.moveDestinationsProvider = moveDestinationsProvider
         addSubview(titleBar)
+        dimOverlay.translatesAutoresizingMaskIntoConstraints = false
+        dimOverlay.isHidden = true
+        addSubview(dimOverlay)
         titleBarHeightConstraint = titleBar.heightAnchor.constraint(equalToConstant: 0)
         NSLayoutConstraint.activate([
             titleBar.leadingAnchor.constraint(equalTo: leadingAnchor),
@@ -764,6 +788,10 @@ final class PaneHostView: NSView {
             terminal.trailingAnchor.constraint(equalTo: trailingAnchor),
             terminal.topAnchor.constraint(equalTo: titleBar.bottomAnchor),
             terminal.bottomAnchor.constraint(equalTo: bottomAnchor),
+            dimOverlay.leadingAnchor.constraint(equalTo: terminal.leadingAnchor),
+            dimOverlay.trailingAnchor.constraint(equalTo: terminal.trailingAnchor),
+            dimOverlay.topAnchor.constraint(equalTo: terminal.topAnchor),
+            dimOverlay.bottomAnchor.constraint(equalTo: terminal.bottomAnchor),
         ])
 
         let contextMenu = NSMenu()
@@ -795,13 +823,18 @@ final class PaneHostView: NSView {
         return nil
     }
 
-    func setActive(_ active: Bool) {
+    func setActive(_ active: Bool, visiblePaneCount: Int = 1) {
         isPaneActive = active
+        self.visiblePaneCount = visiblePaneCount
         // 1px 指示，避免厚边框「卡片」感
         layer?.borderWidth = active ? FlatChrome.activePaneBorderWidth : 0
         layer?.borderColor = active ? NSColor.controlAccentColor.cgColor : nil
         layer?.cornerRadius = 0
         titleBar.setActive(active)
+        dimOverlay.isHidden = !InactivePaneDimmingPolicy.shouldDim(
+            isActive: active,
+            visiblePaneCount: visiblePaneCount
+        )
         publishGeometry()
     }
 
@@ -841,6 +874,13 @@ final class PaneHostView: NSView {
     var titleForTesting: String { titleBar.titleForTesting }
     var terminalHeightForTesting: CGFloat { terminal.frame.height }
     var titleActionsForTesting: [PaneTitleAction] { titleBar.actionsForTesting }
+    var isContentDimmedForTesting: Bool { !dimOverlay.isHidden }
+    var dimOverlayFrameForTesting: NSRect { dimOverlay.frame }
+    var titleBarFrameForTesting: NSRect { titleBar.frame }
+
+    func dimOverlayBlocksHitsForTesting(at point: NSPoint) -> Bool {
+        dimOverlay.hitTest(point) != nil
+    }
 
     func triggerTitleAction(_ action: PaneTitleAction) {
         guard !titleBar.isHidden else { return }
@@ -861,7 +901,11 @@ final class PaneHostView: NSView {
     func publishGeometry() {
         let w = Int(bounds.width.rounded())
         let h = Int(bounds.height.rounded())
-        let text = "pane=@\(paneId) w=\(w) h=\(h) active=\(isPaneActive ? 1 : 0)"
+        let dimmed = InactivePaneDimmingPolicy.shouldDim(
+            isActive: isPaneActive,
+            visiblePaneCount: visiblePaneCount
+        )
+        let text = "pane=@\(paneId) w=\(w) h=\(h) active=\(isPaneActive ? 1 : 0) dim=\(dimmed ? 1 : 0)"
         setAccessibilityValue(text)
         setAccessibilityHelp(text)
     }

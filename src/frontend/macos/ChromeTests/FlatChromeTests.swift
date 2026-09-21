@@ -1432,6 +1432,32 @@ final class PaneFullscreenPolicyTests: XCTestCase {
     }
 }
 
+final class InactivePaneDimmingPolicyTests: XCTestCase {
+    func testInactivePaneDimsOnlyWhenSplitAndUnfocused() {
+        XCTAssertEqual(InactivePaneDimmingPolicy.amount, 0.15, accuracy: 0.0001)
+        XCTAssertGreaterThan(InactivePaneDimmingPolicy.amount, 0)
+        XCTAssertLessThan(InactivePaneDimmingPolicy.amount, 1)
+        XCTAssertFalse(
+            InactivePaneDimmingPolicy.shouldDim(isActive: true, visiblePaneCount: 2),
+            "聚焦 pane 保持原亮度"
+        )
+        XCTAssertTrue(
+            InactivePaneDimmingPolicy.shouldDim(isActive: false, visiblePaneCount: 2),
+            "分屏里未聚焦 pane 必须变暗"
+        )
+        XCTAssertFalse(
+            InactivePaneDimmingPolicy.shouldDim(isActive: false, visiblePaneCount: 1),
+            "单 pane / zoom 全屏不得整窗发灰"
+        )
+        XCTAssertFalse(
+            InactivePaneDimmingPolicy.shouldDim(isActive: true, visiblePaneCount: 1)
+        )
+        XCTAssertFalse(
+            InactivePaneDimmingPolicy.shouldDim(isActive: false, visiblePaneCount: 0)
+        )
+    }
+}
+
 final class EventBatchPlanTests: XCTestCase {
     func testStructuralEventDefersOutputs() {
         // 1 = tab add（结构事件），7 = active pane changed，99 = 普通输出。

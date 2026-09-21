@@ -857,6 +857,19 @@ public enum PaneHostFocusPolicy {
     public static var acceptsFirstResponder: Bool { false }
 }
 
+/// 未聚焦 split pane 的明暗（对齐 iTerm2「Dim inactive split panes」）。
+///
+/// iTerm2 hidden setting `SplitPaneDimmingAmount` 默认 0.15：把内容向黑色
+/// 插值，同时压暗文字和背景。单 pane / zoom 全屏时不蒙，避免整窗发灰。
+public enum InactivePaneDimmingPolicy {
+    /// 0 = 不蒙，1 = 全黑。默认对齐 iTerm2 `SplitPaneDimmingAmount`。
+    public static let amount: CGFloat = 0.15
+
+    public static func shouldDim(isActive: Bool, visiblePaneCount: Int) -> Bool {
+        visiblePaneCount > 1 && !isActive
+    }
+}
+
 /// 光标必须在 SwiftTerm 输入里。Surface 还没 ready 时不要抢，ready 后立刻补。
 public enum TerminalInputFocusPolicy {
     public static func shouldAttemptFocus(
