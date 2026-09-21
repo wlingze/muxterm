@@ -924,7 +924,7 @@ impl TmuxClientHandle {
 
     /// 发送任意原始文本到 tmux stdin（应自带末尾换行）。
     pub async fn send_raw(&mut self, raw: &str) -> Result<()> {
-        tracing::debug!(target = "muxterm::client", "send: {:?}", raw);
+        crate::performance::log_control_send("muxterm::client", raw);
         if let Some(w) = &self.pty_writer {
             w.write_all(raw.as_bytes().to_vec())
                 .await

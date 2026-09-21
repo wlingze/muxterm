@@ -352,7 +352,7 @@ impl RemoteTmuxClient {
 
     /// 发送原始文本（应自带末尾换行）。
     pub async fn send_raw(&mut self, raw: &str) -> Result<()> {
-        tracing::debug!(target = "muxterm::ssh", "send: {:?}", raw);
+        crate::performance::log_control_send("muxterm::ssh", raw);
         self.stdin_tx
             .send(raw.as_bytes().to_vec())
             .await
