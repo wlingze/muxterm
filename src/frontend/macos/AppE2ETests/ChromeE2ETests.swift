@@ -205,6 +205,27 @@ final class ChromeE2ETests: XCTestCase {
         XCTAssertEqual(bar.testAttentionIndicator(), .working)
     }
 
+    func testAttentionBellCountMatchesDisplayedColor() {
+        let bar = StatusBarView(frame: .zero)
+        bar.setAttention(StatusBarAttention(indicators: [
+            .done, .done, .blocked, .blocked, .blocked, .working,
+        ]))
+        XCTAssertEqual(bar.testAttentionIndicator(), .done)
+        XCTAssertTrue(
+            bar.testAttentionCountLabel().contains("2"),
+            "完成色铃铛应显示完成数 2，而不是总数 6: \(bar.testAttentionCountLabel())"
+        )
+
+        bar.setAttention(StatusBarAttention(indicators: [
+            .blocked, .blocked, .blocked, .working,
+        ]))
+        XCTAssertEqual(bar.testAttentionIndicator(), .blocked)
+        XCTAssertTrue(
+            bar.testAttentionCountLabel().contains("3"),
+            "阻塞色铃铛应显示阻塞数 3，而不是总数 4: \(bar.testAttentionCountLabel())"
+        )
+    }
+
     func testStatusButtonsReceivePhysicalHitTesting() throws {
         let bar = StatusBarView(frame: NSRect(x: 0, y: 0, width: 900, height: 28))
         window.contentView = bar
