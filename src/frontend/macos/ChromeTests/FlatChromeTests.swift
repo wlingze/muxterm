@@ -1294,9 +1294,9 @@ final class PaneLayoutProjectionTests: XCTestCase {
         XCTAssertTrue(PaneTitleLayoutPolicy.showsTitleBar(visiblePaneCount: 2))
         XCTAssertFalse(PaneTitleLayoutPolicy.showsTitleBar(visiblePaneCount: 1))
         XCTAssertTrue(GeometrySyncPolicy.pinLocalGrids(.cachedReveal))
-        XCTAssertFalse(
+        XCTAssertTrue(
             GeometrySyncPolicy.clientTreeChanged(.cachedReveal),
-            "切 tab 不得把标题栏 ±1 行发给所有 tmux window"
+            "切 tab 的计划格子（含标题栏）变化只发一次"
         )
         XCTAssertFalse(GeometrySyncPolicy.forceRedraw(.cachedReveal))
         XCTAssertFalse(GeometrySyncPolicy.forceRedraw(.treeChange))
@@ -1309,13 +1309,21 @@ final class PaneLayoutProjectionTests: XCTestCase {
             GeometrySyncPolicy.merge(.cachedReveal, .treeChange),
             .treeChange
         )
-        XCTAssertFalse(
+        XCTAssertTrue(
             TreeChangeClientResizePolicy.shouldSend(
                 previous: (178, 50),
                 next: (178, 49),
                 treeChanged: GeometrySyncPolicy.clientTreeChanged(.cachedReveal)
             ),
-            "切到单 pane/多 pane tab 时标题扣减不得 refresh-client -C"
+            "计划格子从无标题到有标题只发这一次 50→49"
+        )
+        XCTAssertFalse(
+            TreeChangeClientResizePolicy.shouldSend(
+                previous: (178, 49),
+                next: (178, 49),
+                treeChanged: true
+            ),
+            "同一计划不得再 resize"
         )
     }
 

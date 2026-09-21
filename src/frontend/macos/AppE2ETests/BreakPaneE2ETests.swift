@@ -32,8 +32,8 @@ final class BreakPaneE2ETests: XCTestCase {
         )
         XCTAssertEqual(
             PaneTitleBarGeometry.reservedHeight(for: vertical, showsTitles: true),
-            PaneTitleBarGeometry.height * 2,
-            "上下分屏的两个标题栏都必须从 client 高度中扣除"
+            PaneTitleBarGeometry.height * 2 + PaneTitleBarGeometry.dividerLength,
+            "上下分屏扣除两个标题栏和一条分隔条，只算一次"
         )
         XCTAssertEqual(
             PaneTitleBarGeometry.reservedHeight(
@@ -45,8 +45,72 @@ final class BreakPaneE2ETests: XCTestCase {
                 ),
                 showsTitles: true
             ),
-            PaneTitleBarGeometry.height * 2,
-            "嵌套布局按最深的纵向标题链计算"
+            PaneTitleBarGeometry.height * 2 + PaneTitleBarGeometry.dividerLength,
+            "嵌套布局按最深的纵向 chrome 计算"
+        )
+        let container = NSSize(width: 800, height: 600)
+        let firstPlan = PaneTitleBarGeometry.clientContentSize(
+            container: container,
+            layout: vertical,
+            showsTitles: true
+        )
+        let secondPlan = PaneTitleBarGeometry.clientContentSize(
+            container: container,
+            layout: vertical,
+            showsTitles: true
+        )
+        XCTAssertEqual(firstPlan, secondPlan, "同一容器和布局必须得到同一计划尺寸")
+        XCTAssertEqual(
+            firstPlan.height,
+            container.height - PaneTitleBarGeometry.height * 2 - PaneTitleBarGeometry.dividerLength,
+            accuracy: 0.001
+        )
+        XCTAssertFalse(
+            PaneTitleBarGeometry.shouldSend(previous: (178, 48), next: (178, 48)),
+            "计划格子没变不得 resize"
+        )
+        XCTAssertTrue(
+            PaneTitleBarGeometry.shouldSend(previous: (178, 50), next: (178, 48)),
+            "计划格子变了只发一次"
+        )
+    }
+
+    func testTitledHostTerminalFillsSpaceBelowTitle() {
+        AppE2E.ensureApp()
+        let terminal = MuxTerminalView(
+            paneId: 11,
+            frame: NSRect(x: 0, y: 0, width: 400, height: 200)
+        )
+        let host = PaneHostView(paneId: 11, title: "shell", terminal: terminal)
+        host.setShowsTitleBar(true)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 240),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 240))
+        window.contentView = root
+        root.addSubview(host)
+        NSLayoutConstraint.activate([
+            host.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            host.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            host.topAnchor.constraint(equalTo: root.topAnchor),
+            host.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+        ])
+        window.layoutIfNeeded()
+        defer { window.orderOut(nil) }
+
+        XCTAssertEqual(
+            host.titleBarFrameForTesting.height,
+            PaneTitleBarGeometry.height,
+            accuracy: 0.5
+        )
+        XCTAssertEqual(
+            host.titleBarFrameForTesting.height + host.terminalHeightForTesting,
+            host.bounds.height,
+            accuracy: 1,
+            "标题栏和终端必须一次铺满 host，底下不得再空一截"
         )
     }
 

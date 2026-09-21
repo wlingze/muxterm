@@ -786,8 +786,8 @@ public enum PaneFocusStickiness {
     }
 }
 
-/// 几何同步的原因。切 tab 只钉本地格子；只有同 tab 换树才把 ±1 行
-/// 标题扣减发给 tmux，避免所有 window 跟着跳。
+/// 几何同步的原因。计划格子（含标题栏/分隔条）变了才发一次 client
+/// resize；窗口抖动走 hysteresis，禁止事后再量 widget 纠偏。
 public enum GeometrySyncKind: Equatable {
     case window
     case treeChange
@@ -800,7 +800,7 @@ public enum GeometrySyncPolicy {
     }
 
     public static func clientTreeChanged(_ kind: GeometrySyncKind) -> Bool {
-        kind == .treeChange
+        kind == .treeChange || kind == .cachedReveal
     }
 
     public static func forceRedraw(_ kind: GeometrySyncKind) -> Bool {
@@ -819,10 +819,7 @@ public enum GeometrySyncPolicy {
     }
 }
 
-/// 换树后的 client resize：格子没变就不要发给 Runtime。
-///
-/// 切 tab（`treeChanged == false`）走 hysteresis，标题栏 ±1 行不会
-/// `refresh-client -C`。同 tab split/close 才按精确格子发一次。
+/// 计划格子没变不发。窗口测量抖动走 hysteresis。
 public enum TreeChangeClientResizePolicy {
     public static func shouldForceClientResize() -> Bool { false }
 

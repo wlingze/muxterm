@@ -11,22 +11,58 @@ enum PaneTitleAction: Equatable {
     case close
 }
 
-/// Pane 标题栏占用的是原生像素，不属于 Runtime 字符格。左右分屏共享同一
-/// 条纵向空间，只扣较深的一侧；上下分屏会把两棵子树的标题高度相加。
+/// Pane 标题栏和分隔条是前端 chrome，不属于 Runtime 字符格。
+///
+/// 格子只从「容器 − chrome」算一次。不要先按无标题 layout 再量 widget
+/// 去 chase ±1 行 resize。
 enum PaneTitleBarGeometry {
     static let height: CGFloat = 22
+    static let dividerLength: CGFloat = 6
+
+    static func reservedSize(for layout: LayoutNode?, showsTitles: Bool) -> NSSize {
+        guard let layout else { return .zero }
+        return chrome(layout, showsTitles: showsTitles)
+    }
 
     static func reservedHeight(for layout: LayoutNode?, showsTitles: Bool) -> CGFloat {
-        guard showsTitles, let layout else { return 0 }
+        reservedSize(for: layout, showsTitles: showsTitles).height
+    }
+
+    static func clientContentSize(
+        container: NSSize,
+        layout: LayoutNode?,
+        showsTitles: Bool
+    ) -> NSSize {
+        let chrome = reservedSize(for: layout, showsTitles: showsTitles)
+        return NSSize(
+            width: max(0, container.width - chrome.width),
+            height: max(0, container.height - chrome.height)
+        )
+    }
+
+    /// 计划格子没变就不要发 resize；变了只发这一次，不再用事后测量纠偏。
+    static func shouldSend(previous: (UInt16, UInt16)?, next: (UInt16, UInt16)) -> Bool {
+        guard let previous else { return true }
+        return previous != next
+    }
+
+    private static func chrome(_ layout: LayoutNode, showsTitles: Bool) -> NSSize {
         switch layout {
         case .leaf:
-            return height
+            return NSSize(width: 0, height: showsTitles ? height : 0)
         case .split(let horizontal, _, let first, let second):
-            let firstHeight = reservedHeight(for: first, showsTitles: true)
-            let secondHeight = reservedHeight(for: second, showsTitles: true)
-            return horizontal
-                ? max(firstHeight, secondHeight)
-                : firstHeight + secondHeight
+            let a = chrome(first, showsTitles: showsTitles)
+            let b = chrome(second, showsTitles: showsTitles)
+            if horizontal {
+                return NSSize(
+                    width: a.width + dividerLength + b.width,
+                    height: max(a.height, b.height)
+                )
+            }
+            return NSSize(
+                width: max(a.width, b.width),
+                height: a.height + dividerLength + b.height
+            )
         }
     }
 }
@@ -422,13 +458,10 @@ final class PaneLayoutView: NSView, TerminalClientContentSizing {
     }
 
     var terminalClientContentSize: NSSize {
-        let reservedHeight = PaneTitleBarGeometry.reservedHeight(
-            for: currentLayout,
-            showsTitles: currentPaneIds.count > 1
-        )
-        return NSSize(
-            width: bounds.width,
-            height: max(0, bounds.height - reservedHeight)
+        PaneTitleBarGeometry.clientContentSize(
+            container: bounds.size,
+            layout: currentLayout,
+            showsTitles: PaneTitleLayoutPolicy.showsTitleBar(visiblePaneCount: currentPaneIds.count)
         )
     }
 
@@ -1198,7 +1231,7 @@ private final class SplitContainerView: NSView {
         self.first = first
         self.second = second
         self.currentRatio = CGFloat(PaneResizeMath.clampedRatio(Double(ratio)))
-        self.dividerLength = 6
+        self.dividerLength = PaneTitleBarGeometry.dividerLength
         self.firstPaneID = firstPaneID
         self.onResize = onResize
         super.init(frame: .zero)
