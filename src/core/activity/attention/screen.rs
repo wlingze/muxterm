@@ -624,6 +624,74 @@ const RULES: &[Rule] = &[
         not_contains: EMPTY,
         not_regex: EMPTY,
     },
+    // —— pi（Herdr pi.toml 2026.09.14.1 + Pi TUI select/confirm 弹层）——
+    // 官方 manifest 只有 Working；权限/提问走 ctx.ui.select，footer 是
+    // `↑↓ navigate  enter select  esc cancel`。没有本段时 Pi 会一直 Idle。
+    Rule {
+        agent: "pi",
+        priority: 420,
+        state: PaneStatus::Blocked,
+        keep: false,
+        region: Region::Whole,
+        contains: &["project trust"],
+        any_contains: &["saved decision", "current session"],
+        line_regex: EMPTY,
+        regex: EMPTY,
+        not_contains: EMPTY,
+        not_regex: EMPTY,
+    },
+    Rule {
+        agent: "pi",
+        priority: 410,
+        state: PaneStatus::Blocked,
+        keep: false,
+        region: Region::Bottom(10),
+        contains: &["navigate", "select", "cancel"],
+        any_contains: EMPTY,
+        line_regex: EMPTY,
+        regex: EMPTY,
+        not_contains: EMPTY,
+        not_regex: EMPTY,
+    },
+    Rule {
+        agent: "pi",
+        priority: 405,
+        state: PaneStatus::Blocked,
+        keep: false,
+        region: Region::Whole,
+        contains: EMPTY,
+        any_contains: &["allow once", "always allow", ":input_needed:", "allow this"],
+        line_regex: EMPTY,
+        regex: EMPTY,
+        not_contains: EMPTY,
+        not_regex: EMPTY,
+    },
+    Rule {
+        agent: "pi",
+        priority: 220,
+        state: PaneStatus::Working,
+        keep: false,
+        region: Region::Whole,
+        contains: EMPTY,
+        any_contains: &["working..."],
+        line_regex: EMPTY,
+        regex: EMPTY,
+        not_contains: EMPTY,
+        not_regex: EMPTY,
+    },
+    Rule {
+        agent: "pi",
+        priority: 210,
+        state: PaneStatus::Working,
+        keep: false,
+        region: Region::Bottom(12),
+        contains: EMPTY,
+        any_contains: EMPTY,
+        line_regex: &[r"^── [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Working ─+$"],
+        regex: EMPTY,
+        not_contains: EMPTY,
+        not_regex: EMPTY,
+    },
     // —— 其它已知 agent 的弱规则 ——
     Rule {
         agent: "",
@@ -829,5 +897,55 @@ mod tests {
     fn known_agent_without_match_falls_back_to_idle() {
         let screen = ScreenSnapshot::from_text("some transcript line");
         assert_eq!(classify_agent_screen("pi", &screen), Some(PaneStatus::Idle));
+    }
+
+    #[test]
+    fn pi_working_ellipsis_is_working() {
+        let screen = ScreenSnapshot::from_text("bash ls -la\nWorking...");
+        assert_eq!(
+            classify_agent_screen("pi", &screen),
+            Some(PaneStatus::Working)
+        );
+    }
+
+    #[test]
+    fn pi_bordered_working_loader_is_working() {
+        let screen = ScreenSnapshot::from_text("── ⠋ Working ────────────────────────");
+        assert_eq!(
+            classify_agent_screen("pi", &screen),
+            Some(PaneStatus::Working)
+        );
+    }
+
+    #[test]
+    fn pi_select_overlay_is_blocked() {
+        let screen = ScreenSnapshot::from_text(
+            "Allow bash?\n→ Allow\n  Block\n↑↓ navigate  enter select  esc cancel",
+        );
+        assert_eq!(
+            classify_agent_screen("pi", &screen),
+            Some(PaneStatus::Blocked)
+        );
+    }
+
+    #[test]
+    fn pi_project_trust_is_blocked() {
+        let screen = ScreenSnapshot::from_text(
+            "Project trust\n/Users/wlz/project\nSaved decision: none\nCurrent session: untrusted",
+        );
+        assert_eq!(
+            classify_agent_screen("pi", &screen),
+            Some(PaneStatus::Blocked)
+        );
+    }
+
+    #[test]
+    fn pi_allow_once_prompt_is_blocked() {
+        let screen =
+            ScreenSnapshot::from_text("bash git push\nAllow once\nAlways allow this session\nDeny");
+        assert_eq!(
+            classify_agent_screen("pi", &screen),
+            Some(PaneStatus::Blocked)
+        );
     }
 }
