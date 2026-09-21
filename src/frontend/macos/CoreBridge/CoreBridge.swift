@@ -488,6 +488,17 @@ struct MuxTask {
         )
     }
 
+    /// 交换同一 tab 里两个 pane 的位置。
+    static func swapPanes(_ a: UInt32, _ b: UInt32) -> MuxTask {
+        MuxTask(
+            type: TASK_SWAP_PANE,
+            targetPane: a,
+            targetTab: b,
+            dir: 0,
+            name: nil
+        )
+    }
+
     /// 把 pane 并入已有 tab。
     static func joinPane(_ paneId: UInt32, tabId: UInt32) -> MuxTask {
         MuxTask(

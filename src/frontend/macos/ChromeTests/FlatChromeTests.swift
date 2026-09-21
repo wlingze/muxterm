@@ -1246,6 +1246,21 @@ final class PaneLayoutProjectionTests: XCTestCase {
         )
     }
 
+    func testPaneDragSwapsOnDropAndBreaksWhenDroppedOutside() {
+        XCTAssertEqual(
+            PaneDragLayoutPolicy.action(source: 1, destination: 2),
+            .swap(2)
+        )
+        XCTAssertEqual(
+            PaneDragLayoutPolicy.action(source: 1, destination: 1),
+            .cancel
+        )
+        XCTAssertEqual(
+            PaneDragLayoutPolicy.action(source: 1, destination: nil),
+            .moveToNewTab
+        )
+    }
+
     func testMoveMenuPinsNewTabFirstAndSkipsCurrentTab() {
         XCTAssertEqual(
             PaneMoveMenuPolicy.destinations(

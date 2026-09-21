@@ -1170,6 +1170,7 @@ pub enum ClientTask {
     TogglePaneFullscreen { pane_id: u32 },
     BreakPane { pane_id: u32 },
     JoinPane { pane_id: u32, tab_id: u32 },
+    SwapPane { a: u32, b: u32 },
     RefreshTabs,
     RequestPaneSnapshot { pane_id: u32 },
     ScrollPane { pane_id: u32, lines: i32 },
@@ -2757,6 +2758,7 @@ fn task_to_ffi(task: ClientTask) -> CTask {
         }
         ClientTask::BreakPane { pane_id } => (ffi::TASK_BREAK_PANE, pane_id, 0, 0),
         ClientTask::JoinPane { pane_id, tab_id } => (ffi::TASK_JOIN_PANE, pane_id, tab_id, 0),
+        ClientTask::SwapPane { a, b } => (ffi::TASK_SWAP_PANE, a, b, 0),
         ClientTask::RefreshTabs => (ffi::TASK_REFRESH_TABS, 0, 0, 0),
         ClientTask::RequestPaneSnapshot { pane_id } => {
             (ffi::TASK_REQUEST_PANE_SNAPSHOT, pane_id, 0, 0)

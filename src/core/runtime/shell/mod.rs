@@ -825,6 +825,34 @@ impl ShellRuntime {
         Ok(())
     }
 
+    fn swap_pane_internal(&mut self, a: PaneId, b: PaneId) -> Result<(), String> {
+        if a == b {
+            return Ok(());
+        }
+        let tab_a = self
+            .tab_of_pane(a)
+            .ok_or_else(|| format!("pane {a} 不存在"))?;
+        let tab_b = self
+            .tab_of_pane(b)
+            .ok_or_else(|| format!("pane {b} 不存在"))?;
+        if tab_a != tab_b {
+            return Err("只能交换同一 tab 里的 pane".into());
+        }
+        let Some(tab) = self
+            .tabs
+            .iter_mut()
+            .find(|candidate| candidate.info.id == tab_a)
+        else {
+            return Err(format!("tab {tab_a} 不存在"));
+        };
+        if !tab.layout.tree.swap_leaves(a, b) {
+            return Err("交换失败".into());
+        }
+        let layout = tab.layout.clone();
+        self.push_control(ControlEvent::LayoutChanged { tab: tab_a, layout });
+        Ok(())
+    }
+
     /// 找 pane 所在 tab。
     fn tab_of_pane(&self, pane: PaneId) -> Option<TabId> {
         self.panes
@@ -1120,6 +1148,10 @@ impl Runtime for ShellRuntime {
                 Err(reason) => TaskOutcome::Rejected { reason },
             },
             Task::JoinPane { pane, tab } => match self.join_pane_internal(*pane, *tab) {
+                Ok(()) => TaskOutcome::Done,
+                Err(reason) => TaskOutcome::Rejected { reason },
+            },
+            Task::SwapPane { a, b } => match self.swap_pane_internal(*a, *b) {
                 Ok(()) => TaskOutcome::Done,
                 Err(reason) => TaskOutcome::Rejected { reason },
             },
@@ -2115,6 +2147,17 @@ mod tests {
         assert_eq!(b.tab_of_pane(second), Some(dest));
         let leaves = b.layout(&dest).map(|layout| layout.tree.leaves()).unwrap();
         assert!(leaves.contains(&first) && leaves.contains(&second));
+        assert!(matches!(
+            b.execute(&Task::SwapPane {
+                a: first,
+                b: second
+            })
+            .unwrap(),
+            TaskOutcome::Done
+        ));
+        let swapped = b.layout(&dest).map(|layout| layout.tree.leaves()).unwrap();
+        assert_eq!(swapped.len(), leaves.len());
+        assert_ne!(swapped, leaves);
     }
 
     #[tokio::test]

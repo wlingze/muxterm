@@ -3601,6 +3601,31 @@ impl Runtime for HerdrRuntime {
                     .map_err(|e| anyhow!("pane.move 失败: {e}"))?;
                 Ok(TaskOutcome::Done)
             }
+            Task::SwapPane { a, b } => {
+                if a == b {
+                    return Ok(TaskOutcome::Done);
+                }
+                let Some(source) = self.herdr_pane(*a).map(ToOwned::to_owned) else {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: format!("pane {a} 不存在"),
+                    });
+                };
+                let Some(target) = self.herdr_pane(*b).map(ToOwned::to_owned) else {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: format!("pane {b} 不存在"),
+                    });
+                };
+                self.session
+                    .call(
+                        "pane.swap",
+                        serde_json::json!({
+                            "source_pane_id": source,
+                            "target_pane_id": target,
+                        }),
+                    )
+                    .map_err(|e| anyhow!("pane.swap 失败: {e}"))?;
+                Ok(TaskOutcome::Done)
+            }
             _ => Ok(TaskOutcome::Rejected {
                 reason: format!("Herdr v1 未实现 Task {task:?}"),
             }),

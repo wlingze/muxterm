@@ -73,6 +73,7 @@ final class PaneLayoutView: NSView, TerminalClientContentSizing {
     private var pendingForcedClientResize = false
     var onActivatePane: ((UInt32) -> Void)?
     var onMovePaneToNewTab: ((UInt32) -> Void)?
+    var onSwapPanes: ((UInt32, UInt32) -> Void)?
     var onPaneTitleAction: ((UInt32, PaneTitleAction) -> Void)?
     /// 标题栏「移动」菜单在弹出时询问最新目标。nil tab = 新建。
     var moveDestinationsProvider: (() -> [(tabId: UInt32?, title: String)])?
@@ -427,6 +428,31 @@ final class PaneLayoutView: NSView, TerminalClientContentSizing {
         hostByPane[paneId]?.triggerMoveToNewTab()
     }
 
+    func testHandlePaneDrag(_ paneId: UInt32, to destination: UInt32?) {
+        handlePaneDrag(source: paneId, destination: destination)
+    }
+
+    fileprivate func handlePaneDrag(source: UInt32, destination: UInt32?) {
+        switch PaneDragLayoutPolicy.action(source: source, destination: destination) {
+        case .swap(let other):
+            onSwapPanes?(source, other)
+        case .moveToNewTab:
+            onMovePaneToNewTab?(source)
+        case .cancel:
+            break
+        }
+    }
+
+    func paneId(atWindowPoint point: NSPoint) -> UInt32? {
+        for (id, host) in hostByPane {
+            let local = host.convert(point, from: nil)
+            if host.bounds.contains(local) {
+                return id
+            }
+        }
+        return nil
+    }
+
     /// 本地 shell：切换 pane 全屏（再次调用恢复）。tmux 模式走 core zoom，
     /// 不调用这里。
     func toggleFullscreen(paneId: UInt32) {
@@ -575,6 +601,12 @@ final class PaneLayoutView: NSView, TerminalClientContentSizing {
             wrap.onMoveToNewTab = { [weak self] id in
                 self?.onMovePaneToNewTab?(id)
             }
+            wrap.onSwapPanes = { [weak self] a, b in
+                self?.onSwapPanes?(a, b)
+            }
+            wrap.dropTargetProvider = { [weak self] windowPoint in
+                self?.paneId(atWindowPoint: windowPoint)
+            }
             wrap.onTitleAction = { [weak self] id, action in
                 self?.onPaneTitleAction?(id, action)
             }
@@ -651,6 +683,8 @@ final class PaneHostView: NSView {
     let paneId: UInt32
     var onActivate: ((UInt32) -> Void)?
     var onMoveToNewTab: ((UInt32) -> Void)?
+    var onSwapPanes: ((UInt32, UInt32) -> Void)?
+    var dropTargetProvider: ((NSPoint) -> UInt32?)?
     var onTitleAction: ((UInt32, PaneTitleAction) -> Void)?
     var moveDestinationsProvider: (() -> [(tabId: UInt32?, title: String)])? {
         didSet { titleBar.moveDestinationsProvider = moveDestinationsProvider }
@@ -700,8 +734,18 @@ final class PaneHostView: NSView {
             guard let self else { return }
             self.onActivate?(self.paneId)
         }
-        titleBar.onDragOut = { [weak self] in
-            self?.triggerMoveToNewTab()
+        titleBar.onDragOut = { [weak self] windowPoint in
+            guard let self else { return }
+            let destination = self.dropTargetProvider?(windowPoint)
+            switch PaneDragLayoutPolicy.action(source: self.paneId, destination: destination) {
+            case .swap(let other):
+                self.onActivate?(self.paneId)
+                self.onSwapPanes?(self.paneId, other)
+            case .moveToNewTab:
+                self.triggerMoveToNewTab()
+            case .cancel:
+                break
+            }
         }
         titleBar.onAction = { [weak self] action in
             guard let self else { return }
@@ -836,7 +880,7 @@ final class PaneHostView: NSView {
 /// 标题行参与 Auto Layout，终端字符格按剩余真实高度同步给 Runtime。
 private final class PaneTitleBarView: NSView {
     var onActivate: (() -> Void)?
-    var onDragOut: (() -> Void)?
+    var onDragOut: ((NSPoint) -> Void)?
     var onAction: ((PaneTitleAction) -> Void)?
     var moveDestinationsProvider: (() -> [(tabId: UInt32?, title: String)])?
     var dragEnabled = false
@@ -1041,7 +1085,7 @@ private final class PaneTitleBarView: NSView {
                 }
             } else if next.type == .leftMouseUp {
                 alphaValue = 1
-                if dragged { onDragOut?() }
+                if dragged { onDragOut?(next.locationInWindow) }
                 return
             }
         }

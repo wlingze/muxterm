@@ -73,6 +73,25 @@ final class BreakPaneE2ETests: XCTestCase {
         XCTAssertEqual(actions.last?.1, .splitVertical)
     }
 
+    func testDraggingTitleOntoAnotherPaneRequestsSwap() throws {
+        AppE2E.ensureApp()
+        let bridge = try CoreBridge(backendType: "local")
+        defer { bridge.shutdown() }
+        let layout = PaneLayoutView(terminalManager: TerminalManager(bridge: bridge))
+        var swapped: (UInt32, UInt32)?
+        var moved: UInt32?
+        layout.onSwapPanes = { swapped = ($0, $1) }
+        layout.onMovePaneToNewTab = { moved = $0 }
+        layout.testHandlePaneDrag(1, to: 2)
+        XCTAssertEqual(swapped?.0, 1)
+        XCTAssertEqual(swapped?.1, 2)
+        XCTAssertNil(moved)
+        layout.testHandlePaneDrag(1, to: 1)
+        XCTAssertNil(moved)
+        layout.testHandlePaneDrag(1, to: nil)
+        XCTAssertEqual(moved, 1)
+    }
+
     func testPaneTitleMoveMenuPinsNewTabThenOtherTabs() {
         AppE2E.ensureApp()
         let terminal = MuxTerminalView(
