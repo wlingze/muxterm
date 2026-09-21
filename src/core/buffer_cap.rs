@@ -15,11 +15,13 @@ pub const MAX_STATE_EVENTS: usize = 8_192;
 /// 适合长期高频追加的有界字节环。
 ///
 /// 普通 `Vec::drain(..n)` 会在缓冲达到上限后为每个小增量搬动整个尾部；终端 diff
-/// 往往没有换行，于是旧实现还会反复扫描完整的 2 MiB 缓冲。这里用 `VecDeque`
-/// 丢弃前缀，并单独记录换行的绝对位置，使截断和行边界对齐都只处理新增/删除的字节。
-#[derive(Default)]
+/// 往往没有换行，于是旧实现还会反复扫描完整的 2 MiB 缓冲。这里用 `start`
+/// 丢掉前缀，并单独记录换行的绝对位置，使截断和行边界对齐都只处理新增/删除的字节。
+/// `as_slice()` 对 `pane_output` 查询是 O(1) 连续视图。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CappedBytes {
-    bytes: VecDeque<u8>,
+    bytes: Vec<u8>,
+    start: usize,
     line_breaks: VecDeque<u64>,
     head_offset: u64,
 }
@@ -38,37 +40,42 @@ impl CappedBytes {
         }
 
         self.rebase_if_needed(data.len());
-        let tail_offset = self.head_offset + self.bytes.len() as u64;
+        let tail_offset = self.head_offset + self.len() as u64;
         self.line_breaks.extend(
             data.iter()
                 .enumerate()
                 .filter(|(_, byte)| **byte == b'\n')
                 .map(|(index, _)| tail_offset + index as u64),
         );
-        self.bytes.extend(data);
+        self.bytes.extend_from_slice(data);
 
-        if self.bytes.len() > max {
-            self.discard_front(self.bytes.len() - max);
+        if self.len() > max {
+            self.discard_front(self.len() - max);
             self.align_to_line_start();
         }
     }
 
     pub fn clear(&mut self) {
         self.bytes.clear();
+        self.start = 0;
         self.line_breaks.clear();
         self.head_offset = 0;
     }
 
     pub fn len(&self) -> usize {
-        self.bytes.len()
+        self.bytes.len().saturating_sub(self.start)
     }
 
     pub fn is_empty(&self) -> bool {
-        self.bytes.is_empty()
+        self.len() == 0
+    }
+
+    pub fn as_slice(&self) -> &[u8] {
+        &self.bytes[self.start..]
     }
 
     pub fn to_vec(&self) -> Vec<u8> {
-        self.bytes.iter().copied().collect()
+        self.as_slice().to_vec()
     }
 
     fn replace(&mut self, data: &[u8]) {
@@ -79,12 +86,12 @@ impl CappedBytes {
                 .filter(|(_, byte)| **byte == b'\n')
                 .map(|(index, _)| index as u64),
         );
-        self.bytes.extend(data);
+        self.bytes.extend_from_slice(data);
     }
 
     fn discard_front(&mut self, count: usize) {
-        debug_assert!(count <= self.bytes.len());
-        self.bytes.drain(..count);
+        debug_assert!(count <= self.len());
+        self.start += count;
         self.head_offset += count as u64;
         while self
             .line_breaks
@@ -92,6 +99,14 @@ impl CappedBytes {
             .is_some_and(|offset| *offset < self.head_offset)
         {
             self.line_breaks.pop_front();
+        }
+        self.compact_if_needed();
+    }
+
+    fn compact_if_needed(&mut self) {
+        if self.start >= 4096 && self.start * 2 >= self.bytes.len() {
+            self.bytes.drain(..self.start);
+            self.start = 0;
         }
     }
 
@@ -104,7 +119,7 @@ impl CappedBytes {
     }
 
     fn rebase_if_needed(&mut self, incoming: usize) {
-        let required = self.bytes.len().saturating_add(incoming) as u64;
+        let required = self.len().saturating_add(incoming) as u64;
         if self.head_offset <= u64::MAX.saturating_sub(required) {
             return;
         }
@@ -186,8 +201,20 @@ mod tests {
         buf.append(b"old-partial\nrecent-one\nrecent-two", 24);
 
         assert_eq!(buf.to_vec(), b"recent-one\nrecent-two");
+        assert_eq!(buf.as_slice(), b"recent-one\nrecent-two");
         assert_eq!(buf.len(), 21);
         assert_eq!(buf.line_breaks.len(), 1);
+    }
+
+    #[test]
+    fn capped_bytes_as_slice_survives_many_newline_free_evictions() {
+        let mut buf = CappedBytes::default();
+        for i in 0..4_000u32 {
+            buf.append(&i.to_le_bytes(), 64);
+        }
+        assert_eq!(buf.len(), 64);
+        assert_eq!(buf.as_slice().len(), 64);
+        assert_eq!(buf.as_slice(), buf.to_vec());
     }
 
     #[test]

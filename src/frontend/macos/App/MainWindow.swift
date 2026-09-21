@@ -3449,14 +3449,22 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 不在这里偷选或 start server。
     private func connectHerdrProject(config: TargetConfig) {
         updatePendingWorkspaceOpen(stage: .attach)
-        connectCatalogTarget(config: config, intent: .attachOnly) { [weak self] result in
+        connectCatalogTarget(
+            config: config,
+            intent: .attachOnly,
+            initialClientSize: initialTmuxClientSizeHint()
+        ) { [weak self] result in
             guard let self else { return }
             switch result {
             case .success(let connection):
                 self.quickConnectStore.upsertProject(connection.target)
                 self.finishCatalogConnect(.success(connection))
             case .failure:
-                self.connectCatalogTarget(config: config, intent: .createIfMissing) { [weak self] createResult in
+                self.connectCatalogTarget(
+                    config: config,
+                    intent: .createIfMissing,
+                    initialClientSize: self.initialTmuxClientSizeHint()
+                ) { [weak self] createResult in
                     guard let self else { return }
                     if case .success(let connection) = createResult {
                         self.quickConnectStore.upsertProject(connection.target)

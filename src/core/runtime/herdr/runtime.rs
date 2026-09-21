@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 
-use crate::buffer_cap::{append_capped, MAX_PANE_OUTPUT_BYTES};
+use crate::buffer_cap::{CappedBytes, MAX_PANE_OUTPUT_BYTES};
 use crate::protocol::layout::{LayoutNode, SplitDir, TabLayout};
 #[cfg(test)]
 use crate::protocol::state::StateChange;
@@ -82,7 +82,7 @@ pub struct HerdrRuntime {
     preferred_client_size: Option<(u16, u16)>,
     /// 每个 pane 最后收到的 UI allocation；不能随 intent/stream 切换丢掉。
     pane_client_sizes: HashMap<PaneId, (u16, u16)>,
-    outputs: HashMap<PaneId, Vec<u8>>,
+    outputs: HashMap<PaneId, CappedBytes>,
     agents: HashMap<PaneId, PaneAgentInfo>,
     /// 最近一次接受的 agent 版本（含已释放 agent 的墓碑）。旧 snapshot
     /// 不能凭空把一个刚进入 working 的 pane 改回旧状态。
@@ -1005,7 +1005,7 @@ impl HerdrRuntime {
     fn seed_one_pane(&mut self, pane: PaneId, herdr_pane: &str) {
         match self.session.pane_read_ansi(herdr_pane) {
             Ok(bytes) if !bytes.is_empty() => {
-                self.outputs.insert(pane, bytes.clone());
+                self.replace_output(pane, &bytes);
                 // pane.read 只进 Index（搜索/attention）；Surface 由
                 // current-generation full frame 负责，禁止把无头快照当像素。
                 Self::push_render(
@@ -1061,7 +1061,7 @@ impl HerdrRuntime {
             }
             match result {
                 Ok(bytes) if !bytes.is_empty() => {
-                    self.outputs.insert(pane, bytes.clone());
+                    self.replace_output(pane, &bytes);
                     Self::push_render(
                         &mut self.events,
                         RenderEvent::PaneIndexSnapshot { pane, data: bytes },
@@ -1290,9 +1290,36 @@ impl HerdrRuntime {
         }
     }
 
+    fn has_ui_allocation(&self, pane: PaneId) -> bool {
+        self.pane_client_sizes.contains_key(&pane)
+            || self.preferred_client_size.is_some()
+            || self
+                .stream_slots
+                .get(&pane)
+                .is_some_and(|slot| slot.pending_resize.is_some())
+    }
+
+    fn replace_output(&mut self, pane: PaneId, bytes: &[u8]) {
+        let buf = self.outputs.entry(pane).or_default();
+        buf.clear();
+        buf.append(bytes, MAX_PANE_OUTPUT_BYTES);
+    }
+
     /// 递增 generation → 关旧流（Drop 发 Detach）→ 启动新流（async worker；
     /// 调用线程只登记 Starting）。generation 递增必须先于旧流 shutdown。
     fn start_stream_replacing(&mut self, pane: PaneId, mode: StreamMode, takeover: bool) {
+        let never_started = self
+            .stream_slots
+            .get(&pane)
+            .is_none_or(|slot| slot.generation == 0 && slot.actual_mode.is_none());
+        if never_started && !self.has_ui_allocation(pane) {
+            tracing::debug!(
+                target = "muxterm::herdr",
+                pane = %pane,
+                "defer pane stream until UI allocation; skip 80x24 Hello"
+            );
+            return;
+        }
         let Some(slot) = self.stream_slots.get_mut(&pane) else {
             return;
         };
@@ -1629,16 +1656,19 @@ impl HerdrRuntime {
                             }
                         }
                         let index_snapshot = if keep_seed {
-                            self.outputs.entry(pane).or_insert_with(|| bytes.clone());
+                            self.outputs.entry(pane).or_insert_with(|| {
+                                let mut buf = CappedBytes::default();
+                                buf.append(&bytes, MAX_PANE_OUTPUT_BYTES);
+                                buf
+                            });
                             // 追赶 full 之前缓存的严格连续增量。
                             match slot.take_catchup_after_full(wire_seq) {
                                 Ok(catchup) => {
                                     for data in catchup {
-                                        append_capped(
-                                            self.outputs.entry(pane).or_default(),
-                                            &data,
-                                            MAX_PANE_OUTPUT_BYTES,
-                                        );
+                                        self.outputs
+                                            .entry(pane)
+                                            .or_default()
+                                            .append(&data, MAX_PANE_OUTPUT_BYTES);
                                         Self::push_render(
                                             &mut self.events,
                                             RenderEvent::PaneOutput { pane, data },
@@ -1661,9 +1691,13 @@ impl HerdrRuntime {
                             // attach 的 pane.read 内容仍是搜索事实源，需在 full
                             // 之后再播种一次，不能让非活动 pane 的 baseline 抹掉
                             // 已存在的历史 token。
-                            self.outputs.get(&pane).cloned()
+                            self.outputs.get(&pane).map(CappedBytes::to_vec)
                         } else {
-                            self.outputs.insert(pane, bytes.clone());
+                            {
+                                let buf = self.outputs.entry(pane).or_default();
+                                buf.clear();
+                                buf.append(&bytes, MAX_PANE_OUTPUT_BYTES);
+                            }
                             None
                         };
                         Self::push_render(
@@ -1695,11 +1729,10 @@ impl HerdrRuntime {
                             ));
                         }
                     } else {
-                        append_capped(
-                            self.outputs.entry(pane).or_default(),
-                            &bytes,
-                            MAX_PANE_OUTPUT_BYTES,
-                        );
+                        self.outputs
+                            .entry(pane)
+                            .or_default()
+                            .append(&bytes, MAX_PANE_OUTPUT_BYTES);
                         Self::push_render(
                             &mut self.events,
                             RenderEvent::PaneOutput { pane, data: bytes },
@@ -3118,7 +3151,7 @@ impl State for HerdrRuntime {
     }
 
     fn pane_output(&self, pane: &PaneId) -> Option<&[u8]> {
-        self.outputs.get(pane).map(Vec::as_slice)
+        self.outputs.get(pane).map(CappedBytes::as_slice)
     }
 
     fn status(&self) -> BackendStatus {
@@ -3329,9 +3362,17 @@ impl Runtime for HerdrRuntime {
                 );
                 Ok(TaskOutcome::Done)
             }
-            Task::ResizeClient { .. } => Ok(TaskOutcome::Rejected {
-                reason: "HerdrRuntime 使用 pane Surface resize".into(),
-            }),
+            Task::ResizeClient { cols, rows } => {
+                // 前端 attach 时把窗口格子先写成 preferred，Hello 才不会用 80×24。
+                // 分屏的精确格子仍由后续 ResizePane 覆盖。
+                let first = self.preferred_client_size.is_none();
+                let (cols, rows) = normalize_pane_size(*cols, *rows, self.preferred_client_size);
+                self.preferred_client_size = Some((cols, rows));
+                if first {
+                    self.reconcile_stream_modes();
+                }
+                Ok(TaskOutcome::Done)
+            }
             Task::SwitchPane { target } => {
                 let Some(pane) = self.panes.iter().find(|p| p.id == *target) else {
                     return Ok(TaskOutcome::Rejected {
@@ -4156,6 +4197,11 @@ mod tests {
         );
         runtime.preferred_client_size = Some((132, 41));
         assert_eq!(runtime.hello_client_size(pane), (132, 41));
+        runtime.preferred_client_size = None;
+        assert!(
+            !runtime.has_ui_allocation(pane),
+            "没有 UI 格子时不得用 80×24 开流"
+        );
         if let Some(slot) = runtime.stream_slots.get_mut(&pane) {
             slot.pending_resize = Some((140, 50));
         }
@@ -4234,6 +4280,24 @@ mod tests {
             StreamMode::Control,
             "preferred 写入后 active 应变 Control"
         );
+    }
+
+    #[test]
+    fn resize_client_records_preferred_viewport() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w2",
+        );
+        runtime.status = BackendStatus::Connected;
+        let outcome = runtime
+            .execute(&Task::ResizeClient {
+                cols: 178,
+                rows: 50,
+            })
+            .expect("resize client");
+        assert!(matches!(outcome, TaskOutcome::Done));
+        assert_eq!(runtime.preferred_client_size, Some((178, 50)));
+        assert!(runtime.has_ui_allocation(PaneId(1)));
     }
 
     /// 帧尺寸变化必须先发 PaneResized，再让 Surface 吃 PaneFrame。
@@ -5115,7 +5179,7 @@ mod tests {
         })
         .unwrap();
         runtime.drain_stream();
-        assert_eq!(runtime.outputs.get(&pane).unwrap(), b"FULL_ONE");
+        assert_eq!(runtime.outputs.get(&pane).unwrap().as_slice(), b"FULL_ONE");
 
         // 第二个 full（seq 2）：必须替换 seed buffer。
         tx.send(PaneStreamEvent::Frame {
@@ -5131,7 +5195,7 @@ mod tests {
         .unwrap();
         runtime.drain_stream();
         assert_eq!(
-            runtime.outputs.get(&pane).unwrap(),
+            runtime.outputs.get(&pane).unwrap().as_slice(),
             b"FULL_TWO",
             "第二个 full frame 必须替换 seed buffer，禁止 FULL_ONEFULL_TWO"
         );
@@ -5149,7 +5213,10 @@ mod tests {
         })
         .unwrap();
         runtime.drain_stream();
-        assert_eq!(runtime.outputs.get(&pane).unwrap(), b"FULL_TWO_DIFF");
+        assert_eq!(
+            runtime.outputs.get(&pane).unwrap().as_slice(),
+            b"FULL_TWO_DIFF"
+        );
 
         let queued_events = queued_state_changes(&runtime);
         let output_events = queued_events
@@ -5201,7 +5268,7 @@ mod tests {
         slot.surface_baseline = SurfaceBaseline::AwaitingFull;
         slot.seed_pending = true;
         runtime.stream_slots.insert(pane, slot);
-        runtime.outputs.insert(pane, b"ATTACH_HISTORY".to_vec());
+        runtime.replace_output(pane, b"ATTACH_HISTORY");
 
         tx.send(PaneStreamEvent::Frame {
             pane,
@@ -5217,7 +5284,7 @@ mod tests {
         runtime.drain_stream();
 
         assert_eq!(
-            runtime.outputs.get(&pane).map(Vec::as_slice),
+            runtime.outputs.get(&pane).map(CappedBytes::as_slice),
             Some(b"ATTACH_HISTORY".as_slice()),
             "首个 full 不得覆盖 attach 的历史 Index 快照"
         );
@@ -5660,7 +5727,7 @@ mod tests {
             "pane.read 必须产生 PaneIndexSnapshot"
         );
         assert_eq!(
-            runtime.outputs.get(&pane).map(Vec::as_slice),
+            runtime.outputs.get(&pane).map(CappedBytes::as_slice),
             Some(seed_text.as_bytes()),
             "Index 快照字节必须进 outputs"
         );
@@ -5690,6 +5757,7 @@ mod tests {
             rows: 24,
         });
         runtime.pane_to_herdr_pane.insert(pane, "w1:p1".into());
+        runtime.preferred_client_size = Some((80, 24));
         let (tx, rx) = super::super::observe::channel();
         runtime.stream_tx = Some(tx.clone());
         runtime.stream_rx = Some(rx);
@@ -5712,12 +5780,12 @@ mod tests {
         })
         .unwrap();
         runtime.drain_stream();
-        assert_eq!(runtime.outputs.get(&pane).unwrap(), b"GEN1_FULL");
+        assert_eq!(runtime.outputs.get(&pane).unwrap().as_slice(), b"GEN1_FULL");
 
         // 切换到 generation 2（模拟 promote/demote）：旧像素保留。
         runtime.start_stream_replacing(pane, StreamMode::Observe, false);
         assert_eq!(
-            runtime.outputs.get(&pane).unwrap(),
+            runtime.outputs.get(&pane).unwrap().as_slice(),
             b"GEN1_FULL",
             "generation 切换不得清空旧像素"
         );
@@ -5736,7 +5804,7 @@ mod tests {
         .unwrap();
         runtime.drain_stream();
         assert_eq!(
-            runtime.outputs.get(&pane).unwrap(),
+            runtime.outputs.get(&pane).unwrap().as_slice(),
             b"GEN1_FULL",
             "stale generation full 不得覆盖当前 Index"
         );
@@ -5756,7 +5824,7 @@ mod tests {
         .unwrap();
         runtime.drain_stream();
         assert_eq!(
-            runtime.outputs.get(&pane).unwrap(),
+            runtime.outputs.get(&pane).unwrap().as_slice(),
             b"GEN2_FULL",
             "新 generation full 到达后才替换旧像素"
         );
