@@ -5,73 +5,42 @@ import MuxtermChrome
 
 /// 把 pane 拖成新 tab = tmux `break-pane`（iTerm2 breakOutWindowPane / MoveSessionToNewTab）。
 final class BreakPaneE2ETests: XCTestCase {
-    func testPaneTitleReservationFollowsSplitAxis() {
-        let first = LayoutNode.leaf(paneId: 1)
-        let second = LayoutNode.leaf(paneId: 2)
-        let horizontal = LayoutNode.split(
-            horizontal: true,
-            ratio: 500,
-            first: first,
-            second: second
-        )
-        let vertical = LayoutNode.split(
-            horizontal: false,
-            ratio: 500,
-            first: first,
-            second: second
-        )
-
+    func testTitleReservationIsFixedAndIgnoresLayoutTree() {
+        XCTAssertEqual(PaneTitleBarGeometry.reservedHeight(showsTitles: false), 0)
         XCTAssertEqual(
-            PaneTitleBarGeometry.reservedHeight(for: first, showsTitles: false),
-            0
-        )
-        XCTAssertEqual(
-            PaneTitleBarGeometry.reservedHeight(for: horizontal, showsTitles: true),
+            PaneTitleBarGeometry.reservedHeight(showsTitles: true),
             PaneTitleBarGeometry.height,
-            "左右分屏的标题栏在同一纵向层级，只扣除一次固定高度"
-        )
-        XCTAssertEqual(
-            PaneTitleBarGeometry.reservedHeight(for: vertical, showsTitles: true),
-            PaneTitleBarGeometry.height * 2 + PaneTitleBarGeometry.dividerLength,
-            "上下分屏扣除两个标题栏和一条分隔条，只算一次"
-        )
-        XCTAssertEqual(
-            PaneTitleBarGeometry.reservedHeight(
-                for: .split(
-                    horizontal: true,
-                    ratio: 500,
-                    first: vertical,
-                    second: .leaf(paneId: 3)
-                ),
-                showsTitles: true
-            ),
-            PaneTitleBarGeometry.height * 2 + PaneTitleBarGeometry.dividerLength,
-            "嵌套布局按最深的纵向 chrome 计算"
+            "有 title 只扣一次固定高度"
         )
         let container = NSSize(width: 800, height: 600)
-        let firstPlan = PaneTitleBarGeometry.clientContentSize(
+        let withTitle = PaneTitleBarGeometry.clientContentSize(
             container: container,
-            layout: vertical,
             showsTitles: true
         )
-        let secondPlan = PaneTitleBarGeometry.clientContentSize(
+        let again = PaneTitleBarGeometry.clientContentSize(
             container: container,
-            layout: vertical,
             showsTitles: true
         )
-        XCTAssertEqual(firstPlan, secondPlan, "同一容器和布局必须得到同一计划尺寸")
+        XCTAssertEqual(withTitle, again)
+        XCTAssertEqual(withTitle.width, container.width)
         XCTAssertEqual(
-            firstPlan.height,
-            container.height - PaneTitleBarGeometry.height * 2 - PaneTitleBarGeometry.dividerLength,
+            withTitle.height,
+            container.height - PaneTitleBarGeometry.height,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            PaneTitleBarGeometry.clientContentSize(
+                container: container,
+                showsTitles: false
+            ).height,
+            container.height,
             accuracy: 0.001
         )
         XCTAssertFalse(
-            PaneTitleBarGeometry.shouldSend(previous: (178, 48), next: (178, 48)),
-            "计划格子没变不得 resize"
+            PaneTitleBarGeometry.shouldSend(previous: (178, 49), next: (178, 49))
         )
         XCTAssertTrue(
-            PaneTitleBarGeometry.shouldSend(previous: (178, 50), next: (178, 48)),
-            "计划格子变了只发一次"
+            PaneTitleBarGeometry.shouldSend(previous: (178, 50), next: (178, 49))
         )
     }
 
