@@ -600,6 +600,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 self.splitPane(paneId, horizontal: true)
             case .splitVertical:
                 self.splitPane(paneId, horizontal: false)
+            case .fullscreen:
+                self.togglePaneFullscreen(paneId)
             case .close:
                 self.closePane(paneId)
             }
@@ -989,6 +991,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         else {
             return
         }
+        togglePaneFullscreen(pane)
+    }
+
+    private func togglePaneFullscreen(_ pane: UInt32) {
         if terminalManager.usesClientResize {
             _ = enqueueCoreTask(
                 MuxTask.togglePaneFullscreen(pane),
@@ -996,6 +1002,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             )
         } else {
             content.paneLayout.toggleFullscreen(paneId: pane)
+            content.paneLayout.refreshSurfaceGeometry(paneId: pane)
         }
     }
 

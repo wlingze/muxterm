@@ -63,12 +63,14 @@ final class BreakPaneE2ETests: XCTestCase {
 
         XCTAssertEqual(
             host.titleActionsForTesting,
-            [.splitHorizontal, .splitVertical, .close]
+            [.splitHorizontal, .splitVertical, .fullscreen, .close]
         )
-        host.triggerTitleAction(.splitVertical)
+        host.triggerTitleAction(.fullscreen)
         XCTAssertEqual(actions.count, 1)
         XCTAssertEqual(actions.first?.0, 7)
-        XCTAssertEqual(actions.first?.1, .splitVertical)
+        XCTAssertEqual(actions.first?.1, .fullscreen)
+        host.triggerTitleAction(.splitVertical)
+        XCTAssertEqual(actions.last?.1, .splitVertical)
     }
 
     func testPaneTitlesAppearOnlyForSplitTabs() throws {

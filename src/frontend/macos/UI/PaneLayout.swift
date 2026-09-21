@@ -4,6 +4,7 @@ import MuxtermChrome
 enum PaneTitleAction: Equatable {
     case splitHorizontal
     case splitVertical
+    case fullscreen
     case close
 }
 
@@ -897,7 +898,7 @@ private final class PaneTitleBarView: NSView {
 
     var titleForTesting: String { label.stringValue }
     var actionsForTesting: [PaneTitleAction] {
-        [.splitHorizontal, .splitVertical, .close]
+        [.splitHorizontal, .splitVertical, .fullscreen, .close]
     }
 
     private func configureActionMenu() {
@@ -916,6 +917,15 @@ private final class PaneTitleBarView: NSView {
         )
         vertical.target = self
         actionMenu.addItem(vertical)
+        actionMenu.addItem(.separator())
+
+        let fullscreen = NSMenuItem(
+            title: MuxtermI18n.shared.tr(.togglePaneFullscreen),
+            action: #selector(toggleFullscreen(_:)),
+            keyEquivalent: ""
+        )
+        fullscreen.target = self
+        actionMenu.addItem(fullscreen)
         actionMenu.addItem(.separator())
 
         let close = NSMenuItem(
@@ -942,6 +952,10 @@ private final class PaneTitleBarView: NSView {
 
     @objc private func splitVertical(_ sender: Any?) {
         onAction?(.splitVertical)
+    }
+
+    @objc private func toggleFullscreen(_ sender: Any?) {
+        onAction?(.fullscreen)
     }
 
     @objc private func closePane(_ sender: Any?) {
