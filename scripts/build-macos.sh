@@ -99,6 +99,8 @@ copy_spm_bundle "SwiftTerm_SwiftTerm"
 
 # 源码 catalog：给 Bundle.main / Contents/Resources/i18n 查找（不依赖 SPM bundle 名）
 cp -f "$MACOS_DIR/Resources/i18n/"*.json "$APP/Contents/Resources/i18n/"
+# 应用图标属于主 .app bundle；MuxtermAppLib 的资源包不会被 LaunchServices 当作图标根目录。
+cp -f "$MACOS_DIR/Resources/MuxtermLogo.icns" "$APP/Contents/Resources/MuxtermLogo.icns"
 
 xattr -cr "$APP" 2>/dev/null || true
 cp -f "$MACOS_DIR/Info.plist" "$APP/Contents/Info.plist"

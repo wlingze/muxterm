@@ -1,5 +1,9 @@
 # Muxterm
 
+<p align="center">
+  <img src="assets/muxterm-logo-b-wide.svg" alt="Muxterm logo" width="180">
+</p>
+
 跨平台终端：把 tmux / Herdr / 本地 shell 收成原生 Tab / Pane UI，而不是黑框 + `Ctrl+B`。
 
 产品层级是 **Workspace = Runtime(Transport) + path**。Linux（GTK4）、macOS（Swift）、TUI、CLI 都是 frontend，只经共享 Rust Core 的 C FFI。详见 [PRODUCT.md](PRODUCT.md)。目录见 [docs/PROJECT-STRUCTURE.md](docs/PROJECT-STRUCTURE.md)。

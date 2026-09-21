@@ -6,6 +6,8 @@
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIconFile</key>
+	<string>MuxtermLogo.icns</string>
 	<key>CFBundleIdentifier</key>
 	<string>dev.muxterm.app</string>
 	<key>CFBundleInfoDictionaryVersion</key>
