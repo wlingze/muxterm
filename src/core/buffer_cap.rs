@@ -1,5 +1,7 @@
 //! 有界缓冲：防止挂起/忙等时 pane 输出与半行缓冲涨到数 GB。
 
+use std::collections::VecDeque;
+
 /// 单 pane 累计输出上限（字节）。超出时丢弃最旧前缀，保留尾部。
 pub const MAX_PANE_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
 
@@ -9,6 +11,109 @@ pub const MAX_INCOMPLETE_LINE_BYTES: usize = 1024 * 1024;
 /// 事件队列软上限：超出时优先丢弃最旧的 `PaneOutput` 类事件占用
 /// （由调用方在 push 后调用 [`trim_front_while`]）。
 pub const MAX_STATE_EVENTS: usize = 8_192;
+
+/// 适合长期高频追加的有界字节环。
+///
+/// 普通 `Vec::drain(..n)` 会在缓冲达到上限后为每个小增量搬动整个尾部；终端 diff
+/// 往往没有换行，于是旧实现还会反复扫描完整的 2 MiB 缓冲。这里用 `VecDeque`
+/// 丢弃前缀，并单独记录换行的绝对位置，使截断和行边界对齐都只处理新增/删除的字节。
+#[derive(Default)]
+pub struct CappedBytes {
+    bytes: VecDeque<u8>,
+    line_breaks: VecDeque<u64>,
+    head_offset: u64,
+}
+
+impl CappedBytes {
+    /// 追加字节并把逻辑长度限制在 `max` 以内。
+    pub fn append(&mut self, data: &[u8], max: usize) {
+        if max == 0 {
+            self.clear();
+            return;
+        }
+        if data.len() >= max {
+            self.replace(&data[data.len() - max..]);
+            self.align_to_line_start();
+            return;
+        }
+
+        self.rebase_if_needed(data.len());
+        let tail_offset = self.head_offset + self.bytes.len() as u64;
+        self.line_breaks.extend(
+            data.iter()
+                .enumerate()
+                .filter(|(_, byte)| **byte == b'\n')
+                .map(|(index, _)| tail_offset + index as u64),
+        );
+        self.bytes.extend(data);
+
+        if self.bytes.len() > max {
+            self.discard_front(self.bytes.len() - max);
+            self.align_to_line_start();
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.bytes.clear();
+        self.line_breaks.clear();
+        self.head_offset = 0;
+    }
+
+    pub fn len(&self) -> usize {
+        self.bytes.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
+
+    pub fn to_vec(&self) -> Vec<u8> {
+        self.bytes.iter().copied().collect()
+    }
+
+    fn replace(&mut self, data: &[u8]) {
+        self.clear();
+        self.line_breaks.extend(
+            data.iter()
+                .enumerate()
+                .filter(|(_, byte)| **byte == b'\n')
+                .map(|(index, _)| index as u64),
+        );
+        self.bytes.extend(data);
+    }
+
+    fn discard_front(&mut self, count: usize) {
+        debug_assert!(count <= self.bytes.len());
+        self.bytes.drain(..count);
+        self.head_offset += count as u64;
+        while self
+            .line_breaks
+            .front()
+            .is_some_and(|offset| *offset < self.head_offset)
+        {
+            self.line_breaks.pop_front();
+        }
+    }
+
+    fn align_to_line_start(&mut self) {
+        let Some(line_break) = self.line_breaks.front().copied() else {
+            return;
+        };
+        let count = (line_break + 1 - self.head_offset) as usize;
+        self.discard_front(count);
+    }
+
+    fn rebase_if_needed(&mut self, incoming: usize) {
+        let required = self.bytes.len().saturating_add(incoming) as u64;
+        if self.head_offset <= u64::MAX.saturating_sub(required) {
+            return;
+        }
+        for offset in &mut self.line_breaks {
+            *offset -= self.head_offset;
+        }
+        self.head_offset = 0;
+    }
+}
 
 /// 向 `buf` 追加 `data`，总长超过 `max` 时丢掉最旧前缀，保留尾部。
 pub fn append_capped(buf: &mut Vec<u8>, data: &[u8], max: usize) {
@@ -57,6 +162,33 @@ pub fn trim_incomplete_line(buf: &mut Vec<u8>, max: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capped_bytes_keeps_exact_tail_across_many_newline_free_writes() {
+        let mut buf = CappedBytes::default();
+        let source = (0..20_000)
+            .map(|i| ((i % 200) + 32) as u8)
+            .collect::<Vec<_>>();
+
+        for chunk in source.chunks(7) {
+            buf.append(chunk, 1_024);
+        }
+
+        assert_eq!(buf.len(), 1_024);
+        assert_eq!(buf.to_vec(), source[source.len() - 1_024..]);
+        assert!(buf.line_breaks.is_empty());
+    }
+
+    #[test]
+    fn capped_bytes_aligns_evicted_prefix_to_the_next_complete_line() {
+        let mut buf = CappedBytes::default();
+
+        buf.append(b"old-partial\nrecent-one\nrecent-two", 24);
+
+        assert_eq!(buf.to_vec(), b"recent-one\nrecent-two");
+        assert_eq!(buf.len(), 21);
+        assert_eq!(buf.line_breaks.len(), 1);
+    }
 
     #[test]
     fn append_capped_keeps_tail_under_max() {

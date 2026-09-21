@@ -9,7 +9,7 @@
 //! dump `visible_ansi` 当显示。
 
 use crate::activity::attention::signal::AttentionSignal;
-use crate::buffer_cap::{append_capped, MAX_PANE_OUTPUT_BYTES};
+use crate::buffer_cap::{CappedBytes, MAX_PANE_OUTPUT_BYTES};
 use crate::protocol::terminal::emulate::TerminalState;
 
 /// 一个 pane 的缓冲（scrollback + byte ring + viewport）。
@@ -19,7 +19,7 @@ pub struct PaneBuf {
     /// TerminalState 被完整快照替换时，保留尚未交给注意力引擎的信号。
     pending_attention: Vec<AttentionSignal>,
     /// 有界原始字节环（丢最旧；供 peek / 小终端播种）。
-    byte_ring: Vec<u8>,
+    byte_ring: CappedBytes,
     /// 当前 viewport 滚动偏移（0 = 底部直播）。
     viewport: u32,
 }
@@ -31,7 +31,7 @@ impl PaneBuf {
             terminal: TerminalState::with_scrollback(cols.max(1), rows.max(1), scrollback_max),
             scrollback_max,
             pending_attention: Vec::new(),
-            byte_ring: Vec::new(),
+            byte_ring: CappedBytes::default(),
             viewport: 0,
         }
     }
@@ -44,7 +44,7 @@ impl PaneBuf {
         let _timing = crate::performance::INDEX.enter();
         self.terminal
             .resize(usize::from(cols.max(1)), usize::from(rows.max(1)));
-        append_capped(&mut self.byte_ring, bytes, MAX_PANE_OUTPUT_BYTES);
+        self.byte_ring.append(bytes, MAX_PANE_OUTPUT_BYTES);
         self.terminal.feed(bytes);
         // resize/新输出可能改变可见行数，旧 viewport 不能悬空到历史范围之外。
         if self.viewport != 0 {
@@ -189,8 +189,8 @@ impl PaneBuf {
     }
 
     /// 有界原始字节环（peek / 小终端播种用）。
-    pub fn raw_bytes(&self) -> &[u8] {
-        &self.byte_ring
+    pub fn raw_bytes(&self) -> Vec<u8> {
+        self.byte_ring.to_vec()
     }
 
     /// 取走 OSC/CSI 查询应答（渲染层回写用）。

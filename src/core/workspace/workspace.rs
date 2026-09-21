@@ -490,7 +490,7 @@ impl Workspace {
     pub fn pane_raw_bytes(&self, pane: PaneId) -> Vec<u8> {
         self.panes
             .get(&pane)
-            .map(|t| t.raw_bytes().to_vec())
+            .map(|t| t.raw_bytes())
             .unwrap_or_default()
     }
 
