@@ -104,6 +104,55 @@ final class SurfaceVisibilityE2ETests: XCTestCase {
         XCTAssertEqual(view.renderedGridSize.rows, allocated.rows)
     }
 
+    func testClosingSiblingGrowsRemainingPaneToAllocatedGrid() throws {
+        AppE2E.ensureApp()
+        let (bridge, manager) = try makeManager()
+        defer { bridge.shutdown() }
+        manager.setBridgeQueriesEnabled(false)
+        let layout = PaneLayoutView(terminalManager: manager)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1000, height: 600),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = layout
+        window.orderFront(nil)
+        defer { window.orderOut(nil) }
+
+        let splitPanes = [
+            Pane(id: 1, cols: 80, rows: 24, isActive: true),
+            Pane(id: 2, cols: 80, rows: 24, isActive: false),
+        ]
+        let split = LayoutNode.split(
+            horizontal: true,
+            ratio: 500,
+            first: .leaf(paneId: 1),
+            second: .leaf(paneId: 2)
+        )
+        XCTAssertTrue(layout.apply(layout: split, panes: splitPanes, tabId: 1))
+        AppE2E.pump(120)
+        layout.layoutSubtreeIfNeeded()
+        let view = manager.view(for: 1)
+        let splitGrid = view.renderedGridSize
+        XCTAssertGreaterThan(splitGrid.cols, 2, "split 后剩余 pane 应已有合法格子")
+
+        let remaining = [Pane(id: 1, cols: 80, rows: 24, isActive: true)]
+        XCTAssertTrue(layout.apply(layout: .leaf(paneId: 1), panes: remaining, tabId: 1))
+        AppE2E.pump(120)
+        layout.layoutSubtreeIfNeeded()
+        let after = view.renderedGridSize
+        XCTAssertGreaterThan(
+            after.cols,
+            splitGrid.cols,
+            "关掉兄弟 pane 后 grok 格子必须放大到新 allocation，不能继续钉在旧 split 宽度。before=\(splitGrid) after=\(after)"
+        )
+        if let allocated = view.allocatedGridSize() {
+            XCTAssertEqual(after.cols, allocated.cols)
+            XCTAssertEqual(after.rows, allocated.rows)
+        }
+    }
+
     func testPaneHostClipsTerminalGlyphsAtSplitBoundary() {
         AppE2E.ensureApp()
         let view = MuxTerminalView(

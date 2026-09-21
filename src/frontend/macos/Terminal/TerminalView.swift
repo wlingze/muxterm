@@ -865,10 +865,30 @@ final class MuxTerminalView: TerminalView {
         return true
     }
 
+    /// 当前 widget 分配折算成字符格；未布局 / 字号未知时返回 nil。
+    func allocatedGridSize() -> (cols: Int, rows: Int)? {
+        layoutSubtreeIfNeeded()
+        let size = bounds.size
+        guard size.width >= 40, size.height >= 24 else { return nil }
+        guard let cell = terminalCellSizeInPoints(), cell.width > 0, cell.height > 0 else {
+            return nil
+        }
+        return (
+            cols: max(2, Int((size.width / cell.width).rounded(.down))),
+            rows: max(1, Int((size.height / cell.height).rounded(.down)))
+        )
+    }
+
     /// 乐观全屏/缓存投影刚挂载时，后端 pane size 事件还在路上。先让
     /// SwiftTerm 按当前 allocation 重算 grid，避免在旧 split 宽度上输入。
+    ///
+    /// `pinToAllocation`：换树后 host 像素就是格子（关 pane 放大、split 缩小）。
+    /// 默认只放大，缩小仍交给 tmux 尺寸事件。
     @discardableResult
-    func syncToAllocatedGrid() -> Bool {
+    func syncToAllocatedGrid(
+        notifyResize: Bool = false,
+        pinToAllocation: Bool = false
+    ) -> Bool {
         layoutSubtreeIfNeeded()
         let size = bounds.size
         guard size.width >= 40, size.height >= 24 else { return false }
@@ -877,23 +897,23 @@ final class MuxTerminalView: TerminalView {
         setFrameSize(size)
         let term = getTerminal()
         guard term.cols >= 2, term.rows >= 1 else { return false }
-        let allocated: (cols: Int, rows: Int)
-        if let cell = terminalCellSizeInPoints(), cell.width > 0, cell.height > 0 {
-            allocated = (
-                cols: max(2, Int((size.width / cell.width).rounded(.down))),
-                rows: max(1, Int((size.height / cell.height).rounded(.down)))
+        let allocated = allocatedGridSize() ?? (cols: term.cols, rows: term.rows)
+        let target = pinToAllocation
+            ? RemainingPaneGridPolicy.treeChangeGrid(
+                allocatedCols: allocated.cols,
+                allocatedRows: allocated.rows
             )
-        } else {
-            allocated = (cols: term.cols, rows: term.rows)
-        }
-        // 全屏切换时 host 已经变大，必须跟着放大；缩小仍由 tmux 尺寸事件负责。
-        let targetCols = max(term.cols, allocated.cols)
-        let targetRows = max(term.rows, allocated.rows)
-        minimumModelCols = targetCols
-        minimumModelRows = targetRows
+            : RemainingPaneGridPolicy.mergedGrid(
+                requestedCols: term.cols,
+                requestedRows: term.rows,
+                allocatedCols: allocated.cols,
+                allocatedRows: allocated.rows
+            )
+        minimumModelCols = target.cols
+        minimumModelRows = target.rows
         return syncSizeToPty(
-            notifyResize: false,
-            exactGrid: (cols: targetCols, rows: targetRows)
+            notifyResize: notifyResize,
+            exactGrid: target
         )
     }
 
