@@ -1445,7 +1445,7 @@ private final class AttentionBellButton: NSButton {
         contentTintColor = color
         badgeLabel.layer?.backgroundColor = color.cgColor
         badgeLabel.stringValue = self.count > 99 ? "99+" : "\(self.count)"
-        badgeLabel.isHidden = self.count <= 1
+        badgeLabel.isHidden = !AttentionBadgePolicy.showsCount(self.count)
     }
 }
 

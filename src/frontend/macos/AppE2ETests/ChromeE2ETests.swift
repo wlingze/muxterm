@@ -195,6 +195,17 @@ final class ChromeE2ETests: XCTestCase {
 
         bar.setAttention(StatusBarAttention(count: 0))
         XCTAssertEqual(bar.testAttentionSymbolName(), "bell")
+        XCTAssertFalse(
+            bar.testAttentionCountLabel().contains("1"),
+            "0 不得显示数量"
+        )
+
+        bar.setAttention(StatusBarAttention(count: 1, indicator: .blocked))
+        XCTAssertEqual(bar.testAttentionSymbolName(), "bell.fill")
+        XCTAssertTrue(
+            bar.testAttentionCountLabel().contains("1"),
+            "1 必须显示数字 1: \(bar.testAttentionCountLabel())"
+        )
     }
 
     func testAttentionBellUsesSidebarActivityState() {

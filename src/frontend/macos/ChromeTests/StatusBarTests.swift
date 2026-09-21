@@ -269,6 +269,9 @@ final class StatusBarAttentionTests: XCTestCase {
         let working = StatusBarAttention(indicators: [.working, .working, .working])
         XCTAssertEqual(working.indicator, .working)
         XCTAssertEqual(working.count, 3)
+        XCTAssertTrue(AttentionBadgePolicy.showsCount(working.count))
+        XCTAssertTrue(AttentionBadgePolicy.showsCount(1))
+        XCTAssertFalse(AttentionBadgePolicy.showsCount(0))
     }
 }
 
