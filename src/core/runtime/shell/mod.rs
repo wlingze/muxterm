@@ -853,6 +853,20 @@ impl ShellRuntime {
         Ok(())
     }
 
+    fn cycle_layout_internal(&mut self, tab: TabId) -> Result<(), String> {
+        let Some(layout_tab) = self
+            .tabs
+            .iter_mut()
+            .find(|candidate| candidate.info.id == tab)
+        else {
+            return Err(format!("tab {tab} 不存在"));
+        };
+        layout_tab.layout.tree.cycle_split_dirs();
+        let layout = layout_tab.layout.clone();
+        self.push_control(ControlEvent::LayoutChanged { tab, layout });
+        Ok(())
+    }
+
     /// 找 pane 所在 tab。
     fn tab_of_pane(&self, pane: PaneId) -> Option<TabId> {
         self.panes
@@ -1152,6 +1166,10 @@ impl Runtime for ShellRuntime {
                 Err(reason) => TaskOutcome::Rejected { reason },
             },
             Task::SwapPane { a, b } => match self.swap_pane_internal(*a, *b) {
+                Ok(()) => TaskOutcome::Done,
+                Err(reason) => TaskOutcome::Rejected { reason },
+            },
+            Task::CycleLayout { tab } => match self.cycle_layout_internal(*tab) {
                 Ok(()) => TaskOutcome::Done,
                 Err(reason) => TaskOutcome::Rejected { reason },
             },
@@ -2158,6 +2176,14 @@ mod tests {
         let swapped = b.layout(&dest).map(|layout| layout.tree.leaves()).unwrap();
         assert_eq!(swapped.len(), leaves.len());
         assert_ne!(swapped, leaves);
+        let before_cycle = swapped.clone();
+        assert!(matches!(
+            b.execute(&Task::CycleLayout { tab: dest }).unwrap(),
+            TaskOutcome::Done
+        ));
+        let after_cycle = b.layout(&dest).unwrap();
+        assert_eq!(after_cycle.tree.leaves(), before_cycle);
+        assert_eq!(after_cycle.tree.parent_dir(first), Some(SplitDir::Vertical));
     }
 
     #[tokio::test]

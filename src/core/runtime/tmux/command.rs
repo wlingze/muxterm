@@ -305,6 +305,11 @@ pub fn break_pane(pane: PaneId) -> TmuxCommand {
     build(&[format!("-s %{}", pane.0)], "break-pane")
 }
 
+/// tmux `next-layout`：在 even-horizontal / even-vertical 等布局间循环。
+pub fn next_layout(tab: TabId) -> TmuxCommand {
+    build(&[format!("-t @{}", tab.0)], "next-layout")
+}
+
 /// 交换两个 pane 的位置，保留分割形状。
 pub fn swap_pane(a: PaneId, b: PaneId) -> TmuxCommand {
     build(
@@ -776,6 +781,11 @@ mod tests {
             swap_pane(PaneId(2), PaneId(7)).as_str(),
             "swap-pane -s %2 -t %7"
         );
+    }
+
+    #[test]
+    fn next_layout_targets_window_id() {
+        assert_eq!(next_layout(TabId(4)).as_str(), "next-layout -t @4");
     }
 
     #[test]

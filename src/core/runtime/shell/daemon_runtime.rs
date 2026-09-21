@@ -324,6 +324,7 @@ impl DaemonRuntime {
             | Task::BreakPane { .. }
             | Task::JoinPane { .. }
             | Task::SwapPane { .. }
+            | Task::CycleLayout { .. }
             | Task::RefreshTabs => None, // daemon CLI 暂不支持 zoom
             Task::NewTab { name, .. } => Some(CliCommand::NewTab { name: name.clone() }),
             Task::RenameWorkspace { name } => Some(CliCommand::RenameWorkspace {

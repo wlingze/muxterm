@@ -488,6 +488,17 @@ struct MuxTask {
         )
     }
 
+    /// 切换当前 tab 的布局格式（tmux next-layout）。
+    static func cycleLayout(_ tabId: UInt32) -> MuxTask {
+        MuxTask(
+            type: TASK_CYCLE_LAYOUT,
+            targetPane: 0,
+            targetTab: tabId,
+            dir: 0,
+            name: nil
+        )
+    }
+
     /// 交换同一 tab 里两个 pane 的位置。
     static func swapPanes(_ a: UInt32, _ b: UInt32) -> MuxTask {
         MuxTask(

@@ -74,6 +74,8 @@
   "rename_tab_detail": "修改当前标签页名称",
   "rename_workspace": "重命名工作区…",
   "rename_workspace_detail": "修改当前工作区名称",
+  "cycle_layout": "切换布局",
+  "cycle_layout_detail": "把当前标签页的左右分屏改成上下，或反过来",
   "move_pane": "移动窗格",
   "move_pane_to_new_tab": "将窗格移到新标签页",
   "move_pane_to_new_tab_detail": "将当前窗格拆分为独立标签页",

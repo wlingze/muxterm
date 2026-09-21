@@ -97,6 +97,7 @@ struct CLayoutNode {
 #define TASK_SCROLL_PANE 17u
 #define TASK_JOIN_PANE 18u
 #define TASK_SWAP_PANE 19u
+#define TASK_CYCLE_LAYOUT 20u
 
 #define DIR_HORIZONTAL 0u
 #define DIR_VERTICAL   1u

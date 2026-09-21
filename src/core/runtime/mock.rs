@@ -359,6 +359,7 @@ impl Runtime for MockRuntime {
             | Task::BreakPane { .. }
             | Task::JoinPane { .. }
             | Task::SwapPane { .. }
+            | Task::CycleLayout { .. }
             | Task::RefreshTabs => TaskOutcome::Done,
             Task::ResizePane { target, cols, rows } => {
                 if !self.panes.iter().any(|p| p.id == *target) {

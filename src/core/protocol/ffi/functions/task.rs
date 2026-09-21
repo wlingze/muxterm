@@ -11,8 +11,8 @@ use crate::workspace::Workspace;
 
 use super::super::types::{
     CTask, DIR_HORIZONTAL, DIR_VERTICAL, TAB_MOVE_BEFORE, TASK_BREAK_PANE, TASK_CLOSE_PANE,
-    TASK_CLOSE_TAB, TASK_DETACH, TASK_JOIN_PANE, TASK_MOVE_TAB, TASK_NEW_TAB, TASK_NEXT_PANE,
-    TASK_PREV_PANE, TASK_REFRESH_TABS, TASK_RENAME_TAB, TASK_RENAME_WORKSPACE,
+    TASK_CLOSE_TAB, TASK_CYCLE_LAYOUT, TASK_DETACH, TASK_JOIN_PANE, TASK_MOVE_TAB, TASK_NEW_TAB,
+    TASK_NEXT_PANE, TASK_PREV_PANE, TASK_REFRESH_TABS, TASK_RENAME_TAB, TASK_RENAME_WORKSPACE,
     TASK_REQUEST_PANE_SNAPSHOT, TASK_SCROLL_PANE, TASK_SHUTDOWN, TASK_SPLIT_PANE, TASK_SWAP_PANE,
     TASK_SWITCH_PANE, TASK_SWITCH_TAB, TASK_TOGGLE_PANE_FULLSCREEN,
 };
@@ -90,6 +90,9 @@ pub(crate) fn ctask_to_task(task: &CTask, ws: &Workspace) -> Option<Task> {
         TASK_SWAP_PANE => Some(Task::SwapPane {
             a: resolve_c_task_pane(task.target_pane, ws),
             b: PaneId(task.target_tab),
+        }),
+        TASK_CYCLE_LAYOUT => Some(Task::CycleLayout {
+            tab: TabId(task.target_tab),
         }),
         TASK_REFRESH_TABS => Some(Task::RefreshTabs),
         TASK_RENAME_TAB => name.map(|name| Task::RenameTab {

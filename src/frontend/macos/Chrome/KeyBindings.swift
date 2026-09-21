@@ -24,6 +24,7 @@ public enum KeyAction: Equatable, Sendable {
     case decreaseFontSize
     case resetFontSize
     case togglePaneFullscreen
+    case cycleLayout
     case toggleSidebar
     /// 进入前端 Shells 聚合槽；不会向终端发送清屏字符。
     case openShells
@@ -139,6 +140,10 @@ public enum KeyBindings {
             if key == "0", !chord.control {
                 return .resetFontSize
             }
+        }
+        // Cmd+Shift+L：布局格式循环（tmux next-layout / 左右变上下）。
+        if chord.command, chord.shift, !chord.option, !chord.control, key == "l" {
+            return .cycleLayout
         }
         // Cmd+Enter / Alt+Enter：当前 pane 全屏切换（tmux `resize-pane -Z` / 本地布局）。
         if !chord.shift, key == "\r" || key == "\n" {

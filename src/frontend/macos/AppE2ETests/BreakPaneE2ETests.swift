@@ -63,7 +63,7 @@ final class BreakPaneE2ETests: XCTestCase {
 
         XCTAssertEqual(
             host.titleActionsForTesting,
-            [.splitHorizontal, .splitVertical, .fullscreen, .close]
+            [.splitHorizontal, .splitVertical, .fullscreen, .cycleLayout, .close]
         )
         host.triggerTitleAction(.fullscreen)
         XCTAssertEqual(actions.count, 1)
@@ -109,6 +109,7 @@ final class BreakPaneE2ETests: XCTestCase {
                 .splitHorizontal,
                 .splitVertical,
                 .fullscreen,
+                .cycleLayout,
                 .moveToNewTab,
                 .moveToTab(9),
                 .moveToTab(12),

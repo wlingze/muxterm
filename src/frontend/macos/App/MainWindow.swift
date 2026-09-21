@@ -608,6 +608,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 self.splitPane(paneId, horizontal: false)
             case .fullscreen:
                 self.togglePaneFullscreen(paneId)
+            case .cycleLayout:
+                self.cycleActiveLayout()
             case .moveToNewTab:
                 _ = self.movePane(paneId, toTab: nil)
             case .moveToTab(let tabId):
@@ -1045,6 +1047,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             return
         }
         togglePaneFullscreen(pane)
+    }
+
+    @objc func cycleActiveLayout() {
+        let tab = lastSnapshot.activeTab
+        guard tab != 0 else { return }
+        _ = enqueueCoreTask(
+            MuxTask.cycleLayout(tab),
+            failureMessage: MuxtermI18n.shared.tr(.errorCommandFailed)
+        )
+        needsLayoutReload = true
     }
 
     private func togglePaneFullscreen(_ pane: UInt32) {
@@ -4144,6 +4156,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 kind: .command(.togglePaneFullscreen)
             ),
             PaletteItem(
+                title: i18n.tr(.cycleLayout),
+                detail: i18n.tr(.cycleLayoutDetail),
+                keywords: "layout cycle rotate next-layout 布局 切换 上下 左右",
+                kind: .command(.cycleLayout)
+            ),
+            PaletteItem(
                 title: i18n.tr(.nextPane),
                 detail: i18n.tr(.nextPaneDetail),
                 keywords: "pane next cmd bracket 下一个",
@@ -4351,6 +4369,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         case .command(.togglePaneFullscreen):
             commandPalette.dismiss()
             toggleActivePaneFullscreen()
+        case .command(.cycleLayout):
+            commandPalette.dismiss()
+            cycleActiveLayout()
         case .command(.nextPane):
             commandPalette.dismiss()
             nextPane()
@@ -6087,6 +6108,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             resetTerminalFontSize(nil)
         case .togglePaneFullscreen:
             toggleActivePaneFullscreen()
+        case .cycleLayout:
+            cycleActiveLayout()
         case .toggleSidebar:
             toggleWorkspaceSidebar()
         case .openShells, .openAgents, .switchWorkspace:

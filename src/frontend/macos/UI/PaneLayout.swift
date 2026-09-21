@@ -5,6 +5,7 @@ enum PaneTitleAction: Equatable {
     case splitHorizontal
     case splitVertical
     case fullscreen
+    case cycleLayout
     case moveToNewTab
     case moveToTab(UInt32)
     case close
@@ -961,7 +962,7 @@ private final class PaneTitleBarView: NSView {
 
     var titleForTesting: String { label.stringValue }
     var actionsForTesting: [PaneTitleAction] {
-        var items: [PaneTitleAction] = [.splitHorizontal, .splitVertical, .fullscreen]
+        var items: [PaneTitleAction] = [.splitHorizontal, .splitVertical, .fullscreen, .cycleLayout]
         for destination in moveDestinationsProvider?() ?? [] {
             if let tabId = destination.tabId {
                 items.append(.moveToTab(tabId))
@@ -1002,6 +1003,14 @@ private final class PaneTitleBarView: NSView {
         )
         fullscreen.target = self
         actionMenu.addItem(fullscreen)
+
+        let cycle = NSMenuItem(
+            title: MuxtermI18n.shared.tr(.cycleLayout),
+            action: #selector(cycleLayout(_:)),
+            keyEquivalent: ""
+        )
+        cycle.target = self
+        actionMenu.addItem(cycle)
         actionMenu.addItem(.separator())
 
         let close = NSMenuItem(
@@ -1059,6 +1068,10 @@ private final class PaneTitleBarView: NSView {
 
     @objc private func toggleFullscreen(_ sender: Any?) {
         onAction?(.fullscreen)
+    }
+
+    @objc private func cycleLayout(_ sender: Any?) {
+        onAction?(.cycleLayout)
     }
 
     @objc private func closePane(_ sender: Any?) {

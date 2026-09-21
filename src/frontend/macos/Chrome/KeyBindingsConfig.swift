@@ -30,6 +30,7 @@ public enum KeyBindingsConfig {
         case "decrease_font_size": return .decreaseFontSize
         case "reset_font_size": return .resetFontSize
         case "toggle_pane_fullscreen": return .togglePaneFullscreen
+        case "cycle_layout", "next_layout": return .cycleLayout
         case "switch_tab_last": return .switchLastTab
         case "toggle_sidebar": return .toggleSidebar
         case "open_shells": return .openShells

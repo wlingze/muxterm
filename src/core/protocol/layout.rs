@@ -30,6 +30,15 @@ pub enum SplitDir {
     Vertical,
 }
 
+impl SplitDir {
+    pub fn opposite(self) -> Self {
+        match self {
+            Self::Horizontal => Self::Vertical,
+            Self::Vertical => Self::Horizontal,
+        }
+    }
+}
+
 /// 布局树节点（二叉嵌套）。
 ///
 /// 与现有 `platform::linux::notebook::PaneNode` 同构，但用 `PaneId`（newtype）
@@ -169,6 +178,52 @@ impl LayoutNode {
         }
     }
 
+    /// 把每个 split 的左右/上下对调（tmux next-layout 的两叶近似）。
+    pub fn cycle_split_dirs(&mut self) {
+        match self {
+            Self::Leaf(_) => {}
+            Self::Split {
+                dir, first, second, ..
+            } => {
+                *dir = dir.opposite();
+                first.cycle_split_dirs();
+                second.cycle_split_dirs();
+            }
+        }
+    }
+
+    /// 与 `pane` 同层的兄弟叶子。
+    pub fn sibling_leaf(&self, pane: PaneId) -> Option<PaneId> {
+        match self {
+            Self::Leaf(_) => None,
+            Self::Split { first, second, .. } => match (first.as_ref(), second.as_ref()) {
+                (Self::Leaf(a), Self::Leaf(b)) if *a == pane => Some(*b),
+                (Self::Leaf(a), Self::Leaf(b)) if *b == pane => Some(*a),
+                _ => first
+                    .sibling_leaf(pane)
+                    .or_else(|| second.sibling_leaf(pane)),
+            },
+        }
+    }
+
+    /// `pane` 所在 split 的方向。
+    pub fn parent_dir(&self, pane: PaneId) -> Option<SplitDir> {
+        match self {
+            Self::Leaf(_) => None,
+            Self::Split {
+                dir, first, second, ..
+            } => {
+                if matches!(first.as_ref(), Self::Leaf(p) if *p == pane)
+                    || matches!(second.as_ref(), Self::Leaf(p) if *p == pane)
+                {
+                    Some(*dir)
+                } else {
+                    first.parent_dir(pane).or_else(|| second.parent_dir(pane))
+                }
+            }
+        }
+    }
+
     /// 连续分割深度（叶子到根的最大边数）。
     pub fn depth(&self) -> usize {
         match self {
@@ -289,6 +344,18 @@ mod tests {
         assert_eq!(t.leaves(), vec![p(3), p(2), p(1)]);
         assert!(!t.swap_leaves(p(1), p(1)));
         assert!(!t.swap_leaves(p(1), p(99)));
+    }
+
+    #[test]
+    fn cycle_split_dirs_flips_horizontal_and_vertical() {
+        let mut t = LayoutNode::leaf(p(1));
+        t.split_at(p(1), p(2), SplitDir::Horizontal);
+        assert_eq!(t.parent_dir(p(1)), Some(SplitDir::Horizontal));
+        assert_eq!(t.sibling_leaf(p(1)), Some(p(2)));
+        t.cycle_split_dirs();
+        assert_eq!(t.parent_dir(p(1)), Some(SplitDir::Vertical));
+        assert_eq!(t.sibling_leaf(p(2)), Some(p(1)));
+        assert_eq!(SplitDir::Horizontal.opposite(), SplitDir::Vertical);
     }
 
     #[test]

@@ -4675,6 +4675,20 @@ impl Runtime for TmuxRuntime {
                 self.query_list_windows();
                 TaskOutcome::Done
             }
+            Task::CycleLayout { tab } => {
+                if self.layout(tab).is_none() {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: format!("tab {tab} 不存在"),
+                    });
+                }
+                let c = cmd::next_layout(*tab);
+                if self.dispatch_tmux_command(&c).is_err() {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: "发送命令失败".into(),
+                    });
+                }
+                TaskOutcome::Done
+            }
             Task::RefreshTabs => {
                 // 外部 tmux 变更后强制重查 window/pane，同步 GUI 标签。
                 self.query_list_windows();

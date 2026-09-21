@@ -59,6 +59,8 @@ pub enum Task {
     JoinPane { pane: PaneId, tab: TabId },
     /// 交换同一 tab 里两个 pane 的位置（tmux `swap-pane`；Herdr `pane.swap`）。
     SwapPane { a: PaneId, b: PaneId },
+    /// 切换 tab 布局格式（tmux `next-layout`；左右变上下）。
+    CycleLayout { tab: TabId },
     /// 重新查询 window/pane 列表（外部 tmux 变更后同步 GUI）。
     RefreshTabs,
 
