@@ -114,4 +114,64 @@ final class InactivePaneDimmingE2ETests: XCTestCase {
         XCTAssertFalse(zoomed.isContentDimmedForTesting, "全屏后只有一个可见 pane，不得蒙灰")
         XCTAssertNil(layout.testHost(for: 1))
     }
+
+    func testSplitKeepsCurrentPaneUndimmedWhenSnapshotStillMarksFirst() throws {
+        AppE2E.ensureApp()
+        let bridge = try CoreBridge(backendType: "local")
+        defer { bridge.shutdown() }
+        let layout = PaneLayoutView(terminalManager: TerminalManager(bridge: bridge))
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 800, height: 400),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = layout
+        window.orderFront(nil)
+        defer { window.orderOut(nil) }
+
+        let two = LayoutNode.split(
+            horizontal: true,
+            ratio: 500,
+            first: .leaf(paneId: 1),
+            second: .leaf(paneId: 2)
+        )
+        XCTAssertTrue(layout.apply(
+            layout: two,
+            panes: [
+                Pane(id: 1, cols: 80, rows: 24, isActive: false),
+                Pane(id: 2, cols: 80, rows: 24, isActive: true),
+            ],
+            tabId: 1
+        ))
+        layout.markActivePane(2)
+        XCTAssertFalse(try XCTUnwrap(layout.testHost(for: 2)).isContentDimmedForTesting)
+
+        let three = LayoutNode.split(
+            horizontal: true,
+            ratio: 500,
+            first: .leaf(paneId: 1),
+            second: .split(
+                horizontal: false,
+                ratio: 500,
+                first: .leaf(paneId: 2),
+                second: .leaf(paneId: 3)
+            )
+        )
+        XCTAssertTrue(layout.apply(
+            layout: three,
+            panes: [
+                Pane(id: 1, cols: 40, rows: 24, isActive: true),
+                Pane(id: 2, cols: 40, rows: 12, isActive: false),
+                Pane(id: 3, cols: 40, rows: 12, isActive: false),
+            ],
+            tabId: 1
+        ))
+        XCTAssertFalse(
+            try XCTUnwrap(layout.testHost(for: 2)).isContentDimmedForTesting,
+            "split 过渡快照仍标第一个叶子时，当前 pane 不得突然变暗"
+        )
+        XCTAssertTrue(try XCTUnwrap(layout.testHost(for: 1)).isContentDimmedForTesting)
+        XCTAssertTrue(try XCTUnwrap(layout.testHost(for: 3)).isContentDimmedForTesting)
+    }
 }

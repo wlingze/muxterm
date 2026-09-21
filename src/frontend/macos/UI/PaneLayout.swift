@@ -63,6 +63,7 @@ final class PaneLayoutView: NSView, TerminalClientContentSizing {
     private var fullscreenPaneId: UInt32?
     private var lastPanes: [Pane] = []
     private var forceRebuild = false
+    private var focusedPaneId: UInt32 = 0
     private var hostByPane: [UInt32: PaneHostView] = [:]
     private var currentPaneIds = Set<UInt32>()
     private var currentTabId: UInt32?
@@ -71,7 +72,7 @@ final class PaneLayoutView: NSView, TerminalClientContentSizing {
     private var lastLayoutBounds: (Int, Int) = (0, 0)
     private var geometrySyncScheduled = false
     private var pendingGeometryPaneIds: Set<UInt32>?
-    private var pendingForcedClientResize = false
+    private var pendingSyncKind: GeometrySyncKind = .window
     var onActivatePane: ((UInt32) -> Void)?
     var onMovePaneToNewTab: ((UInt32) -> Void)?
     var onSwapPanes: ((UInt32, UInt32) -> Void)?
@@ -220,7 +221,16 @@ final class PaneLayoutView: NSView, TerminalClientContentSizing {
         // 缓存记录的是实际可见投影；zoom 时完整 pane 快照仍含隐藏兄弟。
         // 用完整列表比较会在每次快照/切 tab 时拆树，反复改变终端 allocation。
         let expectedIds = Set(tree?.leafPaneIDs() ?? [])
-        let active = panes.first(where: \.isActive)?.id ?? panes.first?.id ?? 0
+        let previousIds = currentTabId == tabId ? currentPaneIds : (tabTrees[tabId]?.paneIds ?? [])
+        let previousFocus = currentTabId == tabId
+            ? focusedPaneId
+            : (tabTrees[tabId]?.activePaneId ?? focusedPaneId)
+        let active = PaneFocusStickiness.resolvedActive(
+            snapshotActive: panes.first(where: \.isActive)?.id,
+            currentActive: previousFocus == 0 ? nil : previousFocus,
+            visibleIds: expectedIds,
+            previousVisibleIds: previousIds
+        ) ?? 0
         if !forceRebuild, tabId == currentTabId, tree == currentLayout, expectedIds == currentPaneIds {
             markActivePane(active)
             return true
@@ -236,6 +246,7 @@ final class PaneLayoutView: NSView, TerminalClientContentSizing {
         forceRebuild = false
 
         parkCurrentTab()
+        let reusedHosts = tabTrees[tabId]?.hostByPane ?? [:]
         tabTrees.removeValue(forKey: tabId)
         currentTabId = tabId
 
@@ -246,10 +257,11 @@ final class PaneLayoutView: NSView, TerminalClientContentSizing {
         }
 
         currentLayout = tree
-        hostByPane.removeAll()
+        hostByPane = reusedHosts
         let ids = Set(collectPaneIds(tree))
         let showsTitles = PaneTitleLayoutPolicy.showsTitleBar(visiblePaneCount: ids.count)
         let built = build(node: tree, showsTitles: showsTitles)
+        hostByPane = hostByPane.filter { ids.contains($0.key) }
         attachRoot(built)
 
         currentPaneIds = ids
@@ -272,9 +284,7 @@ final class PaneLayoutView: NSView, TerminalClientContentSizing {
         // 的像素重算 SwiftTerm 格子，否则切 tab 后字体/结构会错，
         // 直到用户再点一下 pane。
         if TabGeometrySyncPolicy.needsPaneGridSync(treeChanged: true) {
-            // force 只钉 SwiftTerm 本地格子；client resize 由
-            // TreeChangeClientResizePolicy 决定，格子没变就不发。
-            scheduleGeometrySync(paneIds: ids, forceClientResize: true)
+            scheduleGeometrySync(paneIds: ids, kind: .treeChange)
         }
         return true
     }
@@ -328,15 +338,15 @@ final class PaneLayoutView: NSView, TerminalClientContentSizing {
             paneIds: currentPaneIds,
             rootView: root,
             hostByPane: hostByPane,
-            activePaneId: tabTrees[tabId]?.activePaneId
-                ?? lastPanes.first(where: \.isActive)?.id
-                ?? lastPanes.first?.id
-                ?? 0
+            activePaneId: currentPaneIds.contains(focusedPaneId)
+                ? focusedPaneId
+                : (lastPanes.first(where: \.isActive)?.id ?? lastPanes.first?.id ?? 0)
         )
         // 先清空 pane 集合，detach 触发的 layout() 才不会再 schedule
         // geometry sync / refresh-client -C。
         currentPaneIds.removeAll()
         pendingGeometryPaneIds = nil
+        pendingSyncKind = .window
         detachRoot()
         currentLayout = nil
         hostByPane.removeAll()
@@ -387,7 +397,7 @@ final class PaneLayoutView: NSView, TerminalClientContentSizing {
         }
         markActivePane(cached.activePaneId)
         if TabGeometrySyncPolicy.shouldSyncOnCachedReveal() {
-            scheduleGeometrySync(paneIds: cached.paneIds, forceClientResize: true)
+            scheduleGeometrySync(paneIds: cached.paneIds, kind: .cachedReveal)
         }
     }
 
@@ -506,6 +516,7 @@ final class PaneLayoutView: NSView, TerminalClientContentSizing {
 
     /// 更新活跃 pane 高亮、未聚焦蒙层与 AX（供 Cmd+[ / ] 焦点跟随断言）。
     func markActivePane(_ paneId: UInt32) {
+        focusedPaneId = paneId
         let visibleCount = hostByPane.count
         for (id, host) in hostByPane {
             host.setActive(id == paneId, visiblePaneCount: visibleCount)
@@ -535,7 +546,7 @@ final class PaneLayoutView: NSView, TerminalClientContentSizing {
 
     private func finalizeAfterLayout(
         paneIds: Set<UInt32>,
-        forceClientResize: Bool,
+        kind: GeometrySyncKind,
         attempt: Int
     ) {
         guard paneIds == currentPaneIds else { return }
@@ -544,7 +555,7 @@ final class PaneLayoutView: NSView, TerminalClientContentSizing {
             DispatchQueue.main.async { [weak self] in
                 self?.finalizeAfterLayout(
                     paneIds: paneIds,
-                    forceClientResize: forceClientResize,
+                    kind: kind,
                     attempt: attempt + 1
                 )
             }
@@ -556,9 +567,12 @@ final class PaneLayoutView: NSView, TerminalClientContentSizing {
         terminalManager.syncAllVisibleSizes(
             paneIds: paneIds,
             container: self,
-            forceClientResize: forceClientResize
+            pinToAllocation: GeometrySyncPolicy.pinLocalGrids(kind),
+            clientTreeChanged: GeometrySyncPolicy.clientTreeChanged(kind)
         )
-        terminalManager.forceRedraw(paneIds: paneIds)
+        if GeometrySyncPolicy.forceRedraw(kind) {
+            terminalManager.forceRedraw(paneIds: paneIds)
+        }
     }
 
     override func layout() {
@@ -567,28 +581,28 @@ final class PaneLayoutView: NSView, TerminalClientContentSizing {
         let token = (Int(bounds.width.rounded()), Int(bounds.height.rounded()))
         guard token != lastLayoutBounds else { return }
         lastLayoutBounds = token
-        scheduleGeometrySync(paneIds: currentPaneIds)
+        scheduleGeometrySync(paneIds: currentPaneIds, kind: .window)
     }
 
     private func scheduleGeometrySync(
         paneIds: Set<UInt32>,
-        forceClientResize: Bool = false
+        kind: GeometrySyncKind = .window
     ) {
         guard paneIds == currentPaneIds else { return }
         pendingGeometryPaneIds = paneIds
-        pendingForcedClientResize = pendingForcedClientResize || forceClientResize
+        pendingSyncKind = GeometrySyncPolicy.merge(pendingSyncKind, kind)
         guard !geometrySyncScheduled else { return }
         geometrySyncScheduled = true
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.geometrySyncScheduled = false
             let latestPaneIds = self.pendingGeometryPaneIds ?? self.currentPaneIds
-            let forceClientResize = self.pendingForcedClientResize
+            let kind = self.pendingSyncKind
             self.pendingGeometryPaneIds = nil
-            self.pendingForcedClientResize = false
+            self.pendingSyncKind = .window
             self.finalizeAfterLayout(
                 paneIds: latestPaneIds,
-                forceClientResize: forceClientResize,
+                kind: kind,
                 attempt: 0
             )
         }
@@ -597,6 +611,11 @@ final class PaneLayoutView: NSView, TerminalClientContentSizing {
     private func build(node: LayoutNode, showsTitles: Bool) -> NSView {
         switch node {
         case .leaf(let paneId):
+            if let existing = hostByPane[paneId] {
+                existing.removeFromSuperview()
+                existing.setShowsTitleBar(showsTitles)
+                return existing
+            }
             let term = terminalManager.view(for: paneId)
             let title = lastPanes.first(where: { $0.id == paneId })?.title ?? ""
             let wrap = PaneHostView(paneId: paneId, title: title, terminal: term)
