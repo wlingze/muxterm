@@ -814,6 +814,44 @@ public enum TabGeometrySyncPolicy {
     public static func shouldSyncOnCachedReveal() -> Bool { true }
 }
 
+/// 关 pane / split 之后，剩余 host 已经占了新的像素。
+///
+/// 旧的后端 pane 格子不能再钉住 Surface：否则 TUI 看起来像「外框变大了、
+/// 内容没重绘」。Linux `merge_grid_size` 同样以 widget 分配为下限。
+public enum RemainingPaneGridPolicy {
+    /// 换树后用当前 allocation 作为乐观格子。
+    public static func usesAllocatedGridAfterTreeChange(_ treeChanged: Bool) -> Bool {
+        treeChanged
+    }
+
+    /// 把后端请求和当前 widget 分配合成最终格子。
+    /// 已分配时不得小于 widget；未分配时由调用方不要传 0。
+    public static func mergedGrid(
+        requestedCols: Int,
+        requestedRows: Int,
+        allocatedCols: Int,
+        allocatedRows: Int
+    ) -> (cols: Int, rows: Int) {
+        (
+            cols: max(max(requestedCols, allocatedCols), 2),
+            rows: max(max(requestedRows, allocatedRows), 1)
+        )
+    }
+
+    /// 换树时 host 像素就是格子：关 pane 放大，split 缩小。
+    public static func treeChangeGrid(
+        allocatedCols: Int,
+        allocatedRows: Int
+    ) -> (cols: Int, rows: Int) {
+        (cols: max(allocatedCols, 2), rows: max(allocatedRows, 1))
+    }
+
+    /// tmux 用 refresh-client；Herdr/shell 必须把新格子写回 Runtime。
+    public static func shouldNotifyRuntime(usesClientResize: Bool) -> Bool {
+        !usesClientResize
+    }
+}
+
 /// pane host 只是边框。点击和新建都不能把 first responder 停在 host 上。
 public enum PaneHostFocusPolicy {
     public static var acceptsFirstResponder: Bool { false }

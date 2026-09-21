@@ -597,15 +597,29 @@ final class TerminalManager: TerminalInputHandler {
         guard let target = PaneGridSyncPolicy.modelSize(tmuxCols: cols, tmuxRows: rows) else {
             return
         }
-        expectedPaneSizes[paneId] = (target.cols, target.rows)
+        var nextCols = target.cols
+        var nextRows = target.rows
+        // Herdr snapshot 的 cols/rows 是 split 矩形，不是当前 widget 分配。
+        // 已布局时不得把 grok pane 缩回旧 split；tmux 仍以权威格子为准。
+        if !usesClientResize, let view = views[paneId], let allocated = view.allocatedGridSize() {
+            let merged = RemainingPaneGridPolicy.mergedGrid(
+                requestedCols: nextCols,
+                requestedRows: nextRows,
+                allocatedCols: allocated.cols,
+                allocatedRows: allocated.rows
+            )
+            nextCols = merged.cols
+            nextRows = merged.rows
+        }
+        expectedPaneSizes[paneId] = (nextCols, nextRows)
         guard let view = views[paneId] else { return }
-        if view.renderedGridSize.cols != target.cols || view.renderedGridSize.rows != target.rows {
+        if view.renderedGridSize.cols != nextCols || view.renderedGridSize.rows != nextRows {
             // snapshot 刷新和有序 resize 事件必须使用同一个输出屏障。
             flushOutputBeforeResize(paneId: paneId)
         }
         view.applyGridSize(
-            cols: target.cols,
-            rows: target.rows,
+            cols: nextCols,
+            rows: nextRows,
             followTail: view.isAtLatest()
         )
         if bridgeQueriesEnabled {
@@ -984,14 +998,26 @@ final class TerminalManager: TerminalInputHandler {
         container: NSView? = nil,
         forceClientResize: Bool = false
     ) {
+        let pinToAllocation = RemainingPaneGridPolicy.usesAllocatedGridAfterTreeChange(
+            forceClientResize
+        )
         for id in paneIds {
             guard let view = views[id] else { continue }
             view.layoutSubtreeIfNeeded()
-            let exact = expectedPaneSizes[id].map { (cols: $0.cols, rows: $0.rows) }
-            _ = view.syncSizeToPty(
-                notifyResize: !usesClientResize,
-                exactGrid: usesClientResize ? exact : nil
-            )
+            if pinToAllocation {
+                let notify = RemainingPaneGridPolicy.shouldNotifyRuntime(
+                    usesClientResize: usesClientResize
+                )
+                if view.syncToAllocatedGrid(notifyResize: notify, pinToAllocation: true) {
+                    expectedPaneSizes[id] = view.renderedGridSize
+                }
+            } else {
+                let exact = expectedPaneSizes[id].map { (cols: $0.cols, rows: $0.rows) }
+                _ = view.syncSizeToPty(
+                    notifyResize: !usesClientResize,
+                    exactGrid: usesClientResize ? exact : nil
+                )
+            }
         }
         if bridgeQueriesEnabled, usesClientResize, let container {
             syncClientSize(
@@ -1005,7 +1031,11 @@ final class TerminalManager: TerminalInputHandler {
     func syncSurfaceToAllocatedSize(paneId: UInt32) {
         guard let view = views[paneId] else { return }
         view.layoutSubtreeIfNeeded()
-        if view.syncToAllocatedGrid() {
+        let notify = RemainingPaneGridPolicy.shouldNotifyRuntime(
+            usesClientResize: usesClientResize
+        )
+        if view.syncToAllocatedGrid(notifyResize: notify) {
+            expectedPaneSizes[paneId] = view.renderedGridSize
             view.forceRedraw()
         }
     }

@@ -1246,6 +1246,40 @@ final class PaneLayoutProjectionTests: XCTestCase {
         )
     }
 
+    func testRemainingPaneUsesAllocatedGridAfterTreeChange() {
+        XCTAssertTrue(
+            RemainingPaneGridPolicy.usesAllocatedGridAfterTreeChange(true),
+            "关 pane / split 后必须按新 host 像素重算格子"
+        )
+        XCTAssertFalse(RemainingPaneGridPolicy.usesAllocatedGridAfterTreeChange(false))
+        XCTAssertEqual(
+            RemainingPaneGridPolicy.treeChangeGrid(allocatedCols: 160, allocatedRows: 40).cols,
+            160
+        )
+        XCTAssertEqual(
+            RemainingPaneGridPolicy.treeChangeGrid(allocatedCols: 80, allocatedRows: 24).rows,
+            24
+        )
+        XCTAssertEqual(
+            RemainingPaneGridPolicy.mergedGrid(
+                requestedCols: 27,
+                requestedRows: 23,
+                allocatedCols: 100,
+                allocatedRows: 40
+            ).cols,
+            100,
+            "Herdr snapshot split 矩形不得把已分配的 grok pane 缩回去"
+        )
+        XCTAssertTrue(
+            RemainingPaneGridPolicy.shouldNotifyRuntime(usesClientResize: false),
+            "Herdr/shell 换树后必须把新格子写回 Runtime，否则 TUI 收不到 SIGWINCH"
+        )
+        XCTAssertFalse(
+            RemainingPaneGridPolicy.shouldNotifyRuntime(usesClientResize: true),
+            "tmux 仍走 refresh-client，不能按每个 SwiftTerm 再 ResizePane"
+        )
+    }
+
     func testClickingPaneMustFocusTerminalNotHost() {
         XCTAssertFalse(PaneHostFocusPolicy.acceptsFirstResponder)
         XCTAssertTrue(
