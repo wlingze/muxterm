@@ -38,6 +38,7 @@ let appLibSources = [
     "App/UnifiedPanelController.swift",
     "App/TargetConfigWindow.swift",
     "App/SettingsWindow.swift",
+    "App/DeveloperToolAccess.swift",
     "App/WorkspaceSidebar.swift",
     "Terminal/TerminalView.swift",
     "Terminal/TerminalManager.swift",
@@ -111,6 +112,9 @@ let package = Package(
             sources: appLibSources,
             resources: [
                 .process("Resources"),
+            ],
+            linkerSettings: [
+                .linkedFramework("ExecutionPolicy"),
             ]
         ),
         .executableTarget(

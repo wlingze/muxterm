@@ -2358,3 +2358,26 @@ final class KeyBindingsConfigTests: XCTestCase {
         )
     }
 }
+
+final class DeveloperToolAccessPolicyTests: XCTestCase {
+    func testAuthorizedDoesNotNeedSettingsPane() {
+        XCTAssertTrue(DeveloperToolAccessPolicy.isAuthorized(.authorized))
+        XCTAssertFalse(DeveloperToolAccessPolicy.isAuthorized(.denied))
+        XCTAssertFalse(DeveloperToolAccessPolicy.isAuthorized(.notDetermined))
+        XCTAssertFalse(DeveloperToolAccessPolicy.shouldOpenSettings(afterRequestGranted: true))
+        XCTAssertTrue(DeveloperToolAccessPolicy.shouldOpenSettings(afterRequestGranted: false))
+        XCTAssertEqual(
+            DeveloperToolAccessPolicy.actionTitle(authorized: false),
+            "Request Access…"
+        )
+        XCTAssertEqual(
+            DeveloperToolAccessPolicy.actionTitle(authorized: true),
+            "Open System Settings"
+        )
+        XCTAssertTrue(
+            DeveloperToolAccessPolicy.settingsURLs.contains {
+                $0.contains("Privacy_DevTools")
+            }
+        )
+    }
+}
