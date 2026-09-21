@@ -404,13 +404,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let viewMenu = NSMenu(title: MuxtermI18n.shared.tr(.menuView))
         viewMenuItem.submenu = viewMenu
 
-        // Cmd-V 上下、Cmd-S 左右、Cmd-D 按当前形状自动切分。
+        // Cmd-Shift-S 上下、Cmd-S 左右、Cmd-D 按当前形状自动切分。
+        // Cmd-V 留给 Edit 菜单粘贴。
         let splitV = NSMenuItem(
             title: MuxtermI18n.shared.tr(.menuSplitVertical),
             action: #selector(MainWindowController.splitVertical),
-            keyEquivalent: "v"
+            keyEquivalent: "s"
         )
-        splitV.keyEquivalentModifierMask = .command
+        splitV.keyEquivalentModifierMask = [.command, .shift]
         splitV.target = windowController
         viewMenu.addItem(splitV)
 
