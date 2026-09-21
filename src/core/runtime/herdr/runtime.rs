@@ -1278,6 +1278,14 @@ impl HerdrRuntime {
                 if slot.actual_mode == Some(effective) && slot.state == SlotState::Live {
                     return None;
                 }
+                // 隐 tab / 切走 Workspace：保持已 Live 的 Control 流。
+                // 拆掉再 Observe→Control 会等下一帧 full，切回去整屏重绘。
+                if slot.state == SlotState::Live
+                    && slot.actual_mode == Some(StreamMode::Control)
+                    && effective == StreamMode::Observe
+                {
+                    return None;
+                }
                 // 布局给非焦点 pane 建 Control 时不得沿用过去 focus 的接管许可。
                 let takeover = effective == StreamMode::Control
                     && self.active_pane == Some(pane.id)
@@ -1292,7 +1300,6 @@ impl HerdrRuntime {
 
     fn has_ui_allocation(&self, pane: PaneId) -> bool {
         self.pane_client_sizes.contains_key(&pane)
-            || self.preferred_client_size.is_some()
             || self
                 .stream_slots
                 .get(&pane)
@@ -4197,6 +4204,10 @@ mod tests {
         );
         runtime.preferred_client_size = Some((132, 41));
         assert_eq!(runtime.hello_client_size(pane), (132, 41));
+        assert!(
+            !runtime.has_ui_allocation(pane),
+            "窗口 preferred 不能代替 pane allocation"
+        );
         runtime.preferred_client_size = None;
         assert!(
             !runtime.has_ui_allocation(pane),
@@ -4297,7 +4308,68 @@ mod tests {
             .expect("resize client");
         assert!(matches!(outcome, TaskOutcome::Done));
         assert_eq!(runtime.preferred_client_size, Some((178, 50)));
-        assert!(runtime.has_ui_allocation(PaneId(1)));
+        assert!(
+            !runtime.has_ui_allocation(PaneId(1)),
+            "整窗 preferred 不能当 split pane 的 Hello，否则 178x50 再缩成 88x49"
+        );
+    }
+
+    #[test]
+    fn first_hello_waits_for_pane_allocation_not_window_preferred() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w8",
+        );
+        let pane = PaneId(15);
+        runtime.preferred_client_size = Some((178, 50));
+        runtime.stream_slots.insert(
+            pane,
+            PaneStreamSlot::new(pane, "w8:pF", StreamMode::Observe),
+        );
+        assert!(!runtime.has_ui_allocation(pane), "只有窗口格子时不得开流");
+        runtime.pane_client_sizes.insert(pane, (88, 49));
+        assert!(runtime.has_ui_allocation(pane));
+        assert_eq!(runtime.hello_client_size(pane), (88, 49));
+    }
+
+    #[test]
+    fn live_control_is_kept_when_desired_observe() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w8",
+        );
+        runtime.foreground = true;
+        runtime.preferred_client_size = Some((88, 49));
+        let pane = PaneId(15);
+        runtime.panes.push(PaneInfo {
+            id: pane,
+            tab: TabId(6),
+            active: true,
+            title: String::new(),
+            cols: 88,
+            rows: 49,
+        });
+        runtime.active_tab = Some(TabId(6));
+        runtime.active_pane = Some(pane);
+        runtime.pane_client_sizes.insert(pane, (88, 49));
+        runtime.pane_to_herdr_pane.insert(pane, "w8:pF".into());
+        let mut slot = PaneStreamSlot::new(pane, "w8:pF", StreamMode::Control);
+        slot.generation = 4;
+        slot.state = SlotState::Live;
+        slot.actual_mode = Some(StreamMode::Control);
+        runtime.stream_slots.insert(pane, slot);
+
+        runtime.foreground = false;
+        runtime.reconcile_stream_modes();
+        assert_eq!(
+            runtime.stream_slots.get(&pane).unwrap().generation,
+            4,
+            "切走 Workspace 不得拆 Control 流"
+        );
+        assert_eq!(
+            runtime.stream_slots.get(&pane).unwrap().actual_mode,
+            Some(StreamMode::Control)
+        );
     }
 
     /// 帧尺寸变化必须先发 PaneResized，再让 Surface 吃 PaneFrame。
@@ -5849,6 +5921,7 @@ mod tests {
             rows: 50,
         });
         runtime.pane_to_herdr_pane.insert(PaneId(6), "w1:p6".into());
+        runtime.pane_client_sizes.insert(PaneId(6), (178, 50));
         runtime.ensure_stream_channels();
         let mut slot = PaneStreamSlot::new(PaneId(6), "w1:p6", StreamMode::Observe);
         slot.state = SlotState::Degraded;
