@@ -1003,15 +1003,16 @@ final class TerminalManager: TerminalInputHandler {
     func syncAllVisibleSizes(
         paneIds: Set<UInt32>,
         container: NSView? = nil,
-        forceClientResize: Bool = false
+        pinToAllocation: Bool = false,
+        clientTreeChanged: Bool = false
     ) {
-        let pinToAllocation = RemainingPaneGridPolicy.usesAllocatedGridAfterTreeChange(
-            forceClientResize
+        let pin = RemainingPaneGridPolicy.usesAllocatedGridAfterTreeChange(
+            pinToAllocation
         )
         for id in paneIds {
             guard let view = views[id] else { continue }
             view.layoutSubtreeIfNeeded()
-            if pinToAllocation {
+            if pin {
                 let notify = RemainingPaneGridPolicy.shouldNotifyRuntime(
                     usesClientResize: usesClientResize
                 )
@@ -1030,7 +1031,7 @@ final class TerminalManager: TerminalInputHandler {
             syncClientSize(
                 container: container,
                 paneIds: paneIds,
-                treeChanged: forceClientResize
+                treeChanged: clientTreeChanged
             )
         }
     }

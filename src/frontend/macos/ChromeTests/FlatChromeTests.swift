@@ -1293,6 +1293,68 @@ final class PaneLayoutProjectionTests: XCTestCase {
         )
         XCTAssertTrue(PaneTitleLayoutPolicy.showsTitleBar(visiblePaneCount: 2))
         XCTAssertFalse(PaneTitleLayoutPolicy.showsTitleBar(visiblePaneCount: 1))
+        XCTAssertTrue(GeometrySyncPolicy.pinLocalGrids(.cachedReveal))
+        XCTAssertFalse(
+            GeometrySyncPolicy.clientTreeChanged(.cachedReveal),
+            "切 tab 不得把标题栏 ±1 行发给所有 tmux window"
+        )
+        XCTAssertFalse(GeometrySyncPolicy.forceRedraw(.cachedReveal))
+        XCTAssertFalse(GeometrySyncPolicy.forceRedraw(.treeChange))
+        XCTAssertTrue(GeometrySyncPolicy.clientTreeChanged(.treeChange))
+        XCTAssertEqual(
+            GeometrySyncPolicy.merge(.window, .cachedReveal),
+            .cachedReveal
+        )
+        XCTAssertEqual(
+            GeometrySyncPolicy.merge(.cachedReveal, .treeChange),
+            .treeChange
+        )
+        XCTAssertFalse(
+            TreeChangeClientResizePolicy.shouldSend(
+                previous: (178, 50),
+                next: (178, 49),
+                treeChanged: GeometrySyncPolicy.clientTreeChanged(.cachedReveal)
+            ),
+            "切到单 pane/多 pane tab 时标题扣减不得 refresh-client -C"
+        )
+    }
+
+    func testAttentionBadgeShowsCountFromOne() {
+        XCTAssertFalse(AttentionBadgePolicy.showsCount(0))
+        XCTAssertTrue(AttentionBadgePolicy.showsCount(1), "1 必须显示数字 1")
+        XCTAssertTrue(AttentionBadgePolicy.showsCount(3))
+    }
+
+    func testSplitKeepsCurrentFocusUntilNewPaneIsActive() {
+        XCTAssertEqual(
+            PaneFocusStickiness.resolvedActive(
+                snapshotActive: 1,
+                currentActive: 2,
+                visibleIds: [1, 2, 3],
+                previousVisibleIds: [1, 2]
+            ),
+            2,
+            "split 过渡快照仍标第一个叶子时，不得把焦点抢回去"
+        )
+        XCTAssertEqual(
+            PaneFocusStickiness.resolvedActive(
+                snapshotActive: 3,
+                currentActive: 2,
+                visibleIds: [1, 2, 3],
+                previousVisibleIds: [1, 2]
+            ),
+            3,
+            "新 pane 成为 active 后才跟过去"
+        )
+        XCTAssertEqual(
+            PaneFocusStickiness.resolvedActive(
+                snapshotActive: 1,
+                currentActive: 1,
+                visibleIds: [1, 2],
+                previousVisibleIds: [1]
+            ),
+            1
+        )
     }
 
     func testPaneDragSwapsOnDropAndBreaksWhenDroppedOutside() {

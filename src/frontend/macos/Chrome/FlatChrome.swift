@@ -757,10 +757,72 @@ public enum PaneTitleLayoutPolicy {
     }
 }
 
+/// split / 关 pane 时快照可能仍把第一个叶子标成 active。
+/// 树在长大且旧焦点还在，就钉住旧焦点，等新 pane 真正变成 active 再跳。
+public enum PaneFocusStickiness {
+    public static func resolvedActive(
+        snapshotActive: UInt32?,
+        currentActive: UInt32?,
+        visibleIds: Set<UInt32>,
+        previousVisibleIds: Set<UInt32>
+    ) -> UInt32? {
+        let growing = visibleIds.count > previousVisibleIds.count
+        if growing,
+           let current = currentActive,
+           visibleIds.contains(current),
+           let snapshot = snapshotActive,
+           previousVisibleIds.contains(snapshot),
+           snapshot != current
+        {
+            return current
+        }
+        if let snapshot = snapshotActive, visibleIds.contains(snapshot) {
+            return snapshot
+        }
+        if let current = currentActive, visibleIds.contains(current) {
+            return current
+        }
+        return visibleIds.sorted().first
+    }
+}
+
+/// 几何同步的原因。切 tab 只钉本地格子；只有同 tab 换树才把 ±1 行
+/// 标题扣减发给 tmux，避免所有 window 跟着跳。
+public enum GeometrySyncKind: Equatable {
+    case window
+    case treeChange
+    case cachedReveal
+}
+
+public enum GeometrySyncPolicy {
+    public static func pinLocalGrids(_ kind: GeometrySyncKind) -> Bool {
+        kind != .window
+    }
+
+    public static func clientTreeChanged(_ kind: GeometrySyncKind) -> Bool {
+        kind == .treeChange
+    }
+
+    public static func forceRedraw(_ kind: GeometrySyncKind) -> Bool {
+        false
+    }
+
+    public static func merge(_ a: GeometrySyncKind, _ b: GeometrySyncKind) -> GeometrySyncKind {
+        switch (a, b) {
+        case (.treeChange, _), (_, .treeChange):
+            return .treeChange
+        case (.cachedReveal, _), (_, .cachedReveal):
+            return .cachedReveal
+        default:
+            return .window
+        }
+    }
+}
+
 /// 换树后的 client resize：格子没变就不要发给 Runtime。
 ///
-/// `force` 只用于 SwiftTerm 钉本地格子。用它绕过 hysteresis 会让 tmux/herdr
-/// 在标题栏 ±1 行之间来回 `refresh-client -C` / SIGWINCH。
+/// 切 tab（`treeChanged == false`）走 hysteresis，标题栏 ±1 行不会
+/// `refresh-client -C`。同 tab split/close 才按精确格子发一次。
 public enum TreeChangeClientResizePolicy {
     public static func shouldForceClientResize() -> Bool { false }
 
@@ -773,6 +835,13 @@ public enum TreeChangeClientResizePolicy {
         if previous == next { return false }
         if treeChanged { return true }
         return ClientGridHysteresis.shouldSend(current: previous, next: next)
+    }
+}
+
+/// 铃铛角标：0 不显示数字，1 及以上显示该颜色的个数。
+public enum AttentionBadgePolicy {
+    public static func showsCount(_ count: Int) -> Bool {
+        count >= 1
     }
 }
 
