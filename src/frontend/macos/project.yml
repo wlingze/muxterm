@@ -84,6 +84,8 @@ targets:
     platform: macOS
     sources:
       - path: main.swift
+      - path: Resources/MuxtermLogo.icns
+        buildPhase: resources
     settings:
       base:
         PRODUCT_NAME: Muxterm
@@ -111,8 +113,10 @@ targets:
     info:
       path: Info.plist
       properties:
+        CFBundleIconFile: MuxtermLogo.icns
         CFBundleIdentifier: dev.muxterm.app
         CFBundleName: Muxterm
+        LSMultipleInstancesProhibited: true
         NSPrincipalClass: NSApplication
         NSHighResolutionCapable: true
 
