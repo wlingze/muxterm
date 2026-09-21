@@ -89,11 +89,12 @@ pub fn wheel_notches(delta_y: f64) -> u32 {
         return 0;
     }
     let rounded = delta_y.round() as i32;
-    if rounded == 0 {
+    let notches = if rounded == 0 {
         1
     } else {
         rounded.unsigned_abs()
-    }
+    };
+    notches.min(4)
 }
 
 #[cfg(test)]
@@ -129,6 +130,7 @@ mod tests {
             Some(b"\x1b[<64;2;4M".as_slice()),
             "小数 delta 也必须发出一格，否则触控板滚不动"
         );
+        assert_eq!(wheel_notches(80.0), 4, "触控板一次手势不得拆成几十格");
     }
 
     #[test]

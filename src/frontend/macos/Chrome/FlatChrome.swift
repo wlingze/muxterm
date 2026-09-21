@@ -1097,6 +1097,14 @@ public enum PaneHistoryScrollPolicy {
         return UInt32(next)
     }
 
+    /// 单次 NSEvent 最多转发的滚轮格数。触控板精确 delta 否则会把
+    /// 一次手势拆成几十条 `send-keys -H`，CPU 顶满一核。
+    public static let maxWheelLinesPerEvent = 4
+
+    public static func cappedWheelLines(_ lines: Int) -> Int {
+        min(max(lines, -maxWheelLinesPerEvent), maxWheelLinesPerEvent)
+    }
+
     /// 把滚轮/触控板 delta 收成整数行，余数留在 accumulator。
     public static func lines(
         deltaY: CGFloat,

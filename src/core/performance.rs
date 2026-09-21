@@ -68,7 +68,24 @@ pub(crate) static INDEX: Stage = Stage::new("index.feed");
 pub(crate) static ATTENTION: Stage = Stage::new("activity.batch");
 pub(crate) static SCREEN: Stage = Stage::new("activity.screen_rules");
 pub(crate) static PROCESS: Stage = Stage::new("process.observe");
-static STAGES: &[&Stage] = &[&POLL, &RUNTIME, &INDEX, &ATTENTION, &SCREEN, &PROCESS];
+pub(crate) static SEND: Stage = Stage::new("tmux.send");
+static STAGES: &[&Stage] = &[
+    &POLL, &RUNTIME, &INDEX, &ATTENTION, &SCREEN, &PROCESS, &SEND,
+];
+
+/// 写一条控制命令。高频 send-keys -H（鼠标）只记次数，避免刷 debug 日志。
+pub(crate) fn note_send() {
+    SEND.calls.fetch_add(1, Relaxed);
+}
+
+pub(crate) fn log_control_send(target: &'static str, raw: &str) {
+    note_send();
+    if raw.contains("send-keys") && raw.contains("-H") {
+        tracing::trace!(target, "send: {:?}", raw);
+    } else {
+        tracing::debug!(target, "send: {:?}", raw);
+    }
+}
 
 fn cpu_percent(previous: Duration, current: Duration, wall: Duration) -> Option<f64> {
     if wall.is_zero() {
@@ -121,7 +138,8 @@ pub(crate) fn start() {
 #[cfg(unix)]
 fn monitor() {
     tracing::debug!(
-        threshold_cpu_percent = 100,
+        log_threshold_cpu_percent = 90,
+        sample_threshold_cpu_percent = 100,
         interval_ms = 2000,
         cooldown_secs = 30,
         "performance monitor started (100% = one core)"
@@ -137,10 +155,12 @@ fn monitor() {
             cpu_percent(before, after, now.duration_since(then))
         });
         previous = current.map(|cpu| (now, cpu));
-        let high = cpu.is_some_and(|cpu| cpu > 100.0);
+        // Activity Monitor 的 90%+ 是一核；sample 仍要 100% 才抓栈，避免 sample 自己搅局。
+        let log_high = cpu.is_some_and(|cpu| cpu >= 90.0);
+        let sample_high = cpu.is_some_and(|cpu| cpu > 100.0);
         for stage in STAGES {
             let (calls, total_us, max_us, active) = stage.drain();
-            if high || max_us >= 100_000 {
+            if log_high || max_us >= 100_000 || (stage.name == "tmux.send" && calls > 20) {
                 tracing::debug!(
                     stage = stage.name,
                     calls,
@@ -151,9 +171,9 @@ fn monitor() {
                 );
             }
         }
-        if let Some(cpu) = cpu.filter(|_| high) {
+        if let Some(cpu) = cpu.filter(|_| log_high) {
             tracing::debug!(cpu_percent = cpu, "performance CPU threshold exceeded");
-            if should_capture(cpu, epoch.elapsed(), last_capture) {
+            if sample_high && should_capture(cpu, epoch.elapsed(), last_capture) {
                 last_capture = Some(epoch.elapsed());
                 let _ = capture();
             }
@@ -316,6 +336,7 @@ mod tests {
             Duration::from_secs(30),
             Some(Duration::ZERO)
         ));
+        assert!(!should_capture(90.0, Duration::ZERO, None));
     }
     #[test]
     fn excerpt_keeps_stacks_bounded_and_omits_binary_images() {

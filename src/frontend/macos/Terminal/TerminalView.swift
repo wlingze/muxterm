@@ -368,21 +368,51 @@ final class MuxTerminalView: TerminalView {
             }
             return
         }
-        // tmux 的 agent TUI（Codex/Cursor）在 alternate screen 中自己维护
-        // 历史。此时本地 SwiftTerm scrollback 没有意义，把鼠标上报保持打开，
-        // 让 tmux/agent 的滚轮绑定处理；不回写 core viewport。
-        if getTerminal().isCurrentBufferAlternate {
+        // tmux / agent TUI：触控板精确 delta 必须先合成整格，再发有限条
+        // SGR。SwiftTerm 对每个 NSEvent 都发一格，会把一次手势打成几十条
+        // send-keys（1649.log `ESC[<65;34;22M` 连发，CPU 100%）。
+        let reportsMouse =
+            getTerminal().isCurrentBufferAlternate || getTerminal().mouseMode != .off
+        if reportsMouse {
+            let cellHeight = terminalCellSizeInPoints()?.height ?? 16
+            let lines = PaneHistoryScrollPolicy.lines(
+                deltaY: event.scrollingDeltaY,
+                precise: event.hasPreciseScrollingDeltas,
+                cellHeight: cellHeight,
+                accumulator: &serverScrollRemainder
+            )
+            let capped = PaneHistoryScrollPolicy.cappedWheelLines(lines)
+            guard capped != 0 else { return }
             lastScrollWheelRoutedToRuntime = true
-            let previous = allowMouseReporting
-            allowMouseReporting = true
-            isSendingUserMouseReport = true
-            super.scrollWheel(with: event)
-            isSendingUserMouseReport = false
-            allowMouseReporting = previous
+            sendCoalescedSgrWheel(lines: capped, event: event)
             return
         }
         lastScrollWheelRoutedToRuntime = false
         withUserMouseReporting { super.scrollWheel(with: event) }
+    }
+
+    /// 把已合成的整格滚轮一次交给 pane，避免每像素一次 send-keys。
+    private func sendCoalescedSgrWheel(lines: Int, event: NSEvent) {
+        guard let cell = terminalCellSizeInPoints(), cell.width > 0, cell.height > 0 else {
+            return
+        }
+        let term = getTerminal()
+        let point = convert(event.locationInWindow, from: nil)
+        let col = min(max(Int(point.x / cell.width), 0), max(term.cols, 1) - 1) + 1
+        let row = min(
+            max(Int((bounds.height - point.y) / cell.height), 0),
+            max(term.rows, 1) - 1
+        ) + 1
+        let button = lines > 0 ? 64 : 65
+        let one = Array("\u{1b}[<\(button);\(col);\(row)M".utf8)
+        var payload = [UInt8]()
+        payload.reserveCapacity(one.count * abs(lines))
+        for _ in 0..<abs(lines) {
+            payload.append(contentsOf: one)
+        }
+        withUserMouseReporting {
+            inputHandler?.terminal(self, send: payload[...])
+        }
     }
 
     override func mouseDown(with event: NSEvent) {

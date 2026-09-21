@@ -990,6 +990,22 @@ final class PaneHistoryScrollPolicyTests: XCTestCase {
         )
     }
 
+    func testWheelLinesAreCappedPerEvent() {
+        XCTAssertEqual(PaneHistoryScrollPolicy.cappedWheelLines(40), 4)
+        XCTAssertEqual(PaneHistoryScrollPolicy.cappedWheelLines(-40), -4)
+        XCTAssertEqual(PaneHistoryScrollPolicy.cappedWheelLines(2), 2)
+        XCTAssertEqual(PaneHistoryScrollPolicy.cappedWheelLines(0), 0)
+        var acc: CGFloat = 0
+        let raw = PaneHistoryScrollPolicy.lines(
+            deltaY: 16 * 20,
+            precise: true,
+            cellHeight: 16,
+            accumulator: &acc
+        )
+        XCTAssertEqual(raw, 20)
+        XCTAssertEqual(PaneHistoryScrollPolicy.cappedWheelLines(raw), 4)
+    }
+
     func testPreciseTrackpadAccumulatesPartialCells() {
         var acc: CGFloat = 0
         XCTAssertEqual(
