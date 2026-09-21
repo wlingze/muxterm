@@ -113,6 +113,7 @@ enum MuxtermTextKey: CaseIterable {
     case menuResetFontSize
     case menuSearchPanes
     case menuSelectAll
+    case menuSplitAuto
     case menuSplitHorizontal
     case menuSplitVertical
     case menuSwitchTab
@@ -357,6 +358,7 @@ enum MuxtermTextKey: CaseIterable {
         case .menuResetFontSize: return "menu_reset_font_size"
         case .menuSearchPanes: return "menu_search_panes"
         case .menuSelectAll: return "menu_select_all"
+        case .menuSplitAuto: return "menu_split_auto"
         case .menuSplitHorizontal: return "menu_split_horizontal"
         case .menuSplitVertical: return "menu_split_vertical"
         case .menuSwitchTab: return "menu_switch_tab"

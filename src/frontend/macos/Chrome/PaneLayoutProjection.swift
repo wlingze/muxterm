@@ -88,6 +88,13 @@ public enum StateEventPolicy {
     }
 }
 
+/// 按当前 pane 形状自动切分：更宽则左右，更高则上下。
+public enum AutoSplitPolicy {
+    public static func horizontal(cols: Int, rows: Int) -> Bool {
+        cols >= rows
+    }
+}
+
 /// 拖标题栏改布局：落到另一 pane 上交换，落到空白处拆到新 tab。
 public enum PaneDragLayoutPolicy {
     public enum Action: Equatable {

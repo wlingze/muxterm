@@ -136,7 +136,9 @@ final class KeyBindingsTests: XCTestCase {
 
     func testCommonCmdShortcutsUnchanged() {
         XCTAssertEqual(KeyBindings.action(for: KeyChord(command: true, key: "t")), .newTab)
-        XCTAssertEqual(KeyBindings.action(for: KeyChord(command: true, key: "d")), .splitVertical)
+        XCTAssertEqual(KeyBindings.action(for: KeyChord(command: true, key: "d")), .splitAuto)
+        XCTAssertEqual(KeyBindings.action(for: KeyChord(command: true, key: "v")), .splitVertical)
+        XCTAssertEqual(KeyBindings.action(for: KeyChord(command: true, key: "s")), .splitHorizontal)
         XCTAssertEqual(
             KeyBindings.action(for: KeyChord(command: true, shift: true, key: "d")),
             .splitHorizontal
@@ -181,6 +183,12 @@ final class KeyBindingsTests: XCTestCase {
             KeyBindings.action(for: KeyChord(command: true, key: "0")),
             .resetFontSize
         )
+    }
+
+    func testAutoSplitFollowsPaneShape() {
+        XCTAssertTrue(AutoSplitPolicy.horizontal(cols: 120, rows: 40))
+        XCTAssertFalse(AutoSplitPolicy.horizontal(cols: 40, rows: 80))
+        XCTAssertTrue(AutoSplitPolicy.horizontal(cols: 24, rows: 24))
     }
 
     func testCmdShiftLCyclesLayout() {
@@ -2192,7 +2200,7 @@ final class KeyBindingsConfigTests: XCTestCase {
         action = "new_pane"
         """
         let custom = KeyBindingsConfig.parse(toml: toml)
-        // 默认 Cmd-D = splitVertical；自定义覆盖为 splitHorizontal
+        // 默认 Cmd-D = splitAuto；自定义覆盖为 splitHorizontal
         XCTAssertEqual(
             KeyBindings.action(for: KeyChord(command: true, key: "d"), custom: custom),
             .splitHorizontal
