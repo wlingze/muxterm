@@ -75,13 +75,11 @@ public enum KeyBindings {
         if chord.command, !chord.shift, !chord.option, key == "t" {
             return .newTab
         }
-        // Cmd-V 上下、Cmd-S 左右、Cmd-D 按当前 pane 形状自动切分。
+        // Cmd-S 左右、Cmd-Shift-S 上下、Cmd-D 按当前 pane 形状自动切分。
+        // Cmd-V 必须留给粘贴。
         if chord.command, !chord.option, !chord.control {
-            if key == "v", !chord.shift {
-                return .splitVertical
-            }
-            if key == "s", !chord.shift {
-                return .splitHorizontal
+            if key == "s" {
+                return chord.shift ? .splitVertical : .splitHorizontal
             }
             if key == "d" {
                 return chord.shift ? .splitHorizontal : .splitAuto

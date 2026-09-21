@@ -137,7 +137,14 @@ final class KeyBindingsTests: XCTestCase {
     func testCommonCmdShortcutsUnchanged() {
         XCTAssertEqual(KeyBindings.action(for: KeyChord(command: true, key: "t")), .newTab)
         XCTAssertEqual(KeyBindings.action(for: KeyChord(command: true, key: "d")), .splitAuto)
-        XCTAssertEqual(KeyBindings.action(for: KeyChord(command: true, key: "v")), .splitVertical)
+        XCTAssertNil(
+            KeyBindings.action(for: KeyChord(command: true, key: "v")),
+            "Cmd-V 必须留给粘贴，不能再拦截成上下切分"
+        )
+        XCTAssertEqual(
+            KeyBindings.action(for: KeyChord(command: true, shift: true, key: "s")),
+            .splitVertical
+        )
         XCTAssertEqual(KeyBindings.action(for: KeyChord(command: true, key: "s")), .splitHorizontal)
         XCTAssertEqual(
             KeyBindings.action(for: KeyChord(command: true, shift: true, key: "d")),
