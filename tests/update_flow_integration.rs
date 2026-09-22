@@ -259,6 +259,10 @@ fn alpha_feed_is_detected_downloaded_verified_and_installed() {
     for entry in std::fs::read_dir(&feed).expect("读取 feed") {
         let entry = entry.expect("feed entry");
         let name = entry.file_name();
+        // 只镜像清单与资产文件；下载目录里可能带有解压产物等子目录。
+        if !entry.path().is_file() {
+            continue;
+        }
         let bytes = std::fs::read(entry.path()).expect("读取 feed 文件");
         // 只改清单里的摘要，资产文件保持原样 → 校验必然失败。
         let bytes = if name == "latest.json" {
