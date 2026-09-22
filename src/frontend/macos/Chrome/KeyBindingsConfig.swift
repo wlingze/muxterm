@@ -33,6 +33,8 @@ public enum KeyBindingsConfig {
         case "toggle_pane_fullscreen": return .togglePaneFullscreen
         case "cycle_layout", "next_layout": return .cycleLayout
         case "switch_tab_last": return .switchLastTab
+        case "switch_tab_previous", "previous_tab": return .previousTab
+        case "switch_tab_next", "next_tab": return .nextTab
         case "toggle_sidebar": return .toggleSidebar
         case "open_shells": return .openShells
         case "open_agents": return .openAgents

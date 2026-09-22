@@ -175,6 +175,10 @@ enum MuxtermTextKey: CaseIterable {
     case moveTabRightDetail
     case switchLastTab
     case switchLastTabDetail
+    case previousTab
+    case previousTabDetail
+    case nextTab
+    case nextTabDetail
     case quitMuxterm
     case quitMuxtermDetail
     case rename
@@ -420,6 +424,10 @@ enum MuxtermTextKey: CaseIterable {
         case .moveTabRightDetail: return "move_tab_right_detail"
         case .switchLastTab: return "switch_last_tab"
         case .switchLastTabDetail: return "switch_last_tab_detail"
+        case .previousTab: return "previous_tab"
+        case .previousTabDetail: return "previous_tab_detail"
+        case .nextTab: return "next_tab"
+        case .nextTabDetail: return "next_tab_detail"
         case .quitMuxterm: return "quit_muxterm"
         case .quitMuxtermDetail: return "quit_muxterm_detail"
         case .rename: return "rename"

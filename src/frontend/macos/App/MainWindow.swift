@@ -1013,6 +1013,27 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         requestSwitchTab(tabId)
     }
 
+    @objc func switchToPreviousTab() {
+        switchAdjacentTab(offset: -1)
+    }
+
+    @objc func switchToNextTab() {
+        switchAdjacentTab(offset: 1)
+    }
+
+    /// 按当前展示顺序移到相邻 tab。到头就停，不绕回另一端。
+    private func switchAdjacentTab(offset: Int) {
+        let tabs = presentedTabs()
+        guard let index = tabs.firstIndex(where: \.isActive),
+              let destination = TabSwitchPolicy.adjacentIndex(
+                activeIndex: index,
+                count: tabs.count,
+                offset: offset
+              )
+        else { return }
+        requestSwitchTab(tabs[destination].id)
+    }
+
     /// Cmd+Ctrl+N：按固定打开顺序切换 Workspace，不随最近使用重排。
     /// 与 Linux Ctrl+Alt+N 使用同一组 `switch_workspace_N` 语义。
     func switchToWorkspaceAtFixedIndex(_ oneBased: Int) {
@@ -4320,12 +4341,26 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             items.insert(contentsOf: tabItems, at: insertion)
             if tabItems.count > 1 {
                 items.insert(
-                    PaletteItem(
-                        title: i18n.tr(.switchLastTab),
-                        detail: i18n.tr(.switchLastTabDetail),
-                        keywords: "switch last final tab 0 最后 标签页",
-                        kind: .command(.switchLastTab)
-                    ),
+                    contentsOf: [
+                        PaletteItem(
+                            title: i18n.tr(.previousTab),
+                            detail: i18n.tr(.previousTabDetail),
+                            keywords: "previous tab left cmd 上一个 左边 标签页",
+                            kind: .command(.previousTab)
+                        ),
+                        PaletteItem(
+                            title: i18n.tr(.nextTab),
+                            detail: i18n.tr(.nextTabDetail),
+                            keywords: "next tab right cmd 下一个 右边 标签页",
+                            kind: .command(.nextTab)
+                        ),
+                        PaletteItem(
+                            title: i18n.tr(.switchLastTab),
+                            detail: i18n.tr(.switchLastTabDetail),
+                            keywords: "switch last final tab 0 最后 标签页",
+                            kind: .command(.switchLastTab)
+                        ),
+                    ],
                     at: insertion + tabItems.count
                 )
             }
@@ -4390,6 +4425,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         case .command(.switchLastTab):
             commandPalette.dismiss()
             switchToLastTab()
+        case .command(.previousTab):
+            commandPalette.dismiss()
+            switchToPreviousTab()
+        case .command(.nextTab):
+            commandPalette.dismiss()
+            switchToNextTab()
         case .command(.movePaneToNewTab):
             commandPalette.dismiss()
             moveActivePaneToNewTab()
@@ -6048,6 +6089,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             key = "up"
         } else if event.keyCode == 125 {
             key = "down"
+        } else if event.keyCode == 123 {
+            key = "left"
+        } else if event.keyCode == 124 {
+            key = "right"
         } else if let raw = event.charactersIgnoringModifiers, let first = raw.first {
             key = String(first)
         } else {
@@ -6117,6 +6162,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             switchToTabIndex(n)
         case .switchLastTab:
             switchToLastTab()
+        case .previousTab:
+            switchToPreviousTab()
+        case .nextTab:
+            switchToNextTab()
         case .nextPane:
             nextPane()
         case .prevPane:

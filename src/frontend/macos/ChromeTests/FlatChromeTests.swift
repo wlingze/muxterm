@@ -94,6 +94,43 @@ final class KeyBindingsTests: XCTestCase {
         )
     }
 
+    func testCommandArrowsSwitchAdjacentTabsPastTheNinth() {
+        XCTAssertEqual(
+            KeyBindings.action(for: KeyChord(command: true, key: "left")),
+            .previousTab
+        )
+        XCTAssertEqual(
+            KeyBindings.action(for: KeyChord(command: true, key: "right")),
+            .nextTab
+        )
+        XCTAssertEqual(KeyBindings.action(for: KeyChord(command: true, key: "9")), .switchTab(9))
+        XCTAssertNil(
+            KeyBindings.action(for: KeyChord(command: true, key: "10")),
+            "没有第 10 个数字键；第 10 个 tab 只能靠左右相邻切换"
+        )
+        XCTAssertNil(KeyBindings.action(for: KeyChord(command: true, shift: true, key: "left")))
+        XCTAssertNil(KeyBindings.action(for: KeyChord(command: true, option: true, key: "right")))
+        XCTAssertNil(KeyBindings.action(for: KeyChord(key: "left")))
+        XCTAssertEqual(
+            KeyBindingsConfig.action(from: "switch_tab_previous"),
+            .previousTab
+        )
+        XCTAssertEqual(KeyBindingsConfig.action(from: "next_tab"), .nextTab)
+    }
+
+    func testAdjacentTabStopsAtTheEnds() {
+        XCTAssertEqual(TabSwitchPolicy.adjacentIndex(activeIndex: 8, count: 12, offset: 1), 9)
+        XCTAssertEqual(TabSwitchPolicy.adjacentIndex(activeIndex: 9, count: 12, offset: 1), 10)
+        XCTAssertEqual(TabSwitchPolicy.adjacentIndex(activeIndex: 11, count: 12, offset: -1), 10)
+        XCTAssertNil(
+            TabSwitchPolicy.adjacentIndex(activeIndex: 11, count: 12, offset: 1),
+            "最后一个 tab 再向右必须停住"
+        )
+        XCTAssertNil(TabSwitchPolicy.adjacentIndex(activeIndex: 0, count: 12, offset: -1))
+        XCTAssertNil(TabSwitchPolicy.adjacentIndex(activeIndex: 3, count: 12, offset: 0))
+        XCTAssertNil(TabSwitchPolicy.adjacentIndex(activeIndex: 12, count: 12, offset: -1))
+    }
+
     func testCmdBracketPaneSwitchMapping() {
         XCTAssertEqual(
             KeyBindings.action(for: KeyChord(command: true, key: "[")),
@@ -1602,6 +1639,13 @@ final class PaneLayoutProjectionTests: XCTestCase {
             "关 pane / split 后必须按新 host 像素重算格子"
         )
         XCTAssertFalse(RemainingPaneGridPolicy.usesAllocatedGridAfterTreeChange(false))
+        XCTAssertFalse(
+            RemainingPaneGridPolicy.usesAllocatedGridAfterTreeChange(
+                true,
+                usesClientResize: true
+            ),
+            "tmux 换树不能按像素改 VT 格子，否则底栏和输入叠在一起"
+        )
         XCTAssertEqual(
             RemainingPaneGridPolicy.treeChangeGrid(allocatedCols: 160, allocatedRows: 40).cols,
             160

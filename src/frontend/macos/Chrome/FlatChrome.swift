@@ -913,8 +913,14 @@ public enum TabGeometrySyncPolicy {
 /// 内容没重绘」。Linux `merge_grid_size` 同样以 widget 分配为下限。
 public enum RemainingPaneGridPolicy {
     /// 换树后用当前 allocation 作为乐观格子。
-    public static func usesAllocatedGridAfterTreeChange(_ treeChanged: Bool) -> Bool {
-        treeChanged
+    ///
+    /// tmux 的格子来自 layout。按像素改模型会比 pane 少掉标题栏和分隔条，
+    /// TUI 仍按 pane 列数画，底栏 CUP 被夹到上一行，输入和状态叠在一起。
+    public static func usesAllocatedGridAfterTreeChange(
+        _ treeChanged: Bool,
+        usesClientResize: Bool = false
+    ) -> Bool {
+        treeChanged && !usesClientResize
     }
 
     /// 把后端请求和当前 widget 分配合成最终格子。
