@@ -25,6 +25,48 @@ pub struct RuntimeBatch {
     pub signals: Vec<RuntimeSignal>,
 }
 
+/// 同一次 drain 里，后到的 full frame 覆盖该 pane 更早的 frame/增量。
+///
+/// Herdr 一个按键会连发多帧完整画面。全部喂进 Index 和 SwiftTerm 会占满
+/// 一核，打字要等整屏重画。只保留最后一帧，以及它之后的增量。
+pub fn coalesce_superseded_frames(batches: &mut std::collections::VecDeque<RuntimeBatch>) {
+    use std::collections::HashMap;
+
+    let mut order = Vec::new();
+    for (batch_index, batch) in batches.iter().enumerate() {
+        for (render_index, event) in batch.render.iter().enumerate() {
+            let (pane, is_frame) = match event {
+                RenderEvent::PaneFrame { pane, .. } => (*pane, true),
+                RenderEvent::PaneOutput { pane, .. } => (*pane, false),
+                _ => continue,
+            };
+            order.push((batch_index, render_index, pane, is_frame));
+        }
+    }
+    let mut last_frame = HashMap::<crate::protocol::PaneId, usize>::new();
+    for (index, (_, _, pane, is_frame)) in order.iter().enumerate() {
+        if *is_frame {
+            last_frame.insert(*pane, index);
+        }
+    }
+    let mut drop_at = Vec::new();
+    for (index, (batch_index, render_index, pane, _)) in order.iter().enumerate() {
+        if last_frame.get(pane).is_some_and(|frame| index < *frame) {
+            drop_at.push((*batch_index, *render_index));
+        }
+    }
+    for (batch_index, render_index) in drop_at.into_iter().rev() {
+        if let Some(batch) = batches.get_mut(batch_index) {
+            if render_index < batch.render.len() {
+                batch.render.remove(render_index);
+            }
+        }
+    }
+    batches.retain(|batch| {
+        !batch.control.is_empty() || !batch.render.is_empty() || !batch.signals.is_empty()
+    });
+}
+
 impl RuntimeBatch {
     /// Classify legacy product events into their lane at the Runtime boundary.
     pub fn from_state_changes(events: impl IntoIterator<Item = StateChange>) -> Self {
@@ -389,5 +431,59 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn later_full_frame_drops_earlier_frame_and_output_for_same_pane() {
+        let mut batches = std::collections::VecDeque::from([
+            RuntimeBatch::from(StateChange::PaneFrame {
+                pane: PaneId(1),
+                data: b"ONE".to_vec(),
+            }),
+            RuntimeBatch::from(StateChange::PaneOutput {
+                pane: PaneId(1),
+                data: b"mid".to_vec(),
+            }),
+            RuntimeBatch::from(StateChange::PaneFrame {
+                pane: PaneId(1),
+                data: b"TWO".to_vec(),
+            }),
+            RuntimeBatch::from(StateChange::PaneOutput {
+                pane: PaneId(1),
+                data: b"after".to_vec(),
+            }),
+            RuntimeBatch::from(StateChange::PaneFrame {
+                pane: PaneId(2),
+                data: b"OTHER".to_vec(),
+            }),
+            RuntimeBatch {
+                control: vec![ControlEvent::TabOrderChanged],
+                ..RuntimeBatch::default()
+            },
+        ]);
+        coalesce_superseded_frames(&mut batches);
+        let mut frames = Vec::new();
+        let mut outputs = Vec::new();
+        let mut controls = 0;
+        for batch in &batches {
+            controls += batch.control.len();
+            for event in &batch.render {
+                match event {
+                    RenderEvent::PaneFrame { pane, data } => {
+                        frames.push((*pane, data.clone()));
+                    }
+                    RenderEvent::PaneOutput { pane, data } => {
+                        outputs.push((*pane, data.clone()));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        assert_eq!(
+            frames,
+            vec![(PaneId(1), b"TWO".to_vec()), (PaneId(2), b"OTHER".to_vec()),]
+        );
+        assert_eq!(outputs, vec![(PaneId(1), b"after".to_vec())]);
+        assert_eq!(controls, 1);
     }
 }

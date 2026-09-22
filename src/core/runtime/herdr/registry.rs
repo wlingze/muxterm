@@ -134,6 +134,10 @@ pub struct PaneStreamSlot {
     /// intent-bound 的 latest resize。
     pub pending_resize: Option<(u16, u16)>,
     pub pending_scroll: i32,
+    /// 还没有 UI 格子，禁止每轮 reconcile 都重试 Hello。
+    pub awaiting_allocation: bool,
+    /// 最近一次已经交给 Surface 的 full frame 指纹。相同帧不再重灌 VTE。
+    pub last_full_fingerprint: Option<u64>,
     /// 生命周期诊断（W0 字段；测试可读取确定性计数）。
     pub transitions: Vec<String>,
 }
@@ -166,6 +170,8 @@ impl PaneStreamSlot {
             pending_input_bytes: 0,
             pending_resize: None,
             pending_scroll: 0,
+            awaiting_allocation: false,
+            last_full_fingerprint: None,
             transitions: Vec::new(),
         }
     }
