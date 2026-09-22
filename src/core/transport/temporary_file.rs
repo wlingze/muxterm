@@ -1,11 +1,51 @@
 //! 本地/SSH 二进制文件传输：不经 PTY，不把图片塞进 shell 输入或命令行参数。
+//!
+//! 本地直接写 `/tmp`，不走 SSH 复制，也不用 macOS `TMPDIR`（`/var/folders/.../T`）。
+//! 过期的 `muxterm-paste-*` 在下一次粘贴时删掉。
 use std::io::{Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use anyhow::{bail, Context, Result};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+const PASTE_DIR: &str = "/tmp";
+const PASTE_PREFIX: &str = "muxterm-paste-";
+const PASTE_TTL: Duration = Duration::from_secs(60 * 60);
+
+fn paste_name(extension: &str) -> Result<String> {
+    let mut random = [0u8; 16];
+    std::fs::File::open("/dev/urandom")?.read_exact(&mut random)?;
+    let token: String = random.iter().map(|b| format!("{b:02x}")).collect();
+    Ok(format!("{PASTE_PREFIX}{token}.{extension}"))
+}
+
+/// 删掉 `/tmp` 里超过 TTL 的本进程前缀文件。失败不影响这次粘贴。
+pub(super) fn sweep_expired_pastes(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let now = SystemTime::now();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with(PASTE_PREFIX) {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else { continue };
+        if !meta.is_file() {
+            continue;
+        }
+        let Ok(modified) = meta.modified() else {
+            continue;
+        };
+        if now.duration_since(modified).unwrap_or_default() > PASTE_TTL {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
 
 pub(super) fn store(
     transport: &str,
@@ -22,13 +62,12 @@ pub(super) fn store(
     {
         bail!("invalid temporary file extension");
     }
-    let mut random = [0u8; 16];
-    std::fs::File::open("/dev/urandom")?.read_exact(&mut random)?;
-    let token: String = random.iter().map(|b| format!("{b:02x}")).collect();
-    let name = format!("muxterm-paste-{token}.{extension}");
+    let name = paste_name(extension)?;
     match transport {
         "local" => {
-            let path = std::env::temp_dir().join(name);
+            let dir = PathBuf::from(PASTE_DIR);
+            sweep_expired_pastes(&dir);
+            let path = dir.join(name);
             let mut file = std::fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
@@ -47,9 +86,10 @@ pub(super) fn store(
             }
             let path = format!("/tmp/{name}");
             // 路径只含内部随机十六进制，不包含 clipboard 或用户 shell 文本。
-            // noclobber 创建成功后才进入子 shell：失败清理不会误删已有文件。
+            // 先清掉超过 1 小时的旧粘贴，再 noclobber 创建：失败清理不会误删已有文件。
             let script = format!(
-                "umask 077; set -C; (trap 'unlink {path}' HUP INT TERM; cat; count=$(wc -c < {path}); if [ \"$count\" -ne {} ]; then unlink {path}; exit 1; fi) > {path}", bytes.len()
+                "find /tmp -maxdepth 1 -type f -name 'muxterm-paste-*' -mmin +60 -exec unlink {{}} \\; 2>/dev/null; umask 077; set -C; (trap 'unlink {path}' HUP INT TERM; cat; count=$(wc -c < {path}); if [ \"$count\" -ne {} ]; then unlink {path}; exit 1; fi) > {path}",
+                bytes.len()
             );
             let config = std::env::var("MUXTERM_SSH_CONFIG_PATH").ok();
             let command = format!("sh -c '{}'", script.replace('\'', "'\\''"));
@@ -120,7 +160,9 @@ mod tests {
         let second = store("local", "", bytes, "png").unwrap();
         assert_ne!(first, second);
         for path in [first, second] {
+            assert!(path.starts_with("/tmp/muxterm-paste-"));
             assert!(path.ends_with(".png"));
+            assert!(!path.contains("/var/folders"));
             assert_eq!(std::fs::read(&path).unwrap(), bytes);
             assert_eq!(
                 std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
@@ -128,6 +170,23 @@ mod tests {
             );
             std::fs::remove_file(path).unwrap();
         }
+    }
+
+    #[test]
+    fn local_paste_sweeps_expired_tmp_files() {
+        let stale = PathBuf::from(format!(
+            "/tmp/muxterm-paste-stale-{}-deadbeef.png",
+            std::process::id()
+        ));
+        std::fs::write(&stale, b"old").unwrap();
+        let file = std::fs::File::options().write(true).open(&stale).unwrap();
+        file.set_modified(SystemTime::now() - Duration::from_secs(2 * 60 * 60))
+            .unwrap();
+        drop(file);
+        let fresh = store("local", "", b"new", "png").unwrap();
+        assert!(!stale.exists(), "超过 1 小时的 /tmp 粘贴必须被清掉");
+        assert!(fresh.starts_with("/tmp/muxterm-paste-"));
+        std::fs::remove_file(fresh).unwrap();
     }
 
     #[test]
