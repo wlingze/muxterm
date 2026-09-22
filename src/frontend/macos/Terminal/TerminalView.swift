@@ -454,6 +454,13 @@ final class MuxTerminalView: TerminalView {
         withUserMouseReporting { super.mouseUp(with: event) }
     }
 
+    /// 1003 hover 走 `mouseMoved` → `Terminal.sendMotion`，和点击一样落在
+    /// `send(source: Terminal)`。tmux / Herdr 镜像会丢掉解析器应答，所以
+    /// 悬停也必须标成用户鼠标，否则进度条、列表高亮都收不到移动。
+    override func mouseMoved(with event: NSEvent) {
+        withUserMouseReporting { super.mouseMoved(with: event) }
+    }
+
     override func mouseDragged(with event: NSEvent) {
         if !mouseReportingConsumes(event),
            wordDragPivot != nil,

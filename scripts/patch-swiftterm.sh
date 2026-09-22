@@ -366,6 +366,17 @@ if "MUXTERM_SET_SELECTION" not in mac_text:
     print("==> applied SwiftTerm setSelectionRange patch")
 else:
     print("==> SwiftTerm setSelectionRange patch already applied")
+# 悬停上报在 MuxTerminalView 里包一层用户鼠标标记；SwiftTerm 的 mouseMoved 必须 open。
+if "MUXTERM_OPEN_MOUSE_MOVED" not in mac_text:
+    old = "    public override func mouseMoved(with event: NSEvent) {"
+    new = "    open override func mouseMoved(with event: NSEvent) { // MUXTERM_OPEN_MOUSE_MOVED"
+    if old not in mac_text:
+        sys.exit("ERROR: SwiftTerm mouseMoved changed; update scripts/patch-swiftterm.sh")
+    mac_text = mac_text.replace(old, new, 1)
+    print("==> opened SwiftTerm mouseMoved for hover passthrough")
+else:
+    print("==> SwiftTerm mouseMoved already open")
+
 # 由 Runtime 提供网格时，像素布局不得触发一次临时 reflow。
 if "MUXTERM_GRID_AUTHORITY" not in mac_text:
     old = "    open override func setFrameSize(_ newSize: NSSize) {"
