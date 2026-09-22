@@ -289,6 +289,35 @@ const RULES: &[Rule] = &[
         not_contains: EMPTY,
         not_regex: EMPTY,
     },
+    // 标题经常停在「grok」、进度也会瞬间回到 4;0;0，但底栏仍是这一轮。
+    // 这两条必须高于标题 idle（1100）和进度 idle（950），否则 Agents
+    // 会在 Working 和 Done 之间来回闪。
+    Rule {
+        agent: "grok",
+        priority: 1120,
+        state: PaneStatus::Working,
+        keep: false,
+        region: Region::Bottom(8),
+        contains: EMPTY,
+        any_contains: &["[stop]", "esc to interrupt"],
+        line_regex: EMPTY,
+        regex: EMPTY,
+        not_contains: EMPTY,
+        not_regex: EMPTY,
+    },
+    Rule {
+        agent: "grok",
+        priority: 1110,
+        state: PaneStatus::Working,
+        keep: false,
+        region: Region::Bottom(6),
+        contains: EMPTY,
+        any_contains: EMPTY,
+        line_regex: &[r"(?i)thinking(?:…|\.{3})"],
+        regex: EMPTY,
+        not_contains: EMPTY,
+        not_regex: EMPTY,
+    },
     Rule {
         agent: "grok",
         priority: 1100,
@@ -751,6 +780,33 @@ mod tests {
         );
         assert_eq!(
             classify_agent_screen("grok", &screen),
+            Some(PaneStatus::Working)
+        );
+    }
+
+    #[test]
+    fn grok_plain_title_stays_working_while_stop_or_thinking_is_visible() {
+        let stop = ScreenSnapshot::from_visible(
+            "muxterm - grok",
+            "4;0;0",
+            vec![
+                "Let me wait.".into(),
+                "13m53s [stop]".into(),
+                "Enter:queue  Ctrl+c:cancel".into(),
+            ],
+        );
+        assert_eq!(
+            classify_agent_screen("grok", &stop),
+            Some(PaneStatus::Working),
+            "标题没有旋钮、进度已清零时，底栏 [stop] 仍是这一轮"
+        );
+        let thinking = ScreenSnapshot::from_visible(
+            "grok",
+            "",
+            vec!["Thinking… 1m27s".into(), "Grok 4.7".into()],
+        );
+        assert_eq!(
+            classify_agent_screen("grok", &thinking),
             Some(PaneStatus::Working)
         );
     }
