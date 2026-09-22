@@ -559,6 +559,122 @@ final class AgentRenderE2ETests: XCTestCase {
         )
     }
 
+    func testOsc10WhiteSetDoesNotHideTypedTextOnLightTheme() {
+        AppE2E.ensureApp()
+        MuxtermTerminalColors.activePalette = .light
+        let view = MuxTerminalView(paneId: 1, frame: NSRect(x: 0, y: 0, width: 640, height: 360))
+        view.suppressOutputDrivenResponses = true
+        view.applyPalette(.light)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 360),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = view
+        window.orderFront(nil)
+        AppE2E.pump(40)
+        view.getTerminal().resize(cols: 40, rows: 12)
+        // git lg 真实样例：OSC 10/11 应答写进 stdout。若当成 SET，浅色主题
+        // 默认前景变白，随后的默认色输入（HELLO）会看不见。
+        let payload =
+            "\u{1b}]10;rgb:ffff/ffff/ffff\u{1b}\\" +
+            "\u{1b}]11;rgb:ffff/ffff/ffff\u{1b}\\" +
+            String(repeating: "H", count: 40) + "\r\n"
+        view.feedOutput(Data(payload.utf8))
+        view.forceRedraw()
+        AppE2E.pump(80)
+        let colors = view.themeHexColors()
+        XCTAssertEqual(
+            colors.fg.lowercased(),
+            MuxtermPalette.light.fg,
+            "tmux 镜像下 OSC 10 SET 不能把默认前景改成白色。got=\(colors.fg)"
+        )
+        XCTAssertEqual(colors.bg.lowercased(), MuxtermPalette.light.bg)
+        guard let range = view.sampleFirstRowLuminanceRange() else {
+            XCTFail("无法采样终端像素")
+            window.orderOut(nil)
+            return
+        }
+        XCTAssertLessThan(
+            range.min,
+            80 * 3,
+            "白底上刚打的字必须有深色墨水，不能是白字。range=\(range)"
+        )
+        XCTAssertGreaterThan(
+            range.max,
+            200 * 3,
+            "浅色背景应仍接近白。range=\(range)"
+        )
+        window.orderOut(nil)
+    }
+
+    func testGitLgOsc10BlackOnLightThemeKeepsTypedTextReadable() {
+        AppE2E.ensureApp()
+        MuxtermTerminalColors.activePalette = .light
+        let view = MuxTerminalView(paneId: 1, frame: NSRect(x: 0, y: 0, width: 640, height: 360))
+        view.suppressOutputDrivenResponses = true
+        view.applyPalette(.light)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 360),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = view
+        window.orderFront(nil)
+        AppE2E.pump(40)
+        view.getTerminal().resize(cols: 40, rows: 12)
+        // tests/samples/real-gitlg-osc-query.txt 末尾：OSC 10 黑字 + OSC 11 白底。
+        let payload =
+            "\u{1b}]10;rgb:0000/0000/0000\u{1b}\\" +
+            "\u{1b}]11;rgb:ffff/ffff/ffff\u{1b}\\" +
+            "\u{1b}[0m" + String(repeating: "F", count: 40) + "\r\n"
+        view.feedOutput(Data(payload.utf8))
+        view.forceRedraw()
+        AppE2E.pump(80)
+        XCTAssertEqual(view.themeHexColors().fg.lowercased(), MuxtermPalette.light.fg)
+        guard let range = view.sampleFirstRowLuminanceRange() else {
+            XCTFail("无法采样终端像素")
+            window.orderOut(nil)
+            return
+        }
+        XCTAssertLessThan(range.min, 80 * 3, "git lg 之后输入必须可见。range=\(range)")
+        window.orderOut(nil)
+    }
+
+    func testTruecolorWhiteOnLightBackgroundIsDrawnReadable() {
+        AppE2E.ensureApp()
+        MuxtermTerminalColors.activePalette = .light
+        let view = MuxTerminalView(paneId: 1, frame: NSRect(x: 0, y: 0, width: 640, height: 360))
+        view.applyPalette(.light)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 360),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = view
+        window.orderFront(nil)
+        AppE2E.pump(40)
+        view.getTerminal().resize(cols: 40, rows: 12)
+        let line = "\u{1b}[38;2;255;255;255m" + String(repeating: "W", count: 40) + "\u{1b}[0m\r\n"
+        view.feedOutput(Data(line.utf8))
+        view.forceRedraw()
+        AppE2E.pump(80)
+        guard let range = view.sampleFirstRowLuminanceRange() else {
+            XCTFail("无法采样终端像素")
+            window.orderOut(nil)
+            return
+        }
+        XCTAssertLessThan(
+            range.min,
+            80 * 3,
+            "真彩白字叠在浅色背景上必须被压暗。range=\(range)"
+        )
+        window.orderOut(nil)
+    }
+
     func testBlackOnBlackCellsAreDrawnReadable() {
         AppE2E.ensureApp()
         MuxtermTerminalColors.activePalette = .light

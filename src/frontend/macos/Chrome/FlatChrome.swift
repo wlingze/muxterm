@@ -1453,6 +1453,34 @@ public enum ColorContrast {
     }
 }
 
+/// pane 输出里的 OSC 10/11 SET 不能把主题默认色改成白底白字。
+///
+/// `git lg` / less 会把终端的 OSC 10/11 应答写进 stdout。SwiftTerm 把
+/// `OSC 10;rgb:...` 当成 SET，浅色主题下默认前景变成白/浅色后，zsh 提示符
+/// 仍有显式颜色所以路径可见，但用户刚打的字走 Color.default，看起来像没输入。
+/// 回车仍然发给 shell，因为字节在，只是看不见。
+///
+/// tmux 镜像：默认色由 GUI 主题拥有（tmux 用 `refresh-client -r` 代答查询），
+/// 输出流里的 SET 一律丢弃。本地 PTY：允许应用改默认色，但对比不足时仍恢复。
+public enum DefaultColorGuard {
+    public static func shouldRestore(
+        currentFg: String,
+        currentBg: String,
+        themeFg: String,
+        themeBg: String,
+        isRemoteMirror: Bool,
+        minRatio: Double = ColorContrast.minimumRatio
+    ) -> Bool {
+        let fg = currentFg.lowercased()
+        let bg = currentBg.lowercased()
+        if ColorContrast.contrastRatio(fg: fg, bg: bg) < minRatio {
+            return true
+        }
+        guard isRemoteMirror else { return false }
+        return fg != themeFg.lowercased() || bg != themeBg.lowercased()
+    }
+}
+
 extension MuxtermPalette {
     /// 主题色若前景/背景过近，只推前景。
     public func contrasted() -> MuxtermPalette {
