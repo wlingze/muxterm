@@ -370,7 +370,13 @@ jobs:
   # ── Publish release (single job, no race) ──────────────────
   publish:
     name: Publish release
-    if: needs.resolve-version.outputs.should_publish == 'true' &&
+    # `always()` 是必须的：tag 发布不构建 Linux CLI，该 job 会被 skip，而
+    # GitHub 会把「被依赖 job 被跳过」传播下去，导致 publish 一起被跳过
+    # （beta 就发不出 release 了）。用 always() 继续执行，再用各 build 的
+    # result == 'success' 精确表达「至少有一个平台构建成功」。
+    if: always() &&
+        needs.resolve-version.result == 'success' &&
+        needs.resolve-version.outputs.should_publish == 'true' &&
         github.event_name != 'pull_request' &&
         (needs.build-linux-cli.result == 'success' ||
          needs.build-linux-gtk.result == 'success' ||
@@ -380,6 +386,8 @@ jobs:
       contents: write
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      FS_VERSION: ${{ needs.resolve-version.outputs.fs_version }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -396,6 +404,16 @@ jobs:
           mkdir -p dist
           find release-assets -type f -exec cp {} dist/ \;
           ls -la dist/
+          # 发布必须带上两个桌面产物，缺一个就失败，避免发布空 release
+          # （某个平台构建失败时 publish 仍会因 always() 进入这里）。
+          for expected in \
+            "muxterm-macos-arm64-${FS_VERSION}.dmg" \
+            "muxterm-gtk-linux-x86_64-${FS_VERSION}.tar.gz"; do
+            if [ ! -f "dist/$expected" ]; then
+              echo "ERROR: 缺少发布产物 $expected" >&2
+              exit 1
+            fi
+          done
 
       - name: Build updater manifest (latest.json)
         env:
