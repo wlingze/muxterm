@@ -136,19 +136,29 @@ final class KeyBindingsTests: XCTestCase {
 
     func testCommonCmdShortcutsUnchanged() {
         XCTAssertEqual(KeyBindings.action(for: KeyChord(command: true, key: "t")), .newTab)
-        XCTAssertEqual(KeyBindings.action(for: KeyChord(command: true, key: "d")), .splitAuto)
-        XCTAssertNil(
-            KeyBindings.action(for: KeyChord(command: true, key: "v")),
-            "Cmd-V 必须留给粘贴，不能再拦截成上下切分"
+        XCTAssertEqual(
+            KeyBindings.action(for: KeyChord(command: true, key: "d")),
+            .splitHorizontal,
+            "Cmd-D 固定左右切分，不再按形状自动选方向"
+        )
+        XCTAssertEqual(
+            KeyBindings.action(for: KeyChord(command: true, shift: true, key: "d")),
+            .splitVertical,
+            "Cmd-Shift-D 上下切分"
+        )
+        XCTAssertEqual(
+            KeyBindings.action(for: KeyChord(command: true, key: "s")),
+            .splitVertical,
+            "Cmd-S 上下切分"
         )
         XCTAssertEqual(
             KeyBindings.action(for: KeyChord(command: true, shift: true, key: "s")),
-            .splitVertical
+            .splitHorizontal,
+            "Cmd-Shift-S 左右切分"
         )
-        XCTAssertEqual(KeyBindings.action(for: KeyChord(command: true, key: "s")), .splitHorizontal)
-        XCTAssertEqual(
-            KeyBindings.action(for: KeyChord(command: true, shift: true, key: "d")),
-            .splitHorizontal
+        XCTAssertNil(
+            KeyBindings.action(for: KeyChord(command: true, key: "v")),
+            "Cmd-V 必须留给粘贴，不能再拦截成切分"
         )
         XCTAssertEqual(KeyBindings.action(for: KeyChord(command: true, key: "w")), .closePane)
         XCTAssertEqual(KeyBindings.action(for: KeyChord(command: true, shift: true, key: "w")), .closeWindow)
@@ -2429,7 +2439,7 @@ final class KeyBindingsConfigTests: XCTestCase {
         action = "new_pane"
         """
         let custom = KeyBindingsConfig.parse(toml: toml)
-        // 默认 Cmd-D = splitAuto；自定义覆盖为 splitHorizontal
+        // 默认 Cmd-D = 左右；自定义仍可覆盖为同一动作
         XCTAssertEqual(
             KeyBindings.action(for: KeyChord(command: true, key: "d"), custom: custom),
             .splitHorizontal
