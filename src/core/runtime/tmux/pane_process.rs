@@ -4,6 +4,7 @@
 //! `pane_pid` 后，本地 Runtime 可以从 `/proc` 读取前台进程组完整 argv；
 //! SSH Runtime 必须保留远端 tmux 原值，不能拿远端 PID 误查本机 `/proc`。
 
+use crate::activity::attention::engine::known_agent_process_name;
 use crate::protocol::terminal::foreground_process_command;
 
 /// node wrapper 需要完整 argv；tmux 的 `#()` 在 server 侧异步执行，因此 SSH
@@ -32,29 +33,46 @@ where
     let reported = reported.trim();
     // #() 返回的是异步缓存；进程已回到 shell 或换成具名命令时，旧 argv
     // 不得复活上一个 agent，也不应为每个 shell 同步启动两次本机 ps。
-    if !matches!(reported, "node" | "nodejs" | "npx" | "bun") {
+    if !is_script_host(reported) {
         return reported.to_string();
     }
     let server_argv = fields
         .next()
         .map(str::trim)
         .filter(|argv| !argv.is_empty() && !argv.starts_with("<'"));
+    // 完整 `node …` 仍是同一宿主下换程序的证据，优先于本机补查。
     if let Some(server_argv) = server_argv.filter(|argv| is_wrapper_argv(argv)) {
         return server_argv.to_string();
     }
-    if server_argv.is_some() {
+    // macOS tmux 用可执行文件路径，所以 Pi 这种 node 程序的
+    // pane_current_command 是 node。`process.title = "pi"` 会覆写 argv，
+    // `ps args` 只剩标题，不再以 node 开头。这是前台身份，不是过期 shell。
+    // 见 https://nodejs.org/api/process.html#processtitle （2026-09-22 核对）。
+    let titled_agent = server_argv.filter(|argv| known_agent_process_name(argv).is_some());
+    if server_argv.is_some() && titled_agent.is_none() {
         tracing::debug!(target: "muxterm::tmux", reported, local,
             "ignored conflicting cached foreground argv");
     }
-    if !local {
-        return reported.to_string();
+    if local {
+        if let Ok(pid) = pid.trim().parse::<u32>() {
+            if let Some(command) = resolve(pid).filter(|command| accept_observed_argv(command)) {
+                return command;
+            }
+        }
     }
-    let Ok(pid) = pid.trim().parse::<u32>() else {
-        return reported.to_string();
-    };
-    resolve(pid)
-        .filter(|command| is_wrapper_argv(command))
-        .unwrap_or_else(|| reported.to_string())
+    if let Some(agent_argv) = titled_agent {
+        return agent_argv.to_string();
+    }
+    reported.to_string()
+}
+
+fn is_script_host(command: &str) -> bool {
+    matches!(command, "node" | "nodejs" | "npx" | "bun")
+}
+
+/// 本机补查可以是完整 wrapper argv，也可以是被 process.title 改写后的 agent 名。
+fn accept_observed_argv(command: &str) -> bool {
+    is_wrapper_argv(command) || known_agent_process_name(command).is_some()
 }
 
 /// #() 的缓存和当前 pane_current_command 不是原子采样。既然当前命令仍是
@@ -194,6 +212,70 @@ mod tests {
         assert_eq!(
             resolve_subscription_value_with("not-a-pid|htop", true, |_| None),
             "htop"
+        );
+    }
+
+    #[test]
+    fn rewritten_pi_title_is_an_agent_when_tmux_reports_node() {
+        use crate::activity::attention::{
+            clock::FakeClock, engine::AttentionEngine, state::PaneStatus,
+        };
+        // 2026-09-22 yaklang 本地 pane：tmux 报 node，前台 ps args 只有 process.title `pi`。
+        for (raw, local) in [("98096|node|pi", true), ("98096|node|pi", false)] {
+            let observed = resolve_subscription_value_with(raw, local, |_| {
+                if local {
+                    Some("pi".into())
+                } else {
+                    panic!("ssh must not inspect a remote pid locally")
+                }
+            });
+            assert_eq!(observed, "pi");
+            assert_eq!(known_agent_process_name(&observed), Some("pi"));
+        }
+        // 服务端缓存还没回来时，本机 ps 读到的标题同样要算 agent。
+        assert_eq!(
+            resolve_subscription_value_with("98096|node|", true, |_| Some("pi".into())),
+            "pi"
+        );
+
+        let mut engine = AttentionEngine::new(
+            Default::default(),
+            FakeClock::new(std::time::Instant::now()),
+        );
+        engine.set_process_name("yaklang", 173, Some("pi".into()));
+        let pane = &engine.snapshot()[0].panes[0];
+        assert!(pane.process_is_agent);
+        assert_eq!(pane.agent_name.as_deref(), Some("pi"));
+        assert_eq!(pane.process_name.as_deref(), Some("pi"));
+        assert_eq!(pane.status, PaneStatus::Idle);
+    }
+
+    #[test]
+    fn stale_pi_title_loses_to_a_live_node_script() {
+        assert_eq!(
+            resolve_subscription_value_with("98096|node|pi", true, |_| {
+                Some("node server.js".into())
+            }),
+            "node server.js"
+        );
+        // 本机补查竞态回到 shell 时，标题仍是比裸 node 更好的身份。
+        assert_eq!(
+            resolve_subscription_value_with("98096|node|pi", true, |_| Some("-zsh".into())),
+            "pi"
+        );
+    }
+
+    #[test]
+    fn mentioning_an_agent_in_argv_is_not_identity() {
+        assert_eq!(
+            resolve_subscription_value_with("42|node|echo pi", false, |_| {
+                panic!("non-wrapper cache must not force a local lookup")
+            }),
+            "node"
+        );
+        assert_eq!(
+            resolve_subscription_value_with("42|node|echo pi", true, |_| Some("echo pi".into())),
+            "node"
         );
     }
 
