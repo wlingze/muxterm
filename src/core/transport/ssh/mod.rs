@@ -314,12 +314,14 @@ impl ProcessTransport for SshProcessTransport {
                 if let Some(t) = &self.traffic {
                     t.add_down(data.len() as u64);
                 }
-                tracing::trace!(
-                    target = "muxterm::ssh",
-                    len = data.len(),
-                    hex = %hex_debug(&data),
-                    "recv ssh chunk"
-                );
+                if tracing::enabled!(target: "muxterm::ssh", tracing::Level::TRACE) {
+                    tracing::trace!(
+                        target = "muxterm::ssh",
+                        len = data.len(),
+                        hex = %hex_debug(&data),
+                        "recv ssh chunk"
+                    );
+                }
                 Ok(Some(data))
             }
             Err(tokio::sync::mpsc::error::TryRecvError::Empty) => Ok(None),
@@ -341,12 +343,14 @@ impl ProcessTransport for SshProcessTransport {
                 "ssh transport not started",
             ));
         };
-        tracing::debug!(
-            target = "muxterm::ssh",
-            len = data.len(),
-            hex = %hex_debug(data),
-            "send ssh bytes"
-        );
+        if tracing::enabled!(target: "muxterm::ssh", tracing::Level::TRACE) {
+            tracing::trace!(
+                target = "muxterm::ssh",
+                len = data.len(),
+                hex = %hex_debug(data),
+                "send ssh bytes"
+            );
+        }
         writer.write_all(data)?;
         writer.flush()?;
         if let Some(t) = &self.traffic {
