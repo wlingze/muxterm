@@ -975,6 +975,92 @@ final class PanePaintPolicyTests: XCTestCase {
     }
 }
 
+final class WheelPassthroughPolicyTests: XCTestCase {
+    func testMouseReportingBeatsServerScroll() {
+        XCTAssertEqual(
+            WheelPassthroughPolicy.route(
+                mouseReporting: true,
+                shiftBypassesMouse: false,
+                alternateScreen: false,
+                hasServerScroll: true
+            ),
+            .applicationMouse,
+            "Herdr ServerScroll 不得抢走 htop/Codex 的滚轮"
+        )
+    }
+
+    func testShiftBypassesMouseReportingForLocalSelect() {
+        XCTAssertEqual(
+            WheelPassthroughPolicy.route(
+                mouseReporting: true,
+                shiftBypassesMouse: true,
+                alternateScreen: false,
+                hasServerScroll: true
+            ),
+            .serverScroll
+        )
+    }
+
+    func testServerScrollUsedWhenAppDidNotRequestMouse() {
+        XCTAssertEqual(
+            WheelPassthroughPolicy.route(
+                mouseReporting: false,
+                shiftBypassesMouse: false,
+                alternateScreen: true,
+                hasServerScroll: true
+            ),
+            .serverScroll
+        )
+        XCTAssertEqual(
+            WheelPassthroughPolicy.route(
+                mouseReporting: false,
+                shiftBypassesMouse: false,
+                alternateScreen: false,
+                hasServerScroll: false
+            ),
+            .localHistory
+        )
+        XCTAssertEqual(
+            WheelPassthroughPolicy.route(
+                mouseReporting: false,
+                shiftBypassesMouse: false,
+                alternateScreen: true,
+                hasServerScroll: false
+            ),
+            .applicationArrows
+        )
+    }
+}
+
+final class KeyPassthroughPolicyTests: XCTestCase {
+    func testOptionOnlyChordsReachTheTerminal() {
+        XCTAssertFalse(
+            KeyPassthroughPolicy.consumeInMacOSWindow(KeyChord(option: true, key: "s")),
+            "Option-S 必须进 pane，不能再当 TUI 左右切分"
+        )
+        XCTAssertFalse(
+            KeyPassthroughPolicy.consumeInMacOSWindow(KeyChord(option: true, key: "d"))
+        )
+        XCTAssertFalse(
+            KeyPassthroughPolicy.consumeInMacOSWindow(KeyChord(option: true, key: "t"))
+        )
+    }
+
+    func testHookedCommandChordsStayConsumed() {
+        XCTAssertTrue(
+            KeyPassthroughPolicy.consumeInMacOSWindow(KeyChord(command: true, key: "d"))
+        )
+        XCTAssertTrue(
+            KeyPassthroughPolicy.consumeInMacOSWindow(KeyChord(command: true, key: "s"))
+        )
+        XCTAssertTrue(
+            KeyPassthroughPolicy.consumeInMacOSWindow(
+                KeyChord(command: true, option: true, key: "up")
+            )
+        )
+    }
+}
+
 final class PaneHistoryScrollPolicyTests: XCTestCase {
     func testNativeScrollbackOwnsTrackpadAndPageKeys() {
         XCTAssertFalse(
