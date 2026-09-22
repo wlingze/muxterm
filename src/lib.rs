@@ -47,6 +47,8 @@ pub mod render_policy;
 pub mod runtime;
 #[path = "core/transport/mod.rs"]
 pub mod transport;
+#[path = "core/update/mod.rs"]
+pub mod update;
 #[path = "core/url_detect.rs"]
 pub mod url_detect;
 #[path = "core/workspace/mod.rs"]

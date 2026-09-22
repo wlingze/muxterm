@@ -323,6 +323,10 @@ impl ConfigDocument {
                     {"path":"/platform/linux/client_side_decorations","control":"switch","apply":"next_workspace","title_key":"settings.platform.linux_csd"},
                     {"path":"/platform/macos/option_as_alt","control":"switch","apply":"next_workspace","title_key":"settings.platform.macos_option_as_alt"}
                 ]},
+                {"id":"update","title_key":"settings.update","fields":[
+                    {"path":"/update/auto_check","control":"switch","apply":"commit","title_key":"settings.update.auto_check"},
+                    {"path":"/update/manifest_url","control":"text","apply":"commit","title_key":"settings.update.manifest_url"}
+                ]},
                 {"id":"projects","title_key":"settings.projects","fields":[
                     {"path":"/projects","control":"project_editor","apply":"commit","title_key":"settings.projects"}
                 ]},
@@ -587,6 +591,7 @@ fn validate_toml_shape(value: &toml::Value) -> Result<()> {
             "ui",
             "pane",
             "behavior",
+            "update",
             "keybindings",
             "projects",
             "templates",
@@ -608,6 +613,7 @@ fn validate_toml_shape(value: &toml::Value) -> Result<()> {
         "attention",
         &["enabled", "blocked_regex", "debounce_ms"],
     )?;
+    check_table(table, "update", &["auto_check", "manifest_url"])?;
     check_table(
         table,
         "ui",

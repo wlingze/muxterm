@@ -283,4 +283,12 @@ char* muxterm_create_tmux_session_json(
 );
 void muxterm_free_string(char* value);
 
+// ── 客户端自更新 ──
+// Core 负责检查发布、下载、校验与安装；前端只渲染提醒与按钮。
+// 返回值都是 JSON，非 NULL，用完必须 muxterm_free_string。
+char* muxterm_update_status_json(struct MuxtermHandle* h);
+char* muxterm_update_check_json(struct MuxtermHandle* h);
+char* muxterm_update_install_json(struct MuxtermHandle* h);
+char* muxterm_update_take_events_json(struct MuxtermHandle* h);
+
 #endif /* muxterm_h */

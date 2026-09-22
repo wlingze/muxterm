@@ -231,6 +231,7 @@ fn boxed_handle(
             ProjectsService::in_memory()
         }
     };
+    let update_config = settings.document().config.update.clone();
     Box::into_raw(Box::new(MuxtermHandle {
         catalog,
         runtime_registry,
@@ -253,6 +254,10 @@ fn boxed_handle(
         workspace_ids: Vec::new(),
         pending_open: None,
         pending_image_paste: None,
+        updater: crate::update::UpdateService::http(
+            update_config.auto_check,
+            update_config.manifest_url,
+        ),
     }))
 }
 

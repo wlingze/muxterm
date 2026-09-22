@@ -91,6 +91,8 @@ pub struct Muxterm {
     pub(crate) workspace_ids: Vec<CString>,
     pub(crate) pending_open: Option<crate::protocol::ffi::functions::open_async::PendingOpen>,
     pub(crate) pending_image_paste: Option<crate::clipboard::PendingImagePaste>,
+    /// 客户端自更新：检查发布、下载校验、一键安装。
+    pub(crate) updater: crate::update::UpdateService,
 }
 
 impl Muxterm {
