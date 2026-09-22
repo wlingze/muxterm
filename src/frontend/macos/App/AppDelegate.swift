@@ -404,32 +404,31 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let viewMenu = NSMenu(title: MuxtermI18n.shared.tr(.menuView))
         viewMenuItem.submenu = viewMenu
 
-        // Cmd-Shift-S 上下、Cmd-S 左右、Cmd-D 按当前形状自动切分。
-        // Cmd-V 留给 Edit 菜单粘贴。
-        let splitV = NSMenuItem(
-            title: MuxtermI18n.shared.tr(.menuSplitVertical),
-            action: #selector(MainWindowController.splitVertical),
-            keyEquivalent: "s"
-        )
-        splitV.keyEquivalentModifierMask = [.command, .shift]
-        splitV.target = windowController
-        viewMenu.addItem(splitV)
-
+        // Cmd-D 左右、Cmd-S 上下。Shift 变体由 KeyBindings 处理：
+        // Cmd-Shift-D 上下、Cmd-Shift-S 左右。Cmd-V 留给粘贴。
         let splitH = NSMenuItem(
             title: MuxtermI18n.shared.tr(.menuSplitHorizontal),
             action: #selector(MainWindowController.splitHorizontal),
-            keyEquivalent: "s"
+            keyEquivalent: "d"
         )
         splitH.keyEquivalentModifierMask = .command
         splitH.target = windowController
         viewMenu.addItem(splitH)
 
+        let splitV = NSMenuItem(
+            title: MuxtermI18n.shared.tr(.menuSplitVertical),
+            action: #selector(MainWindowController.splitVertical),
+            keyEquivalent: "s"
+        )
+        splitV.keyEquivalentModifierMask = .command
+        splitV.target = windowController
+        viewMenu.addItem(splitV)
+
         let splitAuto = NSMenuItem(
             title: MuxtermI18n.shared.tr(.menuSplitAuto),
             action: #selector(MainWindowController.splitAuto),
-            keyEquivalent: "d"
+            keyEquivalent: ""
         )
-        splitAuto.keyEquivalentModifierMask = .command
         splitAuto.target = windowController
         viewMenu.addItem(splitAuto)
 
