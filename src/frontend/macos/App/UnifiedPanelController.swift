@@ -429,8 +429,14 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         }
         if queryIsNonEmpty {
             var seen = Set(entries.map { QuickConnect.uniqueID(for: $0.config) })
+            let projectNames = Set(store.projects.map { $0.name.lowercased() })
             for choice in rootExistingChoices {
                 guard seen.insert(QuickConnect.uniqueID(for: choice.config)).inserted else {
+                    continue
+                }
+                // 同名 Project 已经在上面。Herdr 的 provisional id 和
+                // 已连接 workspace id 不同，不能再列成第二条。
+                if projectNames.contains(choice.config.name.lowercased()) {
                     continue
                 }
                 allItems.append(.existing(choice))
@@ -1229,6 +1235,15 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                     }
                 }
                 cell.detail = details.joined(separator: " · ")
+                let saved = store.projects.contains {
+                    $0.name.compare(choice.config.name, options: .caseInsensitive) == .orderedSame
+                }
+                cell.setSaveVisible(!saved)
+                cell.onSave = { [weak self] in
+                    guard let self else { return }
+                    self.store.upsertProject(choice.config)
+                    self.reload()
+                }
                 cell.setAccessibilityIdentifier(
                     "muxterm.quickConnect.existing.\(choice.target.displayName)."
                         + "\(choice.config.runtime.rawValue).\(choice.config.session ?? "")."
@@ -1693,6 +1708,8 @@ private final class StatusColorBlockView: NSView {
 private final class ExistingConnectionCellView: NSTableCellView {
     private let titleLabel = NSTextField(labelWithString: "")
     private let detailLabel = NSTextField(labelWithString: "")
+    private let saveButton = NSButton()
+    var onSave: (() -> Void)?
 
     var title: String {
         get { titleLabel.stringValue }
@@ -1702,6 +1719,10 @@ private final class ExistingConnectionCellView: NSTableCellView {
     var detail: String {
         get { detailLabel.stringValue }
         set { detailLabel.stringValue = newValue }
+    }
+
+    func setSaveVisible(_ visible: Bool) {
+        saveButton.isHidden = !visible
     }
 
     init(identifier: NSUserInterfaceItemIdentifier) {
@@ -1714,17 +1735,35 @@ private final class ExistingConnectionCellView: NSTableCellView {
         detailLabel.font = NSFont.systemFont(ofSize: 11)
         detailLabel.textColor = .secondaryLabelColor
         detailLabel.lineBreakMode = .byTruncatingTail
+        saveButton.translatesAutoresizingMaskIntoConstraints = false
+        saveButton.title = "Save"
+        saveButton.bezelStyle = .rounded
+        saveButton.controlSize = .small
+        saveButton.font = .systemFont(ofSize: 11)
+        saveButton.target = self
+        saveButton.action = #selector(saveClicked)
+        saveButton.setAccessibilityIdentifier("muxterm.quickConnect.existing.save")
         addSubview(titleLabel)
         addSubview(detailLabel)
+        addSubview(saveButton)
         textField = titleLabel
         NSLayoutConstraint.activate([
-            titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
-            titleLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+            titleLabel.leadingAnchor.constraint(
+                equalTo: leadingAnchor,
+                constant: QuickRowMetrics.titleLeading
+            ),
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: saveButton.leadingAnchor, constant: -8),
             titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 5),
             detailLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
-            detailLabel.trailingAnchor.constraint(equalTo: titleLabel.trailingAnchor),
+            detailLabel.trailingAnchor.constraint(lessThanOrEqualTo: saveButton.leadingAnchor, constant: -8),
             detailLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 1),
+            saveButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            saveButton.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
+    }
+
+    @objc private func saveClicked() {
+        onSave?()
     }
 
     @available(*, unavailable)

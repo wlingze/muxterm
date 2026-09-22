@@ -275,7 +275,16 @@ enum QuickConnectItem {
     case newProject
 }
 
-/// Quick Connect 的轻量动作行，与目标行共享 14pt 左边距。
+/// 列表文字列。编号占左侧 22pt，标题从同一条竖线开始，
+/// 没有编号的 Project / Existing 也不能另起一行缩进。
+enum QuickRowMetrics {
+    static let edge: CGFloat = 14
+    static let gutter: CGFloat = 22
+    static let titleGap: CGFloat = 6
+    static var titleLeading: CGFloat { edge + gutter + titleGap }
+}
+
+/// Quick Connect 的轻量动作行，标题与目标行对齐。
 final class QuickActionCellView: NSTableCellView {
     private let label = NSTextField(labelWithString: "")
 
@@ -291,7 +300,7 @@ final class QuickActionCellView: NSTableCellView {
         label.font = NSFont.systemFont(ofSize: 13, weight: .medium)
         addSubview(label)
         NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: QuickRowMetrics.titleLeading),
             label.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -14),
             label.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
@@ -414,10 +423,13 @@ final class QuickTargetCellView: NSTableCellView {
             constant: -14
         )
         NSLayoutConstraint.activate([
-            workspaceIndexLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            workspaceIndexLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: QuickRowMetrics.edge),
             workspaceIndexLabel.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
-            workspaceIndexLabel.widthAnchor.constraint(equalToConstant: 22),
-            titleLabel.leadingAnchor.constraint(equalTo: workspaceIndexLabel.trailingAnchor, constant: 6),
+            workspaceIndexLabel.widthAnchor.constraint(equalToConstant: QuickRowMetrics.gutter),
+            titleLabel.leadingAnchor.constraint(
+                equalTo: workspaceIndexLabel.trailingAnchor,
+                constant: QuickRowMetrics.titleGap
+            ),
             titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 5),
             badgeStack.leadingAnchor.constraint(equalTo: titleLabel.trailingAnchor, constant: 6),
             badgeStack.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
