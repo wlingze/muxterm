@@ -22,6 +22,8 @@ final class ContentView: NSView {
     let connectProgressOverlay = WorkspaceOpeningView()
     /// 注意力 Cmd-Enter 的独立 replica overlay（W19-E）。
     let replyOverlayContainer = NSView()
+    /// 更新提醒条：有新版本时给出「一键更新」按钮。
+    let updateBanner = UpdateBannerView()
 
     private var topConstraints: [NSLayoutConstraint] = []
     private var bottomConstraints: [NSLayoutConstraint] = []
@@ -98,6 +100,8 @@ final class ContentView: NSView {
         addSubview(jumpLatestButton)
         addSubview(connectProgressOverlay)
         addSubview(replyOverlayContainer)
+        addSubview(updateBanner)
+        updateBanner.translatesAutoresizingMaskIntoConstraints = false
 
         let railWidth = commandMarkRail.widthAnchor.constraint(
             equalToConstant: CommandMarkRailLayout.collapsedWidth
@@ -132,6 +136,9 @@ final class ContentView: NSView {
             connectProgressOverlay.trailingAnchor.constraint(equalTo: paneLayout.trailingAnchor),
             connectProgressOverlay.topAnchor.constraint(equalTo: paneLayout.topAnchor),
             connectProgressOverlay.bottomAnchor.constraint(equalTo: paneLayout.bottomAnchor),
+            updateBanner.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            updateBanner.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            updateBanner.topAnchor.constraint(equalTo: topAnchor, constant: 6),
         ])
 
         // 顶部：status | pane

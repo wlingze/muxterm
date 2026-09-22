@@ -292,6 +292,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         preferences.keyEquivalentModifierMask = .command
         preferences.target = windowController
         appMenu.addItem(preferences)
+        let checkUpdates = NSMenuItem(
+            title: MuxtermI18n.shared.tr(.menuCheckUpdates),
+            action: #selector(MainWindowController.checkForUpdates),
+            keyEquivalent: ""
+        )
+        checkUpdates.target = windowController
+        appMenu.addItem(checkUpdates)
         appMenu.addItem(NSMenuItem.separator())
         appMenu.addItem(
             withTitle: MuxtermI18n.shared.tr(.menuQuit),

@@ -61,20 +61,56 @@ sudo apt-get install -y build-essential pkg-config \
 
 ### 从 Release 下载
 
-GitHub Release 自动构建产物（打 tag `v*.*.*` 触发，或手动 dispatch）：
+发布由 tag 触发，产物按 tag 后缀分通道：
+
+| Tag 示例 | 通道 | 行为 |
+|----------|------|------|
+| `v1.2.3` | stable | 构建 + 发布正式 Release（`/releases/latest` 指向它，内置更新只认它） |
+| `v1.2.3-beta.1` | beta | 构建 + 发布 prerelease（不占用 `latest`） |
+| `v1.2.3-alpha.1` | alpha | **只构建**，产物上传到 Actions artifacts，不创建 Release |
+| 手动 dispatch | manual | 构建 `最近 tag-dev.短SHA` 的 prerelease |
+
+正式目标平台是两个桌面版本：
 
 | 产物 | 平台 | 类型 | 运行时依赖 |
 |------|------|------|-----------|
-| `muxterm-cli-linux-x86_64-*` | Linux x86_64 | CLI/TUI | glibc (ubuntu-latest), tmux for tmux ops |
-| `muxterm-gtk-linux-x86_64-*` | Linux x86_64 | GTK4 GUI | glibc, libgtk-4-1, libvte-2.91-gtk4, libssl3, tmux |
-| `muxterm-macos-arm64-*.zip` | macOS ARM64 | SwiftUI .app 包 | macOS 13+ |
+| `muxterm-macos-arm64.dmg` | macOS ARM64 | DMG containing `Muxterm.app` | macOS 13+ |
+| `muxterm-gtk-linux-x86_64.tar.gz` | Linux x86_64 | GTK4 GUI app | glibc, libgtk-4-1, libvte-2.91-gtk4, libssl3, tmux |
 
-每个产物附带 `.sha256` 校验文件。
+每个产物附带 `.sha256` 校验文件；Release 同时发布 `latest.json`（内置更新读取的清单）。
+资产文件名同时保留带版本号的一份（如 `muxterm-macos-arm64-v1.2.3.dmg`）。
+
+### 客户端更新
+
+Core 负责「提醒 + 一键更新」，前端只渲染提醒条与按钮：
+
+- 启动后按 `[update] auto_check` 自动检查一次；也可在 macOS 菜单 / Linux 命令面板
+  手动触发「检查更新」。
+- 发现新版本时显示提醒条，点击「一键更新」由 Core 下载、校验 SHA-256、原子安装
+  （Linux 替换 `muxterm` 可执行文件并保留备份；macOS 挂载 DMG 替换 `Muxterm.app`）。
+- 只有 stable 版本会出现在 `releases/latest/download/latest.json`；要试 beta/alpha，
+  把 `[update] manifest_url` 指向对应通道的 `latest.json`。
+
+本地验证整条链路（无需真实 release）：
+
+```bash
+VERSION=v0.2.0-alpha.1 CHANNEL=alpha PRERELEASE=true \
+  bash scripts/release-package.sh /tmp/muxterm-feed
+cd /tmp/muxterm-feed && python3 -m http.server 8231 &
+MUXTERM_UPDATE_TEST_FEED=/tmp/muxterm-feed \
+MUXTERM_UPDATE_VERSION=v0.0.1 \
+  cargo test --no-default-features --features ffi --test update_flow_integration -- --nocapture
+```
 
 ### 版本命名
 
-- 打 tag `v1.2.3` → Release 版本 `v1.2.3`（正式发布）
+- 打 tag `v1.2.3` → Release 版本 `v1.2.3`（正式发布，占 `latest`）
+- 打 tag `v1.2.3-beta.1` → prerelease `v1.2.3-beta.1`（不占 `latest`）
+- 打 tag `v1.2.3-alpha.1` → 只构建，不发布
 - 手动 dispatch → `最近 v* tag-dev.短SHA`；无可达 tag → `短SHA`（预发布）
+
+`MUXTERM_BUILD_VERSION` 会写进二进制，内置更新据此比较版本；CI 打 tag 时由
+workflow 注入，本地构建回退 `Cargo.toml` 版本号。
 
 ### 从源码构建
 
@@ -141,6 +177,7 @@ cp configs/config.example.toml ~/.config/muxterm/config.toml
 - `[[templates]]` — WorkspaceTemplate（新建会话时的 tab / pane）
 - `[shortcuts]` — 快捷键
 - `[platform.linux]` / `[platform.macos]` — 平台专属
+- `[update]` — 客户端更新（`auto_check`、`manifest_url`）
 
 权威字段见 [`docs/CONFIG.md`](docs/CONFIG.md)。Runtime / Transport **不直接读**配置文件；值经 WorkspaceSpec 或 provider 参数注入。
 
