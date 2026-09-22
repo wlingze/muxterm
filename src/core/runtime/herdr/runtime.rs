@@ -1448,6 +1448,7 @@ impl HerdrRuntime {
                         .as_mut()
                         .ok_or_else(|| anyhow!("pane {pane} control stream 缺失"))?;
                     if !data.is_empty() {
+                        let _timing = crate::performance::INPUT.enter();
                         stream.send_input(data)?;
                     }
                     return Ok(());

@@ -69,8 +69,9 @@ pub(crate) static ATTENTION: Stage = Stage::new("activity.batch");
 pub(crate) static SCREEN: Stage = Stage::new("activity.screen_rules");
 pub(crate) static PROCESS: Stage = Stage::new("process.observe");
 pub(crate) static SEND: Stage = Stage::new("tmux.send");
+pub(crate) static INPUT: Stage = Stage::new("runtime.input");
 static STAGES: &[&Stage] = &[
-    &POLL, &RUNTIME, &INDEX, &ATTENTION, &SCREEN, &PROCESS, &SEND,
+    &POLL, &RUNTIME, &INDEX, &ATTENTION, &SCREEN, &PROCESS, &SEND, &INPUT,
 ];
 
 /// 写一条控制命令。高频 send-keys -H（鼠标）只记次数，避免刷 debug 日志。
