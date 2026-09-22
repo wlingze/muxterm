@@ -771,6 +771,46 @@ final class AgentRenderE2ETests: XCTestCase {
         XCTAssertEqual(activated, [42])
     }
 
+    func testHoverReportsSgrOnTmuxAndHerdrMirrors() throws {
+        AppE2E.ensureApp()
+        let view = MuxTerminalView(
+            paneId: 42,
+            frame: NSRect(x: 0, y: 0, width: 640, height: 240)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 240),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = view
+        window.orderFront(nil)
+        defer { window.orderOut(nil) }
+        view.getTerminal().resize(cols: 40, rows: 12)
+        view.suppressOutputDrivenResponses = true
+        view.feedOutput(Data("\u{1b}[?1003h\u{1b}[?1006h".utf8))
+        XCTAssertEqual(view.getTerminal().mouseMode, .anyEvent)
+        let handler = RecordingInputHandler()
+        view.inputHandler = handler
+        let event = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .mouseMoved,
+            location: NSPoint(x: 30, y: 40),
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 2,
+            clickCount: 0,
+            pressure: 0
+        ))
+        view.mouseMoved(with: event)
+        let payload = String(bytes: handler.bytes, encoding: .utf8) ?? ""
+        XCTAssertTrue(
+            payload.contains("\u{1b}[<"),
+            "1003 悬停必须把 SGR 交给 pane。got=\(payload)"
+        )
+    }
+
     /// 伪造 pi/Cursor 网格：顶栏 + 中间对话 + 底栏输入。历史 prepend 后
     /// 可见屏仍必须是顶+输入，不能只剩中间；上划后中文历史必须可读。
     func testForgedAgentGridKeepsTopAndInputAfterHistory() throws {
