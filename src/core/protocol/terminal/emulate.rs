@@ -3523,6 +3523,26 @@ mod xterm_conformance_tests {
         assert!(!t.cell(0, 5).unwrap().strike);
     }
 
+    /// 满行进度条：末列之后再写一格，开着自动换行会把整行顶上去。
+    /// Herdr blit 和 `\r` 刷新都依赖 DECAWM off 才能停在同一行。
+    #[test]
+    fn full_width_progress_line_does_not_scroll_when_autowrap_is_off() {
+        let mut wrapped = TerminalState::new(8, 3);
+        wrapped.feed(b"\x1b[3;1H########");
+        wrapped.feed(b"#");
+        assert_eq!(
+            snap(&wrapped),
+            vec!["", "########", "#"],
+            "默认自动换行时满行后再写会滚屏"
+        );
+
+        let mut held = TerminalState::new(8, 3);
+        held.feed(b"\x1b[?7l\x1b[3;1H########");
+        held.feed(b"\x1b[3;1H#######2");
+        assert_eq!(snap(&held), vec!["", "", "#######2"]);
+        assert_eq!(held.cursor_row(), 2);
+    }
+
     /// DECAWM（CSI ? 7 l）：关闭自动换行后，最后一个字符格被覆盖而不是换行。
     #[test]
     fn autowrap_disabled_overwrites_last_col() {
