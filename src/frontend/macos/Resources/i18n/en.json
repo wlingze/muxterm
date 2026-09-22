@@ -385,5 +385,18 @@
   "settings.option.control": "Control",
   "settings.option.super": "Super",
   "settings.option.qwerty": "QWERTY",
-  "settings.option.colemak": "Colemak"
+  "settings.option.colemak": "Colemak",
+  "update_available": "Update available",
+  "update_available_message": "Muxterm {{version}} is ready to install.",
+  "update_install_now": "Install update",
+  "update_installing": "Downloading and installing…",
+  "update_installed_restart": "Update installed. Restart Muxterm to finish.",
+  "update_up_to_date": "Muxterm is up to date.",
+  "update_checking": "Checking for updates…",
+  "update_failed": "Update failed: {{message}}",
+  "update_check_now": "Check for updates",
+  "update_retry": "Retry",
+  "settings_update": "Updates",
+  "settings_update_auto_check": "Check for updates on launch",
+  "settings_update_manifest_url": "Update manifest URL"
 }

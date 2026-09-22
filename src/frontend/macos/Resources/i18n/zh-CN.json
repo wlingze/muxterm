@@ -385,5 +385,18 @@
   "settings.option.control": "Control",
   "settings.option.super": "Super",
   "settings.option.qwerty": "QWERTY",
-  "settings.option.colemak": "Colemak"
+  "settings.option.colemak": "Colemak",
+  "update_available": "有新版本可用",
+  "update_available_message": "Muxterm {{version}} 已可安装。",
+  "update_install_now": "一键更新",
+  "update_installing": "正在下载并安装…",
+  "update_installed_restart": "更新已安装，重启 Muxterm 生效。",
+  "update_up_to_date": "Muxterm 已是最新版本。",
+  "update_checking": "正在检查更新…",
+  "update_failed": "更新失败：{{message}}",
+  "update_check_now": "检查更新",
+  "update_retry": "重试",
+  "settings_update": "更新",
+  "settings_update_auto_check": "启动时检查更新",
+  "settings_update_manifest_url": "更新清单地址"
 }

@@ -32,6 +32,7 @@ use super::window_sidebar::{
 use super::window_status::{
     maybe_refresh_status, refresh_attention_chrome, refresh_connection_summary,
 };
+use super::window_update::{dismiss_update, handle_update_action, poll_update};
 use super::window_worktree::show_worktree_create_dialog;
 use super::*;
 
@@ -156,6 +157,7 @@ impl AppWindow {
             sidebar,
             status,
             overlay,
+            update_banner,
             header,
         } = AppShell::new(&window, &scene_stack_widget, status_mode, theme.clone());
         status.set_tab_style(&cfg.ui.tab_bar_style);
@@ -227,6 +229,7 @@ impl AppWindow {
             reconnect_retry_at: None,
             reconnect_attempts: 0,
             overlay,
+            update_banner,
             last_seen: Default::default(),
             pending_open: None,
             scrollback_lines: cfg.scrollback.lines,
@@ -262,6 +265,17 @@ impl AppWindow {
             s.header.connect_actions(
                 move || open_quick_connect(&quick_state, &quick_window),
                 move || open_preferences(&settings_state, &settings_window),
+            );
+        }
+
+        {
+            // 更新 banner：主按钮一键更新/重试，✕ 只关掉当前版本的提醒。
+            let action_state = state.clone();
+            let dismiss_state = state.clone();
+            let s = state.borrow();
+            s.update_banner.connect_actions(
+                move || handle_update_action(&mut action_state.borrow_mut()),
+                move || dismiss_update(&mut dismiss_state.borrow_mut()),
             );
         }
 
@@ -570,6 +584,8 @@ impl AppWindow {
                         sync_render_policies(&mut s);
                         // EventPump 是唯一事件消费者：Core 的 workspace 批次先写入
                         // owned ViewStore，再由常驻 Scene 消费 render mailbox。
+                        // 更新提醒：Core 推进状态机，这里只取快照渲染 banner。
+                        poll_update(&mut s);
                         let events = poll_event_store(&mut s);
                         let structural = events.iter().any(|event| event.event.is_topology());
                         refresh_event_workspaces(&mut s, &events);

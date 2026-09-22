@@ -38,6 +38,7 @@ pub enum PaletteAction {
     ResetFontSize,
     ToggleTheme,
     ToggleStatusBarMode,
+    CheckUpdates,
     Quit,
 }
 
@@ -49,6 +50,7 @@ pub fn parse_palette_action(id: &str) -> Option<PaletteAction> {
         TMUX_DETACH_COMMAND => PaletteAction::TmuxDetach,
         "ssh_connect" => PaletteAction::SshConnect,
         "ssh_disconnect" => PaletteAction::SshDisconnect,
+        "check_updates" => PaletteAction::CheckUpdates,
         "new_tab" | "new_window" => PaletteAction::NewTab,
         "new_pane" => PaletteAction::NewPane,
         "new_pane_vertical" => PaletteAction::NewPaneVertical,
@@ -224,6 +226,10 @@ fn core_command_list() -> Vec<PaletteCommand> {
         PaletteCommand {
             id: "language",
             label: i18n::tr(TextKey::Language),
+        },
+        PaletteCommand {
+            id: "check_updates",
+            label: i18n::tr(TextKey::UpdateCheckNow),
         },
         PaletteCommand {
             id: "quick_connect",

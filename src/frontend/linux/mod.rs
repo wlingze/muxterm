@@ -22,6 +22,7 @@ pub use chrome::overlay;
 pub use chrome::panel_model;
 pub use chrome::scene_stack;
 pub use chrome::status_bar;
+pub use chrome::update_banner;
 pub use chrome::workspace_scenes;
 pub use chrome::workspace_sidebar;
 #[cfg(test)]

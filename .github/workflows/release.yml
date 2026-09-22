@@ -43,6 +43,8 @@ jobs:
       is_tag: ${{ steps.version.outputs.is_tag }}
       prerelease: ${{ steps.version.outputs.prerelease }}
       source_sha: ${{ steps.version.outputs.source_sha }}
+      channel: ${{ steps.version.outputs.channel }}
+      should_publish: ${{ steps.version.outputs.should_publish }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -51,14 +53,42 @@ jobs:
       - name: Resolve version
         id: version
         run: |
-          # Tag trigger: exact v* tag → formal release
+          # 发布通道由 tag 后缀决定：
+          #   v1.2.3          → stable：构建 + 推送正式 release（占用 latest）
+          #   v1.2.3-beta.1   → beta  ：构建 + 推送 prerelease（不占 latest）
+          #   v1.2.3-alpha.1  → alpha ：只构建 + 上传 Actions artifacts，不推送 release
+          # 其它带后缀的 tag（rc 等）按普通 prerelease 推送。
+          # 手动 dispatch 一律是 prerelease（dev 版本，不覆盖 latest）。
+          set_channel() {
+            local tag="$1"
+            if [[ "$tag" == *-alpha* ]]; then
+              echo "channel=alpha" >> "$GITHUB_OUTPUT"
+              echo "should_publish=false" >> "$GITHUB_OUTPUT"
+              echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            elif [[ "$tag" == *-* ]]; then
+              if [[ "$tag" == *-beta* ]]; then
+                echo "channel=beta" >> "$GITHUB_OUTPUT"
+              else
+                echo "channel=prerelease" >> "$GITHUB_OUTPUT"
+              fi
+              echo "should_publish=true" >> "$GITHUB_OUTPUT"
+              echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "channel=stable" >> "$GITHUB_OUTPUT"
+              echo "should_publish=true" >> "$GITHUB_OUTPUT"
+              echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            fi
+          }
+
+          # Tag trigger: exact v* tag → release pipeline
           if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == refs/tags/v* ]]; then
             VERSION="${GITHUB_REF#refs/tags/}"
+            FS_VERSION=$(echo "$VERSION" | sed 's/[^a-zA-Z0-9._-]/-/g')
             echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-            echo "fs_version=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "fs_version=$FS_VERSION" >> "$GITHUB_OUTPUT"
             echo "is_tag=true" >> "$GITHUB_OUTPUT"
-            echo "prerelease=false" >> "$GITHUB_OUTPUT"
             echo "source_sha=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+            set_channel "$VERSION"
           else
             # Manual dispatch (always prerelease): nearest reachable v* tag + short SHA, or short SHA
             NEAREST=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)
@@ -75,6 +105,8 @@ jobs:
             echo "is_tag=false" >> "$GITHUB_OUTPUT"
             echo "prerelease=${{ inputs.prerelease }}" >> "$GITHUB_OUTPUT"
             echo "source_sha=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+            echo "channel=manual" >> "$GITHUB_OUTPUT"
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
           fi
           echo "Resolved version: $VERSION (fs: $FS_VERSION)"
 
@@ -91,6 +123,7 @@ jobs:
     env:
       CARGO_TARGET_DIR: target
       FS_VERSION: ${{ needs.resolve-version.outputs.fs_version }}
+      MUXTERM_BUILD_VERSION: ${{ needs.resolve-version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -154,6 +187,7 @@ jobs:
     env:
       CARGO_TARGET_DIR: target
       FS_VERSION: ${{ needs.resolve-version.outputs.fs_version }}
+      MUXTERM_BUILD_VERSION: ${{ needs.resolve-version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -221,6 +255,7 @@ jobs:
     timeout-minutes: 45
     env:
       FS_VERSION: ${{ needs.resolve-version.outputs.fs_version }}
+      MUXTERM_BUILD_VERSION: ${{ needs.resolve-version.outputs.version }}
       DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
       MACOSX_DEPLOYMENT_TARGET: '13.0'
     steps:
@@ -301,7 +336,8 @@ jobs:
   # ── Publish release (single job, no race) ──────────────────
   publish:
     name: Publish release
-    if: github.event_name != 'pull_request' &&
+    if: needs.resolve-version.outputs.should_publish == 'true' &&
+        github.event_name != 'pull_request' &&
         (needs.build-linux-cli.result == 'success' ||
          needs.build-linux-gtk.result == 'success' ||
          needs.build-macos.result == 'success')
@@ -333,6 +369,7 @@ jobs:
           FS_VERSION: ${{ needs.resolve-version.outputs.fs_version }}
           REPO: ${{ github.repository }}
           PRERELEASE: ${{ needs.resolve-version.outputs.prerelease }}
+          CHANNEL: ${{ needs.resolve-version.outputs.channel }}
           SOURCE_SHA: ${{ needs.resolve-version.outputs.source_sha }}
         run: |
           set -euo pipefail
@@ -351,23 +388,26 @@ jobs:
           [[ "${PRERELEASE}" == "true" ]] && prerelease_json=true
 
           # 更新清单由 Core 的 updater 解析：版本号 + 每平台资产名/URL/大小/校验和。
+          # 资产 URL 用相对路径：Core 按「清单地址所在目录」解析，因此正式版、
+          # beta release、以及本地/alpha 测试服务都能用同一份清单。
           cat > dist/latest.json <<EOF
           {
             "version": "${VERSION}",
             "tag": "${VERSION}",
             "prerelease": ${prerelease_json},
+            "channel": "${CHANNEL}",
             "source_sha": "${SOURCE_SHA}",
             "published_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
             "assets": {
               "macos-arm64": {
                 "name": "muxterm-macos-arm64.dmg",
-                "url": "https://github.com/${REPO}/releases/download/${VERSION}/muxterm-macos-arm64.dmg",
+                "url": "muxterm-macos-arm64.dmg",
                 "sha256": "${macos_sha}",
                 "size": $(stat -c%s "dist/muxterm-macos-arm64.dmg")
               },
               "linux-gui-x86_64": {
                 "name": "muxterm-gtk-linux-x86_64.tar.gz",
-                "url": "https://github.com/${REPO}/releases/download/${VERSION}/muxterm-gtk-linux-x86_64.tar.gz",
+                "url": "muxterm-gtk-linux-x86_64.tar.gz",
                 "sha256": "${linux_sha}",
                 "size": $(stat -c%s "dist/muxterm-gtk-linux-x86_64.tar.gz")
               }
@@ -391,9 +431,14 @@ jobs:
 
             | Platform | Download | Notes |
             |----------|----------|-------|
-            | macOS ARM64 (Apple silicon) | [muxterm-macos-arm64.dmg](https://github.com/${{ github.repository }}/releases/latest/download/muxterm-macos-arm64.dmg) | DMG containing `Muxterm.app`, macOS 13+ |
-            | Linux x86_64 (GTK4 desktop) | [muxterm-gtk-linux-x86_64.tar.gz](https://github.com/${{ github.repository }}/releases/latest/download/muxterm-gtk-linux-x86_64.tar.gz) | GTK4 GUI app, needs libgtk-4-1 / libvte-2.91-gtk4 / libssl3 / tmux |
-            | Update manifest | [latest.json](https://github.com/${{ github.repository }}/releases/latest/download/latest.json) | Machine-readable metadata consumed by the built-in updater |
+            | macOS ARM64 (Apple silicon) | [muxterm-macos-arm64.dmg](https://github.com/${{ github.repository }}/releases/download/${{ needs.resolve-version.outputs.version }}/muxterm-macos-arm64.dmg) | DMG containing `Muxterm.app`, macOS 13+ |
+            | Linux x86_64 (GTK4 desktop) | [muxterm-gtk-linux-x86_64.tar.gz](https://github.com/${{ github.repository }}/releases/download/${{ needs.resolve-version.outputs.version }}/muxterm-gtk-linux-x86_64.tar.gz) | GTK4 GUI app, needs libgtk-4-1 / libvte-2.91-gtk4 / libssl3 / tmux |
+            | Update manifest | [latest.json](https://github.com/${{ github.repository }}/releases/download/${{ needs.resolve-version.outputs.version }}/latest.json) | Machine-readable metadata consumed by the built-in updater |
+
+            Channel: `${{ needs.resolve-version.outputs.channel }}`（stable / beta / prerelease）.
+            The built-in updater follows `releases/latest/download/latest.json`, so only
+            **stable** releases become the automatic update target. To try a beta build,
+            point `[update] manifest_url` at this release's `latest.json`.
 
             Each archive ships with a matching `.sha256` checksum file, and the
             built-in updater verifies that checksum before installing.

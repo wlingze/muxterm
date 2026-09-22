@@ -404,6 +404,50 @@ pub struct ClientConfigDraft {
     pub diagnostics: Vec<String>,
 }
 
+/// 客户端自更新的阶段，由 Core 决定；前端只按阶段渲染提醒与按钮。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ClientUpdatePhase {
+    Idle,
+    Checking,
+    UpToDate,
+    Available,
+    Installing,
+    Installed,
+    Failed,
+}
+
+/// Core 汇报的更新状态快照。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ClientUpdateStatus {
+    pub phase: ClientUpdatePhase,
+    pub current_version: String,
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub message: Option<String>,
+    #[serde(default)]
+    pub release_url: Option<String>,
+    #[serde(default)]
+    pub download_url: Option<String>,
+    #[serde(default)]
+    pub asset_name: Option<String>,
+    #[serde(default)]
+    pub restart_required: bool,
+}
+
+impl ClientUpdateStatus {
+    /// 是否有等待用户点击安装的新版本。
+    pub fn has_update(&self) -> bool {
+        self.phase == ClientUpdatePhase::Available
+    }
+
+    /// 是否已经装好、需要重启。
+    pub fn needs_restart(&self) -> bool {
+        self.restart_required || self.phase == ClientUpdatePhase::Installed
+    }
+}
+
 impl std::fmt::Display for ClientError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.message)
@@ -1411,6 +1455,30 @@ impl CoreBridge {
             ffi::muxterm_config_events_json(self.handle.as_ptr())
         })?;
         Ok(serde_json::from_value(value["data"]["events"].clone())?)
+    }
+
+    /// 读取 Core 维护的更新状态；同时驱动一次状态机 poll。
+    pub fn update_status(&self) -> anyhow::Result<ClientUpdateStatus> {
+        let value = Self::discovery_json(|| unsafe {
+            ffi::muxterm_update_status_json(self.handle.as_ptr())
+        })?;
+        Ok(serde_json::from_value(value["status"].clone())?)
+    }
+
+    /// 请求检查新版本（异步）。返回 Core 的当前状态。
+    pub fn update_check(&self) -> anyhow::Result<ClientUpdateStatus> {
+        let value = Self::discovery_json(|| unsafe {
+            ffi::muxterm_update_check_json(self.handle.as_ptr())
+        })?;
+        Ok(serde_json::from_value(value["status"].clone())?)
+    }
+
+    /// 一键更新：下载已发现的新版本并安装（异步）。
+    pub fn update_install(&self) -> anyhow::Result<ClientUpdateStatus> {
+        let value = Self::discovery_json(|| unsafe {
+            ffi::muxterm_update_install_json(self.handle.as_ptr())
+        })?;
+        Ok(serde_json::from_value(value["status"].clone())?)
     }
 
     /// Configure the Core-owned attention engine before frontend polling starts.

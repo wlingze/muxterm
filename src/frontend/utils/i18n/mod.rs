@@ -408,6 +408,19 @@ define_text_keys! {
     TmuxUnknown => "tmux_unknown",
     TmuxWindows => "tmux_windows",
     WindowCloseHint => "window_close_hint",
+    UpdateAvailable => "update_available",
+    UpdateAvailableMessage => "update_available_message",
+    UpdateInstallNow => "update_install_now",
+    UpdateInstalling => "update_installing",
+    UpdateInstalledRestart => "update_installed_restart",
+    UpdateUpToDate => "update_up_to_date",
+    UpdateChecking => "update_checking",
+    UpdateFailed => "update_failed",
+    UpdateCheckNow => "update_check_now",
+    UpdateRetry => "update_retry",
+    SettingsUpdate => "settings_update",
+    SettingsUpdateAutoCheck => "settings_update_auto_check",
+    SettingsUpdateManifestUrl => "settings_update_manifest_url",
 }
 
 /// 简写别名：平台模块可以使用 `Key::CommandPalette`，不暴露 JSON 字符串。
