@@ -695,6 +695,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
 
     private func makePage(for category: Category, values: [String: Any]) -> NSScrollView {
         let scroll = NSScrollView()
+        scroll.contentView = TopPinnedClipView()
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = false
         scroll.borderType = .noBorder
@@ -786,8 +787,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
                 constant: contentWidth
             ).isActive = true
         }
+        // 不要用可拉伸空白把短页面顶到滚动区底部。Platform 只有两三行时，
+        // 那块空白会出现在标题上面。
         let spacer = NSView()
-        spacer.setContentHuggingPriority(.defaultLow, for: .vertical)
+        spacer.setContentHuggingPriority(.required, for: .vertical)
+        spacer.heightAnchor.constraint(equalToConstant: 1).isActive = true
         stack.addArrangedSubview(spacer)
         spacer.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: contentWidth).isActive = true
 
@@ -828,7 +832,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         badge.layer?.cornerRadius = 4
         badge.setContentHuggingPriority(.required, for: .horizontal)
         badge.setContentCompressionResistancePriority(.required, for: .horizontal)
-        badge.widthAnchor.constraint(equalToConstant: 88).isActive = true
+        badge.widthAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
         badge.heightAnchor.constraint(equalToConstant: 17).isActive = true
 
         let titleRow = NSStackView(views: [titleLabel, badge, NSView()])
@@ -1572,6 +1576,7 @@ private func settingsAppearancePreview(values: [String: Any]) -> NSView {
     preview.orientation = .vertical
     preview.alignment = .width
     preview.spacing = 12
+    preview.setContentHuggingPriority(.required, for: .vertical)
     preview.setContentHuggingPriority(.defaultLow, for: .horizontal)
     preview.setContentCompressionResistancePriority(.required, for: .horizontal)
     settingsStyleCard(preview, fill: NSColor.controlBackgroundColor.withAlphaComponent(0.56))
@@ -1605,8 +1610,10 @@ private func settingsAppearancePreview(values: [String: Any]) -> NSView {
     terminal.alignment = .width
     terminal.spacing = 8
     terminal.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
+    terminal.setContentHuggingPriority(.required, for: .vertical)
     terminal.setContentHuggingPriority(.defaultLow, for: .horizontal)
     terminal.setContentCompressionResistancePriority(.required, for: .horizontal)
+    terminal.heightAnchor.constraint(equalToConstant: 96).isActive = true
     terminal.wantsLayer = true
     terminal.layer?.backgroundColor = NSColor(calibratedRed: 0.06, green: 0.08, blue: 0.11, alpha: 1).cgColor
     terminal.layer?.cornerRadius = 8
@@ -1709,6 +1716,41 @@ private final class SettingsCategoryCellView: NSTableCellView {
             copy.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
             copy.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
+    }
+}
+
+/// 短页面钉在滚动区顶部。默认 clip 会把比视口矮的文档贴在底部，
+/// Platform 这种只有几行的页就会在标题上面留一大块空白。
+private final class TopPinnedClipView: NSClipView {
+    override var isFlipped: Bool { true }
+
+    override func constrainBoundsRect(_ proposedBounds: NSRect) -> NSRect {
+        var rect = super.constrainBoundsRect(proposedBounds)
+        guard let document = documentView else { return rect }
+        if document.frame.height <= rect.height {
+            rect.origin.y = 0
+        }
+        return rect
+    }
+}
+
+/// 点整行就是修改；删除按钮单独吃点击，不会把这一下再当成编辑。
+private final class ProjectSettingsRow: NSView {
+    var index: Int
+    var onSelect: ((Int) -> Void)?
+
+    init(index: Int) {
+        self.index = index
+        super.init(frame: .zero)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        onSelect?(index)
     }
 }
 
@@ -1839,17 +1881,11 @@ private final class SettingsProjectEditorView: NSView {
         info.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         info.translatesAutoresizingMaskIntoConstraints = false
 
-        let edit = NSButton(
-            title: settingsText("settings.edit", fallback: "Edit"),
-            target: self,
-            action: #selector(editProject(_:))
-        )
-        edit.translatesAutoresizingMaskIntoConstraints = false
-        edit.tag = index
-        edit.bezelStyle = .rounded
-        edit.setContentHuggingPriority(.required, for: .horizontal)
-        edit.setContentCompressionResistancePriority(.required, for: .horizontal)
-        edit.setAccessibilityIdentifier("muxterm.settings.projects.\(index).edit")
+        let row = ProjectSettingsRow(index: index)
+        row.onSelect = { [weak self] index in
+            self?.onEdit?(index)
+        }
+        row.identifier = NSUserInterfaceItemIdentifier("muxterm.settings.projects.\(index).edit")
         let delete = NSButton(
             title: settingsText("settings.delete", fallback: "Delete"),
             target: self,
@@ -1863,18 +1899,14 @@ private final class SettingsProjectEditorView: NSView {
         delete.setContentCompressionResistancePriority(.required, for: .horizontal)
         delete.setAccessibilityIdentifier("muxterm.settings.projects.\(index).delete")
 
-        let row = NSView()
         row.translatesAutoresizingMaskIntoConstraints = false
         row.addSubview(info)
-        row.addSubview(edit)
         row.addSubview(delete)
         NSLayoutConstraint.activate([
             info.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 12),
-            info.trailingAnchor.constraint(equalTo: edit.leadingAnchor, constant: -8),
+            info.trailingAnchor.constraint(equalTo: delete.leadingAnchor, constant: -8),
             info.topAnchor.constraint(equalTo: row.topAnchor, constant: 10),
             info.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -10),
-            edit.trailingAnchor.constraint(equalTo: delete.leadingAnchor, constant: -8),
-            edit.centerYAnchor.constraint(equalTo: row.centerYAnchor),
             delete.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -12),
             delete.centerYAnchor.constraint(equalTo: row.centerYAnchor),
         ])
@@ -1899,10 +1931,6 @@ private final class SettingsProjectEditorView: NSView {
 
     @objc private func newProject() {
         onNew?()
-    }
-
-    @objc private func editProject(_ sender: NSButton) {
-        onEdit?(sender.tag)
     }
 
     @objc private func deleteProject(_ sender: NSButton) {
