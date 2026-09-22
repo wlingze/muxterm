@@ -1546,7 +1546,15 @@ impl HerdrRuntime {
         let first_preferred = self.preferred_client_size.is_none();
         let (cols, rows) = normalize_pane_size(cols, rows, None);
         self.preferred_client_size = Some((cols, rows));
-        let first_allocation = self.pane_client_sizes.insert(pane, (cols, rows)).is_none();
+        let previous_size = self.pane_client_sizes.insert(pane, (cols, rows));
+        let first_allocation = previous_size.is_none();
+        // 视图格子变了之后 SwiftTerm 会 reflow，旧画面经常变成白屏。
+        // 下一帧即使字节相同也必须再画一次，不能被指纹去重吃掉。
+        if previous_size.is_some_and(|old| old != (cols, rows)) {
+            if let Some(slot) = self.stream_slots.get_mut(&pane) {
+                slot.last_full_fingerprint = None;
+            }
+        }
         let Some(slot) = self.stream_slots.get_mut(&pane) else {
             if first_preferred || first_allocation {
                 self.reconcile_stream_modes();
