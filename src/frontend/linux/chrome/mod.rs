@@ -11,5 +11,6 @@ pub mod overlay;
 pub mod panel_model;
 pub mod scene_stack;
 pub mod status_bar;
+pub mod update_banner;
 pub mod workspace_scenes;
 pub mod workspace_sidebar;

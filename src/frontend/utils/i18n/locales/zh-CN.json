@@ -373,5 +373,18 @@
   "workspace_capacity_title": "工作区数量较多",
   "workspace_capacity_message": "当前保留了 {{count}} 个工作区（软提醒阈值 {{limit}}）。可以选择关闭长期未使用的后台工作区；当前工作区不会被列出。",
   "workspace_capacity_close_selected": "关闭选中项",
-  "workspace_capacity_keep_all": "全部保留"
+  "workspace_capacity_keep_all": "全部保留",
+  "update_available": "有新版本可用",
+  "update_available_message": "Muxterm {{version}} 已可安装。",
+  "update_install_now": "一键更新",
+  "update_installing": "正在下载并安装…",
+  "update_installed_restart": "更新已安装，重启 Muxterm 生效。",
+  "update_up_to_date": "Muxterm 已是最新版本。",
+  "update_checking": "正在检查更新…",
+  "update_failed": "更新失败：{{message}}",
+  "update_check_now": "检查更新",
+  "update_retry": "重试",
+  "settings_update": "更新",
+  "settings_update_auto_check": "启动时检查更新",
+  "settings_update_manifest_url": "更新清单地址"
 }

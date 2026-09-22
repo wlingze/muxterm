@@ -5,7 +5,8 @@
 //! 而不会再出现多个 frontend 路径分别读取同一个 Core handle。
 
 use crate::frontend::utils::corebridge::{
-    ClientActivityWorkspaceEvent, ClientConfigEvent, ClientWorkspaceEvent, FfiClient,
+    ClientActivityWorkspaceEvent, ClientConfigEvent, ClientUpdateStatus, ClientWorkspaceEvent,
+    FfiClient,
 };
 
 use crate::frontend::view_store::ViewStore;
@@ -48,6 +49,18 @@ impl EventPump {
             Err(error) => {
                 tracing::warn!(target = "muxterm::config", %error, "configuration event poll failed");
                 Vec::new()
+            }
+        }
+    }
+
+    /// 读取 Core 维护的更新状态。更新状态机由 Core 推进，这里只取快照；
+    /// 前端据此决定是否渲染「有新版本」提醒与一键更新按钮。
+    pub fn poll_update_status(&self) -> Option<ClientUpdateStatus> {
+        match self.client.update_status() {
+            Ok(status) => Some(status),
+            Err(error) => {
+                tracing::debug!(target = "muxterm::update", %error, "update status poll failed");
+                None
             }
         }
     }
@@ -205,5 +218,14 @@ mod tests {
             .send_input("local//missing/shell/", 7, b"x")
             .expect_err("catalog handle has no workspace");
         assert!(error.to_string().contains("Core FFI input dispatch failed"));
+    }
+
+    #[test]
+    fn update_status_starts_idle_with_the_build_version() {
+        let pump = EventPump::new(FfiClient::new_catalog().expect("catalog handle"));
+        let status = pump.poll_update_status().expect("update status");
+        // 空 handle 不会自动联网（配置默认只在实际产品会话里生效），状态可读。
+        assert!(!status.current_version.is_empty());
+        assert!(!status.needs_restart());
     }
 }

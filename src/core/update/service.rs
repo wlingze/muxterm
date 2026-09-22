@@ -17,7 +17,8 @@ use super::REPOSITORY_URL;
 /// 检查/下载使用的网络出口；生产实现走 HTTP，测试注入替身。
 pub trait UpdateTransport: Send + Sync {
     fn fetch_manifest(&self, url: &str) -> Result<Manifest, UpdateError>;
-    fn download(&self, asset: &Asset, destination: &Path) -> Result<(), UpdateError>;
+    /// 下载资产。`url` 是已按清单地址解析过的绝对地址。
+    fn download(&self, asset: &Asset, url: &str, destination: &Path) -> Result<(), UpdateError>;
 }
 
 /// 基于 ureq 的生产实现。
@@ -39,8 +40,8 @@ impl UpdateTransport for HttpTransport {
         Manifest::parse(&text).map_err(|error| UpdateError::Network(error.to_string()))
     }
 
-    fn download(&self, asset: &Asset, destination: &Path) -> Result<(), UpdateError> {
-        install::download_asset(asset, destination)
+    fn download(&self, asset: &Asset, url: &str, destination: &Path) -> Result<(), UpdateError> {
+        install::download_asset_from(asset, url, destination)
     }
 }
 
@@ -247,6 +248,7 @@ impl UpdateService {
         let transport = Arc::clone(&self.transport);
         let staging = super::staging_dir();
         let install_version = version.clone();
+        let manifest_url = self.manifest_url.clone();
         let (sender, receiver) = mpsc::channel();
         let spawned = std::thread::Builder::new()
             .name("muxterm-update-install".into())
@@ -255,6 +257,7 @@ impl UpdateService {
                     transport.as_ref(),
                     &asset,
                     &install_version,
+                    &manifest_url,
                     &staging,
                 );
                 let _ = sender.send(Outcome::Installed(result));
@@ -352,7 +355,11 @@ impl UpdateService {
                 serde_json::json!(format!("{REPOSITORY_URL}/releases/tag/{tag}"));
             if let Some(key) = current_asset_key() {
                 if let Some(asset) = manifest.assets.get(key) {
-                    value["download_url"] = serde_json::json!(asset.url);
+                    // 清单里可以是相对路径，对外统一给可直接下载的绝对地址。
+                    value["download_url"] = serde_json::json!(super::manifest::resolve_asset_url(
+                        &self.manifest_url,
+                        &asset.url
+                    ));
                     value["asset_name"] = serde_json::json!(asset.name);
                 }
             }
@@ -399,7 +406,12 @@ mod tests {
             }
         }
 
-        fn download(&self, asset: &Asset, destination: &Path) -> Result<(), UpdateError> {
+        fn download(
+            &self,
+            asset: &Asset,
+            _url: &str,
+            destination: &Path,
+        ) -> Result<(), UpdateError> {
             self.downloads
                 .lock()
                 .unwrap()
@@ -542,5 +554,45 @@ mod tests {
         assert!(service.start_check());
         assert!(!service.start_check(), "同一时间只允许一个检查任务");
         let _ = wait_for(&mut service, |service| !service.is_busy());
+    }
+
+    #[test]
+    fn status_reports_an_absolute_download_url_for_relative_manifest_entries() {
+        struct RelativeTransport;
+        impl UpdateTransport for RelativeTransport {
+            fn fetch_manifest(&self, _url: &str) -> Result<Manifest, UpdateError> {
+                Ok(Manifest::parse(
+                    r#"{"version":"v9.9.9","assets":{"macos-arm64":{"name":"muxterm-macos-arm64.dmg","url":"muxterm-macos-arm64.dmg","sha256":"aa"},"linux-gui-x86_64":{"name":"muxterm-gtk-linux-x86_64.tar.gz","url":"muxterm-gtk-linux-x86_64.tar.gz","sha256":"bb"}}}"#,
+                )
+                .unwrap())
+            }
+            fn download(
+                &self,
+                _asset: &Asset,
+                _url: &str,
+                _destination: &Path,
+            ) -> Result<(), UpdateError> {
+                Ok(())
+            }
+        }
+
+        let mut service = UpdateService::new(
+            Arc::new(RelativeTransport),
+            false,
+            "https://example.invalid/releases/download/v9.9.9/latest.json".into(),
+        )
+        .with_current_version("v1.0.0");
+        service.start_check();
+        assert!(wait_for(&mut service, |service| matches!(
+            service.phase(),
+            UpdatePhase::Available { .. }
+        )));
+        let status = service.status_json();
+        let url = status["download_url"].as_str().unwrap();
+        assert!(
+            url.starts_with("https://example.invalid/releases/download/v9.9.9/"),
+            "相对路径必须解析成绝对地址: {url}"
+        );
+        assert!(url.ends_with(".dmg") || url.ends_with(".tar.gz"));
     }
 }

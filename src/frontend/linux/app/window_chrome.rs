@@ -49,6 +49,37 @@ pub(super) fn chrome_css(theme: &Theme) -> String {
             background-color: alpha({fg}, 0.12);
             box-shadow: inset 0 -2px 0 {fg};
         }}
+        // 更新提醒条：贴终端区上方的一条细 banner（有新版本时才显示）。
+        .muxterm-update-banner {{
+            padding: 4px 10px;
+            background: alpha({shell_accent}, 0.14);
+            border-bottom: 1px solid alpha({fg}, 0.12);
+            color: {fg};
+            font-size: 13px;
+        }}
+        .muxterm-update-banner button.muxterm-update-action {{
+            background-image: none;
+            background-color: alpha({shell_accent}, 0.22);
+            border: 1px solid alpha({shell_accent}, 0.45);
+            border-radius: 6px;
+            box-shadow: none;
+            color: {fg};
+            min-height: 22px;
+            padding: 1px 10px;
+            font-weight: 600;
+        }}
+        .muxterm-update-banner button.muxterm-update-action:hover {{ background-color: alpha({shell_accent}, 0.34); }}
+        .muxterm-update-banner button.muxterm-update-dismiss {{
+            min-width: 22px;
+            min-height: 22px;
+            padding: 0 4px;
+            border-radius: 5px;
+            background: transparent;
+            box-shadow: none;
+            color: {fg};
+            opacity: 0.6;
+        }}
+        .muxterm-update-banner button.muxterm-update-dismiss:hover {{ opacity: 1; }}
         .status-bar {{
             color: {fg};
             padding: 3px 8px;

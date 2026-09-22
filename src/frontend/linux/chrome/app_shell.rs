@@ -6,6 +6,7 @@ use crate::frontend::linux::overlay::OverlayLayer;
 use crate::frontend::linux::quickconnect::status_style::StatusBarMode;
 use crate::frontend::linux::status_bar::StatusBar;
 use crate::frontend::linux::theme::Theme;
+use crate::frontend::linux::update_banner::UpdateBanner;
 use crate::frontend::linux::workspace_sidebar::WorkspaceSidebar;
 
 /// 标题栏中的前端业务入口。
@@ -38,6 +39,7 @@ pub struct AppShell {
     pub(crate) sidebar: WorkspaceSidebar,
     pub(crate) status: StatusBar,
     pub(crate) overlay: OverlayLayer,
+    pub(crate) update_banner: UpdateBanner,
     pub(crate) header: HeaderActions,
 }
 
@@ -80,6 +82,8 @@ impl AppShell {
         status.container.prepend(&sidebar.toggle);
         status.container.add_css_class("status-bar");
         let overlay = OverlayLayer::new(scene);
+        // 更新提醒条：贴在终端区上方，不遮场景内容。
+        let update_banner = UpdateBanner::new();
 
         // 左侧栏与右侧终端 chrome 是同一个水平 Paned 的两列。Tab/status
         // chrome 属于右列，不能延伸到侧栏下方；Paned 的 handle 同时提供
@@ -91,6 +95,7 @@ impl AppShell {
             .vexpand(true)
             .build();
         terminal_column.set_widget_name("muxterm-terminal-column");
+        terminal_column.append(&update_banner.container);
         terminal_column.append(&overlay.container);
         terminal_column.append(&status.container);
 
@@ -114,6 +119,7 @@ impl AppShell {
             sidebar,
             status,
             overlay,
+            update_banner,
             header: HeaderActions {
                 quick_connect: quick_connect_button,
                 settings: settings_button,

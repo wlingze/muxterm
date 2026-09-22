@@ -41,6 +41,7 @@ use crate::frontend::linux::status_bar::StatusBar;
 #[cfg(test)]
 use crate::frontend::linux::theme::Rgb;
 use crate::frontend::linux::theme::{fallback_theme, toggle_target, Theme};
+use crate::frontend::linux::update_banner::UpdateBanner;
 use crate::frontend::linux::view_store::ViewStore;
 use crate::frontend::linux::window_input::{connect_close_handler, connect_key_handler};
 use crate::frontend::linux::workspace_scenes::WorkspaceScenes;
@@ -99,6 +100,8 @@ mod window_status;
 mod window_surface;
 #[path = "window_test_api.rs"]
 mod window_test_api;
+#[path = "window_update.rs"]
+mod window_update;
 #[path = "window_worktree.rs"]
 mod window_worktree;
 
@@ -230,6 +233,8 @@ struct UiState {
     reconnect_attempts: u32,
     /// 终端区 Overlay：常驻 workspace scene stack 是主 child，覆盖层浮在上面。
     overlay: OverlayLayer,
+    /// 更新提醒条：有新版本时给出「一键更新」按钮。
+    update_banner: UpdateBanner,
     /// 完整身份与稳定行号驱动的短时历史提示。
     last_seen: crate::frontend::linux::chrome::last_seen::LastSeen,
     pending_open: Option<window_connection::PendingWorkspaceOpen>,

@@ -333,6 +333,9 @@ pub(super) fn run_palette_command(
         PaletteAction::Preferences => {
             open_preferences(state, parent);
         }
+        PaletteAction::CheckUpdates => {
+            super::window_update::check_for_updates(&mut state.borrow_mut());
+        }
         PaletteAction::ReloadConfig | PaletteAction::OpenConfig => {
             tracing::info!(target = "muxterm::linux", "命令 {id} 尚未接到 GTK 对话框");
         }

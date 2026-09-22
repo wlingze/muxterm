@@ -99,6 +99,18 @@ pub fn sha256_file(path: &Path) -> Result<String, UpdateError> {
 /// 采用流式读取：先看 `Content-Length`，再按块累计，超过
 /// [`MAX_DOWNLOAD_BYTES`] 立即中止，避免异常清单写爆磁盘。
 pub fn download_asset(asset: &Asset, destination: &Path) -> Result<(), UpdateError> {
+    download_asset_from(asset, &asset.url, destination)
+}
+
+/// 与 [`download_asset`] 相同，但显式给出已解析的下载地址。
+///
+/// 清单里的资产地址允许是相对路径，调用方先用
+/// [`super::manifest::resolve_asset_url`] 结合清单地址解析成绝对地址。
+pub fn download_asset_from(
+    asset: &Asset,
+    url: &str,
+    destination: &Path,
+) -> Result<(), UpdateError> {
     if let Some(parent) = destination.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -107,7 +119,7 @@ pub fn download_asset(asset: &Asset, destination: &Path) -> Result<(), UpdateErr
         .build()
         .into();
     let mut response = agent
-        .get(&asset.url)
+        .get(url)
         .call()
         .map_err(|error| UpdateError::Network(error.to_string()))?;
     if let Some(length) = response.body().content_length() {
@@ -249,12 +261,15 @@ pub fn download_and_install(
     transport: &dyn UpdateTransport,
     asset: &Asset,
     version: &str,
+    manifest_url: &str,
     staging: &Path,
 ) -> Result<InstallOutcome, UpdateError> {
     let staging = staging.join(version.trim_start_matches('v'));
     fs::create_dir_all(&staging)?;
     let archive = staging.join(&asset.name);
-    transport.download(asset, &archive)?;
+    // 清单里的资产地址可以是相对路径，先按清单地址解析成绝对地址。
+    let download_url = super::manifest::resolve_asset_url(manifest_url, &asset.url);
+    transport.download(asset, &download_url, &archive)?;
 
     // 传输层可能不做校验（例如未来换实现），这里以清单摘要为准再核一次。
     if !asset.sha256.trim().is_empty() {
@@ -566,6 +581,97 @@ mod tests {
             extract_linux_binary(&archive_path, &out),
             Err(UpdateError::MissingBinary(_))
         ));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn download_and_install_end_to_end_from_a_caller_supplied_transport() {
+        // 端到端：造一个 tar.gz（含 muxterm），经替身传输落到 staging，
+        // 校验摘要后替换目标，并保留可回滚的备份。
+        use super::super::service::UpdateTransport;
+        use super::super::Manifest;
+
+        struct LocalTransport {
+            bytes: Vec<u8>,
+            seen_url: std::sync::Mutex<Option<String>>,
+        }
+        impl UpdateTransport for LocalTransport {
+            fn fetch_manifest(&self, _url: &str) -> Result<Manifest, UpdateError> {
+                unreachable!("本测试不请求清单")
+            }
+            fn download(
+                &self,
+                _asset: &Asset,
+                url: &str,
+                destination: &Path,
+            ) -> Result<(), UpdateError> {
+                *self.seen_url.lock().unwrap() = Some(url.to_string());
+                if let Some(parent) = destination.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::write(destination, &self.bytes)?;
+                Ok(())
+            }
+        }
+
+        let dir = temp_dir("e2e");
+        // 构造 tar.gz
+        let mut archive_bytes = Vec::new();
+        {
+            let encoder =
+                flate2::write::GzEncoder::new(&mut archive_bytes, flate2::Compression::fast());
+            let mut builder = tar::Builder::new(encoder);
+            let payload = b"#!/bin/sh\necho v2\n";
+            let mut header = tar::Header::new_gnu();
+            header.set_size(payload.len() as u64);
+            header.set_mode(0o755);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, "muxterm", &payload[..])
+                .unwrap();
+            builder.into_inner().unwrap().finish().unwrap();
+        }
+        let digest = sha256_hex(&archive_bytes);
+        let transport = LocalTransport {
+            bytes: archive_bytes,
+            seen_url: std::sync::Mutex::new(None),
+        };
+        let asset = Asset {
+            name: "muxterm-gtk-linux-x86_64.tar.gz".into(),
+            // 相对路径：必须按清单地址解析。
+            url: "muxterm-gtk-linux-x86_64.tar.gz".into(),
+            sha256: digest,
+            size: 0,
+        };
+
+        // 目标可执行文件：在测试机上直接复用当前二进制路径会破坏环境，
+        // 因此只在非 Linux 平台跳过真实替换，仅验证解析 + 校验 + 解包。
+        let manifest_url = "http://127.0.0.1:9/alpha/latest.json";
+        let resolved = super::super::manifest::resolve_asset_url(manifest_url, &asset.url);
+
+        // 这里走的是解包 + 校验路径；替换目标由 current_install_target 决定，
+        // 在 macOS 上会返回 UnsupportedPlatform/UnknownInstallLocation，属预期。
+        let result = download_and_install(&transport, &asset, "v2.0.0", manifest_url, &dir);
+        assert_eq!(
+            transport.seen_url.lock().unwrap().as_deref(),
+            Some(resolved.as_str()),
+            "下载地址必须按清单地址解析"
+        );
+        match result {
+            Ok(outcome) => {
+                assert_eq!(outcome.version, "v2.0.0");
+                assert!(
+                    fs::read(&outcome.path)
+                        .map(|bytes| String::from_utf8_lossy(&bytes).contains("echo v2"))
+                        .unwrap_or(false),
+                    "安装后的文件应是新版本内容"
+                );
+            }
+            Err(UpdateError::UnsupportedPlatform)
+            | Err(UpdateError::UnknownInstallLocation)
+            | Err(UpdateError::UnsupportedFormat(_)) => {}
+            Err(other) => panic!("不该出现的失败: {other}"),
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -100,6 +100,27 @@ impl Manifest {
     }
 }
 
+/// 把清单里的资产地址解析成可直接下载的绝对地址。
+///
+/// 清单里的 `url` 允许是相对路径（发布流程故意如此）：
+/// - 正式版从 `.../releases/latest/download/latest.json` 解析 → 同目录资产；
+/// - 测试版从某个 release 的 `latest.json` 解析 → 该 release 的资产；
+/// - alpha 产物下载到本地后用 `python3 -m http.server` 起服务，也能解析到
+///   localhost，无需为每个通道写死不同地址。
+pub fn resolve_asset_url(manifest_url: &str, asset_url: &str) -> String {
+    let asset_url = asset_url.trim();
+    if asset_url.starts_with("http://") || asset_url.starts_with("https://") {
+        return asset_url.to_string();
+    }
+    // 以清单地址所在目录为基准拼接；清单地址自身必须是绝对 URL。
+    match manifest_url.rsplit_once('/') {
+        Some((base, _)) if base.starts_with("http") => {
+            format!("{base}/{}", asset_url.trim_start_matches('/'))
+        }
+        _ => asset_url.to_string(),
+    }
+}
+
 /// 把 `v1.2.3` / `1.2.3-dev.abcdef` 解析为 semver。
 fn parse_version(raw: &str) -> Option<semver::Version> {
     let trimmed = raw.trim().trim_start_matches('v');
@@ -218,5 +239,33 @@ mod tests {
         assert!(!Manifest::parse(SAMPLE)
             .unwrap()
             .is_newer_than("not-a-version"));
+    }
+
+    #[test]
+    fn relative_asset_urls_resolve_against_the_manifest_location() {
+        let stable = "https://github.com/o/r/releases/latest/download/latest.json";
+        assert_eq!(
+            resolve_asset_url(stable, "muxterm-macos-arm64.dmg"),
+            "https://github.com/o/r/releases/latest/download/muxterm-macos-arm64.dmg"
+        );
+        let beta = "https://github.com/o/r/releases/download/v1.2.3-beta.1/latest.json";
+        assert_eq!(
+            resolve_asset_url(beta, "/muxterm-gtk-linux-x86_64.tar.gz"),
+            "https://github.com/o/r/releases/download/v1.2.3-beta.1/muxterm-gtk-linux-x86_64.tar.gz"
+        );
+        let local = "http://127.0.0.1:8000/alpha/latest.json";
+        assert_eq!(
+            resolve_asset_url(local, "muxterm-macos-arm64.dmg"),
+            "http://127.0.0.1:8000/alpha/muxterm-macos-arm64.dmg"
+        );
+    }
+
+    #[test]
+    fn absolute_asset_urls_are_left_untouched() {
+        let manifest = "https://example.invalid/latest.json";
+        assert_eq!(
+            resolve_asset_url(manifest, "https://cdn.example/x.dmg"),
+            "https://cdn.example/x.dmg"
+        );
     }
 }
