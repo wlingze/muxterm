@@ -305,13 +305,37 @@ jobs:
           rm -rf build/macos/dmg-root/Muxterm.app
           cp -R build/macos/Muxterm.app build/macos/dmg-root/Muxterm.app
           DMG="artifacts/muxterm-macos-arm64-${FS_VERSION}.dmg"
-          hdiutil create \
-            -volname Muxterm \
-            -srcfolder build/macos/dmg-root \
-            -ov \
-            -format UDZO \
-            "$DMG"
-          hdiutil verify "$DMG"
+          # GitHub macOS runner 上的 diskimages-helper 偶尔会卡住，hdiutil 报
+          # "Resource temporarily unavailable"(EAGAIN)：create 已成功、镜像可读，
+          # 但 verify 拿不到 helper 去识别格式。这是 runner 瞬时故障（
+          # actions/runner-images#12323 同类），重试即可，不能让它烧掉整次发布。
+          create_dmg() {
+            hdiutil create \
+              -volname Muxterm \
+              -srcfolder build/macos/dmg-root \
+              -ov \
+              -format UDZO \
+              "$DMG"
+          }
+          verify_dmg() {
+            hdiutil verify "$DMG"
+          }
+          retry() {
+            local attempts=3 delay=5
+            for attempt in $(seq 1 "$attempts"); do
+              if "$@"; then
+                return 0
+              fi
+              if [[ "$attempt" == "$attempts" ]]; then
+                echo "命令连续 ${attempts} 次失败: $*" >&2
+                return 1
+              fi
+              echo "第 ${attempt} 次失败，${delay}s 后重试: $*" >&2
+              sleep "$delay"
+            done
+          }
+          retry create_dmg
+          retry verify_dmg
           shasum -a 256 "$DMG" > "$DMG.sha256"
 
       - name: Verify DMG contents
@@ -320,7 +344,17 @@ jobs:
           DMG="artifacts/muxterm-macos-arm64-${FS_VERSION}.dmg"
           MOUNT="$RUNNER_TEMP/muxterm-dmg"
           mkdir -p "$MOUNT"
-          hdiutil attach -nobrowse -readonly -mountpoint "$MOUNT" "$DMG"
+          # attach 同样会被卡住的 helper 影响；用与打包步骤一致的有界重试。
+          for attempt in 1 2 3; do
+            if hdiutil attach -nobrowse -readonly -mountpoint "$MOUNT" "$DMG"; then
+              break
+            fi
+            if [[ "$attempt" == 3 ]]; then
+              echo "hdiutil attach 连续 3 次失败" >&2
+              exit 1
+            fi
+            sleep 5
+          done
           trap 'hdiutil detach "$MOUNT" || true' EXIT
           test -d "$MOUNT/Muxterm.app"
           test -x "$MOUNT/Muxterm.app/Contents/MacOS/Muxterm"
