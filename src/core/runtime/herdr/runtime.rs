@@ -175,6 +175,31 @@ fn surface_blit(bytes: Vec<u8>) -> Vec<u8> {
     out
 }
 
+/// 把鼠标 DECSET 接到这一轮留下的最后一帧后面。没有 full frame 时返回 false。
+fn append_mouse_mode_to_last_frame(
+    events: &mut std::collections::VecDeque<RuntimeBatch>,
+    pane: PaneId,
+    bytes: &[u8],
+) -> bool {
+    for batch in events.iter_mut().rev() {
+        for event in batch.render.iter_mut().rev() {
+            if let RenderEvent::PaneFrame {
+                pane: frame_pane,
+                data,
+            } = event
+            {
+                if *frame_pane == pane {
+                    if !data.ends_with(bytes) {
+                        data.extend_from_slice(bytes);
+                    }
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 impl HerdrRuntime {
     /// 绑定共享 session + 一个 Herdr workspace_id（如 `w1`）。
     pub fn new(session: Arc<HerdrSession>, workspace_id: impl Into<String>) -> Self {
@@ -1368,6 +1393,8 @@ impl HerdrRuntime {
         slot.generation = slot.generation.saturating_add(1);
         slot.awaiting_allocation = false;
         slot.last_full_fingerprint = None;
+        slot.pending_mouse = None;
+        slot.mouse_dirty = false;
         slot.stream = None;
         slot.actual_mode = None;
         slot.state = SlotState::Starting;
@@ -1816,16 +1843,10 @@ impl HerdrRuntime {
                     if !slot.is_current(generation) || !slot.accept_ordinal(event_ordinal) {
                         continue;
                     }
-                    if slot.surface_baseline != SurfaceBaseline::Ready {
-                        continue;
-                    }
-                    Self::push_render(
-                        &mut self.events,
-                        RenderEvent::PaneOutput {
-                            pane,
-                            data: mouse_capture_decset(enabled, sgr_pixels),
-                        },
-                    );
+                    // 第一帧之前的 MouseCapture 不能丢。Grok 启动时就开 1003，
+                    // 丢掉之后 Surface 永远不进鼠标模式，只剩 ServerScroll 的滚轮。
+                    slot.pending_mouse = Some((enabled, sgr_pixels));
+                    slot.mouse_dirty = true;
                 }
                 PaneStreamEvent::Closed {
                     pane,
@@ -3839,6 +3860,7 @@ impl Runtime for HerdrRuntime {
         self.reconcile_stream_modes();
         self.tick_mutations(now);
         coalesce_superseded_frames(&mut self.events);
+        self.flush_pending_mouse_modes();
         for batch in self.events.drain(..) {
             out.append(batch);
         }
@@ -3895,7 +3917,49 @@ impl Drop for HerdrRuntime {
     }
 }
 
-impl HerdrRuntime {}
+impl HerdrRuntime {
+    /// full 帧合并之后再补鼠标 DECSET。
+    ///
+    /// 模式字节必须写进这一轮留下的 full frame 末尾。单独的 `PaneOutput`
+    /// 会进前端的增量队列，下一帧 `handleFrame` / `feed_full` 会把还没
+    /// flush 的队列清掉，于是 Grok 永远停在「没开鼠标，滚轮走 ServerScroll」。
+    fn flush_pending_mouse_modes(&mut self) {
+        let pending: Vec<(PaneId, Vec<u8>)> = self
+            .stream_slots
+            .iter()
+            .filter_map(|(pane, slot)| {
+                if slot.surface_baseline != SurfaceBaseline::Ready {
+                    return None;
+                }
+                let (enabled, sgr_pixels) = slot.pending_mouse?;
+                let framed = self.events.iter().any(|batch| {
+                    batch.render.iter().any(|event| {
+                        matches!(
+                            event,
+                            RenderEvent::PaneFrame { pane: frame_pane, .. } if frame_pane == pane
+                        )
+                    })
+                });
+                if framed || slot.mouse_dirty {
+                    Some((*pane, mouse_capture_decset(enabled, sgr_pixels)))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for (pane, bytes) in pending {
+            if let Some(slot) = self.stream_slots.get_mut(&pane) {
+                slot.mouse_dirty = false;
+            }
+            if !append_mouse_mode_to_last_frame(&mut self.events, pane, &bytes) {
+                Self::push_render(
+                    &mut self.events,
+                    RenderEvent::PaneOutput { pane, data: bytes },
+                );
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -4476,6 +4540,196 @@ mod tests {
             .filter(|event| matches!(event, RenderEvent::PaneFrame { .. }))
             .collect();
         assert_eq!(frames.len(), 1, "相同 full frame 不得再次灌进 Surface");
+    }
+
+    #[test]
+    fn mouse_capture_before_the_first_frame_still_arms_the_surface() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w8",
+        );
+        runtime.status = BackendStatus::Connected;
+        let pane = PaneId(13);
+        runtime.panes.push(PaneInfo {
+            id: pane,
+            tab: TabId(2),
+            active: true,
+            title: "grok".into(),
+            cols: 88,
+            rows: 49,
+        });
+        runtime.pane_to_herdr_pane.insert(pane, "w8:pD".into());
+        let (tx, rx) = super::super::observe::channel();
+        runtime.stream_tx = Some(tx.clone());
+        runtime.stream_rx = Some(rx);
+        let mut slot = PaneStreamSlot::new(pane, "w8:pD", StreamMode::Control);
+        slot.generation = 1;
+        slot.state = SlotState::Live;
+        slot.actual_mode = Some(StreamMode::Control);
+        runtime.stream_slots.insert(pane, slot);
+
+        tx.send(PaneStreamEvent::MouseCapture {
+            pane,
+            generation: 1,
+            event_ordinal: 1,
+            enabled: true,
+            sgr_pixels: false,
+        })
+        .unwrap();
+        let mut early = RuntimeBatch::default();
+        runtime.drain_events(&mut early);
+        assert!(
+            early.render.is_empty(),
+            "第一帧之前不能把鼠标模式写进还没准备好的 Surface"
+        );
+
+        tx.send(PaneStreamEvent::Frame {
+            pane,
+            generation: 1,
+            event_ordinal: 2,
+            wire_seq: 1,
+            bytes: b"GROK".to_vec(),
+            width: 88,
+            height: 49,
+            full: true,
+        })
+        .unwrap();
+        let mut out = RuntimeBatch::default();
+        runtime.drain_events(&mut out);
+        let frames: Vec<_> = out
+            .render
+            .iter()
+            .filter_map(|event| match event {
+                RenderEvent::PaneFrame { data, .. } => Some(data.as_slice()),
+                RenderEvent::PaneOutput { .. } => {
+                    panic!("鼠标模式必须写进 full frame，不能单独排队被下一帧丢掉")
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(frames.len(), 1);
+        assert!(
+            frames[0].ends_with(b"\x1b[?1003h\x1b[?1006h"),
+            "full 末尾必须是 hover/click 用的 1003+1006，got {:?}",
+            frames[0]
+        );
+        assert!(
+            frames[0].windows(b"GROK".len()).any(|w| w == b"GROK"),
+            "补模式不能盖掉画面"
+        );
+
+        tx.send(PaneStreamEvent::MouseCapture {
+            pane,
+            generation: 1,
+            event_ordinal: 3,
+            enabled: true,
+            sgr_pixels: false,
+        })
+        .unwrap();
+        let mut live = RuntimeBatch::default();
+        runtime.drain_events(&mut live);
+        assert!(
+            live.render.iter().any(|event| {
+                matches!(event, RenderEvent::PaneOutput { data, .. }
+                    if data.windows(b"\x1b[?1003h".len()).any(|w| w == b"\x1b[?1003h"))
+            }),
+            "已经 Ready 的 pane 收到 MouseCapture 必须立刻交给 Surface"
+        );
+
+        tx.send(PaneStreamEvent::Frame {
+            pane,
+            generation: 1,
+            event_ordinal: 4,
+            wire_seq: 2,
+            bytes: b"GROK2".to_vec(),
+            width: 88,
+            height: 49,
+            full: true,
+        })
+        .unwrap();
+        let mut again = RuntimeBatch::default();
+        runtime.drain_events(&mut again);
+        let again_frames: Vec<_> = again
+            .render
+            .iter()
+            .filter_map(|event| match event {
+                RenderEvent::PaneFrame { data, .. } => Some(data.as_slice()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(again_frames.len(), 1);
+        assert!(
+            again_frames[0].ends_with(b"\x1b[?1003h\x1b[?1006h"),
+            "下一帧 full 必须再次把鼠标模式写进帧内，避免前端清掉上一轮增量。got {:?}",
+            again_frames[0]
+        );
+    }
+
+    #[test]
+    fn superseded_full_frame_still_carries_mouse_mode() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w8",
+        );
+        runtime.status = BackendStatus::Connected;
+        let pane = PaneId(13);
+        runtime.panes.push(PaneInfo {
+            id: pane,
+            tab: TabId(2),
+            active: true,
+            title: "grok".into(),
+            cols: 88,
+            rows: 49,
+        });
+        runtime.pane_to_herdr_pane.insert(pane, "w8:pD".into());
+        let (tx, rx) = super::super::observe::channel();
+        runtime.stream_tx = Some(tx.clone());
+        runtime.stream_rx = Some(rx);
+        let mut slot = PaneStreamSlot::new(pane, "w8:pD", StreamMode::Control);
+        slot.generation = 1;
+        slot.state = SlotState::Live;
+        slot.actual_mode = Some(StreamMode::Control);
+        runtime.stream_slots.insert(pane, slot);
+        tx.send(PaneStreamEvent::MouseCapture {
+            pane,
+            generation: 1,
+            event_ordinal: 1,
+            enabled: true,
+            sgr_pixels: false,
+        })
+        .unwrap();
+        for (ordinal, bytes) in [(2u64, &b"GROK1"[..]), (3, &b"GROK2"[..])] {
+            tx.send(PaneStreamEvent::Frame {
+                pane,
+                generation: 1,
+                event_ordinal: ordinal,
+                wire_seq: ordinal,
+                bytes: bytes.to_vec(),
+                width: 88,
+                height: 49,
+                full: true,
+            })
+            .unwrap();
+        }
+        let mut out = RuntimeBatch::default();
+        runtime.drain_events(&mut out);
+        let frames: Vec<_> = out
+            .render
+            .iter()
+            .filter_map(|event| match event {
+                RenderEvent::PaneFrame { data, .. } => Some(data.as_slice()),
+                RenderEvent::PaneOutput { .. } => panic!("合并后的帧必须自己带上鼠标模式"),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(frames.len(), 1, "同一轮只留最后一帧");
+        assert!(frames[0]
+            .windows(b"GROK2".len())
+            .any(|window| window == b"GROK2"));
+        assert!(!frames[0]
+            .windows(b"GROK1".len())
+            .any(|window| window == b"GROK1"));
+        assert!(frames[0].ends_with(b"\x1b[?1003h\x1b[?1006h"));
     }
 
     fn first_hello_waits_for_pane_allocation_not_window_preferred() {
