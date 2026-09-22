@@ -865,17 +865,20 @@ public enum GeometrySyncPolicy {
 }
 
 /// 计划格子没变不发。窗口测量抖动走 hysteresis。
+///
+/// 标题栏显隐正好差一行。切到 zoom（没有标题）量出 50，切回分屏量出 49，
+/// 再写 `refresh-client -C` 会把这条 tmux 里的每个 window 都重排。
+/// shell 重画提示符，旧行留在画面上。±1 一律不当成 client resize。
 public enum TreeChangeClientResizePolicy {
     public static func shouldForceClientResize() -> Bool { false }
 
     public static func shouldSend(
         previous: (UInt16, UInt16)?,
         next: (UInt16, UInt16),
-        treeChanged: Bool
+        treeChanged _: Bool
     ) -> Bool {
         guard let previous else { return true }
         if previous == next { return false }
-        if treeChanged { return true }
         return ClientGridHysteresis.shouldSend(current: previous, next: next)
     }
 }

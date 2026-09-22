@@ -1548,13 +1548,13 @@ final class PaneLayoutProjectionTests: XCTestCase {
             ),
             "标题栏扣完后格子没变，不得再 resize"
         )
-        XCTAssertTrue(
+        XCTAssertFalse(
             TreeChangeClientResizePolicy.shouldSend(
                 previous: (178, 50),
                 next: (178, 49),
                 treeChanged: true
             ),
-            "叠标题少了一行必须一次发给 Runtime"
+            "标题栏只少一行，不得 resize 整条 tmux"
         )
         XCTAssertFalse(
             TreeChangeClientResizePolicy.shouldSend(
@@ -1564,12 +1564,20 @@ final class PaneLayoutProjectionTests: XCTestCase {
             ),
             "同一棵树的 ±1 行抖动仍走 hysteresis"
         )
+        XCTAssertTrue(
+            TreeChangeClientResizePolicy.shouldSend(
+                previous: (178, 50),
+                next: (120, 30),
+                treeChanged: true
+            ),
+            "窗口真实变小仍要发给 Runtime"
+        )
         XCTAssertTrue(PaneTitleLayoutPolicy.showsTitleBar(visiblePaneCount: 2))
         XCTAssertFalse(PaneTitleLayoutPolicy.showsTitleBar(visiblePaneCount: 1))
         XCTAssertTrue(GeometrySyncPolicy.pinLocalGrids(.cachedReveal))
         XCTAssertTrue(
             GeometrySyncPolicy.clientTreeChanged(.cachedReveal),
-            "切 tab 的计划格子（含标题栏）变化只发一次"
+            "切 tab 仍要重算每个 host 的格子；client 尺寸不跟着标题栏走"
         )
         XCTAssertFalse(GeometrySyncPolicy.forceRedraw(.cachedReveal))
         XCTAssertFalse(GeometrySyncPolicy.forceRedraw(.treeChange))
@@ -1582,13 +1590,13 @@ final class PaneLayoutProjectionTests: XCTestCase {
             GeometrySyncPolicy.merge(.cachedReveal, .treeChange),
             .treeChange
         )
-        XCTAssertTrue(
+        XCTAssertFalse(
             TreeChangeClientResizePolicy.shouldSend(
                 previous: (178, 50),
                 next: (178, 49),
                 treeChanged: GeometrySyncPolicy.clientTreeChanged(.cachedReveal)
             ),
-            "计划格子从无标题到有标题只发这一次 50→49"
+            "切 tab 的标题栏显隐不得把 client 从 50 改成 49"
         )
         XCTAssertFalse(
             TreeChangeClientResizePolicy.shouldSend(
@@ -1598,6 +1606,27 @@ final class PaneLayoutProjectionTests: XCTestCase {
             ),
             "同一计划不得再 resize"
         )
+    }
+
+    /// test-2026-0922-1758.log：zoom tab 量出 178x50，分屏 tab 量出 178x49，
+    /// 来回切就来回发 refresh-client -C。shell 重画提示符，旧行留在画面上。
+    func testTabSwitchTitleRowDoesNotResizeTheWholeClient() {
+        let samples: [(UInt16, UInt16)] = [(178, 50), (178, 49), (178, 50), (178, 49)]
+        var previous: (UInt16, UInt16)?
+        var sent: [(UInt16, UInt16)] = []
+        for sample in samples {
+            if TreeChangeClientResizePolicy.shouldSend(
+                previous: previous,
+                next: sample,
+                treeChanged: true
+            ) {
+                sent.append(sample)
+                previous = sample
+            }
+        }
+        XCTAssertEqual(sent.count, 1, "不能在 50 和 49 之间来回改")
+        XCTAssertEqual(sent.first?.0, 178)
+        XCTAssertEqual(sent.first?.1, 50)
     }
 
     func testAttentionBadgeShowsCountFromOne() {
