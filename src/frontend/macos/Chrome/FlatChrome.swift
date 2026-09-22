@@ -1131,6 +1131,49 @@ public enum PaneHistoryScrollPolicy {
     }
 }
 
+/// 滚轮交给谁：对齐 Linux `handle_scroll`。
+///
+/// 应用开了 1000/1002/1003 时必须把滚轮写成 SGR 交给 pane（htop / vim /
+/// Codex）。Herdr 的 ServerScroll 只在应用没要鼠标时滚服务端历史。
+public enum WheelPassthroughPolicy {
+    public enum Route: Equatable {
+        case applicationMouse
+        case serverScroll
+        case applicationArrows
+        case localHistory
+    }
+
+    public static func route(
+        mouseReporting: Bool,
+        shiftBypassesMouse: Bool,
+        alternateScreen: Bool,
+        hasServerScroll: Bool
+    ) -> Route {
+        if mouseReporting, !shiftBypassesMouse {
+            return .applicationMouse
+        }
+        if hasServerScroll {
+            return .serverScroll
+        }
+        if alternateScreen {
+            return .applicationArrows
+        }
+        return .localHistory
+    }
+}
+
+/// macOS 窗口只消费我们 hook 的 Cmd/Ctrl 快捷键。
+/// Option 单修饰（Alt-S 等 TUI 兼容键）必须进 pane，否则 Herdr/vim/emacs
+/// 的 Meta 组合会被 Muxterm 吃掉。
+public enum KeyPassthroughPolicy {
+    public static func consumeInMacOSWindow(_ chord: KeyChord) -> Bool {
+        if chord.option, !chord.command, !chord.control {
+            return false
+        }
+        return true
+    }
+}
+
 /// last-seen 跳转的纯状态判定。
 ///
 /// `rawOffset == -1` 表示 core 已经淘汰了旧 seq；此时必须清掉按钮，

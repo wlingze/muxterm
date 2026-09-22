@@ -75,6 +75,31 @@ pub enum PaneStreamEvent {
         event_ordinal: u64,
         message: String,
     },
+    /// Herdr 通知 client：pane 应用打开/关闭了鼠标协议。
+    ///
+    /// 应用写的 `CSI ? 1000/1002/1003 h` 由 Herdr 自己消费，不一定出现在
+    /// ANSI 帧里。前端 VT 必须靠这条消息进入 mouse reporting，否则点击和
+    /// 滚轮会被当成本地选区 / ServerScroll。
+    MouseCapture {
+        pane: PaneId,
+        generation: u64,
+        event_ordinal: u64,
+        enabled: bool,
+        sgr_pixels: bool,
+    },
+}
+
+/// 把 Herdr `MouseCapture` 转成 DECSET/DECRST，喂进 Surface 的 VT。
+pub fn mouse_capture_decset(enabled: bool, sgr_pixels: bool) -> Vec<u8> {
+    if enabled {
+        if sgr_pixels {
+            b"\x1b[?1003h\x1b[?1016h".to_vec()
+        } else {
+            b"\x1b[?1003h\x1b[?1006h".to_vec()
+        }
+    } else {
+        b"\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1006l\x1b[?1016l".to_vec()
+    }
 }
 
 /// start worker 的完成结果（generation-tagged）。
@@ -242,6 +267,24 @@ impl ObserveStream {
                         }
                         return;
                     }
+                    Ok(ServerMessage::MouseCapture {
+                        enabled,
+                        sgr_pixels,
+                    }) => {
+                        event_ordinal = event_ordinal.saturating_add(1);
+                        if tx
+                            .send(PaneStreamEvent::MouseCapture {
+                                pane,
+                                generation,
+                                event_ordinal,
+                                enabled,
+                                sgr_pixels,
+                            })
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
                     Ok(_) => {}
                     Err(err) => {
                         if alive {
@@ -400,4 +443,26 @@ impl Drop for ObserveStream {
 /// 空 channel 工厂（测试用）。
 pub fn channel() -> (Sender<PaneStreamEvent>, Receiver<PaneStreamEvent>) {
     mpsc::channel()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mouse_capture_decset;
+
+    #[test]
+    fn mouse_capture_enable_uses_sgr_cell_mode() {
+        assert_eq!(mouse_capture_decset(true, false), b"\x1b[?1003h\x1b[?1006h");
+    }
+
+    #[test]
+    fn mouse_capture_enable_pixels_uses_sgr_pixels() {
+        assert_eq!(mouse_capture_decset(true, true), b"\x1b[?1003h\x1b[?1016h");
+    }
+
+    #[test]
+    fn mouse_capture_disable_resets_all_mouse_modes() {
+        let bytes = mouse_capture_decset(false, false);
+        assert!(bytes.windows(8).any(|w| w == b"\x1b[?1003l"));
+        assert!(bytes.windows(8).any(|w| w == b"\x1b[?1006l"));
+    }
 }

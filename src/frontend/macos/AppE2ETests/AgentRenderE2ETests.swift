@@ -446,6 +446,28 @@ final class AgentRenderE2ETests: XCTestCase {
         XCTAssertFalse(view.canScroll, "服务端历史不得伪装成本地重放的 scrollback")
     }
 
+    func testMouseReportingWheelBypassesServerScroll() throws {
+        AppE2E.ensureApp()
+        let view = MuxTerminalView(paneId: 9, frame: NSRect(x: 0, y: 0, width: 640, height: 240))
+        view.getTerminal().resize(cols: 40, rows: 12)
+        view.feedOutput(Data("\u{1b}[?1003h\u{1b}[?1006h".utf8))
+        XCTAssertNotEqual(view.getTerminal().mouseMode, .off)
+        var server: [Int] = []
+        view.onServerScroll = { server.append($0) }
+        let handler = RecordingInputHandler()
+        view.inputHandler = handler
+        let event = try XCTUnwrap(CGEvent(scrollWheelEvent2Source: nil, units: .line,
+            wheelCount: 1, wheel1: 3, wheel2: 0, wheel3: 0).flatMap(NSEvent.init(cgEvent:)))
+        view.scrollWheel(with: event)
+        XCTAssertTrue(server.isEmpty, "应用开了鼠标时滚轮必须进 pane，不能走 Herdr ServerScroll")
+        let payload = String(bytes: handler.bytes, encoding: .utf8) ?? ""
+        XCTAssertTrue(
+            payload.contains("\u{1b}[<64;") || payload.contains("\u{1b}[<65;"),
+            "mouse reporting 滚轮必须 SGR。got=\(handler.bytes)"
+        )
+        XCTAssertTrue(view.lastScrollWheelRoutedToRuntime)
+    }
+
     func testAlternateAgentScrollRoutesToRuntimeNotLocalHistory() {
         AppE2E.ensureApp()
         let view = MuxTerminalView(

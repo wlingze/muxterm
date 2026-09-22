@@ -354,7 +354,18 @@ final class MuxTerminalView: TerminalView {
     }
 
     override func scrollWheel(with event: NSEvent) {
-        if let onServerScroll {
+        let route = WheelPassthroughPolicy.route(
+            mouseReporting: getTerminal().mouseMode != .off,
+            shiftBypassesMouse: event.modifierFlags.contains(.shift),
+            alternateScreen: getTerminal().isCurrentBufferAlternate,
+            hasServerScroll: onServerScroll != nil
+        )
+        switch route {
+        case .applicationMouse:
+            sendCoalescedWheelToApp(event: event, sgr: true)
+        case .applicationArrows:
+            sendCoalescedWheelToApp(event: event, sgr: false)
+        case .serverScroll:
             lastScrollWheelRoutedToRuntime = true
             let cellHeight = terminalCellSizeInPoints()?.height ?? 16
             serverScrollRemainder += event.hasPreciseScrollingDeltas
@@ -364,31 +375,46 @@ final class MuxTerminalView: TerminalView {
                 serverScrollRemainder -= CGFloat(lines)
                 // ScrollPane 在 Core 内按需切焦点；每个滚轮都另发 SwitchPane
                 // 会同步等待 SSH pane.focus，把连续滚动降到网络往返速度。
-                onServerScroll(lines)
+                onServerScroll?(lines)
             }
-            return
+        case .localHistory:
+            lastScrollWheelRoutedToRuntime = false
+            withUserMouseReporting { super.scrollWheel(with: event) }
         }
-        // tmux / agent TUI：触控板精确 delta 必须先合成整格，再发有限条
-        // SGR。SwiftTerm 对每个 NSEvent 都发一格，会把一次手势打成几十条
-        // send-keys（1649.log `ESC[<65;34;22M` 连发，CPU 100%）。
-        let reportsMouse =
-            getTerminal().isCurrentBufferAlternate || getTerminal().mouseMode != .off
-        if reportsMouse {
-            let cellHeight = terminalCellSizeInPoints()?.height ?? 16
-            let lines = PaneHistoryScrollPolicy.lines(
-                deltaY: event.scrollingDeltaY,
-                precise: event.hasPreciseScrollingDeltas,
-                cellHeight: cellHeight,
-                accumulator: &serverScrollRemainder
-            )
-            let capped = PaneHistoryScrollPolicy.cappedWheelLines(lines)
-            guard capped != 0 else { return }
-            lastScrollWheelRoutedToRuntime = true
+    }
+
+    /// 触控板精确 delta 先合成整格再发给 pane，避免一次手势打成几十条
+    /// send-keys（1649.log `ESC[<65;34;22M` 连发，CPU 100%）。
+    private func sendCoalescedWheelToApp(event: NSEvent, sgr: Bool) {
+        let cellHeight = terminalCellSizeInPoints()?.height ?? 16
+        let lines = PaneHistoryScrollPolicy.lines(
+            deltaY: event.scrollingDeltaY,
+            precise: event.hasPreciseScrollingDeltas,
+            cellHeight: cellHeight,
+            accumulator: &serverScrollRemainder
+        )
+        let capped = PaneHistoryScrollPolicy.cappedWheelLines(lines)
+        guard capped != 0 else { return }
+        lastScrollWheelRoutedToRuntime = true
+        if sgr {
             sendCoalescedSgrWheel(lines: capped, event: event)
-            return
+        } else {
+            sendCoalescedArrowWheel(lines: capped)
         }
-        lastScrollWheelRoutedToRuntime = false
-        withUserMouseReporting { super.scrollWheel(with: event) }
+    }
+
+    /// alt-screen 且应用没开鼠标：滚轮 = CSI 方向键（对齐 Linux / iTerm2）。
+    private func sendCoalescedArrowWheel(lines: Int) {
+        let byte: UInt8 = lines > 0 ? 0x41 : 0x42
+        let one: [UInt8] = [0x1b, 0x5b, byte]
+        var payload = [UInt8]()
+        payload.reserveCapacity(one.count * abs(lines))
+        for _ in 0..<abs(lines) {
+            payload.append(contentsOf: one)
+        }
+        withUserMouseReporting {
+            inputHandler?.terminal(self, send: payload[...])
+        }
     }
 
     /// 把已合成的整格滚轮一次交给 pane，避免每像素一次 send-keys。

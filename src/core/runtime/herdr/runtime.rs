@@ -29,7 +29,9 @@ use crate::runtime::{
 
 use super::events::{EventStream, EventStreamEvent};
 use super::mutation::{MutationQueue, PendingMutation};
-use super::observe::{ObserveStream, PaneStreamEvent, StreamMode, StreamStartResult};
+use super::observe::{
+    mouse_capture_decset, ObserveStream, PaneStreamEvent, StreamMode, StreamStartResult,
+};
 use super::registry::{
     classify_stream_end, ControlRearm, FrameDecision, PaneStreamSlot, SlotAction, SlotState,
     SurfaceBaseline, FULL_FRAME_DEADLINE, INPUT_MAX_BYTES, INPUT_MAX_WRITES,
@@ -1746,6 +1748,30 @@ impl HerdrRuntime {
                             RenderEvent::PaneOutput { pane, data: bytes },
                         );
                     }
+                }
+                PaneStreamEvent::MouseCapture {
+                    pane,
+                    generation,
+                    event_ordinal,
+                    enabled,
+                    sgr_pixels,
+                } => {
+                    let Some(slot) = self.stream_slots.get_mut(&pane) else {
+                        continue;
+                    };
+                    if !slot.is_current(generation) || !slot.accept_ordinal(event_ordinal) {
+                        continue;
+                    }
+                    if slot.surface_baseline != SurfaceBaseline::Ready {
+                        continue;
+                    }
+                    Self::push_render(
+                        &mut self.events,
+                        RenderEvent::PaneOutput {
+                            pane,
+                            data: mouse_capture_decset(enabled, sgr_pixels),
+                        },
+                    );
                 }
                 PaneStreamEvent::Closed {
                     pane,
