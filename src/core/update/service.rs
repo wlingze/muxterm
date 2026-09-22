@@ -86,7 +86,11 @@ impl UpdatePhase {
 
 /// 后台任务结果。
 enum Outcome {
-    Checked(Result<Manifest, UpdateError>),
+    Checked {
+        result: Result<Manifest, UpdateError>,
+        /// 是否由用户主动触发；自动检查失败不打扰界面。
+        manual: bool,
+    },
     Installed(Result<InstallOutcome, UpdateError>),
 }
 
@@ -107,6 +111,8 @@ pub struct UpdateService {
     /// 上一次自动检查的时间，用于节流。
     last_auto_check: Option<std::time::Instant>,
     pending: Option<Receiver<Outcome>>,
+    /// 当前检查是否由用户主动触发（决定失败是否可见）。
+    checking_is_manual: bool,
     events: VecDeque<serde_json::Value>,
 }
 
@@ -133,6 +139,7 @@ impl UpdateService {
             auto_check_launched: false,
             last_auto_check: None,
             pending: None,
+            checking_is_manual: false,
             events: VecDeque::new(),
         }
     }
@@ -145,6 +152,26 @@ impl UpdateService {
     /// 覆盖当前版本号（测试与本地开发用）。
     pub fn with_current_version(mut self, version: impl Into<String>) -> Self {
         self.current_version = version.into();
+        self
+    }
+
+    /// 本地测试/开发用：用环境变量覆盖当前版本号与清单地址。
+    ///
+    /// 只影响显式设置了变量的进程，方便在没有正式 release 时用本地 HTTP
+    /// 服务验证「提醒 + 一键更新」整条链路。
+    pub fn apply_env_overrides(mut self) -> Self {
+        if let Ok(version) = std::env::var(VERSION_ENV) {
+            let version = version.trim();
+            if !version.is_empty() {
+                self.current_version = version.to_string();
+            }
+        }
+        if let Ok(url) = std::env::var(MANIFEST_URL_ENV) {
+            let url = url.trim();
+            if !url.is_empty() {
+                self.manifest_url = url.to_string();
+            }
+        }
         self
     }
 
@@ -184,7 +211,7 @@ impl UpdateService {
         if self.auto_check_launched && !due {
             return;
         }
-        if self.start_check_internal() {
+        if self.start_check_with_origin(false) {
             self.auto_check_launched = true;
             self.last_auto_check = Some(std::time::Instant::now());
         }
@@ -192,10 +219,10 @@ impl UpdateService {
 
     /// 手动检查。已有任务在跑时忽略，返回 false。
     pub fn start_check(&mut self) -> bool {
-        self.start_check_internal()
+        self.start_check_with_origin(true)
     }
 
-    fn start_check_internal(&mut self) -> bool {
+    fn start_check_with_origin(&mut self, manual: bool) -> bool {
         if self.pending.is_some() {
             return false;
         }
@@ -205,7 +232,10 @@ impl UpdateService {
         let spawned = std::thread::Builder::new()
             .name("muxterm-update-check".into())
             .spawn(move || {
-                let _ = sender.send(Outcome::Checked(transport.fetch_manifest(&url)));
+                let _ = sender.send(Outcome::Checked {
+                    result: transport.fetch_manifest(&url),
+                    manual,
+                });
             });
         if spawned.is_err() {
             self.set_phase(UpdatePhase::Failed {
@@ -214,6 +244,7 @@ impl UpdateService {
             return false;
         }
         self.pending = Some(receiver);
+        self.checking_is_manual = manual;
         self.set_phase(UpdatePhase::Checking);
         true
     }
@@ -279,7 +310,10 @@ impl UpdateService {
             return;
         };
         match receiver.try_recv() {
-            Ok(Outcome::Checked(Ok(manifest))) => {
+            Ok(Outcome::Checked {
+                result: Ok(manifest),
+                ..
+            }) => {
                 if manifest.is_newer_than(&self.current_version) {
                     self.set_phase(UpdatePhase::Available {
                         version: manifest.version.clone(),
@@ -290,10 +324,24 @@ impl UpdateService {
                     self.set_phase(UpdatePhase::UpToDate);
                 }
             }
-            Ok(Outcome::Checked(Err(error))) => {
-                self.set_phase(UpdatePhase::Failed {
-                    message: error.to_string(),
-                });
+            Ok(Outcome::Checked {
+                result: Err(error),
+                manual,
+            }) => {
+                if manual || self.checking_is_manual {
+                    self.set_phase(UpdatePhase::Failed {
+                        message: error.to_string(),
+                    });
+                } else {
+                    // 自动检查失败（离线、限流、还没有 release）不弹提醒，
+                    // 回到 idle 等下一次机会，避免开机就报错。
+                    tracing::debug!(
+                        target = "muxterm::update",
+                        %error,
+                        "自动检查更新失败，已静默忽略"
+                    );
+                    self.set_phase(UpdatePhase::Idle);
+                }
             }
             Ok(Outcome::Installed(Ok(outcome))) => {
                 self.set_phase(UpdatePhase::Installed {
@@ -384,6 +432,11 @@ impl UpdateService {
         }));
     }
 }
+
+/// 覆盖当前版本号（本地把 alpha 包当成「旧版本」来验证更新）。
+pub const VERSION_ENV: &str = "MUXTERM_UPDATE_VERSION";
+/// 覆盖清单地址（本地指向 `python3 -m http.server` 输出的 latest.json）。
+pub const MANIFEST_URL_ENV: &str = "MUXTERM_UPDATE_MANIFEST_URL";
 
 #[cfg(test)]
 mod tests {
@@ -558,13 +611,29 @@ mod tests {
 
     #[test]
     fn status_reports_an_absolute_download_url_for_relative_manifest_entries() {
-        struct RelativeTransport;
+        // 只有两个正式发布平台有资产；其余平台（如 Linux ARM 开发容器）
+        // 本就不该给出下载链接，直接跳过。
+        let Some(key) = crate::update::platform::current_asset_key() else {
+            return;
+        };
+        let (name, url) = match key {
+            crate::update::platform::MACOS_ARM64 => {
+                ("muxterm-macos-arm64.dmg", "muxterm-macos-arm64.dmg")
+            }
+            crate::update::platform::LINUX_GUI_X86_64 => (
+                "muxterm-gtk-linux-x86_64.tar.gz",
+                "muxterm-gtk-linux-x86_64.tar.gz",
+            ),
+            other => panic!("测试只覆盖两个正式发布平台，实际 key={other}"),
+        };
+        let manifest_json = format!(
+            r#"{{"version":"v9.9.9","assets":{{"{key}":{{"name":"{name}","url":"{url}","sha256":"aa"}}}}}}"#
+        );
+
+        struct RelativeTransport(String);
         impl UpdateTransport for RelativeTransport {
             fn fetch_manifest(&self, _url: &str) -> Result<Manifest, UpdateError> {
-                Ok(Manifest::parse(
-                    r#"{"version":"v9.9.9","assets":{"macos-arm64":{"name":"muxterm-macos-arm64.dmg","url":"muxterm-macos-arm64.dmg","sha256":"aa"},"linux-gui-x86_64":{"name":"muxterm-gtk-linux-x86_64.tar.gz","url":"muxterm-gtk-linux-x86_64.tar.gz","sha256":"bb"}}}"#,
-                )
-                .unwrap())
+                Ok(Manifest::parse(&self.0).unwrap())
             }
             fn download(
                 &self,
@@ -577,7 +646,7 @@ mod tests {
         }
 
         let mut service = UpdateService::new(
-            Arc::new(RelativeTransport),
+            Arc::new(RelativeTransport(manifest_json)),
             false,
             "https://example.invalid/releases/download/v9.9.9/latest.json".into(),
         )
@@ -588,11 +657,15 @@ mod tests {
             UpdatePhase::Available { .. }
         )));
         let status = service.status_json();
+        assert_eq!(status["asset_name"].as_str(), Some(name));
         let url = status["download_url"].as_str().unwrap();
         assert!(
             url.starts_with("https://example.invalid/releases/download/v9.9.9/"),
             "相对路径必须解析成绝对地址: {url}"
         );
-        assert!(url.ends_with(".dmg") || url.ends_with(".tar.gz"));
+        assert!(
+            url.ends_with(name),
+            "解析出的地址必须指向当前平台的资产，期望以 {name} 结尾: {url}"
+        );
     }
 }

@@ -1,5 +1,7 @@
 # Rust
 /target
+/target-linux
+/target-*
 **/*.rs.bk
 Cargo.lock
 
@@ -27,4 +29,3 @@ artifacts/
 # Local assistant tooling
 .rtk/
 CLAUDE.md
-

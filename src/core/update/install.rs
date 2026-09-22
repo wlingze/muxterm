@@ -237,6 +237,22 @@ pub fn current_executable() -> Result<PathBuf, UpdateError> {
 
 /// 判断当前平台的一键更新目标。
 pub fn current_install_target() -> Result<InstallTarget, UpdateError> {
+    // 显式覆盖：用户/打包方把二进制装在非标准位置，或测试需要隔离目标时使用。
+    // 只接受已存在的文件，避免把更新写到任意路径。
+    if let Some(target) = std::env::var_os(INSTALL_TARGET_ENV) {
+        let target = PathBuf::from(target);
+        // `.app` 覆盖值按 macOS bundle 目标处理（本地验证 DMG 安装用）。
+        if target
+            .extension()
+            .is_some_and(|extension| extension == "app")
+        {
+            return Ok(InstallTarget::MacOsApp(target));
+        }
+        if target.is_file() {
+            return Ok(InstallTarget::LinuxBinary(target));
+        }
+        return Err(UpdateError::UnknownInstallLocation);
+    }
     let exe = current_executable()?;
     if cfg!(target_os = "macos") {
         // …/Muxterm.app/Contents/MacOS/Muxterm → 去掉三层得到 .app
@@ -253,6 +269,9 @@ pub fn current_install_target() -> Result<InstallTarget, UpdateError> {
     }
     Err(UpdateError::UnsupportedPlatform)
 }
+
+/// 覆盖一键更新的安装目标（绝对路径）。生产环境不设置时按平台推导。
+pub const INSTALL_TARGET_ENV: &str = "MUXTERM_INSTALL_TARGET";
 
 /// 一次完整的「下载 → 校验 → 安装」。
 ///
@@ -400,17 +419,25 @@ fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<(), UpdateErr
 
 /// 原子替换文件：先备份旧文件，替换失败时回滚。
 ///
-/// `new` 必须已经写在目标同一文件系统上，才能保证 `rename` 是原子的。
+/// `new` 可能来自另一个文件系统（下载目录常在 `~/.cache`，目标二进制可能在
+/// `/usr/bin`），此情况下 `rename` 会以 `EXDEV` 失败。这里先把新文件复制到
+/// 目标所在目录的临时文件，再在**同一文件系统内** `rename`，保证替换仍是
+/// 原子的：读者要么看到旧文件，要么看到完整的新文件，不会看到半个文件。
 pub fn replace_file(new: &Path, target: &Path) -> Result<PathBuf, UpdateError> {
     let backup = target.with_extension("muxterm-backup");
     let _ = fs::remove_file(&backup);
     let had_old = target.exists();
+    // 与目标同目录，确保后续 rename 不跨设备。
+    let staged = target.with_extension("muxterm-new");
+    let _ = fs::remove_file(&staged);
+    fs::copy(new, &staged)?;
     if had_old {
         fs::rename(target, &backup)?;
     }
-    match fs::rename(new, target) {
+    match fs::rename(&staged, target) {
         Ok(()) => Ok(backup),
         Err(error) => {
+            let _ = fs::remove_file(&staged);
             if had_old {
                 let _ = fs::rename(&backup, target);
             }
@@ -671,6 +698,32 @@ mod tests {
             | Err(UpdateError::UnknownInstallLocation)
             | Err(UpdateError::UnsupportedFormat(_)) => {}
             Err(other) => panic!("不该出现的失败: {other}"),
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn install_target_override_points_at_an_existing_file() {
+        // 覆盖变量只接受已存在的文件；否则报错而不是写到任意路径。
+        let dir = temp_dir("target-override");
+        let fake = dir.join("muxterm");
+        fs::write(&fake, b"old").unwrap();
+
+        // 该测试不能污染进程级环境；用子进程语义校验解析分支。
+        let previous = std::env::var_os(INSTALL_TARGET_ENV);
+        std::env::set_var(INSTALL_TARGET_ENV, &fake);
+        let resolved = current_install_target().expect("覆盖路径必须生效");
+        assert_eq!(resolved, InstallTarget::LinuxBinary(fake.clone()));
+
+        std::env::set_var(INSTALL_TARGET_ENV, dir.join("missing"));
+        assert!(matches!(
+            current_install_target(),
+            Err(UpdateError::UnknownInstallLocation)
+        ));
+
+        match previous {
+            Some(value) => std::env::set_var(INSTALL_TARGET_ENV, value),
+            None => std::env::remove_var(INSTALL_TARGET_ENV),
         }
         let _ = fs::remove_dir_all(&dir);
     }
