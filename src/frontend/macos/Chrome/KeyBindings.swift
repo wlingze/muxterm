@@ -10,6 +10,9 @@ public enum KeyAction: Equatable, Sendable {
     case closePane
     case switchTab(Int) // 1-based
     case switchLastTab
+    /// 当前 tab 的前一个 / 后一个。Cmd-1..9 盖不住第 10 个以后的 tab。
+    case previousTab
+    case nextTab
     case nextPane
     case prevPane
     /// 在 OSC 133 命令刻度之间向前/向后跳转；不向 pane 发送按键。
@@ -94,6 +97,15 @@ public enum KeyBindings {
            let n = Int(key), (1...9).contains(n)
         {
             return .switchTab(n)
+        }
+        // Cmd-Left / Cmd-Right：相邻 tab。第 10 个以后没有数字键。
+        if chord.command, !chord.option, !chord.shift, !chord.control {
+            if key == "left" {
+                return .previousTab
+            }
+            if key == "right" {
+                return .nextTab
+            }
         }
         // Cmd+[ / Cmd+]：上一个 / 下一个 pane（焦点跟随）
         if chord.command, !chord.shift, !chord.option, key == "[" {
@@ -198,5 +210,16 @@ public enum KeyBindings {
         }
 
         return nil
+    }
+}
+
+/// 数字键只覆盖前 9 个 tab。第 10 个及以后靠相邻偏移，到头就停。
+public enum TabSwitchPolicy {
+    /// `activeIndex` 是 0-based。`offset` 为 0 或越界时返回 nil，不环绕。
+    public static func adjacentIndex(activeIndex: Int, count: Int, offset: Int) -> Int? {
+        guard count > 0, (0..<count).contains(activeIndex), offset != 0 else { return nil }
+        let destination = activeIndex + offset
+        guard (0..<count).contains(destination) else { return nil }
+        return destination
     }
 }

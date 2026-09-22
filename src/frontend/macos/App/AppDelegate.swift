@@ -371,6 +371,22 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         moveTabRight.target = windowController
         windowMenu.addItem(moveTabRight)
         windowMenu.addItem(NSMenuItem.separator())
+        let previousTab = NSMenuItem(
+            title: MuxtermI18n.shared.tr(.previousTab),
+            action: #selector(MainWindowController.switchToPreviousTab),
+            keyEquivalent: "\u{F702}"
+        )
+        previousTab.keyEquivalentModifierMask = .command
+        previousTab.target = windowController
+        windowMenu.addItem(previousTab)
+        let nextTab = NSMenuItem(
+            title: MuxtermI18n.shared.tr(.nextTab),
+            action: #selector(MainWindowController.switchToNextTab),
+            keyEquivalent: "\u{F703}"
+        )
+        nextTab.keyEquivalentModifierMask = .command
+        nextTab.target = windowController
+        windowMenu.addItem(nextTab)
         for i in 1...9 {
             let item = NSMenuItem(
                 title: MuxtermI18n.shared.tr(.menuSwitchTab, arguments: ["number": "\(i)"]),

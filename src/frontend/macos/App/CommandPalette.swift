@@ -91,6 +91,8 @@ enum PaletteCommand: Equatable {
     case moveTabRight
     case switchTab(Int)
     case switchLastTab
+    case previousTab
+    case nextTab
     case movePaneToNewTab
     case splitHorizontal
     case splitVertical

@@ -1026,7 +1026,8 @@ final class TerminalManager: TerminalInputHandler {
         clientTreeChanged: Bool = false
     ) {
         let pin = RemainingPaneGridPolicy.usesAllocatedGridAfterTreeChange(
-            pinToAllocation
+            pinToAllocation,
+            usesClientResize: usesClientResize
         )
         for id in paneIds {
             guard let view = views[id] else { continue }
@@ -1056,6 +1057,8 @@ final class TerminalManager: TerminalInputHandler {
     }
 
     func syncSurfaceToAllocatedSize(paneId: UInt32) {
+        // tmux 放大/切树时格子仍等 layout-change。先按像素改模型会和 pane 差几行。
+        guard !usesClientResize else { return }
         guard let view = views[paneId] else { return }
         view.layoutSubtreeIfNeeded()
         let notify = RemainingPaneGridPolicy.shouldNotifyRuntime(
