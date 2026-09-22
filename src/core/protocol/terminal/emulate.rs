@@ -216,6 +216,8 @@ pub struct TerminalState {
     /// 不能只看 `command_marks.last_mut()`：异常/重复 D 可能把退出码
     /// 错写到上一条合法命令上。
     command_mark_seq: Option<u64>,
+    /// 行集合没变时跳过整段 scrollback 扫描。TUI 每帧都 feed。
+    command_prune_fingerprint: Option<(u64, usize, usize, u64, u64)>,
     processor: Processor,
 }
 
@@ -353,6 +355,7 @@ impl TerminalState {
             command_pending: None,
             command_start_seq: 0,
             command_mark_seq: None,
+            command_prune_fingerprint: None,
             processor: Processor::default(),
         }
     }
@@ -407,6 +410,23 @@ impl TerminalState {
     /// scrollback 淘汰、resize 删除或 DECSTBM 重排后，继续保留该 mark
     /// 会让 UI 把 stale seq 错误地当成 offset=0 跳转。
     fn prune_command_marks(&mut self) {
+        if self.command_marks.is_empty()
+            && self.command_pending.is_none()
+            && self.command_mark_seq.is_none()
+        {
+            return;
+        }
+        // 只在有行进出时重扫。格内重绘不改 seq，不能每帧给整段历史做哈希。
+        let fingerprint = (
+            self.next_line_id,
+            self.scrollback.len(),
+            self.grid_line_ids.len(),
+            self.grid_line_ids.first().copied().unwrap_or(0),
+            self.scrollback.front().map(|line| line.seq).unwrap_or(0),
+        );
+        if self.command_prune_fingerprint == Some(fingerprint) {
+            return;
+        }
         let mut live = HashSet::with_capacity(self.grid_line_ids.len() + self.scrollback.len());
         live.extend(self.grid_line_ids.iter().copied());
         live.extend(self.scrollback.iter().map(|line| line.seq));
@@ -420,6 +440,7 @@ impl TerminalState {
             self.command_pending = None;
             self.command_start_seq = 0;
         }
+        self.command_prune_fingerprint = Some(fingerprint);
     }
 
     pub fn cols(&self) -> usize {
@@ -576,6 +597,24 @@ impl TerminalState {
         self.push_reply(b"\x1b\\");
     }
 
+    /// OSC 133 B 之后只收命令文本。超过这个长度说明 C 没来，后面是画面。
+    const MAX_COMMAND_TEXT_CHARS: usize = 4096;
+
+    fn collect_command_byte(&mut self, b: u8) {
+        let Some(len) = self.command_pending.as_ref().map(String::len) else {
+            return;
+        };
+        if len >= Self::MAX_COMMAND_TEXT_CHARS {
+            self.command_pending = None;
+            self.command_start_seq = 0;
+            self.command_prune_fingerprint = None;
+            return;
+        }
+        if let Some(pending) = self.command_pending.as_mut() {
+            pending.push(b as char);
+        }
+    }
+
     /// 把原始字节喂给解析器。
     pub fn feed(&mut self, bytes: &[u8]) {
         self.last_raw_bytes = bytes.to_vec();
@@ -588,9 +627,7 @@ impl TerminalState {
             // W18h：B..C 之间的命令文本（含混入的 C OSC 帧，C 处理时再剥掉）。
             // 终止 OSC 的 BEL/ST 不是命令文本，不收集。
             if !terminated_osc {
-                if let Some(pending) = self.command_pending.as_mut() {
-                    pending.push(b as char);
-                }
+                self.collect_command_byte(b);
             }
             processor.advance(self, b);
         }
@@ -3220,6 +3257,18 @@ mod attention_signal_tests {
         t.feed(b"\x1b]133;A;aid=1\x07");
         t.feed(b"\x1b]133;P\x07");
         assert!(t.take_attention_signals().is_empty());
+    }
+
+    #[test]
+    fn osc133_b_without_c_does_not_retain_the_following_screen() {
+        let mut term = TerminalState::new(40, 8);
+        term.feed(b"\x1b]133;B\x07");
+        term.feed(&vec![b'A'; 20_000]);
+        term.feed(b"\x1b]133;C\x07");
+        assert!(
+            term.command_marks().is_empty(),
+            "C 没在命令文本结束前到来时，不能把 TUI 画面记成一条命令"
+        );
     }
 
     #[test]
