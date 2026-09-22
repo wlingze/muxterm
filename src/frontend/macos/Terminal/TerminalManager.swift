@@ -772,6 +772,11 @@ final class TerminalManager: TerminalInputHandler {
 
         let view = view(for: paneId)
         ensureValidModelSize(view)
+        // 整帧按 Runtime 格子绝对定位。先把模型对齐，否则满行进度和
+        // TUI 会画进旧的 80 列里，折行后只剩一块白。
+        if let size = expectedPaneSizes[paneId], size.cols >= 2, size.rows >= 1 {
+            view.applyGridSize(cols: size.cols, rows: size.rows, followTail: true)
+        }
         view.feedFull(data)
         swiftTermSeeded.insert(paneId)
         setSurfaceReady(paneId, true)
