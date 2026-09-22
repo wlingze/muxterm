@@ -3,6 +3,8 @@
   "image_paste_invalid": "无法粘贴此图片。请使用 PNG 或 TIFF，最大 20 MiB、6400 万像素。",
   "image_paste_failed": "图片粘贴失败",
   "image_paste_progress": "正在上传剪贴板图片…",
+  "text_paste_busy": "已有大段内容正在粘贴，请稍候。",
+  "text_paste_progress": "正在把大段内容粘贴进原来的窗格…",
   "attention_jump": "跳转",
   "attention_hide": "隐藏",
   "attention_mute": "静音…",

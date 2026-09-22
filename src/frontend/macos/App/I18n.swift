@@ -6,6 +6,8 @@ enum MuxtermTextKey: CaseIterable {
     case imagePasteProgress
     case imagePasteBusy
     case imagePasteInvalid
+    case textPasteBusy
+    case textPasteProgress
     case attentionJump
     case attentionHide
     case attentionMute
@@ -255,6 +257,8 @@ enum MuxtermTextKey: CaseIterable {
         case .imagePasteProgress: return "image_paste_progress"
         case .imagePasteBusy: return "image_paste_busy"
         case .imagePasteInvalid: return "image_paste_invalid"
+        case .textPasteBusy: return "text_paste_busy"
+        case .textPasteProgress: return "text_paste_progress"
         case .attentionJump: return "attention_jump"
         case .attentionHide: return "attention_hide"
         case .attentionMute: return "attention_mute"

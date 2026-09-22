@@ -74,6 +74,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private var structuredAgentTestOverrides: [String: [StructuredPaneAgent]] = [:]
     private var quickConnectStore: QuickConnectStore!
     private var imagePasteBridge: CoreBridge?
+    /// 大段粘贴转圈的起点。写完后仍保持到最短显示时间，避免一帧闪完。
+    private var textPasteStartedAt: Date?
+    private var textPasteWasBusy = false
     private var pollTimer: Timer?
     /// 主窗口 local key monitor 的 token；独立 NSPanel 的事件不能进入这里。
     private var keyMonitor: Any?
@@ -1950,6 +1953,37 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    /// 每个 scene 自己的大段粘贴继续写回发起时的 pane，不跟当前焦点。
+    private func drainLargePastes() {
+        var managers: [TerminalManager] = [terminalManager]
+        managers.append(contentsOf: sceneStack.scenes.values.map(\.terminalManager))
+        var seen = Set<ObjectIdentifier>()
+        for manager in managers {
+            guard seen.insert(ObjectIdentifier(manager)).inserted else { continue }
+            manager.drainLargePaste()
+        }
+        refreshPasteSpinner()
+    }
+
+    private func refreshPasteSpinner() {
+        let busy = terminalManager.hasLargePaste
+            || sceneStack.scenes.values.contains { $0.terminalManager.hasLargePaste }
+        let now = Date()
+        if busy && !textPasteWasBusy {
+            textPasteStartedAt = now
+        }
+        textPasteWasBusy = busy
+        let show = LargePastePlan.showsSpinner(
+            busy: busy,
+            startedAt: textPasteStartedAt,
+            now: now
+        )
+        if !show {
+            textPasteStartedAt = nil
+        }
+        content.statusBar.setTextPasteInProgress(show)
+    }
+
     private func pollImagePaste() {
         guard let source = imagePasteBridge else { return }
         do {
@@ -3177,6 +3211,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         terminalManager.enqueueCoreCommand = { [weak self] command in
             self?.enqueueCoreCommand(command) ?? false
+        }
+        terminalManager.onLargePasteActivityChanged = { [weak self] in
+            self?.refreshPasteSpinner()
         }
         terminalManager.onViewportChanged = { [weak self, weak manager = terminalManager] paneId, offset in
             guard let self, let manager, manager === self.terminalManager else { return }
@@ -4939,6 +4976,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         flushDeferredSceneBridgeWork()
         // Resuming a scene may enqueue deferred input/resize work collected
         // while bridge queries were paused, so flush after the resume as well.
+        drainLargePastes()
         flushCoreCommandQueue()
         pollImagePaste()
         pollUpdateStatus()

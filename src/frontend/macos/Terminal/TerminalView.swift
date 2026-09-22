@@ -104,6 +104,8 @@ final class MuxTerminalView: TerminalView {
     weak var inputHandler: TerminalInputHandler?
     var onImagePaste: ((Data) -> Void)?
     var onImagePasteError: ((String) -> Void)?
+    /// 超过单次控制命令的粘贴。调用方分批写回发起时的 pane，并显示进度。
+    var onLargePaste: ((Data) -> Void)?
     private var encodingClipboardImage = false
     /// 服务端维护 viewport 的 runtime 通过任务接收滚轮，不滚动本地缓冲。
     var onServerScroll: ((Int) -> Void)?
@@ -536,6 +538,17 @@ final class MuxTerminalView: TerminalView {
         }
         let text = pasteboard.string(forType: .string) ?? ""
         guard !text.isEmpty else { return }
+        let payload = pastePayload(text)
+        if LargePastePlan.needsProgress(byteCount: payload.count), let onLargePaste {
+            onLargePaste(payload)
+            return
+        }
+        // 小粘贴保持原来的两条路：括号模式直接发字节，否则走 insertText，
+        // 让 kitty 键盘协议继续编码短输入。没有进度回调的大粘贴只能一次送出。
+        if LargePastePlan.needsProgress(byteCount: payload.count) {
+            send([UInt8](payload))
+            return
+        }
         if getTerminal().bracketedPasteMode {
             send(data: EscapeSequences.bracketedPasteStart[...])
             send(txt: text)
@@ -543,6 +556,20 @@ final class MuxTerminalView: TerminalView {
         } else {
             insertText(text, replacementRange: NSRange(location: 0, length: 0))
         }
+    }
+
+    /// 括号粘贴包住整段，分批时也不能每批各包一次。
+    private func pastePayload(_ text: String) -> Data {
+        var data = Data()
+        let bracketed = getTerminal().bracketedPasteMode
+        if bracketed {
+            data.append(contentsOf: EscapeSequences.bracketedPasteStart)
+        }
+        data.append(contentsOf: text.utf8)
+        if bracketed {
+            data.append(contentsOf: EscapeSequences.bracketedPasteEnd)
+        }
+        return data
     }
 
     @available(*, unavailable)

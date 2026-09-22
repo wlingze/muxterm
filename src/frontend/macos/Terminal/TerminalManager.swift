@@ -46,6 +46,17 @@ final class TerminalManager: TerminalInputHandler {
         let errorKey: MuxtermTextKey
     }
     private var pendingInputs: [PendingInput] = []
+    /// 大段粘贴的剩余切片。pane 在 Cmd-V 时钉死，后续切焦点不改目的地。
+    private struct LargePaste {
+        let paneID: UInt32
+        let chunks: [Data]
+        var next = 0
+    }
+    private var largePaste: LargePaste?
+    /// 同一 pane 在大段粘贴期间的按键。插进括号粘贴中间会把这次粘贴拆开，
+    /// 所以先攒着，整段写完再按原顺序发出。别的 pane 不拦。
+    private var inputHeldForPaste: [PendingInput] = []
+    var hasLargePaste: Bool { largePaste != nil }
     /// 上次发送给 tmux control client 的整体尺寸。
     private var lastClientSize: (UInt16, UInt16)?
     /// 已排队但尚未发送的整体尺寸；窗口 live resize 期间只保留最后一帧。
@@ -110,6 +121,8 @@ final class TerminalManager: TerminalInputHandler {
     /// MainWindow supplies the single UI-to-Core command boundary.  Terminal
     /// input and resize callbacks never call CoreBridge directly.
     var enqueueCoreCommand: ((QueuedMuxCommand) -> Bool)?
+    /// 大段粘贴开始或结束。窗口用它开关底栏转圈。
+    var onLargePasteActivityChanged: (() -> Void)?
     /// Surface 首帧完成后通知布局层一次性显示 PaneHostView。
     /// 回调只在主线程触发；后台 slot 不创建/重建 AppKit view。
     var onSurfaceReadinessChanged: ((UInt32, Bool) -> Void)?
@@ -167,6 +180,11 @@ final class TerminalManager: TerminalInputHandler {
         lastPtySize.removeAll()
         pendingPtySizes.removeAll()
         pendingInputs.removeAll()
+        if largePaste != nil || !inputHeldForPaste.isEmpty {
+            largePaste = nil
+            inputHeldForPaste.removeAll()
+            onLargePasteActivityChanged?()
+        }
         lastClientSize = nil
         pendingClientSize = nil
         clientResizeWorkItem?.cancel()
@@ -483,6 +501,9 @@ final class TerminalManager: TerminalInputHandler {
             ))
         }
         view.onImagePasteError = { [weak self] message in self?.onError?(message) }
+        view.onLargePaste = { [weak self] payload in
+            self?.beginLargePaste(paneID: paneId, payload: payload)
+        }
         view.onScrollPositionChanged = { [weak self] paneId, position, atLatest in
             self?.handleNativeScroll(paneId: paneId, position: position, atLatest: atLatest)
         }
@@ -1413,12 +1434,82 @@ final class TerminalManager: TerminalInputHandler {
         }
     }
 
+    /// 把超过单次控制命令的粘贴切成几批。每一批仍写回发起时的 pane。
+    func beginLargePaste(paneID: UInt32, payload: Data) {
+        guard largePaste == nil else {
+            onError?(MuxtermI18n.shared.tr(.textPasteBusy))
+            return
+        }
+        let chunks = LargePastePlan.chunks(of: payload)
+        guard !chunks.isEmpty else { return }
+        if !LargePastePlan.needsProgress(byteCount: payload.count) {
+            sendInput(paneId: paneID, data: payload)
+            return
+        }
+        largePaste = LargePaste(paneID: paneID, chunks: chunks)
+        onLargePasteActivityChanged?()
+    }
+
+    /// 本轮最多写出 `bytesPerTurn`。桥还停着时留在队列里，不改目标。
+    func drainLargePaste() {
+        guard bridgeQueriesEnabled, var job = largePaste else { return }
+        var budget = LargePastePlan.bytesPerTurn
+        while job.next < job.chunks.count, budget > 0 {
+            let chunk = job.chunks[job.next]
+            guard enqueuePasteChunk(paneID: job.paneID, data: chunk) else {
+                finishLargePaste()
+                return
+            }
+            budget -= chunk.count
+            job.next += 1
+        }
+        if job.next >= job.chunks.count {
+            finishLargePaste()
+        } else {
+            largePaste = job
+        }
+    }
+
+    /// 粘贴结束或写失败后，把同一 pane 上暂存的按键按原顺序补上。
+    private func finishLargePaste() {
+        largePaste = nil
+        let held = inputHeldForPaste
+        inputHeldForPaste.removeAll()
+        onLargePasteActivityChanged?()
+        for input in held {
+            sendInput(paneId: input.paneId, data: input.data, errorKey: input.errorKey)
+        }
+    }
+
+    private func enqueuePasteChunk(paneID: UInt32, data: Data) -> Bool {
+        let failureMessage = MuxtermI18n.shared.tr(
+            .errorSendInput,
+            arguments: ["id": "\(paneID)"]
+        )
+        guard enqueueCoreOperation(
+            .input(paneID: paneID, data: data, quiet: false),
+            failureMessage: failureMessage
+        ) else {
+            onError?(failureMessage)
+            return false
+        }
+        return true
+    }
+
     private func sendInput(
         paneId: UInt32,
         data: Data,
         errorKey: MuxtermTextKey = .errorSendInput
     ) {
         guard !data.isEmpty else { return }
+        if largePaste?.paneID == paneId {
+            inputHeldForPaste.append(PendingInput(
+                paneId: paneId,
+                data: data,
+                errorKey: errorKey
+            ))
+            return
+        }
         guard bridgeQueriesEnabled else {
             pendingInputs.append(PendingInput(
                 paneId: paneId,
