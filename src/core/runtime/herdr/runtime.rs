@@ -23,6 +23,7 @@ use crate::protocol::state::{
 use crate::protocol::task::{Task, TaskOutcome};
 use crate::protocol::terminal::input::KeyEvent;
 use crate::protocol::{PaneId, TabId};
+use crate::runtime::batch::coalesce_superseded_frames;
 use crate::runtime::{
     ControlEvent, RenderEvent, Runtime, RuntimeBatch, RuntimeCapability, RuntimeSignal,
 };
@@ -149,6 +150,15 @@ struct FocusPin {
 /// 钉住窗口：必须盖过 reader 晚到旧快照的传输延迟；
 /// 用户显式切 pane/tab 会立即清除（见 `clear_focus_pin`）。
 const FOCUS_PIN_TTL: Duration = Duration::from_secs(5);
+
+fn frame_fingerprint(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for &byte in bytes {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash ^ (bytes.len() as u64)
+}
 
 impl HerdrRuntime {
     /// 绑定共享 session + 一个 Herdr workspace_id（如 `w1`）。
@@ -1272,6 +1282,9 @@ impl HerdrRuntime {
                 {
                     return None;
                 }
+                if slot.awaiting_allocation && !self.has_ui_allocation(pane.id) {
+                    return None;
+                }
                 let effective = if slot.control_rearm == ControlRearm::SuppressedAfterTakeover {
                     StreamMode::Observe
                 } else {
@@ -1322,17 +1335,24 @@ impl HerdrRuntime {
             .get(&pane)
             .is_none_or(|slot| slot.generation == 0 && slot.actual_mode.is_none());
         if never_started && !self.has_ui_allocation(pane) {
-            tracing::debug!(
-                target = "muxterm::herdr",
-                pane = %pane,
-                "defer pane stream until UI allocation; skip 80x24 Hello"
-            );
+            if let Some(slot) = self.stream_slots.get_mut(&pane) {
+                if !slot.awaiting_allocation {
+                    slot.awaiting_allocation = true;
+                    tracing::debug!(
+                        target = "muxterm::herdr",
+                        pane = %pane,
+                        "defer pane stream until UI allocation; skip 80x24 Hello"
+                    );
+                }
+            }
             return;
         }
         let Some(slot) = self.stream_slots.get_mut(&pane) else {
             return;
         };
         slot.generation = slot.generation.saturating_add(1);
+        slot.awaiting_allocation = false;
+        slot.last_full_fingerprint = None;
         slot.stream = None;
         slot.actual_mode = None;
         slot.state = SlotState::Starting;
@@ -1665,6 +1685,11 @@ impl HerdrRuntime {
                                 }
                             }
                         }
+                        let fingerprint = frame_fingerprint(&bytes);
+                        if slot.last_full_fingerprint == Some(fingerprint) && !keep_seed {
+                            continue;
+                        }
+                        slot.last_full_fingerprint = Some(fingerprint);
                         let index_snapshot = if keep_seed {
                             self.outputs.entry(pane).or_insert_with(|| {
                                 let mut buf = CappedBytes::default();
@@ -3784,6 +3809,7 @@ impl Runtime for HerdrRuntime {
         self.maybe_start_pending_retries(now);
         self.reconcile_stream_modes();
         self.tick_mutations(now);
+        coalesce_superseded_frames(&mut self.events);
         for batch in self.events.drain(..) {
             out.append(batch);
         }
@@ -4342,6 +4368,87 @@ mod tests {
     }
 
     #[test]
+    fn deferred_hello_is_not_retried_until_the_pane_has_a_grid() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w8",
+        );
+        runtime.foreground = true;
+        runtime.preferred_client_size = Some((178, 50));
+        runtime.status = BackendStatus::Connected;
+        let pane = PaneId(15);
+        runtime.active_pane = Some(pane);
+        runtime.active_tab = Some(TabId(1));
+        runtime.panes.push(PaneInfo {
+            id: pane,
+            tab: TabId(1),
+            active: true,
+            title: String::new(),
+            cols: 80,
+            rows: 24,
+        });
+        runtime.pane_to_herdr_pane.insert(pane, "w8:pF".into());
+        runtime.ensure_stream_channels();
+        runtime.reconcile_stream_modes();
+        runtime.reconcile_stream_modes();
+        let slot = runtime.stream_slots.get(&pane).unwrap();
+        assert!(slot.awaiting_allocation);
+        assert_eq!(slot.generation, 0, "没有格子时不得每轮 poll 都重开 Hello");
+        runtime.pane_client_sizes.insert(pane, (88, 49));
+        runtime.reconcile_stream_modes();
+        let slot = runtime.stream_slots.get(&pane).unwrap();
+        assert!(!slot.awaiting_allocation);
+        assert_eq!(slot.generation, 1);
+    }
+
+    #[test]
+    fn identical_full_frames_are_not_replayed() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w1",
+        );
+        runtime.status = BackendStatus::Connected;
+        let pane = PaneId(1);
+        runtime.panes.push(PaneInfo {
+            id: pane,
+            tab: TabId(1),
+            active: true,
+            title: "pane".into(),
+            cols: 80,
+            rows: 24,
+        });
+        runtime.pane_to_herdr_pane.insert(pane, "w1:p1".into());
+        let (tx, rx) = super::super::observe::channel();
+        runtime.stream_tx = Some(tx.clone());
+        runtime.stream_rx = Some(rx);
+        let mut slot = PaneStreamSlot::new(pane, "w1:p1", StreamMode::Observe);
+        slot.generation = 7;
+        slot.state = SlotState::Live;
+        slot.actual_mode = Some(StreamMode::Observe);
+        runtime.stream_slots.insert(pane, slot);
+        for (ordinal, seq) in [(1u64, 1u64), (2, 2)] {
+            tx.send(PaneStreamEvent::Frame {
+                pane,
+                generation: 7,
+                event_ordinal: ordinal,
+                wire_seq: seq,
+                bytes: b"SAME".to_vec(),
+                width: 80,
+                height: 24,
+                full: true,
+            })
+            .unwrap();
+        }
+        let mut out = RuntimeBatch::default();
+        runtime.drain_events(&mut out);
+        let frames: Vec<_> = out
+            .render
+            .iter()
+            .filter(|event| matches!(event, RenderEvent::PaneFrame { .. }))
+            .collect();
+        assert_eq!(frames.len(), 1, "相同 full frame 不得再次灌进 Surface");
+    }
+
     fn first_hello_waits_for_pane_allocation_not_window_preferred() {
         let mut runtime = HerdrRuntime::new(
             Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
