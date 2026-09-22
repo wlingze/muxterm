@@ -367,55 +367,13 @@ jobs:
         env:
           VERSION: ${{ needs.resolve-version.outputs.version }}
           FS_VERSION: ${{ needs.resolve-version.outputs.fs_version }}
-          REPO: ${{ github.repository }}
-          PRERELEASE: ${{ needs.resolve-version.outputs.prerelease }}
           CHANNEL: ${{ needs.resolve-version.outputs.channel }}
+          PRERELEASE: ${{ needs.resolve-version.outputs.prerelease }}
           SOURCE_SHA: ${{ needs.resolve-version.outputs.source_sha }}
+          REPO: ${{ github.repository }}
         run: |
-          set -euo pipefail
-          # 稳定文件名（不含版本号）：更新清单与 /releases/latest/download 直达链接都靠它。
-          cp "dist/muxterm-macos-arm64-${FS_VERSION}.dmg" "dist/muxterm-macos-arm64.dmg"
-          cp "dist/muxterm-macos-arm64-${FS_VERSION}.dmg.sha256" \
-             "dist/muxterm-macos-arm64.dmg.sha256"
-          cp "dist/muxterm-gtk-linux-x86_64-${FS_VERSION}.tar.gz" \
-             "dist/muxterm-gtk-linux-x86_64.tar.gz"
-          cp "dist/muxterm-gtk-linux-x86_64-${FS_VERSION}.tar.gz.sha256" \
-             "dist/muxterm-gtk-linux-x86_64.tar.gz.sha256"
-
-          macos_sha="$(awk '{print $1}' "dist/muxterm-macos-arm64.dmg.sha256")"
-          linux_sha="$(awk '{print $1}' "dist/muxterm-gtk-linux-x86_64.tar.gz.sha256")"
-          prerelease_json=false
-          [[ "${PRERELEASE}" == "true" ]] && prerelease_json=true
-
-          # 更新清单由 Core 的 updater 解析：版本号 + 每平台资产名/URL/大小/校验和。
-          # 资产 URL 用相对路径：Core 按「清单地址所在目录」解析，因此正式版、
-          # beta release、以及本地/alpha 测试服务都能用同一份清单。
-          cat > dist/latest.json <<EOF
-          {
-            "version": "${VERSION}",
-            "tag": "${VERSION}",
-            "prerelease": ${prerelease_json},
-            "channel": "${CHANNEL}",
-            "source_sha": "${SOURCE_SHA}",
-            "published_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-            "assets": {
-              "macos-arm64": {
-                "name": "muxterm-macos-arm64.dmg",
-                "url": "muxterm-macos-arm64.dmg",
-                "sha256": "${macos_sha}",
-                "size": $(stat -c%s "dist/muxterm-macos-arm64.dmg")
-              },
-              "linux-gui-x86_64": {
-                "name": "muxterm-gtk-linux-x86_64.tar.gz",
-                "url": "muxterm-gtk-linux-x86_64.tar.gz",
-                "sha256": "${linux_sha}",
-                "size": $(stat -c%s "dist/muxterm-gtk-linux-x86_64.tar.gz")
-              }
-            }
-          }
-          EOF
+          bash scripts/release-package.sh dist
           python3 -m json.tool dist/latest.json >/dev/null
-          ls -la dist/
 
       - name: Create release
         uses: softprops/action-gh-release@v2

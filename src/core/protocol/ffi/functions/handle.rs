@@ -257,7 +257,8 @@ fn boxed_handle(
         updater: crate::update::UpdateService::http(
             update_config.auto_check,
             update_config.manifest_url,
-        ),
+        )
+        .apply_env_overrides(),
     }))
 }
 

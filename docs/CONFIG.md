@@ -86,6 +86,7 @@ config_version = 1
 [ui]
 [pane]
 [behavior]
+[update]
 [platform.linux]
 [platform.macos]
 
@@ -127,7 +128,23 @@ config_version = 1
 不会触发静默 LRU 淘汰。TTL、内存压力和用户明确关闭仍可按各自策略回收资源。
 frontend 不再维护第二套连接池。
 
-### 3.3 Runtime 和行为
+### 3.3 更新
+
+| 路径 | 类型 | 默认值 | 生效 |
+| --- | --- | --- | --- |
+| `update.auto_check` | bool | `true` | 启动后自动检查一次（只提醒，不自动安装） |
+| `update.manifest_url` | string | 空（用内置 GitHub Release 地址） | 下次检查 |
+
+`auto_check` 每个会话只自动触发一次；手动入口是 macOS 应用菜单 / Linux 命令面板的
+「检查更新」。`manifest_url` 指向一个 `latest.json`（格式见发布流程
+`scripts/release-package.sh`）；留空时使用仓库的
+`releases/latest/download/latest.json`，即只跟随 stable 通道。
+把地址指向某个 beta / alpha tag 的 `latest.json` 即可用同一套逻辑测试预发布包。
+
+清单里的资产 URL 允许是相对路径：Core 以清单地址所在目录为基准解析，因此正式版、
+固定 tag、以及本地 `python3 -m http.server` 的测试 feed 可以共用同一份清单。
+
+### 3.4 Runtime 和行为
 
 现有运行时字段保留原名，便于迁移：
 
@@ -140,6 +157,7 @@ frontend 不再维护第二套连接池。
 | `behavior` | `on_last_pane_exit`、`on_program_exit_abnormal` |
 | `attention` | `enabled`、`blocked_regex`、`debounce_ms` |
 | `ui` | `tab_bar_position`、`tab_bar_style`、`tab_bar_height`、`show_title_bar`、`borderless` |
+| `update` | `auto_check`、`manifest_url` |
 
 `tmux` / `ssh` / `pane` 这些分组是**序列化记录**，给 resolver 写成 `WorkspaceSpec`。
 Runtime / Transport 实现不得打开 `config.toml`。frontend 不直接检查 runtime 字符串，
