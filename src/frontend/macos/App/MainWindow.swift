@@ -678,6 +678,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             )
         }
 
+        content.updateBanner.onPrimaryAction = { [weak self] in
+            self?.performUpdateAction()
+        }
+        content.updateBanner.onDismiss = { [weak self] in
+            self?.content.updateBanner.isHidden = true
+        }
         installKeyEquivalents()
         applyTheme(currentTheme(), persist: false)
         refreshWorkspaceSidebar(force: true)
@@ -4780,6 +4786,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // while bridge queries were paused, so flush after the resume as well.
         flushCoreCommandQueue()
         pollImagePaste()
+        pollUpdateStatus()
         // 后台排空的事件必须先于 active bridge 的新事件交付。否则切回
         // Workspace 后，新的 PaneOutput 可能越过尚未应用的旧队列。
         if flushActiveSurfaceCatchUpBeforePoll() {
@@ -4795,6 +4802,37 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let activeSlot = sceneStack.activeKey.flatMap { sceneStack.scenes[$0] }
         let events = pollSharedWorkspaceEvents(activeSlot: activeSlot)
         applyPolledEvents(events)
+    }
+
+    /// 更新提醒：Core 推进状态机，这里只取快照并渲染 banner。
+    /// 未变化时 `apply` 直接返回，不做布局。
+    private func pollUpdateStatus() {
+        guard let status = bridge.updateStatus() else { return }
+        content.updateBanner.apply(status)
+    }
+
+    /// 一键更新/重试：按 Core 当前阶段触发安装或检查。
+    func performUpdateAction() {
+        guard let status = bridge.updateStatus() else { return }
+        let updated: CoreBridge.UpdateStatus?
+        switch status.phase {
+        case "available":
+            updated = bridge.updateInstall()
+        case "failed", "up_to_date", "idle":
+            updated = bridge.updateCheck()
+        default:
+            updated = status
+        }
+        if let updated {
+            content.updateBanner.apply(updated)
+        }
+    }
+
+    /// 菜单/命令面板的「检查更新」入口。
+    @objc func checkForUpdates() {
+        if let status = bridge.updateCheck() {
+            content.updateBanner.apply(status)
+        }
     }
 
     /// 生产事件批次入口；回归测试直接重放同一条路径。

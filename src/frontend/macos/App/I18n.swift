@@ -108,6 +108,7 @@ enum MuxtermTextKey: CaseIterable {
     case menuNextPane
     case menuPaste
     case menuPreviousPane
+    case menuCheckUpdates
     case menuQuit
     case menuResetFontSize
     case menuSearchPanes
@@ -228,6 +229,16 @@ enum MuxtermTextKey: CaseIterable {
     case tmuxSessionDetail
     case tmuxUnknown
     case tmuxWindows
+    case updateAvailable
+    case updateAvailableMessage
+    case updateCheckNow
+    case updateChecking
+    case updateFailed
+    case updateInstallNow
+    case updateInstalledRestart
+    case updateInstalling
+    case updateRetry
+    case updateUpToDate
     case windowCloseHint
 
     var id: String {
@@ -338,6 +349,7 @@ enum MuxtermTextKey: CaseIterable {
         case .menuNextPane: return "menu_next_pane"
         case .menuPaste: return "menu_paste"
         case .menuPreviousPane: return "menu_previous_pane"
+        case .menuCheckUpdates: return "update_check_now"
         case .menuQuit: return "menu_quit"
         case .menuResetFontSize: return "menu_reset_font_size"
         case .menuSearchPanes: return "menu_search_panes"
@@ -458,6 +470,16 @@ enum MuxtermTextKey: CaseIterable {
         case .tmuxSessionDetail: return "tmux_session_detail"
         case .tmuxUnknown: return "tmux_unknown"
         case .tmuxWindows: return "tmux_windows"
+        case .updateAvailable: return "update_available"
+        case .updateAvailableMessage: return "update_available_message"
+        case .updateCheckNow: return "update_check_now"
+        case .updateChecking: return "update_checking"
+        case .updateFailed: return "update_failed"
+        case .updateInstallNow: return "update_install_now"
+        case .updateInstalledRestart: return "update_installed_restart"
+        case .updateInstalling: return "update_installing"
+        case .updateRetry: return "update_retry"
+        case .updateUpToDate: return "update_up_to_date"
         case .windowCloseHint: return "window_close_hint"
         }
     }

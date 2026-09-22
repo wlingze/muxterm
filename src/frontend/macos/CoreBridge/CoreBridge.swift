@@ -1249,6 +1249,61 @@ final class CoreBridge {
 
     // MARK: - Core configuration transactions
 
+    /// 客户端自更新的状态快照（Core 负责检查/下载/安装，前端只渲染）。
+    struct UpdateStatus: Equatable {
+        let phase: String
+        let currentVersion: String
+        let version: String?
+        let message: String?
+        let releaseURL: String?
+        let downloadURL: String?
+        let assetName: String?
+        let restartRequired: Bool
+
+        var hasUpdate: Bool { phase == "available" }
+        var isBusy: Bool { phase == "checking" || phase == "installing" }
+        var needsRestart: Bool { restartRequired || phase == "installed" }
+    }
+
+    /// 读取 Core 的更新状态；同时驱动一次 Core 侧状态机 poll。
+    func updateStatus() -> UpdateStatus? {
+        guard let handle else { return nil }
+        return decodeUpdateStatus { muxterm_update_status_json(handle) }
+    }
+
+    /// 请求检查新版本（异步，结果经 updateStatus 观察）。
+    func updateCheck() -> UpdateStatus? {
+        guard let handle else { return nil }
+        return decodeUpdateStatus { muxterm_update_check_json(handle) }
+    }
+
+    /// 一键更新：下载已发现的新版本，校验后安装。
+    func updateInstall() -> UpdateStatus? {
+        guard let handle else { return nil }
+        return decodeUpdateStatus { muxterm_update_install_json(handle) }
+    }
+
+    private func decodeUpdateStatus(
+        _ call: () -> UnsafeMutablePointer<CChar>?
+    ) -> UpdateStatus? {
+        guard let text = configString(call),
+              let data = text.data(using: .utf8),
+              let envelope = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let status = envelope["status"] as? [String: Any],
+              let phase = status["phase"] as? String
+        else { return nil }
+        return UpdateStatus(
+            phase: phase,
+            currentVersion: status["current_version"] as? String ?? "",
+            version: status["version"] as? String,
+            message: status["message"] as? String,
+            releaseURL: status["release_url"] as? String,
+            downloadURL: status["download_url"] as? String,
+            assetName: status["asset_name"] as? String,
+            restartRequired: status["restart_required"] as? Bool ?? false
+        )
+    }
+
     /// Return the Schema/Manifest snapshot. The AppKit settings window renders
     /// controls from this JSON and never reads config.toml directly.
     func configDescribeJSON() -> String? {
