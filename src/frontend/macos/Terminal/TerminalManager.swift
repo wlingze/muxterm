@@ -627,6 +627,15 @@ final class TerminalManager: TerminalInputHandler {
             rows: nextRows,
             followTail: view.isAtLatest()
         )
+        if RemainingPaneGridPolicy.shouldWriteBack(
+            usesClientResize: usesClientResize,
+            requestedCols: cols,
+            requestedRows: rows,
+            mergedCols: nextCols,
+            mergedRows: nextRows
+        ) {
+            terminal(view, sizeChanged: nextCols, rows: nextRows)
+        }
         if bridgeQueriesEnabled {
             syncHistoryCapacity(paneId: paneId, view: view)
         }

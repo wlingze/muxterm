@@ -943,6 +943,18 @@ public enum RemainingPaneGridPolicy {
     public static func shouldNotifyRuntime(usesClientResize: Bool) -> Bool {
         !usesClientResize
     }
+
+    /// 后端格子比当前 widget 窄时，必须把合成后的格子写回。
+    /// 否则 SwiftTerm 按窗口画，PTY 仍按旧列换行，右侧留下空白。
+    public static func shouldWriteBack(
+        usesClientResize: Bool,
+        requestedCols: Int,
+        requestedRows: Int,
+        mergedCols: Int,
+        mergedRows: Int
+    ) -> Bool {
+        !usesClientResize && (mergedCols != requestedCols || mergedRows != requestedRows)
+    }
 }
 
 /// pane host 只是边框。点击和新建都不能把 first responder 停在 host 上。

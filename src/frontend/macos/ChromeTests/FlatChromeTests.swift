@@ -1628,6 +1628,34 @@ final class PaneLayoutProjectionTests: XCTestCase {
             RemainingPaneGridPolicy.shouldNotifyRuntime(usesClientResize: true),
             "tmux 仍走 refresh-client，不能按每个 SwiftTerm 再 ResizePane"
         )
+        XCTAssertTrue(
+            RemainingPaneGridPolicy.shouldWriteBack(
+                usesClientResize: false,
+                requestedCols: 80,
+                requestedRows: 24,
+                mergedCols: 140,
+                mergedRows: 40
+            ),
+            "Herdr/shell 窗口比后端格子大时必须写回，否则输出按窄列换行"
+        )
+        XCTAssertFalse(
+            RemainingPaneGridPolicy.shouldWriteBack(
+                usesClientResize: true,
+                requestedCols: 80,
+                requestedRows: 24,
+                mergedCols: 140,
+                mergedRows: 40
+            )
+        )
+        XCTAssertFalse(
+            RemainingPaneGridPolicy.shouldWriteBack(
+                usesClientResize: false,
+                requestedCols: 140,
+                requestedRows: 40,
+                mergedCols: 140,
+                mergedRows: 40
+            )
+        )
     }
 
     func testClickingPaneMustFocusTerminalNotHost() {
