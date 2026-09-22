@@ -928,6 +928,97 @@ final class SurfaceVisibilityE2ETests: XCTestCase {
         )
     }
 
+    func testLargePasteIsHandedOffWholeAndDrainedToTheOriginPane() throws {
+        AppE2E.ensureApp()
+        let (bridge, manager) = try makeManager()
+        defer { bridge.shutdown() }
+        let view = manager.view(for: 9)
+        var handed: Data?
+        view.onLargePaste = { handed = $0 }
+        let text = String(repeating: "q", count: LargePastePlan.immediateLimit + 3)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        defer { NSPasteboard.general.clearContents() }
+        let handler = ClipboardRecordingHandler()
+        view.inputHandler = handler
+        view.paste(nil)
+        XCTAssertTrue(handler.bytes.isEmpty, "大段粘贴不能在按下的这一下整段写进当前焦点")
+        let payload = try XCTUnwrap(handed)
+        XCTAssertEqual(payload, Data(text.utf8))
+
+        var sent: [(UInt32, Data)] = []
+        manager.enqueueCoreCommand = { command in
+            if case .input(let paneID, let data, _) = command.operation {
+                sent.append((paneID, data))
+            }
+            return true
+        }
+        var errors: [String] = []
+        manager.onError = { errors.append($0) }
+        manager.beginLargePaste(paneID: 9, payload: payload)
+        XCTAssertTrue(manager.hasLargePaste)
+        manager.beginLargePaste(paneID: 3, payload: Data("nope".utf8))
+        XCTAssertFalse(errors.isEmpty, "进行中的大粘贴不能被下一次粘贴改道")
+        XCTAssertTrue(manager.hasLargePaste)
+
+        manager.setBridgeQueriesEnabled(false)
+        manager.drainLargePaste()
+        XCTAssertTrue(sent.isEmpty, "桥暂停时不能把剩余切片一次性倒进当前焦点")
+        XCTAssertTrue(manager.hasLargePaste)
+        manager.terminal(view, send: Array("Z".utf8)[...])
+        manager.setBridgeQueriesEnabled(true)
+
+        let other = manager.view(for: 8)
+        manager.terminal(other, send: Array("Y".utf8)[...])
+        var guardTurns = 0
+        while manager.hasLargePaste {
+            manager.drainLargePaste()
+            guardTurns += 1
+            XCTAssertLessThan(guardTurns, 8)
+        }
+        XCTAssertGreaterThan(sent.count, 2)
+        XCTAssertEqual(sent.first?.0, 8)
+        XCTAssertEqual(sent.first?.1, Data("Y".utf8))
+        let origin = sent.filter { $0.0 == 9 }
+        XCTAssertGreaterThan(origin.count, 1)
+        XCTAssertEqual(origin.dropLast().map(\.1).reduce(Data(), +), payload)
+        XCTAssertEqual(origin.last?.1, Data("Z".utf8))
+    }
+
+    func testBracketedLargePasteWrapsTheWholePayloadOnce() throws {
+        AppE2E.ensureApp()
+        let view = MuxTerminalView(
+            paneId: 4,
+            frame: NSRect(x: 0, y: 0, width: 640, height: 360)
+        )
+        view.feedOutput(Data("\u{1b}[?2004h".utf8))
+        XCTAssertTrue(view.getTerminal().bracketedPasteMode)
+        var handed: Data?
+        view.onLargePaste = { handed = $0 }
+        let text = String(repeating: "q", count: LargePastePlan.immediateLimit + 1)
+        let board = NSPasteboard(name: NSPasteboard.Name("muxterm.largePasteBracket"))
+        board.clearContents()
+        board.setString(text, forType: .string)
+        view.paste(from: board)
+        let payload = try XCTUnwrap(handed)
+        let start = Data([0x1b, 0x5b, 0x32, 0x30, 0x30, 0x7e])
+        let end = Data([0x1b, 0x5b, 0x32, 0x30, 0x31, 0x7e])
+        XCTAssertEqual(payload.prefix(start.count), start)
+        XCTAssertEqual(payload.suffix(end.count), end)
+        XCTAssertEqual(
+            payload.dropFirst(start.count).dropLast(end.count),
+            Data(text.utf8)
+        )
+        let chunks = LargePastePlan.chunks(of: payload)
+        XCTAssertGreaterThan(chunks.count, 1)
+        let first = try XCTUnwrap(chunks.first)
+        let second = try XCTUnwrap(chunks.dropFirst().first)
+        let last = try XCTUnwrap(chunks.last)
+        XCTAssertEqual(first.prefix(start.count), start)
+        XCTAssertNotEqual(second.prefix(start.count), start)
+        XCTAssertEqual(last.suffix(end.count), end)
+    }
+
     func testClipboardCopyReplacesSystemPasteboardInsteadOfAppending() throws {
         AppE2E.ensureApp()
         let view = MuxTerminalView(

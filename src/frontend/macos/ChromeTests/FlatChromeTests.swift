@@ -86,6 +86,47 @@ final class FlatChromeTests: XCTestCase {
     }
 }
 
+final class LargePastePlanTests: XCTestCase {
+    func testSmallPasteStaysOneWrite() {
+        let payload = Data(repeating: 0x61, count: LargePastePlan.immediateLimit)
+        XCTAssertFalse(LargePastePlan.needsProgress(byteCount: payload.count))
+        XCTAssertEqual(LargePastePlan.chunks(of: payload), [payload])
+    }
+
+    func testLargePasteChunksReassembleWithoutDroppingBytes() {
+        let count = LargePastePlan.chunkBytes * 2 + 7
+        let payload = Data(repeating: 0x62, count: count)
+        XCTAssertTrue(LargePastePlan.needsProgress(byteCount: count))
+        let chunks = LargePastePlan.chunks(of: payload)
+        XCTAssertEqual(chunks.count, 3)
+        XCTAssertEqual(chunks[0].count, LargePastePlan.chunkBytes)
+        XCTAssertEqual(chunks[1].count, LargePastePlan.chunkBytes)
+        XCTAssertEqual(chunks[2].count, 7)
+        XCTAssertEqual(chunks.reduce(Data(), +), payload)
+        XCTAssertLessThanOrEqual(LargePastePlan.chunkBytes * 4, LargePastePlan.bytesPerTurn)
+    }
+
+    func testSpinnerStaysUpBrieflyAfterThePasteFinishes() {
+        let start = Date(timeIntervalSince1970: 1_000)
+        XCTAssertFalse(LargePastePlan.showsSpinner(busy: false, startedAt: nil, now: start))
+        XCTAssertTrue(LargePastePlan.showsSpinner(busy: true, startedAt: start, now: start))
+        XCTAssertTrue(
+            LargePastePlan.showsSpinner(
+                busy: false,
+                startedAt: start,
+                now: start.addingTimeInterval(LargePastePlan.minimumVisible - 0.01)
+            )
+        )
+        XCTAssertFalse(
+            LargePastePlan.showsSpinner(
+                busy: false,
+                startedAt: start,
+                now: start.addingTimeInterval(LargePastePlan.minimumVisible + 0.05)
+            )
+        )
+    }
+}
+
 final class KeyBindingsTests: XCTestCase {
     func testAltZeroSwitchesToLastTab() {
         XCTAssertEqual(

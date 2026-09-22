@@ -43,6 +43,51 @@ public enum FlatChrome {
     }
 }
 
+/// 大段粘贴仍分批写进控制通道，但逻辑上是同一次粘贴。
+///
+/// 一整条 `send-keys -H` / `pane.send_text` 会按字节膨胀并占住这条通道，
+/// 切 tab、切 pane 都要排在它后面。每批只是传输切片，括号粘贴包住整段，
+/// 目标 pane 在开始时钉死，不跟随后面的焦点。
+public enum LargePastePlan {
+    /// 单条控制命令携带的原始字节。tmux `-H` 会再膨胀成约三倍的十六进制。
+    public static let chunkBytes = 16 * 1024
+    /// 不超过这一档就一次写完，不转圈。
+    public static let immediateLimit = chunkBytes
+    /// 每一轮事件泵最多写出的字节，给切 tab 之类的命令留出空隙。
+    public static let bytesPerTurn = 64 * 1024
+    /// 很短的粘贴也要让转圈画出来，避免一帧内结束时用户什么都看不见。
+    public static let minimumVisible: TimeInterval = 0.4
+
+    public static func needsProgress(byteCount: Int) -> Bool {
+        byteCount > immediateLimit
+    }
+
+    /// 正在写，或者刚写完但还没到最短显示时间。
+    public static func showsSpinner(busy: Bool, startedAt: Date?, now: Date) -> Bool {
+        if busy { return true }
+        guard let startedAt else { return false }
+        return now.timeIntervalSince(startedAt) < minimumVisible
+    }
+
+    /// 按顺序切块。拼回去必须等于原来的字节。
+    public static func chunks(of payload: Data) -> [Data] {
+        guard !payload.isEmpty else { return [] }
+        if payload.count <= chunkBytes {
+            return [payload]
+        }
+        var pieces: [Data] = []
+        pieces.reserveCapacity((payload.count + chunkBytes - 1) / chunkBytes)
+        var offset = payload.startIndex
+        while offset < payload.endIndex {
+            let end = payload.index(offset, offsetBy: chunkBytes, limitedBy: payload.endIndex)
+                ?? payload.endIndex
+            pieces.append(payload.subdata(in: offset..<end))
+            offset = end
+        }
+        return pieces
+    }
+}
+
 /// 一套完整终端调色板：默认前景/背景/光标 + ANSI 16 色（与 `configs/themes/*.toml` 对齐）。
 ///
 /// 主题与终端内所有颜色绑定：浅色 chrome 必须配浅色终端（白底黑字），

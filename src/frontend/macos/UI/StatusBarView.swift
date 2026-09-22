@@ -116,6 +116,8 @@ final class StatusBarView: NSView {
     private let leftLabel = NSTextField(labelWithString: "")
     private let rightLabel = NSTextField(labelWithString: "")
     private let statusDot = StatusDotButton()
+    private let pasteSpinner = NSProgressIndicator()
+    private var pasteSpinnerWidth: NSLayoutConstraint!
     private let workspaceButton = NSButton()
     private let attentionButton = AttentionBellButton()
     private let newTabButton = NSButton()
@@ -145,6 +147,7 @@ final class StatusBarView: NSView {
     private var isDebug = false
     private var debugText = ""
     private var imagePasteInProgress = false
+    private var textPasteInProgress = false
     private var errorText: String?
     private var layoutSyncMessage = ""
 
@@ -220,6 +223,13 @@ final class StatusBarView: NSView {
         statusDot.action = #selector(statusDotClicked)
         statusDot.translatesAutoresizingMaskIntoConstraints = false
 
+        pasteSpinner.style = .spinning
+        pasteSpinner.controlSize = .small
+        pasteSpinner.isDisplayedWhenStopped = false
+        pasteSpinner.isHidden = true
+        pasteSpinner.translatesAutoresizingMaskIntoConstraints = false
+        pasteSpinner.setAccessibilityIdentifier("muxterm.pasteSpinner")
+
         // Workspace 快速入口。普通 Workspace 显示列表图标，固定聚合槽
         // 显示醒目的 S/A 地标，让底栏本身就能说明当前投影语义。
         workspaceButton.isBordered = false
@@ -261,7 +271,7 @@ final class StatusBarView: NSView {
 
         for view in [
             sidebarToggleButton, middleStack,
-            statusDot, workspaceButton, attentionButton, newTabButton,
+            statusDot, pasteSpinner, workspaceButton, attentionButton, newTabButton,
         ] {
             view.translatesAutoresizingMaskIntoConstraints = false
             addSubview(view)
@@ -285,7 +295,7 @@ final class StatusBarView: NSView {
 
             // 中间区严格夹在左右固定控制区之间。
             middleStack.leadingAnchor.constraint(equalTo: sidebarToggleButton.trailingAnchor, constant: 6),
-            middleStack.trailingAnchor.constraint(equalTo: statusDot.leadingAnchor, constant: -6),
+            middleStack.trailingAnchor.constraint(equalTo: pasteSpinner.leadingAnchor, constant: -4),
             middleStack.centerYAnchor.constraint(equalTo: centerYAnchor),
             middleStack.heightAnchor.constraint(equalToConstant: 20),
 
@@ -312,7 +322,13 @@ final class StatusBarView: NSView {
             statusDot.centerYAnchor.constraint(equalTo: centerYAnchor),
             statusDot.widthAnchor.constraint(equalToConstant: 18),
             statusDot.heightAnchor.constraint(equalToConstant: 18),
+
+            pasteSpinner.trailingAnchor.constraint(equalTo: statusDot.leadingAnchor, constant: -2),
+            pasteSpinner.centerYAnchor.constraint(equalTo: centerYAnchor),
+            pasteSpinner.heightAnchor.constraint(equalToConstant: 14),
         ])
+        pasteSpinnerWidth = pasteSpinner.widthAnchor.constraint(equalToConstant: 0)
+        pasteSpinnerWidth.isActive = true
         refreshLocalization()
     }
 
@@ -562,6 +578,28 @@ final class StatusBarView: NSView {
     func setImagePasteInProgress(_ active: Bool) {
         imagePasteInProgress = active
         updateStatusDotColor()
+        updatePasteSpinner()
+    }
+
+    /// 大段文本粘贴分批写入时转圈。切走不会改目标 pane，但用户需要看见还在写。
+    func setTextPasteInProgress(_ active: Bool) {
+        textPasteInProgress = active
+        updatePasteSpinner()
+    }
+
+    private func updatePasteSpinner() {
+        let active = textPasteInProgress || imagePasteInProgress
+        pasteSpinnerWidth.constant = active ? 14 : 0
+        pasteSpinner.isHidden = !active
+        if active {
+            pasteSpinner.startAnimation(nil)
+            pasteSpinner.toolTip = MuxtermI18n.shared.tr(
+                textPasteInProgress ? .textPasteProgress : .imagePasteProgress
+            )
+        } else {
+            pasteSpinner.stopAnimation(nil)
+            pasteSpinner.toolTip = nil
+        }
     }
 
     func showError(_ message: String) {
