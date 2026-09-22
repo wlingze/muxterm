@@ -138,6 +138,11 @@ pub struct PaneStreamSlot {
     pub awaiting_allocation: bool,
     /// 最近一次已经交给 Surface 的 full frame 指纹。相同帧不再重灌 VTE。
     pub last_full_fingerprint: Option<u64>,
+    /// Herdr 把应用的 DECSET 吃掉后，用这条告诉客户端鼠标是否打开。
+    /// 它经常早于第一帧到达；那时 Surface 还不能吃字节，必须留到 full 之后。
+    pub pending_mouse: Option<(bool, bool)>,
+    /// pending_mouse 还没写进当前 Surface。
+    pub mouse_dirty: bool,
     /// 生命周期诊断（W0 字段；测试可读取确定性计数）。
     pub transitions: Vec<String>,
 }
@@ -172,6 +177,8 @@ impl PaneStreamSlot {
             pending_scroll: 0,
             awaiting_allocation: false,
             last_full_fingerprint: None,
+            pending_mouse: None,
+            mouse_dirty: false,
             transitions: Vec::new(),
         }
     }

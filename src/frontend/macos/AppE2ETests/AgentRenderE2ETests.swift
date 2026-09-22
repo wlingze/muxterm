@@ -811,6 +811,91 @@ final class AgentRenderE2ETests: XCTestCase {
         )
     }
 
+    /// 1533.log：Herdr grok 只有 ScrollPane。鼠标 DECSET 若只排进增量队列，
+    /// 下一帧 full 会把队列清掉，点击和悬浮都进不了 pane。
+    func testHerdrFrameMouseModeSurvivesTheNextFullFrameAndReportsClick() throws {
+        let (bridge, manager) = try makeManager()
+        defer { bridge.shutdown() }
+        AppE2E.ensureApp()
+        let paneId: UInt32 = 13
+        manager.updatePaneSizes([Pane(id: paneId, cols: 40, rows: 12, isActive: true)])
+        let view = manager.view(for: paneId)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 240),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = view
+        window.orderFront(nil)
+        defer { window.orderOut(nil) }
+        view.suppressOutputDrivenResponses = true
+        let handler = RecordingInputHandler()
+        view.inputHandler = handler
+
+        let mouse = Data("\u{1b}[?1003h\u{1b}[?1006h".utf8)
+        var frame = Data("\u{1b}[?7l\u{1b}[1;1HGROK".utf8)
+        frame.append(mouse)
+        manager.handleFrame(paneId: paneId, data: frame)
+        XCTAssertEqual(view.getTerminal().mouseMode, .anyEvent)
+
+        // 模拟还没 flush 的增量，紧接着又来一帧。模式必须仍由帧尾的 DECSET 打开。
+        manager.handleOutput(paneId: paneId, data: Data("STALE".utf8))
+        var next = Data("\u{1b}[?7l\u{1b}[1;1HGROK2".utf8)
+        next.append(mouse)
+        manager.handleFrame(paneId: paneId, data: next)
+        XCTAssertEqual(
+            view.getTerminal().mouseMode,
+            .anyEvent,
+            "后一帧 full 清掉增量队列后，帧内的 1003+1006 仍必须留住鼠标模式"
+        )
+        XCTAssertFalse(
+            view.visibleScreenText().contains("STALE"),
+            "被 full 覆盖的增量不能画出来"
+        )
+
+        let down = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .leftMouseDown,
+            location: NSPoint(x: 30, y: 40),
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 3,
+            clickCount: 1,
+            pressure: 1
+        ))
+        view.mouseDown(with: down)
+        let click = String(bytes: handler.bytes, encoding: .utf8) ?? ""
+        XCTAssertTrue(
+            click.contains("\u{1b}[<"),
+            "点击必须是 SGR，不能只做本地选区。got=\(click)"
+        )
+
+        handler.bytes.removeAll()
+        let moved = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .mouseMoved,
+            location: NSPoint(x: 48, y: 36),
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 4,
+            clickCount: 0,
+            pressure: 0
+        ))
+        view.mouseMoved(with: moved)
+        let hover = String(bytes: handler.bytes, encoding: .utf8) ?? ""
+        XCTAssertTrue(hover.contains("\u{1b}[<"), "悬停必须是 SGR。got=\(hover)")
+
+        var server: [Int] = []
+        view.onServerScroll = { server.append($0) }
+        let wheel = try XCTUnwrap(CGEvent(scrollWheelEvent2Source: nil, units: .line,
+            wheelCount: 1, wheel1: 3, wheel2: 0, wheel3: 0).flatMap(NSEvent.init(cgEvent:)))
+        view.scrollWheel(with: wheel)
+        XCTAssertTrue(server.isEmpty, "鼠标模式打开后滚轮不能再走 ServerScroll")
+    }
+
     /// 伪造 pi/Cursor 网格：顶栏 + 中间对话 + 底栏输入。历史 prepend 后
     /// 可见屏仍必须是顶+输入，不能只剩中间；上划后中文历史必须可读。
     func testForgedAgentGridKeepsTopAndInputAfterHistory() throws {
