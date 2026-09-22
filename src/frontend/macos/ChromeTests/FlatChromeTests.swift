@@ -1122,6 +1122,79 @@ final class ColorContrastTests: XCTestCase {
     }
 }
 
+final class DefaultColorGuardTests: XCTestCase {
+    func testOsc10WhiteOnLightThemeMustRestore() {
+        XCTAssertTrue(
+            DefaultColorGuard.shouldRestore(
+                currentFg: "ffffff",
+                currentBg: "ffffff",
+                themeFg: MuxtermPalette.light.fg,
+                themeBg: MuxtermPalette.light.bg,
+                isRemoteMirror: true
+            ),
+            "git lg 把 OSC 10 写成白字后必须恢复主题黑字"
+        )
+        XCTAssertTrue(
+            DefaultColorGuard.shouldRestore(
+                currentFg: "ffffff",
+                currentBg: "ffffff",
+                themeFg: MuxtermPalette.light.fg,
+                themeBg: MuxtermPalette.light.bg,
+                isRemoteMirror: false
+            ),
+            "本地 PTY 白底白字同样要恢复"
+        )
+    }
+
+    func testDarkThemeForegroundLeakedOntoLightBackgroundMustRestore() {
+        XCTAssertTrue(
+            DefaultColorGuard.shouldRestore(
+                currentFg: MuxtermPalette.dark.fg,
+                currentBg: MuxtermPalette.light.bg,
+                themeFg: MuxtermPalette.light.fg,
+                themeBg: MuxtermPalette.light.bg,
+                isRemoteMirror: true
+            ),
+            "深色 OSC 10（cdd6f4）漏到浅色背景必须恢复"
+        )
+    }
+
+    func testMatchingLightThemeDefaultsAreKept() {
+        XCTAssertFalse(
+            DefaultColorGuard.shouldRestore(
+                currentFg: MuxtermPalette.light.fg,
+                currentBg: MuxtermPalette.light.bg,
+                themeFg: MuxtermPalette.light.fg,
+                themeBg: MuxtermPalette.light.bg,
+                isRemoteMirror: true
+            )
+        )
+    }
+
+    func testLocalPtyKeepsReadableCustomDefault() {
+        XCTAssertFalse(
+            DefaultColorGuard.shouldRestore(
+                currentFg: "1e66f5",
+                currentBg: "ffffff",
+                themeFg: MuxtermPalette.light.fg,
+                themeBg: MuxtermPalette.light.bg,
+                isRemoteMirror: false
+            ),
+            "本地应用故意设置的可读默认色不应被主题覆盖"
+        )
+        XCTAssertTrue(
+            DefaultColorGuard.shouldRestore(
+                currentFg: "1e66f5",
+                currentBg: "ffffff",
+                themeFg: MuxtermPalette.light.fg,
+                themeBg: MuxtermPalette.light.bg,
+                isRemoteMirror: true
+            ),
+            "tmux 镜像下默认色仍归 GUI 主题"
+        )
+    }
+}
+
 final class ScreenTextTests: XCTestCase {
     /// AX 文本必须只反映当前屏幕：行尾去空白、去掉末尾空行，
     /// 不能累积 feed 历史（输入/状态区的中间帧会像堆叠一样残留）。

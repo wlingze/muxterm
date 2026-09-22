@@ -590,6 +590,7 @@ final class MuxTerminalView: TerminalView {
         isFeedingRemoteOutput = true
         feed(byteArray: bytes[...])
         isFeedingRemoteOutput = false
+        reconcileDefaultColorsAfterRemoteFeed()
         if pendingOutputScrollNotification {
             pendingOutputScrollNotification = false
             scrolled(source: self, position: scrollPosition)
@@ -958,6 +959,25 @@ final class MuxTerminalView: TerminalView {
         if let layer {
             layer.setNeedsDisplay()
         }
+    }
+
+    /// `git lg` 等输出里的 OSC 10/11 SET 会改 SwiftTerm 默认色。浅色主题下
+    /// 变成白字后，提示符仍有 SGR 所以路径可见，用户输入走 default fg 就看不见。
+    private func reconcileDefaultColorsAfterRemoteFeed() {
+        let theme = MuxtermTerminalColors.activePalette.contrasted()
+        let current = themeHexColors()
+        guard DefaultColorGuard.shouldRestore(
+            currentFg: current.fg,
+            currentBg: current.bg,
+            themeFg: theme.fg,
+            themeBg: theme.bg,
+            isRemoteMirror: suppressOutputDrivenResponses
+        ) else { return }
+        nativeForegroundColor = Self.color(hex: theme.fg)
+        nativeBackgroundColor = Self.color(hex: theme.bg)
+        layer?.backgroundColor = nativeBackgroundColor.cgColor
+        getTerminal().updateFullScreen()
+        forceRedraw()
     }
 
     /// 运行期切换主题：把默认前景/背景/光标/选区/ANSI 16 色全部写成当前 palette。
