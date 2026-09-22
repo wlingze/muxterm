@@ -43,6 +43,14 @@ clap = { version = "4", features = ["derive"] }
 async-channel = "2"
 async-trait = "0.1"
 async-ssh2-tokio = "0.13"
+# 客户端自更新：检查 GitHub Release、下载、校验、原子安装。
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+semver = "1"
+tar = "0.4"
+flate2 = "1"
+sha2 = "0.11"
+hex = "0.4"
+
 
 # 可选：跨平台 TUI 前端
 crossterm = { version = "0.28", optional = true }

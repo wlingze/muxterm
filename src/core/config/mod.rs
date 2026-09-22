@@ -63,6 +63,8 @@ pub struct Config {
     #[serde(default)]
     pub behavior: BehaviorConfig,
     #[serde(default)]
+    pub update: UpdateConfig,
+    #[serde(default)]
     pub keybindings: Vec<KeyBinding>,
 }
 
@@ -327,6 +329,26 @@ impl UiConfig {
     }
 }
 
+/// `[update]`：客户端自更新。
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct UpdateConfig {
+    /// 启动后自动检查一次新版本（只提醒，不自动安装）。
+    #[serde(default = "default_true")]
+    pub auto_check: bool,
+    /// 更新清单地址；空则用内置的 GitHub Release 地址。
+    #[serde(default)]
+    pub manifest_url: String,
+}
+
+impl Default for UpdateConfig {
+    fn default() -> Self {
+        UpdateConfig {
+            auto_check: true,
+            manifest_url: String::new(),
+        }
+    }
+}
+
 /// `[pane]`：本地 pane 默认程序与工作目录。
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct PaneConfig {
@@ -409,6 +431,7 @@ impl Default for Config {
             ui: UiConfig::default(),
             pane: PaneConfig::default(),
             behavior: BehaviorConfig::default(),
+            update: UpdateConfig::default(),
             keybindings: default_keybindings(),
         }
     }

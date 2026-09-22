@@ -60,6 +60,10 @@ pub use super::functions::transport::{
     muxterm_discover_tmux_sessions_json, muxterm_discover_workspaces_json, muxterm_list_dir_json,
     muxterm_status_snapshot_json, muxterm_transport_list_json,
 };
+pub use super::functions::update::{
+    muxterm_update_check_json, muxterm_update_install_json, muxterm_update_status_json,
+    muxterm_update_take_events_json,
+};
 pub use super::functions::workspace::{
     muxterm_create_tmux_session_json, muxterm_get_layout, muxterm_get_pane_output,
     muxterm_get_panes, muxterm_get_tabs, muxterm_workspace_activate, muxterm_workspace_close,

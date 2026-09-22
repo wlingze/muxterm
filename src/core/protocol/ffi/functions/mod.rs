@@ -14,4 +14,5 @@ pub mod snapshot;
 pub(crate) mod support;
 pub mod task;
 pub mod transport;
+pub mod update;
 pub mod workspace;
