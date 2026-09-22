@@ -1052,7 +1052,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let size = lastSnapshot.panes.first(where: { $0.id == pane })
         let cols = Int(size?.cols ?? 80)
         let rows = Int(size?.rows ?? 24)
-        splitPane(pane, horizontal: AutoSplitPolicy.horizontal(cols: cols, rows: rows))
+        let cell = terminalManager.sharedCellSizeInPoints()
+        splitPane(
+            pane,
+            horizontal: AutoSplitPolicy.horizontal(
+                cols: cols,
+                rows: rows,
+                cellWidth: cell?.width ?? 1,
+                cellHeight: cell?.height ?? AutoSplitPolicy.defaultCellHeightOverWidth
+            )
+        )
     }
 
     /// 当前 pane 全屏切换：tmux/ssh 发 `resize-pane -Z`，本地 shell 用布局全屏。

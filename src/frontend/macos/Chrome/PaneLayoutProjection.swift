@@ -88,10 +88,24 @@ public enum StateEventPolicy {
     }
 }
 
-/// 按当前 pane 形状自动切分：更宽则左右，更高则上下。
+/// 按当前 pane 的**像素**长边自动切分。
+///
+/// iTerm2 / Herdr / tmux 都没有按格子数自动选方向：iTerm2 Cmd-D 固定左右，
+/// Herdr prefix+v / prefix+- 显式，tmux `split-window -h/-v` 显式。
+/// tmux 社区脚本用 `pane_width > pane_height * 2`，因为字符格大约高是宽的
+/// 两倍。这里用像素比（默认同 1:2），半屏竖条会上下切，宽屏会左右切。
 public enum AutoSplitPolicy {
-    public static func horizontal(cols: Int, rows: Int) -> Bool {
-        cols >= rows
+    public static let defaultCellHeightOverWidth: CGFloat = 2
+
+    public static func horizontal(
+        cols: Int,
+        rows: Int,
+        cellWidth: CGFloat = 1,
+        cellHeight: CGFloat = defaultCellHeightOverWidth
+    ) -> Bool {
+        let width = CGFloat(max(cols, 1)) * max(cellWidth, 1)
+        let height = CGFloat(max(rows, 1)) * max(cellHeight, 1)
+        return width >= height
     }
 }
 

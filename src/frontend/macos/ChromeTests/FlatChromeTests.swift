@@ -192,10 +192,20 @@ final class KeyBindingsTests: XCTestCase {
         )
     }
 
-    func testAutoSplitFollowsPaneShape() {
-        XCTAssertTrue(AutoSplitPolicy.horizontal(cols: 120, rows: 40))
+    func testAutoSplitFollowsPixelAspectNotCellCount() {
+        // 默认字高≈字宽×2：宽屏 178×50 左右切，半屏 88×49 上下切。
+        XCTAssertTrue(AutoSplitPolicy.horizontal(cols: 178, rows: 50))
+        XCTAssertFalse(AutoSplitPolicy.horizontal(cols: 88, rows: 49))
+        XCTAssertTrue(AutoSplitPolicy.horizontal(cols: 80, rows: 24))
         XCTAssertFalse(AutoSplitPolicy.horizontal(cols: 40, rows: 80))
-        XCTAssertTrue(AutoSplitPolicy.horizontal(cols: 24, rows: 24))
+        XCTAssertFalse(
+            AutoSplitPolicy.horizontal(cols: 24, rows: 24),
+            "正方形格子数在真实字高下仍是竖条，应上下切"
+        )
+        XCTAssertTrue(
+            AutoSplitPolicy.horizontal(cols: 88, rows: 49, cellWidth: 11, cellHeight: 11),
+            "正方形像素格按宽边左右切"
+        )
     }
 
     func testCmdShiftLCyclesLayout() {
