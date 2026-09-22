@@ -160,6 +160,21 @@ fn frame_fingerprint(bytes: &[u8]) -> u64 {
     hash ^ (bytes.len() as u64)
 }
 
+/// Herdr 自己的客户端在画第一帧之前会发 `CSI ?7 l`。blit 按「自动换行已关」
+/// 逐格推进：行宽正好等于列数时，开着 DECAWM 的宿主会在末列挂起换行，
+/// 进度条这种满行刷新就会把上一行顶进 scrollback。
+const BLIT_AUTOWRAP_OFF: &[u8] = b"\x1b[?7l";
+
+fn surface_blit(bytes: Vec<u8>) -> Vec<u8> {
+    if bytes.starts_with(BLIT_AUTOWRAP_OFF) {
+        return bytes;
+    }
+    let mut out = Vec::with_capacity(BLIT_AUTOWRAP_OFF.len() + bytes.len());
+    out.extend_from_slice(BLIT_AUTOWRAP_OFF);
+    out.extend_from_slice(&bytes);
+    out
+}
+
 impl HerdrRuntime {
     /// 绑定共享 session + 一个 Herdr workspace_id（如 `w1`）。
     pub fn new(session: Arc<HerdrSession>, workspace_id: impl Into<String>) -> Self {
@@ -1737,7 +1752,10 @@ impl HerdrRuntime {
                         };
                         Self::push_render(
                             &mut self.events,
-                            RenderEvent::PaneFrame { pane, data: bytes },
+                            RenderEvent::PaneFrame {
+                                pane,
+                                data: surface_blit(bytes),
+                            },
                         );
                         if let Some(data) = index_snapshot {
                             Self::push_render(
@@ -1770,7 +1788,10 @@ impl HerdrRuntime {
                             .append(&bytes, MAX_PANE_OUTPUT_BYTES);
                         Self::push_render(
                             &mut self.events,
-                            RenderEvent::PaneOutput { pane, data: bytes },
+                            RenderEvent::PaneOutput {
+                                pane,
+                                data: surface_blit(bytes),
+                            },
                         );
                     }
                 }
@@ -5433,14 +5454,17 @@ mod tests {
                 _ => None,
             })
             .collect::<Vec<_>>();
+        let full_one = super::surface_blit(b"FULL_ONE".to_vec());
+        let full_two = super::surface_blit(b"FULL_TWO".to_vec());
+        let diff = super::surface_blit(b"_DIFF".to_vec());
         assert_eq!(
             output_events,
             vec![
-                (true, b"FULL_ONE".as_slice()),
-                (true, b"FULL_TWO".as_slice()),
-                (false, b"_DIFF".as_slice())
+                (true, full_one.as_slice()),
+                (true, full_two.as_slice()),
+                (false, diff.as_slice())
             ],
-            "Runtime 必须保留 full/diff 语义，同时按顺序交付每个原始 ANSI frame"
+            "Runtime 必须保留 full/diff 语义；Surface 帧关掉自动换行，避免满行进度条滚屏"
         );
     }
 
@@ -5508,10 +5532,11 @@ mod tests {
                 _ => None,
             })
             .collect::<Vec<_>>();
+        let frame = super::surface_blit(b"CURRENT_SCREEN".to_vec());
         assert_eq!(
             events,
             vec![
-                ("frame", b"CURRENT_SCREEN".as_slice()),
+                ("frame", frame.as_slice()),
                 ("index", b"ATTACH_HISTORY".as_slice()),
             ],
             "首个 full 后必须按 PaneFrame→PaneIndexSnapshot 顺序恢复 attach 快照"
