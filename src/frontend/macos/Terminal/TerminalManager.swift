@@ -447,6 +447,11 @@ final class TerminalManager: TerminalInputHandler {
         }
     }
 
+    /// 当前字体的格子像素；自动切分用长边，不拿 cols/rows 硬比。
+    func sharedCellSizeInPoints() -> (width: CGFloat, height: CGFloat)? {
+        views.values.lazy.compactMap { $0.terminalCellSizeInPoints() }.first
+    }
+
     /// 获取或创建指定 pane 的终端视图。
     ///
     /// 新建 Surface 保持空白，等 Runtime 的 `PaneSnapshot` / `PaneOutput`。
