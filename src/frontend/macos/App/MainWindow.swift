@@ -50,6 +50,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         case connecting(String)
     }
 
+    /// Shells 投影的判别值；延后激活靠它确认还在同一条投影上。
+    private struct ShellAggregateToken: Equatable {
+        let workspaceId: String?
+        let tabId: UInt32?
+    }
+
     var bridge: CoreBridge
     var terminalManager: TerminalManager
     let content: ContentView
@@ -2333,11 +2339,22 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             )
             updatePresentedTabs()
             if changed {
+                let scheduled = ShellAggregateToken(
+                    workspaceId: target.workspaceId,
+                    tabId: target.sourceTabId
+                )
                 DispatchQueue.main.async { [weak self] in
-                    self?.activateShells(
+                    guard let self,
+                          DeferredAggregateActivationPolicy.shouldActivate(
+                              scheduled: scheduled,
+                              current: self.currentShellAggregateToken,
+                              isConnecting: self.isConnectingPresentation
+                          )
+                    else { return }
+                    self.activateShells(
                         selectFirstLocal: false,
-                        preferredWorkspaceId: target.workspaceId,
-                        preferredTabId: target.sourceTabId
+                        preferredWorkspaceId: scheduled.workspaceId,
+                        preferredTabId: scheduled.tabId
                     )
                 }
             }
@@ -2353,13 +2370,41 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             }
             lastAgentAggregateKey = target.key
             if target.key != selectedKey {
-                workspacePresentation = .agents(target.key)
+                let scheduled = target.key
+                workspacePresentation = .agents(scheduled)
                 DispatchQueue.main.async { [weak self] in
-                    self?.activateAgents(preferred: target.key)
+                    guard let self,
+                          DeferredAggregateActivationPolicy.shouldActivate(
+                              scheduled: scheduled,
+                              current: self.currentAgentAggregateKey,
+                              isConnecting: self.isConnectingPresentation
+                          )
+                    else { return }
+                    self.activateAgents(preferred: scheduled)
                 }
             }
             updatePresentedTabs()
         }
+    }
+
+    /// 当前展示的 Shells 投影；非 Shells 投影时为 nil。
+    private var currentShellAggregateToken: ShellAggregateToken? {
+        guard case .shells(let workspaceId, let tabId) = workspacePresentation else {
+            return nil
+        }
+        return ShellAggregateToken(workspaceId: workspaceId, tabId: tabId)
+    }
+
+    /// 当前展示的 Agents 投影；非 Agents 投影时为 nil。
+    private var currentAgentAggregateKey: AgentAggregateKey? {
+        guard case .agents(let key) = workspacePresentation else { return nil }
+        return key
+    }
+
+    /// 连接页（pending open）是否正显示在可见区。
+    private var isConnectingPresentation: Bool {
+        if case .connecting = workspacePresentation { return true }
+        return false
     }
 
     func refreshWorkspaceSidebar(force: Bool = false) {
@@ -3336,9 +3381,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private func finishPendingWorkspaceOpen(error: Error? = nil, prefix: String? = nil) {
         let pendingID = pendingWorkspaceOpen?.id
         pendingWorkspaceOpen = nil
+        // 投影已被别的路径改掉时不要把它拽回 .workspace，但连接页必须清掉：
+        // 这次 open 已经结束，留着 stage 会让进度页永远停在 attach/ssh。
+        content.setConnectProgress(stage: nil)
         if let pendingID, workspacePresentation == .connecting(pendingID) {
             workspacePresentation = .workspace
-            content.setConnectProgress(stage: nil)
             updatePresentedTabs()
         }
         refreshWorkspaceSidebar(force: true)
