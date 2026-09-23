@@ -5,13 +5,9 @@ import MuxtermChrome
 
 /// 把 pane 拖成新 tab = tmux `break-pane`（iTerm2 breakOutWindowPane / MoveSessionToNewTab）。
 final class BreakPaneE2ETests: XCTestCase {
-    func testTitleReservationIsFixedAndIgnoresLayoutTree() {
+    func testFloatingTitleNeverChangesClientGrid() {
         XCTAssertEqual(PaneTitleBarGeometry.reservedHeight(showsTitles: false), 0)
-        XCTAssertEqual(
-            PaneTitleBarGeometry.reservedHeight(showsTitles: true),
-            PaneTitleBarGeometry.height,
-            "有 title 只扣一次固定高度"
-        )
+        XCTAssertEqual(PaneTitleBarGeometry.reservedHeight(showsTitles: true), 0)
         let container = NSSize(width: 800, height: 600)
         let withTitle = PaneTitleBarGeometry.clientContentSize(
             container: container,
@@ -25,7 +21,7 @@ final class BreakPaneE2ETests: XCTestCase {
         XCTAssertEqual(withTitle.width, container.width)
         XCTAssertEqual(
             withTitle.height,
-            container.height - PaneTitleBarGeometry.height,
+            container.height,
             accuracy: 0.001
         )
         XCTAssertEqual(
@@ -44,7 +40,7 @@ final class BreakPaneE2ETests: XCTestCase {
         )
     }
 
-    func testTitledHostTerminalFillsSpaceBelowTitle() {
+    func testTitledHostTerminalFillsHostAndTitleFloatsOnHover() {
         AppE2E.ensureApp()
         let terminal = MuxTerminalView(
             paneId: 11,
@@ -75,12 +71,25 @@ final class BreakPaneE2ETests: XCTestCase {
             PaneTitleBarGeometry.height,
             accuracy: 0.5
         )
-        XCTAssertEqual(
-            host.titleBarFrameForTesting.height + host.terminalHeightForTesting,
-            host.bounds.height,
-            accuracy: 1,
-            "标题栏和终端必须一次铺满 host，底下不得再空一截"
-        )
+        XCTAssertFalse(host.isTitleBarVisibleForTesting)
+        XCTAssertEqual(host.terminalHeightForTesting, host.bounds.height, accuracy: 1)
+        host.setTitleHoveredForTesting(true)
+        XCTAssertTrue(host.isTitleBarVisibleForTesting)
+        XCTAssertEqual(host.terminalHeightForTesting, host.bounds.height, accuracy: 1)
+        host.setTitleHoveredForTesting(false)
+        XCTAssertFalse(host.isTitleBarVisibleForTesting)
+        func move(to point: NSPoint) {
+            let event = NSEvent.mouseEvent(
+                with: .mouseMoved, location: point, modifierFlags: [], timestamp: 0,
+                windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+                clickCount: 0, pressure: 0
+            )!
+            host.mouseMoved(with: event)
+        }
+        move(to: NSPoint(x: 10, y: host.bounds.height - 4))
+        XCTAssertTrue(host.isTitleBarVisibleForTesting)
+        move(to: NSPoint(x: 10, y: host.bounds.height - PaneTitleBarGeometry.height - 4))
+        XCTAssertFalse(host.isTitleBarVisibleForTesting)
     }
 
     func testPaneTitleOffersSplitAndCloseActions() {
@@ -98,6 +107,7 @@ final class BreakPaneE2ETests: XCTestCase {
             host.titleActionsForTesting,
             [.splitHorizontal, .splitVertical, .fullscreen, .cycleLayout, .close]
         )
+        host.setTitleHoveredForTesting(true)
         host.triggerTitleAction(.fullscreen)
         XCTAssertEqual(actions.count, 1)
         XCTAssertEqual(actions.first?.0, 7)
@@ -164,8 +174,8 @@ final class BreakPaneE2ETests: XCTestCase {
         defer { splitApp.testShutdown() }
         XCTAssertTrue(splitApp.waitReady(minLeaves: 2))
         XCTAssertTrue(
-            splitApp.testLayoutLeafIDs().allSatisfy { splitApp.testPaneTitleVisible($0) },
-            "多 pane tab 的每个 Surface 都应显示布局内标题条"
+            splitApp.testLayoutLeafIDs().allSatisfy { !splitApp.testPaneTitleVisible($0) },
+            "多 pane 标题默认隐藏，不占终端高度"
         )
         for pane in splitApp.testLayoutLeafIDs() {
             let title = try XCTUnwrap(splitApp.testPaneTitle(pane))
@@ -173,17 +183,17 @@ final class BreakPaneE2ETests: XCTestCase {
             XCTAssertFalse(title.hasPrefix("Pane @"), "标题应来自 Core PaneInfo，而不是 pane id")
             XCTAssertEqual(
                 splitApp.testPaneAllocation(pane).height - splitApp.testPaneTerminalHeight(pane),
-                22,
+                0,
                 accuracy: 1,
-                "标题条必须占据独立布局行，不能悬浮覆盖 terminal"
+                "悬浮标题不能缩小 terminal"
             )
         }
         XCTAssertEqual(
             splitApp.testPaneLayoutFrame().height
                 - splitApp.testTerminalClientContentSize().height,
-            PaneTitleBarGeometry.height,
+            0,
             accuracy: 1,
-            "左右分屏必须用扣除标题栏后的高度计算 tmux client 字符格"
+            "分屏和单 pane 必须用相同的完整高度计算 client 字符格"
         )
     }
 

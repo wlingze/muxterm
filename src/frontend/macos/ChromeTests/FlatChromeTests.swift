@@ -1546,7 +1546,7 @@ final class PaneLayoutProjectionTests: XCTestCase {
                 next: (178, 49),
                 treeChanged: true
             ),
-            "标题栏扣完后格子没变，不得再 resize"
+            "悬浮标题不能改变 client 格子"
         )
         XCTAssertFalse(
             TreeChangeClientResizePolicy.shouldSend(
@@ -1554,7 +1554,7 @@ final class PaneLayoutProjectionTests: XCTestCase {
                 next: (178, 49),
                 treeChanged: true
             ),
-            "标题栏只少一行，不得 resize 整条 tmux"
+            "切树时一行测量抖动不得 resize 整条 tmux"
         )
         XCTAssertFalse(
             TreeChangeClientResizePolicy.shouldSend(
@@ -1577,7 +1577,7 @@ final class PaneLayoutProjectionTests: XCTestCase {
         XCTAssertTrue(GeometrySyncPolicy.pinLocalGrids(.cachedReveal))
         XCTAssertTrue(
             GeometrySyncPolicy.clientTreeChanged(.cachedReveal),
-            "切 tab 仍要重算每个 host 的格子；client 尺寸不跟着标题栏走"
+            "切 tab 仍要重算每个 host 的格子；client 尺寸不跟着悬浮标题走"
         )
         XCTAssertFalse(GeometrySyncPolicy.forceRedraw(.cachedReveal))
         XCTAssertFalse(GeometrySyncPolicy.forceRedraw(.treeChange))
@@ -1596,7 +1596,7 @@ final class PaneLayoutProjectionTests: XCTestCase {
                 next: (178, 49),
                 treeChanged: GeometrySyncPolicy.clientTreeChanged(.cachedReveal)
             ),
-            "切 tab 的标题栏显隐不得把 client 从 50 改成 49"
+            "切 tab 的一行测量抖动不得重排所有 window"
         )
         XCTAssertFalse(
             TreeChangeClientResizePolicy.shouldSend(
