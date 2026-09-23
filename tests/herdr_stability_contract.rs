@@ -334,8 +334,8 @@ fn run_stability_case(
             .test_herdr_pane_id(first_active)
             .context("旧 active 缺 wire id")?
             .to_string();
-        let keeps_control = herdr_runtime(workspace)?.test_actual_mode(first_active)
-            == Some(StreamMode::Control);
+        let keeps_control =
+            herdr_runtime(workspace)?.test_actual_mode(first_active) == Some(StreamMode::Control);
         ensure!(
             raw_control_attempt(&client_socket, &old_wire, false)? != keeps_control,
             "previous pane ownership must follow its live mode"
