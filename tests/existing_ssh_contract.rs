@@ -213,6 +213,23 @@ fn ssh_herdr_forward_attach_contract() {
     // that seed is an Index snapshot and does not prove the forwarded control
     // stream is writable.  Match the local Herdr contract: wait for a real
     // PaneFrame before delivering VTE-style per-byte WriteRaw input.
+    //
+    // 无 GUI 的契约必须显式模拟前端 viewport：Herdr 在 ResizePane/ResizeClient
+    // 到达前不开流，避免默认 80×24 Control Hello 重排远端 TUI。
+    // 与 tests/herdr_stability_contract.rs 同一约定。
+    workspace
+        .execute(Task::ResizeClient {
+            cols: 132,
+            rows: 41,
+        })
+        .expect("SSH Herdr ResizeClient 应成功");
+    workspace
+        .execute(Task::ResizePane {
+            target: active,
+            cols: 132,
+            rows: 41,
+        })
+        .expect("SSH Herdr ResizePane 应成功");
     let frame_deadline = Instant::now() + Duration::from_secs(15);
     let mut saw_live_frame = false;
     while Instant::now() < frame_deadline {
