@@ -1077,9 +1077,18 @@ final class TerminalManager: TerminalInputHandler {
         }
     }
 
-    func syncSurfaceToAllocatedSize(paneId: UInt32) {
-        // tmux 放大/切树时格子仍等 layout-change。先按像素改模型会和 pane 差几行。
-        guard !usesClientResize else { return }
+    /// 乐观全屏切换后按真实 allocation 追上目标格子。
+    ///
+    /// tmux 的权威格子来自 layout，一般路径必须等 layout-change；按像素改模型
+    /// 会和 pane 实际网格差一个分隔条，TUI 底栏会落到输入行。乐观全屏切换是
+    /// 例外：host 已经由前端放大、tmux 的 layout-change 还没回来，此时
+    /// allocation 就是该 pane 的目标格子，等事件会让全屏 pane 一直停在
+    /// split 格子。
+    func syncSurfaceToAllocatedSize(paneId: UInt32, afterOptimisticLayout: Bool = false) {
+        guard SurfaceAllocationPolicy.usesAllocation(
+            usesClientResize: usesClientResize,
+            afterOptimisticLayout: afterOptimisticLayout
+        ) else { return }
         guard let view = views[paneId] else { return }
         view.layoutSubtreeIfNeeded()
         let notify = RemainingPaneGridPolicy.shouldNotifyRuntime(

@@ -824,6 +824,31 @@ final class PaneOutputFeedPolicyTests: XCTestCase {
         )
     }
 
+    /// tmux 的格子等 layout-change；只有乐观全屏切换才可以用 allocation 直接追。
+    func testSurfaceAllocationOnlyWinsForOptimisticLayoutOnTmux() {
+        XCTAssertTrue(
+            SurfaceAllocationPolicy.usesAllocation(
+                usesClientResize: false,
+                afterOptimisticLayout: false
+            ),
+            "Herdr/shell 本来就要把新格子写回 Runtime"
+        )
+        XCTAssertTrue(
+            SurfaceAllocationPolicy.usesAllocation(
+                usesClientResize: true,
+                afterOptimisticLayout: true
+            ),
+            "乐观全屏切换后 tmux 事件还没回来，必须用 allocation 追上目标格子"
+        )
+        XCTAssertFalse(
+            SurfaceAllocationPolicy.usesAllocation(
+                usesClientResize: true,
+                afterOptimisticLayout: false
+            ),
+            "tmux 一般路径按像素改模型会和 pane 实际网格差一个分隔条，底栏落到输入行"
+        )
+    }
+
     func testPaneResizeEventDecodesLittleEndianGrid() {
         var data = Data([93, 0, 51, 0])
         XCTAssertEqual(PaneGridSyncPolicy.grid(fromResizeEvent: data)?.cols, 93)

@@ -509,7 +509,10 @@ final class PaneLayoutView: NSView, TerminalClientContentSizing {
             guard let self, self.currentPaneIds.contains(paneId) else { return }
             self.layoutSubtreeIfNeeded()
             self.hostByPane[paneId]?.layoutSubtreeIfNeeded()
-            self.terminalManager.syncSurfaceToAllocatedSize(paneId: paneId)
+            self.terminalManager.syncSurfaceToAllocatedSize(
+                paneId: paneId,
+                afterOptimisticLayout: true
+            )
         }
     }
 
