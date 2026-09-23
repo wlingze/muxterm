@@ -135,6 +135,20 @@ final class KeyBindingsTests: XCTestCase {
         )
     }
 
+    func testCommandZeroSwitchesToLastTab() {
+        XCTAssertEqual(
+            KeyBindings.action(for: KeyChord(command: true, key: "0")),
+            .switchLastTab
+        )
+    }
+
+    func testCommandShiftZeroResetsFontSize() {
+        XCTAssertEqual(
+            KeyBindings.action(for: KeyChord(command: true, shift: true, key: "0")),
+            .resetFontSize
+        )
+    }
+
     func testCommandArrowsSwitchAdjacentTabsPastTheNinth() {
         XCTAssertEqual(
             KeyBindings.action(for: KeyChord(command: true, key: "left")),
@@ -275,7 +289,7 @@ final class KeyBindingsTests: XCTestCase {
             .decreaseFontSize
         )
         XCTAssertEqual(
-            KeyBindings.action(for: KeyChord(command: true, key: "0")),
+            KeyBindings.action(for: KeyChord(command: true, shift: true, key: "0")),
             .resetFontSize
         )
     }

@@ -4,6 +4,39 @@ import XCTest
 
 /// 对标 `linux_live_e2e`：echo 进 SwiftTerm、CUP 停在末帧、点 status tab 切 window。
 final class LiveE2ETests: XCTestCase {
+    func testCommandZeroSwitchesToLastTab() throws {
+        AppE2E.requireTmux()
+        let socket = Tmux.uniqueSocket("cmd-zero-last-tab")
+        let session = "s"
+        Tmux.killServer(socket)
+        defer { Tmux.killServer(socket) }
+        Tmux.ok(socket: socket, args: [
+            "-f", "/dev/null", "new-session", "-d", "-s", session,
+            "-x", "80", "-y", "24",
+        ])
+        Tmux.ok(socket: socket, args: ["new-window", "-t", session])
+
+        let app = try AppE2E.attachWindow(socket: socket, session: session)
+        defer { app.testShutdown() }
+        XCTAssertTrue(app.waitReady(minTabs: 2))
+
+        let tabs = app.testTabIDs()
+        let first = try XCTUnwrap(tabs.first)
+        let last = try XCTUnwrap(tabs.last)
+        app.testSwitchTab(first)
+        XCTAssertTrue(AppE2E.wait(timeout: 2) {
+            app.testPollOnce()
+            return app.testActiveTabID() == first
+        })
+
+        let event = try XCTUnwrap(app.testMakeKeyEvent(key: "0", keyCode: 29, command: true))
+        XCTAssertTrue(app.testDispatchKeyEvent(event), "Cmd-0 must be consumed as last-tab navigation")
+        XCTAssertTrue(AppE2E.wait(timeout: 2) {
+            app.testPollOnce()
+            return app.testActiveTabID() == last
+        }, "Cmd-0 must select the final tab")
+    }
+
     func testLiveEchoCupAndStatusTabSwitch() throws {
         AppE2E.requireTmux()
         let socket = Tmux.uniqueSocket("live")

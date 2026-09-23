@@ -98,6 +98,9 @@ public enum KeyBindings {
         {
             return .switchTab(n)
         }
+        if chord.command, !chord.option, !chord.shift, !chord.control, key == "0" {
+            return .switchLastTab
+        }
         // Cmd-Left / Cmd-Right：相邻 tab。第 10 个以后没有数字键。
         if chord.command, !chord.option, !chord.shift, !chord.control {
             if key == "left" {
@@ -148,7 +151,7 @@ public enum KeyBindings {
         if chord.command, chord.shift, !chord.option, key == "f" {
             return .searchGlobal
         }
-        // Cmd+= / Cmd++ 增大字体，Cmd+- 减小，Cmd+0 重置。
+        // Cmd+= / Cmd++ 增大字体，Cmd+- 减小，Cmd+Shift+0 重置。
         if chord.command, !chord.option {
             if key == "=" || key == "+" {
                 return .increaseFontSize
@@ -156,9 +159,12 @@ public enum KeyBindings {
             if key == "-" {
                 return .decreaseFontSize
             }
-            if key == "0", !chord.control {
+            if key == "0", chord.shift, !chord.control {
                 return .resetFontSize
             }
+        }
+        if chord.control, !chord.command, !chord.shift, !chord.option, key == "0" {
+            return .resetFontSize
         }
         // Cmd+Shift+L：布局格式循环（tmux next-layout / 左右变上下）。
         if chord.command, chord.shift, !chord.option, !chord.control, key == "l" {
@@ -193,7 +199,6 @@ public enum KeyBindings {
         }
 
         // Cmd+Ctrl+1..9 固定打开顺序；Cmd+Ctrl+0 永远最后一个。
-        // Cmd+0 仍是重置字体，不得变成切 Workspace。
         if chord.command, chord.control, !chord.shift, !chord.option {
             if key == "0" {
                 return .switchWorkspace(0)
