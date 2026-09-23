@@ -577,28 +577,61 @@ final class MuxTerminalView: TerminalView {
         return nil
     }
 
-    /// AppKit 的选区/曝光重绘不经过 SwiftTerm.updateDisplay。保留已提交
-    /// 像素，避免这些重绘把 DEC 2026 同步帧的中间状态暴露出来。
-    private var committedPaint: CGLayer?
+    /// 选区/曝光重绘不能暴露 DEC 2026 同步帧的中间状态。CGLayer 会把每次
+    /// 绘制追加到 CoreGraphics display list，持续输出可累积数百万条指令；
+    /// 固定大小的位图只保存最新像素，内存随 pane 尺寸而非帧数增长。
+    private var committedPaint: CGContext?
+    private var committedPaintSize: NSSize = .zero
     private var committedPaintScale: CGFloat = 0
+    private(set) var committedPaintBufferBytes = 0
+
+    private func makeCommittedPaint(size: NSSize, scale: CGFloat) -> CGContext? {
+        let width = ceil(size.width * scale)
+        let height = ceil(size.height * scale)
+        guard width.isFinite, height.isFinite,
+              width > 0, height > 0, width <= 16_384, height <= 16_384
+        else { return nil }
+        guard let bitmap = CGContext(
+            data: nil,
+            width: Int(width),
+            height: Int(height),
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        bitmap.scaleBy(x: scale, y: scale)
+        committedPaintBufferBytes = bitmap.bytesPerRow * Int(height)
+        return bitmap
+    }
+
+    private func displayCommittedPaint(in context: CGContext, dirtyRect: NSRect) {
+        context.saveGState()
+        context.clip(to: dirtyRect)
+        context.clear(dirtyRect)
+        if let image = committedPaint?.makeImage() {
+            context.draw(image, in: bounds)
+        }
+        context.restoreGState()
+    }
 
     override func draw(_ dirtyRect: NSRect) {
         guard let graphics = NSGraphicsContext.current else { return }
         let context = graphics.cgContext
         if getTerminal().synchronizedOutputActive {
-            context.clear(dirtyRect)
-            if let committedPaint {
-                context.draw(committedPaint, in: bounds)
-            }
+            displayCommittedPaint(in: context, dirtyRect: dirtyRect)
             return
         }
         let scale = window?.backingScaleFactor ?? 1
-        let recreate = committedPaint?.size != bounds.size || committedPaintScale != scale
+        let recreate = committedPaint == nil || committedPaintSize != bounds.size
+            || committedPaintScale != scale
         if recreate {
-            committedPaint = CGLayer(context, size: bounds.size, auxiliaryInfo: nil)
+            committedPaintBufferBytes = 0
+            committedPaint = makeCommittedPaint(size: bounds.size, scale: scale)
+            committedPaintSize = bounds.size
             committedPaintScale = scale
         }
-        guard let committedPaint, let paintContext = committedPaint.context else {
+        guard let paintContext = committedPaint else {
             super.draw(dirtyRect)
             return
         }
@@ -611,8 +644,7 @@ final class MuxTerminalView: TerminalView {
         super.draw(region)
         paintContext.restoreGState()
         NSGraphicsContext.restoreGraphicsState()
-        context.clear(dirtyRect)
-        context.draw(committedPaint, in: bounds)
+        displayCommittedPaint(in: context, dirtyRect: dirtyRect)
     }
 
     /// 将 FFI 输出喂给终端引擎，并更新 AX 值供 UITest 断言「确实渲染到了」。

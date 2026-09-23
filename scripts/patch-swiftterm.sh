@@ -411,3 +411,132 @@ elif new not in mac_text:
 
 mac.write_text(mac_text)
 PY
+
+# SwiftTerm 会永久缓存见过的真彩色和文字属性；彩色 TUI 可使缓存无限增长。
+# 同时缓存宽字符的字形测量，避免每次重绘都重新查询 CoreText。
+python3 - "$APPLE" "$MAC" <<'PY'
+import pathlib, sys
+
+apple = pathlib.Path(sys.argv[1])
+mac = pathlib.Path(sys.argv[2])
+apple_text = apple.read_text()
+mac_text = mac.read_text()
+
+if "MUXTERM_BOUNDED_RENDER_CACHE" not in apple_text:
+    replacements = [
+        (
+            """    func resetCaches ()
+    {
+        self.attributes = [:]
+""",
+            """    func resetCaches ()
+    {
+        #if os(macOS)
+        muxtermGlyphFits.removeAll(keepingCapacity: true) // MUXTERM_BOUNDED_RENDER_CACHE
+        #endif
+        self.attributes = [:]
+""",
+        ),
+        (
+            """        let cellWidth = cellDimension.width
+        let cellHeight = cellDimension.height
+        let slotWidth = CGFloat(columnWidth) * cellWidth
+""",
+            """        #if os(macOS)
+        let key = MuxtermGlyphFitKey(fontHash: CFHash(font), glyph: glyph, columnWidth: columnWidth)
+        if let cached = muxtermGlyphFits[key], CFEqual(cached.font, font) {
+            return cached.fit
+        }
+        muxtermGlyphFitMeasurementCount += 1
+        #endif
+        let cellWidth = cellDimension.width
+        let cellHeight = cellDimension.height
+        let slotWidth = CGFloat(columnWidth) * cellWidth
+""",
+        ),
+        (
+            """        return GlyphSlotFit(dx: dx, dy: dy, scale: scale)
+    }
+""",
+            """        let fit = GlyphSlotFit(dx: dx, dy: dy, scale: scale)
+        #if os(macOS)
+        if muxtermGlyphFits.count >= 2048 { muxtermGlyphFits.removeAll(keepingCapacity: true) }
+        muxtermGlyphFits[key] = (font: font, fit: fit)
+        #endif
+        return fit
+    }
+""",
+        ),
+        (
+            """            trueColors [color] = newColor
+            return newColor
+""",
+            """            #if os(macOS)
+            if trueColors.count >= 2048 { trueColors.removeAll(keepingCapacity: true) }
+            #endif
+            trueColors [color] = newColor
+            return newColor
+""",
+        ),
+        (
+            """        if withUrl {
+            nsattr [.underlineStyle] = NSUnderlineStyle.single.rawValue
+""",
+            """        #if os(macOS)
+        if attributes.count + urlAttributes.count >= 2048 {
+            attributes.removeAll(keepingCapacity: true)
+            urlAttributes.removeAll(keepingCapacity: true)
+        }
+        #endif
+        if withUrl {
+            nsattr [.underlineStyle] = NSUnderlineStyle.single.rawValue
+""",
+        ),
+        (
+            """    // Given a vt100 attribute, return the NSAttributedString attributes used to render it
+""",
+            """    #if os(macOS)
+    public func muxtermRenderCacheSizes() -> (attributes: Int, trueColors: Int) {
+        (attributes.count + urlAttributes.count, trueColors.count)
+    }
+    #endif
+
+    // Given a vt100 attribute, return the NSAttributedString attributes used to render it
+""",
+        ),
+    ]
+    for old, new in replacements:
+        if apple_text.count(old) != 1:
+            sys.exit("ERROR: SwiftTerm render-cache anchor changed; update patch-swiftterm.sh")
+        apple_text = apple_text.replace(old, new, 1)
+    apple.write_text(apple_text)
+    print("==> bounded SwiftTerm render caches and cached wide glyph metrics")
+
+if "MUXTERM_BOUNDED_RENDER_CACHE" not in mac_text:
+    old = """    var trueColors: [Attribute.Color:NSColor] = [:]
+"""
+    new = old + """    // MUXTERM_BOUNDED_RENDER_CACHE：每个终端独立持有，换字体时清空。
+    var muxtermGlyphFits: [MuxtermGlyphFitKey: (font: CTFont, fit: GlyphSlotFit)] = [:]
+    public internal(set) var muxtermGlyphFitMeasurementCount = 0
+"""
+    if mac_text.count(old) != 1:
+        sys.exit("ERROR: SwiftTerm glyph-cache property anchor changed; update patch-swiftterm.sh")
+    mac.write_text(mac_text.replace(old, new, 1))
+
+apple_text = apple.read_text()
+if "struct MuxtermGlyphFitKey" not in apple_text:
+    old = """struct GlyphSlotFit {
+"""
+    new = """#if os(macOS)
+struct MuxtermGlyphFitKey: Hashable {
+    let fontHash: CFHashCode
+    let glyph: CGGlyph
+    let columnWidth: Int
+}
+#endif
+
+""" + old
+    if apple_text.count(old) != 1:
+        sys.exit("ERROR: SwiftTerm GlyphSlotFit changed; update patch-swiftterm.sh")
+    apple.write_text(apple_text.replace(old, new, 1))
+PY
