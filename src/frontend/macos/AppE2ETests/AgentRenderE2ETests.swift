@@ -631,6 +631,31 @@ final class AgentRenderE2ETests: XCTestCase {
         window.orderOut(nil)
     }
 
+    func testFullFrameDoesNotLeakItsFinalWhiteRenditionIntoLaterInput() {
+        AppE2E.ensureApp()
+        MuxtermTerminalColors.activePalette = .light
+        let view = MuxTerminalView(paneId: 1, frame: NSRect(x: 0, y: 0, width: 640, height: 360))
+        view.suppressOutputDrivenResponses = true
+        view.applyPalette(.light)
+        view.getTerminal().resize(cols: 40, rows: 12)
+        // 服务端全帧是绘图快照，最后一个白色格子的 SGR 不是后续输入的状态。
+        view.feedFull(Data("\u{1b}[38;2;255;255;255mOLD".utf8))
+        view.feedOutput(Data("INPUT".utf8))
+        let term = view.getTerminal()
+        XCTAssertEqual(term.getCharacter(col: 3, row: 0), "I")
+        XCTAssertEqual(
+            term.getCharData(col: 3, row: 0)?.attribute.fg, .defaultColor,
+            "frame rendition=\(term.currentAttribute) colors=\(view.themeHexColors())"
+        )
+        view.feedFull(Data("\u{1b}[48;2;0;0;0m\u{1b}[38;2;255;255;255mDARK".utf8))
+        view.feedOutput(Data("TEXT".utf8))
+        XCTAssertEqual(
+            term.getCharData(col: 4, row: 0)?.attribute.fg,
+            .trueColor(red: 255, green: 255, blue: 255),
+            "黑底白字可读，后续增量仍须继承完整帧的样式"
+        )
+    }
+
     func testGitLgOsc10BlackOnLightThemeKeepsTypedTextReadable() {
         AppE2E.ensureApp()
         MuxtermTerminalColors.activePalette = .light

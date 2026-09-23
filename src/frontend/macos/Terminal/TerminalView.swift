@@ -684,6 +684,37 @@ final class MuxTerminalView: TerminalView {
     /// append 到旧屏幕，Cursor/Pi 的历史帧就会逐帧堆叠。
     func feedFull(_ data: Data) {
         feedOutput(PaneSnapshotPaintPolicy.baseline(data: data, existingSurface: true))
+        restoreUnreadableFrameRendition()
+    }
+
+    /// 完整帧是服务端画出的格子，不是 PTY 的连续字节流。若最后一个格子的
+    /// 前景色和背景色几乎相同，后续没有 SGR 的输入不能继承这份不可读样式。
+    /// 其它颜色必须保留：Herdr 的增量帧可能依赖完整帧留下的 rendition。
+    private func restoreUnreadableFrameRendition() {
+        let attribute = getTerminal().currentAttribute
+        let native = themeHexColors()
+        let palette = MuxtermTerminalColors.activePalette
+        func hex(_ color: Attribute.Color, foreground: Bool) -> String? {
+            switch color {
+            case .defaultColor:
+                return foreground ? native.fg : native.bg
+            case .defaultInvertedColor:
+                return foreground ? nil : native.bg
+            case .ansi256(let code):
+                let index = Int(code)
+                return index < palette.ansi.count ? palette.ansi[index] : nil
+            case .trueColor(let red, let green, let blue):
+                return String(format: "%02x%02x%02x", Int(red), Int(green), Int(blue))
+            }
+        }
+        guard var fg = hex(attribute.fg, foreground: true),
+              var bg = hex(attribute.bg, foreground: false)
+        else { return }
+        if attribute.style.contains(.inverse) { swap(&fg, &bg) }
+        guard ColorContrast.contrastRatio(fg: fg, bg: bg) < ColorContrast.minimumRatio else {
+            return
+        }
+        feed(byteArray: [0x1b, 0x5b, 0x30, 0x6d][...])
     }
 
     /// attach 前历史写入 native scrollback。不得 reset，也不得当 VT 流重放。
