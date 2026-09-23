@@ -597,14 +597,20 @@ pub struct TmuxClientHandle {
 /// `PtyWriter` adapter for a transport-owned ByteChannel.
 struct ChannelWriter {
     channel: Arc<Mutex<Box<dyn ByteChannel>>>,
+    traffic: Option<crate::transport::TrafficCounters>,
 }
 
 impl Write for ChannelWriter {
     fn write(&mut self, data: &[u8]) -> io::Result<usize> {
-        self.channel
+        let written = self
+            .channel
             .lock()
             .map_err(|_| io::Error::other("channel lock poisoned"))?
-            .write(data)
+            .write(data)?;
+        if let Some(traffic) = &self.traffic {
+            traffic.add_up(written as u64);
+        }
+        Ok(written)
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -689,9 +695,14 @@ impl TmuxClient {
             .context("open tmux Exec channel 失败")?;
         let channel = Arc::new(Mutex::new(channel));
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        // TargetConnection-backed SSH channels bypass SshProcessTransport's
+        // legacy counters, so count bytes at the Runtime channel boundary.
+        let traffic =
+            (connection.transport_id() == "ssh").then(crate::transport::TrafficCounters::new);
         let (read_tx, read_rx) = mpsc::channel::<std::io::Result<Vec<u8>>>(4096);
         let reader_channel = Arc::clone(&channel);
         let reader_stop = Arc::clone(&stop);
+        let reader_traffic = traffic.clone();
         std::thread::Builder::new()
             .name("muxterm-target-tmux-read".into())
             .spawn(move || loop {
@@ -704,6 +715,9 @@ impl TmuxClient {
                     .and_then(|mut channel| channel.read());
                 match result {
                     Ok(Some(data)) => {
+                        if let Some(traffic) = &reader_traffic {
+                            traffic.add_down(data.len() as u64);
+                        }
                         if read_tx.blocking_send(Ok(data)).is_err() {
                             break;
                         }
@@ -724,6 +738,7 @@ impl TmuxClient {
         });
         let writer = PtyWriter::new(Box::new(ChannelWriter {
             channel: Arc::clone(&channel),
+            traffic: traffic.clone(),
         }));
         let handle = TmuxClientHandle {
             pty_writer: Some(writer),
@@ -732,7 +747,7 @@ impl TmuxClient {
             stdin: None,
             child: None,
             pty_child: None,
-            traffic: None,
+            traffic,
         };
         Ok((handle, rx))
     }
