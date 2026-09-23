@@ -184,11 +184,15 @@ final class ZoomE2ETests: XCTestCase {
             "目标 Surface 必须从 split grid 放大到全屏 allocation。before=\(secondGridBeforeZoom) after=\(app.testPaneGrid(secondPane))"
         )
 
+        // 窗口快捷键用 Cmd-[。Option-only 组合（Alt-[）现在必须进 pane：
+        // KeyPassthroughPolicy 只让 Cmd/Ctrl 钩子消费事件，否则 vim/emacs/Herdr
+        // 的 Meta 组合会被前端吃掉。本条断言的是 bracket 导航本身，
+        // 所以用产品实际消费的 chord。
         let previous = try XCTUnwrap(
-            app.testMakeKeyEvent(key: "[", keyCode: 33, option: true),
-            "必须能构造 Alt-["
+            app.testMakeKeyEvent(key: "[", keyCode: 33, command: true),
+            "必须能构造 Cmd-["
         )
-        XCTAssertTrue(app.testDispatchKeyEvent(previous), "Alt-[ 必须被窗口快捷键消费")
+        XCTAssertTrue(app.testDispatchKeyEvent(previous), "Cmd-[ 必须被窗口快捷键消费")
         XCTAssertTrue(
             AppE2E.wait(timeout: 5) {
                 app.testPollOnce()
@@ -199,7 +203,7 @@ final class ZoomE2ETests: XCTestCase {
                         args: ["display-message", "-p", "-t", painted.session, "#{window_zoomed_flag}"]
                     ) == "1"
             },
-            "Alt-[ 应切回上一个 pane，并继续保持全屏"
+            "Cmd-[ 应切回上一个 pane，并继续保持全屏"
         )
     }
 
