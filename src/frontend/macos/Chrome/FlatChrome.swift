@@ -794,8 +794,7 @@ public enum PaneGridSyncPolicy {
     }
 }
 
-/// 多 pane 标题栏必须在 host 进树之前就占好高度。
-/// 先进树再 `setShowsTitleBar` 会让未切分的兄弟先按整格高度 layout，再缩回去。
+/// 仅决定多 pane 是否允许悬停显示标题；标题不参与格子布局。
 public enum PaneTitleLayoutPolicy {
     public static func showsTitleBar(visiblePaneCount: Int) -> Bool {
         visiblePaneCount > 1
@@ -831,7 +830,7 @@ public enum PaneFocusStickiness {
     }
 }
 
-/// 几何同步的原因。计划格子（含标题栏/分隔条）变了才发一次 client
+/// 几何同步的原因。计划格子（含分隔条，不含悬浮标题）变了才发一次 client
 /// resize；窗口抖动走 hysteresis，禁止事后再量 widget 纠偏。
 public enum GeometrySyncKind: Equatable {
     case window
@@ -866,9 +865,8 @@ public enum GeometrySyncPolicy {
 
 /// 计划格子没变不发。窗口测量抖动走 hysteresis。
 ///
-/// 标题栏显隐正好差一行。切到 zoom（没有标题）量出 50，切回分屏量出 49，
-/// 再写 `refresh-client -C` 会把这条 tmux 里的每个 window 都重排。
-/// shell 重画提示符，旧行留在画面上。±1 一律不当成 client resize。
+/// 切 tab 或测量抖动出现的 ±1 不应 `refresh-client -C`，否则整条 tmux
+/// 的所有 window 都会重排。真正较大的窗口变化照常发送。
 public enum TreeChangeClientResizePolicy {
     public static func shouldForceClientResize() -> Bool { false }
 

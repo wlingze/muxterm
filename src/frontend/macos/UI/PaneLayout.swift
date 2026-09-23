@@ -11,14 +11,13 @@ enum PaneTitleAction: Equatable {
     case close
 }
 
-/// Pane 标题栏高度固定。只看「有没有 title」，有就从原始高度扣一次，
-/// 和分屏树无关。每个 host 自己用同一常量占位，不再按树累加。
+/// Pane 标题悬浮在终端上，显隐不改变 Surface 或 client 的格子。
 enum PaneTitleBarGeometry {
     static let height: CGFloat = 22
     static let dividerLength: CGFloat = 6
 
     static func reservedHeight(showsTitles: Bool) -> CGFloat {
-        showsTitles ? height : 0
+        0
     }
 
     static func clientContentSize(container: NSSize, showsTitles: Bool) -> NSSize {
@@ -734,6 +733,7 @@ final class PaneHostView: NSView {
         didSet { titleBar.moveDestinationsProvider = moveDestinationsProvider }
     }
     private var isPaneActive = false
+    private var allowsTitleBar = false
     private var visiblePaneCount = 1
     private let moveToNewTabItem: NSMenuItem
     private let moveSeparator: NSMenuItem
@@ -741,6 +741,7 @@ final class PaneHostView: NSView {
     private let terminal: MuxTerminalView
     private let dimOverlay = InactivePaneDimView()
     private var titleBarHeightConstraint: NSLayoutConstraint!
+    private var titleTrackingArea: NSTrackingArea?
 
     init(paneId: UInt32, title: String = "", terminal: MuxTerminalView) {
         self.paneId = paneId
@@ -798,11 +799,14 @@ final class PaneHostView: NSView {
             self.onTitleAction?(self.paneId, action)
         }
         titleBar.moveDestinationsProvider = moveDestinationsProvider
-        addSubview(titleBar)
         dimOverlay.translatesAutoresizingMaskIntoConstraints = false
         dimOverlay.isHidden = true
         addSubview(dimOverlay)
-        titleBarHeightConstraint = titleBar.heightAnchor.constraint(equalToConstant: 0)
+        // 标题在蒙层之上，终端从 host 顶部延伸到底部，不为 hover 重新布局。
+        addSubview(titleBar)
+        titleBarHeightConstraint = titleBar.heightAnchor.constraint(
+            equalToConstant: PaneTitleBarGeometry.height
+        )
         NSLayoutConstraint.activate([
             titleBar.leadingAnchor.constraint(equalTo: leadingAnchor),
             titleBar.trailingAnchor.constraint(equalTo: trailingAnchor),
@@ -810,7 +814,7 @@ final class PaneHostView: NSView {
             titleBarHeightConstraint,
             terminal.leadingAnchor.constraint(equalTo: leadingAnchor),
             terminal.trailingAnchor.constraint(equalTo: trailingAnchor),
-            terminal.topAnchor.constraint(equalTo: titleBar.bottomAnchor),
+            terminal.topAnchor.constraint(equalTo: topAnchor),
             terminal.bottomAnchor.constraint(equalTo: bottomAnchor),
             dimOverlay.leadingAnchor.constraint(equalTo: terminal.leadingAnchor),
             dimOverlay.trailingAnchor.constraint(equalTo: terminal.trailingAnchor),
@@ -875,15 +879,44 @@ final class PaneHostView: NSView {
         PaneHostFocusPolicy.acceptsFirstResponder
     }
 
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let titleTrackingArea { removeTrackingArea(titleTrackingArea) }
+        let area = NSTrackingArea(
+            rect: .zero,
+            options: [.mouseEnteredAndExited, .mouseMoved, .activeInKeyWindow, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        titleTrackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        updateTitleHover(at: convert(event.locationInWindow, from: nil))
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        updateTitleHover(at: convert(event.locationInWindow, from: nil))
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        titleBar.isHidden = true
+    }
+
+    private func updateTitleHover(at point: NSPoint) {
+        titleBar.isHidden = !(allowsTitleBar && bounds.contains(point)
+            && point.y >= bounds.maxY - PaneTitleBarGeometry.height)
+    }
+
     func setAllowsMoveToNewTab(_ allowed: Bool) {
         moveSeparator.isHidden = !allowed
         moveToNewTabItem.isHidden = !allowed
     }
 
     func setShowsTitleBar(_ visible: Bool) {
-        titleBar.isHidden = !visible
-        titleBarHeightConstraint.constant = visible ? PaneTitleBarGeometry.height : 0
-        needsLayout = true
+        allowsTitleBar = visible
+        titleBar.isHidden = true
     }
 
     func setTitle(_ title: String) {
@@ -901,6 +934,10 @@ final class PaneHostView: NSView {
     var isContentDimmedForTesting: Bool { !dimOverlay.isHidden }
     var dimOverlayFrameForTesting: NSRect { dimOverlay.frame }
     var titleBarFrameForTesting: NSRect { titleBar.frame }
+
+    func setTitleHoveredForTesting(_ hovered: Bool) {
+        titleBar.isHidden = !(allowsTitleBar && hovered)
+    }
 
     func dimOverlayBlocksHitsForTesting(at point: NSPoint) -> Bool {
         dimOverlay.hitTest(point) != nil

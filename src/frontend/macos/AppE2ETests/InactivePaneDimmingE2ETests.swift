@@ -30,7 +30,7 @@ final class InactivePaneDimmingE2ETests: XCTestCase {
         XCTAssertFalse(host.isContentDimmedForTesting, "zoom / 单 pane 取消蒙层")
     }
 
-    func testDimOverlayCoversTerminalNotTitleBar() {
+    func testDimOverlayCoversTerminalBehindFloatingTitle() {
         AppE2E.ensureApp()
         let terminal = MuxTerminalView(
             paneId: 9,
@@ -61,16 +61,14 @@ final class InactivePaneDimmingE2ETests: XCTestCase {
         XCTAssertGreaterThan(host.titleBarFrameForTesting.height, 0)
         XCTAssertGreaterThan(host.dimOverlayFrameForTesting.height, 0)
         XCTAssertEqual(
-            host.dimOverlayFrameForTesting.maxY,
-            host.titleBarFrameForTesting.minY,
-            accuracy: 1,
-            "蒙层只盖终端，不盖标题栏"
-        )
-        XCTAssertEqual(
             host.dimOverlayFrameForTesting.height,
             host.terminalHeightForTesting,
-            accuracy: 1
+            accuracy: 1,
+            "悬浮标题不能从终端或蒙层的高度里扣空间"
         )
+        host.setTitleHoveredForTesting(true)
+        XCTAssertTrue(host.isTitleBarVisibleForTesting)
+        XCTAssertEqual(host.dimOverlayFrameForTesting.height, host.bounds.height, accuracy: 1)
     }
 
     func testSplitLayoutDimsInactiveAndFullscreenClearsDim() throws {
