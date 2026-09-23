@@ -643,9 +643,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         content.statusBar.onConnectionRefresh = { [weak self] in
             self?.updateTrafficMonitor()
         }
-        content.statusBar.onSSHPortForward = { [weak self] port in
+        content.statusBar.onSSHPortForward = { [weak self] port, allowLAN in
             guard let self else { return }
-            _ = self.terminalManager.forwardSSHPort(port)
+            _ = self.terminalManager.forwardSSHPort(port, allowLAN: allowLAN)
             self.updateTrafficMonitor()
         }
         content.statusBar.onSSHPortStop = { [weak self] port in
@@ -6129,6 +6129,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             return false
         }
         let eventFlags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if event.keyCode == 4,
+           eventFlags.contains(.command),
+           !eventFlags.contains(.shift),
+           !eventFlags.contains(.option),
+           !eventFlags.contains(.control)
+        {
+            content.statusBar.openConnectionDetails()
+            return true
+        }
         let isReturn = event.keyCode == 36 || event.keyCode == 76
         // Cmd-P 统一面板可见时，Tab/Shift+Tab/Esc/Enter/↑↓ 走面板。
         // headless e2e 经 testDispatchKeyEvent 调用 handleKey，事件挂在主

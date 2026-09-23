@@ -249,6 +249,13 @@ impl Workspace {
             .unwrap_or_default()
     }
 
+    /// Check whether a pane-advertised SSH port was hidden by the user.
+    pub fn is_ssh_port_ignored(&self, port: u16) -> bool {
+        self.ssh_port_discovery
+            .as_ref()
+            .is_some_and(|discovery| discovery.is_ignored(port))
+    }
+
     /// Ignore a discovered port until this workspace is closed.
     pub fn ignore_ssh_port(&mut self, port: u16) -> bool {
         self.ssh_port_discovery

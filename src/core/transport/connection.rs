@@ -67,12 +67,61 @@ impl TargetConnection for Connect {
     }
 
     fn open_tcp_forward(&self, remote_port: u16) -> TransportResult<Box<dyn TcpPortForward>> {
+        self.open_tcp_forward_with_access(remote_port, false)
+    }
+
+    fn open_tcp_forward_with_access(
+        &self,
+        remote_port: u16,
+        allow_lan: bool,
+    ) -> TransportResult<Box<dyn TcpPortForward>> {
         if self.transport_id != "ssh" {
             return Err(anyhow::anyhow!("TCP port forwarding requires SSH transport").into());
         }
-        SshTcpPortForward::start(&self.target, remote_port)
+        SshTcpPortForward::start(&self.target, remote_port, allow_lan)
             .map(|forward| Box::new(forward) as Box<dyn TcpPortForward>)
             .map_err(Into::into)
+    }
+
+    fn list_tcp_listener_ports(&self) -> TransportResult<Vec<u16>> {
+        if self.transport_id != "ssh" {
+            return Err(anyhow::anyhow!("TCP port listing requires SSH transport").into());
+        }
+
+        let ss = self.exec_command(ChannelRequest::Exec {
+            argv: vec!["ss".into(), "-H".into(), "-ltn".into()],
+            cwd: None,
+            env: Vec::new(),
+            pty: None,
+        })?;
+        if ss.status == 0 {
+            return Ok(parse_ss_listener_ports(&ss.stdout));
+        }
+
+        // macOS and a few minimal Linux images do not ship iproute2's `ss`.
+        let lsof = self.exec_command(ChannelRequest::Exec {
+            argv: vec![
+                "lsof".into(),
+                "-nP".into(),
+                "-iTCP".into(),
+                "-sTCP:LISTEN".into(),
+            ],
+            cwd: None,
+            env: Vec::new(),
+            pty: None,
+        })?;
+        if lsof.status == 0 {
+            return Ok(parse_lsof_listener_ports(&lsof.stdout));
+        }
+
+        let ss_error = String::from_utf8_lossy(&ss.stderr);
+        let lsof_error = String::from_utf8_lossy(&lsof.stderr);
+        Err(anyhow::anyhow!(
+            "could not list remote TCP ports (ss: {}; lsof: {})",
+            ss_error.trim(),
+            lsof_error.trim()
+        )
+        .into())
     }
 
     fn open_channel(&self, request: ChannelRequest) -> TransportResult<Box<dyn ByteChannel>> {
@@ -108,6 +157,10 @@ impl TargetConnection for Connect {
                 );
             }
             let mut command = std::process::Command::new("ssh");
+            command.args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=3"]);
+            if let Some(config) = std::env::var_os("MUXTERM_SSH_CONFIG_PATH") {
+                command.arg("-F").arg(config);
+            }
             command.arg(&self.target).arg("--").arg(program);
             command.args(&argv[1..]);
             command
@@ -135,15 +188,54 @@ impl TargetConnection for Connect {
     }
 }
 
-/// OpenSSH local forward bound only to 127.0.0.1. It never writes to the
-/// user's ssh_config and is stopped when its owner drops this guard.
+fn parse_ss_listener_ports(output: &[u8]) -> Vec<u16> {
+    let mut ports = std::collections::BTreeSet::new();
+    for line in String::from_utf8_lossy(output).lines() {
+        if let Some(address) = line.split_whitespace().nth(3) {
+            if let Some(port) = port_from_listener_address(address) {
+                ports.insert(port);
+            }
+        }
+    }
+    ports.into_iter().collect()
+}
+
+fn parse_lsof_listener_ports(output: &[u8]) -> Vec<u16> {
+    let mut ports = std::collections::BTreeSet::new();
+    for line in String::from_utf8_lossy(output).lines() {
+        let fields: Vec<_> = line.split_whitespace().collect();
+        let Some(listen_index) = fields.iter().position(|field| *field == "(LISTEN)") else {
+            continue;
+        };
+        let Some(address) = listen_index
+            .checked_sub(1)
+            .and_then(|index| fields.get(index))
+        else {
+            continue;
+        };
+        if let Some(port) = port_from_listener_address(address) {
+            ports.insert(port);
+        }
+    }
+    ports.into_iter().collect()
+}
+
+fn port_from_listener_address(address: &str) -> Option<u16> {
+    let (_, port) = address.rsplit_once(':')?;
+    let port = port.parse::<u16>().ok()?;
+    (port != 0).then_some(port)
+}
+
+/// OpenSSH local forward. It never writes to the user's ssh_config and is
+/// stopped when its owner drops this guard.
 struct SshTcpPortForward {
     child: std::process::Child,
     local_port: u16,
+    lan_access_enabled: bool,
 }
 
 impl SshTcpPortForward {
-    fn start(alias: &str, remote_port: u16) -> anyhow::Result<Self> {
+    fn start(alias: &str, remote_port: u16, allow_lan: bool) -> anyhow::Result<Self> {
         anyhow::ensure!(
             !alias.trim().is_empty(),
             "SSH port forwarding requires a host alias"
@@ -151,8 +243,9 @@ impl SshTcpPortForward {
         anyhow::ensure!(remote_port != 0, "remote port must be between 1 and 65535");
 
         let mut last_error = None;
+        let bind_address = if allow_lan { "0.0.0.0" } else { "127.0.0.1" };
         for _ in 0..10 {
-            let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+            let listener = std::net::TcpListener::bind((bind_address, 0))?;
             let local_port = listener.local_addr()?.port();
             drop(listener);
 
@@ -171,7 +264,7 @@ impl SshTcpPortForward {
             }
             command
                 .arg("-L")
-                .arg(format!("127.0.0.1:{local_port}:127.0.0.1:{remote_port}"))
+                .arg(tcp_forward_spec(bind_address, local_port, remote_port))
                 .arg(alias)
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
@@ -207,8 +300,12 @@ impl SshTcpPortForward {
                         }
                     );
                 }
-                if std::net::TcpListener::bind(("127.0.0.1", local_port)).is_err() {
-                    return Ok(Self { child, local_port });
+                if std::net::TcpListener::bind((bind_address, local_port)).is_err() {
+                    return Ok(Self {
+                        child,
+                        local_port,
+                        lan_access_enabled: allow_lan,
+                    });
                 }
                 if Instant::now() >= deadline {
                     let _ = child.kill();
@@ -232,6 +329,14 @@ impl TcpPortForward for SshTcpPortForward {
     fn local_port(&self) -> u16 {
         self.local_port
     }
+
+    fn lan_access_enabled(&self) -> bool {
+        self.lan_access_enabled
+    }
+}
+
+fn tcp_forward_spec(bind_address: &str, local_port: u16, remote_port: u16) -> String {
+    format!("{bind_address}:{local_port}:127.0.0.1:{remote_port}")
 }
 
 impl Drop for SshTcpPortForward {
@@ -649,6 +754,39 @@ mod tests {
         let connection = Connect::new("ssh", "dev");
         assert_eq!(connection.transport_id(), "ssh");
         assert_eq!(connection.target(), "dev");
+    }
+
+    #[test]
+    fn parses_ss_tcp_listener_addresses_and_deduplicates_ports() {
+        let output = b"State Recv-Q Send-Q Local Address:Port Peer Address:Port\n\
+            LISTEN 0 128 127.0.0.1:3000 0.0.0.0:*\n\
+            LISTEN 0 4096 [::]:443 [::]:*\n\
+            LISTEN 0 128 0.0.0.0:3000 0.0.0.0:*\n\
+            LISTEN 0 128 0.0.0.0:0 0.0.0.0:*\n\
+            malformed listener row\n";
+        assert_eq!(parse_ss_listener_ports(output), vec![443, 3000]);
+    }
+
+    #[test]
+    fn parses_lsof_tcp_listener_addresses_and_ignores_headers() {
+        let output = b"COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\n\
+            node 42 alice 19u IPv4 0x1 0t0 TCP *:5173 (LISTEN)\n\
+            node 42 alice 20u IPv6 0x2 0t0 TCP [::1]:5173 (LISTEN)\n\
+            sshd 1 root 3u IPv4 0x3 0t0 TCP *:22 (ESTABLISHED)\n\
+            test 2 root 4u IPv4 0x4 0t0 TCP *:0 (LISTEN)\n";
+        assert_eq!(parse_lsof_listener_ports(output), vec![5173]);
+    }
+
+    #[test]
+    fn ssh_forward_specs_bind_loopback_or_all_interfaces() {
+        assert_eq!(
+            tcp_forward_spec("127.0.0.1", 41001, 3000),
+            "127.0.0.1:41001:127.0.0.1:3000"
+        );
+        assert_eq!(
+            tcp_forward_spec("0.0.0.0", 41001, 3000),
+            "0.0.0.0:41001:127.0.0.1:3000"
+        );
     }
 
     #[test]

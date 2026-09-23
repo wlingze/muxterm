@@ -152,6 +152,8 @@ int muxterm_workspace_close(struct MuxtermHandle* h, const char* id);
 char* muxterm_workspace_ssh_ports_json(struct MuxtermHandle* h, const char* workspace_id);
 char* muxterm_workspace_ssh_port_forward(
     struct MuxtermHandle* h, const char* workspace_id, uint32_t remote_port);
+char* muxterm_workspace_ssh_port_forward_with_access(
+    struct MuxtermHandle* h, const char* workspace_id, uint32_t remote_port, bool allow_lan);
 int muxterm_workspace_ssh_port_ignore(
     struct MuxtermHandle* h, const char* workspace_id, uint32_t remote_port);
 int muxterm_workspace_ssh_port_stop(

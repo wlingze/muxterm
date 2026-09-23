@@ -85,6 +85,10 @@ impl SshPortDiscovery {
         }
     }
 
+    pub fn is_ignored(&self, port: u16) -> bool {
+        self.ignored.contains(&port)
+    }
+
     fn finish_line(&mut self) {
         self.scan_line();
         self.line.clear();

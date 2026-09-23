@@ -202,14 +202,16 @@ final class ContentView: NSView {
     func updateConnectionStatus(_ summary: (type: String, host: String?, status: String),
                                 trafficRate: UInt64, totalBytes: UInt64,
                                 upRate: UInt64 = 0, upBytes: UInt64 = 0,
-                                ports: [CoreSSHPort] = []) {
+                                ports: CoreSSHPortListing = CoreSSHPortListing(
+                                    ports: [], scanPending: false, scanError: nil
+                                )) {
         statusBar.updateConnectionStatus(
             summary,
             trafficRate: trafficRate,
             totalBytes: totalBytes,
             upRate: upRate,
             upBytes: upBytes,
-            ports: ports
+            portListing: ports
         )
     }
 

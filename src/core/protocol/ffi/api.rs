@@ -45,8 +45,9 @@ pub use super::functions::snapshot::{
     muxterm_workspace_take_pane_reply,
 };
 pub use super::functions::ssh_ports::{
-    muxterm_workspace_ssh_port_forward, muxterm_workspace_ssh_port_ignore,
-    muxterm_workspace_ssh_port_stop, muxterm_workspace_ssh_ports_json,
+    muxterm_workspace_ssh_port_forward, muxterm_workspace_ssh_port_forward_with_access,
+    muxterm_workspace_ssh_port_ignore, muxterm_workspace_ssh_port_stop,
+    muxterm_workspace_ssh_ports_json,
 };
 pub use super::functions::support::MuxtermHandle;
 pub use super::functions::task::{

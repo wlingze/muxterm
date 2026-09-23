@@ -130,13 +130,16 @@ struct CoreSSHHost: Decodable, Equatable {
 struct CoreSSHPort: Decodable, Equatable {
     let remotePort: UInt16
     let localPort: UInt16?
+    let lanAccessEnabled: Bool?
     let pending: Bool
     let error: String?
+    let discovered: Bool?
 
     enum CodingKeys: String, CodingKey {
         case remotePort = "remote_port"
         case localPort = "local_port"
-        case pending, error
+        case lanAccessEnabled = "lan_access_enabled"
+        case pending, error, discovered
     }
 }
 
@@ -144,6 +147,20 @@ private struct WorkspaceSSHPortsResponse: Decodable {
     let ok: Bool
     let error: CoreWireError?
     let ports: [CoreSSHPort]?
+    let scanPending: Bool?
+    let scanError: String?
+
+    enum CodingKeys: String, CodingKey {
+        case ok, error, ports
+        case scanPending = "scan_pending"
+        case scanError = "scan_error"
+    }
+}
+
+struct CoreSSHPortListing: Equatable {
+    let ports: [CoreSSHPort]
+    let scanPending: Bool
+    let scanError: String?
 }
 
 private struct WorkspaceTrafficResponse: Decodable {
@@ -1637,23 +1654,36 @@ final class CoreBridge {
         }
     }
 
-    func workspaceSSHPorts(workspaceID: String) -> [CoreSSHPort] {
-        guard let handle else { return [] }
+    func workspaceSSHPorts(workspaceID: String) -> CoreSSHPortListing {
+        guard let handle else {
+            return CoreSSHPortListing(ports: [], scanPending: false, scanError: nil)
+        }
         do {
             let response: WorkspaceSSHPortsResponse = try Self.decodeDiscoveryJSON(
                 workspaceID.withCString { muxterm_workspace_ssh_ports_json(handle, $0) }
             )
-            return response.ok ? (response.ports ?? []) : []
+            return response.ok
+                ? CoreSSHPortListing(
+                    ports: response.ports ?? [],
+                    scanPending: response.scanPending ?? false,
+                    scanError: response.scanError
+                )
+                : CoreSSHPortListing(ports: [], scanPending: false, scanError: nil)
         } catch {
-            return []
+            return CoreSSHPortListing(ports: [], scanPending: false, scanError: error.localizedDescription)
         }
     }
 
-    func forwardSSHPort(workspaceID: String, remotePort: UInt16) throws {
+    func forwardSSHPort(workspaceID: String, remotePort: UInt16, allowLAN: Bool = false) throws {
         guard let handle else { throw CoreBridgeDiscoveryError.message("Core handle unavailable") }
         let response: SSHPortForwardResponse = try Self.decodeDiscoveryJSON(
             workspaceID.withCString {
-                muxterm_workspace_ssh_port_forward(handle, $0, UInt32(remotePort))
+                muxterm_workspace_ssh_port_forward_with_access(
+                    handle,
+                    $0,
+                    UInt32(remotePort),
+                    allowLAN
+                )
             }
         )
         guard response.ok else {

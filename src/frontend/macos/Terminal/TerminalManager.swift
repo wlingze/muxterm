@@ -1606,16 +1606,18 @@ final class TerminalManager: TerminalInputHandler {
         return bridge.workspaceTrafficBytes(workspaceID: workspaceID)
     }
 
-    func workspaceSSHPorts() -> [CoreSSHPort] {
-        guard connectionSummary.type == "ssh", let bridge, let workspaceID else { return [] }
+    func workspaceSSHPorts() -> CoreSSHPortListing {
+        guard connectionSummary.type == "ssh", let bridge, let workspaceID else {
+            return CoreSSHPortListing(ports: [], scanPending: false, scanError: nil)
+        }
         return bridge.workspaceSSHPorts(workspaceID: workspaceID)
     }
 
     @discardableResult
-    func forwardSSHPort(_ remotePort: UInt16) -> Bool {
+    func forwardSSHPort(_ remotePort: UInt16, allowLAN: Bool = false) -> Bool {
         guard connectionSummary.type == "ssh", let bridge, let workspaceID else { return false }
         do {
-            try bridge.forwardSSHPort(workspaceID: workspaceID, remotePort: remotePort)
+            try bridge.forwardSSHPort(workspaceID: workspaceID, remotePort: remotePort, allowLAN: allowLAN)
             return true
         } catch {
             onError?(error.localizedDescription)
