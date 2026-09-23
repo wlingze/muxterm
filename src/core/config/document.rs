@@ -99,9 +99,11 @@ impl ConfigDocument {
         }
         if !matches!(
             self.config.ui.tab_bar_style.as_str(),
-            "compact" | "equal_width"
+            "compact" | "equal_width" | "fixed"
         ) {
-            return Err(anyhow!("ui.tab_bar_style 只能是 compact 或 equal_width"));
+            return Err(anyhow!(
+                "ui.tab_bar_style 只能是 equal_width、fixed 或 compact"
+            ));
         }
         self.validate_projects()?;
         self.validate_templates()?;
@@ -304,7 +306,7 @@ impl ConfigDocument {
                 ]},
                 {"id":"ui","title_key":"settings.ui","fields":[
                     {"path":"/ui/tab_bar_position","control":"select","options":["top","bottom"],"apply":"next_workspace","title_key":"settings.ui.tab_bar_position"},
-                    {"path":"/ui/tab_bar_style","control":"select","options":["equal_width","compact"],"apply":"immediate","title_key":"settings.ui.tab_bar_style"},
+                    {"path":"/ui/tab_bar_style","control":"select","options":["equal_width","fixed","compact"],"apply":"immediate","title_key":"settings.ui.tab_bar_style"},
                     {"path":"/ui/tab_bar_height","control":"number","apply":"next_workspace","title_key":"settings.ui.tab_bar_height"},
                     {"path":"/ui/show_title_bar","control":"switch","apply":"next_workspace","title_key":"settings.ui.show_title_bar"},
                     {"path":"/ui/borderless","control":"switch","apply":"next_workspace","title_key":"settings.ui.borderless"}

@@ -1285,9 +1285,8 @@ final class StatusBarView: NSView {
         for (id, button) in existing where !ids.contains(id) {
             button.removeFromSuperview()
         }
-        let equalWidth = tmuxStatusEnabled
-            ? colorMode == .theme
-            : tabBarStyle == .equalWidth
+        let equalWidth = tabBarStyle == .equalWidth
+        let fixedWidth = tabBarStyle == .fixed
         tabStack.distribution = equalWidth ? .fillEqually : .fill
         tabStack.spacing = equalWidth ? 1 : 3
         tabStack.setContentHuggingPriority(
@@ -1321,6 +1320,8 @@ final class StatusBarView: NSView {
                 let minimum = button.widthAnchor.constraint(greaterThanOrEqualToConstant: 44)
                 minimum.priority = .defaultLow
                 tabWidthConstraints.append(minimum)
+            } else if fixedWidth {
+                tabWidthConstraints.append(button.widthAnchor.constraint(equalToConstant: 152))
             }
             button.tag = Int(item.id)
             button.aggregateAppearance = AggregateWorkspaceAppearance(
