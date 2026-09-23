@@ -69,6 +69,30 @@ public struct AgentAggregateKey: Hashable, Sendable {
     }
 }
 
+/// 聚合投影的「延后激活」门禁。
+///
+/// `reconcileAggregatePresentation` 发现目标变了不立刻切可见区，而是排到 main
+/// queue。这段延迟里世界会变：用户可能已经开始一个 pending open
+/// （`.connecting`），或切到别的投影。
+///
+/// 此时再无条件激活两个后果：
+/// 1. `activateShells`/`activateAgents` 会清掉连接页（`setConnectProgress(nil)`）；
+/// 2. `connectCatalogTarget` 用 `workspacePresentation == .connecting(pendingID)`
+/// 判断「这次 open 还要不要接管可见区」。被改掉后 attach 结果会走
+/// `insertHidden`，首帧永远画不出来，UI 停在旧 Workspace。
+///
+/// 所以延后块必须重新确认：仍停在调度时的那条投影上才允许激活。
+public enum DeferredAggregateActivationPolicy {
+    public static func shouldActivate<Token: Equatable>(
+        scheduled: Token,
+        current: Token?,
+        isConnecting: Bool
+    ) -> Bool {
+        guard !isConnecting else { return false }
+        return current == scheduled
+    }
+}
+
 /// Agents 槽的一页；只指向包含 agent 的真实源 Tab，不拥有或复制 Surface。
 public struct AgentAggregateTab: Sendable, Equatable {
     public let displayId: UInt32

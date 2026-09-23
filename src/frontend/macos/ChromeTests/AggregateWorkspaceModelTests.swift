@@ -109,4 +109,41 @@ final class AggregateWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(KeyBindingsConfig.action(from: "open_shells"), .openShells)
         XCTAssertEqual(KeyBindingsConfig.action(from: "open_agents"), .openAgents)
     }
+
+    /// 延后激活只能在仍停在调度时那条投影、且没在连接页时执行。
+    /// 否则会清掉连接页，并把随后完成的 attach 挤成隐藏 Workspace。
+    func testDeferredAggregateActivationRequiresTheSameProjection() {
+        let scheduled = "agent-attach-agent-no-resize"
+        XCTAssertTrue(
+            DeferredAggregateActivationPolicy.shouldActivate(
+                scheduled: scheduled,
+                current: scheduled,
+                isConnecting: false
+            )
+        )
+        XCTAssertFalse(
+            DeferredAggregateActivationPolicy.shouldActivate(
+                scheduled: scheduled,
+                current: scheduled,
+                isConnecting: true
+            ),
+            ".connecting 期间不得抢可见区，否则 attach 会走 insertHidden"
+        )
+        XCTAssertFalse(
+            DeferredAggregateActivationPolicy.shouldActivate(
+                scheduled: scheduled,
+                current: "another-workspace",
+                isConnecting: false
+            ),
+            "用户已切走就不得再激活"
+        )
+        XCTAssertFalse(
+            DeferredAggregateActivationPolicy.shouldActivate(
+                scheduled: scheduled,
+                current: nil,
+                isConnecting: false
+            ),
+            "已不在聚合投影上就不得激活"
+        )
+    }
 }
