@@ -1887,8 +1887,8 @@ private final class StatusTabButton: NSButton {
         NSLayoutConstraint.activate([
             activityView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 7),
             activityView.centerYAnchor.constraint(equalTo: centerYAnchor),
-            activityView.widthAnchor.constraint(equalToConstant: 10),
-            activityView.heightAnchor.constraint(equalToConstant: 10),
+            activityView.widthAnchor.constraint(equalToConstant: 12),
+            activityView.heightAnchor.constraint(equalToConstant: 12),
             closeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
             closeButton.centerYAnchor.constraint(equalTo: centerYAnchor),
             closeButton.widthAnchor.constraint(equalToConstant: 16),
@@ -2000,7 +2000,7 @@ private final class StatusTabButton: NSButton {
         self.font = font
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = .left
-        let leadingIndent: CGFloat = activityView.isHidden ? 8 : 21
+        let leadingIndent: CGFloat = activityView.isHidden ? 8 : 25
         paragraph.headIndent = leadingIndent
         paragraph.firstLineHeadIndent = leadingIndent
         paragraph.tailIndent = closeButton.isHidden ? -8 : -24
@@ -2069,6 +2069,7 @@ private final class StatusTabButton: NSButton {
 /// Animation's render server, so multiple busy tabs do not create competing
 /// main-thread timers or increase the event-pump frequency.
 private final class TabActivityIndicatorView: NSView {
+    private let outline = CAShapeLayer()
     private let shape = CAShapeLayer()
 
     var activity: AgentSidebarIndicator? {
@@ -2089,7 +2090,9 @@ private final class TabActivityIndicatorView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
+        outline.contentsScale = NSScreen.main?.backingScaleFactor ?? 2
         shape.contentsScale = NSScreen.main?.backingScaleFactor ?? 2
+        layer?.addSublayer(outline)
         layer?.addSublayer(shape)
     }
 
@@ -2112,22 +2115,35 @@ private final class TabActivityIndicatorView: NSView {
     private func updateAppearance() {
         let color: NSColor
         switch activity {
-        case .working: color = .systemYellow
+        case .working: color = workingColor
         case .blocked: color = .systemPink
         case .done: color = .systemTeal
         case .idle, nil: color = .tertiaryLabelColor
         }
+        outline.strokeColor = NSColor.labelColor.withAlphaComponent(0.82).cgColor
+        outline.fillColor = NSColor.clear.cgColor
+        outline.lineWidth = activity == .working ? 4.2 : 0
+        outline.lineCap = .round
         shape.strokeColor = color.cgColor
         shape.fillColor = activity == .working ? NSColor.clear.cgColor : color.cgColor
-        shape.lineWidth = activity == .working ? 1.5 : 1
+        shape.lineWidth = activity == .working ? 2.6 : 1
         shape.lineCap = .round
         updatePath()
         updateAnimation()
     }
 
+    private var workingColor: NSColor {
+        if effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua {
+            return NSColor(srgbRed: 1.0, green: 0.72, blue: 0.18, alpha: 1)
+        }
+        return NSColor(srgbRed: 0.70, green: 0.22, blue: 0.035, alpha: 1)
+    }
+
     private func updatePath() {
         let rect = bounds.insetBy(dx: 1.5, dy: 1.5)
         guard rect.width > 0, rect.height > 0 else { return }
+        outline.frame = bounds
+        shape.frame = bounds
         if activity == .working {
             let path = CGMutablePath()
             path.addArc(
@@ -2138,9 +2154,17 @@ private final class TabActivityIndicatorView: NSView {
                 clockwise: false
             )
             shape.path = path
+            outline.path = path
         } else {
-            shape.path = CGPath(ellipseIn: rect, transform: nil)
+            let circle = CGPath(ellipseIn: rect, transform: nil)
+            shape.path = circle
+            outline.path = circle
         }
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateAppearance()
     }
 
     private func updateAnimation() {
