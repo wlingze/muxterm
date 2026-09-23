@@ -99,6 +99,13 @@ pub trait TargetConnection: Send + Sync {
     fn transport_id(&self) -> &str;
     fn target(&self) -> &str;
     fn open_channel(&self, request: ChannelRequest) -> TransportResult<Box<dyn ByteChannel>>;
+    /// Start a user-requested local TCP forward to a target loopback port.
+    /// Transports without TCP forwarding keep the default unsupported result.
+    fn open_tcp_forward(&self, _remote_port: u16) -> TransportResult<Box<dyn TcpPortForward>> {
+        Err(TransportError::message(
+            "target transport does not support TCP port forwarding",
+        ))
+    }
     /// Execute a bounded, non-interactive command on this target.
     ///
     /// The default keeps existing test connections source-compatible; real
@@ -109,6 +116,11 @@ pub trait TargetConnection: Send + Sync {
         ))
     }
     fn probe(&self) -> TransportResult<()>;
+}
+
+/// A local TCP forward whose lifetime is tied to the owner of this guard.
+pub trait TcpPortForward: Send {
+    fn local_port(&self) -> u16;
 }
 
 /// PTY 字符格尺寸。

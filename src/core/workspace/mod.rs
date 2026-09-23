@@ -7,6 +7,7 @@ mod pane_buf;
 mod pool;
 mod provenance;
 mod spec;
+mod ssh_port_discovery;
 mod template;
 mod template_apply;
 mod terminal_model;

@@ -15,13 +15,13 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 #[cfg(unix)]
 use std::sync::Mutex;
-#[cfg(unix)]
 use std::time::{Duration, Instant};
 
 use crate::transport::local::LocalProcessTransport;
 use crate::transport::ssh::{build_ssh_command, SshProcessTransport};
 use crate::transport::{
-    ByteChannel, ChannelRequest, CommandOutput, ProcessTransport, TargetConnection, TransportResult,
+    ByteChannel, ChannelRequest, CommandOutput, ProcessTransport, TargetConnection, TcpPortForward,
+    TransportResult,
 };
 
 /// A reusable target connection for local or SSH target context.
@@ -64,6 +64,15 @@ impl TargetConnection for Connect {
 
     fn target(&self) -> &str {
         self.target()
+    }
+
+    fn open_tcp_forward(&self, remote_port: u16) -> TransportResult<Box<dyn TcpPortForward>> {
+        if self.transport_id != "ssh" {
+            return Err(anyhow::anyhow!("TCP port forwarding requires SSH transport").into());
+        }
+        SshTcpPortForward::start(&self.target, remote_port)
+            .map(|forward| Box::new(forward) as Box<dyn TcpPortForward>)
+            .map_err(Into::into)
     }
 
     fn open_channel(&self, request: ChannelRequest) -> TransportResult<Box<dyn ByteChannel>> {
@@ -123,6 +132,112 @@ impl TargetConnection for Connect {
 
     fn probe(&self) -> TransportResult<()> {
         Ok(())
+    }
+}
+
+/// OpenSSH local forward bound only to 127.0.0.1. It never writes to the
+/// user's ssh_config and is stopped when its owner drops this guard.
+struct SshTcpPortForward {
+    child: std::process::Child,
+    local_port: u16,
+}
+
+impl SshTcpPortForward {
+    fn start(alias: &str, remote_port: u16) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            !alias.trim().is_empty(),
+            "SSH port forwarding requires a host alias"
+        );
+        anyhow::ensure!(remote_port != 0, "remote port must be between 1 and 65535");
+
+        let mut last_error = None;
+        for _ in 0..10 {
+            let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+            let local_port = listener.local_addr()?.port();
+            drop(listener);
+
+            let mut command = std::process::Command::new("ssh");
+            command.args([
+                "-nNT",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ExitOnForwardFailure=yes",
+                "-o",
+                "ConnectTimeout=3",
+            ]);
+            if let Some(config) = std::env::var_os("MUXTERM_SSH_CONFIG_PATH") {
+                command.arg("-F").arg(config);
+            }
+            command
+                .arg("-L")
+                .arg(format!("127.0.0.1:{local_port}:127.0.0.1:{remote_port}"))
+                .arg(alias)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::piped());
+
+            let mut child = command
+                .spawn()
+                .map_err(|error| anyhow::anyhow!("spawn SSH TCP forwarding failed: {error}"))?;
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                if let Some(status) = child.try_wait()? {
+                    let mut diagnostic = String::new();
+                    if let Some(mut stderr) = child.stderr.take() {
+                        let _ = std::io::Read::read_to_string(&mut stderr, &mut diagnostic);
+                    }
+                    if diagnostic
+                        .to_ascii_lowercase()
+                        .contains("address already in use")
+                        || diagnostic
+                            .to_ascii_lowercase()
+                            .contains("cannot listen to port")
+                    {
+                        last_error = Some(format!("{status}: {}", diagnostic.trim()));
+                        break;
+                    }
+                    anyhow::bail!(
+                        "SSH port forwarding failed (alias={alias}, remote={remote_port}): {}{}",
+                        status,
+                        if diagnostic.trim().is_empty() {
+                            String::new()
+                        } else {
+                            format!(": {}", diagnostic.trim())
+                        }
+                    );
+                }
+                if std::net::TcpListener::bind(("127.0.0.1", local_port)).is_err() {
+                    return Ok(Self { child, local_port });
+                }
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    anyhow::bail!(
+                        "timed out starting SSH port forward (alias={alias}, remote={remote_port})"
+                    );
+                }
+                std::thread::sleep(Duration::from_millis(40));
+            }
+        }
+
+        anyhow::bail!(
+            "could not allocate a local loopback port for SSH forward to {remote_port}: {}",
+            last_error.unwrap_or_else(|| "local port allocation failed".to_string())
+        )
+    }
+}
+
+impl TcpPortForward for SshTcpPortForward {
+    fn local_port(&self) -> u16 {
+        self.local_port
+    }
+}
+
+impl Drop for SshTcpPortForward {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 

@@ -65,6 +65,29 @@ pub unsafe extern "C" fn muxterm_traffic_up(handle: *mut MuxtermHandle) -> u64 {
     .unwrap_or(0)
 }
 
+/// Return cumulative SSH transport bytes for one product workspace.
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_workspace_traffic_json(
+    handle: *mut MuxtermHandle,
+    workspace_id: *const c_char,
+) -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| {
+        if handle.is_null() {
+            return json_error("handle is null");
+        }
+        let Some(workspace_id) = super::support::cstr_opt(workspace_id) else {
+            return json_error("workspace id is empty");
+        };
+        let workspace_id = parse_workspace_id(&workspace_id);
+        let Some(workspace) = (*handle).pool().get(&workspace_id) else {
+            return json_error("workspace does not exist");
+        };
+        let (down, up) = workspace.runtime().traffic_bytes();
+        json_string(serde_json::json!({ "ok": true, "down": down, "up": up }))
+    }))
+    .unwrap_or_else(|_| json_error("workspace traffic snapshot panic"))
+}
+
 /// List the registered runtime providers and their capabilities.
 ///
 /// # Safety

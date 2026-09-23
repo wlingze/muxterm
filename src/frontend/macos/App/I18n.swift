@@ -219,6 +219,12 @@ enum MuxtermTextKey: CaseIterable {
     case statusState
     case statusTransport
     case statusTransportLocal
+    case statusPorts
+    case statusForward
+    case statusForwarding
+    case statusStopForward
+    case statusIgnore
+    case statusNoPorts
     case tab
     case tabs
     case tabsAccessibility
@@ -470,6 +476,12 @@ enum MuxtermTextKey: CaseIterable {
         case .statusState: return "status_state"
         case .statusTransport: return "status_transport"
         case .statusTransportLocal: return "status_transport_local"
+        case .statusPorts: return "status_ports"
+        case .statusForward: return "status_forward"
+        case .statusForwarding: return "status_forwarding"
+        case .statusStopForward: return "status_stop_forward"
+        case .statusIgnore: return "status_ignore"
+        case .statusNoPorts: return "status_no_ports"
         case .tab: return "tab"
         case .tabs: return "tabs"
         case .tabsAccessibility: return "tabs_accessibility"

@@ -16,6 +16,7 @@ use crate::protocol::{PaneId, TabId};
 use crate::runtime::{ControlEvent, RenderEvent, Runtime, RuntimeBatch, RuntimeSignal};
 use crate::workspace::pane_buf::PaneBuf;
 use crate::workspace::provenance::WorkspaceProvenance;
+use crate::workspace::ssh_port_discovery::SshPortDiscovery;
 use crate::workspace::template::WorkspaceTemplate;
 use crate::workspace::template_apply::{TemplateApplication, TemplateApplyReport};
 use crate::workspace::terminal_model::TerminalModel;
@@ -137,6 +138,8 @@ pub struct Workspace {
     template_application: Option<TemplateApplication>,
     /// 模板应用完成后的稳定报告。
     template_apply_report: Option<TemplateApplyReport>,
+    /// SSH applications explicitly advertising loopback web-server URLs.
+    ssh_port_discovery: Option<SshPortDiscovery>,
 }
 
 impl Workspace {
@@ -153,6 +156,8 @@ impl Workspace {
         scrollback_lines: usize,
     ) -> Self {
         static NEXT_INSTANCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let ssh_port_discovery =
+            (id.transport == "ssh" && id.runtime != "herdr").then(SshPortDiscovery::default);
         Self {
             id,
             name,
@@ -168,6 +173,7 @@ impl Workspace {
             provenance: None,
             template_application: None,
             template_apply_report: None,
+            ssh_port_discovery,
         }
     }
 
@@ -233,6 +239,21 @@ impl Workspace {
     /// 可变访问底层 Runtime，供测试注入事件。
     pub fn runtime_mut(&mut self) -> &mut dyn Runtime {
         self.model.runtime_mut()
+    }
+
+    /// Remote loopback ports advertised by this SSH workspace's pane output.
+    pub fn ssh_ports(&self) -> Vec<u16> {
+        self.ssh_port_discovery
+            .as_ref()
+            .map(|discovery| discovery.ports().collect())
+            .unwrap_or_default()
+    }
+
+    /// Ignore a discovered port until this workspace is closed.
+    pub fn ignore_ssh_port(&mut self, port: u16) -> bool {
+        self.ssh_port_discovery
+            .as_mut()
+            .is_some_and(|discovery| discovery.ignore(port))
     }
 
     /// 只读访问当前状态快照。
@@ -664,6 +685,16 @@ impl Workspace {
                 _ => None,
             })
             .collect();
+
+        if let Some(discovery) = self.ssh_port_discovery.as_mut() {
+            for event in &batch.render {
+                if let RenderEvent::PaneOutput { pane, data } = event {
+                    if !closed_panes.contains(pane) {
+                        discovery.feed(data);
+                    }
+                }
+            }
+        }
 
         for event in &batch.control {
             match event {

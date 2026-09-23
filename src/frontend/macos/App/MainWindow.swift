@@ -186,6 +186,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// SSH 连接状态 + 流量监控刷新定时器（每秒更新一次显示）。
     private var trafficMonitorTimer: Timer?
     private var trafficRateSampler = TrafficRateSampler()
+    private var uploadRateSampler = TrafficRateSampler()
     private var activeProjectFlow: ProjectConnectFlowBox?
     /// UI tasks are owned until the single main-thread event pump dispatches
     /// them to Core.  The queue stores the workspace identity so a fast scene
@@ -641,6 +642,21 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         content.statusBar.onConnectionRefresh = { [weak self] in
             self?.updateTrafficMonitor()
+        }
+        content.statusBar.onSSHPortForward = { [weak self] port in
+            guard let self else { return }
+            _ = self.terminalManager.forwardSSHPort(port)
+            self.updateTrafficMonitor()
+        }
+        content.statusBar.onSSHPortStop = { [weak self] port in
+            guard let self else { return }
+            _ = self.terminalManager.stopSSHPort(port)
+            self.updateTrafficMonitor()
+        }
+        content.statusBar.onSSHPortIgnore = { [weak self] port in
+            guard let self else { return }
+            _ = self.terminalManager.ignoreSSHPort(port)
+            self.updateTrafficMonitor()
         }
         // 铃铛始终打开 Attention 面板。
         content.statusBar.onAttentionClick = { [weak self] in
@@ -3811,6 +3827,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         terminalManager = slot.terminalManager
         terminalManager.setBridgeQueriesEnabled(false)
         trafficRateSampler.reset()
+        uploadRateSampler.reset()
         lastSeenLineSeq.removeAll()
         pendingLastSeenPanes.removeAll()
         lastSeenJump = nil
@@ -4902,14 +4919,20 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private func updateTrafficMonitor() {
         guard !isClosing else { return }
         let summary = terminalManager.connectionSummary
-        let totalBytes = terminalManager.totalBytesReceived
+        let (downBytes, upBytes) = terminalManager.workspaceTrafficBytes()
         content.updateConnectionStatus(
             summary,
             trafficRate: trafficRateSampler.sample(
-                totalBytes: totalBytes,
+                totalBytes: downBytes,
                 now: ProcessInfo.processInfo.systemUptime
             ),
-            totalBytes: totalBytes
+            totalBytes: downBytes,
+            upRate: uploadRateSampler.sample(
+                totalBytes: upBytes,
+                now: ProcessInfo.processInfo.systemUptime
+            ),
+            upBytes: upBytes,
+            ports: terminalManager.workspaceSSHPorts()
         )
     }
 

@@ -55,6 +55,17 @@ pub struct ClientWorkspace {
     pub resolved_target: Option<serde_json::Value>,
 }
 
+/// A remote application port detected from an SSH workspace pane.
+#[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
+pub struct ClientSshPort {
+    pub remote_port: u16,
+    pub local_port: Option<u16>,
+    #[serde(default)]
+    pub pending: bool,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
 /// An owned workspace event.  The workspace identity is copied before the C
 /// buffer is released, so callers never retain a pointer into the handle.
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
@@ -2336,6 +2347,63 @@ impl CoreBridge {
             (
                 ffi::muxterm_traffic_down(self.handle.as_ptr()),
                 ffi::muxterm_traffic_up(self.handle.as_ptr()),
+            )
+        }
+    }
+
+    pub fn workspace_traffic_bytes(&self, workspace_id: &str) -> anyhow::Result<(u64, u64)> {
+        let workspace_id = cstring(workspace_id);
+        let value = Self::discovery_json(|| unsafe {
+            ffi::muxterm_workspace_traffic_json(self.handle.as_ptr(), workspace_id.as_ptr())
+        })?;
+        Ok((
+            value["down"].as_u64().unwrap_or_default(),
+            value["up"].as_u64().unwrap_or_default(),
+        ))
+    }
+
+    pub fn workspace_ssh_ports(&self, workspace_id: &str) -> anyhow::Result<Vec<ClientSshPort>> {
+        let workspace_id = cstring(workspace_id);
+        let value = Self::discovery_json(|| unsafe {
+            ffi::muxterm_workspace_ssh_ports_json(self.handle.as_ptr(), workspace_id.as_ptr())
+        })?;
+        Ok(serde_json::from_value(value["ports"].clone())?)
+    }
+
+    pub fn forward_workspace_ssh_port(
+        &self,
+        workspace_id: &str,
+        remote_port: u16,
+    ) -> anyhow::Result<()> {
+        let workspace_id = cstring(workspace_id);
+        Self::discovery_json(|| unsafe {
+            ffi::muxterm_workspace_ssh_port_forward(
+                self.handle.as_ptr(),
+                workspace_id.as_ptr(),
+                u32::from(remote_port),
+            )
+        })?;
+        Ok(())
+    }
+
+    pub fn ignore_workspace_ssh_port(&self, workspace_id: &str, remote_port: u16) -> i32 {
+        let workspace_id = cstring(workspace_id);
+        unsafe {
+            ffi::muxterm_workspace_ssh_port_ignore(
+                self.handle.as_ptr(),
+                workspace_id.as_ptr(),
+                u32::from(remote_port),
+            )
+        }
+    }
+
+    pub fn stop_workspace_ssh_port(&self, workspace_id: &str, remote_port: u16) -> i32 {
+        let workspace_id = cstring(workspace_id);
+        unsafe {
+            ffi::muxterm_workspace_ssh_port_stop(
+                self.handle.as_ptr(),
+                workspace_id.as_ptr(),
+                u32::from(remote_port),
             )
         }
     }

@@ -1582,18 +1582,13 @@ final class TerminalManager: TerminalInputHandler {
     /// SSH 连接状态摘要（供 statusbar 显示）。
     /// 返回 backend 类型 + alias/session + 连接状态。
     var connectionSummary: (type: String, host: String?, status: String) {
-        let bt = bridge?.backendType ?? "unknown"
-        let host: String?
-        switch bt {
-        case "ssh":
-            host = bridge?.sshAlias ?? bridge?.socket
-        case "tmux":
-            host = bridge?.session
-        case "local":
-            host = nil
-        default:
-            host = bridge?.session
-        }
+        let idParts = workspaceID?.split(separator: "/", maxSplits: 4, omittingEmptySubsequences: false)
+        let workspaceTransport = idParts?.first.map(String.init)
+        let isSSH = workspaceTransport == "ssh" || (workspaceTransport == nil && bridge?.sshAlias != nil)
+        let type = isSSH ? "ssh" : "local"
+        let host = isSSH
+            ? (idParts?.dropFirst().first.map(String.init) ?? bridge?.sshAlias)
+            : nil
         let statusLabel: String
         switch bridge?.lastStatus {
         case 0: statusLabel = "disconnected"
@@ -1602,6 +1597,41 @@ final class TerminalManager: TerminalInputHandler {
         case 3: statusLabel = "exited"
         default: statusLabel = "unknown"
         }
-        return (bt, host, statusLabel)
+        return (type, host, statusLabel)
+    }
+
+    /// Workspace-scoped transport counters and detected application ports.
+    func workspaceTrafficBytes() -> (down: UInt64, up: UInt64) {
+        guard let bridge, let workspaceID else { return (totalBytesReceived, 0) }
+        return bridge.workspaceTrafficBytes(workspaceID: workspaceID)
+    }
+
+    func workspaceSSHPorts() -> [CoreSSHPort] {
+        guard connectionSummary.type == "ssh", let bridge, let workspaceID else { return [] }
+        return bridge.workspaceSSHPorts(workspaceID: workspaceID)
+    }
+
+    @discardableResult
+    func forwardSSHPort(_ remotePort: UInt16) -> Bool {
+        guard connectionSummary.type == "ssh", let bridge, let workspaceID else { return false }
+        do {
+            try bridge.forwardSSHPort(workspaceID: workspaceID, remotePort: remotePort)
+            return true
+        } catch {
+            onError?(error.localizedDescription)
+            return false
+        }
+    }
+
+    @discardableResult
+    func ignoreSSHPort(_ remotePort: UInt16) -> Bool {
+        guard let bridge, let workspaceID else { return false }
+        return bridge.ignoreSSHPort(workspaceID: workspaceID, remotePort: remotePort) == 1
+    }
+
+    @discardableResult
+    func stopSSHPort(_ remotePort: UInt16) -> Bool {
+        guard let bridge, let workspaceID else { return false }
+        return bridge.stopSSHPort(workspaceID: workspaceID, remotePort: remotePort) == 1
     }
 }
