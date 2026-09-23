@@ -108,6 +108,8 @@
   "choose_directory_message": "选择目录后，Muxterm 会创建 tmux session 并 attach。",
   "choose_remote_directory": "选择远程工作目录",
   "remote_directory_message": "输入 {{host}} 上新 tmux session 的目录。",
+  "directory_suggestion_hint": "输入路径后按一次回车进入匹配目录，再按一次回车创建 session。",
+  "directory_no_suggestions": "没有匹配的目录",
   "create_and_attach": "创建并连接",
   "cancel": "取消",
   "tabs": "标签页",

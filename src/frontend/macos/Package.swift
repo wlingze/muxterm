@@ -37,6 +37,7 @@ let appLibSources = [
     "App/AttentionPanelController.swift",
     "App/UnifiedPanelController.swift",
     "App/TargetConfigWindow.swift",
+    "App/RemoteDirectoryPickerWindow.swift",
     "App/SettingsWindow.swift",
     "App/DeveloperToolAccess.swift",
     "App/WorkspaceSidebar.swift",

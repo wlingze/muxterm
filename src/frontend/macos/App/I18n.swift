@@ -189,6 +189,8 @@ enum MuxtermTextKey: CaseIterable {
     case renameWorkspace
     case renameWorkspaceDetail
     case remoteDirectoryMessage
+    case directorySuggestionHint
+    case directoryNoSuggestions
     case splitPaneHorizontal
     case splitPaneHorizontalDetail
     case splitPaneVertical
@@ -450,6 +452,8 @@ enum MuxtermTextKey: CaseIterable {
         case .renameWorkspace: return "rename_workspace"
         case .renameWorkspaceDetail: return "rename_workspace_detail"
         case .remoteDirectoryMessage: return "remote_directory_message"
+        case .directorySuggestionHint: return "directory_suggestion_hint"
+        case .directoryNoSuggestions: return "directory_no_suggestions"
         case .splitPaneHorizontal: return "split_pane_horizontal"
         case .splitPaneHorizontalDetail: return "split_pane_horizontal_detail"
         case .splitPaneVertical: return "split_pane_vertical"

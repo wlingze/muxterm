@@ -4729,21 +4729,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 self?.createSession(target: target, directory: directory)
             }
         case .ssh(let host):
-            let alert = NSAlert()
-            alert.messageText = MuxtermI18n.shared.tr(.chooseRemoteDirectory)
-            alert.informativeText = MuxtermI18n.shared.tr(
-                .remoteDirectoryMessage,
-                arguments: ["host": host.alias]
-            )
-            let field = NSTextField(string: "~")
-            field.frame = NSRect(x: 0, y: 0, width: 320, height: 24)
-            alert.accessoryView = field
-            alert.addButton(withTitle: MuxtermI18n.shared.tr(.createAndAttach))
-            alert.addButton(withTitle: MuxtermI18n.shared.tr(.cancel))
-            alert.beginSheetModal(for: ownerWindow) { [weak self] response in
-                guard response == .alertFirstButtonReturn else { return }
-                let directory = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !directory.isEmpty else { return }
+            let picker = RemoteDirectoryPickerWindow(alias: host.alias, owner: ownerWindow)
+            picker.onChoose = { [weak self] directory in
                 self?.createSession(target: target, directory: directory)
             }
         }

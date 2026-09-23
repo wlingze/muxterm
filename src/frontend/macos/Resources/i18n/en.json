@@ -108,6 +108,8 @@
   "choose_directory_message": "Muxterm will create a tmux session and attach after you choose a directory.",
   "choose_remote_directory": "Choose a remote working directory",
   "remote_directory_message": "Enter the directory for a new tmux session on {{host}}.",
+  "directory_suggestion_hint": "Type a path. Press Return once to enter a matching directory, then Return again to create the session.",
+  "directory_no_suggestions": "No matching directories",
   "create_and_attach": "Create and Attach",
   "cancel": "Cancel",
   "tabs": "tabs",
