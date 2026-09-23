@@ -28,7 +28,7 @@ use crate::runtime::{
     ControlEvent, RenderEvent, Runtime, RuntimeBatch, RuntimeCapability, RuntimeSignal,
 };
 
-use super::events::{EventStream, EventStreamEvent};
+use super::events::{EventStream, EventStreamEvent, HerdrEventKind};
 use super::mutation::{MutationQueue, PendingMutation};
 use super::observe::{
     mouse_capture_decset, ObserveStream, PaneStreamEvent, StreamMode, StreamStartResult,
@@ -415,6 +415,15 @@ impl HerdrRuntime {
 
     /// 把 snapshot 里属于本 workspace 的 tab/pane/layout 填进产品状态。
     fn apply_snapshot(&mut self, snap: &SessionSnapshot, initial: bool) -> bool {
+        self.apply_snapshot_with_workspace_name(snap, initial, true)
+    }
+
+    fn apply_snapshot_with_workspace_name(
+        &mut self,
+        snap: &SessionSnapshot,
+        initial: bool,
+        update_workspace_name: bool,
+    ) -> bool {
         let Some(ws) = snap
             .workspaces
             .iter()
@@ -422,7 +431,9 @@ impl HerdrRuntime {
         else {
             return false;
         };
-        self.workspace_name = ws.label.clone();
+        if update_workspace_name {
+            self.workspace_name = ws.label.clone();
+        }
         let previous_pane_sizes = self
             .panes
             .iter()
@@ -2204,7 +2215,10 @@ impl HerdrRuntime {
                         event = ?cause,
                         "apply Herdr event snapshot"
                     );
-                    self.reconcile_snapshot(&snapshot);
+                    // Workspace 命名是独立操作。关闭/聚焦 Tab 后的快照可能
+                    // 带着活动 Tab 的派生 label；只有 workspace.renamed
+                    // 才能覆盖 Workspace 名称。
+                    self.reconcile_snapshot(&snapshot, cause == HerdrEventKind::WorkspaceRenamed);
                 }
                 EventStreamEvent::Layout(layout) => {
                     self.apply_layout_record(&layout, true);
@@ -2239,7 +2253,7 @@ impl HerdrRuntime {
     /// Apply a post-connect session snapshot as a diff in the shared Runtime
     /// model. Structural events, titles, focus, layouts and full agent records
     /// all converge here; no Herdr event spelling escapes this module.
-    fn reconcile_snapshot(&mut self, snap: &SessionSnapshot) {
+    fn reconcile_snapshot(&mut self, snap: &SessionSnapshot, update_workspace_name: bool) {
         let old_name = self.workspace_name.clone();
         let old_tabs: HashMap<TabId, TabInfo> =
             self.tabs.iter().cloned().map(|tab| (tab.id, tab)).collect();
@@ -2292,7 +2306,7 @@ impl HerdrRuntime {
             return;
         }
 
-        if !self.apply_snapshot(snap, false) {
+        if !self.apply_snapshot_with_workspace_name(snap, false, update_workspace_name) {
             return;
         }
 
@@ -2856,7 +2870,7 @@ impl HerdrRuntime {
             Ok(MutationIoValue::Dispatched(value)) => {
                 let _ = self.apply_mutation_dispatch_result(pending.operation_id, kind, Ok(value));
             }
-            Ok(MutationIoValue::Snapshot(snapshot)) => self.reconcile_snapshot(&snapshot),
+            Ok(MutationIoValue::Snapshot(snapshot)) => self.reconcile_snapshot(&snapshot, false),
             Err(error) => {
                 if !pending.is_probe {
                     let _ =
@@ -3376,6 +3390,22 @@ impl Runtime for HerdrRuntime {
             });
         }
         match task {
+            Task::RenameWorkspace { name } => {
+                if name.trim().is_empty() {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: "Workspace 名称不能为空".into(),
+                    });
+                }
+                self.session
+                    .workspace_rename(&self.workspace_id, name)
+                    .map_err(|error| anyhow!("Herdr workspace.rename 失败: {error}"))?;
+                self.workspace_name.clone_from(name);
+                Self::push_control(
+                    &mut self.events,
+                    ControlEvent::WorkspaceRenamed { name: name.clone() },
+                );
+                Ok(TaskOutcome::Done)
+            }
             Task::RequestPaneSnapshot { target } => {
                 let Some(slot) = self.stream_slots.get(target) else {
                     return Ok(TaskOutcome::Rejected {
@@ -4122,6 +4152,25 @@ mod tests {
                 .into_iter()
                 .collect(),
         }
+    }
+
+    #[test]
+    fn tab_snapshot_does_not_replace_the_herdr_workspace_name() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w1",
+        );
+        let mut initial = agent_snapshot(HerdrAgentStatus::Idle, 0, 1, None, false);
+        initial.workspaces[0].label = "legion-workspace".into();
+        assert!(runtime.apply_snapshot(&initial, true));
+
+        let mut tab_closed_snapshot = initial.clone();
+        tab_closed_snapshot.workspaces[0].label = "second-tab-title".into();
+        assert!(runtime.apply_snapshot_with_workspace_name(&tab_closed_snapshot, false, false,));
+        assert_eq!(runtime.workspace_name, "legion-workspace");
+
+        assert!(runtime.apply_snapshot_with_workspace_name(&tab_closed_snapshot, false, true,));
+        assert_eq!(runtime.workspace_name, "second-tab-title");
     }
 
     #[test]

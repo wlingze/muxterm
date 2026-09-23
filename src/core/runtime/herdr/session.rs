@@ -281,6 +281,15 @@ impl HerdrSession {
         WorkspaceRecord::from_json(ws).ok_or_else(|| anyhow!("workspace.create 解析失败: {result}"))
     }
 
+    /// `workspace.rename`：更新独立的 Herdr workspace 名称。
+    pub fn workspace_rename(&self, workspace_id: &str, label: &str) -> Result<()> {
+        self.call(
+            "workspace.rename",
+            serde_json::json!({ "workspace_id": workspace_id, "label": label }),
+        )?;
+        Ok(())
+    }
+
     /// `worktree.list`：当前仓库全部 checkout（需 WorktreeList）。
     pub fn worktree_list(&self, workspace_id: &str) -> Result<HerdrWorktreeList> {
         let result = self.call(
@@ -981,6 +990,7 @@ mod tests {
 
     struct RecordingChannel {
         response: Vec<u8>,
+        requests: std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
     }
 
     impl crate::transport::ByteChannel for RecordingChannel {
@@ -993,10 +1003,17 @@ mod tests {
         }
 
         fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-            assert!(String::from_utf8_lossy(data).contains("\"method\":\"ping\""));
-            self.response = br#"{"result":{"type":"pong"}}
+            let request: Value = serde_json::from_slice(data).unwrap();
+            self.requests.lock().unwrap().push(request.clone());
+            self.response = if request["method"] == "ping" {
+                br#"{"result":{"type":"pong"}}
 "#
-            .to_vec();
+                .to_vec()
+            } else {
+                br#"{"result":{}}
+"#
+                .to_vec()
+            };
             Ok(data.len())
         }
 
@@ -1011,6 +1028,7 @@ mod tests {
 
     struct RecordingConnection {
         path: std::sync::Arc<std::sync::Mutex<Option<PathBuf>>>,
+        requests: std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
     }
 
     impl crate::transport::TargetConnection for RecordingConnection {
@@ -1034,6 +1052,7 @@ mod tests {
             *self.path.lock().unwrap() = Some(path);
             Ok(Box::new(RecordingChannel {
                 response: Vec::new(),
+                requests: std::sync::Arc::clone(&self.requests),
             }))
         }
 
@@ -1045,9 +1064,11 @@ mod tests {
     #[test]
     fn api_calls_use_target_connection_unix_socket_channel() {
         let path = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let connection: std::sync::Arc<dyn crate::transport::TargetConnection> =
             std::sync::Arc::new(RecordingConnection {
                 path: std::sync::Arc::clone(&path),
+                requests,
             });
         let session = HerdrSession::with_connection(connection, "test", "/remote/herdr.sock");
 
@@ -1058,6 +1079,27 @@ mod tests {
             path.lock().unwrap().as_deref(),
             Some(Path::new("/remote/herdr.sock"))
         );
+    }
+
+    #[test]
+    fn workspace_rename_uses_its_own_label_not_a_tab_name() {
+        let path = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let connection: std::sync::Arc<dyn crate::transport::TargetConnection> =
+            std::sync::Arc::new(RecordingConnection {
+                path,
+                requests: std::sync::Arc::clone(&requests),
+            });
+        let session = HerdrSession::with_connection(connection, "test", "/remote/herdr.sock");
+
+        session
+            .workspace_rename("w7", "legion-workspace")
+            .expect("Herdr should accept an independent workspace label");
+
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests[0]["method"], "workspace.rename");
+        assert_eq!(requests[0]["params"]["workspace_id"], "w7");
+        assert_eq!(requests[0]["params"]["label"], "legion-workspace");
     }
 
     #[test]
