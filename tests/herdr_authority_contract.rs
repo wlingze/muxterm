@@ -24,7 +24,9 @@ use muxterm::test_support::core::transport::registry::ConnectionRegistry;
 use muxterm::test_support::core::workspace::Workspace;
 use muxterm::test_support::core::workspace::WorkspacePool;
 use muxterm::test_support::core::workspace::WorkspaceSpec;
-use support::herdr_test_support::{herdr_available, IsolatedHerdr};
+use support::herdr_test_support::{
+    herdr_available, seed_herdr_pane_viewport, seed_herdr_viewport, IsolatedHerdr,
+};
 use support::sshd_test_support::{loopback_sshd_available, LoopbackSshd};
 
 const TIMEOUT: Duration = Duration::from_secs(15);
@@ -173,6 +175,35 @@ fn herdr_runtime(workspace: &Workspace) -> Result<&HerdrRuntime> {
         .as_any()
         .downcast_ref::<HerdrRuntime>()
         .context("Catalog 没有打开 HerdrRuntime")
+}
+
+/// 等新建的 pane 进入拓扑，并给它补上前端 viewport。
+///
+/// 新建的 pane 在拿到自己的格子之前不开流；mutation 收敛要求该 pane 已 Live
+/// 且 full baseline Ready。真实前端在 layout-change 后会给每个可见 pane 发
+/// ResizePane；无 GUI 的契约必须做同一件事，否则永远等不到收敛。
+fn wait_new_pane(
+    workspace: &mut Workspace,
+    known: &HashSet<PaneId>,
+    label: &str,
+) -> Result<PaneId> {
+    let deadline = Instant::now() + TIMEOUT;
+    while Instant::now() < deadline {
+        let _ = workspace.refresh();
+        let all: Vec<PaneId> = workspace
+            .state()
+            .tabs()
+            .iter()
+            .flat_map(|tab| workspace.state().panes(&tab.id))
+            .map(|pane| pane.id)
+            .collect();
+        if let Some(pane) = all.into_iter().find(|id| !known.contains(id)) {
+            seed_herdr_pane_viewport(workspace, pane, 120, 40)?;
+            return Ok(pane);
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    anyhow::bail!("等待 {label} 超时")
 }
 
 fn assert_authoritative_focus(
@@ -375,6 +406,9 @@ fn run_case(rt: &tokio::runtime::Runtime, sshd: &LoopbackSshd, transport: &str) 
     wait_until(workspace, "初始 Herdr tab/pane", |ws| {
         ws.state().tabs().len() == 1 && ws.state().active_pane().is_some()
     })?;
+    // 无 GUI：先把前端 viewport 写进 Runtime，否则新建 pane 不会开流，
+    // mutation 永远等不到 AuthorityConvergence。
+    seed_herdr_viewport(workspace, 120, 40)?;
 
     {
         let runtime = herdr_runtime(workspace)?;
@@ -403,6 +437,12 @@ fn run_case(rt: &tokio::runtime::Runtime, sshd: &LoopbackSshd, transport: &str) 
     let tab1 = active_tab(workspace)?;
     let tab1_pane = active_pane(workspace)?;
     assert_authoritative_focus(workspace, tab1, tab1_pane, "初始焦点")?;
+    let mut known_panes: HashSet<PaneId> = workspace
+        .state()
+        .panes(&tab1)
+        .into_iter()
+        .map(|pane| pane.id)
+        .collect();
 
     let new_tab_op = accepted(
         workspace,
@@ -413,6 +453,8 @@ fn run_case(rt: &tokio::runtime::Runtime, sshd: &LoopbackSshd, transport: &str) 
         },
         "NewTab",
     )?;
+    let new_tab_pane = wait_new_pane(workspace, &known_panes, "Tab 2 新 pane")?;
+    known_panes.insert(new_tab_pane);
     wait_settled(workspace, new_tab_op, "NewTab settlement")?;
     wait_until(workspace, "第二个 tab", |ws| {
         ws.state().tabs().len() == 2
@@ -431,6 +473,8 @@ fn run_case(rt: &tokio::runtime::Runtime, sshd: &LoopbackSshd, transport: &str) 
         },
         "向右 split",
     )?;
+    let right_top = wait_new_pane(workspace, &known_panes, "向右 split 新 pane")?;
+    known_panes.insert(right_top);
     wait_settled(workspace, split_right_op, "向右 split settlement")?;
     wait_until(workspace, "Tab 2 两 pane", |ws| {
         leaves(ws, tab2).len() == 2
@@ -448,6 +492,8 @@ fn run_case(rt: &tokio::runtime::Runtime, sshd: &LoopbackSshd, transport: &str) 
         },
         "向下 split",
     )?;
+    let bottom = wait_new_pane(workspace, &known_panes, "向下 split 新 pane")?;
+    known_panes.insert(bottom);
     wait_settled(workspace, split_down_op, "向下 split settlement")?;
     wait_until(workspace, "Tab 2 三 pane", |ws| {
         leaves(ws, tab2).len() == 3
@@ -462,8 +508,7 @@ fn run_case(rt: &tokio::runtime::Runtime, sshd: &LoopbackSshd, transport: &str) 
     let all_panes = [tab1_pane, tab2_panes[0], tab2_panes[1], tab2_panes[2]];
     switch_tab(workspace, tab1, "切 Tab 1")?;
     switch_pane(workspace, tab1_pane, "切 Tab 1 pane")?;
-    assert_authoritative_focus(workspace, tab1, tab1_pane, "切到 Tab 1")?;
-    execute_and_assert_three_way_binding(
+    assert_authoritative_focus(workspace, tab1, tab1_pane, "切到 Tab 1")?;    execute_and_assert_three_way_binding(
         workspace,
         tab1_pane,
         &all_panes,

@@ -166,6 +166,20 @@ fn wait_actual_mode(
     })
 }
 
+/// 旧 active pane 应保持什么模式。
+///
+/// 同 tab 分屏：各自保留 controller。
+/// 切到其它 tab：分支上「Live Control 在 desired 变 Observe 时保留」是有意
+/// 为之——拆掉再重建会让切回来整屏重绘，也会把服务端控制权交还。所以这里
+/// 仍要求 Control，而不是旧契约的降级 Observe。
+fn expected_previous_mode(first_visible: bool, was_live_control: bool) -> StreamMode {
+    if first_visible || was_live_control {
+        StreamMode::Control
+    } else {
+        StreamMode::Observe
+    }
+}
+
 /// 核心场景：可见且有 allocation 的 pane 持有 controller；takeover 后有界。
 fn run_stability_case(
     rt: &tokio::runtime::Runtime,
@@ -271,8 +285,9 @@ fn run_stability_case(
         );
     }
 
-    // 3) 连续 focus：已有 allocation 的 first_active 在同 tab 内保留 Control，
-    // 切到其它 tab 才降 Observe；没有 allocation 的隐藏 pane 不能接管尺寸。
+    // 3) 连续 focus：已有 allocation 的 first_active 在同 tab 内保留 Control；
+    //    切到其它 tab 时 Live Control 也保留（避免切回来整屏重绘）；
+    //    没有 allocation 的隐藏 pane 不能接管尺寸。
     let first_tab = workspace
         .state()
         .tabs()
@@ -297,14 +312,12 @@ fn run_stability_case(
             .panes(&first_tab)
             .iter()
             .any(|p| p.id == *pane);
+        let first_was_live_control =
+            herdr_runtime(workspace)?.test_actual_mode(first_active) == Some(StreamMode::Control);
         wait_actual_mode(
             workspace,
             first_active,
-            if first_visible {
-                StreamMode::Control
-            } else {
-                StreamMode::Observe
-            },
+            expected_previous_mode(first_visible, first_was_live_control),
             "previous pane follows tab visibility",
         )?;
         let wire = herdr_runtime(workspace)?
@@ -315,14 +328,17 @@ fn run_stability_case(
             !raw_control_attempt(&client_socket, &wire, false)?,
             "新 active pane 的 raw takeover=false 必须被拒"
         );
-        // 同 tab 分屏保留各自 controller；隐藏 tab 释放。
+        // 同 tab 分屏保留各自 controller；隐藏 tab 的 Live Control 也保留
+        // （分支行为），所以只有真正没有 controller 的 pane 才接受 takeover。
         let old_wire = herdr_runtime(workspace)?
             .test_herdr_pane_id(first_active)
             .context("旧 active 缺 wire id")?
             .to_string();
+        let keeps_control = herdr_runtime(workspace)?.test_actual_mode(first_active)
+            == Some(StreamMode::Control);
         ensure!(
-            raw_control_attempt(&client_socket, &old_wire, false)? != first_visible,
-            "previous pane ownership must follow tab visibility"
+            raw_control_attempt(&client_socket, &old_wire, false)? != keeps_control,
+            "previous pane ownership must follow its live mode"
         );
     }
 
