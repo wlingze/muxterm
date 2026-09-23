@@ -1531,8 +1531,16 @@ final class TerminalManager: TerminalInputHandler {
             errorKey,
             arguments: ["id": "\(paneId)"]
         )
+        let operation: QueuedMuxOperation
+        if data.count <= 64,
+           TerminalMouseReportPolicy.isCoalescibleMotion(Array(data))
+        {
+            operation = .mouseMotion(paneID: paneId, data: data)
+        } else {
+            operation = .input(paneID: paneId, data: data, quiet: false)
+        }
         if !enqueueCoreOperation(
-            .input(paneID: paneId, data: data, quiet: false),
+            operation,
             failureMessage: failureMessage
         ) {
             onError?(failureMessage)

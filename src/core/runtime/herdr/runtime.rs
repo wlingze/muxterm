@@ -6089,9 +6089,24 @@ mod tests {
             let (mut second, _) = listener.accept().expect("accept 重建流失败");
             let mut second_reader = mock_observe_handshake(&mut second);
             ready_tx.send(1usize).unwrap();
-            let input: ClientMessage =
-                read_message(&mut second_reader, MAX_FRAME_SIZE).expect("读 Input 失败");
-            assert!(matches!(input, ClientMessage::Input { .. }));
+            let click = ClientMessage::Input {
+                data: b"\x1b[<0;4;10M".to_vec(),
+            };
+            let hover = ClientMessage::Input {
+                data: b"\x1b[<35;5;11M".to_vec(),
+            };
+            let click_input: ClientMessage =
+                read_message(&mut second_reader, MAX_FRAME_SIZE).expect("读 click Input 失败");
+            assert_eq!(
+                click_input, click,
+                "Herdr control socket 必须收到原样的 SGR 点击字节"
+            );
+            let hover_input: ClientMessage =
+                read_message(&mut second_reader, MAX_FRAME_SIZE).expect("读 hover Input 失败");
+            assert_eq!(
+                hover_input, hover,
+                "Herdr control socket 必须收到原样的 SGR hover 字节"
+            );
             // 保持连接，避免测试结束前 reader 线程 EOF。
             std::thread::sleep(Duration::from_secs(1));
             drop(first_reader);
@@ -6213,8 +6228,9 @@ mod tests {
             .unwrap()
             .surface_baseline = SurfaceBaseline::Ready;
 
-        // 重建后的 control 流必须能送达输入。
-        runtime.send_control_input(pane, b"x").unwrap();
+        // 重建后的 control 流必须按序送达真实终端鼠标报告。
+        runtime.send_control_input(pane, b"\x1b[<0;4;10M").unwrap();
+        runtime.send_control_input(pane, b"\x1b[<35;5;11M").unwrap();
 
         server.join().unwrap();
         let _ = std::fs::remove_dir_all(&dir);

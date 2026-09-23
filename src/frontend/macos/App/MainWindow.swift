@@ -1770,6 +1770,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 } else {
                     result = bridge.sendInput(paneId: paneID, data: data)
                 }
+            case .mouseMotion(let paneID, let data):
+                if let workspaceID = command.workspaceID {
+                    result = bridge.sendInput(
+                        workspaceID: workspaceID,
+                        paneId: paneID,
+                        data: data
+                    )
+                } else {
+                    result = bridge.sendInput(paneId: paneID, data: data)
+                }
             case .resize(let resize):
                 switch resize {
                 case .pane(let paneID, let cols, let rows):

@@ -336,6 +336,32 @@ public enum TerminalMirrorPolicy {
     }
 }
 
+/// 鼠标 hover 是位置更新，队列拥塞时只需保留同一 pane 的最新位置。
+/// 按下、释放、拖动和滚轮序列都必须原样按序送达。
+public enum TerminalMouseReportPolicy {
+    public static func isCoalescibleMotion(_ data: [UInt8]) -> Bool {
+        guard data.count >= 9,
+              data.starts(with: [0x1b, 0x5b, 0x3c]),
+              data.last == 0x4d
+        else {
+            return false
+        }
+
+        let fields = data[3..<(data.count - 1)].split(separator: 0x3b)
+        guard fields.count == 3,
+              let button = Int(String(decoding: fields[0], as: UTF8.self)),
+              Int(String(decoding: fields[1], as: UTF8.self)) != nil,
+              Int(String(decoding: fields[2], as: UTF8.self)) != nil
+        else {
+            return false
+        }
+
+        // SGR motion without a held button uses the release code (3) plus the
+        // motion bit (32). Drag motion has button code 0/1/2 and must be kept.
+        return button >= 32 && button & 0b11 == 0b11
+    }
+}
+
 /// 检测一段 pane 输出里是否包含「终端查询」序列。
 ///
 /// 目前仅用于诊断/测试：tmux 控制模式下查询由 tmux 自己代答，前端不再

@@ -38,6 +38,7 @@ public struct QueuedMuxTask: Equatable, Sendable {
 public enum QueuedMuxOperation: Equatable, Sendable {
     case task(QueuedMuxTask)
     case input(paneID: UInt32, data: Data, quiet: Bool)
+    case mouseMotion(paneID: UInt32, data: Data)
     case resize(QueuedMuxResize)
     case attention(QueuedMuxAttention)
     case viewport(paneID: UInt32, offset: UInt32)
@@ -70,6 +71,8 @@ public enum QueuedMuxOperation: Equatable, Sendable {
             case .acknowledge, .mute:
                 return nil
             }
+        case .mouseMotion(let paneID, _):
+            return .mouseMotion(paneID)
         case .task, .input, .closeWorkspace, .config, .search, .paneOutput, .imagePaste:
             return nil
         }
@@ -84,6 +87,7 @@ public enum QueuedMuxOperation: Equatable, Sendable {
         case switchTab
         case resize(QueuedMuxResize.CoalescingKey)
         case viewport(UInt32)
+        case mouseMotion(UInt32)
         case coloursPane(UInt32)
         case coloursAll
         case attentionVisible(UInt32)

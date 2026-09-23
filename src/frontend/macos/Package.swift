@@ -150,6 +150,7 @@ let package = Package(
             name: "MuxtermAppE2ETests",
             dependencies: [
                 "MuxtermAppLib",
+                .product(name: "SwiftTerm", package: "SwiftTerm"),
             ],
             path: "AppE2ETests",
             linkerSettings: muxtermForceLoad

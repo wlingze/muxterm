@@ -109,6 +109,9 @@ final class MuxTerminalView: TerminalView {
     private var encodingClipboardImage = false
     /// 服务端维护 viewport 的 runtime 通过任务接收滚轮，不滚动本地缓冲。
     var onServerScroll: ((Int) -> Void)?
+    /// Tests and embedding frontends can observe an opened terminal URL without
+    /// launching an external browser. Production falls back to NSWorkspace.
+    var onOpenLink: ((URL) -> Void)?
     private var serverScrollRemainder: CGFloat = 0
     /// 原生 SwiftTerm scrollback 位置变化；TerminalManager 将其镜像到 core。
     var onScrollPositionChanged: ((UInt32, Double, Bool) -> Void)?
@@ -1230,7 +1233,10 @@ extension MuxTerminalView: TerminalViewDelegate {
     }
 
     func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {
-        if let url = URL(string: link) {
+        guard let url = URL(string: link) else { return }
+        if let onOpenLink {
+            onOpenLink(url)
+        } else {
             NSWorkspace.shared.open(url)
         }
     }

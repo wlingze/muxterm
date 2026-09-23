@@ -382,6 +382,27 @@ final class TerminalMirrorPolicyTests: XCTestCase {
             )
         )
     }
+
+    func testOnlyUnpressedSgrMotionCanBeCoalesced() {
+        XCTAssertTrue(TerminalMouseReportPolicy.isCoalescibleMotion(
+            Array("\u{1b}[<35;12;7M".utf8)
+        ))
+        XCTAssertTrue(TerminalMouseReportPolicy.isCoalescibleMotion(
+            Array("\u{1b}[<39;12;7M".utf8)
+        ), "modifier bits do not turn hover into a button event")
+        XCTAssertFalse(TerminalMouseReportPolicy.isCoalescibleMotion(
+            Array("\u{1b}[<0;12;7M".utf8)
+        ), "button press must never be coalesced")
+        XCTAssertFalse(TerminalMouseReportPolicy.isCoalescibleMotion(
+            Array("\u{1b}[<0;12;7m".utf8)
+        ), "button release must never be coalesced")
+        XCTAssertFalse(TerminalMouseReportPolicy.isCoalescibleMotion(
+            Array("\u{1b}[<65;12;7M".utf8)
+        ), "wheel reports must never be coalesced")
+        XCTAssertFalse(TerminalMouseReportPolicy.isCoalescibleMotion(
+            Array("\u{1b}[<35;x;7M".utf8)
+        ), "malformed coordinates must stay on the ordinary input path")
+    }
 }
 
 final class MuxtermTerminalColorsTests: XCTestCase {
