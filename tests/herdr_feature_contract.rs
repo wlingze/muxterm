@@ -17,7 +17,9 @@ use muxterm::test_support::core::protocol::WorkspaceId;
 use muxterm::test_support::core::runtime::herdr::session::{HerdrAgentStatus, HerdrSession};
 use muxterm::test_support::core::runtime::herdr::HerdrRuntime;
 use muxterm::test_support::core::workspace::Workspace;
-use support::herdr_test_support::{herdr_available, IsolatedHerdr, TempAgentCommand};
+use support::herdr_test_support::{
+    herdr_available, seed_herdr_viewport, IsolatedHerdr, TempAgentCommand,
+};
 
 /// 与 SSH 契约同量级（15s）。
 const HERDR_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
@@ -404,6 +406,8 @@ fn herdr_local_write_raw_executes_echo_command() {
         .expect("tokio");
     rt.block_on(workspace.connect())
         .expect("本地 Herdr Runtime connect 应成功");
+    // 无 GUI：显式模拟前端 viewport，否则该 pane 的流永远不会启动。
+    seed_herdr_viewport(&mut workspace, 120, 40).expect("种子 viewport");
 
     let ready_deadline = Instant::now() + HERDR_TIMEOUT;
     let mut live_frame_pane = None;

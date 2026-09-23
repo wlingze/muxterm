@@ -41,6 +41,42 @@ fn pane_process_ready(session: &HerdrSession, pane_id: &str) -> bool {
     shell_pid > 0 && foreground_count > 0
 }
 
+/// 无 GUI 契约必须显式模拟前端 viewport。
+///
+/// Herdr 在拿到本 pane 的格子之前不开流（跳过默认 80×24 Hello；否则远端 TUI
+/// 会被重排）。新建 pane 的 mutation 收敛要求该 pane 已 Live 且 full baseline
+/// Ready，所以不开流就永远不会收敛。真实前端在 attach 时发 ResizeClient，
+/// 之后每个可见 pane 由 ResizePane 跟上。
+pub fn seed_herdr_viewport(
+    workspace: &mut muxterm::test_support::core::workspace::Workspace,
+    cols: u16,
+    rows: u16,
+) -> anyhow::Result<()> {
+    use muxterm::test_support::core::protocol::task::Task;
+    workspace.execute(Task::ResizeClient { cols, rows })?;
+    if let Some(active) = workspace.state().active_pane().map(|pane| pane.id) {
+        seed_herdr_pane_viewport(workspace, active, cols, rows)?;
+    }
+    Ok(())
+}
+
+/// 给单个 pane 发 ResizePane。新建 pane、split 产生的新叶子都要补一次，
+/// 否则该 pane 的流永远不会启动（slot 停在 Absent）。
+pub fn seed_herdr_pane_viewport(
+    workspace: &mut muxterm::test_support::core::workspace::Workspace,
+    pane: muxterm::test_support::core::protocol::PaneId,
+    cols: u16,
+    rows: u16,
+) -> anyhow::Result<()> {
+    use muxterm::test_support::core::protocol::task::Task;
+    workspace.execute(Task::ResizePane {
+        target: pane,
+        cols,
+        rows,
+    })?;
+    Ok(())
+}
+
 /// 检查 herdr 二进制是否可用。
 pub fn herdr_available() -> bool {
     Command::new("herdr")
