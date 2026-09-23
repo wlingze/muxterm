@@ -794,6 +794,21 @@ public enum PaneGridSyncPolicy {
     }
 }
 
+/// pane Surface 是否可以用像素分配覆盖模型格子。
+///
+/// tmux 的权威格子来自 layout：一般路径必须等 layout-change，按像素改模型会和
+/// pane 实际网格差一个分隔条，TUI 底栏会落到输入行。（悬浮标题不参与格子，
+/// PaneTitleBarGeometry.reservedHeight 恒为 0。）乐观全屏切换是例外——host
+/// 已经由前端放大、tmux 事件还没回来，allocation 就是该 pane 的目标格子。
+public enum SurfaceAllocationPolicy {
+    public static func usesAllocation(
+        usesClientResize: Bool,
+        afterOptimisticLayout: Bool
+    ) -> Bool {
+        afterOptimisticLayout || !usesClientResize
+    }
+}
+
 /// 仅决定多 pane 是否允许悬停显示标题；标题不参与格子布局。
 public enum PaneTitleLayoutPolicy {
     public static func showsTitleBar(visiblePaneCount: Int) -> Bool {
@@ -960,7 +975,7 @@ public enum TabGeometrySyncPolicy {
 public enum RemainingPaneGridPolicy {
     /// 换树后用当前 allocation 作为乐观格子。
     ///
-    /// tmux 的格子来自 layout。按像素改模型会比 pane 少掉标题栏和分隔条，
+    /// tmux 的格子来自 layout。按像素改模型会和 pane 实际网格差一个分隔条，
     /// TUI 仍按 pane 列数画，底栏 CUP 被夹到上一行，输入和状态叠在一起。
     public static func usesAllocatedGridAfterTreeChange(
         _ treeChanged: Bool,
