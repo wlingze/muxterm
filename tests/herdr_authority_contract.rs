@@ -508,7 +508,8 @@ fn run_case(rt: &tokio::runtime::Runtime, sshd: &LoopbackSshd, transport: &str) 
     let all_panes = [tab1_pane, tab2_panes[0], tab2_panes[1], tab2_panes[2]];
     switch_tab(workspace, tab1, "切 Tab 1")?;
     switch_pane(workspace, tab1_pane, "切 Tab 1 pane")?;
-    assert_authoritative_focus(workspace, tab1, tab1_pane, "切到 Tab 1")?;    execute_and_assert_three_way_binding(
+    assert_authoritative_focus(workspace, tab1, tab1_pane, "切到 Tab 1")?;
+    execute_and_assert_three_way_binding(
         workspace,
         tab1_pane,
         &all_panes,
