@@ -7,6 +7,82 @@ import MuxtermChrome
 /// OSC 10/11。主题与终端颜色绑定：默认浅色是黑字白底；深色才是浅字深底。
 final class AgentRenderE2ETests: XCTestCase {
 
+    func testTrueColorRenderCachesStayBoundedAcrossFrames() throws {
+        AppE2E.ensureApp()
+        let view = MuxTerminalView(paneId: 164, frame: NSRect(x: 0, y: 0, width: 640, height: 360))
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 640,
+            pixelsHigh: 360, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+            isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 2560, bitsPerPixel: 32))
+        let graphics = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: bitmap))
+        for frame in 0..<32 {
+            var bytes = "\u{1b}[H"
+            for cell in 0..<80 {
+                let color = frame * 80 + cell
+                bytes += "\u{1b}[38;2;\(color / 256);\(color % 256);17mX"
+            }
+            view.feedOutput(Data(bytes.utf8))
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = graphics
+            view.draw(view.bounds)
+            NSGraphicsContext.restoreGraphicsState()
+        }
+        let sizes = view.muxtermRenderCacheSizes()
+        XCTAssertGreaterThan(sizes.attributes, 0)
+        XCTAssertGreaterThan(sizes.trueColors, 0)
+        XCTAssertLessThanOrEqual(sizes.attributes, 2048)
+        XCTAssertLessThanOrEqual(sizes.trueColors, 2048)
+        XCTAssertTrue(view.visibleScreenText().contains("XXXX"))
+    }
+
+    func testWideGlyphMetricsAreReusedAcrossRedraws() throws {
+        AppE2E.ensureApp()
+        let view = MuxTerminalView(paneId: 165, frame: NSRect(x: 0, y: 0, width: 640, height: 360))
+        view.feedOutput(Data("\u{1b}[H中文宽字符".utf8))
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 640,
+            pixelsHigh: 360, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+            isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 2560, bitsPerPixel: 32))
+        let graphics = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: bitmap))
+        func draw() {
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = graphics
+            view.draw(view.bounds)
+            NSGraphicsContext.restoreGraphicsState()
+        }
+        draw()
+        let first = view.muxtermGlyphFitMeasurementCount
+        XCTAssertGreaterThan(first, 0)
+        draw()
+        XCTAssertEqual(view.muxtermGlyphFitMeasurementCount, first)
+    }
+
+    func testCommittedPaintUsesFixedSizeBitmapAcrossManyFrames() throws {
+        AppE2E.ensureApp()
+        let view = MuxTerminalView(paneId: 166, frame: NSRect(x: 0, y: 0, width: 640, height: 360))
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 640,
+            pixelsHigh: 360, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+            isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 2560, bitsPerPixel: 32))
+        let graphics = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: bitmap))
+        var backingBytes = 0
+        for frame in 0..<120 {
+            view.feedOutput(Data("\u{1b}[HFrame \(frame) 中文".utf8))
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = graphics
+            view.draw(view.bounds)
+            NSGraphicsContext.restoreGraphicsState()
+            if frame == 0 { backingBytes = view.committedPaintBufferBytes }
+            XCTAssertEqual(view.committedPaintBufferBytes, backingBytes)
+        }
+        XCTAssertGreaterThan(backingBytes, 0)
+        XCTAssertLessThanOrEqual(backingBytes, 640 * 360 * 8)
+        XCTAssertTrue(view.visibleScreenText().contains("Frame 119"))
+        view.setFrameSize(NSSize(width: 320, height: 180))
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = graphics
+        view.draw(view.bounds)
+        NSGraphicsContext.restoreGraphicsState()
+        XCTAssertLessThan(view.committedPaintBufferBytes, backingBytes)
+    }
+
     func testSelectionDuringSynchronizedOutputKeepsLastCompletePixels() throws {
         AppE2E.ensureApp()
         let view = MuxTerminalView(paneId: 163, frame: NSRect(x: 0, y: 0, width: 640, height: 360))
