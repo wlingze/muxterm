@@ -820,6 +820,48 @@ extension MainWindowController {
         pollOnce()
     }
 
+    // MARK: - 更新提醒条
+
+    /// 提醒条是否可见：Core 说「有更新」时前端必须把它渲染出来。
+    func testUpdateBannerVisible() -> Bool { !content.updateBanner.isHidden }
+
+    /// 提醒条当前文案（版本号来自 Core 的发布清单）。
+    func testUpdateBannerMessage() -> String { content.updateBanner.testMessageText() }
+
+    /// 提醒条主按钮标题（「一键更新」/「重试」由 Core 阶段决定）。
+    func testUpdateBannerActionTitle() -> String { content.updateBanner.testActionTitle() }
+
+    /// 主按钮是否可点：下载/安装期间必须为 false，避免重复触发。
+    func testUpdateBannerActionEnabled() -> Bool {
+        guard let button = Self.findView(
+            content.updateBanner,
+            identifier: "muxterm.updateAction"
+        ) as? NSButton else {
+            return false
+        }
+        return !button.isHidden && button.isEnabled
+    }
+
+    /// 点真实按钮，走生产回调链：按钮 → onPrimaryAction
+    /// → performUpdateAction。
+    @discardableResult
+    func testClickUpdateAction() -> Bool {
+        guard let button = Self.findView(
+            content.updateBanner,
+            identifier: "muxterm.updateAction"
+        ) as? NSButton, !button.isHidden, button.isEnabled else {
+            return false
+        }
+        button.performClick(nil)
+        return true
+    }
+
+    /// Core 的更新状态快照；banner 的唯一数据来源。
+    func testUpdateStatus() -> CoreBridge.UpdateStatus? { bridge.updateStatus() }
+
+    /// 手动检查一次（等价于菜单里的「检查更新」）。
+    func testCheckForUpdates() -> CoreBridge.UpdateStatus? { bridge.updateCheck() }
+
     private static func findView(_ root: NSView?, identifier: String) -> NSView? {
         guard let root else { return nil }
         if root.accessibilityIdentifier() == identifier {
