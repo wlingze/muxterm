@@ -1322,14 +1322,20 @@ impl HerdrRuntime {
                 {
                     return None;
                 }
-                if slot.awaiting_allocation && !self.has_ui_allocation(pane.id) {
-                    return None;
-                }
                 let effective = if slot.control_rearm == ControlRearm::SuppressedAfterTakeover {
                     StreamMode::Observe
                 } else {
                     slot.desired_mode
                 };
+                // 只有 Control 需要本 pane 的格子（Hello 会写远端 PTY 尺寸）。
+                // Observe 不再被 awaiting_allocation 拦住：隐藏 tab 的 pane
+                // 拿不到 ResizePane，但 Activity 仍要它的字节流。
+                if slot.awaiting_allocation
+                    && effective.is_control()
+                    && !self.has_ui_allocation(pane.id)
+                {
+                    return None;
+                }
                 if slot.actual_mode == Some(effective) && slot.state == SlotState::Live {
                     return None;
                 }
@@ -1374,14 +1380,22 @@ impl HerdrRuntime {
             .stream_slots
             .get(&pane)
             .is_none_or(|slot| slot.generation == 0 && slot.actual_mode.is_none());
-        if never_started && !self.has_ui_allocation(pane) {
+        // Control Hello 会把远端 PTY 改成 Hello 里的尺寸，所以必须等本 pane 的
+        // 格子，不能用默认 80×24 开局重排远端 TUI。
+        //
+        // Observe 是只读画布，不会动远端尺寸：隐藏 tab 的 pane 永远拿不到
+        // ResizePane（前端只给可见格子发），但 Activity/注意仍需它的字节流，
+        // 所以 Observe 必须能先用 preferred/默认 viewport 开流；hello_client_size
+        // 已经把窗口 preferred 插在 80×24 之前。
+        let needs_pane_grid = mode.is_control();
+        if never_started && needs_pane_grid && !self.has_ui_allocation(pane) {
             if let Some(slot) = self.stream_slots.get_mut(&pane) {
                 if !slot.awaiting_allocation {
                     slot.awaiting_allocation = true;
                     tracing::debug!(
                         target = "muxterm::herdr",
                         pane = %pane,
-                        "defer pane stream until UI allocation; skip 80x24 Hello"
+                        "defer Control stream until this pane has a grid; skip 80x24 Hello"
                     );
                 }
             }
@@ -4494,6 +4508,43 @@ mod tests {
         assert_eq!(slot.generation, 1);
     }
 
+    /// 隐藏 tab 的 pane 拿不到 ResizePane，但 Activity 仍要它的字节流。
+    /// Control Hello 会用 Hello 里的尺寸写远端 PTY，才必须等格子；
+    /// Observe 只是只读画布，不得被 awaiting_allocation 拦住。
+    #[test]
+    fn observe_stream_starts_without_a_pane_grid() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w8",
+        );
+        runtime.foreground = true;
+        runtime.preferred_client_size = Some((178, 50));
+        runtime.status = BackendStatus::Connected;
+        let hidden = PaneId(21);
+        runtime.active_pane = Some(PaneId(15));
+        runtime.active_tab = Some(TabId(1));
+        runtime.panes.push(PaneInfo {
+            id: hidden,
+            tab: TabId(4),
+            active: false,
+            title: String::new(),
+            cols: 90,
+            rows: 30,
+        });
+        runtime.pane_to_herdr_pane.insert(hidden, "w8:pK".into());
+        runtime.ensure_stream_channels();
+        runtime.reconcile_stream_modes();
+        let slot = runtime.stream_slots.get(&hidden).unwrap();
+        assert_eq!(slot.desired_mode, StreamMode::Observe);
+        assert!(
+            !slot.awaiting_allocation,
+            "Observe 不得因为缺本 pane 格子而一直不开流"
+        );
+        assert_eq!(slot.generation, 1, "Observe 必须已经开流");
+        // 开流用的 viewport 取窗口 preferred，不是默认 80×24。
+        assert_eq!(runtime.hello_client_size(hidden), (178, 50));
+    }
+
     #[test]
     fn identical_full_frames_are_not_replayed() {
         let mut runtime = HerdrRuntime::new(
@@ -4732,6 +4783,7 @@ mod tests {
         assert!(frames[0].ends_with(b"\x1b[?1003h\x1b[?1006h"));
     }
 
+    #[test]
     fn first_hello_waits_for_pane_allocation_not_window_preferred() {
         let mut runtime = HerdrRuntime::new(
             Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
