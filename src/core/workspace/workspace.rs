@@ -282,23 +282,24 @@ impl Workspace {
                 command,
                 workdir: None,
             } => {
+                let is_herdr = self.resolved_target.as_ref().is_some_and(|target| {
+                    target.canonical.runtime == crate::projects::TargetRuntime::Herdr
+                });
+                let usable_path = |path: &str| {
+                    let path = path.trim();
+                    (!path.is_empty() && !(is_herdr && is_herdr_workspace_token(path)))
+                        .then(|| path.to_string())
+                };
                 let workdir = self
                     .resolved_target
                     .as_ref()
-                    .map(|target| target.canonical.path.trim().to_string())
-                    .filter(|path| !path.is_empty())
+                    .and_then(|target| usable_path(&target.canonical.path))
                     .or_else(|| {
-                        self.resolved_target.as_ref().and_then(|target| {
-                            let path = target.spec.path.trim();
-                            (!path.is_empty() && !is_herdr_workspace_token(path))
-                                .then(|| path.to_string())
-                        })
+                        self.resolved_target
+                            .as_ref()
+                            .and_then(|target| usable_path(&target.spec.path))
                     })
-                    .or_else(|| {
-                        let path = self.id.path.trim();
-                        (!path.is_empty() && !is_herdr_workspace_token(path))
-                            .then(|| path.to_string())
-                    });
+                    .or_else(|| usable_path(&self.id.path));
                 Task::NewTab {
                     name,
                     command,

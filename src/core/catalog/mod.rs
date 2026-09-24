@@ -647,6 +647,40 @@ impl Catalog {
             }
             CandidateRef::Existing { identity } => {
                 let mut resolved = self.resolve_existing_candidate(connections, identity)?;
+                // A discovered Herdr workspace carries its runtime id, but
+                // discovery cannot supply the user's Project directory. Keep
+                // that metadata when this exact runtime identity is already
+                // saved as a Project.
+                let mut matching_projects = projects.iter().filter(|project| {
+                    resolver::ResolvedTargetDescriptor::from_project_target(
+                        project.name.clone(),
+                        &project.target,
+                    )
+                    .identity_key()
+                        == resolved.canonical.identity_key()
+                });
+                if let Some(project) = matching_projects.next() {
+                    if matching_projects.next().is_some() {
+                        return Err(resolver::ResolveError::AmbiguousCandidate {
+                            identity: resolved.canonical.identity_key(),
+                            candidates: projects
+                                .iter()
+                                .filter(|candidate| {
+                                    resolver::ResolvedTargetDescriptor::from_project_target(
+                                        candidate.name.clone(),
+                                        &candidate.target,
+                                    )
+                                    .identity_key()
+                                        == resolved.canonical.identity_key()
+                                })
+                                .map(|candidate| candidate.id.to_string())
+                                .collect(),
+                        });
+                    }
+                    resolved.canonical.name = project.name.clone();
+                    resolved.canonical.path = project.target.path().to_string();
+                    resolved.spec.provenance = Some(project.provenance());
+                }
                 resolved.spec.template = requested_template;
                 // An Existing row is an attach identity even if a caller
                 // accidentally supplies CreateIfMissing.
