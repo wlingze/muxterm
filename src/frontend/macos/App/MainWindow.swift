@@ -3835,6 +3835,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         bridge.selectWorkspace(slot.workspaceID)
         applyVisibleWorkspaceIdentity(slot)
         terminalManager = slot.terminalManager
+        content.setDisconnected(WorkspaceDisconnectOverlayPolicy.shouldShow(
+            status: slot.backendStatus,
+            usesClientResize: terminalManager.usesClientResize
+        ))
         terminalManager.setBridgeQueriesEnabled(false)
         trafficRateSampler.reset()
         uploadRateSampler.reset()
@@ -5272,20 +5276,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 needsLightweightUpdate = true
             }
             if ev.isBackendStatus {
-                if ev.paneId == 0 || ev.paneId == 4 {
-                    // 0 = disconnected, 4 = exited。
-                    // tmux/ssh 控制模式：保留最后一帧 + 水印，不关窗（W16b）。
-                    // 本地 shell 的 Exited 仍关窗（session 已结束）。
-                    if terminalManager.usesClientResize {
-                        content.setDisconnected(true)
-                    } else if ev.paneId == 4 {
-                        // Shells 是固定聚合槽；具体 shell 退出只让当前真实
-                        // Workspace 进入空拓扑，下面统一决定补 local 或关闭 remote。
-                        content.setDisconnected(true)
-                    }
-                } else {
-                    content.setDisconnected(false)
-                }
+                sceneStack.activeKey.flatMap { sceneStack.scenes[$0] }?
+                    .cacheBackendStatus(ev.paneId)
+                content.setDisconnected(WorkspaceDisconnectOverlayPolicy.shouldShow(
+                    status: ev.paneId,
+                    usesClientResize: terminalManager.usesClientResize
+                ))
             }
         }
         if needsLayoutReload || uiStateChanged {

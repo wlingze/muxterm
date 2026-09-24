@@ -1469,6 +1469,23 @@ final class ScreenTextTests: XCTestCase {
     }
 }
 
+final class WorkspaceDisconnectOverlayPolicyTests: XCTestCase {
+    func testOverlayFollowsSelectedWorkspaceStatus() {
+        XCTAssertTrue(WorkspaceDisconnectOverlayPolicy.shouldShow(
+            status: 4, usesClientResize: false
+        ))
+        XCTAssertFalse(WorkspaceDisconnectOverlayPolicy.shouldShow(
+            status: 2, usesClientResize: false
+        ))
+        XCTAssertTrue(WorkspaceDisconnectOverlayPolicy.shouldShow(
+            status: 0, usesClientResize: true
+        ))
+        XCTAssertFalse(WorkspaceDisconnectOverlayPolicy.shouldShow(
+            status: 0, usesClientResize: false
+        ))
+    }
+}
+
 final class PaneLayoutProjectionTests: XCTestCase {
     func testLayoutMustContainExactlyCurrentTabPanes() {
         XCTAssertTrue(

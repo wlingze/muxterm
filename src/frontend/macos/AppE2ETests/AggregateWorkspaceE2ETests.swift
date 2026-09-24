@@ -4,6 +4,24 @@ import XCTest
 import MuxtermChrome
 
 final class AggregateWorkspaceE2ETests: XCTestCase {
+    func testLastLocalPaneExitCreatesShellAndClearsDisconnectOverlay() throws {
+        AppE2E.ensureApp()
+        let bridge = try CoreBridge(backendType: "local")
+        let app = MainWindowController(bridge: bridge, debug: true)
+        defer { app.testShutdown() }
+        app.showWindow(nil)
+        XCTAssertTrue(app.waitReady())
+
+        let oldPane = app.testActivePaneID()
+        app.testCloseActivePane()
+        XCTAssertTrue(AppE2E.wait(timeout: AppE2E.featureTimeout) {
+            app.testPollOnce()
+            return app.testActivePaneID() != oldPane
+                && app.testPresentedTabIDs().count == 1
+                && !app.testDisconnectOverlayVisible()
+        }, "最后一个本地 pane 退出后必须立即补建 shell，且不能留下断线水印")
+    }
+
     func testColdStartIsShellsAndCmdCtrlSReturnsToFirstLocalTab() throws {
         let project = OnePaneCat(label: "aggregate-shell-project")
         AppE2E.ensureApp()

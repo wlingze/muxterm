@@ -983,6 +983,13 @@ public enum FirstTabPaintPolicy {
     }
 }
 
+/// 断线水印属于当前 Workspace，不能随 ContentView 泄漏到切换后的 Scene。
+public enum WorkspaceDisconnectOverlayPolicy {
+    public static func shouldShow(status: UInt32, usesClientResize: Bool) -> Bool {
+        (status == 0 && usesClientResize) || status == 4
+    }
+}
+
 /// 窗口外框没变可以省略 `refresh-client -C`；换了一棵 pane 树时
 /// SwiftTerm 每个 host 的格子仍要按像素重算。
 public enum TabGeometrySyncPolicy {
