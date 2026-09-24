@@ -74,6 +74,24 @@ enum MuxTerminalGridMetrics {
 /// 普通文本保留 SwiftTerm → `interpretKeyEvents` → `insertText` 单路径。
 /// 仅补齐 legacy 修饰方向键编码，避免 AppKit 将其吞成选区操作。
 final class MuxTerminalView: TerminalView {
+    /// IME 候选窗应锚定到下一个将要输入的字符。光标停在最后一列时，
+    /// 下一字符会软换行；仍返回最后一格会把候选窗挤到 pane 右边缘并裁掉。
+    override func firstRect(
+        forCharacterRange range: NSRange,
+        actualRange: NSRangePointer?
+    ) -> NSRect {
+        actualRange?.pointee = range
+        guard let window else { return .zero }
+
+        var caret = caretFrame
+        let cursor = getTerminal().getCursorLocation()
+        if getTerminal().cols > 0, cursor.x >= getTerminal().cols - 1 {
+            caret.origin.x = 0
+            caret.origin.y = max(0, caret.origin.y - caret.height)
+        }
+        return window.convertToScreen(convert(caret, to: nil))
+    }
+
     override func keyDown(with event: NSEvent) {
         let flags = event.modifierFlags
         if !hasMarkedText(), getTerminal().keyboardEnhancementFlags.isEmpty,
