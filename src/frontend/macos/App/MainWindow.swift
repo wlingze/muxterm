@@ -244,6 +244,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         var tabBarPosition = TabBarPosition.bottom
         var tabBarStyle = TabBarStyle.equalWidth
         var poolMaxSlots = MuxtermConfig.defaultPoolMaxSlots
+        var attachHistoryDays = 30
         var projects: [TargetConfig] = []
     }
 
@@ -279,6 +280,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         if let pool = values["pool"] as? [String: Any] {
             resolved.poolMaxSlots = pool["max_slots"] as? Int ?? resolved.poolMaxSlots
+        }
+        if let quickPanel = values["quick_panel"] as? [String: Any] {
+            resolved.attachHistoryDays = quickPanel["attach_history_days"] as? Int
+                ?? resolved.attachHistoryDays
         }
         if let projects = values["projects"] as? [[String: Any]] {
             resolved.projects = QuickConnectStore.targetConfigs(from: projects)
@@ -357,7 +362,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         if let injectedQuickConnectStore {
             quickConnectStore = injectedQuickConnectStore
         } else {
-            quickConnectStore = QuickConnectStore(projects: resolved.projects) { [weak self] updated in
+            quickConnectStore = QuickConnectStore(
+                projects: resolved.projects,
+                attachHistoryURL: QuickConnectStore.defaultAttachHistoryURL
+            ) { [weak self] updated in
                 guard let self else { return }
                 let operations: [[String: Any]] = [[
                     "op": "replace",
@@ -375,6 +383,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 }
             }
         }
+        quickConnectStore.setAttachHistoryDays(resolved.attachHistoryDays)
         window.delegate = self
         installMainSplit(in: window)
         content.statusBar.onToggleSidebar = { [weak self] in
@@ -471,7 +480,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             }
         )
         unifiedPanel.onWorkspaceActivate = { [weak self] workspaceId in
-            self?.activateSidebarWorkspace(workspaceId)
+            guard let self else { return }
+            if let scene = self.scene(forWorkspaceId: workspaceId) {
+                self.quickConnectStore.recordAttach(scene.targetConfig)
+            }
+            self.activateSidebarWorkspace(workspaceId)
+        }
+        unifiedPanel.attachCountForWorkspace = { [weak self] workspaceId in
+            guard let self, let scene = self.scene(forWorkspaceId: workspaceId) else { return 0 }
+            return self.quickConnectStore.attachCount(for: scene.targetConfig)
         }
         unifiedPanel.onWorkspaceClose = { [weak self] workspaceId in
             self?.closeWorkspace(workspaceId)
@@ -1194,6 +1211,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         )
         window?.appearance = appearance
         content.appearance = appearance
+        settingsWindow?.window?.appearance = appearance
         NSApp.appearance = appearance
         // 强制外观立即传播（headless 下 effectiveAppearance 可能延迟）。
         window?.contentView?.viewDidChangeEffectiveAppearance()
@@ -1269,6 +1287,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// Open the Core Schema/Manifest-backed settings window.
     @objc func openPreferences() {
         if let settingsWindow {
+            settingsWindow.window?.appearance = window?.appearance
             settingsWindow.showWindow(self)
             return
         }
@@ -1283,13 +1302,65 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             }
         )
         settingsWindow = controller
+        controller.window?.appearance = window?.appearance
         controller.onApplied = { [weak self] operations in
+            guard let self else { return }
+            var fontFamily = self.terminalFontSettings.family
+            var fontSize = self.terminalFontSettings.size
+            var fontChanged = false
             for operation in operations {
-                guard operation["path"] as? String == "/ui/tab_bar_style",
-                      let value = operation["value"] as? String,
-                      let style = TabBarStyle(rawValue: value)
-                else { continue }
-                self?.content.statusBar.tabBarStyle = style
+                guard let path = operation["path"] as? String else { continue }
+                switch path {
+                case "/quick_panel/attach_history_days":
+                    if let days = operation["value"] as? Int {
+                        self.quickConnectStore.setAttachHistoryDays(days)
+                        self.unifiedPanel.refreshData()
+                    }
+                case "/ui/tab_bar_style":
+                    if let value = operation["value"] as? String,
+                       let style = TabBarStyle(rawValue: value) {
+                        self.content.statusBar.tabBarStyle = style
+                    }
+                case "/ui/tab_bar_position":
+                    if let value = operation["value"] as? String,
+                       let position = TabBarPosition(rawValue: value) {
+                        self.content.applyTabBarPosition(position)
+                    }
+                case "/statusbar/mode":
+                    if let value = operation["value"] as? String,
+                       let mode = StatusBarMode(rawValue: value) {
+                        self.content.statusBar.colorMode = mode
+                        if let snapshot = self.statusBarSnapshot {
+                            self.content.applyStatusBar(snapshot)
+                        }
+                    }
+                case "/theme/name":
+                    if let name = operation["value"] as? String {
+                        self.applyTheme(MuxtermTheme.from(name: name), persist: false)
+                    }
+                case "/font/family":
+                    if let value = operation["value"] as? String {
+                        fontFamily = value
+                        fontChanged = true
+                    }
+                case "/font/size":
+                    if let value = operation["value"] as? NSNumber {
+                        fontSize = CGFloat(truncating: value)
+                        fontChanged = true
+                    }
+                default:
+                    break
+                }
+            }
+            if fontChanged {
+                self.terminalFontSettings.family = fontFamily
+                self.terminalFontSettings.size = fontSize
+                self.configuredFontSize = fontSize
+                self.terminalManager.setFont(
+                    family: fontFamily,
+                    size: fontSize,
+                    container: self.content.paneLayout
+                )
             }
         }
         controller.showWindow(self)
@@ -3634,6 +3705,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             if pendingID == nil || workspacePresentation == .connecting(pendingID!) {
                 activate(slot: slot)
             }
+            quickConnectStore.recordAttach(canonical)
             completion(.success(CatalogConnection(bridge: slot.bridge, target: canonical)))
             return
         }
@@ -3667,6 +3739,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                         if shouldActivate {
                             self.activate(slot: existing)
                         }
+                        self.quickConnectStore.recordAttach(canonical)
                         completion(.success(CatalogConnection(
                             bridge: existing.bridge,
                             target: canonical
@@ -3682,6 +3755,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     } else {
                         self.insertHidden(slot: slot)
                     }
+                    self.quickConnectStore.recordAttach(resolved)
                     completion(.success(CatalogConnection(bridge: sharedBridge, target: resolved)))
                 }
             } catch {

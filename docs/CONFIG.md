@@ -151,6 +151,7 @@ frontend 不再维护第二套连接池。
 | 分组 | 字段 |
 | --- | --- |
 | `pool` | `max_slots` |
+| `quick_panel` | `attach_history_days`（默认 30，范围 1–365；快速面板按窗口内成功 attach 次数排序，历史记录另存文件） |
 | `tmux` | `auto_mouse`、`default_session`、`socket` |
 | `ssh` | `host`、`port`、`user`、`key_path` |
 | `pane` | `default_command`、`workdir` |

@@ -103,6 +103,8 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     var onAcknowledge: ((String, UInt32) -> Void)? // (workspaceId, paneId)
     var onDismissed: (() -> Void)?
     var currentConfig: TargetConfig?
+    /// Core WorkspaceId 到持久 attach 频次的只读投影，由窗口拥有身份映射。
+    var attachCountForWorkspace: ((String) -> Int)?
 
     private let store: QuickConnectStore
     private let input = NSSearchField()
@@ -400,9 +402,21 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
             chromeWorkspaces.compactMap(\.openingTargetID)
         )
         let currentId = currentConfig.map { QuickConnect.uniqueID(for: $0) }
+        let rankedWorkspaces = chromeWorkspaces.enumerated().sorted { lhs, rhs in
+            if lhs.element.isAggregate != rhs.element.isAggregate {
+                return lhs.element.isAggregate
+            }
+            if lhs.element.isAggregate { return lhs.offset < rhs.offset }
+            if lhs.element.isOpening != rhs.element.isOpening {
+                return lhs.element.isOpening
+            }
+            let leftCount = attachCountForWorkspace?(lhs.element.workspaceId) ?? 0
+            let rightCount = attachCountForWorkspace?(rhs.element.workspaceId) ?? 0
+            return leftCount == rightCount ? lhs.offset < rhs.offset : leftCount > rightCount
+        }.map(\.element)
         allItems = chromeWorkspaces.isEmpty
             ? [.existingConnections]
-            : chromeWorkspaces.map(UnifiedWorkspaceItem.workspace)
+            : rankedWorkspaces.map(UnifiedWorkspaceItem.workspace)
         let queryIsNonEmpty = !model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let entries = QuickConnect.entries(
             recents: store.recents,
@@ -411,7 +425,12 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         )
         // 已打开项直接使用侧边栏投影，保证固定槽、顺序、编号和选中态
         // 完全一致。QuickConnect target 只补尚未打开的 Project。
-        allItems.append(contentsOf: entries.compactMap { entry in
+        let rankedEntries = entries.enumerated().sorted { lhs, rhs in
+            let leftCount = store.attachCount(for: lhs.element.config)
+            let rightCount = store.attachCount(for: rhs.element.config)
+            return leftCount == rightCount ? lhs.offset < rhs.offset : leftCount > rightCount
+        }.map(\.element)
+        allItems.append(contentsOf: rankedEntries.compactMap { entry in
             guard chromeWorkspaces.isEmpty
                 || !presentedTargetIDs.contains(QuickConnect.uniqueID(for: entry.config))
             else {
@@ -460,9 +479,25 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
             }
             .sorted {
                 if $0.1 != $1.1 { return $0.1 > $1.1 }
+                let leftCount = attachCount(for: $0.2)
+                let rightCount = attachCount(for: $1.2)
+                if leftCount != rightCount { return leftCount > rightCount }
                 return $0.0 < $1.0
             }
             .map { $0.2 }
+    }
+
+    private func attachCount(for item: UnifiedWorkspaceItem) -> Int {
+        switch item {
+        case .workspace(let workspace):
+            return attachCountForWorkspace?(workspace.workspaceId) ?? 0
+        case .target(let config, _, _, _):
+            return store.attachCount(for: config)
+        case .existing(let choice):
+            return store.attachCount(for: choice.config)
+        default:
+            return 0
+        }
     }
 
     private func defaultSelectedRow() -> Int {
