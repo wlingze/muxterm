@@ -365,6 +365,56 @@ impl Connect {
         Ok(forward)
     }
 
+    #[cfg(unix)]
+    fn discard_ssh_unix_socket_forward(
+        &self,
+        remote_path: &Path,
+        failed: &Arc<SshUnixSocketForward>,
+    ) -> anyhow::Result<()> {
+        let mut forwards = self
+            .unix_forwards
+            .lock()
+            .map_err(|_| anyhow::anyhow!("SSH UnixSocket forward registry poisoned"))?;
+        if forwards
+            .get(remote_path)
+            .is_some_and(|current| Arc::ptr_eq(current, failed))
+        {
+            forwards.remove(remote_path);
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn connect_ssh_unix_socket_forward(
+        &self,
+        remote_path: &Path,
+    ) -> anyhow::Result<(UnixStream, Arc<SshUnixSocketForward>)> {
+        for attempt in 0..2 {
+            let forward = self.ssh_unix_socket_forward(remote_path)?;
+            match UnixStream::connect(&forward.local_path) {
+                Ok(stream) => return Ok((stream, forward)),
+                Err(error)
+                    if attempt == 0
+                        && matches!(
+                            error.kind(),
+                            io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound
+                        ) =>
+                {
+                    // ssh 子进程退出后，本地 socket 文件可能仍在，但已无人监听。
+                    // 只移除仍指向本次失败 forward 的缓存项，避免并发新连接被误删。
+                    self.discard_ssh_unix_socket_forward(remote_path, &forward)?;
+                }
+                Err(error) => {
+                    return Err(anyhow::anyhow!(
+                        "连接 SSH UnixSocket forwarding 失败（{}）：{error}",
+                        forward.local_path.display()
+                    ));
+                }
+            }
+        }
+        unreachable!("UnixSocket forward connect retries are bounded to two attempts")
+    }
+
     fn open_exec_channel(
         &self,
         argv: Vec<String>,
@@ -430,13 +480,7 @@ impl Connect {
                     if self.target.is_empty() {
                         return Err(anyhow::anyhow!("SSH UnixSocket channel 缺少 target alias"));
                     }
-                    let forward = self.ssh_unix_socket_forward(&path)?;
-                    let stream = UnixStream::connect(&forward.local_path).map_err(|error| {
-                        anyhow::anyhow!(
-                            "连接 SSH UnixSocket forwarding 失败（{}）：{error}",
-                            forward.local_path.display()
-                        )
-                    })?;
+                    let (stream, forward) = self.connect_ssh_unix_socket_forward(&path)?;
                     (stream, Some(forward))
                 }
                 transport => {
