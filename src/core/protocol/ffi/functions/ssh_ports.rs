@@ -6,6 +6,10 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use super::support::{cstr_opt, json_error, json_string, parse_workspace_id, MuxtermHandle};
 
 /// Return application ports detected from this SSH workspace's pane output.
+///
+/// # Safety
+/// `handle`, when non-null, must point to a live Muxterm handle. `workspace_id`,
+/// when non-null, must point to a NUL-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn muxterm_workspace_ssh_ports_json(
     handle: *mut MuxtermHandle,
@@ -36,6 +40,10 @@ pub unsafe extern "C" fn muxterm_workspace_ssh_ports_json(
 }
 
 /// Start an explicit local loopback forward. OpenSSH startup is asynchronous.
+///
+/// # Safety
+/// `handle`, when non-null, must point to a live Muxterm handle. `workspace_id`,
+/// when non-null, must point to a NUL-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn muxterm_workspace_ssh_port_forward(
     handle: *mut MuxtermHandle,
@@ -46,6 +54,10 @@ pub unsafe extern "C" fn muxterm_workspace_ssh_port_forward(
 }
 
 /// Start an SSH port forward with optional LAN access (0.0.0.0 bind).
+///
+/// # Safety
+/// `handle`, when non-null, must point to a live Muxterm handle. `workspace_id`,
+/// when non-null, must point to a NUL-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn muxterm_workspace_ssh_port_forward_with_access(
     handle: *mut MuxtermHandle,
@@ -82,6 +94,10 @@ unsafe fn ssh_port_forward_json(
 }
 
 /// Ignore a discovered port for the lifetime of this workspace.
+///
+/// # Safety
+/// `handle`, when non-null, must point to a live Muxterm handle. `workspace_id`,
+/// when non-null, must point to a NUL-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn muxterm_workspace_ssh_port_ignore(
     handle: *mut MuxtermHandle,
@@ -105,6 +121,10 @@ pub unsafe extern "C" fn muxterm_workspace_ssh_port_ignore(
 }
 
 /// Stop an active local port forward.
+///
+/// # Safety
+/// `handle`, when non-null, must point to a live Muxterm handle. `workspace_id`,
+/// when non-null, must point to a NUL-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn muxterm_workspace_ssh_port_stop(
     handle: *mut MuxtermHandle,

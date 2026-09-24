@@ -54,6 +54,8 @@ type PendingCommandActivity = (u32, Option<String>, CommandActivityPhase);
 /// The fields remain crate-visible while the FFI function modules are being
 /// migrated to service methods.  Frontends never receive this Rust object;
 /// they use the public FFI facade and its safe client wrapper.
+type PendingSshPortForward = std::sync::mpsc::Receiver<Result<Box<dyn TcpPortForward>, String>>;
+
 pub struct Muxterm {
     /// Catalog: provider/discovery/resolution services.
     pub(crate) catalog: crate::catalog::Catalog,
@@ -74,10 +76,8 @@ pub struct Muxterm {
     pub(crate) ssh_port_forwards:
         HashMap<(crate::protocol::WorkspaceId, u16), Box<dyn TcpPortForward>>,
     /// SSH process startup runs away from the UI/FFI owner thread.
-    pub(crate) pending_ssh_port_forwards: HashMap<
-        (crate::protocol::WorkspaceId, u16),
-        std::sync::mpsc::Receiver<Result<Box<dyn TcpPortForward>, String>>,
-    >,
+    pub(crate) pending_ssh_port_forwards:
+        HashMap<(crate::protocol::WorkspaceId, u16), PendingSshPortForward>,
     pub(crate) ssh_port_forward_errors: HashMap<(crate::protocol::WorkspaceId, u16), String>,
     /// Remote listening ports loaded on demand for the SSH port picker.
     pub(crate) ssh_machine_ports: HashMap<crate::protocol::WorkspaceId, BTreeSet<u16>>,

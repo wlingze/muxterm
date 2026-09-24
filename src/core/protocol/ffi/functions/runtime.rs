@@ -66,6 +66,10 @@ pub unsafe extern "C" fn muxterm_traffic_up(handle: *mut MuxtermHandle) -> u64 {
 }
 
 /// Return cumulative SSH transport bytes for one product workspace.
+///
+/// # Safety
+/// `handle`, when non-null, must point to a live Muxterm handle. `workspace_id`,
+/// when non-null, must point to a NUL-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn muxterm_workspace_traffic_json(
     handle: *mut MuxtermHandle,

@@ -58,11 +58,7 @@ impl SshPortDiscovery {
                     0x08 | 0x7f => {
                         self.line.pop();
                     }
-                    0x20..=0x7e => {
-                        if self.line.len() < MAX_LINE_BYTES {
-                            self.line.push(byte);
-                        }
-                    }
+                    0x20..=0x7e if self.line.len() < MAX_LINE_BYTES => self.line.push(byte),
                     _ => {}
                 },
             }
