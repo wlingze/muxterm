@@ -156,13 +156,13 @@ impl TargetConnection for Connect {
                     anyhow::anyhow!("SSH bounded command must encode cwd in its argv").into(),
                 );
             }
+            let remote_command = build_remote_exec_command(&argv, None, &env)?;
             let mut command = std::process::Command::new("ssh");
             command.args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=3"]);
             if let Some(config) = std::env::var_os("MUXTERM_SSH_CONFIG_PATH") {
                 command.arg("-F").arg(config);
             }
-            command.arg(&self.target).arg("--").arg(program);
-            command.args(&argv[1..]);
+            command.arg(&self.target).arg("--").arg(remote_command);
             command
         } else {
             let mut command = std::process::Command::new(program);
@@ -170,9 +170,9 @@ impl TargetConnection for Connect {
             if let Some(cwd) = cwd {
                 command.current_dir(cwd);
             }
+            command.envs(env);
             command
         };
-        command.envs(env);
         let output = command
             .output()
             .map_err(|error| anyhow::anyhow!("执行 target command 失败: {error}"))?;
