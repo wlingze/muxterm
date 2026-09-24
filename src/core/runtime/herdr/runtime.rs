@@ -1329,6 +1329,9 @@ impl HerdrRuntime {
                 let slot = self.stream_slots.get(&pane.id)?;
                 if slot.state == SlotState::Stopped
                     || slot.state == SlotState::Degraded
+                    // Backoff 只能由 maybe_start_pending_retries 在 retry_at 到期后解除。
+                    // 否则每次事件轮询都会绕开退避并为失败的 SSH socket 立即重开流。
+                    || slot.state == SlotState::Backoff
                     || slot.has_inflight_start()
                 {
                     return None;
