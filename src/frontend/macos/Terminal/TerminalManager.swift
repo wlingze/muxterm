@@ -1511,6 +1511,10 @@ final class TerminalManager: TerminalInputHandler {
         errorKey: MuxtermTextKey = .errorSendInput
     ) {
         guard !data.isEmpty else { return }
+        if TerminalInputEncoding.isUnexpectedSingleByte(data) {
+            CoreBridge.log("dropped unexpected single-byte 0xff terminal input", level: "warning")
+            return
+        }
         if largePaste?.paneID == paneId {
             inputHeldForPaste.append(PendingInput(
                 paneId: paneId,

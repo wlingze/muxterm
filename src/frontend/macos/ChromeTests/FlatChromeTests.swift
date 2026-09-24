@@ -2107,6 +2107,13 @@ final class PaneResizeMathTests: XCTestCase {
 }
 
 final class TerminalInputEncodingTests: XCTestCase {
+    func testUnexpectedSingleFFIsRejectedWithoutChangingMouseOrBackspaceBytes() {
+        XCTAssertTrue(TerminalInputEncoding.isUnexpectedSingleByte(Data([0xff])))
+        XCTAssertFalse(TerminalInputEncoding.isUnexpectedSingleByte(Data([0x7f])))
+        XCTAssertFalse(TerminalInputEncoding.isUnexpectedSingleByte(Data([0x1b, 0x5b, 0x4d, 0xff])))
+        XCTAssertFalse(TerminalInputEncoding.isUnexpectedSingleByte(Data("中".utf8)))
+    }
+
     func testCtrlLettersBecomeTerminalControlBytes() {
         let expected: [(String, UInt8)] = [
             ("a", 0x01), ("c", 0x03), ("e", 0x05),
