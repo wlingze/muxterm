@@ -1794,6 +1794,16 @@ final class PaneLayoutProjectionTests: XCTestCase {
             100,
             "Herdr snapshot split 矩形不得把已分配的 grok pane 缩回去"
         )
+        XCTAssertEqual(
+            RemainingPaneGridPolicy.mergedGrid(
+                requestedCols: 120,
+                requestedRows: 45,
+                allocatedCols: 100,
+                allocatedRows: 40
+            ).cols,
+            100,
+            "旧后端格子宽于可见区域时，末列必须留在 widget 内"
+        )
         XCTAssertTrue(
             RemainingPaneGridPolicy.shouldNotifyRuntime(usesClientResize: false),
             "Herdr/shell 换树后必须把新格子写回 Runtime，否则 TUI 收不到 SIGWINCH"
@@ -1811,6 +1821,16 @@ final class PaneLayoutProjectionTests: XCTestCase {
                 mergedRows: 40
             ),
             "Herdr/shell 窗口比后端格子大时必须写回，否则输出按窄列换行"
+        )
+        XCTAssertTrue(
+            RemainingPaneGridPolicy.shouldWriteBack(
+                usesClientResize: false,
+                requestedCols: 120,
+                requestedRows: 45,
+                mergedCols: 100,
+                mergedRows: 40
+            ),
+            "Herdr/shell 窗口缩小时必须写回，否则末列被裁切"
         )
         XCTAssertFalse(
             RemainingPaneGridPolicy.shouldWriteBack(

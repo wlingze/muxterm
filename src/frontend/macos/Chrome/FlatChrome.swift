@@ -1010,18 +1010,15 @@ public enum RemainingPaneGridPolicy {
         treeChanged && !usesClientResize
     }
 
-    /// 把后端请求和当前 widget 分配合成最终格子。
-    /// 已分配时不得小于 widget；未分配时由调用方不要传 0。
+    /// 已布局的 widget 是可显示列数上限。旧 snapshot 的格子可能比它宽，
+    /// 此时必须缩到实际分配并把新尺寸写回 Runtime。
     public static func mergedGrid(
         requestedCols: Int,
         requestedRows: Int,
         allocatedCols: Int,
         allocatedRows: Int
     ) -> (cols: Int, rows: Int) {
-        (
-            cols: max(max(requestedCols, allocatedCols), 2),
-            rows: max(max(requestedRows, allocatedRows), 1)
-        )
+        treeChangeGrid(allocatedCols: allocatedCols, allocatedRows: allocatedRows)
     }
 
     /// 换树时 host 像素就是格子：关 pane 放大，split 缩小。
@@ -1037,8 +1034,7 @@ public enum RemainingPaneGridPolicy {
         !usesClientResize
     }
 
-    /// 后端格子比当前 widget 窄时，必须把合成后的格子写回。
-    /// 否则 SwiftTerm 按窗口画，PTY 仍按旧列换行，右侧留下空白。
+    /// 后端格子与当前 widget 不同时，把实际可显示格子写回 Runtime。
     public static func shouldWriteBack(
         usesClientResize: Bool,
         requestedCols: Int,
