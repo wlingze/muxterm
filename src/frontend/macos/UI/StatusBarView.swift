@@ -2072,7 +2072,6 @@ private final class StatusTabButton: NSButton {
 /// Animation's render server, so multiple busy tabs do not create competing
 /// main-thread timers or increase the event-pump frequency.
 private final class TabActivityIndicatorView: NSView {
-    private let outline = CAShapeLayer()
     private let shape = CAShapeLayer()
 
     var activity: AgentSidebarIndicator? {
@@ -2093,9 +2092,7 @@ private final class TabActivityIndicatorView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
-        outline.contentsScale = NSScreen.main?.backingScaleFactor ?? 2
         shape.contentsScale = NSScreen.main?.backingScaleFactor ?? 2
-        layer?.addSublayer(outline)
         layer?.addSublayer(shape)
     }
 
@@ -2123,13 +2120,9 @@ private final class TabActivityIndicatorView: NSView {
         case .done: color = .systemTeal
         case .idle, nil: color = .tertiaryLabelColor
         }
-        outline.strokeColor = NSColor.labelColor.withAlphaComponent(0.82).cgColor
-        outline.fillColor = NSColor.clear.cgColor
-        outline.lineWidth = activity == .working ? 4.2 : 0
-        outline.lineCap = .round
         shape.strokeColor = color.cgColor
         shape.fillColor = activity == .working ? NSColor.clear.cgColor : color.cgColor
-        shape.lineWidth = activity == .working ? 2.6 : 1
+        shape.lineWidth = activity == .working ? 2.4 : 0
         shape.lineCap = .round
         updatePath()
         updateAnimation()
@@ -2143,9 +2136,12 @@ private final class TabActivityIndicatorView: NSView {
     }
 
     private func updatePath() {
-        let rect = bounds.insetBy(dx: 1.5, dy: 1.5)
-        guard rect.width > 0, rect.height > 0 else { return }
-        outline.frame = bounds
+        let inset: CGFloat = activity == .working ? 2 : 3
+        let rect = bounds.insetBy(dx: inset, dy: inset)
+        guard rect.width > 0, rect.height > 0 else {
+            shape.path = nil
+            return
+        }
         shape.frame = bounds
         if activity == .working {
             let path = CGMutablePath()
@@ -2153,15 +2149,12 @@ private final class TabActivityIndicatorView: NSView {
                 center: CGPoint(x: rect.midX, y: rect.midY),
                 radius: min(rect.width, rect.height) / 2,
                 startAngle: -.pi / 2,
-                endAngle: .pi,
+                endAngle: .pi * 1.25,
                 clockwise: false
             )
             shape.path = path
-            outline.path = path
         } else {
-            let circle = CGPath(ellipseIn: rect, transform: nil)
-            shape.path = circle
-            outline.path = circle
+            shape.path = CGPath(ellipseIn: rect, transform: nil)
         }
     }
 
