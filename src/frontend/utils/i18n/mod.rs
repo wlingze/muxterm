@@ -203,6 +203,7 @@ define_text_keys! {
     AggregateAgents => "aggregate_agents",
     TabBarStyle => "tab_bar_style",
     TabEqualWidth => "tab_equal_width",
+    TabFixedWidth => "tab_fixed_width",
     TabCompact => "tab_compact",
     Cancel => "cancel",
     ChooseDirectoryMessage => "choose_directory_message",

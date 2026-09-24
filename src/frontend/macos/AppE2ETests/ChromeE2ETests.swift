@@ -388,10 +388,10 @@ final class ChromeE2ETests: XCTestCase {
         AppE2E.pump(40)
 
         XCTAssertEqual(bar.testTabIDs(), [21, 18], "顺序仍必须跟随 Core")
-        XCTAssertEqual(bar.testTabTitle(21), "7:tmux-seven")
-        XCTAssertEqual(bar.testTabTitle(18), "1:tmux-one")
+        XCTAssertEqual(bar.testTabTitle(21), "1  core-first")
+        XCTAssertEqual(bar.testTabTitle(18), "2  core-second")
         let widths = bar.testTabButtonWidths()
-        XCTAssertGreaterThan(widths[0], widths[1], "tmux 标题多大，Tab 就应按标题自然宽度显示")
+        XCTAssertGreaterThanOrEqual(widths[1], widths[0], "Muxterm 顺序与标题应共同决定 tab 标号和内容")
     }
 
     func testStatusDotClickOpensPopoverWithSshSummary() {

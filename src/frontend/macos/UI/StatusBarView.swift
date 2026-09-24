@@ -1234,24 +1234,25 @@ final class StatusBarView: NSView {
         let active: Bool
     }
 
-    private func tabTitle(_ tab: Tab) -> String {
-        StatusBarTabTitle.display(index: tab.id, name: tab.name)
+    private func tabTitle(_ tab: Tab, at position: Int) -> String {
+        StatusBarTabTitle.display(index: UInt32(position + 1), name: tab.name)
     }
 
     private func tabBarItems(activeOverride: UInt32? = nil) -> [TabBarItem] {
         let windowsByID = Dictionary(
             uniqueKeysWithValues: (lastTmuxSnapshot?.windows ?? []).map { ($0.windowId, $0) }
         )
-        let useTmuxTitles = tmuxStatusEnabled && colorMode == .tmux
+        let useTmuxStyles = tmuxStatusEnabled && colorMode == .tmux
         return currentTabs.enumerated().map { position, tab in
             let active = activeOverride.map { tab.id == $0 } ?? tab.isActive
-            if useTmuxTitles, let window = windowsByID[tab.id] {
+            let title = tabTitle(tab, at: position)
+            if useTmuxStyles, windowsByID[tab.id] != nil {
                 let styleText = active
                     ? lastTmuxSnapshot?.windowCurrentStyle ?? ""
                     : lastTmuxSnapshot?.windowStyle ?? ""
                 let style = merged(lastBase, styleText)
                 let attributed = Self.attributed(
-                    StatusBarStyleParser.parseInline(text: window.text, base: style),
+                    StatusBarStyleParser.parseInline(text: title, base: style),
                     font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
                 )
                 return TabBarItem(
@@ -1264,10 +1265,7 @@ final class StatusBarView: NSView {
             }
             return TabBarItem(
                 id: tab.id,
-                title: StatusBarTabTitle.display(
-                    index: UInt32(position + 1),
-                    name: tab.name
-                ),
+                title: title,
                 attributedTitle: nil,
                 tmuxStyle: nil,
                 active: active
@@ -1285,15 +1283,14 @@ final class StatusBarView: NSView {
         for (id, button) in existing where !ids.contains(id) {
             button.removeFromSuperview()
         }
-        let equalWidth = tabBarStyle == .equalWidth
-        let fixedWidth = tabBarStyle == .fixed
-        tabStack.distribution = equalWidth ? .fillEqually : .fill
-        tabStack.spacing = equalWidth ? 1 : 3
+        let fillsViewport = tabBarStyle == .equalWidth
+        tabStack.distribution = fillsViewport ? .fillEqually : .fill
+        tabStack.spacing = fillsViewport ? 1 : 3
         tabStack.setContentHuggingPriority(
-            equalWidth ? .defaultLow : .defaultHigh,
+            fillsViewport ? .defaultLow : .required,
             for: .horizontal
         )
-        tabStackTrailingConstraint.isActive = equalWidth && !items.isEmpty
+        tabStackTrailingConstraint.isActive = fillsViewport && !items.isEmpty
         var firstEqualWidthButton: StatusTabButton?
         for (position, item) in items.enumerated() {
             let button = existing[item.id] ?? StatusTabButton()
@@ -1311,7 +1308,7 @@ final class StatusBarView: NSView {
                 }
                 tabStack.insertArrangedSubview(button, at: position)
             }
-            if equalWidth {
+            if tabBarStyle == .equalWidth {
                 if let firstEqualWidthButton {
                     tabWidthConstraints.append(button.widthAnchor.constraint(equalTo: firstEqualWidthButton.widthAnchor))
                 } else {
@@ -1320,8 +1317,14 @@ final class StatusBarView: NSView {
                 let minimum = button.widthAnchor.constraint(greaterThanOrEqualToConstant: 44)
                 minimum.priority = .defaultLow
                 tabWidthConstraints.append(minimum)
-            } else if fixedWidth {
-                tabWidthConstraints.append(button.widthAnchor.constraint(equalToConstant: 152))
+            } else if tabBarStyle == .fixed {
+                tabWidthConstraints.append(
+                    button.widthAnchor.constraint(equalToConstant: TabBarStyle.fixedTabWidth)
+                )
+            } else {
+                tabWidthConstraints.append(
+                    button.widthAnchor.constraint(lessThanOrEqualToConstant: TabBarStyle.maximumFittedTabWidth)
+                )
             }
             button.tag = Int(item.id)
             button.aggregateAppearance = AggregateWorkspaceAppearance(

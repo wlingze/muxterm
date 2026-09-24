@@ -27,6 +27,28 @@ pub use status_bar_model::ConnectionSummary;
 
 /// status bar 高度（≤ 24px）。
 pub const STATUS_BAR_HEIGHT: u32 = 24;
+const FIXED_TAB_GROUP_WIDTH: i32 = 152;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TabBarStyle {
+    EqualWidth,
+    Fixed,
+    Compact,
+}
+
+impl TabBarStyle {
+    fn from_config(value: &str) -> Self {
+        match value {
+            "fixed" => Self::Fixed,
+            "compact" => Self::Compact,
+            _ => Self::EqualWidth,
+        }
+    }
+
+    fn fills_viewport(self) -> bool {
+        self == Self::EqualWidth
+    }
+}
 
 type WindowActivateCb = Rc<RefCell<Option<Box<dyn Fn(u32)>>>>;
 type NotifyActivateCb = Rc<RefCell<Option<Box<dyn Fn()>>>>;
@@ -53,7 +75,7 @@ pub struct StatusBar {
     popover: Popover,
     on_window_activate: WindowActivateCb,
     on_tab_close: WindowActivateCb,
-    equal_width: Cell<bool>,
+    tab_bar_style: Cell<TabBarStyle>,
     tab_activity: RefCell<BTreeMap<u32, ActivityIndicator>>,
     on_notify_activate: NotifyActivateCb,
     on_new_tab: NewTabCb,
@@ -180,7 +202,7 @@ impl StatusBar {
             popover,
             on_window_activate: Rc::new(RefCell::new(None)),
             on_tab_close: Rc::new(RefCell::new(None)),
-            equal_width: Cell::new(true),
+            tab_bar_style: Cell::new(TabBarStyle::EqualWidth),
             tab_activity: RefCell::new(BTreeMap::new()),
             on_notify_activate: Rc::new(RefCell::new(None)),
             on_new_tab: Rc::new(RefCell::new(None)),
@@ -239,9 +261,9 @@ impl StatusBar {
     }
 
     pub fn set_tab_style(&self, style: &str) {
-        let equal = style != "compact";
-        if self.equal_width.replace(equal) != equal {
-            self.tabs.set_homogeneous(equal);
+        let style = TabBarStyle::from_config(style);
+        if self.tab_bar_style.replace(style) != style {
+            self.tabs.set_homogeneous(style.fills_viewport());
             *self.last_tab_signature.borrow_mut() = None;
             self.render();
         }
@@ -477,7 +499,8 @@ impl StatusBar {
         }
 
         // justify 只影响中区。
-        self.tabs.set_halign(if self.equal_width.get() {
+        let tab_style = self.tab_bar_style.get();
+        self.tabs.set_halign(if tab_style.fills_viewport() {
             Align::Fill
         } else {
             match snapshot.justify.as_str() {
@@ -573,7 +596,7 @@ impl StatusBar {
             }
             content.append(&label_widget);
             button.set_child(Some(&content));
-            button.set_hexpand(self.equal_width.get());
+            button.set_hexpand(tab_style.fills_viewport());
             button.set_tooltip_text(Some(raw));
             let cb = self.on_window_activate.clone();
             let id = win.window_id;
@@ -587,7 +610,11 @@ impl StatusBar {
             if win.current {
                 group.add_css_class("tab-active");
             }
-            group.set_hexpand(self.equal_width.get());
+            group.set_hexpand(tab_style.fills_viewport());
+            if tab_style == TabBarStyle::Fixed {
+                group.set_size_request(FIXED_TAB_GROUP_WIDTH, -1);
+                button.set_hexpand(true);
+            }
             group.append(&button);
             let close = Button::with_label("×");
             close.set_widget_name(&format!("muxterm-status-tab-close-{id}"));

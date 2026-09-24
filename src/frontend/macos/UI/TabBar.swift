@@ -50,4 +50,7 @@ enum TabBarStyle: String {
     case equalWidth = "equal_width"
     case fixed
     case compact
+
+    static let fixedTabWidth: CGFloat = 128
+    static let maximumFittedTabWidth: CGFloat = 280
 }

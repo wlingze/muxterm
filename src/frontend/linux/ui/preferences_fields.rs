@@ -483,6 +483,7 @@ pub(super) fn option_label(path: &str, value: &str) -> String {
     use crate::frontend::utils::i18n::{self, Key};
     match (path, value) {
         ("/ui/tab_bar_style", "equal_width") => i18n::tr(Key::TabEqualWidth),
+        ("/ui/tab_bar_style", "fixed") => i18n::tr(Key::TabFixedWidth),
         ("/ui/tab_bar_style", "compact") => i18n::tr(Key::TabCompact),
         ("/theme/name", "system") => text(TextKey::SettingsFollowSystem).into(),
         ("/theme/name", "black") => text(TextKey::SettingsBlack).into(),
