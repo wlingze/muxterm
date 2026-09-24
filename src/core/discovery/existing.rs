@@ -267,8 +267,9 @@ pub fn discover_ssh_herdr(
 
 /// 查远端已运行 Herdr named session 的 API socket 路径。
 ///
-/// 用于 SSH `workspace.create`：不启动远端 server，只复用已在跑的 session。
-/// `session == "default"` 时匹配名为 default / 空名的条目。
+/// 用于 SSH Herdr 身份解析：只返回当前正在运行的 session socket。
+/// `session == "default"` 时匹配名为 default / 空名的条目；按创建请求
+/// 启动缺失 server 的行为由 RuntimeProvider 负责。
 pub fn ssh_herdr_running_socket(
     alias: &str,
     session: &str,

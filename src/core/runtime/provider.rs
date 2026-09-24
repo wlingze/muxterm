@@ -70,6 +70,20 @@ pub trait RuntimeProvider: Send + Sync {
         )
     }
 
+    /// Prepare a Runtime namespace for an explicit create request.
+    ///
+    /// Providers may start a missing server after the user selected
+    /// `CreateIfMissing`, then return its target-side socket path. This hook is
+    /// never called for attach-only opens.
+    fn prepare_create(
+        &self,
+        connection: &dyn TargetConnection,
+        spec: &RuntimeSpec,
+    ) -> RuntimeResult<Option<String>> {
+        let _ = (connection, spec);
+        Ok(None)
+    }
+
     /// Construct an unconnected Runtime instance.
     fn new_instance(
         &self,

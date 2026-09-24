@@ -296,8 +296,7 @@ impl Catalog {
         match descriptor.runtime {
             TargetRuntime::Herdr => {
                 // Herdr：核对 workspace 存在（AttachOnly 无匹配不创建；
-                // CreateIfMissing 在已运行的 local/SSH session 上 workspace.create，
-                // 不偷偷 start server）。
+                // CreateIfMissing 可按用户请求启动缺失的 SSH server）。
                 let transport = match &descriptor.transport {
                     TargetTransport::Local => "local",
                     TargetTransport::Ssh { .. } => "ssh",
@@ -326,12 +325,25 @@ impl Catalog {
                 let driver = self
                     .runtime("herdr")
                     .expect("刚检查过的 Herdr RuntimeProvider 必须仍在");
-                let namespace = normalized_optional(&descriptor.session);
+                let mut scoped_descriptor = descriptor.clone();
+                let namespace = normalized_optional(&scoped_descriptor.session);
+                let mut scoped_spec = descriptor_to_spec(&scoped_descriptor).runtime_spec();
+                if intent == ResolveIntent::CreateIfMissing {
+                    let prepared_socket = driver
+                        .prepare_create(connect.as_ref(), &scoped_spec)
+                        .map_err(|error| resolver::ResolveError::Discovery {
+                            runtime_id: "herdr".to_string(),
+                            transport_id: transport.to_string(),
+                            target: target.to_string(),
+                            message: format!("准备 Herdr session 失败: {error:#}"),
+                        })?;
+                    if let Some(socket) = prepared_socket {
+                        scoped_spec.socket = Some(socket.clone());
+                        scoped_descriptor.socket = Some(socket);
+                    }
+                }
                 let candidates = driver
-                    .discover_scoped(
-                        connect.as_ref(),
-                        &descriptor_to_spec(descriptor).runtime_spec(),
-                    )
+                    .discover_scoped(connect.as_ref(), &scoped_spec)
                     .map_err(|error| resolver::ResolveError::Discovery {
                         runtime_id: "herdr".to_string(),
                         transport_id: transport.to_string(),
@@ -345,7 +357,7 @@ impl Catalog {
                         candidate_in_scope(
                             candidate,
                             namespace.as_deref(),
-                            descriptor.socket.as_deref(),
+                            scoped_descriptor.socket.as_deref(),
                         )
                     })
                     .collect();
@@ -372,7 +384,7 @@ impl Catalog {
                         })
                         .collect();
                     match exact.as_slice() {
-                        [one] => return Ok(self.resolved_from_candidate(descriptor, one)),
+                        [one] => return Ok(self.resolved_from_candidate(&scoped_descriptor, one)),
                         many if many.len() > 1 => {
                             return Err(resolver::ResolveError::AmbiguousCandidate {
                                 identity,
@@ -396,7 +408,7 @@ impl Catalog {
                 let named: Vec<&ExistingCandidate> = scoped
                     .iter()
                     .copied()
-                    .filter(|candidate| candidate.name == descriptor.name)
+                    .filter(|candidate| candidate.name == scoped_descriptor.name)
                     .collect();
                 match named.as_slice() {
                     [] => match intent {
@@ -407,7 +419,7 @@ impl Catalog {
                         ResolveIntent::CreateIfMissing => {
                             // 缺 session 时只允许选择唯一运行中的 namespace。
                             // `default` 也是普通显式选项，绝不能作为静默后备。
-                            let mut create_descriptor = descriptor.clone();
+                            let mut create_descriptor = scoped_descriptor.clone();
                             if let Some(session) = namespace.clone() {
                                 create_descriptor.session = Some(session);
                             } else {
@@ -429,7 +441,8 @@ impl Catalog {
                                     })
                                 }));
                                 normalize_namespaces(&mut namespaces);
-                                if let Some(socket) = normalized_optional(&descriptor.socket) {
+                                if let Some(socket) = normalized_optional(&scoped_descriptor.socket)
+                                {
                                     namespaces.retain(|candidate| {
                                         candidate.socket.as_deref() == Some(socket.as_str())
                                     });
@@ -460,7 +473,7 @@ impl Catalog {
                                 .create_identity(
                                     connect.as_ref(),
                                     &runtime_spec,
-                                    Some(descriptor.name.as_str()),
+                                    Some(scoped_descriptor.name.as_str()),
                                 )
                                 .map_err(|error| resolver::ResolveError::CreateNotAllowed {
                                     identity: identity.clone(),
@@ -477,7 +490,7 @@ impl Catalog {
                             Ok(ResolvedTarget { canonical, spec })
                         }
                     },
-                    [one] => Ok(self.resolved_from_candidate(descriptor, one)),
+                    [one] => Ok(self.resolved_from_candidate(&scoped_descriptor, one)),
                     many => Err(resolver::ResolveError::AmbiguousCandidate {
                         identity,
                         candidates: many

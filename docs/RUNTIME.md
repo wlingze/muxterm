@@ -248,8 +248,12 @@ adapter 必须保留上一份有效 geometry；`PaneInfo` 不得看到 0×0。�
 
 **pane 上 tmux 与 Herdr 互斥。** 接 Herdr 不是把身份租出去。tmux 路径上的 OSC/BEL 必须继续自己活。
 
-远程 Herdr：Transport `ssh` + Runtime `herdr`。打开不要 `herdr --remote`（会在远端装/启 server）：
-把远端 `herdr.sock` 转发到本机。没在跑就跳过，不要替用户启动。
+远程 Herdr：Transport `ssh` + Runtime `herdr`。AttachOnly 只连接已运行的 namespace。
+用户明确选择 CreateIfMissing 时，如果指定 namespace 尚未运行，Core 通过 SSH 启动
+headless `herdr --session <name> server`，等待 socket 就绪后再发现或创建 workspace；没有
+指定 namespace 且远端没有任何 Herdr session 时使用 default。不要使用 `herdr --remote`，
+它负责远端安装/更新流程，不属于 Muxterm 的 SSH attach 路径。命令细节见
+[Herdr CLI reference](https://herdr.dev/docs/cli-reference/)（核对时间：2026-09-24 10:49:09 +08:00）。
 
 Herdr workspace id 不再复用项目 `path`。生成五段 `WorkspaceId` 时第五段优先 `workspace_id`。
 
