@@ -60,11 +60,12 @@ private func settingsFieldTitle(path: String, titleKey: String) -> String {
     case "/theme/name": "Theme"
     case "/theme/light": "Light theme"
     case "/theme/dark": "Dark theme"
-    case "/statusbar/mode": "Status bar appearance"
+    case "/statusbar/mode": "Status bar colors"
     case "/tmux/auto_mouse": "Enable tmux mouse mode"
     case "/tmux/default_session": "Default workspace"
     case "/tmux/socket": "tmux socket"
     case "/pool/max_slots": "Workspace reminder limit"
+    case "/quick_panel/attach_history_days": "Attach history window"
     case "/scrollback/lines": "Scrollback lines"
     case "/pane/default_command": "Default shell command"
     case "/pane/workdir": "Initial working directory"
@@ -106,11 +107,12 @@ private func settingsFieldDescription(path: String, titleKey: String) -> String 
     case "/theme/name": "Choose a fixed theme or follow your system appearance."
     case "/theme/light": "Theme used when the system is in light mode."
     case "/theme/dark": "Theme used when the system is in dark mode."
-    case "/statusbar/mode": "Match tmux status text, colors, and title widths, or use equal-width Muxterm tabs."
+    case "/statusbar/mode": "Use tmux colors when available, or Muxterm theme colors. Tab widths are set separately above."
     case "/tmux/auto_mouse": "Forward mouse interactions to attached tmux workspaces."
     case "/tmux/default_session": "Workspace to attach on launch; leave empty to start locally."
     case "/tmux/socket": "Optional named tmux socket. Empty uses the default server."
     case "/pool/max_slots": "Show a reminder when this many open workspaces are retained."
+    case "/quick_panel/attach_history_days": "Rank Quick Panel workspaces by successful attaches during the last 1–365 days."
     case "/scrollback/lines": "History kept for each newly created pane."
     case "/pane/default_command": "Command started for a new local pane."
     case "/pane/workdir": "Directory used when a new local pane starts."
@@ -144,7 +146,7 @@ private func settingsFieldDescription(path: String, titleKey: String) -> String 
 private func settingsApplyLabel(_ mode: String) -> String {
     let fallback: String
     switch mode {
-    case "immediate": fallback = "LIVE"
+    case "immediate": fallback = "ON APPLY"
     case "next_workspace": fallback = "NEXT WORKSPACE"
     case "macos": fallback = "macOS"
     default: fallback = "ON SAVE"
@@ -157,8 +159,8 @@ private func settingsOptionLabel(path: String, value: String) -> String {
     case ("/theme/name", "system"): "Follow system"
     case ("/theme/name", "black"), ("/theme/dark", "black"), ("/theme/light", "black"): "Black"
     case ("/theme/name", "white"), ("/theme/dark", "white"), ("/theme/light", "white"): "White"
-    case ("/statusbar/mode", "tmux"): "Match tmux"
-    case ("/statusbar/mode", "theme"): "Use Muxterm theme"
+    case ("/statusbar/mode", "tmux"): "Use tmux colors"
+    case ("/statusbar/mode", "theme"): "Use theme colors"
     case ("/ui/tab_bar_position", "top"): "Top"
     case ("/ui/tab_bar_position", "bottom"): "Bottom"
     case ("/ui/tab_bar_style", "equal_width"): "Fill equally"
@@ -184,6 +186,7 @@ private func settingsCategoryHint(_ id: String) -> String {
     let fallback: String = switch id {
     case "appearance": "Fonts & colors"
     case "runtime": "Workspaces"
+    case "quick_panel": "Recent attaches"
     case "attention": "Agent signals"
     case "ui": "Window chrome"
     case "ssh": "Remote access"
@@ -200,6 +203,7 @@ private func settingsCategoryDescription(_ id: String) -> String {
     let fallback: String = switch id {
     case "appearance": "Tune the terminal you look at all day: type, scale, and color."
     case "runtime": "Set defaults for new workspaces, panes, and terminal history."
+    case "quick_panel": "Choose how far back recent workspace usage affects Quick Panel order."
     case "attention": "Decide when Muxterm should surface work that needs your attention."
     case "ui": "Shape the surrounding window chrome and tab bar."
     case "ssh": "Defaults used when opening remote workspaces over SSH."
@@ -216,6 +220,7 @@ private func settingsCategoryIcon(_ id: String) -> String {
     switch id {
     case "appearance": return "Aa"
     case "runtime": return "▣"
+    case "quick_panel": return "↺"
     case "attention": return "◉"
     case "ui": return "▤"
     case "ssh": return "↗"
@@ -231,6 +236,7 @@ private func settingsSectionTitle(_ id: String) -> String {
     let fallback: String = switch id {
     case "appearance": "Terminal"
     case "runtime": "Workspace defaults"
+    case "quick_panel": "Quick Panel ranking"
     case "attention": "Attention"
     case "ui": "Interface"
     case "ssh": "SSH defaults"
@@ -257,9 +263,26 @@ private func settingsValue(at path: String, in values: [String: Any]) -> Any? {
 private func settingsStyleCard(_ view: NSView, fill: NSColor = .controlBackgroundColor) {
     view.wantsLayer = true
     view.layer?.backgroundColor = fill.cgColor
-    view.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.7).cgColor
-    view.layer?.borderWidth = 1
-    view.layer?.cornerRadius = 7
+    view.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.18).cgColor
+    view.layer?.borderWidth = 0.5
+    view.layer?.cornerRadius = 12
+}
+
+private func settingsRowDivider() -> NSView {
+    let container = NSView()
+    let line = NSView()
+    line.translatesAutoresizingMaskIntoConstraints = false
+    line.wantsLayer = true
+    line.layer?.backgroundColor = NSColor.separatorColor.withAlphaComponent(0.28).cgColor
+    container.addSubview(line)
+    container.heightAnchor.constraint(equalToConstant: 0.5).isActive = true
+    NSLayoutConstraint.activate([
+        line.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 18),
+        line.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -18),
+        line.topAnchor.constraint(equalTo: container.topAnchor),
+        line.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+    ])
+    return container
 }
 
 final class SettingsWindowController: NSWindowController, NSWindowDelegate,
@@ -313,7 +336,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
             configTransaction: configTransaction
         )
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 980, height: 720),
+            contentRect: NSRect(x: 0, y: 0, width: 940, height: 680),
             styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -323,7 +346,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
         window.isMovableByWindowBackground = true
-        window.minSize = NSSize(width: 760, height: 520)
+        window.minSize = NSSize(width: 780, height: 540)
         super.init(window: window)
         window.delegate = self
         window.setAccessibilityIdentifier("muxterm.settingsWindow")
@@ -455,7 +478,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
                   !id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             else { continue }
             let titleKey = group["title_key"] as? String ?? ""
-            let fields = group["fields"] as? [[String: Any]] ?? []
+            let fields = (group["fields"] as? [[String: Any]] ?? []).filter { field in
+                let platforms = field["platforms"] as? [String]
+                return platforms?.contains("macos") ?? true
+            }
             let title = settingsCategoryTitle(id: id, titleKey: titleKey)
             let hint = settingsCategoryHint(id)
             let description = settingsCategoryDescription(id)
@@ -510,7 +536,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         let header = NSView()
         header.translatesAutoresizingMaskIntoConstraints = false
         header.wantsLayer = true
-        header.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        header.layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.35).cgColor
         root.addSubview(header)
 
         let headerTitle = NSTextField(labelWithString: settingsText(
@@ -518,7 +544,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
             fallback: "Settings"
         ))
         headerTitle.translatesAutoresizingMaskIntoConstraints = false
-        headerTitle.font = .systemFont(ofSize: 17, weight: .semibold)
+        headerTitle.font = .systemFont(ofSize: 16, weight: .semibold)
         header.addSubview(headerTitle)
 
         searchField.translatesAutoresizingMaskIntoConstraints = false
@@ -543,7 +569,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
 
         sidebarView.translatesAutoresizingMaskIntoConstraints = false
         sidebarView.wantsLayer = true
-        sidebarView.layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.48).cgColor
+        sidebarView.layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.52).cgColor
         sidebarView.setAccessibilityIdentifier("muxterm.settings.categories")
         pagesContainer.translatesAutoresizingMaskIntoConstraints = false
         pagesContainer.setAccessibilityIdentifier("muxterm.settings.pages")
@@ -551,9 +577,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("category"))
         categoryTable.addTableColumn(column)
         categoryTable.headerView = nil
-        categoryTable.rowHeight = 44
-        categoryTable.intercellSpacing = NSSize(width: 0, height: 1)
-        categoryTable.style = .sourceList
+        categoryTable.rowHeight = 46
+        categoryTable.intercellSpacing = NSSize(width: 0, height: 3)
+        categoryTable.style = .plain
+        categoryTable.selectionHighlightStyle = .regular
         categoryTable.backgroundColor = .clear
         categoryTable.usesAlternatingRowBackgroundColors = false
         categoryTable.dataSource = self
@@ -605,7 +632,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         let footer = NSView()
         footer.translatesAutoresizingMaskIntoConstraints = false
         footer.wantsLayer = true
-        footer.layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.48).cgColor
+        footer.layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.35).cgColor
         right.addSubview(footer)
         summaryLabel.textColor = .secondaryLabelColor
         summaryLabel.font = .systemFont(ofSize: 11)
@@ -656,7 +683,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
             sidebarView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             sidebarView.topAnchor.constraint(equalTo: headerSeparator.bottomAnchor),
             sidebarView.bottomAnchor.constraint(equalTo: root.bottomAnchor),
-            sidebarView.widthAnchor.constraint(equalToConstant: 208),
+            sidebarView.widthAnchor.constraint(equalToConstant: 216),
             sidebarTitle.leadingAnchor.constraint(equalTo: sidebarView.leadingAnchor, constant: 18),
             sidebarTitle.trailingAnchor.constraint(equalTo: sidebarView.trailingAnchor, constant: -12),
             sidebarTitle.topAnchor.constraint(equalTo: sidebarView.topAnchor, constant: 14),
@@ -707,34 +734,34 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         stack.translatesAutoresizingMaskIntoConstraints = false
         stack.orientation = .vertical
         stack.alignment = .width
-        stack.spacing = 14
-        stack.edgeInsets = NSEdgeInsets(top: 22, left: 26, bottom: 28, right: 30)
+        stack.spacing = 16
+        stack.edgeInsets = NSEdgeInsets(top: 30, left: 30, bottom: 32, right: 30)
         stack.setContentHuggingPriority(.defaultLow, for: .horizontal)
         stack.setContentCompressionResistancePriority(.required, for: .horizontal)
-        let contentWidth: CGFloat = -56
+        let contentWidth: CGFloat = -60
 
         let title = NSTextField(labelWithString: category.title)
-        title.font = .systemFont(ofSize: 20, weight: .semibold)
+        title.font = .systemFont(ofSize: 23, weight: .semibold)
         title.textColor = .labelColor
         let description = NSTextField(labelWithString: category.description)
-        description.font = .systemFont(ofSize: 12)
+        description.font = .systemFont(ofSize: 12.5)
         description.textColor = .secondaryLabelColor
         description.lineBreakMode = .byWordWrapping
         description.maximumNumberOfLines = 2
         let headingCopy = NSStackView(views: [title, description])
         headingCopy.orientation = .vertical
         headingCopy.alignment = .leading
-        headingCopy.spacing = 3
+        headingCopy.spacing = 5
         let icon = NSTextField(labelWithString: settingsCategoryIcon(category.id))
         icon.setAccessibilityIdentifier("muxterm.settings.pageIcon.\(category.id)")
         icon.alignment = .center
-        icon.font = .systemFont(ofSize: 17, weight: .bold)
-        icon.textColor = .controlAccentColor
+        icon.font = .systemFont(ofSize: 16, weight: .semibold)
+        icon.textColor = .labelColor
         icon.wantsLayer = true
-        icon.layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.12).cgColor
-        icon.layer?.cornerRadius = 9
-        icon.widthAnchor.constraint(equalToConstant: 42).isActive = true
-        icon.heightAnchor.constraint(equalToConstant: 42).isActive = true
+        icon.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.065).cgColor
+        icon.layer?.cornerRadius = 11
+        icon.widthAnchor.constraint(equalToConstant: 40).isActive = true
+        icon.heightAnchor.constraint(equalToConstant: 40).isActive = true
         let pageHeader = NSStackView(views: [icon, headingCopy])
         pageHeader.orientation = .horizontal
         pageHeader.alignment = .centerY
@@ -744,7 +771,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         pageHeader.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: contentWidth).isActive = true
 
         let sectionTitle = NSTextField(labelWithString: settingsSectionTitle(category.id))
-        sectionTitle.font = .systemFont(ofSize: 11, weight: .bold)
+        sectionTitle.font = .systemFont(ofSize: 10, weight: .semibold)
         sectionTitle.textColor = .secondaryLabelColor
         stack.addArrangedSubview(sectionTitle)
         sectionTitle.widthAnchor.constraint(
@@ -752,7 +779,16 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
             constant: contentWidth
         ).isActive = true
 
-        for field in category.fields {
+        let fieldGroup = NSStackView()
+        fieldGroup.orientation = .vertical
+        fieldGroup.alignment = .width
+        fieldGroup.spacing = 0
+        fieldGroup.setContentHuggingPriority(.required, for: .vertical)
+        settingsStyleCard(fieldGroup, fill: NSColor.controlBackgroundColor.withAlphaComponent(0.28))
+        stack.addArrangedSubview(fieldGroup)
+        fieldGroup.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: contentWidth).isActive = true
+
+        for (index, field) in category.fields.enumerated() {
             guard let path = field["path"] as? String else { continue }
             let control = makeControl(field: field, values: values)
             controls[path] = control
@@ -768,12 +804,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
                 path: path,
                 control: control
             )
-            settingsStyleCard(row, fill: NSColor.controlBackgroundColor.withAlphaComponent(0.44))
-            stack.addArrangedSubview(row)
+            fieldGroup.addArrangedSubview(row)
             row.widthAnchor.constraint(
-                equalTo: stack.widthAnchor,
-                constant: contentWidth
+                equalTo: fieldGroup.widthAnchor
             ).isActive = true
+            if index < category.fields.count - 1 || category.id == "platform" {
+                let divider = settingsRowDivider()
+                fieldGroup.addArrangedSubview(divider)
+                divider.widthAnchor.constraint(equalTo: fieldGroup.widthAnchor).isActive = true
+            }
         }
         if category.id == "appearance" {
             let preview = settingsAppearancePreview(values: values)
@@ -782,10 +821,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         }
         if category.id == "platform" {
             let row = makeDeveloperToolsRow()
-            stack.addArrangedSubview(row)
+            fieldGroup.addArrangedSubview(row)
             row.widthAnchor.constraint(
-                equalTo: stack.widthAnchor,
-                constant: contentWidth
+                equalTo: fieldGroup.widthAnchor
             ).isActive = true
         }
         // 不要用可拉伸空白把短页面顶到滚动区底部。Platform 只有两三行时，
@@ -826,10 +864,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
 
         let badge = NSTextField(labelWithString: apply)
         badge.font = .systemFont(ofSize: 8.5, weight: .bold)
-        badge.textColor = .controlAccentColor
+        badge.textColor = .secondaryLabelColor
         badge.alignment = .center
         badge.wantsLayer = true
-        badge.layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.11).cgColor
+        badge.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.055).cgColor
         badge.layer?.cornerRadius = 4
         badge.setContentHuggingPriority(.required, for: .horizontal)
         badge.setContentCompressionResistancePriority(.required, for: .horizontal)
@@ -860,13 +898,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         let isFullWidth = control is NSScrollView || control is SettingsProjectEditorView
         if isFullWidth {
             NSLayoutConstraint.activate([
-                copy.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 16),
-                copy.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -16),
-                copy.topAnchor.constraint(equalTo: row.topAnchor, constant: 14),
-                control.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 16),
-                control.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -16),
+                copy.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 18),
+                copy.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -18),
+                copy.topAnchor.constraint(equalTo: row.topAnchor, constant: 16),
+                control.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 18),
+                control.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -18),
                 control.topAnchor.constraint(equalTo: copy.bottomAnchor, constant: 12),
-                control.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -14),
+                control.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -16),
             ])
             return row
         }
@@ -882,11 +920,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         control.setContentHuggingPriority(.required, for: .horizontal)
         control.setContentCompressionResistancePriority(.required, for: .horizontal)
         NSLayoutConstraint.activate([
-            copy.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 16),
+            copy.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 18),
             copy.trailingAnchor.constraint(lessThanOrEqualTo: control.leadingAnchor, constant: -20),
-            copy.topAnchor.constraint(equalTo: row.topAnchor, constant: 14),
-            copy.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -14),
-            control.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -16),
+            copy.topAnchor.constraint(equalTo: row.topAnchor, constant: 17),
+            copy.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -17),
+            control.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -18),
             control.centerYAnchor.constraint(equalTo: row.centerYAnchor),
         ])
         return row
@@ -1084,7 +1122,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
             )
             summaryLabel.textColor = .secondaryLabelColor
         }
-        applyButton?.contentTintColor = dirty ? .controlAccentColor : .secondaryLabelColor
+        applyButton?.contentTintColor = dirty ? .labelColor : .secondaryLabelColor
     }
 
     private func refreshProjectEditor() {
@@ -1327,6 +1365,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         return cell
     }
 
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+        SettingsCategoryRowView()
+    }
+
     func tableViewSelectionDidChange(_ notification: Notification) {
         let row = categoryTable.selectedRow
         guard visibleCategoryIDs.indices.contains(row) else { return }
@@ -1434,7 +1476,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
             path: "macos.developer_tools",
             control: control
         )
-        settingsStyleCard(row, fill: NSColor.controlBackgroundColor.withAlphaComponent(0.44))
         refreshDeveloperToolsStatus()
         return row
     }
@@ -1593,9 +1634,9 @@ private func settingsAppearancePreview(values: [String: Any]) -> NSView {
     ))
     badge.font = .systemFont(ofSize: 9, weight: .bold)
     badge.alignment = .center
-    badge.textColor = .controlAccentColor
+    badge.textColor = .secondaryLabelColor
     badge.wantsLayer = true
-    badge.layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.12).cgColor
+    badge.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.055).cgColor
     badge.layer?.cornerRadius = 5
     badge.widthAnchor.constraint(greaterThanOrEqualToConstant: 70).isActive = true
     let titleRow = NSStackView(views: [title, NSView(), badge])
@@ -1661,6 +1702,17 @@ private func settingsAppearancePreview(values: [String: Any]) -> NSView {
     return preview
 }
 
+private final class SettingsCategoryRowView: NSTableRowView {
+    override func drawSelection(in dirtyRect: NSRect) {
+        NSColor.labelColor.withAlphaComponent(0.09).setFill()
+        NSBezierPath(
+            roundedRect: bounds.insetBy(dx: 8, dy: 2),
+            xRadius: 9,
+            yRadius: 9
+        ).fill()
+    }
+}
+
 private final class SettingsCategoryCellView: NSTableCellView {
     private let iconLabel = NSTextField(labelWithString: "")
     private let titleLabel = NSTextField(labelWithString: "")
@@ -1686,11 +1738,12 @@ private final class SettingsCategoryCellView: NSTableCellView {
         iconLabel.translatesAutoresizingMaskIntoConstraints = false
         iconLabel.alignment = .center
         iconLabel.font = .systemFont(ofSize: 15, weight: .bold)
-        iconLabel.textColor = .controlAccentColor
+        iconLabel.textColor = .secondaryLabelColor
         iconLabel.wantsLayer = true
-        iconLabel.layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.10).cgColor
-        iconLabel.layer?.cornerRadius = 6
-        iconLabel.widthAnchor.constraint(equalToConstant: 28).isActive = true
+        iconLabel.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.055).cgColor
+        iconLabel.layer?.cornerRadius = 8
+        iconLabel.widthAnchor.constraint(equalToConstant: 30).isActive = true
+        iconLabel.heightAnchor.constraint(equalToConstant: 30).isActive = true
 
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         titleLabel.font = .systemFont(ofSize: 12, weight: .semibold)
