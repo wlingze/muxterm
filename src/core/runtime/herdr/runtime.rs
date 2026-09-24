@@ -1731,6 +1731,7 @@ impl HerdrRuntime {
                         }
                     }
                     if full {
+                        let first_full = slot.surface_baseline == SurfaceBaseline::AwaitingFull;
                         // 只有 attach 种子（seed_pending）存在时，本 generation
                         // 首个 full（新 client 终端初始化）才保留旧 Index；否则
                         // full 直接替换当前帧（含 generation 切换后的新 full）。
@@ -1813,6 +1814,7 @@ impl HerdrRuntime {
                             }
                             None
                         };
+                        let frame_len = bytes.len();
                         Self::push_render(
                             &mut self.events,
                             RenderEvent::PaneFrame {
@@ -1820,6 +1822,18 @@ impl HerdrRuntime {
                                 data: surface_blit(bytes),
                             },
                         );
+                        if first_full {
+                            tracing::info!(
+                                target = "muxterm::herdr",
+                                pane = %pane,
+                                generation,
+                                wire_seq,
+                                width,
+                                height,
+                                frame_len,
+                                "first full frame delivered to Surface"
+                            );
+                        }
                         if let Some(data) = index_snapshot {
                             Self::push_render(
                                 &mut self.events,
@@ -2143,13 +2157,15 @@ impl HerdrRuntime {
         }
     }
 
-    /// 每 poll tick：Starting 且 full 超时 → Degraded（保留旧像素，不 fallback）。
+    /// 每 poll tick：握手后仍未收到 full 的 Live 流必须重试，不能无限白屏。
+    /// worker 连握手都没完成时沿用 Degraded 语义，保留旧像素。
     fn degrade_stalled_streams(&mut self, now: Instant) {
         let stalled: Vec<PaneId> = self
             .stream_slots
             .iter()
             .filter(|(_, s)| {
-                s.state == SlotState::Starting
+                matches!(s.state, SlotState::Starting | SlotState::Live)
+                    && s.surface_baseline == SurfaceBaseline::AwaitingFull
                     && s.started_at
                         .is_some_and(|started| now.duration_since(started) >= FULL_FRAME_DEADLINE)
             })
@@ -2157,15 +2173,28 @@ impl HerdrRuntime {
             .collect();
         for pane in stalled {
             if let Some(slot) = self.stream_slots.get_mut(&pane) {
-                slot.state = SlotState::Degraded;
+                let handshake_complete = slot.state == SlotState::Live;
                 slot.stream = None;
                 slot.actual_mode = None;
-                slot.drop_pending_input("full-timeout");
-                tracing::warn!(
-                    target = "muxterm::herdr",
-                    pane = %pane,
-                    "首个 full frame 超时：Degraded（保留旧像素）"
-                );
+                if handshake_complete && slot.schedule_retry(now).is_some() {
+                    slot.state = SlotState::Backoff;
+                    tracing::warn!(
+                        target = "muxterm::herdr",
+                        pane = %pane,
+                        generation = slot.generation,
+                        retry = slot.retry_count,
+                        "握手后首个 full frame 超时：重新订阅，保留旧像素"
+                    );
+                } else {
+                    slot.state = SlotState::Degraded;
+                    slot.drop_pending_input("full-timeout");
+                    tracing::warn!(
+                        target = "muxterm::herdr",
+                        pane = %pane,
+                        generation = slot.generation,
+                        "首个 full frame 超时：Degraded（保留旧像素）"
+                    );
+                }
             }
         }
     }
