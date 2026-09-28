@@ -300,7 +300,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         discovery.attachedRemoteSocket = bridge.sshAlias == nil ? nil : bridge.socket
         // 统一配置：初始值来自 Core 解析后的快照，不再手写解析 TOML 或读 UserDefaults。
         let resolved = Self.resolvedSettings(from: bridge)
-        let initialWorkspace = bridge.workspaceList().first
+        let initialWorkspaces = bridge.workspaceList()
+        let initialWorkspace = initialWorkspaces.first(where: \.active) ?? initialWorkspaces.first
         let initialWorkspaceID = initialWorkspace?.id
         appliedTheme = MuxtermTheme.from(name: resolved.themeName)
         MuxtermTerminalColors.activePalette = appliedTheme.palette
