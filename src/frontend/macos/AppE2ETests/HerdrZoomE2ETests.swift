@@ -31,6 +31,9 @@ final class HerdrZoomE2ETests: XCTestCase {
 
         XCTAssertTrue(app.waitReady(minLeaves: 2), "Herdr split must paint both panes")
         XCTAssertTrue(app.waitTerminalContains(fixture.token), "painted Herdr pane must not be blank")
+        let herdrSidebarID = try XCTUnwrap(
+            app.testWorkspaceIDs().first(where: { $0.contains(fixture.name) })
+        )
         let key = try XCTUnwrap(app.testMakeCmdEnterEvent())
         XCTAssertTrue(app.testDispatchKeyEvent(key))
         XCTAssertTrue(AppE2E.wait(timeout: AppE2E.attachTimeout) {
@@ -47,6 +50,63 @@ final class HerdrZoomE2ETests: XCTestCase {
             app.testFlushFeeds()
             return !fixture.isZoomed && app.testLayoutLeafIDs().count == 2
         }, "second Cmd-Enter must restore both Herdr panes")
+
+        // Attach through the production Existing Connection callback and
+        // switch back. Frames from the two runtimes must remain in their own
+        // persistent surfaces even if both contain a pane with a low ID.
+        let tmux = OnePaneCat(label: "herdr-tmux-switch")
+        app.testAttachExistingConnection(ExistingConnectionChoice(
+            target: .local,
+            session: TmuxSessionInfo(name: tmux.session, windowCount: 1, attached: false),
+            socket: tmux.socket
+        ))
+        XCTAssertTrue(AppE2E.wait(timeout: AppE2E.featureTimeout) {
+            app.testPollOnce()
+            app.testFlushFeeds()
+            return app.testActiveWorkspaceSession() == tmux.session
+                && app.testAllVisibleTerminalText().contains(tmux.token)
+                && !app.testAllVisibleTerminalText().contains(fixture.token)
+        }, "tmux attach must display only the tmux pane")
+        app.refreshWorkspaceSidebarForTest()
+        XCTAssertTrue(app.testWorkspaceIDs().contains(herdrSidebarID),
+                      "Herdr workspace must stay in sidebar: \(app.testWorkspaceIDs())")
+        app.testSelectSidebarWorkspace(herdrSidebarID)
+        let restored = AppE2E.wait(timeout: AppE2E.featureTimeout) {
+            app.testPollOnce()
+            app.testFlushFeeds()
+            return app.testAllVisibleTerminalText().contains(fixture.token)
+                && !app.testAllVisibleTerminalText().contains(tmux.token)
+        }
+        XCTAssertTrue(restored, "returning to Herdr must restore its own painted surface; "
+            + "selected=\(app.testSelectedSidebarWorkspaceID() ?? "nil") "
+            + "active=\(app.bridge.workspaceList().first(where: \.active)?.id ?? "nil") "
+            + "leaves=\(app.testLayoutLeafIDs()) "
+            + "text=\(app.testAllVisibleTerminalText().prefix(240))")
+        guard restored else { return }
+
+        try fixture.startArrowProbe()
+        XCTAssertTrue(app.waitTerminalContains("HERDR_KEY_READY"), "raw pager must become visible")
+        app.testMakeActiveTerminalFirstResponder()
+        let arrow = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: .function,
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: try XCTUnwrap(app.window).windowNumber, context: nil,
+            characters: "\u{F700}", charactersIgnoringModifiers: "\u{F700}",
+            isARepeat: false, keyCode: 126
+        ))
+        let routed = try XCTUnwrap(app.testRouteMonitoredKeyEvent(arrow))
+        app.testActiveTerminalView().keyDown(with: routed)
+        XCTAssertTrue(AppE2E.wait(timeout: AppE2E.featureTimeout) {
+            app.testPollOnce()
+            app.testFlushFeeds()
+            let text = app.testAllVisibleTerminalText()
+            return text.contains("HERDR_KEY_BYTES=1b5b41")
+                || text.contains("HERDR_KEY_BYTES=1b4f41")
+        }, "Up arrow must reach the Herdr pane's raw-mode program after a workspace round trip; "
+            + "server=\(fixture.recentScreen().suffix(320)) "
+            + "ui=\(app.testAllVisibleTerminalText().suffix(320)) "
+            + "active=\(app.bridge.workspaceList().first(where: \.active)?.id ?? "nil") "
+            + "responder=\(String(describing: app.window?.firstResponder))")
     }
 }
 
@@ -56,6 +116,7 @@ private final class NamedHerdrZoomFixture {
     private(set) var workspaceID = ""
     private(set) var paneID = ""
     let token: String
+    let probeScriptPath: URL
     private let server: Process
     private var stopped = false
 
@@ -79,6 +140,8 @@ private final class NamedHerdrZoomFixture {
         socket = URL(fileURLWithPath: base)
             .appendingPathComponent("herdr/sessions/\(name)/herdr.sock").path
         token = "HERDR_MAC_ZOOM_\(ProcessInfo.processInfo.processIdentifier)"
+        probeScriptPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(name)-arrow.py")
         server = Process()
         server.executableURL = Self.executable
         server.arguments = ["--session", name, "server"]
@@ -135,12 +198,37 @@ private final class NamedHerdrZoomFixture {
         return layout["zoomed"] as? Bool ?? false
     }
 
+    func startArrowProbe() throws {
+        let script = """
+        import sys,termios,tty
+        fd=sys.stdin.fileno(); old=termios.tcgetattr(fd)
+        try:
+         tty.setraw(fd); print('HERDR_KEY_READY',flush=True)
+         key=sys.stdin.buffer.read(3)
+         print('HERDR_KEY_BYTES='+key.hex(),flush=True)
+        finally:
+         termios.tcsetattr(fd,termios.TCSADRAIN,old)
+        """
+        try script.write(to: probeScriptPath, atomically: true, encoding: .utf8)
+        _ = try cli(["pane", "run", paneID, "python3", "-u", probeScriptPath.path])
+    }
+
+    func recentScreen() -> String {
+        guard let data = try? cli(["pane", "read", paneID, "--source", "recent", "--format", "text"]) else {
+            return "<read failed>"
+        }
+        return String(decoding: data, as: UTF8.self)
+    }
+
     func stop() {
         guard !stopped, name.hasPrefix("muxterm-test-") else { return }
         stopped = true
         _ = try? Self.command(["session", "stop", name])
         _ = try? Self.command(["session", "delete", name])
         if server.isRunning { server.terminate() }
+        if probeScriptPath.lastPathComponent.hasPrefix("muxterm-test-maczoom-") {
+            try? FileManager.default.removeItem(at: probeScriptPath)
+        }
     }
 
     private func cli(_ args: [String]) throws -> Data {

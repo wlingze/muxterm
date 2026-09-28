@@ -705,10 +705,20 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // 启动时由 AppDelegate 创建的首个连接也属于当前 Workspace。
         // 过去只有 Quick Connect 后续创建的连接才登记进池，导致初始 local
         // workspace 既不在 Recent，也无法在切走后保持常驻。
-        let initialTarget = bridge.resolvedTargetConfig
+        let initialTarget = initialWorkspace?.resolvedTarget?.canonical.targetConfig
+            ?? bridge.resolvedTargetConfig
+        let initialAlias: String?
+        switch initialTarget?.transport {
+        case .some(.ssh(let name)):
+            initialAlias = name
+        case .some(.local):
+            initialAlias = nil
+        case .none:
+            initialAlias = bridge.sshAlias
+        }
         let initialKey = SceneKey(
-            transport: bridge.sshAlias == nil ? "local" : "ssh",
-            alias: bridge.sshAlias,
+            transport: initialAlias == nil ? "local" : "ssh",
+            alias: initialAlias,
             session: initialTarget?.session ?? bridge.session ?? "",
             runtime: initialTarget?.runtime.rawValue
                 ?? (terminalManager.usesClientResize ? "tmux" : "shell"),
