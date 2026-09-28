@@ -99,7 +99,9 @@ final class HerdrZoomE2ETests: XCTestCase {
         XCTAssertTrue(AppE2E.wait(timeout: AppE2E.featureTimeout) {
             app.testPollOnce()
             app.testFlushFeeds()
-            let text = app.testAllVisibleTerminalText()
+            // Narrow panes can wrap the marker across terminal rows. Compare
+            // the displayed characters after removing row boundaries.
+            let text = app.testActivePaneTerminalText().filter { !$0.isWhitespace }
             return text.contains("HERDR_KEY_BYTES=1b5b41")
                 || text.contains("HERDR_KEY_BYTES=1b4f41")
         }, "Up arrow must reach the Herdr pane's raw-mode program after a workspace round trip; "
