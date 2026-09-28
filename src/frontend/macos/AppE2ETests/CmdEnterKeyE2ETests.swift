@@ -6,10 +6,12 @@ import XCTest
 final class CmdEnterKeyE2ETests: XCTestCase {
     func testImePlaceholderNeverReachesRemoteShell() throws {
         AppE2E.ensureApp()
-        let terminal = MuxTerminalView(paneId: 603, frame: NSRect(x: 0, y: 0, width: 800, height: 400))
-        let recorder = KeyInputRecorder()
-        terminal.inputHandler = recorder
         for kitty in [false, true] {
+            let terminal = MuxTerminalView(
+                paneId: 603, frame: NSRect(x: 0, y: 0, width: 800, height: 400)
+            )
+            let recorder = KeyInputRecorder()
+            terminal.inputHandler = recorder
             if kitty { terminal.feedOutput(Data("\u{1b}[>1u".utf8)) }
             for characters in ["", "\u{ffff}"] {
                 let event = try XCTUnwrap(NSEvent.keyEvent(
@@ -22,9 +24,14 @@ final class CmdEnterKeyE2ETests: XCTestCase {
             }
             XCTAssertTrue(recorder.bytes.isEmpty,
                           "IME placeholder must never become raw bytes; kitty=\(kitty), bytes=\(recorder.bytes)")
+            terminal.insertText("中文", replacementRange: NSRange(location: NSNotFound, length: 0))
+            XCTAssertEqual(recorder.bytes, Array("中文".utf8))
+            recorder.bytes = []
+            terminal.insertText("\u{ffff}", replacementRange: NSRange(location: NSNotFound, length: 0))
+            XCTAssertTrue(recorder.bytes.isEmpty, "IME insertText placeholder must not reach the pane")
+            terminal.insertText("中\u{ffff}文", replacementRange: NSRange(location: NSNotFound, length: 0))
+            XCTAssertEqual(recorder.bytes, Array("中文".utf8), "IME commit must retain valid Chinese text")
         }
-        terminal.insertText("中文", replacementRange: NSRange(location: NSNotFound, length: 0))
-        XCTAssertEqual(recorder.bytes, Array("中文".utf8))
     }
 
     func testPlainArrowsReachPagerInNormalAndApplicationCursorModes() throws {

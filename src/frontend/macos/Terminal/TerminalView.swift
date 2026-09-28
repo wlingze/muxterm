@@ -77,6 +77,7 @@ final class MuxTerminalView: TerminalView {
     /// 空字符 keyDown（输入法组合键等）仍须经过 interpretKeyEvents；
     /// SwiftTerm 的 kitty 编码有时会额外发出无意义的 CSI 0 u。
     private var interpretingEmptyKeyEvent = false
+    private var suppressPlaceholderInsertion = false
     /// IME 候选窗应锚定到下一个将要输入的字符。光标停在最后一列时，
     /// 下一字符会软换行；仍返回最后一格会把候选窗挤到 pane 右边缘并裁掉。
     override func firstRect(
@@ -129,6 +130,33 @@ final class MuxTerminalView: TerminalView {
             }
         }
         super.keyDown(with: event)
+    }
+
+    override func insertText(_ string: Any, replacementRange: NSRange) {
+        let text: String
+        switch string {
+        case let plain as String:
+            text = plain
+        case let attributed as NSAttributedString:
+            text = attributed.string
+        default:
+            super.insertText(string, replacementRange: replacementRange)
+            return
+        }
+        let cleaned = text.unicodeScalars.reduce(into: "") { result, scalar in
+            if scalar.value != 0xffff && scalar.value != 0xfffe {
+                result.append(String(scalar))
+            }
+        }
+        if cleaned == text {
+            super.insertText(string, replacementRange: replacementRange)
+            return
+        }
+        // Let SwiftTerm clear its pending IME/kitty state, but discard any
+        // synthetic key event it emits for a placeholder-only commit.
+        suppressPlaceholderInsertion = cleaned.isEmpty
+        defer { suppressPlaceholderInsertion = false }
+        super.insertText(cleaned, replacementRange: replacementRange)
     }
 
     /// 对应 muxterm pane id。
@@ -1254,6 +1282,7 @@ extension MuxTerminalView: TerminalViewDelegate {
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
 
     func send(source: TerminalView, data: ArraySlice<UInt8>) {
+        if suppressPlaceholderInsertion { return }
         if interpretingEmptyKeyEvent, data.elementsEqual([0x1b, 0x5b, 0x30, 0x75]) {
             return
         }
