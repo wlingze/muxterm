@@ -602,9 +602,19 @@ struct MuxTask {
         )
     }
 
-    static func scrollPane(_ paneId: UInt32, lines: Int) -> QueuedMuxTask {
-        QueuedMuxTask(type: TASK_SCROLL_PANE, targetPane: paneId,
-            targetTab: UInt32(clamping: lines.magnitude), dir: lines > 0 ? 0 : 1)
+    static func scrollPane(
+        _ paneId: UInt32,
+        lines: Int,
+        column: UInt16? = nil,
+        row: UInt16? = nil,
+        modifiers: UInt8 = 0
+    ) -> QueuedMuxTask {
+        let location = column.flatMap { column in
+            row.map { row in "\(column),\(row),\(modifiers)" }
+        }
+        return QueuedMuxTask(type: TASK_SCROLL_PANE, targetPane: paneId,
+            targetTab: UInt32(clamping: lines.magnitude), dir: lines > 0 ? 0 : 1,
+            name: location)
     }
 
     /// Runtime 重新发送指定 pane 的权威 Surface baseline。

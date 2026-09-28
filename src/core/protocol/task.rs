@@ -91,8 +91,16 @@ pub enum Task {
     /// 重命名当前 Workspace。
     RenameWorkspace { name: String },
 
-    /// 滚动由 Runtime 持有的终端历史；正数向上，负数向下。
-    ScrollPane { target: PaneId, lines: i32 },
+    /// 滚动 pane；Runtime 根据应用鼠标模式决定送给应用或历史。
+    /// 正数向上，负数向下。
+    ScrollPane {
+        target: PaneId,
+        lines: i32,
+        /// frontend 提供的 pane 内 0-based 鼠标格子位置。
+        position: Option<(u16, u16)>,
+        /// Crossterm 兼容的 Shift / Control / Alt 位。
+        modifiers: u8,
+    },
 
     // ── 输入 ──────────────────────────────────────────────
     /// 向 pane 发送按键序列（tmux send-keys / 本地 pty write）。

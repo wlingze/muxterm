@@ -1114,7 +1114,7 @@ final class PanePaintPolicyTests: XCTestCase {
 }
 
 final class WheelPassthroughPolicyTests: XCTestCase {
-    func testMouseReportingBeatsServerScroll() {
+    func testServerScrollKeepsHerdrInChargeOfApplicationWheelRouting() {
         XCTAssertEqual(
             WheelPassthroughPolicy.route(
                 mouseReporting: true,
@@ -1122,8 +1122,8 @@ final class WheelPassthroughPolicyTests: XCTestCase {
                 alternateScreen: false,
                 hasServerScroll: true
             ),
-            .applicationMouse,
-            "Herdr ServerScroll 不得抢走 htop/Codex 的滚轮"
+            .serverScroll,
+            "Herdr must inspect the child terminal mode when routing a wheel"
         )
     }
 

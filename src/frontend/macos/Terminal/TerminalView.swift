@@ -171,6 +171,7 @@ final class MuxTerminalView: TerminalView {
     private var encodingClipboardImage = false
     /// 服务端维护 viewport 的 runtime 通过任务接收滚轮，不滚动本地缓冲。
     var onServerScroll: ((Int) -> Void)?
+    var onServerScrollAt: ((Int, UInt16, UInt16, UInt8) -> Void)?
     /// Tests and embedding frontends can observe an opened terminal URL without
     /// launching an external browser. Production falls back to NSWorkspace.
     var onOpenLink: ((URL) -> Void)?
@@ -425,7 +426,7 @@ final class MuxTerminalView: TerminalView {
             mouseReporting: getTerminal().mouseMode != .off,
             shiftBypassesMouse: event.modifierFlags.contains(.shift),
             alternateScreen: getTerminal().isCurrentBufferAlternate,
-            hasServerScroll: onServerScroll != nil
+            hasServerScroll: onServerScroll != nil || onServerScrollAt != nil
         )
         switch route {
         case .applicationMouse:
@@ -442,7 +443,16 @@ final class MuxTerminalView: TerminalView {
                 serverScrollRemainder -= CGFloat(lines)
                 // ScrollPane 在 Core 内按需切焦点；每个滚轮都另发 SwitchPane
                 // 会同步等待 SSH pane.focus，把连续滚动降到网络往返速度。
-                onServerScroll?(lines)
+                if let onServerScrollAt {
+                    let (column, row) = mouseCellPosition(for: event)
+                    var modifiers: UInt8 = 0
+                    if event.modifierFlags.contains(.shift) { modifiers |= 1 }
+                    if event.modifierFlags.contains(.control) { modifiers |= 2 }
+                    if event.modifierFlags.contains(.option) { modifiers |= 4 }
+                    onServerScrollAt(lines, UInt16(column), UInt16(row), modifiers)
+                } else {
+                    onServerScroll?(lines)
+                }
             }
         case .localHistory:
             lastScrollWheelRoutedToRuntime = false
@@ -489,13 +499,9 @@ final class MuxTerminalView: TerminalView {
         guard let cell = terminalCellSizeInPoints(), cell.width > 0, cell.height > 0 else {
             return
         }
-        let term = getTerminal()
-        let point = convert(event.locationInWindow, from: nil)
-        let col = min(max(Int(point.x / cell.width), 0), max(term.cols, 1) - 1) + 1
-        let row = min(
-            max(Int((bounds.height - point.y) / cell.height), 0),
-            max(term.rows, 1) - 1
-        ) + 1
+        let (column, screenRow) = mouseCellPosition(for: event)
+        let col = column + 1
+        let row = screenRow + 1
         let button = lines > 0 ? 64 : 65
         let one = Array("\u{1b}[<\(button);\(col);\(row)M".utf8)
         var payload = [UInt8]()
@@ -506,6 +512,18 @@ final class MuxTerminalView: TerminalView {
         withUserMouseReporting {
             inputHandler?.terminal(self, send: payload[...])
         }
+    }
+
+    private func mouseCellPosition(for event: NSEvent) -> (Int, Int) {
+        let term = getTerminal()
+        guard let cell = terminalCellSizeInPoints(), cell.width > 0, cell.height > 0 else {
+            return (0, 0)
+        }
+        let point = convert(event.locationInWindow, from: nil)
+        return (
+            min(max(Int(point.x / cell.width), 0), max(term.cols, 1) - 1),
+            min(max(Int((bounds.height - point.y) / cell.height), 0), max(term.rows, 1) - 1)
+        )
     }
 
     override func mouseDown(with event: NSEvent) {

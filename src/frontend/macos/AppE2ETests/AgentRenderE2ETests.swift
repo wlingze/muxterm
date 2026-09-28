@@ -523,7 +523,7 @@ final class AgentRenderE2ETests: XCTestCase {
         XCTAssertFalse(view.canScroll, "服务端历史不得伪装成本地重放的 scrollback")
     }
 
-    func testMouseReportingWheelBypassesServerScroll() throws {
+    func testHerdrWheelUsesServerRoutingEvenWhenSurfaceReportsMouse() throws {
         AppE2E.ensureApp()
         let view = MuxTerminalView(paneId: 9, frame: NSRect(x: 0, y: 0, width: 640, height: 240))
         view.getTerminal().resize(cols: 40, rows: 12)
@@ -536,13 +536,51 @@ final class AgentRenderE2ETests: XCTestCase {
         let event = try XCTUnwrap(CGEvent(scrollWheelEvent2Source: nil, units: .line,
             wheelCount: 1, wheel1: 3, wheel2: 0, wheel3: 0).flatMap(NSEvent.init(cgEvent:)))
         view.scrollWheel(with: event)
-        XCTAssertTrue(server.isEmpty, "应用开了鼠标时滚轮必须进 pane，不能走 Herdr ServerScroll")
-        let payload = String(bytes: handler.bytes, encoding: .utf8) ?? ""
-        XCTAssertTrue(
-            payload.contains("\u{1b}[<64;") || payload.contains("\u{1b}[<65;"),
-            "mouse reporting 滚轮必须 SGR。got=\(handler.bytes)"
-        )
+        XCTAssertEqual(server, [3], "Herdr decides whether the child wants a wheel or history")
+        XCTAssertTrue(handler.bytes.isEmpty, "the client must not inject an extra SGR wheel")
         XCTAssertTrue(view.lastScrollWheelRoutedToRuntime)
+    }
+
+    func testHerdrWheelPassesItsPaneCellToServer() throws {
+        AppE2E.ensureApp()
+        let view = MuxTerminalView(paneId: 9, frame: NSRect(x: 0, y: 0, width: 640, height: 300))
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 300),
+            styleMask: [.titled], backing: .buffered, defer: false
+        )
+        window.contentView = view
+        window.orderFront(nil)
+        defer { window.orderOut(nil) }
+        view.getTerminal().resize(cols: 80, rows: 24)
+        view.feedOutput(Data("\u{1b}[?1003h\u{1b}[?1006h".utf8))
+        let handler = RecordingInputHandler()
+        view.inputHandler = handler
+        var received: (Int, UInt16, UInt16, UInt8)?
+        view.onServerScrollAt = { received = ($0, $1, $2, $3) }
+
+        let localPoint = NSPoint(x: view.bounds.midX, y: view.bounds.midY)
+        let screenPoint = window.convertPoint(toScreen: view.convert(localPoint, to: nil))
+        let event = try XCTUnwrap(CGEvent(
+            scrollWheelEvent2Source: nil, units: .line, wheelCount: 1,
+            wheel1: 3, wheel2: 0, wheel3: 0
+        ))
+        event.setIntegerValueField(.mouseEventWindowUnderMousePointer, value: Int64(window.windowNumber))
+        event.setIntegerValueField(
+            .mouseEventWindowUnderMousePointerThatCanHandleThisEvent,
+            value: Int64(window.windowNumber)
+        )
+        let screenMaxY = NSScreen.screens.first(where: { $0.frame.contains(screenPoint) })?
+            .frame.maxY ?? 0
+        event.location = CGPoint(x: screenPoint.x, y: screenMaxY - screenPoint.y)
+        view.scrollWheel(with: try XCTUnwrap(NSEvent(cgEvent: event)))
+
+        let result = try XCTUnwrap(received)
+        XCTAssertEqual(result.0, 3)
+        XCTAssertGreaterThan(result.1, 0, "Herdr must not always scroll at column zero")
+        XCTAssertGreaterThan(result.2, 0, "Herdr must not always scroll at row zero")
+        XCTAssertLessThan(result.1, 80)
+        XCTAssertLessThan(result.2, 24)
+        XCTAssertTrue(handler.bytes.isEmpty, "AttachScroll owns the wheel input")
     }
 
     func testAlternateAgentScrollRoutesToRuntimeNotLocalHistory() {
@@ -995,7 +1033,7 @@ final class AgentRenderE2ETests: XCTestCase {
         let wheel = try XCTUnwrap(CGEvent(scrollWheelEvent2Source: nil, units: .line,
             wheelCount: 1, wheel1: 3, wheel2: 0, wheel3: 0).flatMap(NSEvent.init(cgEvent:)))
         view.scrollWheel(with: wheel)
-        XCTAssertTrue(server.isEmpty, "鼠标模式打开后滚轮不能再走 ServerScroll")
+        XCTAssertEqual(server, [3], "Herdr's AttachScroll must select the child mouse route")
     }
 
     func testHerdrMouseClickAndHoverReachWorkspaceInputQueue() throws {

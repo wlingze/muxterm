@@ -64,7 +64,7 @@ pub const TASK_REFRESH_TABS: u32 = 13;
 pub const TASK_RENAME_TAB: u32 = 14;
 pub const TASK_RENAME_WORKSPACE: u32 = 15;
 pub const TASK_REQUEST_PANE_SNAPSHOT: u32 = 16;
-/// target_tab = 行数；dir 0 向上、1 向下。
+/// target_tab = 行数；dir 0 向上、1 向下；name 可选 "column,row,modifiers"。
 pub const TASK_SCROLL_PANE: u32 = 17;
 /// target_pane = 源 pane；target_tab = 目标 tab。
 pub const TASK_JOIN_PANE: u32 = 18;

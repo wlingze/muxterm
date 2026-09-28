@@ -101,6 +101,27 @@ pub fn mouse_capture_decset(enabled: bool, sgr_pixels: bool) -> Vec<u8> {
     }
 }
 
+fn attach_scroll_message(
+    lines: i32,
+    column: Option<u16>,
+    row: Option<u16>,
+    modifiers: u8,
+) -> ClientMessage {
+    use super::wire::{AttachScrollDirection, AttachScrollSource};
+    ClientMessage::AttachScroll {
+        source: AttachScrollSource::Wheel,
+        direction: if lines > 0 {
+            AttachScrollDirection::Up
+        } else {
+            AttachScrollDirection::Down
+        },
+        lines: lines.unsigned_abs().min(u16::MAX as u32) as u16,
+        column,
+        row,
+        modifiers,
+    }
+}
+
 /// start worker 的完成结果（generation-tagged）。
 pub enum StreamStartResult {
     Started {
@@ -375,7 +396,15 @@ impl ObserveStream {
     }
 
     pub fn scroll(&mut self, lines: i32) -> Result<()> {
-        use super::wire::{AttachScrollDirection, AttachScrollSource};
+        self.scroll_at(lines, None, 0)
+    }
+
+    pub fn scroll_at(
+        &mut self,
+        lines: i32,
+        position: Option<(u16, u16)>,
+        modifiers: u8,
+    ) -> Result<()> {
         if lines == 0 {
             return Ok(());
         }
@@ -385,18 +414,12 @@ impl ObserveStream {
             .context("Herdr control stream 已关闭")?;
         write_message(
             stream,
-            &ClientMessage::AttachScroll {
-                source: AttachScrollSource::Wheel,
-                direction: if lines > 0 {
-                    AttachScrollDirection::Up
-                } else {
-                    AttachScrollDirection::Down
-                },
-                lines: lines.unsigned_abs().min(u16::MAX as u32) as u16,
-                column: None,
-                row: None,
-                modifiers: 0,
-            },
+            &attach_scroll_message(
+                lines,
+                position.map(|(column, _)| column),
+                position.map(|(_, row)| row),
+                modifiers,
+            ),
         )
         .context("写 Herdr terminal scroll 失败")
     }
@@ -444,7 +467,23 @@ pub fn channel() -> (Sender<PaneStreamEvent>, Receiver<PaneStreamEvent>) {
 
 #[cfg(test)]
 mod tests {
-    use super::mouse_capture_decset;
+    use super::{attach_scroll_message, mouse_capture_decset};
+    use crate::runtime::herdr::wire::{AttachScrollDirection, AttachScrollSource, ClientMessage};
+
+    #[test]
+    fn attach_scroll_preserves_mouse_position_and_modifiers() {
+        assert_eq!(
+            attach_scroll_message(4, Some(37), Some(12), 0b101),
+            ClientMessage::AttachScroll {
+                source: AttachScrollSource::Wheel,
+                direction: AttachScrollDirection::Up,
+                lines: 4,
+                column: Some(37),
+                row: Some(12),
+                modifiers: 0b101,
+            }
+        );
+    }
 
     #[test]
     fn mouse_capture_enable_uses_sgr_cell_mode() {

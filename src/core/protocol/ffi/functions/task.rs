@@ -30,6 +30,22 @@ pub(crate) fn task_result_code(result: anyhow::Result<TaskOutcome>) -> i32 {
     }
 }
 
+fn parse_scroll_location(value: Option<&str>) -> (Option<(u16, u16)>, u8) {
+    let Some(value) = value else { return (None, 0) };
+    let mut fields = value.split(',');
+    match (
+        fields.next().and_then(|s| s.parse::<u16>().ok()),
+        fields.next().and_then(|s| s.parse::<u16>().ok()),
+        fields.next().and_then(|s| s.parse::<u8>().ok()),
+        fields.next(),
+    ) {
+        (Some(column), Some(row), Some(modifiers), None) => {
+            (Some((column, row)), modifiers & 0b111)
+        }
+        _ => (None, 0),
+    }
+}
+
 pub(crate) fn ctask_to_task(task: &CTask, ws: &Workspace) -> Option<Task> {
     let name = cstr_opt(task.name);
     match task.type_ {
@@ -100,11 +116,16 @@ pub(crate) fn ctask_to_task(task: &CTask, ws: &Workspace) -> Option<Task> {
             name,
         }),
         TASK_RENAME_WORKSPACE => name.map(|name| Task::RenameWorkspace { name }),
-        TASK_SCROLL_PANE => Some(Task::ScrollPane {
-            target: resolve_c_task_pane(task.target_pane, ws),
-            lines: (task.target_tab.min(u16::MAX as u32) as i32)
-                * if task.dir == 0 { 1 } else { -1 },
-        }),
+        TASK_SCROLL_PANE => {
+            let (position, modifiers) = parse_scroll_location(name.as_deref());
+            Some(Task::ScrollPane {
+                target: resolve_c_task_pane(task.target_pane, ws),
+                lines: (task.target_tab.min(u16::MAX as u32) as i32)
+                    * if task.dir == 0 { 1 } else { -1 },
+                position,
+                modifiers,
+            })
+        }
         TASK_REQUEST_PANE_SNAPSHOT => Some(Task::RequestPaneSnapshot {
             target: resolve_c_task_pane(task.target_pane, ws),
         }),
@@ -481,6 +502,19 @@ fn task_from_json(ws: &Workspace, value: &serde_json::Value) -> Option<Task> {
         "scroll_pane" => Some(Task::ScrollPane {
             target: target_pane(obj)?,
             lines: obj.get("lines")?.as_i64()?.clamp(-65535, 65535) as i32,
+            position: obj
+                .get("column")
+                .and_then(serde_json::Value::as_u64)
+                .zip(obj.get("row").and_then(serde_json::Value::as_u64))
+                .and_then(|(column, row)| {
+                    Some((u16::try_from(column).ok()?, u16::try_from(row).ok()?))
+                }),
+            modifiers: obj
+                .get("modifiers")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|value| u8::try_from(value).ok())
+                .unwrap_or(0)
+                & 0b111,
         }),
         "send_keys" => Some(Task::SendKeys {
             target: target_pane(obj)?,
@@ -903,4 +937,16 @@ pub unsafe extern "C" fn muxterm_resize_pane_axis(
         }))
     }))
     .unwrap_or(-1)
+}
+
+#[cfg(test)]
+mod scroll_location_tests {
+    use super::parse_scroll_location;
+
+    #[test]
+    fn ffi_scroll_keeps_pointer_and_modifier_bits() {
+        assert_eq!(parse_scroll_location(Some("37,12,5")), (Some((37, 12)), 5));
+        assert_eq!(parse_scroll_location(None), (None, 0));
+        assert_eq!(parse_scroll_location(Some("bad,12,5")), (None, 0));
+    }
 }

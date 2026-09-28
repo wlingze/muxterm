@@ -1905,9 +1905,14 @@ impl HerdrRuntime {
                         slot.live_since = Some(now);
                         if slot.actual_mode == Some(StreamMode::Control) && slot.stream.is_some() {
                             let scroll = std::mem::take(&mut slot.pending_scroll);
+                            let pointer = slot.pending_scroll_pointer.take();
                             if scroll != 0 {
                                 if let Some(stream) = slot.stream.as_mut() {
-                                    if let Err(err) = stream.scroll(scroll) {
+                                    if let Err(err) = stream.scroll_at(
+                                        scroll,
+                                        pointer.map(|(column, row, _)| (column, row)),
+                                        pointer.map_or(0, |(_, _, modifiers)| modifiers),
+                                    ) {
                                         tracing::warn!(pane = pane.0, error = %err, "pending scroll failed");
                                     }
                                 }
@@ -2238,9 +2243,14 @@ impl HerdrRuntime {
                     // 输入不应等待 Surface 建立视觉基线。
                     if mode.is_control() {
                         let scroll = std::mem::take(&mut slot.pending_scroll);
+                        let pointer = slot.pending_scroll_pointer.take();
                         if scroll != 0 {
                             if let Some(stream) = slot.stream.as_mut() {
-                                if let Err(err) = stream.scroll(scroll) {
+                                if let Err(err) = stream.scroll_at(
+                                    scroll,
+                                    pointer.map(|(column, row, _)| (column, row)),
+                                    pointer.map_or(0, |(_, _, modifiers)| modifiers),
+                                ) {
                                     tracing::warn!(pane = pane.0, error = %err, "pending scroll failed");
                                 }
                             }
@@ -3625,7 +3635,12 @@ impl Runtime for HerdrRuntime {
                 self.start_stream_replacing(*target, mode, false);
                 Ok(TaskOutcome::Done)
             }
-            Task::ScrollPane { target, lines } => {
+            Task::ScrollPane {
+                target,
+                lines,
+                position,
+                modifiers,
+            } => {
                 if *lines == 0 {
                     return Ok(TaskOutcome::Done);
                 }
@@ -3642,12 +3657,14 @@ impl Runtime for HerdrRuntime {
                     slot.stream
                         .as_mut()
                         .ok_or_else(|| anyhow!("control stream 缺失"))?
-                        .scroll(*lines)?;
+                        .scroll_at(*lines, *position, *modifiers)?;
                 } else {
                     slot.pending_scroll = slot
                         .pending_scroll
                         .saturating_add(*lines)
                         .clamp(-(u16::MAX as i32), u16::MAX as i32);
+                    slot.pending_scroll_pointer =
+                        position.map(|(column, row)| (column, row, *modifiers));
                 }
                 Ok(TaskOutcome::Done)
             }

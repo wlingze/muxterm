@@ -1241,8 +1241,8 @@ public enum PaneHistoryScrollPolicy {
 
 /// 滚轮交给谁：对齐 Linux `handle_scroll`。
 ///
-/// 应用开了 1000/1002/1003 时必须把滚轮写成 SGR 交给 pane（htop / vim /
-/// Codex）。Herdr 的 ServerScroll 只在应用没要鼠标时滚服务端历史。
+/// 支持 ServerScroll 的 Runtime 自己知道子进程的鼠标/备用屏状态，滚轮由
+/// Runtime 分流到应用或历史。其它 Runtime 使用 Surface 的鼠标模式。
 public enum WheelPassthroughPolicy {
     public enum Route: Equatable {
         case applicationMouse
@@ -1257,11 +1257,11 @@ public enum WheelPassthroughPolicy {
         alternateScreen: Bool,
         hasServerScroll: Bool
     ) -> Route {
-        if mouseReporting, !shiftBypassesMouse {
-            return .applicationMouse
-        }
         if hasServerScroll {
             return .serverScroll
+        }
+        if mouseReporting, !shiftBypassesMouse {
+            return .applicationMouse
         }
         if alternateScreen {
             return .applicationArrows

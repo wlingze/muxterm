@@ -492,9 +492,14 @@ final class TerminalManager: TerminalInputHandler {
         view.muxtermResizeGridWithView = !usesClientResize
         view.inputHandler = self
         if bridge?.runtimeSupports(runtimeID ?? "", capability: "ServerScroll") == true {
-            view.onServerScroll = { [weak self] lines in
+            view.onServerScrollAt = { [weak self] lines, column, row, modifiers in
                 guard let self else { return }
-                _ = self.enqueueCoreOperation(.task(MuxTask.scrollPane(paneId, lines: lines)), failureMessage: MuxtermI18n.shared.tr(.errorCommandFailed))
+                _ = self.enqueueCoreOperation(
+                    .task(MuxTask.scrollPane(
+                        paneId, lines: lines, column: column, row: row, modifiers: modifiers
+                    )),
+                    failureMessage: MuxtermI18n.shared.tr(.errorCommandFailed)
+                )
             }
         }
         let imageWorkspaceID = workspaceID
