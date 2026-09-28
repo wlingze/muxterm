@@ -170,6 +170,96 @@ fn herdr_toggle_pane_fullscreen_updates_server_layout() {
         .expect("named Herdr shutdown");
 }
 
+/// Moving focus with bracket navigation while zoomed must keep the destination
+/// pane visible on the server and in the product layout.
+#[test]
+fn herdr_switch_pane_moves_zoom_to_destination() {
+    if !herdr_available() {
+        eprintln!("skip: 无 herdr 二进制");
+        return;
+    }
+    let herdr = IsolatedHerdr::start("zoom-focus");
+    let (workspace_id, tab_id, first) = herdr.create_workspace("/tmp", "mux-zoom-focus");
+    let second = herdr.split_pane(&first, "right");
+    let session = Arc::new(HerdrSession::new(herdr.name(), herdr.socket_path()));
+    let runtime = HerdrRuntime::new(Arc::clone(&session), &workspace_id);
+    let mut workspace = Workspace::new(
+        WorkspaceId::new("local", None, herdr.name(), "herdr", &workspace_id),
+        "herdr-zoom-focus".to_string(),
+        Box::new(runtime),
+    );
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(2)
+        .build()
+        .expect("tokio");
+    rt.block_on(workspace.connect())
+        .expect("attach named Herdr");
+    let active = workspace.state().active_pane().expect("active pane").id;
+    let tab = workspace.state().tabs()[0].id;
+    let destination = workspace
+        .state()
+        .panes(&tab)
+        .iter()
+        .find(|candidate| candidate.id != active)
+        .expect("other pane")
+        .id;
+    let focused_source = session.snapshot().expect("source snapshot").focused_pane_id;
+    let destination_source = if focused_source.as_deref() == Some(first.as_str()) {
+        &second
+    } else {
+        &first
+    };
+    workspace
+        .execute(Task::TogglePaneFullscreen { target: active })
+        .expect("zoom active pane");
+    workspace
+        .execute(Task::SwitchPane {
+            target: destination,
+        })
+        .expect("switch while zoomed");
+    let deadline = Instant::now() + std::time::Duration::from_secs(3);
+    let server_layout = loop {
+        let _ = workspace.refresh();
+        let layout = session
+            .snapshot()
+            .expect("server layout")
+            .layouts
+            .into_iter()
+            .find(|layout| layout.tab_id == tab_id)
+            .expect("tab layout");
+        if layout.focused_pane_id == *destination_source || Instant::now() >= deadline {
+            break layout;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    assert!(server_layout.zoomed, "server must keep destination zoomed");
+    assert_eq!(server_layout.focused_pane_id, *destination_source);
+    let deadline = Instant::now() + HERDR_TIMEOUT;
+    while Instant::now() < deadline {
+        let _ = workspace.refresh();
+        if workspace
+            .state()
+            .layout(&tab)
+            .is_some_and(|layout| layout.tree.leaves() == vec![destination])
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(
+        workspace
+            .state()
+            .layout(&tab)
+            .expect("zoom layout")
+            .tree
+            .leaves(),
+        vec![destination]
+    );
+    rt.block_on(workspace.shutdown())
+        .expect("named Herdr shutdown");
+}
+
 /// 夹具先涂 token 再 attach：PaneBuf 必须能搜到（直播走 observe 流，
 /// 不是 MockRuntime 喂字节）。
 #[test]
