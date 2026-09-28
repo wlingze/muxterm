@@ -4,6 +4,36 @@ import XCTest
 
 /// 先前 macOS bug：Alt/Cmd+Enter 后 tmux 已 zoom，GUI 仍显示多 pane。
 final class ZoomE2ETests: XCTestCase {
+    func testTwoPaneTmuxGridMatchesHostsAfterWorkspaceRoundTrip() throws {
+        let first = TwoPaneCat(label: "workspace-grid-roundtrip")
+        let second = OnePaneCat(label: "workspace-grid-other")
+        let app = try AppE2E.attachWindow(socket: first.socket, session: first.session)
+        defer { app.testShutdown() }
+        XCTAssertTrue(app.waitReady(minLeaves: 2))
+        let expected = Set(first.panes.compactMap { UInt32($0.dropFirst()) })
+        XCTAssertEqual(expected.count, 2)
+        let otherBridge = try CoreBridge(backendType: "tmux", socket: second.socket, session: second.session)
+        app.testActivateWorkspaceBridge(otherBridge, session: second.session)
+        XCTAssertTrue(AppE2E.wait(timeout: AppE2E.attachTimeout) {
+            app.testPollOnce()
+            return app.testActiveWorkspaceSession() == second.session
+        })
+        app.testSwitchBackToFirstWorkspace()
+        XCTAssertTrue(AppE2E.wait(timeout: AppE2E.attachTimeout) {
+            app.testPollOnce()
+            AppE2E.pump(20)
+            return app.testActiveWorkspaceSession() == first.session
+                && Set(app.testLayoutLeafIDs()) == expected
+        })
+        for pane in expected {
+            let surface = app.terminalManager.view(for: pane)
+            let allocated = try XCTUnwrap(surface.allocatedGridSize())
+            let rendered = surface.renderedGridSize
+            XCTAssertLessThanOrEqual(abs(rendered.cols - allocated.cols), 2,
+                                     "pane \(pane) returned with \(rendered.cols) VT columns in a \(allocated.cols) column host")
+        }
+    }
+
 
     func testCachedTabRevealKeepsAllocatedGridAndContents() throws {
         AppE2E.ensureApp()
