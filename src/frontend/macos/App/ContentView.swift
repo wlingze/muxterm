@@ -201,7 +201,7 @@ final class ContentView: NSView {
 
     func updateConnectionStatus(_ summary: (type: String, host: String?, status: String),
                                 trafficRate: UInt64, totalBytes: UInt64,
-                                upRate: UInt64 = 0, upBytes: UInt64 = 0,
+                                upRate: UInt64? = nil, upBytes: UInt64? = nil,
                                 ports: CoreSSHPortListing = CoreSSHPortListing(
                                     ports: [], scanPending: false, scanError: nil
                                 )) {

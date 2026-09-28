@@ -196,8 +196,8 @@ final class StatusBarView: NSView {
     private var connectionSummary: (type: String, host: String?, status: String) = ("local", nil, "connected")
     private var trafficRate: UInt64 = 0
     private var totalBytes: UInt64 = 0
-    private var upRate: UInt64 = 0
-    private var upBytes: UInt64 = 0
+    private var upRate: UInt64?
+    private var upBytes: UInt64?
     private var sshPorts: [CoreSSHPort] = []
     private var sshPortScanPending = false
     private var sshPortScanError: String?
@@ -595,7 +595,7 @@ final class StatusBarView: NSView {
 
     func updateConnectionStatus(_ summary: (type: String, host: String?, status: String),
                                 trafficRate: UInt64, totalBytes: UInt64,
-                                upRate: UInt64 = 0, upBytes: UInt64 = 0,
+                                upRate: UInt64? = nil, upBytes: UInt64? = nil,
                                 portListing: CoreSSHPortListing = CoreSSHPortListing(
                                     ports: [], scanPending: false, scanError: nil
                                 )) {
@@ -697,7 +697,7 @@ final class StatusBarView: NSView {
             switch connectionSummary.status {
             case "connected":
                 if connectionSummary.type == "ssh" {
-                    color = trafficSpeedColor(max(trafficRate, upRate))
+                    color = trafficSpeedColor(max(trafficRate, upRate ?? 0))
                 } else {
                     color = .systemGreen
                 }
@@ -716,7 +716,10 @@ final class StatusBarView: NSView {
             if let host = connectionSummary.host, !host.isEmpty { summary.append(host) }
             summary.append(localizedStatus(connectionSummary.status))
             if connectionSummary.type == "ssh", connectionSummary.status == "connected" {
-                summary.append("↑ \(StatusTrafficFormatter.rate(upRate))  ↓ \(StatusTrafficFormatter.rate(trafficRate))")
+                if let upRate {
+                    summary.append("↑ \(StatusTrafficFormatter.rate(upRate))")
+                }
+                summary.append("↓ \(StatusTrafficFormatter.rate(trafficRate))")
             }
             summary.append(MuxtermI18n.shared.tr(.statusShowConnectionDetails))
             statusDot.toolTip = summary.joined(separator: " · ")
@@ -793,18 +796,22 @@ final class StatusBarView: NSView {
                 identifier: "muxterm.statusPopover.received",
                 isError: false
             ))
-            rows.append(ConnectionDetailRow(
-                label: MuxtermI18n.shared.tr(.statusSendRate),
-                value: StatusTrafficFormatter.rate(upRate),
-                identifier: "muxterm.statusPopover.sendRate",
-                isError: false
-            ))
-            rows.append(ConnectionDetailRow(
-                label: MuxtermI18n.shared.tr(.statusSent),
-                value: StatusTrafficFormatter.bytes(upBytes),
-                identifier: "muxterm.statusPopover.sent",
-                isError: false
-            ))
+            if let upRate {
+                rows.append(ConnectionDetailRow(
+                    label: MuxtermI18n.shared.tr(.statusSendRate),
+                    value: StatusTrafficFormatter.rate(upRate),
+                    identifier: "muxterm.statusPopover.sendRate",
+                    isError: false
+                ))
+            }
+            if let upBytes {
+                rows.append(ConnectionDetailRow(
+                    label: MuxtermI18n.shared.tr(.statusSent),
+                    value: StatusTrafficFormatter.bytes(upBytes),
+                    identifier: "muxterm.statusPopover.sent",
+                    isError: false
+                ))
+            }
         }
         if let errorText {
             rows.append(ConnectionDetailRow(
@@ -1052,7 +1059,7 @@ final class StatusBarView: NSView {
     private func connectionTrafficColor(for identifier: String) -> NSColor? {
         switch identifier {
         case "muxterm.statusPopover.receiveRate": return trafficSpeedColor(trafficRate)
-        case "muxterm.statusPopover.sendRate": return trafficSpeedColor(upRate)
+        case "muxterm.statusPopover.sendRate": return upRate.map(trafficSpeedColor)
         default: return nil
         }
     }

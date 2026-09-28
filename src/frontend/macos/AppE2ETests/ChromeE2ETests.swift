@@ -142,11 +142,11 @@ final class ChromeE2ETests: XCTestCase {
         XCTAssertTrue(bar.testRightText().contains("R"), "right 应含 R: \(bar.testRightText())")
         XCTAssertEqual(
             bar.testTabTitle(18).trimmingCharacters(in: .whitespaces),
-            "1:code"
+            "1  code"
         )
         XCTAssertEqual(
             bar.testTabTitle(21).trimmingCharacters(in: .whitespaces),
-            "2:other"
+            "2  other"
         )
         XCTAssertFalse(bar.testTabTitle(18).contains("#["), "GUI tab 不得渲染 tmux 格式串")
         XCTAssertFalse(bar.testTabTitle(21).contains("#["), "GUI tab 不得渲染 tmux 格式串")
