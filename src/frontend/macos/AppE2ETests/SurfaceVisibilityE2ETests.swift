@@ -8,6 +8,56 @@ import XCTest
 /// 暴露空白/半截帧，seed 与同期间 live catch-up 完成后才一次性显示。
 final class SurfaceVisibilityE2ETests: XCTestCase {
 
+    func testHiddenDirectShellKeepsOutputBeyondCoalesceBudget() throws {
+        AppE2E.ensureApp()
+        let bridge = try CoreBridge(backendType: "local")
+        defer { bridge.shutdown() }
+        let manager = TerminalManager(bridge: bridge, runtimeID: "shell")
+        let scene = WorkspaceScene(
+            key: SceneKey(transport: "local", alias: nil, session: "", runtime: "shell", path: ""),
+            bridge: bridge, workspaceID: "shell-test", terminalManager: manager, now: 0)
+        let limit = SurfaceEventBatchPolicy.maxCoalescedOutputBytes
+        let first = Data(repeating: 0x41, count: limit - 4)
+        let second = Data("SHELL_OUTPUT_AFTER_LIMIT\r\n".utf8)
+        scene.ingestSharedEvents([
+            StateChange(type: STATE_PANE_OUTPUT, paneId: 1, tabId: 1, windowId: 0,
+                        data: first, name: ""),
+            StateChange(type: STATE_PANE_OUTPUT, paneId: 1, tabId: 1, windowId: 0,
+                        data: second, name: "")
+        ])
+
+        XCTAssertTrue(scene.viewStore.pendingSurfaceOverflowPanes.isEmpty,
+                      "direct PTY has no authoritative snapshot; dropping its output would fence future commands")
+        XCTAssertEqual(scene.viewStore.pendingSurfaceEvents.reduce(0) { $0 + $1.data.count },
+                       first.count + second.count)
+    }
+
+    func testHiddenDirectShellCreatesSurfaceBeforeOutputCacheOverflows() throws {
+        AppE2E.ensureApp()
+        let bridge = try CoreBridge(backendType: "local")
+        defer { bridge.shutdown() }
+        let manager = TerminalManager(bridge: bridge, runtimeID: "shell")
+        let scene = WorkspaceScene(
+            key: SceneKey(transport: "local", alias: nil, session: "", runtime: "shell", path: ""),
+            bridge: bridge, workspaceID: "shell-test", terminalManager: manager, now: 0)
+        let token = "SHELL_OUTPUT_AFTER_HIDDEN_BACKLOG"
+        var output = Data(repeating: 0x41, count: 256 * 1024)
+        output.append(contentsOf: Data("\r\n\(token)\r\n".utf8))
+        scene.ingestSharedEvents([
+            StateChange(type: STATE_PANE_OUTPUT, paneId: 1, tabId: 1, windowId: 0,
+                        data: output, name: "")
+        ])
+
+        XCTAssertFalse(manager.hasView(for: 1))
+        _ = scene.applyPendingSurfaceEvents()
+        XCTAssertTrue(manager.hasView(for: 1), "direct PTY must have a VT even while its scene is hidden")
+        XCTAssertTrue(AppE2E.wait(timeout: AppE2E.featureTimeout) {
+            manager.testFlushFeeds()
+            return manager.view(for: 1).visibleScreenText().contains(token)
+        },
+                      "hidden shell output must remain visible after catch-up")
+    }
+
     func testTopologySizeUpdateDoesNotReinterpretQueuedOutput() throws {
         let (bridge, manager) = try makeManager()
         defer { bridge.shutdown() }

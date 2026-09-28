@@ -270,6 +270,33 @@ final class WorkspaceScene: SceneProtocol {
         }
 
         if event.isPaneOutput {
+            if terminalManager.isDirectPtyTerminal {
+                // 直接 PTY 丢字节后无法重建 VT 状态。按预算分段排队，
+                // catch-up 时仍按原顺序交付每一段。
+                if let index = viewStore.pendingSurfaceEvents.lastIndex(where: {
+                    $0.paneId == paneId
+                }) {
+                    let previous = viewStore.pendingSurfaceEvents[index]
+                    if previous.isPaneOutput,
+                       SurfaceOutputCoalescePolicy.decide(
+                           previousBytes: previous.data.count,
+                           incomingBytes: event.data.count
+                       ) == .combine
+                    {
+                        viewStore.pendingSurfaceEvents[index] = StateChange(
+                            type: previous.type,
+                            paneId: previous.paneId,
+                            tabId: previous.tabId,
+                            windowId: previous.windowId,
+                            data: Self.appendedData(previous.data, event.data),
+                            name: previous.name
+                        )
+                        return
+                    }
+                }
+                viewStore.pendingSurfaceEvents.append(event)
+                return
+            }
             guard !viewStore.pendingSurfaceOverflowPanes.contains(paneId) else { return }
             if let index = viewStore.pendingSurfaceEvents.lastIndex(where: {
                 $0.paneId == paneId

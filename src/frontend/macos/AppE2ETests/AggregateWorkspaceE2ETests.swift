@@ -4,6 +4,53 @@ import XCTest
 import MuxtermChrome
 
 final class AggregateWorkspaceE2ETests: XCTestCase {
+    func testLocalShellStillPaintsCommandOutputAfterWorkspaceRoundTrip() throws {
+        let tmux = OnePaneCat(label: "shell-output-round-trip")
+        AppE2E.ensureApp()
+        let bridge = try CoreBridge(backendType: "local")
+        let app = MainWindowController(bridge: bridge, debug: true)
+        defer { app.testShutdown() }
+        app.window?.setFrame(AppE2E.fixedWindowFrame(width: 960, height: 640), display: true)
+        app.window?.orderFront(nil)
+        XCTAssertTrue(app.waitReady())
+
+        app.testNewTab()
+        XCTAssertTrue(AppE2E.wait(timeout: AppE2E.attachTimeout) {
+            app.testPollOnce()
+            return app.testPresentedTabIDs().count == 2
+        })
+        let shellPane = app.testActivePaneID()
+        app.testAttachExistingConnection(ExistingConnectionChoice(
+            target: .local,
+            session: TmuxSessionInfo(name: tmux.session, windowCount: 1, attached: false),
+            socket: tmux.socket
+        ))
+        XCTAssertTrue(AppE2E.wait(timeout: AppE2E.featureTimeout) {
+            app.testPollOnce()
+            return app.testActiveWorkspaceSession() == tmux.session
+                && app.testAllVisibleTerminalText().contains(tmux.token)
+        })
+
+        app.testSelectSidebarWorkspace(AggregateWorkspaceIdentity.shells)
+        XCTAssertTrue(AppE2E.wait(timeout: AppE2E.featureTimeout) {
+            app.testPollOnce()
+            return app.testSelectedSidebarWorkspaceID() == AggregateWorkspaceIdentity.shells
+        })
+        app.testSwitchTab(2)
+        XCTAssertTrue(AppE2E.wait(timeout: AppE2E.featureTimeout) {
+            app.testPollOnce()
+            return app.testActivePaneID() == shellPane
+        })
+        let token = "LOCAL_SHELL_OUTPUT_\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
+        app.testSendInput(Data("printf '%s\\n' \(token)\r".utf8))
+        XCTAssertTrue(AppE2E.wait(timeout: AppE2E.featureTimeout) {
+            app.testPollOnce()
+            app.testFlushFeeds()
+            return app.testActivePaneTerminalText().contains(token)
+        }, "local shell output must reach its visible surface after switching workspaces; "
+            + "pane=\(shellPane) text=\(app.testActivePaneTerminalText().suffix(400))")
+    }
+
     func testLastLocalPaneExitCreatesShellAndClearsDisconnectOverlay() throws {
         AppE2E.ensureApp()
         let bridge = try CoreBridge(backendType: "local")

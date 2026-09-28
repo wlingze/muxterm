@@ -305,6 +305,8 @@ final class TerminalManager: TerminalInputHandler {
     /// snapshot 和前后两个 baseline 交错。
     func markNeedsAuthoritativeSnapshot(paneId: UInt32) {
         dispatchPrecondition(condition: .onQueue(.main))
+        // 直接 PTY 没有可重放的完整帧；snapshot fence 会永久吞掉后续输出。
+        guard !isDirectPtyTerminal else { return }
         needsAuthoritativeSnapshot.insert(paneId)
         requestedAuthoritativeSnapshots.remove(paneId)
     }
@@ -741,7 +743,7 @@ final class TerminalManager: TerminalInputHandler {
             return
         }
         if views[paneId] == nil {
-            guard viewCreationEnabled else {
+            guard viewCreationEnabled || isDirectPtyTerminal else {
                 appendStashedOutput(paneId: paneId, data: data)
                 return
             }
