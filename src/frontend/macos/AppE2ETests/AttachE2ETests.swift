@@ -115,6 +115,9 @@ final class AttachE2ETests: XCTestCase {
         XCTAssertEqual(bridge.backendType, "local")
         XCTAssertTrue(bridge.runtimeSupports("tmux", capability: "SharedClientResize"))
         XCTAssertFalse(bridge.runtimeSupports("shell", capability: "SharedClientResize"))
+        XCTAssertTrue(bridge.runtimeSupports("tmux", capability: "PaneZoom"))
+        XCTAssertTrue(bridge.runtimeSupports("herdr", capability: "PaneZoom"))
+        XCTAssertFalse(bridge.runtimeSupports("shell", capability: "PaneZoom"))
 
         let tmux = TerminalManager(bridge: bridge, runtimeID: "tmux")
         XCTAssertTrue(
@@ -122,10 +125,12 @@ final class AttachE2ETests: XCTestCase {
             "共享 local handle 上的 tmux scene 必须发 refresh-client -C"
         )
         XCTAssertFalse(tmux.isDirectPtyTerminal)
+        XCTAssertTrue(tmux.supportsPaneZoom)
 
         let shell = TerminalManager(bridge: bridge, runtimeID: "shell")
         XCTAssertFalse(shell.usesClientResize)
         XCTAssertTrue(shell.isDirectPtyTerminal)
+        XCTAssertFalse(shell.supportsPaneZoom)
     }
 
     func testSizedAttachPublishesSurfaceSnapshotWithoutFrontendResize() throws {

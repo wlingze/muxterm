@@ -4118,6 +4118,7 @@ impl Runtime for TmuxRuntime {
             RuntimeCapability::Discover,
             RuntimeCapability::MultiTab,
             RuntimeCapability::SplitPane,
+            RuntimeCapability::PaneZoom,
             RuntimeCapability::SharedClientResize,
         ]
     }

@@ -1032,6 +1032,11 @@ final class TerminalManager: TerminalInputHandler {
         }
     }
 
+    var supportsPaneZoom: Bool {
+        guard let runtimeID else { return false }
+        return bridge?.runtimeSupports(runtimeID, capability: "PaneZoom") ?? false
+    }
+
     /// 前端是否为 pane PTY 的直接终端模拟器。
     ///
     /// 仅 shell Runtime 是：SwiftTerm 就是该 PTY 的终端模拟器，查询应答写回

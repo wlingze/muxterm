@@ -201,6 +201,15 @@ impl HerdrSession {
         LayoutRecord::from_json(layout).ok_or_else(|| anyhow!("pane.layout 布局解析失败: {result}"))
     }
 
+    /// Toggle the target pane's tab zoom on the authoritative Herdr server.
+    pub fn pane_zoom_toggle(&self, pane_id: &str) -> Result<()> {
+        self.call(
+            "pane.zoom",
+            serde_json::json!({ "pane_id": pane_id, "mode": "toggle" }),
+        )?;
+        Ok(())
+    }
+
     /// `pane.read`：attach 快照（source=visible, format=ansi），返回原始 ANSI 字节。
     pub fn pane_read_ansi(&self, pane_id: &str) -> Result<Vec<u8>> {
         self.pane_read_with_source(pane_id, "visible")

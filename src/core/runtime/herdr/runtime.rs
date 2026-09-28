@@ -49,6 +49,7 @@ const HERDR_CAPABILITIES: &[RuntimeCapability] = &[
     RuntimeCapability::Discover,
     RuntimeCapability::MultiTab,
     RuntimeCapability::SplitPane,
+    RuntimeCapability::PaneZoom,
     RuntimeCapability::WorktreeList,
     RuntimeCapability::WorktreeCreate,
     RuntimeCapability::WorktreeOpen,
@@ -915,6 +916,40 @@ impl HerdrRuntime {
             .collect();
         if leaves.is_empty() {
             return false;
+        }
+
+        // Herdr keeps every pane in a zoomed tab's layout record. Only its
+        // focused pane is visible; rebuilding the split tree from all pane
+        // records would leave Muxterm showing the old split after pane.zoom.
+        if layout.zoomed {
+            let Some(active) = self
+                .herdr_pane_to_pane
+                .get(&layout.focused_pane_id)
+                .copied()
+                .filter(|pane| leaves.contains(pane))
+            else {
+                return false;
+            };
+            if !emit_event {
+                self.snapshot_active.insert(tab, active);
+            }
+            let product_layout = TabLayout {
+                tab,
+                tree: LayoutNode::Leaf(active),
+                active,
+            };
+            self.layouts.insert(tab, product_layout.clone());
+            self.resync_active_from_layout(tab, active, emit_event);
+            if emit_event {
+                Self::push_control(
+                    &mut self.events,
+                    ControlEvent::LayoutChanged {
+                        tab,
+                        layout: product_layout,
+                    },
+                );
+            }
+            return true;
         }
 
         // Protocol 19 reports zero-area layouts for background workspaces that
@@ -3547,6 +3582,17 @@ impl Runtime for HerdrRuntime {
             });
         }
         match task {
+            Task::TogglePaneFullscreen { target } => {
+                let Some(herdr_pane) = self.herdr_pane(*target) else {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: format!("pane {target} 不存在"),
+                    });
+                };
+                self.session
+                    .pane_zoom_toggle(herdr_pane)
+                    .map_err(|error| anyhow!("Herdr pane.zoom 失败: {error}"))?;
+                Ok(TaskOutcome::Done)
+            }
             Task::RenameWorkspace { name } => {
                 if name.trim().is_empty() {
                     return Ok(TaskOutcome::Rejected {

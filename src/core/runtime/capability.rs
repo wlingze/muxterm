@@ -16,6 +16,8 @@ pub enum RuntimeCapability {
     MultiTab,
     /// `SplitPane` 有意义。
     SplitPane,
+    /// Runtime can zoom one pane and restore its tab layout.
+    PaneZoom,
     /// Runtime 的全部 pane 共享一个 client viewport。
     SharedClientResize,
     /// Runtime 持有终端历史，滚动通过 ScrollPane 返回权威画面。

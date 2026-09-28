@@ -202,6 +202,7 @@ impl RuntimeProvider for HerdrDriver {
             RuntimeCapability::Discover,
             RuntimeCapability::MultiTab,
             RuntimeCapability::SplitPane,
+            RuntimeCapability::PaneZoom,
             RuntimeCapability::WorktreeList,
             RuntimeCapability::WorktreeCreate,
             RuntimeCapability::WorktreeOpen,
