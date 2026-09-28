@@ -96,6 +96,13 @@ final class MuxTerminalView: TerminalView {
     }
 
     override func keyDown(with event: NSEvent) {
+        // 某些中文输入法把组合中的占位键作为 U+FFFF 放在 characters 中。
+        // SwiftTerm 会把它当文本编码成 EF BF BF，zsh 显示成 <ffff> 并污染命令行。
+        // characters 为空时仍交给 AppKit/IME，保持候选与提交事件正常工作。
+        if let characters = event.characters, !characters.isEmpty,
+           characters.unicodeScalars.allSatisfy({ $0.value == 0xffff || $0.value == 0xfffe }) {
+            return
+        }
         if event.characters?.isEmpty == true {
             interpretingEmptyKeyEvent = true
             defer { interpretingEmptyKeyEvent = false }
