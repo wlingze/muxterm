@@ -163,13 +163,13 @@ struct FocusPin {
 /// 用户显式切 pane/tab 会立即清除（见 `clear_focus_pin`）。
 const FOCUS_PIN_TTL: Duration = Duration::from_secs(5);
 
-fn frame_fingerprint(bytes: &[u8]) -> u64 {
+fn frame_fingerprint(bytes: &[u8], width: u16, height: u16) -> u64 {
     let mut hash = 0xcbf29ce484222325u64;
     for &byte in bytes {
         hash ^= u64::from(byte);
         hash = hash.wrapping_mul(0x100000001b3);
     }
-    hash ^ (bytes.len() as u64)
+    hash ^ (bytes.len() as u64) ^ (u64::from(width) << 32) ^ (u64::from(height) << 48)
 }
 
 /// Herdr 自己的客户端在画第一帧之前会发 `CSI ?7 l`。blit 按「自动换行已关」
@@ -1892,7 +1892,7 @@ impl HerdrRuntime {
                                 }
                             }
                         }
-                        let fingerprint = frame_fingerprint(&bytes);
+                        let fingerprint = frame_fingerprint(&bytes, width, height);
                         if slot.last_full_fingerprint == Some(fingerprint) && !keep_seed {
                             continue;
                         }
@@ -4950,6 +4950,55 @@ mod tests {
             .filter(|event| matches!(event, RenderEvent::PaneFrame { .. }))
             .collect();
         assert_eq!(frames.len(), 1, "相同 full frame 不得再次灌进 Surface");
+    }
+
+    #[test]
+    fn same_full_frame_bytes_at_new_grid_are_replayed() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w1",
+        );
+        runtime.status = BackendStatus::Connected;
+        runtime.preferred_client_size = Some((80, 24));
+        let pane = PaneId(1);
+        runtime.panes.push(PaneInfo {
+            id: pane,
+            tab: TabId(1),
+            active: true,
+            title: "pane".into(),
+            cols: 80,
+            rows: 24,
+        });
+        let (tx, rx) = super::super::observe::channel();
+        runtime.stream_tx = Some(tx.clone());
+        runtime.stream_rx = Some(rx);
+        let mut slot = PaneStreamSlot::new(pane, "w1:p1", StreamMode::Observe);
+        slot.generation = 7;
+        slot.state = SlotState::Live;
+        slot.actual_mode = Some(StreamMode::Observe);
+        runtime.stream_slots.insert(pane, slot);
+        let mut frames = 0;
+        for (ordinal, seq, width) in [(1u64, 1u64, 80u16), (2, 2, 178)] {
+            tx.send(PaneStreamEvent::Frame {
+                pane,
+                generation: 7,
+                event_ordinal: ordinal,
+                wire_seq: seq,
+                bytes: b"\x1b[H".to_vec(),
+                width,
+                height: 24,
+                full: true,
+            })
+            .unwrap();
+            let mut out = RuntimeBatch::default();
+            runtime.drain_events(&mut out);
+            frames += out
+                .render
+                .iter()
+                .filter(|event| matches!(event, RenderEvent::PaneFrame { .. }))
+                .count();
+        }
+        assert_eq!(frames, 2, "相同字节在新格子上必须重画完整帧");
     }
 
     #[test]
