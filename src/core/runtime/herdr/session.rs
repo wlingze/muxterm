@@ -29,7 +29,7 @@ pub struct HerdrSession {
     socket_path: PathBuf,
     client_socket_path: PathBuf,
     connection: Arc<dyn TargetConnection>,
-    ssh_utf8_locale: Arc<OnceLock<Option<String>>>,
+    ssh_utf8_locale: Arc<OnceLock<String>>,
 }
 
 /// 进程内共享的 HerdrSession 缓存（同一 named session + socket 一份 Arc）。
@@ -111,9 +111,14 @@ impl HerdrSession {
         if !self.is_ssh() {
             return None;
         }
-        self.ssh_utf8_locale
-            .get_or_init(|| super::locale::ssh_utf8_locale(self.connection.as_ref()))
-            .as_deref()
+        if self.ssh_utf8_locale.get().is_none() {
+            // A failed SSH probe must not permanently pin this session to a
+            // non-UTF-8 locale; the next pane creation may have a healthy link.
+            if let Some(locale) = super::locale::ssh_utf8_locale(self.connection.as_ref()) {
+                let _ = self.ssh_utf8_locale.set(locale);
+            }
+        }
+        self.ssh_utf8_locale.get().map(String::as_str)
     }
 
     pub fn socket_path(&self) -> &Path {
@@ -1040,11 +1045,16 @@ mod tests {
     struct RecordingConnection {
         path: std::sync::Arc<std::sync::Mutex<Option<PathBuf>>>,
         requests: std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
+        locale_probes: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
     }
 
     impl crate::transport::TargetConnection for RecordingConnection {
         fn transport_id(&self) -> &str {
-            "recording"
+            if self.locale_probes.is_some() {
+                "ssh"
+            } else {
+                "recording"
+            }
         }
 
         fn target(&self) -> &str {
@@ -1070,6 +1080,28 @@ mod tests {
         fn probe(&self) -> crate::transport::TransportResult<()> {
             Ok(())
         }
+
+        fn exec_command(
+            &self,
+            _request: crate::transport::ChannelRequest,
+        ) -> crate::transport::TransportResult<crate::transport::CommandOutput> {
+            let Some(probes) = &self.locale_probes else {
+                return Err(crate::transport::TransportError::message(
+                    "unexpected command",
+                ));
+            };
+            let count = probes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if count == 0 {
+                return Err(crate::transport::TransportError::message(
+                    "temporary SSH failure",
+                ));
+            }
+            Ok(crate::transport::CommandOutput {
+                status: 0,
+                stdout: b"C\nC.utf8\n".to_vec(),
+                stderr: Vec::new(),
+            })
+        }
     }
 
     #[test]
@@ -1080,6 +1112,7 @@ mod tests {
             std::sync::Arc::new(RecordingConnection {
                 path: std::sync::Arc::clone(&path),
                 requests,
+                locale_probes: None,
             });
         let session = HerdrSession::with_connection(connection, "test", "/remote/herdr.sock");
 
@@ -1100,6 +1133,7 @@ mod tests {
             std::sync::Arc::new(RecordingConnection {
                 path,
                 requests: std::sync::Arc::clone(&requests),
+                locale_probes: None,
             });
         let session = HerdrSession::with_connection(connection, "test", "/remote/herdr.sock");
 
@@ -1111,6 +1145,23 @@ mod tests {
         assert_eq!(requests[0]["method"], "workspace.rename");
         assert_eq!(requests[0]["params"]["workspace_id"], "w7");
         assert_eq!(requests[0]["params"]["label"], "legion-workspace");
+    }
+
+    #[test]
+    fn ssh_locale_probe_retries_after_a_transient_failure() {
+        let probes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let connection: std::sync::Arc<dyn crate::transport::TargetConnection> =
+            std::sync::Arc::new(RecordingConnection {
+                path: std::sync::Arc::new(std::sync::Mutex::new(None)),
+                requests: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+                locale_probes: Some(std::sync::Arc::clone(&probes)),
+            });
+        let session = HerdrSession::with_connection(connection, "test", "/remote/herdr.sock");
+
+        assert_eq!(session.ssh_utf8_locale(), None);
+        assert_eq!(session.ssh_utf8_locale(), Some("C.utf8"));
+        assert_eq!(session.ssh_utf8_locale(), Some("C.utf8"));
+        assert_eq!(probes.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
     #[test]

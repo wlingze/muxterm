@@ -17,6 +17,8 @@ use muxterm::test_support::core::projects::{
     Project, ProjectStore, ProjectTarget, TargetConfig, TargetRuntime, TargetTransport,
 };
 use muxterm::test_support::core::protocol::WorkspaceId;
+use muxterm::test_support::core::runtime::herdr::HerdrSession;
+use muxterm::test_support::core::transport::connection::Connect;
 use muxterm::test_support::core::transport::registry::ConnectionRegistry;
 use support::herdr_test_support::{herdr_available, unique_name, IsolatedHerdr};
 use support::sshd_test_support::{loopback_sshd_available, LoopbackSshd};
@@ -219,6 +221,53 @@ fn ssh_herdr_attach_only_never_creates() {
     );
     assert!(created.canonical.workspace_id.is_some());
     assert!(created.canonical.socket.is_some());
+    std::env::remove_var("MUXTERM_SSH_CONFIG_PATH");
+}
+
+#[test]
+fn ssh_herdr_shell_accepts_unicode_input_without_meta_escapes() {
+    let _env_lock = ENV_LOCK.lock().unwrap();
+    if !herdr_available() || !loopback_sshd_available() {
+        eprintln!("skip: 无 herdr 或 sshd");
+        return;
+    }
+    let sshd = LoopbackSshd::start("herdr-unicode").expect("启动 loopback sshd");
+    std::env::set_var("MUXTERM_SSH_CONFIG_PATH", &sshd.config_path);
+    let herdr = IsolatedHerdr::start("ssh-unicode");
+    let session = HerdrSession::with_connection(
+        Connect::new("ssh", &sshd.alias),
+        herdr.name(),
+        herdr.socket_path(),
+    );
+    let workspace = session.workspace_create("/tmp", "utf8-shell").unwrap();
+    let pane = session
+        .snapshot()
+        .unwrap()
+        .panes
+        .into_iter()
+        .find(|pane| pane.workspace_id == workspace.workspace_id)
+        .expect("新 workspace 应有 shell pane");
+    session
+        .pane_send_text(&pane.pane_id, "printf 'RESULT:%s\\n' '⇣⇡中文'\r")
+        .unwrap();
+
+    let mut recent = String::new();
+    for _ in 0..80 {
+        recent = String::from_utf8_lossy(&session.pane_read_recent_ansi(&pane.pane_id).unwrap())
+            .into_owned();
+        if recent.contains("RESULT:⇣⇡中文") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(
+        recent.contains("RESULT:⇣⇡中文"),
+        "Unicode input/output lost: {recent}"
+    );
+    assert!(
+        !recent.contains("\\M-"),
+        "shell escaped UTF-8 as meta bytes: {recent}"
+    );
     std::env::remove_var("MUXTERM_SSH_CONFIG_PATH");
 }
 
