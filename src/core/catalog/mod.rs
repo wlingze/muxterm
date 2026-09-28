@@ -1084,11 +1084,8 @@ fn descriptor_from_existing(
         },
         other => anyhow::bail!("unknown transport '{other}'"),
     };
-    let path = if runtime == TargetRuntime::Herdr {
-        candidate.workspace_id.clone().unwrap_or_default()
-    } else {
-        String::new()
-    };
+    // Herdr workspace_id 是身份字段；发现结果没有项目目录。
+    let path = String::new();
     let mut config =
         ResolvedTargetDescriptor::new(candidate.name.clone(), runtime, transport, path);
     config.session = candidate
