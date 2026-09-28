@@ -120,6 +120,7 @@ fn local_project_reload_matches_existing_identity() {
 /// named session。
 #[test]
 fn local_attach_only_never_creates_and_create_requires_running_session() {
+    let _env_lock = ENV_LOCK.lock().unwrap();
     if !herdr_available() {
         eprintln!("skip: 无 herdr 二进制");
         return;
