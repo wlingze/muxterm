@@ -61,6 +61,46 @@ final class SurfaceVisibilityE2ETests: XCTestCase {
         XCTAssertTrue(view.visibleScreenText().contains("EDGE"))
     }
 
+    func testHerdrFullFramePaintsAtRemoteGridWhileResizeIsPending() throws {
+        let (bridge, manager) = try makeManager()
+        defer { bridge.shutdown() }
+        manager.setBridgeQueriesEnabled(false)
+        let pane: UInt32 = 61
+        let view = manager.view(for: pane)
+        view.setFrameSize(NSSize(width: 1200, height: 700))
+        let allocated = try XCTUnwrap(view.allocatedGridSize())
+        XCTAssertGreaterThan(allocated.cols, 80)
+
+        // The remote Observe stream still paints at 80 columns while the UI
+        // has requested a wider Control stream. A full frame belongs to the
+        // source grid until the server sends the new size and frame.
+        manager.handleResize(paneId: pane, cols: 80, rows: 24)
+        manager.handleFrame(paneId: pane, data: Data("\u{1b}[1;1HOLD\u{1b}[24;75HEND".utf8))
+        XCTAssertEqual(view.renderedGridSize.cols, 80)
+        XCTAssertEqual(view.renderedGridSize.rows, 24)
+        XCTAssertTrue(view.visibleScreenText().contains("END"))
+
+        manager.handleResize(paneId: pane, cols: allocated.cols, rows: allocated.rows)
+        manager.handleFrame(paneId: pane, data: Data("\u{1b}[1;1HNEW\u{1b}[\(allocated.rows);\(allocated.cols - 5)HWIDE".utf8))
+        XCTAssertEqual(view.renderedGridSize.cols, allocated.cols)
+        XCTAssertTrue(view.visibleScreenText().contains("WIDE"))
+    }
+
+    func testHiddenTabRetainsFrameSourceGridAfterActiveTabSnapshot() throws {
+        let (bridge, manager) = try makeManager()
+        defer { bridge.shutdown() }
+        manager.setBridgeQueriesEnabled(false)
+        let hidden: UInt32 = 71
+        let view = manager.view(for: hidden)
+        view.setFrameSize(NSSize(width: 1200, height: 700))
+        manager.updatePaneSizes([Pane(id: hidden, cols: 80, rows: 24, isActive: true)])
+        manager.updatePaneSizes([Pane(id: 72, cols: 100, rows: 40, isActive: true)])
+        manager.handleFrame(paneId: hidden, data: Data("\u{1b}[24;75HHIDDEN".utf8))
+        XCTAssertEqual(view.renderedGridSize.cols, 80,
+                       "active tab snapshot must not erase another tab's frame grid")
+        XCTAssertTrue(view.visibleScreenText().contains("HIDDEN"))
+    }
+
     func testResizeBatchKeepsFrameAndDiffOrder() throws {
         AppE2E.ensureApp()
         let bridge = try CoreBridge.connect(backendType: "local")

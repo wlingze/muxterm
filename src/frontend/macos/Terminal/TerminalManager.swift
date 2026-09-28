@@ -18,6 +18,9 @@ final class TerminalManager: TerminalInputHandler {
     /// 再喂快照/增量。否则模型默认 80 列，codex 的 93 列帧会折行、erase-up
     /// 行数对不上，输入内容逐帧滚出屏幕（1745）。
     private var expectedPaneSizes: [UInt32: (cols: Int, rows: Int)] = [:]
+    /// 完整帧所用的后端格子。UI allocation 可以先触发下一次 resize，
+    /// 但旧 observe full frame 仍必须在产生它的格子上解析。
+    private var sourcePaneSizes: [UInt32: (cols: Int, rows: Int)] = [:]
     private var fontFamily: String
     private var fontSize: CGFloat
     /// 隐藏 Workspace 仍然消费 Core 事件，但不创建不可见的 AppKit/SwiftTerm
@@ -176,6 +179,7 @@ final class TerminalManager: TerminalInputHandler {
         }
         views.removeAll()
         expectedPaneSizes.removeAll()
+        sourcePaneSizes.removeAll()
         swiftTermSeeded.removeAll()
         lastPtySize.removeAll()
         pendingPtySizes.removeAll()
@@ -591,11 +595,10 @@ final class TerminalManager: TerminalInputHandler {
 
     /// 记录后端报告的 pane 尺寸，并把已有 Surface 的模型对齐到这个格子。
     func updatePaneSizes(_ panes: [Pane]) {
-        expectedPaneSizes = Dictionary(
-            uniqueKeysWithValues: panes.map { ($0.id, (Int($0.cols), Int($0.rows))) }
-        )
-        for (paneId, size) in expectedPaneSizes {
-            applyPaneGrid(paneId: paneId, cols: size.cols, rows: size.rows)
+        // 快照只列当前 tab；其它 tab 的 Surface 仍在消费后台 frame。
+        // 保留它们的源格子，直到 STATE_PANE_CLOSED 明确回收。
+        for pane in panes {
+            applyPaneGrid(paneId: pane.id, cols: Int(pane.cols), rows: Int(pane.rows))
         }
     }
 
@@ -623,6 +626,7 @@ final class TerminalManager: TerminalInputHandler {
         guard let target = PaneGridSyncPolicy.modelSize(tmuxCols: cols, tmuxRows: rows) else {
             return
         }
+        sourcePaneSizes[paneId] = target
         var nextCols = target.cols
         var nextRows = target.rows
         // Herdr snapshot 的 cols/rows 是 split 矩形，不是当前 widget 分配。
@@ -795,7 +799,7 @@ final class TerminalManager: TerminalInputHandler {
         ensureValidModelSize(view)
         // 整帧按 Runtime 格子绝对定位。先把模型对齐，否则满行进度和
         // TUI 会画进旧的 80 列里，折行后只剩一块白。
-        if let size = expectedPaneSizes[paneId], size.cols >= 2, size.rows >= 1 {
+        if let size = sourcePaneSizes[paneId], size.cols >= 2, size.rows >= 1 {
             view.applyGridSize(cols: size.cols, rows: size.rows, followTail: true)
         }
         view.feedFull(data)
@@ -980,6 +984,8 @@ final class TerminalManager: TerminalInputHandler {
     /// 切回来重放被截断的累计输出会乱码 / 黑屏）。
     func removePane(_ paneId: UInt32) {
         pendingFeeds.remove(paneID: paneId)
+        expectedPaneSizes.removeValue(forKey: paneId)
+        sourcePaneSizes.removeValue(forKey: paneId)
         pendingViewportOffsets.removeValue(forKey: paneId)
         pendingPtySizes.removeValue(forKey: paneId)
         pendingInputs.removeAll { $0.paneId == paneId }
