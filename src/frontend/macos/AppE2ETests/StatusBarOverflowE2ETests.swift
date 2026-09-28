@@ -20,8 +20,9 @@ final class StatusBarOverflowE2ETests: XCTestCase {
         ])
         let app = try AppE2E.attachWindow(socket: fx.socket, session: fx.session)
         defer { app.testShutdown() }
-        app.window?.setFrame(NSRect(x: 40, y: 40, width: 720, height: 600), display: true)
         XCTAssertTrue(app.waitReady())
+        app.window?.setContentSize(NSSize(width: 720, height: 600))
+        app.window?.contentView?.layoutSubtreeIfNeeded()
         let json = try XCTUnwrap(app.bridge.statusBarSnapshotJSON())
         let snapshot = try XCTUnwrap(
             JSONDecoder().decode(StatusBarResponse.self, from: Data(json.utf8)).status
@@ -31,6 +32,8 @@ final class StatusBarOverflowE2ETests: XCTestCase {
             AppE2E.wait(timeout: 5) {
                 app.testPollOnce()
                 AppE2E.pump(40)
+                app.window?.setContentSize(NSSize(width: 720, height: 600))
+                app.window?.contentView?.layoutSubtreeIfNeeded()
                 // Other tests may leave theme mode in the shared saved config.
                 // Supply the same tmux snapshot explicitly for this layout test.
                 app.content.statusBar.colorMode = .tmux
