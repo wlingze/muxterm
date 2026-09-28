@@ -64,6 +64,8 @@ pub struct HerdrRuntime {
     session: Arc<HerdrSession>,
     workspace_id: String,
     workspace_name: String,
+    /// Attach 现有 workspace 时保留其初始目录，供没有 Project path 的 NewTab 使用。
+    workspace_default_cwd: Option<String>,
     /// Pool 前台/后台状态（`set_foreground` 驱动；决定 active pane 的
     /// desired mode 是否可以是 Control）。
     foreground: bool,
@@ -115,6 +117,11 @@ pub struct HerdrRuntime {
     mutation_queue: MutationQueue,
     /// 网络请求在 worker 执行；每个 Runtime 至多一个 mutation/probe 请求。
     mutation_io: Option<PendingMutationIo>,
+    /// tab.close 的 SSH 请求不能阻塞前台事件轮询。
+    pending_closes: HashMap<TabId, mpsc::Receiver<Result<()>>>,
+    pending_pane_closes: HashMap<PaneId, mpsc::Receiver<Result<()>>>,
+    /// 远端 focus 串行执行，排队期间只保留最后一次用户意图。
+    focus_tx: Option<mpsc::Sender<FocusRequest>>,
     /// lifecycle generation：detach/shutdown 后晚到的 mutation 结果直接丢弃。
     lifecycle_generation: u64,
     /// §6.4 完成态焦点：settle Completed 后，事件流里可能还排着 pane.focus
@@ -137,6 +144,11 @@ struct PendingMutationIo {
     generation: u64,
     is_probe: bool,
     receiver: mpsc::Receiver<Result<MutationIoValue>>,
+}
+
+struct FocusRequest {
+    method: &'static str,
+    id: String,
 }
 
 /// settle Completed 后短暂钉住的权威焦点（产品 id）。
@@ -164,15 +176,42 @@ fn frame_fingerprint(bytes: &[u8]) -> u64 {
 /// 逐格推进：行宽正好等于列数时，开着 DECAWM 的宿主会在末列挂起换行，
 /// 进度条这种满行刷新就会把上一行顶进 scrollback。
 const BLIT_AUTOWRAP_OFF: &[u8] = b"\x1b[?7l";
+const BLIT_AUTOWRAP_ON: &[u8] = b"\x1b[?7h";
 
 fn surface_blit(bytes: Vec<u8>) -> Vec<u8> {
-    if bytes.starts_with(BLIT_AUTOWRAP_OFF) {
-        return bytes;
+    let mut out =
+        Vec::with_capacity(BLIT_AUTOWRAP_OFF.len() + bytes.len() + BLIT_AUTOWRAP_ON.len());
+    if !bytes.starts_with(BLIT_AUTOWRAP_OFF) {
+        out.extend_from_slice(BLIT_AUTOWRAP_OFF);
     }
-    let mut out = Vec::with_capacity(BLIT_AUTOWRAP_OFF.len() + bytes.len());
-    out.extend_from_slice(BLIT_AUTOWRAP_OFF);
     out.extend_from_slice(&bytes);
+    // Herdr frame 是绘制程序，不是持续的 PTY 模式。满行绘制时关闭
+    // DECAWM，帧结束后恢复，否则之后的 shell 输出会在末列互相覆盖。
+    out.extend_from_slice(BLIT_AUTOWRAP_ON);
     out
+}
+
+fn new_tab_params(
+    workspace_id: &str,
+    name: Option<&str>,
+    workdir: Option<&str>,
+    is_ssh: bool,
+    locale: Option<&str>,
+) -> serde_json::Value {
+    let mut params = serde_json::json!({ "workspace_id": workspace_id, "focus": true });
+    if let Some(name) = name {
+        params["label"] = serde_json::json!(name);
+    }
+    if let Some(workdir) = workdir {
+        let cwd = if is_ssh {
+            workdir.to_string()
+        } else {
+            crate::executable::expand_config_value(workdir)
+        };
+        params["cwd"] = serde_json::json!(cwd);
+    }
+    super::locale::set_process_locale(&mut params, locale);
+    params
 }
 
 /// 把鼠标 DECSET 接到这一轮留下的最后一帧后面。没有 full frame 时返回 false。
@@ -201,12 +240,69 @@ fn append_mouse_mode_to_last_frame(
 }
 
 impl HerdrRuntime {
+    fn queue_focus(&mut self, method: &'static str, id: String) -> Result<()> {
+        if self.focus_tx.is_none() {
+            let (tx, rx) = mpsc::channel::<FocusRequest>();
+            let session = Arc::clone(&self.session);
+            std::thread::spawn(move || {
+                while let Ok(mut request) = rx.recv() {
+                    // 慢 SSH 调用期间积压的点击只需要最后一次；同一 worker
+                    // 串行发请求，旧焦点不会在新焦点之后到达 Herdr。
+                    while let Ok(latest) = rx.try_recv() {
+                        request = latest;
+                    }
+                    let params = if request.method == "tab.focus" {
+                        serde_json::json!({ "tab_id": request.id })
+                    } else {
+                        serde_json::json!({ "pane_id": request.id })
+                    };
+                    if let Err(error) = session.call(request.method, params) {
+                        tracing::warn!(
+                            target = "muxterm::herdr",
+                            method = request.method,
+                            error = %error,
+                            "远端 focus 失败"
+                        );
+                    }
+                }
+            });
+            self.focus_tx = Some(tx);
+        }
+        self.focus_tx
+            .as_ref()
+            .expect("focus worker 已建立")
+            .send(FocusRequest { method, id })
+            .map_err(|_| anyhow!("Herdr focus worker 已退出"))
+    }
+
+    fn drain_close_results(&mut self) {
+        self.pending_closes.retain(|tab, receiver| match receiver.try_recv() {
+            Ok(Ok(())) => false,
+            Ok(Err(error)) => {
+                tracing::warn!(target = "muxterm::herdr", tab = %tab, error = %error, "tab.close 失败");
+                false
+            }
+            Err(mpsc::TryRecvError::Disconnected) => false,
+            Err(mpsc::TryRecvError::Empty) => true,
+        });
+        self.pending_pane_closes.retain(|pane, receiver| match receiver.try_recv() {
+            Ok(Ok(())) => false,
+            Ok(Err(error)) => {
+                tracing::warn!(target = "muxterm::herdr", pane = %pane, error = %error, "pane.close 失败");
+                false
+            }
+            Err(mpsc::TryRecvError::Disconnected) => false,
+            Err(mpsc::TryRecvError::Empty) => true,
+        });
+    }
+
     /// 绑定共享 session + 一个 Herdr workspace_id（如 `w1`）。
     pub fn new(session: Arc<HerdrSession>, workspace_id: impl Into<String>) -> Self {
         Self {
             session,
             workspace_id: workspace_id.into(),
             workspace_name: String::new(),
+            workspace_default_cwd: None,
             // 独立构造（CLI/测试直连）的 Runtime 就是自己的前台；Pool 打开后会
             // 立即 set_foreground(true)，后台切换再降 false。默认 true 保证
             // 直连场景的 active pane 持有 Control。
@@ -242,6 +338,9 @@ impl HerdrRuntime {
             pending_index_seeds: HashMap::new(),
             mutation_queue: MutationQueue::new(),
             mutation_io: None,
+            pending_closes: HashMap::new(),
+            pending_pane_closes: HashMap::new(),
+            focus_tx: None,
             lifecycle_generation: 0,
             focus_pin: None,
             forward: None,
@@ -433,6 +532,36 @@ impl HerdrRuntime {
         };
         if update_workspace_name {
             self.workspace_name = ws.label.clone();
+        }
+        if self.workspace_default_cwd.is_none() {
+            self.workspace_default_cwd = ws
+                .worktree
+                .as_ref()
+                .map(|worktree| worktree.checkout_path.as_str())
+                .filter(|path| !path.trim().is_empty())
+                .or_else(|| {
+                    snap.panes
+                        .iter()
+                        .filter(|pane| pane.workspace_id == self.workspace_id)
+                        .find(|pane| {
+                            pane.focused
+                                && pane
+                                    .cwd
+                                    .as_deref()
+                                    .is_some_and(|cwd| !cwd.trim().is_empty())
+                        })
+                        .or_else(|| {
+                            snap.panes.iter().find(|pane| {
+                                pane.workspace_id == self.workspace_id
+                                    && pane
+                                        .cwd
+                                        .as_deref()
+                                        .is_some_and(|cwd| !cwd.trim().is_empty())
+                            })
+                        })
+                        .and_then(|pane| pane.cwd.as_deref())
+                })
+                .map(str::to_string);
         }
         let previous_pane_sizes = self
             .panes
@@ -1420,9 +1549,11 @@ impl HerdrRuntime {
         };
         slot.generation = slot.generation.saturating_add(1);
         slot.awaiting_allocation = false;
-        slot.last_full_fingerprint = None;
-        slot.pending_mouse = None;
-        slot.mouse_dirty = false;
+        // 重开 Control/Observe 不会销毁前端 Surface。保留上一个 full 的
+        // 指纹，首帧完全相同就不重复清屏重画；真正 resize 会单独使它失效。
+        // Herdr 不保证新 observe/control 流会重发当前 mouse_capture。
+        // 保留上一个已知模式，首帧必须重新交给 Surface；后续通知会覆盖它。
+        slot.mouse_dirty = slot.pending_mouse.is_some();
         slot.stream = None;
         slot.actual_mode = None;
         slot.state = SlotState::Starting;
@@ -1856,6 +1987,9 @@ impl HerdrRuntime {
                             ));
                         }
                     } else {
+                        // 这一份增量可能改变可见格子；下一次 full 即使与上一次
+                        // full 字节相同，也必须覆盖它之后产生的内容。
+                        slot.last_full_fingerprint = None;
                         self.outputs
                             .entry(pane)
                             .or_default()
@@ -2608,25 +2742,16 @@ impl HerdrRuntime {
         std::thread::spawn(move || {
             let result = (|| -> Result<MutationIoValue> {
                 let result = match kind {
-                    MutationKind::NewTab => {
-                        let mut params = serde_json::json!({
-                            "workspace_id": workspace_id,
-                            "focus": true,
-                        });
-                        // name=None 时完全省略 label（禁止空字符串覆盖权威数字名）。
-                        if let Some(name) = &new_tab_name {
-                            params["label"] = serde_json::json!(name);
-                        }
-                        if let Some(cwd) = &workdir {
-                            let cwd = if session.is_ssh() {
-                                cwd.clone()
-                            } else {
-                                crate::executable::expand_config_value(cwd)
-                            };
-                            params["cwd"] = serde_json::json!(cwd);
-                        }
-                        session.call("tab.create", params)
-                    }
+                    MutationKind::NewTab => session.call(
+                        "tab.create",
+                        new_tab_params(
+                            &workspace_id,
+                            new_tab_name.as_deref(),
+                            workdir.as_deref(),
+                            session.is_ssh(),
+                            session.ssh_utf8_locale(),
+                        ),
+                    ),
                     MutationKind::SplitPane => {
                         let target = target_pane
                             .clone()
@@ -2643,6 +2768,7 @@ impl HerdrRuntime {
                         if let Some(cwd) = &workdir {
                             params["cwd"] = serde_json::json!(cwd);
                         }
+                        super::locale::set_process_locale(&mut params, session.ssh_utf8_locale());
                         session.call("pane.split", params)
                     }
                 };
@@ -3569,8 +3695,7 @@ impl Runtime for HerdrRuntime {
                         reason: format!("pane {target} 缺 Herdr id"),
                     });
                 };
-                self.session
-                    .call("pane.focus", serde_json::json!({ "pane_id": herdr_pane }))
+                self.queue_focus("pane.focus", herdr_pane)
                     .map_err(|e| anyhow!("pane.focus 失败: {e}"))?;
                 let tab_changed = self.active_tab != Some(tab);
                 for t in self.tabs.iter_mut() {
@@ -3608,8 +3733,7 @@ impl Runtime for HerdrRuntime {
                         reason: format!("tab {target} 缺 Herdr id"),
                     });
                 };
-                self.session
-                    .call("tab.focus", serde_json::json!({ "tab_id": herdr_tab }))
+                self.queue_focus("tab.focus", herdr_tab)
                     .map_err(|e| anyhow!("tab.focus 失败: {e}"))?;
                 for t in self.tabs.iter_mut() {
                     t.active = t.id == *target;
@@ -3694,7 +3818,9 @@ impl Runtime for HerdrRuntime {
                     .by_id_mut(operation_id)
                     .expect("刚入队必须存在");
                 pending.new_tab_name = name.clone();
-                pending.workdir = workdir.clone();
+                pending.workdir = workdir
+                    .clone()
+                    .or_else(|| self.workspace_default_cwd.clone());
                 pending.expected_tab = None;
                 pending.expected_pane = None;
                 pending.expected_focus = None;
@@ -3705,6 +3831,46 @@ impl Runtime for HerdrRuntime {
                     "NewTab 入队（异步收敛）"
                 );
                 Ok(TaskOutcome::Accepted { operation_id })
+            }
+            Task::CloseTab { target } => {
+                let Some(herdr_tab) = self.tab_to_herdr_tab.get(target).cloned() else {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: format!("tab {target} 不存在"),
+                    });
+                };
+                if self.pending_closes.contains_key(target) {
+                    return Ok(TaskOutcome::Done);
+                }
+                let session = Arc::clone(&self.session);
+                let (tx, rx) = mpsc::channel();
+                self.pending_closes.insert(*target, rx);
+                std::thread::spawn(move || {
+                    let result = session
+                        .call("tab.close", serde_json::json!({ "tab_id": herdr_tab }))
+                        .map(|_| ());
+                    let _ = tx.send(result);
+                });
+                Ok(TaskOutcome::Done)
+            }
+            Task::ClosePane { target } => {
+                let Some(herdr_pane) = self.pane_to_herdr_pane.get(target).cloned() else {
+                    return Ok(TaskOutcome::Rejected {
+                        reason: format!("pane {target} 不存在"),
+                    });
+                };
+                if self.pending_pane_closes.contains_key(target) {
+                    return Ok(TaskOutcome::Done);
+                }
+                let session = Arc::clone(&self.session);
+                let (tx, rx) = mpsc::channel();
+                self.pending_pane_closes.insert(*target, rx);
+                std::thread::spawn(move || {
+                    let result = session
+                        .call("pane.close", serde_json::json!({ "pane_id": herdr_pane }))
+                        .map(|_| ());
+                    let _ = tx.send(result);
+                });
+                Ok(TaskOutcome::Done)
             }
             Task::SplitPane {
                 target,
@@ -3924,6 +4090,7 @@ impl Runtime for HerdrRuntime {
     }
 
     fn drain_events(&mut self, out: &mut RuntimeBatch) {
+        self.drain_close_results();
         self.drain_event_start();
         self.drain_event_stream();
         self.drain_index_seeds();
@@ -4044,6 +4211,118 @@ mod tests {
         WorkspaceRecord,
     };
     use crate::runtime::herdr::wire::{read_message, ClientMessage, MAX_FRAME_SIZE};
+
+    #[test]
+    fn surface_blit_restores_autowrap_after_the_rendered_frame() {
+        let rendered = surface_blit(b"\x1b[1;1H12345678".to_vec());
+        assert!(rendered.starts_with(BLIT_AUTOWRAP_OFF));
+        assert!(rendered.ends_with(b"\x1b[?7h"));
+
+        let already_prefixed = surface_blit(b"\x1b[?7l\x1b[1;1H12345678".to_vec());
+        assert!(already_prefixed.ends_with(b"\x1b[?7h"));
+    }
+
+    #[test]
+    fn switch_tab_does_not_wait_for_remote_focus_response() {
+        use std::io::{BufRead, Write};
+        use std::os::unix::net::UnixListener;
+
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("muxterm-herdr-focus-{nonce}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("api.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = std::io::BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+            reader.get_mut().write_all(b"{\"result\":{}}\n").unwrap();
+            serde_json::from_str::<serde_json::Value>(&line).unwrap()
+        });
+        let mut runtime = HerdrRuntime::new(Arc::new(HerdrSession::new("test", &socket)), "w1");
+        runtime.status = BackendStatus::Connected;
+        runtime.tabs.push(TabInfo {
+            id: TabId(1),
+            name: "one".into(),
+            active: true,
+        });
+        runtime.tabs.push(TabInfo {
+            id: TabId(2),
+            name: "two".into(),
+            active: false,
+        });
+        runtime.tab_to_herdr_tab.insert(TabId(2), "w1:t2".into());
+
+        let started = Instant::now();
+        assert_eq!(
+            runtime
+                .execute(&Task::SwitchTab { target: TabId(2) })
+                .unwrap(),
+            TaskOutcome::Done
+        );
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(150),
+            "switch blocked for {elapsed:?}"
+        );
+        assert_eq!(runtime.active_tab, Some(TabId(2)));
+        let request = server.join().unwrap();
+        assert_eq!(request["method"], "tab.focus");
+        assert_eq!(request["params"]["tab_id"], "w1:t2");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn slow_remote_focus_keeps_the_last_requested_tab() {
+        use std::io::{BufRead, Write};
+        use std::os::unix::net::UnixListener;
+
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("muxterm-herdr-focus-order-{nonce}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("api.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let (first_tx, first_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let read_request = |listener: &UnixListener| {
+                let (stream, _) = listener.accept().unwrap();
+                let mut reader = std::io::BufReader::new(stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                (
+                    reader,
+                    serde_json::from_str::<serde_json::Value>(&line).unwrap(),
+                )
+            };
+            let (mut first, request) = read_request(&listener);
+            first_tx.send(()).unwrap();
+            release_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            first.get_mut().write_all(b"{\"result\":{}}\n").unwrap();
+            let (mut last, latest) = read_request(&listener);
+            last.get_mut().write_all(b"{\"result\":{}}\n").unwrap();
+            (request, latest)
+        });
+
+        let mut runtime = HerdrRuntime::new(Arc::new(HerdrSession::new("test", &socket)), "w1");
+        runtime.queue_focus("tab.focus", "w1:t1".into()).unwrap();
+        first_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        runtime.queue_focus("tab.focus", "w1:t2".into()).unwrap();
+        runtime.queue_focus("tab.focus", "w1:t3".into()).unwrap();
+        release_tx.send(()).unwrap();
+        let (first, last) = server.join().unwrap();
+        assert_eq!(first["params"]["tab_id"], "w1:t1");
+        assert_eq!(last["params"]["tab_id"], "w1:t3");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     fn queued_state_changes(runtime: &HerdrRuntime) -> Vec<StateChange> {
         let mut batch = RuntimeBatch::default();
@@ -4674,6 +4953,120 @@ mod tests {
     }
 
     #[test]
+    fn identical_full_frame_after_stream_takeover_keeps_existing_surface() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w1",
+        );
+        runtime.status = BackendStatus::Connected;
+        let pane = PaneId(1);
+        runtime.panes.push(PaneInfo {
+            id: pane,
+            tab: TabId(1),
+            active: true,
+            title: "shell".into(),
+            cols: 80,
+            rows: 24,
+        });
+        runtime.pane_to_herdr_pane.insert(pane, "w1:p1".into());
+        let (tx, rx) = super::super::observe::channel();
+        runtime.stream_tx = Some(tx.clone());
+        runtime.stream_rx = Some(rx);
+        let mut slot = PaneStreamSlot::new(pane, "w1:p1", StreamMode::Observe);
+        slot.generation = 1;
+        slot.state = SlotState::Live;
+        slot.actual_mode = Some(StreamMode::Observe);
+        runtime.stream_slots.insert(pane, slot);
+        let frame = |generation| PaneStreamEvent::Frame {
+            pane,
+            generation,
+            event_ordinal: 1,
+            wire_seq: 1,
+            bytes: b"SAME_SCREEN".to_vec(),
+            width: 80,
+            height: 24,
+            full: true,
+        };
+        tx.send(frame(1)).unwrap();
+        let mut first = RuntimeBatch::default();
+        runtime.drain_events(&mut first);
+        assert!(first
+            .render
+            .iter()
+            .any(|event| matches!(event, RenderEvent::PaneFrame { .. })));
+
+        runtime.start_stream_replacing(pane, StreamMode::Observe, false);
+        let slot = runtime.stream_slots.get_mut(&pane).unwrap();
+        slot.state = SlotState::Live;
+        slot.actual_mode = Some(StreamMode::Observe);
+        tx.send(frame(2)).unwrap();
+        let mut second = RuntimeBatch::default();
+        runtime.drain_events(&mut second);
+        assert!(
+            second
+                .render
+                .iter()
+                .all(|event| !matches!(event, RenderEvent::PaneFrame { .. })),
+            "相同内容的 Control/Observe 新流不得重新绘制现有 Surface"
+        );
+    }
+
+    #[test]
+    fn full_frame_after_incremental_output_replaces_changed_surface() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w1",
+        );
+        runtime.status = BackendStatus::Connected;
+        let pane = PaneId(1);
+        runtime.panes.push(PaneInfo {
+            id: pane,
+            tab: TabId(1),
+            active: true,
+            title: "shell".into(),
+            cols: 80,
+            rows: 24,
+        });
+        let (tx, rx) = super::super::observe::channel();
+        runtime.stream_tx = Some(tx.clone());
+        runtime.stream_rx = Some(rx);
+        let mut slot = PaneStreamSlot::new(pane, "w1:p1", StreamMode::Observe);
+        slot.generation = 1;
+        slot.state = SlotState::Live;
+        slot.actual_mode = Some(StreamMode::Observe);
+        runtime.stream_slots.insert(pane, slot);
+        let mut frames = 0;
+        for (ordinal, seq, full, bytes) in [
+            (1, 1, true, b"BASE".as_slice()),
+            (2, 2, false, b"CHANGED".as_slice()),
+            (3, 3, true, b"BASE".as_slice()),
+        ] {
+            tx.send(PaneStreamEvent::Frame {
+                pane,
+                generation: 1,
+                event_ordinal: ordinal,
+                wire_seq: seq,
+                bytes: bytes.to_vec(),
+                width: 80,
+                height: 24,
+                full,
+            })
+            .unwrap();
+            let mut out = RuntimeBatch::default();
+            runtime.drain_events(&mut out);
+            frames += out
+                .render
+                .iter()
+                .filter(|event| matches!(event, RenderEvent::PaneFrame { .. }))
+                .count();
+        }
+        assert_eq!(
+            frames, 2,
+            "中途发生增量变化后，旧 full 内容必须重新覆盖屏幕"
+        );
+    }
+
+    #[test]
     fn mouse_capture_before_the_first_frame_still_arms_the_surface() {
         let mut runtime = HerdrRuntime::new(
             Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
@@ -5081,6 +5474,164 @@ mod tests {
             .next_undispatched()
             .expect("NewTab 必须还在队列里");
         assert_eq!(pending.workdir.as_deref(), Some("/tmp/a"));
+    }
+
+    #[test]
+    fn new_tab_wire_keeps_remote_directory_and_omits_implicit_label() {
+        let params = new_tab_params("w8", None, Some("~/projects/legion"), true, None);
+        assert_eq!(params["workspace_id"], "w8");
+        assert_eq!(params["cwd"], "~/projects/legion");
+        assert_eq!(params["focus"], true);
+        assert!(params.get("label").is_none());
+    }
+
+    #[test]
+    fn new_ssh_tab_starts_with_utf8_locale() {
+        let params = new_tab_params("w8", None, None, true, Some("C.utf8"));
+        assert_eq!(params["env"]["LANG"], "C.utf8");
+        assert_eq!(params["env"]["LC_ALL"], "C.utf8");
+    }
+
+    #[test]
+    fn new_local_tab_does_not_override_its_locale() {
+        let params = new_tab_params("w8", None, None, false, None);
+        assert!(params.get("env").is_none());
+    }
+
+    #[test]
+    fn new_tab_without_project_path_uses_existing_workspace_directory() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w1",
+        );
+        runtime.status = BackendStatus::Connected;
+        let mut snapshot = agent_snapshot(HerdrAgentStatus::Idle, 0, 0, None, false);
+        snapshot.panes[0].cwd = Some("/projects/legion".into());
+        assert!(runtime.apply_snapshot(&snapshot, true));
+        runtime
+            .execute(&Task::NewTab {
+                name: None,
+                command: None,
+                workdir: None,
+            })
+            .unwrap();
+        let pending = runtime.mutation_queue.next_undispatched().unwrap();
+        assert_eq!(pending.workdir.as_deref(), Some("/projects/legion"));
+    }
+
+    #[test]
+    fn close_tab_sends_wire_request_without_waiting_for_ssh_response() {
+        use std::io::{BufRead, Write};
+        use std::os::unix::net::UnixListener;
+
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("muxterm-herdr-close-{nonce}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("api.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let (request_tx, request_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = std::io::BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            request_tx
+                .send(serde_json::from_str::<serde_json::Value>(&line).unwrap())
+                .unwrap();
+            release_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            reader.get_mut().write_all(b"{\"result\":{}}\n").unwrap();
+        });
+        let mut runtime = HerdrRuntime::new(Arc::new(HerdrSession::new("test", &socket)), "w1");
+        runtime.status = BackendStatus::Connected;
+        runtime.tab_to_herdr_tab.insert(TabId(2), "w1:t2".into());
+
+        assert_eq!(
+            runtime
+                .execute(&Task::CloseTab { target: TabId(2) })
+                .unwrap(),
+            TaskOutcome::Done
+        );
+        let request = request_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(request["method"], "tab.close");
+        assert_eq!(request["params"]["tab_id"], "w1:t2");
+        assert!(
+            runtime.pending_closes.contains_key(&TabId(2)),
+            "未收到响应也必须已返回事件泵"
+        );
+        release_tx.send(()).unwrap();
+        server.join().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !runtime.pending_closes.is_empty() && Instant::now() < deadline {
+            runtime.drain_close_results();
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(runtime.pending_closes.is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn close_pane_sends_wire_request_without_waiting_for_ssh_response() {
+        use std::io::{BufRead, Write};
+        use std::os::unix::net::UnixListener;
+
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("muxterm-herdr-close-pane-{nonce}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("api.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = std::io::BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+            reader.get_mut().write_all(b"{\"result\":{}}\n").unwrap();
+            serde_json::from_str::<serde_json::Value>(&line).unwrap()
+        });
+        let mut runtime = HerdrRuntime::new(Arc::new(HerdrSession::new("test", &socket)), "w1");
+        runtime.status = BackendStatus::Connected;
+        runtime.pane_to_herdr_pane.insert(PaneId(7), "w1:p7".into());
+
+        let started = Instant::now();
+        assert_eq!(
+            runtime
+                .execute(&Task::ClosePane { target: PaneId(7) })
+                .unwrap(),
+            TaskOutcome::Done
+        );
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(150),
+            "close blocked for {elapsed:?}"
+        );
+        let request = server.join().unwrap();
+        assert_eq!(request["method"], "pane.close");
+        assert_eq!(request["params"]["pane_id"], "w1:p7");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn mouse_capture_survives_stream_takeover_and_rearms_next_frame() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w1",
+        );
+        let pane = PaneId(1);
+        let mut slot = PaneStreamSlot::new(pane, "w1:p1", StreamMode::Control);
+        slot.generation = 1;
+        slot.pending_mouse = Some((true, false));
+        runtime.stream_slots.insert(pane, slot);
+        runtime.start_stream_replacing(pane, StreamMode::Observe, false);
+        let slot = runtime.stream_slots.get(&pane).unwrap();
+        assert_eq!(slot.pending_mouse, Some((true, false)));
+        assert!(slot.mouse_dirty);
     }
 
     #[test]
