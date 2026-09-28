@@ -9,6 +9,7 @@
 mod channel;
 pub mod events;
 pub mod forward;
+mod locale;
 pub mod mutation;
 pub mod observe;
 pub mod provider;

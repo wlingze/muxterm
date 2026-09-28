@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -29,6 +29,7 @@ pub struct HerdrSession {
     socket_path: PathBuf,
     client_socket_path: PathBuf,
     connection: Arc<dyn TargetConnection>,
+    ssh_utf8_locale: Arc<OnceLock<Option<String>>>,
 }
 
 /// 进程内共享的 HerdrSession 缓存（同一 named session + socket 一份 Arc）。
@@ -93,6 +94,7 @@ impl HerdrSession {
             socket_path,
             client_socket_path,
             connection,
+            ssh_utf8_locale: Arc::new(OnceLock::new()),
         }
     }
 
@@ -102,6 +104,16 @@ impl HerdrSession {
 
     pub fn is_ssh(&self) -> bool {
         self.connection.transport_id() == "ssh"
+    }
+
+    /// 只探测一次目标机器安装的 locale；已运行的旧 server 可能仍是 POSIX。
+    pub(crate) fn ssh_utf8_locale(&self) -> Option<&str> {
+        if !self.is_ssh() {
+            return None;
+        }
+        self.ssh_utf8_locale
+            .get_or_init(|| super::locale::ssh_utf8_locale(self.connection.as_ref()))
+            .as_deref()
     }
 
     pub fn socket_path(&self) -> &Path {
@@ -271,10 +283,9 @@ impl HerdrSession {
 
     /// `workspace.create`：新建 Herdr workspace（New Project 用）。
     pub fn workspace_create(&self, cwd: &str, label: &str) -> Result<WorkspaceRecord> {
-        let result = self.call(
-            "workspace.create",
-            serde_json::json!({ "cwd": cwd, "label": label, "focus": false }),
-        )?;
+        let mut params = serde_json::json!({ "cwd": cwd, "label": label, "focus": false });
+        super::locale::set_process_locale(&mut params, self.ssh_utf8_locale());
+        let result = self.call("workspace.create", params)?;
         let ws = result
             .get("workspace")
             .ok_or_else(|| anyhow!("workspace.create 缺 workspace: {result}"))?;

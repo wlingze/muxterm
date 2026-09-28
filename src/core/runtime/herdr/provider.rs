@@ -161,7 +161,10 @@ fn start_ssh_herdr_server(connection: &dyn TargetConnection, session: &str) -> R
                 session.into(),
             ],
             cwd: None,
-            env: Vec::new(),
+            env: super::locale::ssh_utf8_locale(connection)
+                .as_deref()
+                .map(super::locale::locale_env)
+                .unwrap_or_default(),
             pty: None,
         })
         .map_err(|error| {
@@ -427,5 +430,69 @@ impl RuntimeProvider for HerdrDriver {
             .map_err(RuntimeError::message)?;
         spec.path = created.workspace_id;
         Ok(spec)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct RecordingSsh {
+        commands: Mutex<Vec<ChannelRequest>>,
+    }
+
+    impl TargetConnection for RecordingSsh {
+        fn transport_id(&self) -> &str {
+            "ssh"
+        }
+
+        fn target(&self) -> &str {
+            "test-target"
+        }
+
+        fn open_channel(
+            &self,
+            _request: ChannelRequest,
+        ) -> crate::transport::TransportResult<Box<dyn crate::transport::ByteChannel>> {
+            unreachable!()
+        }
+
+        fn exec_command(
+            &self,
+            request: ChannelRequest,
+        ) -> crate::transport::TransportResult<crate::transport::CommandOutput> {
+            let is_locale_probe =
+                matches!(&request, ChannelRequest::Exec { argv, .. } if argv == &["locale", "-a"]);
+            self.commands.lock().unwrap().push(request);
+            Ok(crate::transport::CommandOutput {
+                status: 0,
+                stdout: if is_locale_probe {
+                    b"C\nC.utf8\nPOSIX\n".to_vec()
+                } else {
+                    Vec::new()
+                },
+                stderr: Vec::new(),
+            })
+        }
+
+        fn probe(&self) -> crate::transport::TransportResult<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn ssh_server_starts_with_an_installed_utf8_locale() {
+        let connection = RecordingSsh::default();
+        start_ssh_herdr_server(&connection, "muxterm-test-locale").unwrap();
+        let commands = connection.commands.lock().unwrap();
+        assert_eq!(commands.len(), 2);
+        let ChannelRequest::Exec { env, argv, .. } = &commands[1] else {
+            panic!("expected SSH command");
+        };
+        assert_eq!(argv.last().map(String::as_str), Some("muxterm-test-locale"));
+        assert!(env.contains(&("LANG".into(), "C.utf8".into())));
+        assert!(env.contains(&("LC_ALL".into(), "C.utf8".into())));
     }
 }
