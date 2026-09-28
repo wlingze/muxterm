@@ -150,7 +150,7 @@ fn ensure_ssh_herdr_session(
 }
 
 fn start_ssh_herdr_server(connection: &dyn TargetConnection, session: &str) -> RuntimeResult<()> {
-    const START_SCRIPT: &str = "unset HERDR_ENV HERDR_SESSION; PATH=\"$HOME/.local/bin:$PATH\"; export PATH; command -v herdr >/dev/null 2>&1 || { printf '%s\\n' 'herdr executable not found in PATH' >&2; exit 127; }; nohup herdr --session \"$1\" server >/dev/null 2>&1 </dev/null &";
+    const START_SCRIPT: &str = "unset HERDR_ENV HERDR_SESSION; PATH=\"$HOME/.local/bin:$PATH\"; export PATH; command -v herdr >/dev/null 2>&1 || { printf '%s\\n' 'herdr executable not found in PATH' >&2; exit 127; }; herdr --session \"$1\" server >/dev/null 2>&1 </dev/null &";
     let output = connection
         .exec_command(ChannelRequest::Exec {
             argv: vec![

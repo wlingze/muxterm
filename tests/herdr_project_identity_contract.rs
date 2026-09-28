@@ -21,9 +21,12 @@ use muxterm::test_support::core::transport::registry::ConnectionRegistry;
 use support::herdr_test_support::{herdr_available, unique_name, IsolatedHerdr};
 use support::sshd_test_support::{loopback_sshd_available, LoopbackSshd};
 
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// 本地 herdr：Project 保存 → 重载，与 discovery Existing 同一身份。
 #[test]
 fn local_project_reload_matches_existing_identity() {
+    let _env_lock = ENV_LOCK.lock().unwrap();
     if !herdr_available() {
         eprintln!("skip: 无 herdr 二进制");
         return;
@@ -153,6 +156,7 @@ fn local_attach_only_never_creates_and_create_requires_running_session() {
 /// 隔离 named session 后创建 workspace。
 #[test]
 fn ssh_herdr_attach_only_never_creates() {
+    let _env_lock = ENV_LOCK.lock().unwrap();
     if !herdr_available() || !loopback_sshd_available() {
         eprintln!("skip: 无 herdr 或 sshd");
         return;
@@ -194,10 +198,21 @@ fn ssh_herdr_attach_only_never_creates() {
         &create_target,
         ResolveIntent::CreateIfMissing,
     );
+    let diagnostics = if created.is_err() {
+        Some(sshd.remote_exec(
+            "env -u HERDR_ENV -u HERDR_SESSION PATH=\"$HOME/.local/bin:$PATH\" herdr session list --json",
+        ))
+    } else {
+        None
+    };
     let _ = sshd.remote_exec(&format!(
         "env -u HERDR_ENV -u HERDR_SESSION PATH=\"$HOME/.local/bin:$PATH\" herdr session stop {test_session} >/dev/null 2>&1; env -u HERDR_ENV -u HERDR_SESSION PATH=\"$HOME/.local/bin:$PATH\" herdr session delete {test_session} >/dev/null 2>&1"
     ));
-    let created = created.expect("SSH CreateIfMissing 应启动 Herdr session 并创建 workspace");
+    let created = created.unwrap_or_else(|error| {
+        panic!(
+            "SSH CreateIfMissing 应启动 Herdr session 并创建 workspace: {error}; remote sessions: {diagnostics:?}"
+        )
+    });
     assert_eq!(
         created.canonical.session.as_deref(),
         Some(test_session.as_str())
