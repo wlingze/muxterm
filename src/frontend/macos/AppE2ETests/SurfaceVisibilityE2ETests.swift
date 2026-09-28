@@ -928,6 +928,27 @@ final class SurfaceVisibilityE2ETests: XCTestCase {
         )
     }
 
+    func testMultilinePasteKeepsLiteralBytesWithKittyKeyboardEnabled() {
+        AppE2E.ensureApp()
+        let view = MuxTerminalView(
+            paneId: 1,
+            frame: NSRect(x: 0, y: 0, width: 640, height: 360)
+        )
+        view.feedOutput(Data("\u{1b}[>1u".utf8))
+        let handler = ClipboardRecordingHandler()
+        view.inputHandler = handler
+        let board = NSPasteboard(name: NSPasteboard.Name("muxterm.multilinePasteKitty"))
+        let text = "printf 'first\\n'\nprintf 'second\\n'\nprintf 'third\\n'"
+        board.clearContents()
+        board.setString(text, forType: .string)
+        defer { board.clearContents() }
+
+        view.paste(from: board)
+
+        XCTAssertEqual(Data(handler.bytes), Data(text.utf8),
+                       "粘贴必须保留原始换行，不能编码成单个 kitty key event")
+    }
+
     func testLargePasteIsHandedOffWholeAndDrainedToTheOriginPane() throws {
         AppE2E.ensureApp()
         let (bridge, manager) = try makeManager()
