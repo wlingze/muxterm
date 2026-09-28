@@ -144,11 +144,11 @@ fn rand_nanos() -> u32 {
         .unwrap_or(1)
 }
 
-/// core `State`：2 tab、当前 tab 3 leaf、四个 token 都在某个 pane_output 里。
+/// core `State`：2 tab、当前 tab 3 leaf。像素内容由 render 事件交付。
 #[allow(dead_code)]
 pub fn assert_core_painted_topology(
     state: &dyn muxterm::test_support::core::protocol::state::State,
-    ws: &PaintedWorkspace,
+    _ws: &PaintedWorkspace,
 ) {
     let tabs = state.tabs();
     assert!(
@@ -172,22 +172,6 @@ pub fn assert_core_painted_topology(
         3,
         "当前 tab 布局应有 3 leaf，实际 {leaves:?}（1820 错布局）"
     );
-
-    let mut blob = String::new();
-    for tab in &tabs {
-        for pane in state.panes(&tab.id) {
-            if let Some(bytes) = state.pane_output(&pane.id) {
-                blob.push_str(&String::from_utf8_lossy(bytes));
-            }
-        }
-    }
-    for token in ws.tab1_tokens.iter().chain(std::iter::once(&ws.tab2_token)) {
-        assert!(
-            blob.contains(token),
-            "core pane_output 应含播种 token {token}（attach 白屏 = 快照没进缓冲）。blob 长度 {}",
-            blob.len()
-        );
-    }
 }
 
 /// 数一批事件里的 PaneOutput。
