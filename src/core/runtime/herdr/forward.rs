@@ -5,11 +5,26 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
 
 use super::session::client_socket_path_from_api;
+
+static FORWARD_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+fn local_forward_socket_paths() -> (PathBuf, PathBuf) {
+    // macOS 的 TMPDIR 路径本身很长；把 SSH alias 拼进去会超过 Unix socket
+    // 地址上限，使 ssh -L 在两条转发建立前退出。
+    let local_api = std::env::temp_dir().join(format!(
+        "mt-hf-{}-{:x}.sock",
+        std::process::id(),
+        FORWARD_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    let local_client = client_socket_path_from_api(&local_api);
+    (local_api, local_client)
+}
 
 /// 启动一条 ssh Unix socket 转发，返回本机 socket 路径 + 子进程。
 pub fn start_herdr_ssh_forward(
@@ -17,15 +32,7 @@ pub fn start_herdr_ssh_forward(
     remote_socket_path: &str,
     ssh_config_path: Option<&str>,
 ) -> Result<(PathBuf, Child)> {
-    let local_api = std::env::temp_dir().join(format!(
-        "muxterm-herdr-fwd-{}-{}.sock",
-        alias.replace(|c: char| !c.is_ascii_alphanumeric(), "-"),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.subsec_nanos())
-            .unwrap_or(0)
-    ));
-    let local_client = client_socket_path_from_api(&local_api);
+    let (local_api, local_client) = local_forward_socket_paths();
     let remote_api = Path::new(remote_socket_path);
     let remote_client = client_socket_path_from_api(remote_api);
     let _ = std::fs::remove_file(&local_api);
@@ -77,4 +84,20 @@ pub fn start_herdr_ssh_forward(
         remote_api.display(),
         remote_client.display()
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn forward_socket_names_are_short_and_unique() {
+        let (first_api, first_client) = local_forward_socket_paths();
+        let (second_api, second_client) = local_forward_socket_paths();
+        assert_ne!(first_api, second_api);
+        assert_ne!(first_client, second_client);
+        assert!(first_api.file_name().unwrap().len() < 30);
+        assert!(first_client.file_name().unwrap().len() < 40);
+        assert_eq!(first_client, client_socket_path_from_api(&first_api));
+    }
 }
