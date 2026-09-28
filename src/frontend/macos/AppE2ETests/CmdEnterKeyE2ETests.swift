@@ -4,6 +4,46 @@ import XCTest
 
 /// 用户路径：Cmd-Enter 切换当前 pane 全屏。不要只测 KeyChord 表，要走 handleKey。
 final class CmdEnterKeyE2ETests: XCTestCase {
+    func testPageKeysReachAlternateScreenApplication() throws {
+        AppE2E.ensureApp()
+        let terminal = MuxTerminalView(paneId: 600, frame: NSRect(x: 0, y: 0, width: 800, height: 400))
+        let recorder = KeyInputRecorder()
+        terminal.inputHandler = recorder
+        terminal.feedOutput(Data("\u{1b}[?1049h\u{1b}[?1l".utf8))
+        XCTAssertTrue(terminal.getTerminal().isCurrentBufferAlternate)
+        XCTAssertFalse(terminal.getTerminal().applicationCursor)
+        for (code, character) in [(UInt16(116), "\u{F72C}"), (UInt16(121), "\u{F72D}")] {
+            let event = try XCTUnwrap(NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: .function,
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: 0,
+                context: nil, characters: character, charactersIgnoringModifiers: character,
+                isARepeat: false, keyCode: code
+            ))
+            terminal.keyDown(with: event)
+        }
+        XCTAssertEqual(recorder.bytes, Array("\u{1b}[5~\u{1b}[6~".utf8))
+    }
+
+    func testChineseImeCommitSendsLiteralUtf8InKittyMode() throws {
+        AppE2E.ensureApp()
+        let terminal = MuxTerminalView(paneId: 601, frame: NSRect(x: 0, y: 0, width: 800, height: 400))
+        let recorder = KeyInputRecorder()
+        terminal.inputHandler = recorder
+        terminal.feedOutput(Data("\u{1b}[>1u".utf8))
+        let compositionKey = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: 0,
+            context: nil, characters: "", charactersIgnoringModifiers: "\u{ffff}",
+            isARepeat: false, keyCode: 0
+        ))
+        terminal.keyDown(with: compositionKey)
+        terminal.setMarkedText("中", selectedRange: NSRange(location: 1, length: 0),
+            replacementRange: NSRange(location: NSNotFound, length: 0))
+        terminal.insertText("中", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertEqual(recorder.bytes, Array("中".utf8))
+        XCTAssertFalse(terminal.hasMarkedText())
+    }
+
     func testCloseMenuTargetsKeySettingsWindowInsteadOfMainPane() throws {
         let fixture = TwoPaneCat(label: "close-settings")
         let app = try AppE2E.attachWindow(socket: fixture.socket, session: fixture.session)
