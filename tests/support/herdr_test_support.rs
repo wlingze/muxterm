@@ -643,7 +643,10 @@ impl TempGitRepo {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.subsec_nanos())
             .unwrap_or(0);
-        let path = std::env::temp_dir().join(format!("muxterm-test-herdr-{label}-{nanos}"));
+        let path = std::env::temp_dir()
+            .canonicalize()
+            .expect("resolve temp directory")
+            .join(format!("muxterm-test-herdr-{label}-{nanos}"));
         std::fs::create_dir_all(&path).expect("创建临时 git 仓库失败");
         let ok = |args: &[&str]| {
             let out = Command::new("git")
@@ -686,7 +689,10 @@ impl TempGitRepo {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.subsec_nanos())
             .unwrap_or(0);
-        std::env::temp_dir().join(format!("muxterm-test-herdr-wt-{label}-{nanos}"))
+        std::env::temp_dir()
+            .canonicalize()
+            .expect("resolve temp directory")
+            .join(format!("muxterm-test-herdr-wt-{label}-{nanos}"))
     }
 
     /// 记录 herdr 建出的 linked worktree（Drop 时先 remove 再删目录）。
