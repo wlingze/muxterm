@@ -22,20 +22,26 @@ final class StatusBarOverflowE2ETests: XCTestCase {
         defer { app.testShutdown() }
         app.window?.setFrame(NSRect(x: 40, y: 40, width: 720, height: 600), display: true)
         XCTAssertTrue(app.waitReady())
-        // Attach may apply the saved appearance after construction. Select the
-        // mode under test once attach is ready, before waiting for its layout.
-        app.content.statusBar.colorMode = .tmux
+        let json = try XCTUnwrap(app.bridge.statusBarSnapshotJSON())
+        let snapshot = try XCTUnwrap(
+            JSONDecoder().decode(StatusBarResponse.self, from: Data(json.utf8)).status
+        )
+        XCTAssertTrue(snapshot.enabled, "隔离 tmux session 的 status 必须开启")
         XCTAssertTrue(
             AppE2E.wait(timeout: 5) {
                 app.testPollOnce()
                 AppE2E.pump(40)
+                // Other tests may leave theme mode in the shared saved config.
+                // Supply the same tmux snapshot explicitly for this layout test.
+                app.content.statusBar.colorMode = .tmux
+                app.content.applyStatusBar(snapshot)
                 app.content.layoutSubtreeIfNeeded()
                 app.content.statusBar.layoutSubtreeIfNeeded()
                 let widths = app.testTabButtonWidths()
                 return app.testStatusRightWidth() >= StatusBarTabOverflow.statusRightMinWidth
                     && !widths.isEmpty && widths.allSatisfy { $0 > 0 }
             },
-            "必须布局 tmux status-right 和 tab。right=\(app.testStatusRightWidth()) tabs=\(app.testTabButtonWidths())"
+            "必须布局 tmux status-right 和 tab。right=\(app.testStatusRightWidth()) tabs=\(app.testTabButtonWidths()) bar=\(app.testStatusBarFrame()) viewport=\(app.content.statusBar.testTabViewportFrame())"
         )
         app.content.statusBar.layoutSubtreeIfNeeded()
         app.content.layoutSubtreeIfNeeded()
