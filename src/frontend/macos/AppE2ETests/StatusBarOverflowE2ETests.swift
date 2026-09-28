@@ -20,6 +20,8 @@ final class StatusBarOverflowE2ETests: XCTestCase {
         ])
         let app = try AppE2E.attachWindow(socket: fx.socket, session: fx.session)
         defer { app.testShutdown() }
+        // The right tmux segment is intentionally hidden in theme mode.
+        app.content.statusBar.colorMode = .tmux
         app.window?.setFrame(NSRect(x: 40, y: 40, width: 720, height: 600), display: true)
         XCTAssertTrue(app.waitReady())
         XCTAssertTrue(
