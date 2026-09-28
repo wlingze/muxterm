@@ -62,14 +62,12 @@ final class LastSeenE2ETests: XCTestCase {
                 return app.testActiveTabID() == firstTab
                     && app.testLastSeenVisible()
                     && app.testPaneSurfaceReady(firstPaneID)
+                    && (app.testLastSeenJumpOffset() ?? 0) > 0
             },
-            "从 tab 切回后必须显示 last-seen 按钮；active=\(app.testActiveTabID()) lastSeen=\(app.testLastSeenDiagnostics(paneId: firstPaneID)) hits=\(app.testSearchAll(leftHere)) viewport=\(app.testPaneViewport())"
+            "从 tab 切回后必须显示可跳转的 last-seen 按钮；active=\(app.testActiveTabID()) lastSeen=\(app.testLastSeenDiagnostics(paneId: firstPaneID)) hits=\(app.testSearchAll(leftHere)) viewport=\(app.testPaneViewport())"
         )
-        // tab 结构事件之后 PaneLayout 还有一次异步几何同步；先让它
-        // 稳定，再点击，避免把“布局尚未挂载”误判成 last-seen 跳转失败。
-        AppE2E.pump(200)
-        app.testPollOnce()
-        app.testFlushFeeds()
+        // Offer expires after four seconds. Once its target is ready, inspect
+        // and click it in the same visible interval.
         let jumpOffset = app.testLastSeenJumpOffset()
         XCTAssertGreaterThan(
             jumpOffset ?? 0,
