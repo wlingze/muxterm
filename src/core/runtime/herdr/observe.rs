@@ -77,9 +77,8 @@ pub enum PaneStreamEvent {
     },
     /// Herdr 通知 client：pane 应用打开/关闭了鼠标协议。
     ///
-    /// 应用写的 `CSI ? 1000/1002/1003 h` 由 Herdr 自己消费，不一定出现在
-    /// ANSI 帧里。前端 VT 必须靠这条消息进入 mouse reporting，否则点击和
-    /// 滚轮会被当成本地选区 / ServerScroll。
+    /// 0.8.0 的直连 pane 流通常收不到该消息；滚轮应通过 AttachScroll
+    /// 交给服务端按真实子进程模式分流，不能依赖前端 VT 的 mouseMode。
     MouseCapture {
         pane: PaneId,
         generation: u64,
@@ -267,10 +266,7 @@ impl ObserveStream {
                         }
                         return;
                     }
-                    Ok(ServerMessage::MouseCapture {
-                        enabled,
-                        sgr_pixels,
-                    }) => {
+                    Ok(ServerMessage::MouseCapture { enabled }) => {
                         event_ordinal = event_ordinal.saturating_add(1);
                         if tx
                             .send(PaneStreamEvent::MouseCapture {
@@ -278,7 +274,8 @@ impl ObserveStream {
                                 generation,
                                 event_ordinal,
                                 enabled,
-                                sgr_pixels,
+                                // Herdr 0.8.0 wire carries only `enabled`.
+                                sgr_pixels: false,
                             })
                             .is_err()
                         {
