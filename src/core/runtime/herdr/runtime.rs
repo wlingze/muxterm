@@ -1532,9 +1532,7 @@ impl HerdrRuntime {
                 return Err(anyhow!("pane {pane} 不存在"));
             };
             let queued = match (slot.state, slot.actual_mode, slot.control_rearm) {
-                (SlotState::Live, Some(StreamMode::Control), _)
-                    if slot.surface_baseline == SurfaceBaseline::Ready =>
-                {
+                (SlotState::Live, Some(StreamMode::Control), _) => {
                     let stream = slot
                         .stream
                         .as_mut()
@@ -1545,7 +1543,6 @@ impl HerdrRuntime {
                     }
                     return Ok(());
                 }
-                (SlotState::Live, Some(StreamMode::Control), _) => false,
                 (SlotState::Starting | SlotState::Backoff, _, ControlRearm::Armed) => false,
                 _ => {
                     // suppressed 或没有 control：真实 input 建立新 intent。
@@ -2068,7 +2065,9 @@ impl HerdrRuntime {
                             }
                         }
                     }
-                    if mode.is_control() && slot.surface_baseline == SurfaceBaseline::Ready {
+                    // 握手完成后 Herdr 已可接收输入；首帧可能因远端绘制延迟。
+                    // 输入不应等待 Surface 建立视觉基线。
+                    if mode.is_control() {
                         let scroll = std::mem::take(&mut slot.pending_scroll);
                         if scroll != 0 {
                             if let Some(stream) = slot.stream.as_mut() {
@@ -6091,6 +6090,75 @@ mod tests {
         let _control: ClientMessage =
             read_message(&mut reader, MAX_FRAME_SIZE).expect("读 ControlTerminal 失败");
         reader
+    }
+
+    #[test]
+    fn control_input_reaches_herdr_before_first_render_frame() {
+        use std::os::unix::net::UnixListener;
+        use std::sync::mpsc;
+
+        let dir =
+            std::env::temp_dir().join(format!("muxterm-test-early-input-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let session = Arc::new(HerdrSession::new("test", dir.join("herdr.sock")));
+        let listener = UnixListener::bind(session.client_socket_path()).unwrap();
+        let (input_tx, input_rx) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut channel, _) = listener.accept().unwrap();
+            channel
+                .set_read_timeout(Some(Duration::from_millis(700)))
+                .unwrap();
+            let mut reader = mock_observe_handshake(&mut channel);
+            let message = read_message::<_, ClientMessage>(&mut reader, MAX_FRAME_SIZE).ok();
+            input_tx.send(message).unwrap();
+        });
+
+        let pane = PaneId(1);
+        let (stream_tx, _) = mpsc::channel();
+        let stream = ObserveStream::start_with_session(
+            Arc::clone(&session),
+            "w1:p1",
+            pane,
+            1,
+            StreamMode::Control,
+            false,
+            80,
+            24,
+            stream_tx,
+        )
+        .unwrap();
+        let mut runtime = HerdrRuntime::new(session, "w1");
+        runtime.status = BackendStatus::Connected;
+        runtime.foreground = true;
+        runtime.active_pane = Some(pane);
+        runtime.preferred_client_size = Some((80, 24));
+        runtime.panes.push(PaneInfo {
+            id: pane,
+            tab: TabId(1),
+            active: true,
+            title: "cat".into(),
+            cols: 80,
+            rows: 24,
+        });
+        let mut slot = PaneStreamSlot::new(pane, "w1:p1", StreamMode::Control);
+        slot.generation = 1;
+        slot.state = SlotState::Live;
+        slot.actual_mode = Some(StreamMode::Control);
+        slot.stream = Some(stream);
+        assert_eq!(slot.surface_baseline, SurfaceBaseline::AwaitingFull);
+        runtime.stream_slots.insert(pane, slot);
+
+        runtime
+            .send_control_input(pane, "中\x1b[A\x1b[5~".as_bytes())
+            .unwrap();
+        assert_eq!(
+            input_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            Some(ClientMessage::Input {
+                data: "中\x1b[A\x1b[5~".as_bytes().to_vec()
+            })
+        );
+        server.join().unwrap();
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// 共享场景：起一个 mock herdr server，建立真实 control 流，发
