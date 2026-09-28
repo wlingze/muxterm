@@ -20,19 +20,22 @@ final class StatusBarOverflowE2ETests: XCTestCase {
         ])
         let app = try AppE2E.attachWindow(socket: fx.socket, session: fx.session)
         defer { app.testShutdown() }
-        // The right tmux segment is intentionally hidden in theme mode.
-        app.content.statusBar.colorMode = .tmux
         app.window?.setFrame(NSRect(x: 40, y: 40, width: 720, height: 600), display: true)
         XCTAssertTrue(app.waitReady())
+        // Attach may apply the saved appearance after construction. Select the
+        // mode under test once attach is ready, before waiting for its layout.
+        app.content.statusBar.colorMode = .tmux
         XCTAssertTrue(
             AppE2E.wait(timeout: 5) {
                 app.testPollOnce()
                 AppE2E.pump(40)
+                app.content.layoutSubtreeIfNeeded()
                 app.content.statusBar.layoutSubtreeIfNeeded()
-                return app.content.statusBar.testRightText().contains("RIGHT_MARKER")
-                    || app.testStatusRightWidth() > 0
+                let widths = app.testTabButtonWidths()
+                return app.testStatusRightWidth() >= StatusBarTabOverflow.statusRightMinWidth
+                    && !widths.isEmpty && widths.allSatisfy { $0 > 0 }
             },
-            "必须刷到 tmux status-right。right=\(app.content.statusBar.testRightText())"
+            "必须布局 tmux status-right 和 tab。right=\(app.testStatusRightWidth()) tabs=\(app.testTabButtonWidths())"
         )
         app.content.statusBar.layoutSubtreeIfNeeded()
         app.content.layoutSubtreeIfNeeded()

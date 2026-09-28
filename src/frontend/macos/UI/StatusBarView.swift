@@ -144,7 +144,9 @@ final class StatusBarView: NSView {
     var colorMode: StatusBarMode = .tmux {
         didSet {
             guard colorMode != oldValue else { return }
-            rebuildCurrentTabs()
+            // The snapshot may already have hidden tmux segments in theme
+            // mode. Reapply it so changing this setting updates the bar now.
+            applyTmuxSnapshot(lastTmuxSnapshot, enabled: tmuxStatusEnabled)
         }
     }
 
