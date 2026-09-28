@@ -259,10 +259,10 @@ final class SurfaceVisibilityE2ETests: XCTestCase {
         )
     }
 
-    private func makeManager() throws -> (CoreBridge, TerminalManager) {
+    private func makeManager(runtimeID: String? = nil) throws -> (CoreBridge, TerminalManager) {
         AppE2E.ensureApp()
         let bridge = try CoreBridge(backendType: "local")
-        return (bridge, TerminalManager(bridge: bridge))
+        return (bridge, TerminalManager(bridge: bridge, runtimeID: runtimeID))
     }
 
     func testHostStaysHiddenUntilSeedAndLiveCatchupFinish() throws {
@@ -576,7 +576,7 @@ final class SurfaceVisibilityE2ETests: XCTestCase {
     }
 
     func testBackgroundSlotKeepsFeedingExistingSurface() throws {
-        let (bridge, manager) = try makeManager()
+        let (bridge, manager) = try makeManager(runtimeID: "tmux")
         defer { bridge.shutdown() }
         let view = MuxTerminalView(
             paneId: 1,
@@ -649,7 +649,7 @@ final class SurfaceVisibilityE2ETests: XCTestCase {
     }
 
     func testBackgroundOutputOverflowWaitsForAuthoritativeSnapshot() throws {
-        let (bridge, manager) = try makeManager()
+        let (bridge, manager) = try makeManager(runtimeID: "tmux")
         defer { bridge.shutdown() }
         let paneId: UInt32 = 7
         var requested: [UInt32] = []
@@ -788,7 +788,7 @@ final class SurfaceVisibilityE2ETests: XCTestCase {
     }
 
     func testBackgroundOutputOverflowRejectedRequestUsesOnlySafeBaseline() throws {
-        let (bridge, manager) = try makeManager()
+        let (bridge, manager) = try makeManager(runtimeID: "tmux")
         defer { bridge.shutdown() }
         let paneId: UInt32 = 7
         var requested: [UInt32] = []
@@ -816,7 +816,7 @@ final class SurfaceVisibilityE2ETests: XCTestCase {
     }
 
     func testBackgroundOutputOverflowRecoversFromFullFrameAndFollowingLive() throws {
-        let (bridge, manager) = try makeManager()
+        let (bridge, manager) = try makeManager(runtimeID: "tmux")
         defer { bridge.shutdown() }
         let paneId: UInt32 = 7
         var requested: [UInt32] = []
