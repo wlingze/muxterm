@@ -21,6 +21,7 @@ final class StatusBarOverflowE2ETests: XCTestCase {
         let app = try AppE2E.attachWindow(socket: fx.socket, session: fx.session)
         defer { app.testShutdown() }
         XCTAssertTrue(app.waitReady())
+        app.testSetSidebarOpen(false)
         app.window?.setContentSize(NSSize(width: 720, height: 600))
         app.window?.contentView?.layoutSubtreeIfNeeded()
         let json = try XCTUnwrap(app.bridge.statusBarSnapshotJSON())
@@ -32,6 +33,7 @@ final class StatusBarOverflowE2ETests: XCTestCase {
             AppE2E.wait(timeout: 5) {
                 app.testPollOnce()
                 AppE2E.pump(40)
+                app.testSetSidebarOpen(false)
                 app.window?.setContentSize(NSSize(width: 720, height: 600))
                 app.window?.contentView?.layoutSubtreeIfNeeded()
                 // Other tests may leave theme mode in the shared saved config.
@@ -44,7 +46,7 @@ final class StatusBarOverflowE2ETests: XCTestCase {
                 return app.testStatusRightWidth() >= StatusBarTabOverflow.statusRightMinWidth
                     && !widths.isEmpty && widths.allSatisfy { $0 > 0 }
             },
-            "必须布局 tmux status-right 和 tab。right=\(app.testStatusRightWidth()) tabs=\(app.testTabButtonWidths()) bar=\(app.testStatusBarFrame()) viewport=\(app.content.statusBar.testTabViewportFrame())"
+            "必须布局 tmux status-right 和 tab。right=\(app.testStatusRightWidth()) tabs=\(app.testTabButtonWidths()) bar=\(app.testStatusBarFrame()) viewport=\(app.content.statusBar.testTabViewportFrame()) sidebar=\(app.testSidebarOpen()) window=\(String(describing: app.window?.frame))"
         )
         app.content.statusBar.layoutSubtreeIfNeeded()
         app.content.layoutSubtreeIfNeeded()
@@ -64,8 +66,12 @@ final class StatusBarOverflowE2ETests: XCTestCase {
         let widths = app.testTabButtonWidths()
         XCTAssertFalse(widths.isEmpty, "必须画出 tab 按钮")
         XCTAssertTrue(widths.allSatisfy { $0 > 0 }, "tmux title 必须产生自然宽度。widths=\(widths)")
-        let rightView = app.testView(identifier: "muxterm.statusRight")
-        XCTAssertNotNil(rightView, "muxterm.statusRight 必须存在")
-        XCTAssertFalse(rightView?.isHidden ?? true, "status-right 不得隐藏")
+        // testStatusRightWidth returns zero for a hidden right label. Keep the
+        // assertion scoped to this window; testView searches all app windows.
+        XCTAssertGreaterThanOrEqual(
+            app.content.statusBar.testStatusRightWidth(),
+            StatusBarTabOverflow.statusRightMinWidth,
+            "当前窗口的 status-right 不得隐藏"
+        )
     }
 }
