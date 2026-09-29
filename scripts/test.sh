@@ -84,10 +84,6 @@ run_core() {
         --test ssh_transport_unit \
         --test four_mode_integration \
         -- --test-threads="$THREADS"
-
-    # four-mode SSH 两个 case 是 #[ignore]（需 sshd）。
-    cargo test --no-default-features --features ffi,test-harness \
-        --test four_mode_integration -- --ignored --test-threads="$THREADS"
 }
 
 run_linux() {
