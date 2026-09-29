@@ -1872,6 +1872,25 @@ impl HerdrRuntime {
                         }
                         FrameDecision::Apply => {}
                     }
+                    // ResizePane 已记录真实格子后，旧 Observe/Control 流仍可能
+                    // 排着 resize 前的 full frame。不能把这帧的 80×24 再写回
+                    // Surface，也不能用它完成新 generation 的 baseline。
+                    if let Some(allocation) = self.pane_client_sizes.get(&pane).copied() {
+                        let frame_size = normalize_pane_size(width, height, Some(allocation));
+                        if frame_size != allocation {
+                            tracing::debug!(
+                                target = "muxterm::herdr",
+                                pane = %pane,
+                                generation,
+                                width,
+                                height,
+                                allocated_cols = allocation.0,
+                                allocated_rows = allocation.1,
+                                "drop stale Herdr frame after pane allocation"
+                            );
+                            continue;
+                        }
+                    }
                     let synthetic_observe_frame = slot.stream.is_none()
                         && slot.state == SlotState::Live
                         && slot.actual_mode == Some(StreamMode::Observe);
@@ -5498,6 +5517,82 @@ mod tests {
                 .map(|p| (p.cols, p.rows)),
             Some((132, 41))
         );
+    }
+
+    #[test]
+    fn stale_frame_after_pane_allocation_does_not_shrink_surface() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w2",
+        );
+        runtime.status = BackendStatus::Connected;
+        runtime.preferred_client_size = Some((178, 50));
+        let pane = PaneId(5);
+        runtime.panes.push(PaneInfo {
+            id: pane,
+            tab: TabId(1),
+            active: true,
+            title: "shell".into(),
+            cols: 178,
+            rows: 50,
+        });
+        runtime.pane_client_sizes.insert(pane, (178, 50));
+        let (tx, rx) = std::sync::mpsc::channel();
+        runtime.stream_tx = Some(tx);
+        runtime.stream_rx = Some(rx);
+        let mut slot = PaneStreamSlot::new(pane, "w2:p5", StreamMode::Control);
+        slot.generation = 1;
+        slot.state = SlotState::Live;
+        slot.actual_mode = Some(StreamMode::Control);
+        slot.surface_baseline = SurfaceBaseline::AwaitingFull;
+        runtime.stream_slots.insert(pane, slot);
+
+        for (event_ordinal, wire_seq, width, height) in [(1, 1, 80, 24), (2, 2, 178, 50)] {
+            runtime
+                .stream_tx
+                .as_ref()
+                .unwrap()
+                .send(PaneStreamEvent::Frame {
+                    pane,
+                    generation: 1,
+                    event_ordinal,
+                    wire_seq,
+                    bytes: b"SHELL".to_vec(),
+                    width,
+                    height,
+                    full: true,
+                })
+                .unwrap();
+            runtime.drain_stream();
+            assert_eq!(
+                runtime
+                    .panes
+                    .iter()
+                    .find(|candidate| candidate.id == pane)
+                    .map(|candidate| (candidate.cols, candidate.rows)),
+                Some((178, 50)),
+            );
+            let events = queued_state_changes(&runtime);
+            assert!(
+                !events.iter().any(|event| {
+                    matches!(
+                        event,
+                        StateChange::PaneResized { pane: id, cols: 80, rows: 24 }
+                            if *id == pane
+                    )
+                }),
+                "stale frame must not resize the allocated pane",
+            );
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| {
+                        matches!(event, StateChange::PaneFrame { pane: id, .. } if *id == pane)
+                    })
+                    .count(),
+                if wire_seq == 1 { 0 } else { 1 },
+            );
+        }
     }
 
     #[test]
