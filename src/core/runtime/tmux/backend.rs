@@ -8403,13 +8403,19 @@ mod tests {
             // 故意暂停 Runtime 消费，模拟 AppKit 正忙于布局/SwiftTerm feed。
             // 旧 reader 每个 4KiB 都 flush，会在这段时间打满 bounded lane。
             tokio::time::sleep(Duration::from_millis(100)).await;
-            let deadline = Instant::now() + Duration::from_secs(2);
+            // 这里验完整性而非延迟；macOS debug tmux 在 2s 内可能仍在
+            // 生成洪峰。给生产者足够时间，仍检查末尾 token 和零 gap。
+            let deadline = Instant::now() + Duration::from_secs(10);
             let mut saw_done = false;
+            let mut live_bytes = Vec::new();
             while Instant::now() < deadline {
                 for event in b.take_events() {
                     if let StateChange::PaneOutput { pane: p, data } = event {
-                        if p == pane && String::from_utf8_lossy(&data).contains("LIVE_FLOOD_DONE") {
-                            saw_done = true;
+                        if p == pane {
+                            live_bytes.extend_from_slice(&data);
+                            saw_done = live_bytes
+                                .windows(b"LIVE_FLOOD_DONE".len())
+                                .any(|part| part == b"LIVE_FLOOD_DONE");
                         }
                     }
                 }
@@ -8418,7 +8424,14 @@ mod tests {
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
-            assert!(saw_done, "attach 后的 live 洪峰必须完整交付到结束 token");
+            assert!(
+                saw_done,
+                "attach 后的 live 洪峰必须完整交付到结束 token; bytes={} tail={:?} gaps={} recoveries={}",
+                live_bytes.len(),
+                String::from_utf8_lossy(&live_bytes[live_bytes.len().saturating_sub(120)..]),
+                b.output_gap_count,
+                b.output_gap_recovery_count,
+            );
             assert!(
                 b.output_gap_count == 0,
                 "CUP 洪峰不得打出 OutputGap（pending 集合恢复后会清空，必须检查持久计数）；gaps={} recoveries={}",
