@@ -126,6 +126,7 @@ pub struct ShellRuntime {
     default_workdir: String,
     /// Runtime-owned target connection used by the provider path.
     target_connection: Option<Arc<dyn TargetConnection>>,
+    terminal_env: Option<Vec<(String, String)>>,
     /// None = 本地 PTY；Some(alias) = 每个 pane 经 SSH transport 启动远端 shell。
     ssh_alias: Option<String>,
 
@@ -158,6 +159,7 @@ impl ShellRuntime {
             default_command: default_command.into(),
             default_workdir: default_workdir.into(),
             target_connection: None,
+            terminal_env: None,
             ssh_alias: None,
             workspace_name: "local".into(),
             tabs: vec![],
@@ -466,6 +468,14 @@ impl ShellRuntime {
             .map(expand_config_value)
             .unwrap_or_else(|| expand_config_value(&self.default_workdir));
 
+        if self.terminal_env.is_none() {
+            let connection = self
+                .target_connection
+                .clone()
+                .unwrap_or_else(|| Connect::new("local", ""));
+            self.terminal_env = super::terminal_env::shell_environment(connection.as_ref());
+        }
+
         if let Some(connection) = self.target_connection.clone() {
             return self.spawn_channel_pane(connection, tab, &argv, &workdir, cols, rows, active);
         }
@@ -485,6 +495,13 @@ impl ShellRuntime {
             .context("openpty 失败")?;
 
         let mut cmd = CommandBuilder::new(&argv[0]);
+        for (key, value) in self
+            .terminal_env
+            .clone()
+            .unwrap_or_else(super::terminal_env::terminal_metadata)
+        {
+            cmd.env(key, value);
+        }
         for a in &argv[1..] {
             cmd.arg(a);
         }
@@ -590,7 +607,10 @@ impl ShellRuntime {
             .open_channel(ChannelRequest::Exec {
                 argv: argv.to_vec(),
                 cwd: (!workdir.is_empty()).then(|| PathBuf::from(workdir)),
-                env: Vec::new(),
+                env: self
+                    .terminal_env
+                    .clone()
+                    .unwrap_or_else(super::terminal_env::terminal_metadata),
                 pty: Some(TransportPtySize::new(cols, rows)),
             })
             .with_context(|| {
