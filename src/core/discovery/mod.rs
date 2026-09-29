@@ -92,11 +92,11 @@ pub fn create_ssh_tmux_session(
     let socket_args = remote_socket
         .map(|socket| format!("-L {} ", shell_quote(socket)))
         .unwrap_or_default();
-    let remote_command = format!(
-        "tmux {socket_args}new-session -d -s {} -c {}",
+    let remote_command = remote_tmux_command(&format!(
+        "{socket_args}new-session -d -s {} -c {}",
         shell_quote(session),
         shell_quote_remote_path(directory)
-    );
+    ));
     let (program, args) = build_ssh_command_for_discovery(alias, &remote_command, ssh_config_path);
     let (exit_code, output) = run_ssh_discovery_command(&program, &args, timeout)?;
     if exit_code == 0 {
@@ -167,9 +167,9 @@ pub fn list_ssh_tmux_sessions(
     timeout: std::time::Duration,
 ) -> anyhow::Result<Vec<TmuxSessionInfo>> {
     let remote_tmux = if let Some(sk) = remote_socket {
-        format!("tmux -L {} list-sessions -F '#{{session_name}},#{{session_windows}},#{{session_attached}},#{{session_created}}'", sk)
+        remote_tmux_command(&format!("-L {} list-sessions -F '#{{session_name}},#{{session_windows}},#{{session_attached}},#{{session_created}}'", shell_quote(sk)))
     } else {
-        "tmux list-sessions -F '#{session_name},#{session_windows},#{session_attached},#{session_created}'".to_string()
+        remote_tmux_command("list-sessions -F '#{session_name},#{session_windows},#{session_attached},#{session_created}'")
     };
     let (program, args) = build_ssh_command_for_discovery(alias, &remote_tmux, ssh_config_path);
     let (exit_code, output) = run_ssh_discovery_command(&program, &args, timeout)?;
@@ -218,7 +218,6 @@ fn build_ssh_command_for_discovery(
     args.push("ConnectTimeout=2".to_string());
     args.push(alias.to_string());
     if !remote_command.is_empty() {
-        args.push("--".to_string());
         args.push(remote_command.to_string());
     }
     (program, args)
@@ -226,6 +225,13 @@ fn build_ssh_command_for_discovery(
 
 pub fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+/// SSH 非交互 shell 不一定读取用户的 PATH 配置（例如 macOS Homebrew）。
+fn remote_tmux_command(arguments: &str) -> String {
+    format!(
+        "PATH=\"$HOME/.local/bin:$HOME/.nix-profile/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\" tmux {arguments}"
+    )
 }
 
 /// Quote a path for a remote POSIX shell while preserving the conventional
@@ -258,16 +264,16 @@ pub fn list_ssh_tmux_panes(
     timeout: std::time::Duration,
 ) -> anyhow::Result<Vec<SshPaneInfo>> {
     let remote_tmux = if let Some(sk) = remote_socket {
-        format!(
-            "tmux -L {} list-panes -t {} -F '#{{pane_id}},#{{pane_active}},#{{pane_width}},#{{pane_height}},#{{pane_title}}'",
+        remote_tmux_command(&format!(
+            "-L {} list-panes -t {} -F '#{{pane_id}},#{{pane_active}},#{{pane_width}},#{{pane_height}},#{{pane_title}}'",
             shell_quote(sk),
             shell_quote(session)
-        )
+        ))
     } else {
-        format!(
-            "tmux list-panes -t {} -F '#{{pane_id}},#{{pane_active}},#{{pane_width}},#{{pane_height}},#{{pane_title}}'",
+        remote_tmux_command(&format!(
+            "list-panes -t {} -F '#{{pane_id}},#{{pane_active}},#{{pane_width}},#{{pane_height}},#{{pane_title}}'",
             shell_quote(session)
-        )
+        ))
     };
     let (program, args) = build_ssh_command_for_discovery(alias, &remote_tmux, ssh_config_path);
     let (exit_code, output) = run_ssh_discovery_command(&program, &args, timeout)?;
@@ -559,6 +565,11 @@ mod tests {
         );
         assert!(args.contains(&"-F".to_string()), "{args:?}");
         assert!(args.contains(&"local".to_string()), "{args:?}");
+        assert_eq!(
+            args[args.len() - 2..],
+            ["local", "tmux list-sessions"],
+            "SSH destination 后的参数就是远端命令，不能插入 --"
+        );
     }
 
     /// C7：list_ssh_tmux_sessions 必须走 discovery 命令，禁止 attach PTY transport。
