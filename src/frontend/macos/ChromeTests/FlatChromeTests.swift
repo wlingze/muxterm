@@ -1875,10 +1875,6 @@ final class PaneLayoutProjectionTests: XCTestCase {
             TerminalInputFocusPolicy.shouldAttemptFocus(surfaceReady: true, inWindow: true)
         )
         XCTAssertFalse(
-            TerminalInputFocusPolicy.shouldAttemptFocus(surfaceReady: false, inWindow: true),
-            "Surface 还没 ready 时不要 makeFirstResponder"
-        )
-        XCTAssertFalse(
             TerminalInputFocusPolicy.shouldAttemptFocus(surfaceReady: true, inWindow: false)
         )
         XCTAssertTrue(
@@ -1889,6 +1885,13 @@ final class PaneLayoutProjectionTests: XCTestCase {
         )
         XCTAssertFalse(
             TerminalInputFocusPolicy.shouldRetryWhenSurfaceReady(isActivePane: false, ready: true)
+        )
+    }
+
+    func testTabInputFocusDoesNotWaitForFirstRenderFrame() {
+        XCTAssertTrue(
+            TerminalInputFocusPolicy.shouldAttemptFocus(surfaceReady: false, inWindow: true),
+            "Attached terminal must accept typing before Herdr's first frame arrives"
         )
     }
 }

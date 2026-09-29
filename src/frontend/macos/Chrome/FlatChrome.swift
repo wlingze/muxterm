@@ -1071,16 +1071,16 @@ public enum InactivePaneDimmingPolicy {
     }
 }
 
-/// 光标必须在 SwiftTerm 输入里。Surface 还没 ready 时不要抢，ready 后立刻补。
+/// 光标必须在 SwiftTerm 输入里。首帧绘制不影响已挂载视图接收键盘输入。
 public enum TerminalInputFocusPolicy {
     public static func shouldAttemptFocus(
-        surfaceReady: Bool,
+        surfaceReady _: Bool,
         inWindow: Bool,
         windowVisible: Bool = true,
         windowKey: Bool = true,
         appActive: Bool = true
     ) -> Bool {
-        surfaceReady && inWindow && windowVisible && windowKey && appActive
+        inWindow && windowVisible && windowKey && appActive
     }
 
     public static func shouldRetryWhenSurfaceReady(isActivePane: Bool, ready: Bool) -> Bool {
