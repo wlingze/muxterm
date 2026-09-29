@@ -28,7 +28,7 @@ fn created_herdr_pane_uses_utf8_even_when_server_started_without_it() -> anyhow:
     std::fs::create_dir_all(&scratch.0)?;
     std::fs::write(
         scratch.0.join(".zshenv"),
-        "unsetopt rcs\nPROMPT='MUXINPUT> '\nRPROMPT=''\n",
+        "unsetopt rcs\npsvar[1]='⇣⇡'\nPROMPT='MUXINPUT> %1v '\nRPROMPT=''\n",
     )?;
     let herdr = IsolatedHerdr::start_with_environment(
         "input-locale",
@@ -156,10 +156,14 @@ fn assert_utf8_echo(
     let deadline = Instant::now() + HERDR_TIMEOUT;
     loop {
         workspace.refresh();
-        if String::from_utf8_lossy(&session.pane_read_ansi(wire_pane)?).contains("MUXINPUT>") {
+        let prompt = String::from_utf8_lossy(&session.pane_read_ansi(wire_pane)?).into_owned();
+        if prompt.contains("MUXINPUT>") && prompt.contains("⇣⇡") {
             break;
         }
-        anyhow::ensure!(Instant::now() < deadline, "shell prompt did not appear");
+        anyhow::ensure!(
+            Instant::now() < deadline,
+            "UTF-8 git prompt arrows did not appear: {prompt:?}"
+        );
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     let pane = workspace.state().active_pane().expect("active pane").id;
