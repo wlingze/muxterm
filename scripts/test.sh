@@ -65,6 +65,7 @@ run_core() {
         --test herdr_session_contract \
         --test herdr_feature_contract \
         --test herdr_locale_contract \
+        --test tmux_locale_contract \
         --test herdr_authority_contract \
         --test herdr_stability_contract \
         --test herdr_protocol_compat \

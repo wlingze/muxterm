@@ -333,3 +333,20 @@ Herdr 用 named session `muxterm-test-*`。
 - 复合 `RuntimeMode`；`WorkspaceSpec::build_runtime()` 字符串工厂作为产品路径
 - 改 live 像素契约；`visible_ansi` 进 Surface
 - 对用户默认 tmux `kill-server`；对 Herdr `herdr server stop`
+
+## 11. 终端环境与 attach
+
+Muxterm 在目标机器探测实际安装的 UTF-8 locale，不假定 SSH 目标有 `en_US.UTF-8`。
+Shell 的 PTY 与 tmux 控制客户端同时设置终端能力；Herdr 的新 workspace/tab/split 显式
+传入 locale。tmux 的 new-session 使用 `-e` 保证第一个 pane 正确；attach 后经同一条
+命令队列设置所选 session 的 `LANG/LC_CTYPE/LC_ALL` 和 `COLORTERM`，让后续 pane
+继承。不会修改 tmux 全局环境，也不会覆盖 tmux 自己管理的 pane `TERM`。
+
+attach 不能修改已经运行的 shell 的环境。恢复旧 shell 需要用户在 shell 提示符内调整
+locale 或新建 pane；客户端不以发送 `export` 文本的方式假装设置进程环境。
+`tests/tmux_locale_contract.rs` 验证本地/隔离 SSH attach、后续 pane、新 session 首个 pane，
+以及其他 session 和全局环境不变；Herdr 的六条创建路径见 `herdr_locale_contract.rs`。
+
+依据：tmux 官方 [GLOBAL AND SESSION ENVIRONMENT](https://github.com/tmux/tmux/blob/master/tmux.1)
+和 Herdr [pane API schema](https://github.com/herdrdev/herdr/blob/v0.9.1/src/api/schema/panes.rs)。
+核验时间：2026-09-29 17:04:15 +08:00。

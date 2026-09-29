@@ -677,11 +677,14 @@ impl TmuxClient {
             .unwrap_or_else(crate::executable::resolve_tmux_binary);
         let mut argv = Vec::with_capacity(1 + config.extra_args.len() + 8);
         argv.push(bin);
-        argv.extend(build_argv(&config));
-        let env = pty::client_terminal_env()
-            .into_iter()
-            .map(|(key, value)| (key.to_string(), value.to_string()))
-            .collect();
+        let mut env = super::super::terminal_env::terminal_metadata();
+        if let Some(locale) = super::super::terminal_env::installed_utf8_locale(connection.as_ref())
+        {
+            for key in ["LANG", "LC_CTYPE", "LC_ALL"] {
+                env.push((key.into(), locale.clone()));
+            }
+        }
+        argv.extend(build_argv_with_environment(&config, &env));
         let channel = connection
             .open_channel(ChannelRequest::Exec {
                 argv,
@@ -902,6 +905,31 @@ pub(crate) fn build_argv(config: &TmuxClientConfig) -> Vec<String> {
                 argv.push(t.clone());
             }
         }
+    }
+    argv
+}
+
+/// attach 客户端环境不等于 session 环境。只更新当前命令选中的 session，
+/// 不使用 -g，也不把 TERM 写进 session（pane 的 TERM 由 tmux 自己决定）。
+fn build_argv_with_environment(config: &TmuxClientConfig, env: &[(String, String)]) -> Vec<String> {
+    let mut argv = build_argv(config);
+    let pane_env: Vec<_> = env.iter().filter(|(key, _)| key != "TERM").collect();
+    if matches!(
+        config.mode.clone().unwrap_or_default(),
+        ConnectMode::NewSession { .. }
+    ) {
+        for (key, value) in &pane_env {
+            argv.extend(["-e".into(), format!("{key}={value}")]);
+        }
+    }
+    for (key, value) in pane_env {
+        // tmux 的命令队列保留 attach/new-session 选中的 target context。
+        argv.extend([
+            ";".into(),
+            "set-environment".into(),
+            key.clone(),
+            value.clone(),
+        ]);
     }
     argv
 }
@@ -1508,6 +1536,20 @@ mod tests {
             }))
         }
 
+        fn exec_command(
+            &self,
+            request: ChannelRequest,
+        ) -> crate::transport::TransportResult<crate::transport::CommandOutput> {
+            assert!(
+                matches!(request, ChannelRequest::Exec { argv, .. } if argv == ["locale", "-a"])
+            );
+            Ok(crate::transport::CommandOutput {
+                status: 0,
+                stdout: b"C\nC.utf8\n".to_vec(),
+                stderr: Vec::new(),
+            })
+        }
+
         fn probe(&self) -> crate::transport::TransportResult<()> {
             Ok(())
         }
@@ -1556,6 +1598,7 @@ mod tests {
         assert!(argv.contains(&"-CC".to_string()));
         assert_eq!(cwd, None);
         assert_eq!(env.len(), 5);
+        assert!(env.contains(&("LC_ALL".into(), "C.utf8".into())));
         assert_eq!(pty, Some(crate::transport::PtySize::new(100, 40)));
         assert_eq!(&*writes.lock().unwrap(), b"list-sessions\n");
 
