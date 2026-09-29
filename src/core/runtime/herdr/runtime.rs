@@ -923,12 +923,17 @@ impl HerdrRuntime {
         // focused pane is visible; rebuilding the split tree from all pane
         // records would leave Muxterm showing the old split after pane.zoom.
         if layout.zoomed {
-            let Some(active) = self
-                .herdr_pane_to_pane
-                .get(&layout.focused_pane_id)
-                .copied()
-                .filter(|pane| leaves.contains(pane))
-            else {
+            // layout.updated 与 pane.focus 走不同通道。用户刚切到另一个 pane
+            // 时，晚到的旧 zoom 布局不能把唯一可见叶子换回原 pane。
+            let pinned = self.pinned_focus().and_then(|(pin_tab, pin_pane)| {
+                (pin_tab == tab && leaves.contains(&pin_pane)).then_some(pin_pane)
+            });
+            let Some(active) = pinned.or_else(|| {
+                self.herdr_pane_to_pane
+                    .get(&layout.focused_pane_id)
+                    .copied()
+                    .filter(|pane| leaves.contains(pane))
+            }) else {
                 return false;
             };
             if !emit_event {
@@ -6086,6 +6091,70 @@ mod tests {
             .panes
             .iter()
             .all(|pane| (pane.cols, pane.rows) == (90, 30)));
+    }
+
+    #[test]
+    fn stale_zoom_layout_keeps_pinned_destination_visible() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w1",
+        );
+        let tab = TabId(1);
+        let first = PaneId(1);
+        let destination = PaneId(2);
+        runtime.herdr_tab_to_tab.insert("w1:t1".into(), tab);
+        runtime.herdr_pane_to_pane.insert("w1:p1".into(), first);
+        runtime
+            .herdr_pane_to_pane
+            .insert("w1:p2".into(), destination);
+        runtime.active_tab = Some(tab);
+        runtime.active_pane = Some(destination);
+        runtime.panes = [first, destination]
+            .into_iter()
+            .map(|id| PaneInfo {
+                id,
+                tab,
+                active: id == destination,
+                title: String::new(),
+                cols: 90,
+                rows: 30,
+            })
+            .collect();
+        runtime.focus_pin = Some(FocusPin {
+            tab,
+            pane: destination,
+            until: Instant::now() + FOCUS_PIN_TTL,
+        });
+        let zero = LayoutRect {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+        };
+        let stale = LayoutRecord {
+            workspace_id: "w1".into(),
+            tab_id: "w1:t1".into(),
+            zoomed: true,
+            area: zero,
+            focused_pane_id: "w1:p1".into(),
+            panes: vec![
+                LayoutPaneRecord {
+                    pane_id: "w1:p1".into(),
+                    focused: true,
+                    rect: zero,
+                },
+                LayoutPaneRecord {
+                    pane_id: "w1:p2".into(),
+                    focused: false,
+                    rect: zero,
+                },
+            ],
+            splits: Vec::new(),
+        };
+
+        assert!(runtime.apply_layout_record(&stale, true));
+        assert_eq!(runtime.layouts[&tab].tree, LayoutNode::Leaf(destination));
+        assert_eq!(runtime.layouts[&tab].active, destination);
     }
 
     #[test]
