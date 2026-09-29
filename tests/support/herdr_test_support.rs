@@ -223,15 +223,20 @@ impl IsolatedHerdr {
     pub fn start_named(name: String) -> Self {
         // §13.1：任何 herdr 测试开始前校验 protocol 19（版本不符 = required failure）。
         assert_herdr_version_ok();
-        Self::start_named_with_binary(name, PathBuf::from("herdr"))
+        Self::start_named_with_binary(name, PathBuf::from("herdr"), &[])
     }
 
     /// 用显式 Herdr 二进制验证其他已知协议；仍只启动独立 named session。
     pub fn start_with_binary(label: &str, binary: &Path) -> Self {
-        Self::start_named_with_binary(unique_name(label), binary.to_path_buf())
+        Self::start_named_with_binary(unique_name(label), binary.to_path_buf(), &[])
     }
 
-    fn start_named_with_binary(name: String, binary: PathBuf) -> Self {
+    pub fn start_with_environment(label: &str, env: &[(String, String)]) -> Self {
+        assert_herdr_version_ok();
+        Self::start_named_with_binary(unique_name(label), PathBuf::from("herdr"), env)
+    }
+
+    fn start_named_with_binary(name: String, binary: PathBuf, env: &[(String, String)]) -> Self {
         if !name.starts_with("muxterm-test-") {
             panic!("herdr fixture 名称必须以 muxterm-test- 开头: {name}");
         }
@@ -261,6 +266,7 @@ impl IsolatedHerdr {
             command
         };
         let child = server
+            .envs(env.iter().cloned())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())

@@ -564,3 +564,18 @@ stream transition、topology 和 Surface 诊断。
 每个状态转换一个 L0 contract；每个 registry cell 一个 canonical workflow；真实 GTK 只保留
 attach/reattach 两条生产入口；只有新增 ordering、generation 或 payload invariant 才增加
 regression，不做完整操作笛卡尔积。
+
+## 桌面启动与中文回显回归（2026-09-29）
+
+- Shell：`AggregateWorkspaceE2ETests.testDesktopShellTypingKeepsSingleUtf8CommandLine`
+  清空 `TERM/LANG/LC_ALL/LC_CTYPE`，通过 AppKit → Core → 真实 zsh PTY → SwiftTerm
+  验证 `ls`、Ctrl-U 重绘和中文。修复前出现中文转义和旧命令残影，修复后通过。
+- Herdr：`herdr_locale_contract` 以 `LANG/LC_ALL/LC_CTYPE=C` 启动隔离 named server，
+  经 local 和隔离 loopback SSH 分别创建 workspace、tab、split；通过 `Task::WriteRaw`
+  输入中文，并断言真实服务端 shell 回显。修复前本地 workspace 回显 `<00ad>` 等转义；
+  修复后六条创建路径通过。测试纳入 `scripts/test.sh run core`。
+- UTF-8 locale 从目标 `locale -a` 选择，成功缓存，失败允许下次创建重试。
+  本地与 SSH 都显式设置新 Herdr pane 的环境，不能依赖长驻 server 的启动环境。
+- 此测试不证明旧 shell 已修复：attach 不会重新创建 shell，旧进程仍保留原 locale。
+  对旧 pane 的恢复需要用户选择新建终端或自行调整 shell；客户端不能擅自注入命令、
+  结束任务或重启用户 server。也不能据此声称所有 `<ffffffff>` 现象已被复现。

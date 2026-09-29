@@ -476,19 +476,6 @@ fn remote_tmux_command(socket: &str, args: &str) -> String {
     )
 }
 
-#[cfg(test)]
-mod remote_tmux_command_tests {
-    use super::remote_tmux_command;
-
-    #[test]
-    fn includes_binary_paths_and_isolated_socket() {
-        let cmd = remote_tmux_command("muxterm-test-path", "list-panes");
-        assert!(cmd.starts_with("PATH=\"$HOME/.local/bin:"));
-        assert!(cmd.contains(":/opt/homebrew/bin:"));
-        assert!(cmd.contains(":$PATH\" tmux -L muxterm-test-path list-panes"));
-    }
-}
-
 impl Drop for LoopbackSshd {
     fn drop(&mut self) {
         if self.pid != 0 {
@@ -506,4 +493,17 @@ fn dflt_key() -> PathBuf {
         .map(|h| h.join(".ssh").join("id_ed25519"))
         .filter(|p| p.exists())
         .unwrap_or_else(|| PathBuf::from("/dev/null"))
+}
+
+#[cfg(test)]
+mod remote_tmux_command_tests {
+    use super::remote_tmux_command;
+
+    #[test]
+    fn includes_binary_paths_and_isolated_socket() {
+        let cmd = remote_tmux_command("muxterm-test-path", "list-panes");
+        assert!(cmd.starts_with("PATH=\"$HOME/.local/bin:"));
+        assert!(cmd.contains(":/opt/homebrew/bin:"));
+        assert!(cmd.contains(":$PATH\" tmux -L muxterm-test-path list-panes"));
+    }
 }

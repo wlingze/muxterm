@@ -21,6 +21,7 @@ on:
       - "tests/tui_integration.rs"
       - "tests/herdr_session_contract.rs"
       - "tests/herdr_feature_contract.rs"
+      - "tests/herdr_locale_contract.rs"
       - "tests/herdr_authority_contract.rs"
       - "tests/herdr_multi_workspace_contract.rs"
       - "tests/herdr_worktree_contract.rs"

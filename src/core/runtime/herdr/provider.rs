@@ -161,7 +161,7 @@ fn start_ssh_herdr_server(connection: &dyn TargetConnection, session: &str) -> R
                 session.into(),
             ],
             cwd: None,
-            env: super::locale::ssh_utf8_locale(connection)
+            env: super::super::terminal_env::installed_utf8_locale(connection)
                 .as_deref()
                 .map(super::locale::locale_env)
                 .unwrap_or_default(),

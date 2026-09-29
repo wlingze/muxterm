@@ -30,7 +30,7 @@ pub struct HerdrSession {
     socket_path: PathBuf,
     client_socket_path: PathBuf,
     connection: Arc<dyn TargetConnection>,
-    ssh_utf8_locale: Arc<OnceLock<String>>,
+    process_utf8_locale: Arc<OnceLock<String>>,
     wire_protocol: Arc<AtomicU32>,
 }
 
@@ -96,7 +96,7 @@ impl HerdrSession {
             socket_path,
             client_socket_path,
             connection,
-            ssh_utf8_locale: Arc::new(OnceLock::new()),
+            process_utf8_locale: Arc::new(OnceLock::new()),
             wire_protocol: Arc::new(AtomicU32::new(19)),
         }
     }
@@ -110,18 +110,16 @@ impl HerdrSession {
     }
 
     /// 只探测一次目标机器安装的 locale；已运行的旧 server 可能仍是 POSIX。
-    pub(crate) fn ssh_utf8_locale(&self) -> Option<&str> {
-        if !self.is_ssh() {
-            return None;
-        }
-        if self.ssh_utf8_locale.get().is_none() {
-            // A failed SSH probe must not permanently pin this session to a
-            // non-UTF-8 locale; the next pane creation may have a healthy link.
-            if let Some(locale) = super::locale::ssh_utf8_locale(self.connection.as_ref()) {
-                let _ = self.ssh_utf8_locale.set(locale);
+    pub(crate) fn process_utf8_locale(&self) -> Option<&str> {
+        if self.process_utf8_locale.get().is_none() {
+            // 探测失败不缓存；下次创建 pane 时重试。
+            if let Some(locale) =
+                super::super::terminal_env::installed_utf8_locale(self.connection.as_ref())
+            {
+                let _ = self.process_utf8_locale.set(locale);
             }
         }
-        self.ssh_utf8_locale.get().map(String::as_str)
+        self.process_utf8_locale.get().map(String::as_str)
     }
 
     pub fn socket_path(&self) -> &Path {
@@ -312,7 +310,7 @@ impl HerdrSession {
     /// `workspace.create`：新建 Herdr workspace（New Project 用）。
     pub fn workspace_create(&self, cwd: &str, label: &str) -> Result<WorkspaceRecord> {
         let mut params = serde_json::json!({ "cwd": cwd, "label": label, "focus": false });
-        super::locale::set_process_locale(&mut params, self.ssh_utf8_locale());
+        super::locale::set_process_locale(&mut params, self.process_utf8_locale());
         let result = self.call("workspace.create", params)?;
         let ws = result
             .get("workspace")
@@ -1181,9 +1179,9 @@ mod tests {
             });
         let session = HerdrSession::with_connection(connection, "test", "/remote/herdr.sock");
 
-        assert_eq!(session.ssh_utf8_locale(), None);
-        assert_eq!(session.ssh_utf8_locale(), Some("C.utf8"));
-        assert_eq!(session.ssh_utf8_locale(), Some("C.utf8"));
+        assert_eq!(session.process_utf8_locale(), None);
+        assert_eq!(session.process_utf8_locale(), Some("C.utf8"));
+        assert_eq!(session.process_utf8_locale(), Some("C.utf8"));
         assert_eq!(probes.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 

@@ -73,3 +73,21 @@ pub(super) fn shell_environment(
     }
     Some(env)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selects_installed_utf8_locale_without_guessing_spelling() {
+        assert_eq!(
+            choose_utf8_locale("C\nC.utf8\nen_US.utf8\nPOSIX\n"),
+            Some("C.utf8".into())
+        );
+        assert_eq!(
+            choose_utf8_locale("C\nzh_CN.utf8\nPOSIX\n"),
+            Some("zh_CN.utf8".into())
+        );
+        assert_eq!(choose_utf8_locale("C\nPOSIX\n"), None);
+    }
+}

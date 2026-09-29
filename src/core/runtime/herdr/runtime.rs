@@ -2819,7 +2819,7 @@ impl HerdrRuntime {
                             new_tab_name.as_deref(),
                             workdir.as_deref(),
                             session.is_ssh(),
-                            session.ssh_utf8_locale(),
+                            session.process_utf8_locale(),
                         ),
                     ),
                     MutationKind::SplitPane => {
@@ -2838,7 +2838,10 @@ impl HerdrRuntime {
                         if let Some(cwd) = &workdir {
                             params["cwd"] = serde_json::json!(cwd);
                         }
-                        super::locale::set_process_locale(&mut params, session.ssh_utf8_locale());
+                        super::locale::set_process_locale(
+                            &mut params,
+                            session.process_utf8_locale(),
+                        );
                         session.call("pane.split", params)
                     }
                 };
