@@ -10,6 +10,7 @@
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -30,6 +31,7 @@ pub struct HerdrSession {
     client_socket_path: PathBuf,
     connection: Arc<dyn TargetConnection>,
     ssh_utf8_locale: Arc<OnceLock<String>>,
+    wire_protocol: Arc<AtomicU32>,
 }
 
 /// 进程内共享的 HerdrSession 缓存（同一 named session + socket 一份 Arc）。
@@ -95,6 +97,7 @@ impl HerdrSession {
             client_socket_path,
             connection,
             ssh_utf8_locale: Arc::new(OnceLock::new()),
+            wire_protocol: Arc::new(AtomicU32::new(19)),
         }
     }
 
@@ -127,6 +130,11 @@ impl HerdrSession {
 
     pub fn client_socket_path(&self) -> &Path {
         &self.client_socket_path
+    }
+
+    /// 由最新 API snapshot 决定 client socket 使用哪一种 bincode 格式。
+    pub(crate) fn wire_protocol(&self) -> u32 {
+        self.wire_protocol.load(Ordering::Acquire)
     }
 
     /// The transport that owns channel creation for this Herdr session.
@@ -189,7 +197,13 @@ impl HerdrSession {
         let snap = result
             .get("snapshot")
             .ok_or_else(|| anyhow!("session.snapshot 缺 snapshot: {result}"))?;
-        SessionSnapshot::from_json(snap)
+        let snapshot = SessionSnapshot::from_json(snap)?;
+        if let Ok(protocol) = u32::try_from(snapshot.protocol) {
+            if protocol != 0 {
+                self.wire_protocol.store(protocol, Ordering::Release);
+            }
+        }
+        Ok(snapshot)
     }
 
     /// `pane.layout`：取得 pane 所在 tab 的权威布局快照。

@@ -25,9 +25,9 @@ use crate::protocol::PaneId;
 
 use super::channel::{shutdown, ChannelIo, SharedChannel};
 use super::session::HerdrSession;
-use super::wire::{
-    read_message, write_message, ClientKeybindings, ClientLaunchMode, ClientMessage,
-    RenderEncoding, ServerMessage, HERDR_PROTOCOL_VERSION, MAX_FRAME_SIZE,
+use super::wire::{ClientMessage, RenderEncoding};
+use super::wire_compat::{
+    read_stream_message, write_client_message, write_hello, StreamMessage, WireProtocol,
 };
 
 /// 一条 pane 流的模式。
@@ -141,6 +141,7 @@ pub struct ObserveStream {
     pane: PaneId,
     generation: u64,
     mode: StreamMode,
+    wire_protocol: WireProtocol,
     command_stream: Option<ChannelIo>,
     shutdown_channel: Option<SharedChannel>,
     handle: Option<JoinHandle<()>>,
@@ -200,21 +201,12 @@ impl ObserveStream {
         let channel = session.open_socket_channel(session.client_socket_path())?;
         let mut stream = ChannelIo::with_read_timeout(channel.clone(), Duration::from_secs(30));
 
-        let hello = ClientMessage::Hello {
-            version: HERDR_PROTOCOL_VERSION,
-            cols,
-            rows,
-            cell_width_px: 0,
-            cell_height_px: 0,
-            requested_encoding: RenderEncoding::TerminalAnsi,
-            keybindings: ClientKeybindings::Server,
-            launch_mode: ClientLaunchMode::TerminalAttach,
-        };
-        write_message(&mut stream, &hello).context("写 Herdr Hello 失败")?;
-        let welcome: ServerMessage =
-            read_message(&mut stream, MAX_FRAME_SIZE).context("读 Herdr Welcome 失败")?;
+        let wire_protocol = WireProtocol::from_number(session.wire_protocol())?;
+        write_hello(&mut stream, wire_protocol, cols, rows).context("写 Herdr Hello 失败")?;
+        let welcome =
+            read_stream_message(&mut stream, wire_protocol).context("读 Herdr Welcome 失败")?;
         match welcome {
-            ServerMessage::Welcome {
+            StreamMessage::Welcome {
                 version,
                 encoding,
                 error,
@@ -225,10 +217,11 @@ impl ObserveStream {
                 if encoding != RenderEncoding::TerminalAnsi {
                     bail!("Herdr 协商了非 ANSI 编码: {encoding:?}");
                 }
-                // 协议 20+ Welcome 或任何 version 不匹配必须明确拒绝，不能
-                // 继续按 protocol-19 解码（wire 变体索引会漂移）。
-                if version != HERDR_PROTOCOL_VERSION {
-                    bail!("Herdr 协议版本不匹配: client 19, server {version}；拒绝继续");
+                if version != wire_protocol.number() {
+                    bail!(
+                        "Herdr 协议版本不匹配: client {}, server {version}",
+                        wire_protocol.number()
+                    );
                 }
             }
             other => bail!("Herdr 握手响应不是 Welcome: {other:?}"),
@@ -245,7 +238,8 @@ impl ObserveStream {
                 takeover,
             },
         };
-        write_message(&mut stream, &message).context("写 Herdr terminal 请求失败")?;
+        write_client_message(&mut stream, wire_protocol, &message)
+            .context("写 Herdr terminal 请求失败")?;
         let command_stream = ChannelIo::new(channel.clone());
 
         let dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -256,8 +250,8 @@ impl ObserveStream {
             loop {
                 // 主动 shutdown 期间的 EOF/Error 不发，避免误报流死亡。
                 let alive = !reader_dropped.load(std::sync::atomic::Ordering::Acquire);
-                match read_message::<_, ServerMessage>(&mut stream, MAX_FRAME_SIZE) {
-                    Ok(ServerMessage::Terminal(frame)) => {
+                match read_stream_message(&mut stream, wire_protocol) {
+                    Ok(StreamMessage::Terminal(frame)) => {
                         event_ordinal = event_ordinal.saturating_add(1);
                         if tx
                             .send(PaneStreamEvent::Frame {
@@ -275,7 +269,7 @@ impl ObserveStream {
                             return;
                         }
                     }
-                    Ok(ServerMessage::ServerShutdown { reason }) => {
+                    Ok(StreamMessage::Shutdown(reason)) => {
                         if alive {
                             event_ordinal = event_ordinal.saturating_add(1);
                             let _ = tx.send(PaneStreamEvent::Closed {
@@ -287,7 +281,10 @@ impl ObserveStream {
                         }
                         return;
                     }
-                    Ok(ServerMessage::MouseCapture { enabled }) => {
+                    Ok(StreamMessage::MouseCapture {
+                        enabled,
+                        sgr_pixels,
+                    }) => {
                         event_ordinal = event_ordinal.saturating_add(1);
                         if tx
                             .send(PaneStreamEvent::MouseCapture {
@@ -295,8 +292,7 @@ impl ObserveStream {
                                 generation,
                                 event_ordinal,
                                 enabled,
-                                // Herdr 0.8.0 wire carries only `enabled`.
-                                sgr_pixels: false,
+                                sgr_pixels,
                             })
                             .is_err()
                         {
@@ -324,6 +320,7 @@ impl ObserveStream {
             pane,
             generation,
             mode,
+            wire_protocol,
             command_stream: Some(command_stream),
             shutdown_channel: Some(channel),
             handle: Some(handle),
@@ -386,8 +383,9 @@ impl ObserveStream {
             .command_stream
             .as_mut()
             .context("Herdr control stream 已关闭")?;
-        write_message(
+        write_client_message(
             stream,
+            self.wire_protocol,
             &ClientMessage::Input {
                 data: data.to_vec(),
             },
@@ -412,8 +410,9 @@ impl ObserveStream {
             .command_stream
             .as_mut()
             .context("Herdr control stream 已关闭")?;
-        write_message(
+        write_client_message(
             stream,
+            self.wire_protocol,
             &attach_scroll_message(
                 lines,
                 position.map(|(column, _)| column),
@@ -429,8 +428,9 @@ impl ObserveStream {
             .command_stream
             .as_mut()
             .context("Herdr control stream 已关闭")?;
-        write_message(
+        write_client_message(
             stream,
+            self.wire_protocol,
             &ClientMessage::Resize {
                 cols: cols.max(2),
                 rows: rows.max(1),
@@ -448,7 +448,7 @@ impl Drop for ObserveStream {
         self.dropped
             .store(true, std::sync::atomic::Ordering::Release);
         if let Some(mut stream) = self.command_stream.take() {
-            let _ = write_message(&mut stream, &ClientMessage::Detach);
+            let _ = write_client_message(&mut stream, self.wire_protocol, &ClientMessage::Detach);
         }
         // 主线程持有同一 socket 的 clone；shutdown 会打断 reader 的阻塞读，
         // 这样 resize 时替换 observer 不会留下重复流。仍不 join，避免 Drop

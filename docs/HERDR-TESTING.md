@@ -374,8 +374,18 @@ Rust/Herdr 不得使用 `stable` 或偶然预装版本作为 required gate 的�
   [`tmux` formula](https://github.com/Homebrew/homebrew-core/blob/HEAD/Formula/t/tmux.rb)
   负责取得对应平台的 bottle；
 - Herdr 0.8.0：[`herdrdev/herdr` release v0.8.0](https://github.com/herdrdev/herdr/releases/tag/v0.8.0)；
-- Herdr socket 语义：官方 [Socket API](https://herdr.dev/docs/socket-api/)；本分支和本机
-  `herdr 0.8.0` 的 wire contract 固定为 protocol 19。
+- Herdr socket 语义：官方 [Socket API](https://herdr.dev/docs/socket-api/)；required CI
+  夹具固定为 `herdr 0.8.0` / protocol 19。Muxterm 运行时还按 snapshot 协议号选择
+  0.8.2 / protocol 20 或 0.9.0–0.9.1 / protocol 22 的独立编码器，未知协议明确报错。
+
+新版协议依据官方 [v0.8.2 wire](https://github.com/herdrdev/herdr/blob/v0.8.2/src/protocol/wire.rs)
+和 [v0.9.1 wire](https://github.com/herdrdev/herdr/blob/v0.9.1/src/protocol/wire.rs)，
+于 `2026-09-29T10:32:52+08:00` 核验。可选真实 named-session 契约用
+`MUXTERM_TEST_HERDR_V20_BINARY` / `MUXTERM_TEST_HERDR_V22_BINARY` 指向相应版本二进制，
+运行 `cargo test --no-default-features --features tui,test-harness --test herdr_protocol_compat`。
+其中 protocol 19/20/22 均验证切 Tab 后立即输入；protocol 22 还验证直连
+mouse capture、点击、悬停和滚轮。Core CI 会另外下载并校验 0.8.2 / 0.9.1
+官方 Linux 二进制，强制执行这组契约。
 
 `~/Developer/terminal/herdr` 当前 HEAD 已是 protocol 20，不能作为 protocol-19 wire
 字节布局的直接 fixture；它只用于概念对照。测试必须同时断言 Hello/Welcome 的 exact

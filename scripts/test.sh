@@ -66,6 +66,7 @@ run_core() {
         --test herdr_feature_contract \
         --test herdr_authority_contract \
         --test herdr_stability_contract \
+        --test herdr_protocol_compat \
         --test herdr_multi_workspace_contract \
         --test herdr_worktree_contract \
         --test existing_ssh_contract \

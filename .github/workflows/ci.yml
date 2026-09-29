@@ -24,6 +24,7 @@ on:
       - "tests/herdr_authority_contract.rs"
       - "tests/herdr_multi_workspace_contract.rs"
       - "tests/herdr_worktree_contract.rs"
+      - "tests/herdr_protocol_compat.rs"
       - "tests/existing_ssh_contract.rs"
       - "tests/runtime_transport_matrix_contract.rs"
       - "tests/ffi_tmux_discovery.rs"
@@ -76,6 +77,24 @@ jobs:
       # fmt/clippy/全部 target 都在 test.sh 内，避免 CI 与本地两套命令 drift。
       - name: Run all core tests (one compile)
         run: bash scripts/test.sh run core
+
+      - name: Test Herdr 0.8.2 and 0.9.1 client socket compatibility
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/herdr-protocol"
+          curl -fsSL --retry 3 \
+            https://github.com/herdrdev/herdr/releases/download/v0.8.2/herdr-linux-x86_64 \
+            -o "$RUNNER_TEMP/herdr-protocol/herdr-v082"
+          curl -fsSL --retry 3 \
+            https://github.com/herdrdev/herdr/releases/download/v0.9.1/herdr-linux-x86_64 \
+            -o "$RUNNER_TEMP/herdr-protocol/herdr-v091"
+          echo "976150a14d490c94b243ea2e1a7eb2dfb67f12e36b182db90936f6728e6aecf4  $RUNNER_TEMP/herdr-protocol/herdr-v082" | sha256sum -c -
+          echo "2a02fed16beb651ef006e1d43f048f652ca4dc58ad053cd2d44450563d5c54b7  $RUNNER_TEMP/herdr-protocol/herdr-v091" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/herdr-protocol/herdr-v082" "$RUNNER_TEMP/herdr-protocol/herdr-v091"
+          MUXTERM_TEST_HERDR_V20_BINARY="$RUNNER_TEMP/herdr-protocol/herdr-v082" \
+          MUXTERM_TEST_HERDR_V22_BINARY="$RUNNER_TEMP/herdr-protocol/herdr-v091" \
+            cargo test --no-default-features --features tui,test-harness \
+              --test herdr_protocol_compat -- --test-threads=1
 
       - name: Cleanup sshd
         if: always()

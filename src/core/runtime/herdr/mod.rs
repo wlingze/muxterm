@@ -17,6 +17,7 @@ pub mod registry;
 pub mod runtime;
 pub mod session;
 pub mod wire;
+mod wire_compat;
 
 pub(super) use provider::HerdrDriver;
 #[allow(unused_imports)]

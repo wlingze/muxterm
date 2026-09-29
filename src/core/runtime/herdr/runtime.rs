@@ -41,6 +41,7 @@ use super::session::{
     AgentRecord, HerdrAgentStatus, HerdrSession, LayoutRecord, LayoutRect, LayoutSplitDirection,
     SessionSnapshot,
 };
+use super::wire_compat::WireProtocol;
 
 /// HerdrRuntime 支持的能力（v1 不含 WorktreeRemove）。
 const HERDR_CAPABILITIES: &[RuntimeCapability] = &[
@@ -3574,6 +3575,11 @@ impl Runtime for HerdrRuntime {
             .session
             .snapshot()
             .context("Herdr session.snapshot 失败")?;
+        if snap.protocol != 0 {
+            let protocol = u32::try_from(snap.protocol)
+                .map_err(|_| anyhow!("Herdr socket protocol {} is out of range", snap.protocol))?;
+            WireProtocol::from_number(protocol)?;
+        }
         if !self.apply_snapshot(&snap, true) {
             return Err(anyhow!(
                 "Herdr workspace {} 不在 session.snapshot 中",
