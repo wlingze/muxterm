@@ -546,6 +546,9 @@ fn build_remote_exec_command(
         command.push_str(&shell_quote(cwd));
         command.push_str(" && ");
     }
+    command.push_str("export PATH=");
+    command.push_str(crate::executable::REMOTE_PATH_VALUE);
+    command.push_str("; ");
     for (key, value) in env {
         if !is_valid_env_key(key) {
             return Err(anyhow::anyhow!("SSH Exec channel env key 无效: {key}"));
@@ -979,7 +982,7 @@ mod tests {
         .expect("build remote command");
         assert_eq!(
             command,
-            "cd '/tmp/with space' && export TEST_VALUE='x'\\''y'; exec 'printf' 'a b' 'quote'\\''value'"
+            "cd '/tmp/with space' && export PATH=\"$HOME/.local/bin:$HOME/.nix-profile/bin:/opt/homebrew/bin:/usr/local/bin:/opt/local/bin:/run/current-system/sw/bin:$PATH\"; export TEST_VALUE='x'\\''y'; exec 'printf' 'a b' 'quote'\\''value'"
         );
     }
 }

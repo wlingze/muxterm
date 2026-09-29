@@ -7,6 +7,10 @@
 
 use std::path::{Path, PathBuf};
 
+/// SSH 非交互 shell 可能不读取用户的 PATH 配置；保留远端现有 PATH。
+pub(crate) const REMOTE_PATH_VALUE: &str =
+    "\"$HOME/.local/bin:$HOME/.nix-profile/bin:/opt/homebrew/bin:/usr/local/bin:/opt/local/bin:/run/current-system/sw/bin:$PATH\"";
+
 /// 返回可用的 tmux 可执行路径：PATH 命中返回 `tmux`，否则回退常见位置。
 pub fn resolve_tmux_binary() -> String {
     if which("tmux").is_some() {

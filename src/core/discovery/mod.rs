@@ -230,7 +230,8 @@ pub fn shell_quote(value: &str) -> String {
 /// SSH 非交互 shell 不一定读取用户的 PATH 配置（例如 macOS Homebrew）。
 fn remote_tmux_command(arguments: &str) -> String {
     format!(
-        "PATH=\"$HOME/.local/bin:$HOME/.nix-profile/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\" tmux {arguments}"
+        "PATH={} tmux {arguments}",
+        crate::executable::REMOTE_PATH_VALUE
     )
 }
 
