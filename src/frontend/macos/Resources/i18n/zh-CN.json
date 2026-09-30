@@ -157,6 +157,8 @@
   "status_lan_access": "局域网访问",
   "status_copy_address": "复制地址",
   "status_open_address": "打开地址",
+  "status_open_remote_port": "打开",
+  "status_remote_address_pending": "正在解析 SSH 目标地址…",
   "layout_syncing": "GUI 布局同步中：等待当前 tab 的 pane 布局",
   "terminal_output_snippet": "终端输出片段",
   "theme_switch_to": "切换到{{theme}}主题",

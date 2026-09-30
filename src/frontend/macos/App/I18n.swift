@@ -231,6 +231,8 @@ enum MuxtermTextKey: CaseIterable {
     case statusLANAccess
     case statusCopyAddress
     case statusOpenAddress
+    case statusOpenRemotePort
+    case statusRemoteAddressPending
     case tab
     case tabs
     case tabsAccessibility
@@ -494,6 +496,8 @@ enum MuxtermTextKey: CaseIterable {
         case .statusLANAccess: return "status_lan_access"
         case .statusCopyAddress: return "status_copy_address"
         case .statusOpenAddress: return "status_open_address"
+        case .statusOpenRemotePort: return "status_open_remote_port"
+        case .statusRemoteAddressPending: return "status_remote_address_pending"
         case .tab: return "tab"
         case .tabs: return "tabs"
         case .tabsAccessibility: return "tabs_accessibility"

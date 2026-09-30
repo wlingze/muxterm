@@ -157,6 +157,8 @@
   "status_lan_access": "LAN access",
   "status_copy_address": "Copy address",
   "status_open_address": "Open address",
+  "status_open_remote_port": "Open",
+  "status_remote_address_pending": "Resolving SSH target address…",
   "layout_syncing": "GUI layout syncing: waiting for the current tab pane layout",
   "terminal_output_snippet": "Terminal Output Snippet",
   "theme_switch_to": "Switch to {{theme}}",
