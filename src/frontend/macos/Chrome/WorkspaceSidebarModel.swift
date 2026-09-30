@@ -211,6 +211,9 @@ public struct WorkspaceSidebarItem: Sendable, Equatable {
     /// Frontend-only opening projection. It never becomes a Core Workspace.
     public let openingStage: String?
     public let openingTargetID: String?
+    public let canUpdateRuntime: Bool
+    public let runtimeUpdatePhase: String?
+    public let runtimeUpdateMessage: String?
     public let structuredAgents: [StructuredPaneAgent]
     /// 以当前 Tab 排序生成的 1-based 编号；pane id 仍只用于内部跳转。
     public let tabNumberByPane: [UInt32: Int]
@@ -264,6 +267,9 @@ public struct WorkspaceSidebarItem: Sendable, Equatable {
         isReorderable: Bool = true,
         openingStage: String? = nil,
         openingTargetID: String? = nil,
+        canUpdateRuntime: Bool = false,
+        runtimeUpdatePhase: String? = nil,
+        runtimeUpdateMessage: String? = nil,
         structuredAgents: [StructuredPaneAgent] = [],
         tabNumberByPane: [UInt32: Int] = [:],
         tabIdByPane: [UInt32: UInt32] = [:]
@@ -278,6 +284,9 @@ public struct WorkspaceSidebarItem: Sendable, Equatable {
         self.isReorderable = isReorderable
         self.openingStage = openingStage
         self.openingTargetID = openingTargetID
+        self.canUpdateRuntime = canUpdateRuntime
+        self.runtimeUpdatePhase = runtimeUpdatePhase
+        self.runtimeUpdateMessage = runtimeUpdateMessage
         self.structuredAgents = structuredAgents
         self.tabNumberByPane = tabNumberByPane
         self.tabIdByPane = tabIdByPane

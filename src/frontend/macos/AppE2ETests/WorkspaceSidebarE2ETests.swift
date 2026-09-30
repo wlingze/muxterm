@@ -4,6 +4,45 @@ import XCTest
 @testable import MuxtermChrome
 
 final class WorkspaceSidebarE2ETests: XCTestCase {
+    func testRuntimeUpdateIconIsCapabilityScopedAndDisablesWhileBusy() throws {
+        AppE2E.ensureApp()
+        let sidebar = WorkspaceSidebarView(frame: NSRect(x: 0, y: 0, width: 280, height: 640))
+        var requested: [String] = []
+        sidebar.onWorkspaceUpdate = { requested.append($0) }
+        func item(_ id: String, supported: Bool, phase: String? = nil) -> WorkspaceSidebarItem {
+            WorkspaceSidebarItem(workspaceId: id, name: id, runtime: "test-provider", transport: "ssh", isActive: false,
+                canUpdateRuntime: supported, runtimeUpdatePhase: phase, runtimeUpdateMessage: phase)
+        }
+        sidebar.setWorkspaces([item("first", supported: false), item("second", supported: true)])
+        XCTAssertTrue(try XCTUnwrap(sidebar.testRuntimeUpdateButton("first")).isHidden)
+        let button = try XCTUnwrap(sidebar.testRuntimeUpdateButton("second"))
+        XCTAssertFalse(button.isHidden)
+        button.performClick(nil)
+        XCTAssertEqual(requested, ["second"])
+        sidebar.setWorkspaces([item("first", supported: false), item("second", supported: true, phase: "installing")])
+        let busy = try XCTUnwrap(sidebar.testRuntimeUpdateButton("second"))
+        XCTAssertFalse(busy.isEnabled)
+        busy.performClick(nil)
+        XCTAssertEqual(requested, ["second"])
+        sidebar.setWorkspaces([item("first", supported: false), item("second", supported: true, phase: "failed")])
+        XCTAssertTrue(try XCTUnwrap(sidebar.testRuntimeUpdateButton("second")).isEnabled)
+    }
+
+    func testRuntimeUpdateBridgeReturnsCoreErrorsAndLeavesShellAttached() throws {
+        AppE2E.ensureApp()
+        let bridge = try CoreBridge(backendType: "local")
+        defer { bridge.shutdown() }
+        let workspace = try XCTUnwrap(bridge.workspaceList().first)
+        XCTAssertThrowsError(try bridge.startRuntimeUpdate(workspaceID: workspace.id)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("not supported"), error.localizedDescription)
+        }
+        XCTAssertThrowsError(try bridge.startRuntimeUpdate(workspaceID: "missing-workspace")) { error in
+            XCTAssertTrue(error.localizedDescription.contains("does not exist"), error.localizedDescription)
+        }
+        XCTAssertTrue(bridge.runtimeUpdates().isEmpty)
+        XCTAssertEqual(bridge.workspaceList().first?.id, workspace.id)
+    }
+
     func testMainWindowSidebarHasPersistentWorkspaceAndAgentSections() throws {
         AppE2E.ensureApp()
         let bridge = try CoreBridge(backendType: "local")

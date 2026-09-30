@@ -3,6 +3,16 @@ import XCTest
 @testable import MuxtermChrome
 
 final class MacCommandQueueTests: XCTestCase {
+    func testRuntimeUpdatesKeepWorkspaceTargetsAndOrdering() {
+        var queue = MacCommandQueue()
+        for id in ["one", "two", "one"] {
+            queue.enqueue(QueuedMuxCommand(workspaceID: id, operation: .updateRuntime, failureMessage: "update failed"))
+        }
+        let commands = queue.drain()
+        XCTAssertEqual(commands.map(\.workspaceID), ["one", "two", "one"])
+        XCTAssertEqual(commands.map(\.operation), [.updateRuntime, .updateRuntime, .updateRuntime])
+    }
+
     private func switchCommand(
         workspaceID: String?,
         tabID: UInt32,

@@ -43,6 +43,7 @@ public enum QueuedMuxOperation: Equatable, Sendable {
     case attention(QueuedMuxAttention)
     case viewport(paneID: UInt32, offset: UInt32)
     case closeWorkspace
+    case updateRuntime
     case colours(QueuedMuxColours)
     case config(QueuedMuxConfig)
     case search(QueuedMuxSearch)
@@ -73,7 +74,7 @@ public enum QueuedMuxOperation: Equatable, Sendable {
             }
         case .mouseMotion(let paneID, _):
             return .mouseMotion(paneID)
-        case .task, .input, .closeWorkspace, .config, .search, .paneOutput, .imagePaste:
+        case .task, .input, .closeWorkspace, .updateRuntime, .config, .search, .paneOutput, .imagePaste:
             return nil
         }
     }

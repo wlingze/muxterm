@@ -398,6 +398,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         workspaceSidebar.onWorkspaceActivate = { [weak self] workspaceId in
             self?.activateSidebarWorkspace(workspaceId)
         }
+        workspaceSidebar.onWorkspaceUpdate = { [weak self] id in self?.updateWorkspaceRuntime(id) }
         workspaceSidebar.onWorkspaceClose = { [weak self] workspaceId in
             self?.closeWorkspace(workspaceId)
         }
@@ -1911,6 +1912,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 } else {
                     result = bridge.setPaneViewport(paneId: paneID, offset: offset)
                 }
+            case .updateRuntime:
+                do {
+                    guard let workspaceID = command.workspaceID else {
+                        throw CoreBridgeDiscoveryError.message("Workspace unavailable")
+                    }
+                    try bridge.startRuntimeUpdate(workspaceID: workspaceID)
+                } catch {
+                    reportStatusError(error.localizedDescription)
+                }
+                result = 0
             case .closeWorkspace:
                 if let workspaceID = command.workspaceID {
                     result = bridge.closeWorkspace(workspaceID: workspaceID)
@@ -2169,6 +2180,34 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         return WorkspaceShortcutIndex.byWorkspaceID(orderedTargetIDs)[targetID]
     }
 
+    private var runtimeUpdateStatuses: [String: CoreBridge.RuntimeUpdateStatus] = [:]
+    private var runtimeUpdatePolling = false
+    private var runtimeUpdateNextPoll = Date.distantPast
+
+    func updateWorkspaceRuntime(_ workspaceID: String) {
+        runtimeUpdatePolling = true
+        runtimeUpdateNextPoll = .distantPast
+        _ = enqueueCoreCommand(QueuedMuxCommand(
+            workspaceID: workspaceID,
+            operation: .updateRuntime,
+            failureMessage: "Runtime update failed"
+        ))
+    }
+
+    private func pollRuntimeUpdates() {
+        guard runtimeUpdatePolling, Date() >= runtimeUpdateNextPoll else { return }
+        runtimeUpdateNextPoll = Date().addingTimeInterval(0.2)
+        let statuses = Dictionary(uniqueKeysWithValues: bridge.runtimeUpdates().map {
+            ($0.workspace_id, $0.status)
+        })
+        guard statuses != runtimeUpdateStatuses else { return }
+        for (id, status) in statuses where status.phase == "failed" && runtimeUpdateStatuses[id] != status {
+            reportStatusError(status.message)
+        }
+        runtimeUpdateStatuses = statuses
+        refreshWorkspaceSidebar(force: true)
+    }
+
     /// 所有真实 Workspace 的只读侧栏输入。聚合模型从这里取源事实；这里
     /// 不会制造 Shells/Agents 假 Workspace。
     func runtimeSidebarItems() -> [WorkspaceSidebarItem] {
@@ -2186,6 +2225,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 runtime: target.runtime.rawValue,
                 transport: target.transport.label,
                 isActive: slot.visibility == .visible,
+                canUpdateRuntime: bridge.runtimeSupports(target.runtime.rawValue, capability: "RuntimeUpdate"),
+                runtimeUpdatePhase: runtimeUpdateStatuses[workspaceID]?.phase,
+                runtimeUpdateMessage: runtimeUpdateStatuses[workspaceID]?.message,
                 structuredAgents: structuredAgents,
                 tabNumberByPane: tabTargets.tabNumbersByPane,
                 tabIdByPane: tabTargets.tabIdsByPane
@@ -2258,6 +2300,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 transport: item.transport,
                 isActive: workspacePresentation == .workspace && item.isActive,
                 shortcut: shortcuts[item.workspaceId],
+                canUpdateRuntime: item.canUpdateRuntime,
+                runtimeUpdatePhase: item.runtimeUpdatePhase,
+                runtimeUpdateMessage: item.runtimeUpdateMessage,
                 structuredAgents: item.structuredAgents,
                 tabNumberByPane: item.tabNumberByPane,
                 tabIdByPane: item.tabIdByPane
@@ -5151,6 +5196,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let activeSlot = sceneStack.activeKey.flatMap { sceneStack.scenes[$0] }
         let events = pollSharedWorkspaceEvents(activeSlot: activeSlot)
         applyPolledEvents(events)
+        pollRuntimeUpdates()
     }
 
     /// 更新提醒：Core 推进状态机，这里只取快照并渲染 banner。

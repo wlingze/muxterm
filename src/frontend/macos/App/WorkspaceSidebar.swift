@@ -8,6 +8,7 @@ enum SidebarTestSection {
 /// Native main-window sidebar with four compact, independently collapsible sections.
 final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSSplitViewDelegate {
     var onWorkspaceActivate: ((String) -> Void)?
+    var onWorkspaceUpdate: ((String) -> Void)?
     var onWorkspaceClose: ((String) -> Void)?
     var onWorkspaceReorder: (([String]) -> Void)?
     var onAgentActivate: ((String, UInt32?, UInt32) -> Void)?
@@ -463,6 +464,7 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
                     ?? (item.isActive ? .controlAccentColor : .tertiaryLabelColor)),
             title: item.name,
             detail: item.openingStage.map { "Opening · \($0)" }
+                ?? (item.runtimeUpdatePhase != nil && item.runtimeUpdatePhase != "idle" ? item.runtimeUpdateMessage : nil)
                 ?? "\(item.runtime) @ \(item.transport)",
             shortcut: item.shortcutText,
             emphasized: item.isAggregate,
@@ -475,6 +477,14 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
             trailingAction: item.isClosable ? { [weak self] in
                 self?.onWorkspaceClose?(item.workspaceId)
             } : nil
+        )
+        let busy = ["checking", "installing", "handoff", "reconnecting"].contains(item.runtimeUpdatePhase ?? "")
+        cell.setRuntimeUpdate(
+            available: item.canUpdateRuntime, busy: busy,
+            failed: item.runtimeUpdatePhase == "failed",
+            tooltip: item.runtimeUpdateMessage ?? "Update runtime and reconnect",
+            identifier: "muxterm.sidebar.workspace.update.\(safeID(item.workspaceId))",
+            action: { [weak self] in self?.onWorkspaceUpdate?(item.workspaceId) }
         )
         cell.setAccessibilityIdentifier("muxterm.sidebar.workspace.\(safeID(item.workspaceId))")
     }
@@ -736,6 +746,9 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
             && lhs.isReorderable == rhs.isReorderable
             && lhs.openingStage == rhs.openingStage
             && lhs.openingTargetID == rhs.openingTargetID
+            && lhs.canUpdateRuntime == rhs.canUpdateRuntime
+            && lhs.runtimeUpdatePhase == rhs.runtimeUpdatePhase
+            && lhs.runtimeUpdateMessage == rhs.runtimeUpdateMessage
     }
 
     private func sectionTitle(_ section: SidebarTestSection) -> String {
@@ -914,6 +927,11 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
             byExtendingSelection: false
         )
     }
+    func testRuntimeUpdateButton(_ workspaceID: String) -> NSButton? {
+        guard let row = workspaces.firstIndex(where: { $0.workspaceId == workspaceID }),
+              let cell = workspaceTable.view(atColumn: 0, row: row, makeIfNecessary: true) as? WorkspaceSidebarCellView else { return nil }
+        return cell.runtimeUpdateButton
+    }
     func testWorkspaceReloadCount() -> Int { workspaceReloadCount }
     func testAgentReloadCount() -> Int { agentReloadCount }
     func testCommandReloadCount() -> Int { commandReloadCount }
@@ -947,6 +965,10 @@ private final class WorkspaceSidebarCellView: NSTableCellView {
     private let detailLabel = NSTextField(labelWithString: "")
     private let shortcutLabel = NSTextField(labelWithString: "")
     private let trailingButton = NSButton()
+    let runtimeUpdateButton = NSButton()
+    private let updateSpinner = NSProgressIndicator()
+    private var updateButtonWidth: NSLayoutConstraint!
+    private var updateAction: (() -> Void)?
     private var trailingAction: (() -> Void)?
     private var trailingShowsOnHover = true
     private var trailingButtonWidth: NSLayoutConstraint!
@@ -988,15 +1010,37 @@ private final class WorkspaceSidebarCellView: NSTableCellView {
         addSubview(titleLabel)
         addSubview(detailLabel)
         addSubview(trailingButton)
+        runtimeUpdateButton.translatesAutoresizingMaskIntoConstraints = false
+        runtimeUpdateButton.isBordered = false
+        runtimeUpdateButton.imagePosition = .imageOnly
+        runtimeUpdateButton.imageScaling = .scaleProportionallyDown
+        runtimeUpdateButton.controlSize = .small
+        runtimeUpdateButton.target = self
+        runtimeUpdateButton.action = #selector(runtimeUpdateClicked)
+        addSubview(runtimeUpdateButton)
+        updateSpinner.translatesAutoresizingMaskIntoConstraints = false
+        updateSpinner.style = .spinning
+        updateSpinner.controlSize = .small
+        updateSpinner.isDisplayedWhenStopped = false
+        addSubview(updateSpinner)
         textField = titleLabel
         updateTrackingAreas()
 
         trailingButtonWidth = trailingButton.widthAnchor.constraint(equalToConstant: 0)
         titleLeadingToTrailing = titleLabel.trailingAnchor.constraint(
-            equalTo: trailingButton.leadingAnchor,
-            constant: 0
+            equalTo: runtimeUpdateButton.leadingAnchor,
+            constant: -3
         )
+        updateButtonWidth = runtimeUpdateButton.widthAnchor.constraint(equalToConstant: 0)
         NSLayoutConstraint.activate([
+            runtimeUpdateButton.trailingAnchor.constraint(equalTo: trailingButton.leadingAnchor, constant: -2),
+            runtimeUpdateButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            runtimeUpdateButton.heightAnchor.constraint(equalToConstant: 20),
+            updateButtonWidth,
+            updateSpinner.centerXAnchor.constraint(equalTo: runtimeUpdateButton.centerXAnchor),
+            updateSpinner.centerYAnchor.constraint(equalTo: runtimeUpdateButton.centerYAnchor),
+            updateSpinner.widthAnchor.constraint(equalToConstant: 14),
+            updateSpinner.heightAnchor.constraint(equalToConstant: 14),
             marker.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 9),
             marker.centerYAnchor.constraint(equalTo: centerYAnchor),
             marker.widthAnchor.constraint(equalToConstant: 11),
@@ -1052,6 +1096,22 @@ private final class WorkspaceSidebarCellView: NSTableCellView {
         trailingButton.isHidden = !showsTrailing
     }
 
+    @objc private func runtimeUpdateClicked() { updateAction?() }
+
+    func setRuntimeUpdate(available: Bool, busy: Bool, failed: Bool, tooltip: String, identifier: String, action: @escaping () -> Void) {
+        updateAction = available && !busy ? action : nil
+        updateButtonWidth.constant = available ? 22 : 0
+        runtimeUpdateButton.isHidden = !available
+        runtimeUpdateButton.isEnabled = !busy
+        runtimeUpdateButton.title = ""
+        runtimeUpdateButton.image = busy ? nil : NSImage(systemSymbolName: failed ? "exclamationmark.arrow.circlepath" : "arrow.down.circle", accessibilityDescription: "Update runtime")
+        runtimeUpdateButton.contentTintColor = failed ? .systemOrange : .secondaryLabelColor
+        runtimeUpdateButton.toolTip = tooltip
+        runtimeUpdateButton.setAccessibilityIdentifier(identifier)
+        runtimeUpdateButton.setAccessibilityLabel("Update runtime and reconnect")
+        if available && busy { updateSpinner.startAnimation(nil) } else { updateSpinner.stopAnimation(nil) }
+    }
+
     @objc private func trailingClicked() {
         trailingAction?()
     }
@@ -1072,6 +1132,7 @@ private final class WorkspaceSidebarCellView: NSTableCellView {
         trailingShowsOnHover: Bool = true,
         trailingAction: (() -> Void)? = nil
     ) {
+        setRuntimeUpdate(available: false, busy: false, failed: false, tooltip: "", identifier: "", action: {})
         self.marker.stringValue = marker
         self.marker.textColor = markerColor
         shortcutLabel.stringValue = shortcut ?? ""

@@ -1651,6 +1651,49 @@ final class CoreBridge {
         }
     }
 
+    struct RuntimeUpdateStatus: Decodable, Equatable {
+        let phase: String
+        let message: String
+        let version: String?
+        var isBusy: Bool {
+            ["checking", "installing", "handoff", "reconnecting"].contains(phase)
+        }
+    }
+    struct RuntimeUpdateEntry: Decodable {
+        let workspace_id: String
+        let status: RuntimeUpdateStatus
+    }
+    private struct RuntimeUpdatesResponse: Decodable {
+        let ok: Bool
+        let updates: [RuntimeUpdateEntry]?
+        let error: String?
+    }
+    func startRuntimeUpdate(workspaceID: String) throws {
+        guard let handle else { throw CoreBridgeDiscoveryError.message("Core unavailable") }
+        let response: RuntimeUpdatesResponse = try Self.decodeDiscoveryJSON(
+            workspaceID.withCString { muxterm_workspace_update_start_json(handle, $0) }
+        )
+        guard response.ok else {
+            throw CoreBridgeDiscoveryError.message(response.error ?? "Runtime update failed")
+        }
+    }
+    func runtimeUpdates() -> [RuntimeUpdateEntry] {
+        guard let handle else { return [] }
+        do {
+            let response: RuntimeUpdatesResponse = try Self.decodeDiscoveryJSON(
+                muxterm_workspace_updates_json(handle)
+            )
+            guard response.ok else {
+                pendingError = response.error ?? "Runtime update status unavailable"
+                return []
+            }
+            return response.updates ?? []
+        } catch {
+            pendingError = error.localizedDescription
+            return []
+        }
+    }
+
     func workspaceTrafficBytes(workspaceID: String) -> (down: UInt64, up: UInt64) {
         guard let handle else { return (0, 0) }
         do {
