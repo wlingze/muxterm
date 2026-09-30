@@ -83,6 +83,14 @@ impl TargetConnection for Connect {
             .map_err(Into::into)
     }
 
+    fn tcp_browser_host(&self) -> TransportResult<String> {
+        if self.transport_id != "ssh" {
+            return Err(anyhow::anyhow!("SSH browser address requires SSH transport").into());
+        }
+        let config = std::env::var_os("MUXTERM_SSH_CONFIG_PATH").map(PathBuf::from);
+        super::ssh::address::resolve_browser_host(&self.target, config.as_deref())
+    }
+
     fn list_tcp_listener_ports(&self) -> TransportResult<Vec<u16>> {
         if self.transport_id != "ssh" {
             return Err(anyhow::anyhow!("TCP port listing requires SSH transport").into());

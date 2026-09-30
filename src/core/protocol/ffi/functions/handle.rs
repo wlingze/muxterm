@@ -243,6 +243,7 @@ fn boxed_handle(
         pending_ssh_port_forwards: std::collections::HashMap::new(),
         ssh_port_forward_errors: std::collections::HashMap::new(),
         ssh_machine_ports: std::collections::HashMap::new(),
+        ssh_browser_hosts: std::collections::HashMap::new(),
         pending_ssh_port_scans: std::collections::HashMap::new(),
         ssh_port_scan_errors: std::collections::HashMap::new(),
         projects,

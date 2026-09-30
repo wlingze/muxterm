@@ -56,6 +56,11 @@ type PendingCommandActivity = (u32, Option<String>, CommandActivityPhase);
 /// they use the public FFI facade and its safe client wrapper.
 type PendingSshPortForward = std::sync::mpsc::Receiver<Result<Box<dyn TcpPortForward>, String>>;
 
+pub(crate) enum SshPortScanEvent {
+    BrowserHost(Result<String, String>),
+    Ports(Result<Vec<u16>, String>),
+}
+
 pub struct Muxterm {
     /// Catalog: provider/discovery/resolution services.
     pub(crate) catalog: crate::catalog::Catalog,
@@ -81,8 +86,9 @@ pub struct Muxterm {
     pub(crate) ssh_port_forward_errors: HashMap<(crate::protocol::WorkspaceId, u16), String>,
     /// Remote listening ports loaded on demand for the SSH port picker.
     pub(crate) ssh_machine_ports: HashMap<crate::protocol::WorkspaceId, BTreeSet<u16>>,
+    pub(crate) ssh_browser_hosts: HashMap<crate::protocol::WorkspaceId, Result<String, String>>,
     pub(crate) pending_ssh_port_scans:
-        HashMap<crate::protocol::WorkspaceId, std::sync::mpsc::Receiver<Result<Vec<u16>, String>>>,
+        HashMap<crate::protocol::WorkspaceId, std::sync::mpsc::Receiver<SshPortScanEvent>>,
     pub(crate) ssh_port_scan_errors: HashMap<crate::protocol::WorkspaceId, String>,
     /// Core-owned Project records projected from the same SettingsService.
     pub(crate) projects: ProjectsService,
@@ -125,6 +131,8 @@ pub(crate) struct SshPortListing {
     pub ports: Vec<SshPortSnapshot>,
     pub scan_pending: bool,
     pub scan_error: Option<String>,
+    pub remote_host: Option<String>,
+    pub remote_host_error: Option<String>,
 }
 
 impl Muxterm {
@@ -511,10 +519,16 @@ impl Muxterm {
         std::thread::Builder::new()
             .name("muxterm-ssh-port-scan".into())
             .spawn(move || {
+                let host = connection
+                    .tcp_browser_host()
+                    .map_err(|error| error.to_string());
+                if sender.send(SshPortScanEvent::BrowserHost(host)).is_err() {
+                    return;
+                }
                 let result = connection
                     .list_tcp_listener_ports()
                     .map_err(|error| error.to_string());
-                let _ = sender.send(result);
+                let _ = sender.send(SshPortScanEvent::Ports(result));
             })?;
         self.ssh_port_scan_errors.remove(workspace_id);
         self.pending_ssh_port_scans
@@ -582,6 +596,16 @@ impl Muxterm {
             ports,
             scan_pending: self.pending_ssh_port_scans.contains_key(workspace_id),
             scan_error: self.ssh_port_scan_errors.get(workspace_id).cloned(),
+            remote_host: self
+                .ssh_browser_hosts
+                .get(workspace_id)
+                .and_then(|host| host.as_ref().ok())
+                .cloned(),
+            remote_host_error: self
+                .ssh_browser_hosts
+                .get(workspace_id)
+                .and_then(|host| host.as_ref().err())
+                .cloned(),
         })
     }
 
@@ -619,34 +643,47 @@ impl Muxterm {
         self.ssh_port_forward_errors
             .retain(|(id, _), _| id != workspace_id);
         self.ssh_machine_ports.remove(workspace_id);
+        self.ssh_browser_hosts.remove(workspace_id);
         self.pending_ssh_port_scans.remove(workspace_id);
         self.ssh_port_scan_errors.remove(workspace_id);
         self.pool.close(workspace_id)
     }
 
     fn poll_ssh_port_scans(&mut self, workspace_id: &crate::protocol::WorkspaceId) {
-        let result = match self.pending_ssh_port_scans.get(workspace_id) {
-            Some(receiver) => match receiver.try_recv() {
-                Ok(result) => Some(result),
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    Some(Err("SSH port scan worker stopped unexpectedly".to_string()))
+        loop {
+            let result = match self.pending_ssh_port_scans.get(workspace_id) {
+                Some(receiver) => match receiver.try_recv() {
+                    Ok(result) => Some(result),
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        Some(SshPortScanEvent::Ports(Err(
+                            "SSH port scan worker stopped unexpectedly".to_string(),
+                        )))
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                },
+                None => None,
+            };
+            let Some(result) = result else { return };
+            let result = match result {
+                SshPortScanEvent::BrowserHost(host) => {
+                    self.ssh_browser_hosts.insert(workspace_id.clone(), host);
+                    continue;
                 }
-                Err(std::sync::mpsc::TryRecvError::Empty) => None,
-            },
-            None => None,
-        };
-        let Some(result) = result else { return };
-        self.pending_ssh_port_scans.remove(workspace_id);
-        match result {
-            Ok(ports) => {
-                self.ssh_machine_ports
-                    .insert(workspace_id.clone(), ports.into_iter().collect());
-                self.ssh_port_scan_errors.remove(workspace_id);
+                SshPortScanEvent::Ports(result) => result,
+            };
+            self.pending_ssh_port_scans.remove(workspace_id);
+            match result {
+                Ok(ports) => {
+                    self.ssh_machine_ports
+                        .insert(workspace_id.clone(), ports.into_iter().collect());
+                    self.ssh_port_scan_errors.remove(workspace_id);
+                }
+                Err(error) => {
+                    self.ssh_port_scan_errors
+                        .insert(workspace_id.clone(), error);
+                }
             }
-            Err(error) => {
-                self.ssh_port_scan_errors
-                    .insert(workspace_id.clone(), error);
-            }
+            return;
         }
     }
 

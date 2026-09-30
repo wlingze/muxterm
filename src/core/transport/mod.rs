@@ -126,6 +126,12 @@ pub trait TargetConnection: Send + Sync {
             "target transport does not support listing TCP ports",
         ))
     }
+    /// 浏览器可用的目标地址；可能执行配置解析 / DNS，只能在后台调用。
+    fn tcp_browser_host(&self) -> TransportResult<String> {
+        Err(TransportError::message(
+            "target transport does not expose a browser address",
+        ))
+    }
     /// Execute a bounded, non-interactive command on this target.
     ///
     /// The default keeps existing test connections source-compatible; real

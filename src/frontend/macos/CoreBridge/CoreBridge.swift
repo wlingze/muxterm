@@ -149,11 +149,15 @@ private struct WorkspaceSSHPortsResponse: Decodable {
     let ports: [CoreSSHPort]?
     let scanPending: Bool?
     let scanError: String?
+    let remoteHost: String?
+    let remoteHostError: String?
 
     enum CodingKeys: String, CodingKey {
         case ok, error, ports
         case scanPending = "scan_pending"
         case scanError = "scan_error"
+        case remoteHost = "remote_host"
+        case remoteHostError = "remote_host_error"
     }
 }
 
@@ -161,6 +165,8 @@ struct CoreSSHPortListing: Equatable {
     let ports: [CoreSSHPort]
     let scanPending: Bool
     let scanError: String?
+    var remoteHost: String? = nil
+    var remoteHostError: String? = nil
 }
 
 private struct WorkspaceTrafficResponse: Decodable {
@@ -1719,7 +1725,9 @@ final class CoreBridge {
                 ? CoreSSHPortListing(
                     ports: response.ports ?? [],
                     scanPending: response.scanPending ?? false,
-                    scanError: response.scanError
+                    scanError: response.scanError,
+                    remoteHost: response.remoteHost,
+                    remoteHostError: response.remoteHostError
                 )
                 : CoreSSHPortListing(ports: [], scanPending: false, scanError: nil)
         } catch {
