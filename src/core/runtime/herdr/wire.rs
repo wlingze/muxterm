@@ -161,7 +161,6 @@ pub enum ServerMessage {
     ReloadSoundConfig,
     MouseCapture {
         enabled: bool,
-        sgr_pixels: bool,
     },
     KittyKeyboardReportAll {
         enabled: bool,
@@ -227,6 +226,17 @@ pub fn read_message<R: Read, M: for<'de> Deserialize<'de>>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Herdr v0.8.0 protocol 19 encodes MouseCapture with one `enabled` bool.
+    #[test]
+    fn mouse_capture_decodes_protocol19_server_bytes() {
+        let bytes = [2u8, 0, 0, 0, 9, 1];
+        let message: ServerMessage = read_message(&mut bytes.as_slice(), MAX_FRAME_SIZE).unwrap();
+        assert!(matches!(
+            message,
+            ServerMessage::MouseCapture { enabled: true, .. }
+        ));
+    }
 
     /// 协议 19 的 Hello 字节（strace 实测 herdr 0.8.0 observe 握手）：
     /// `00 13 50 28 00 00 01 00 01`。

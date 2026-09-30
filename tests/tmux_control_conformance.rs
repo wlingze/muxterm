@@ -22,10 +22,9 @@ impl Drop for IsolatedServer {
 }
 
 fn connected_model(socket: &str, session: &str) -> (TerminalModel, tokio::runtime::Runtime) {
-    let mut model = TerminalModel::new(Box::new(TmuxRuntime::new_with_attach(
-        Some(socket),
-        session,
-    )));
+    let mut tmux = TmuxRuntime::new_with_attach(Some(socket), session);
+    tmux.set_client_size(80, 24);
+    let mut model = TerminalModel::new(Box::new(tmux));
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .worker_threads(2)
@@ -34,9 +33,27 @@ fn connected_model(socket: &str, session: &str) -> (TerminalModel, tokio::runtim
     runtime
         .block_on(model.connect())
         .expect("isolated tmux attach must connect");
-    // Consume the initial connecting/attach snapshot. The test below verifies
-    // that the deliberate stall does not generate another snapshot.
-    let _ = model.poll_events();
+    // The initial attach capture is asynchronous. Wait for its Surface seed
+    // before measuring whether the deliberate stall causes a second capture.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut seeded = false;
+    while Instant::now() < deadline {
+        let events = model.refresh();
+        if events.iter().any(|event| {
+            matches!(
+                event,
+                StateChange::PaneSnapshot { .. } | StateChange::PaneFrame { .. }
+            )
+        }) {
+            seeded = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        seeded,
+        "initial attach Surface seed must arrive before the flood"
+    );
     (model, runtime)
 }
 
@@ -70,6 +87,7 @@ fn stalled_attach_client_resumes_live_to_last_frame_without_recapture() {
     let mut total_events = 0usize;
     let mut total_outputs = 0usize;
     let mut total_output_bytes = 0usize;
+    let mut surface_bytes = Vec::new();
     let mut last_frame_seen_at = None;
     while Instant::now() < deadline {
         let events = model.refresh();
@@ -86,20 +104,17 @@ fn stalled_attach_client_resumes_live_to_last_frame_without_recapture() {
             })
             .sum::<usize>();
         for event in events {
-            if let StateChange::PaneSnapshot { pane: id, .. } = event {
-                if id.0 == pane {
-                    snapshots += 1;
+            match event {
+                StateChange::PaneSnapshot { pane: id, .. } if id.0 == pane => snapshots += 1,
+                StateChange::PaneOutput { pane: id, data } if id.0 == pane => {
+                    surface_bytes.extend(data);
                 }
+                _ => {}
             }
         }
-        saw_last_frame = model
-            .state()
-            .pane_output(&muxterm::test_support::core::protocol::PaneId(pane))
-            .is_some_and(|bytes| {
-                bytes
-                    .windows(b"FLOOD_DONE".len())
-                    .any(|w| w == b"FLOOD_DONE")
-            });
+        saw_last_frame = surface_bytes
+            .windows(b"FLOOD_DONE".len())
+            .any(|window| window == b"FLOOD_DONE");
         if saw_last_frame {
             let seen_at = last_frame_seen_at.get_or_insert_with(Instant::now);
             if seen_at.elapsed() >= Duration::from_millis(500) {
@@ -117,13 +132,7 @@ fn stalled_attach_client_resumes_live_to_last_frame_without_recapture() {
         (1..=400).contains(&total_outputs),
         "the 5000-frame burst must stay coalesced and bounded (events={total_events}, outputs={total_outputs}, bytes={total_output_bytes})"
     );
-    let tail = model
-        .state()
-        .pane_output(&muxterm::test_support::core::protocol::PaneId(pane))
-        .map(|bytes| {
-            String::from_utf8_lossy(&bytes[bytes.len().saturating_sub(240)..]).into_owned()
-        })
-        .unwrap_or_default();
+    let tail = String::from_utf8_lossy(&surface_bytes[surface_bytes.len().saturating_sub(240)..]);
     assert!(
         saw_last_frame,
         "live recovery must contain the last flood frame; tail={tail:?}"

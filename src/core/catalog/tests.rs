@@ -23,6 +23,25 @@ use crate::workspace::{
     PaneTemplate, TabTemplate, TemplateLayout, TemplateName, TemplateRegistry, WorkspaceTemplate,
 };
 
+#[test]
+fn existing_herdr_descriptor_does_not_use_workspace_id_as_project_path() {
+    let candidate = ExistingCandidate {
+        runtime_id: "herdr".into(),
+        transport_id: "ssh".into(),
+        target: "ryzen".into(),
+        namespace: Some("default".into()),
+        name: "legion".into(),
+        extra: "w8".into(),
+        session: Some("default".into()),
+        socket: Some("/tmp/herdr.sock".into()),
+        workspace_id: Some("w8".into()),
+    };
+    let descriptor = super::descriptor_from_existing(&candidate).unwrap();
+    assert!(descriptor.path.is_empty());
+    assert_eq!(descriptor.workspace_id.as_deref(), Some("w8"));
+    assert_eq!(super::descriptor_to_spec(&descriptor).path, "w8");
+}
+
 struct MockDriver {
     id: &'static str,
     name: &'static str,

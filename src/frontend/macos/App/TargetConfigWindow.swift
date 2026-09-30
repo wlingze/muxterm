@@ -551,8 +551,32 @@ final class TargetConfigWindow: NSWindow, NSWindowDelegate, NSComboBoxDelegate {
                 self.close()
                 return nil
             }
+            if event.keyCode == 36 || event.keyCode == 76 {
+                let responder = self.firstResponder
+                if responder === self.pathCombo || responder === self.pathCombo.currentEditor() {
+                    return self.completePathFromReturn() ? nil : event
+                }
+            }
             return event
         }
+    }
+
+    /// First Return accepts a directory completion; only the next Return can
+    /// reach the Save button's key equivalent.
+    private func completePathFromReturn() -> Bool {
+        let prefix = DirectoryPathModel.inputPrefix(for: pathController.text)
+        guard !prefix.isEmpty else { return false }
+        if let candidate = pathController.candidates.first(where: {
+            $0.localizedCaseInsensitiveCompare(prefix) == .orderedSame
+        }) ?? pathController.candidates.first {
+            applyPathSelection(candidate: candidate)
+        } else {
+            _ = pathController.updateInput(pathController.text + "/")
+            pathCombo.stringValue = pathController.text
+            autoUpdateNameIfNeeded()
+            refreshPathSuggestions()
+        }
+        return true
     }
 
     // MARK: - NSComboBoxDelegate

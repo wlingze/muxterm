@@ -18,6 +18,9 @@ final class TerminalManager: TerminalInputHandler {
     /// 再喂快照/增量。否则模型默认 80 列，codex 的 93 列帧会折行、erase-up
     /// 行数对不上，输入内容逐帧滚出屏幕（1745）。
     private var expectedPaneSizes: [UInt32: (cols: Int, rows: Int)] = [:]
+    /// 完整帧所用的后端格子。UI allocation 可以先触发下一次 resize，
+    /// 但旧 observe full frame 仍必须在产生它的格子上解析。
+    private var sourcePaneSizes: [UInt32: (cols: Int, rows: Int)] = [:]
     private var fontFamily: String
     private var fontSize: CGFloat
     /// 隐藏 Workspace 仍然消费 Core 事件，但不创建不可见的 AppKit/SwiftTerm
@@ -176,6 +179,7 @@ final class TerminalManager: TerminalInputHandler {
         }
         views.removeAll()
         expectedPaneSizes.removeAll()
+        sourcePaneSizes.removeAll()
         swiftTermSeeded.removeAll()
         lastPtySize.removeAll()
         pendingPtySizes.removeAll()
@@ -301,6 +305,8 @@ final class TerminalManager: TerminalInputHandler {
     /// snapshot 和前后两个 baseline 交错。
     func markNeedsAuthoritativeSnapshot(paneId: UInt32) {
         dispatchPrecondition(condition: .onQueue(.main))
+        // 直接 PTY 没有可重放的完整帧；snapshot fence 会永久吞掉后续输出。
+        guard !isDirectPtyTerminal else { return }
         needsAuthoritativeSnapshot.insert(paneId)
         requestedAuthoritativeSnapshots.remove(paneId)
     }
@@ -486,9 +492,14 @@ final class TerminalManager: TerminalInputHandler {
         view.muxtermResizeGridWithView = !usesClientResize
         view.inputHandler = self
         if bridge?.runtimeSupports(runtimeID ?? "", capability: "ServerScroll") == true {
-            view.onServerScroll = { [weak self] lines in
+            view.onServerScrollAt = { [weak self] lines, column, row, modifiers in
                 guard let self else { return }
-                _ = self.enqueueCoreOperation(.task(MuxTask.scrollPane(paneId, lines: lines)), failureMessage: MuxtermI18n.shared.tr(.errorCommandFailed))
+                _ = self.enqueueCoreOperation(
+                    .task(MuxTask.scrollPane(
+                        paneId, lines: lines, column: column, row: row, modifiers: modifiers
+                    )),
+                    failureMessage: MuxtermI18n.shared.tr(.errorCommandFailed)
+                )
             }
         }
         let imageWorkspaceID = workspaceID
@@ -591,11 +602,10 @@ final class TerminalManager: TerminalInputHandler {
 
     /// 记录后端报告的 pane 尺寸，并把已有 Surface 的模型对齐到这个格子。
     func updatePaneSizes(_ panes: [Pane]) {
-        expectedPaneSizes = Dictionary(
-            uniqueKeysWithValues: panes.map { ($0.id, (Int($0.cols), Int($0.rows))) }
-        )
-        for (paneId, size) in expectedPaneSizes {
-            applyPaneGrid(paneId: paneId, cols: size.cols, rows: size.rows)
+        // 快照只列当前 tab；其它 tab 的 Surface 仍在消费后台 frame。
+        // 保留它们的源格子，直到 STATE_PANE_CLOSED 明确回收。
+        for pane in panes {
+            applyPaneGrid(paneId: pane.id, cols: Int(pane.cols), rows: Int(pane.rows))
         }
     }
 
@@ -623,6 +633,7 @@ final class TerminalManager: TerminalInputHandler {
         guard let target = PaneGridSyncPolicy.modelSize(tmuxCols: cols, tmuxRows: rows) else {
             return
         }
+        sourcePaneSizes[paneId] = target
         var nextCols = target.cols
         var nextRows = target.rows
         // Herdr snapshot 的 cols/rows 是 split 矩形，不是当前 widget 分配。
@@ -737,7 +748,7 @@ final class TerminalManager: TerminalInputHandler {
             return
         }
         if views[paneId] == nil {
-            guard viewCreationEnabled else {
+            guard viewCreationEnabled || isDirectPtyTerminal else {
                 appendStashedOutput(paneId: paneId, data: data)
                 return
             }
@@ -795,7 +806,7 @@ final class TerminalManager: TerminalInputHandler {
         ensureValidModelSize(view)
         // 整帧按 Runtime 格子绝对定位。先把模型对齐，否则满行进度和
         // TUI 会画进旧的 80 列里，折行后只剩一块白。
-        if let size = expectedPaneSizes[paneId], size.cols >= 2, size.rows >= 1 {
+        if let size = sourcePaneSizes[paneId], size.cols >= 2, size.rows >= 1 {
             view.applyGridSize(cols: size.cols, rows: size.rows, followTail: true)
         }
         view.feedFull(data)
@@ -980,6 +991,8 @@ final class TerminalManager: TerminalInputHandler {
     /// 切回来重放被截断的累计输出会乱码 / 黑屏）。
     func removePane(_ paneId: UInt32) {
         pendingFeeds.remove(paneID: paneId)
+        expectedPaneSizes.removeValue(forKey: paneId)
+        sourcePaneSizes.removeValue(forKey: paneId)
         pendingViewportOffsets.removeValue(forKey: paneId)
         pendingPtySizes.removeValue(forKey: paneId)
         pendingInputs.removeAll { $0.paneId == paneId }
@@ -1024,6 +1037,11 @@ final class TerminalManager: TerminalInputHandler {
         default:
             return false
         }
+    }
+
+    var supportsPaneZoom: Bool {
+        guard let runtimeID else { return false }
+        return bridge?.runtimeSupports(runtimeID, capability: "PaneZoom") ?? false
     }
 
     /// 前端是否为 pane PTY 的直接终端模拟器。
@@ -1511,6 +1529,10 @@ final class TerminalManager: TerminalInputHandler {
         errorKey: MuxtermTextKey = .errorSendInput
     ) {
         guard !data.isEmpty else { return }
+        if TerminalInputEncoding.isUnexpectedSingleByte(data) {
+            CoreBridge.log("dropped unexpected single-byte 0xff terminal input", level: "warning")
+            return
+        }
         if largePaste?.paneID == paneId {
             inputHeldForPaste.append(PendingInput(
                 paneId: paneId,
@@ -1531,8 +1553,16 @@ final class TerminalManager: TerminalInputHandler {
             errorKey,
             arguments: ["id": "\(paneId)"]
         )
+        let operation: QueuedMuxOperation
+        if data.count <= 64,
+           TerminalMouseReportPolicy.isCoalescibleMotion(Array(data))
+        {
+            operation = .mouseMotion(paneID: paneId, data: data)
+        } else {
+            operation = .input(paneID: paneId, data: data, quiet: false)
+        }
         if !enqueueCoreOperation(
-            .input(paneID: paneId, data: data, quiet: false),
+            operation,
             failureMessage: failureMessage
         ) {
             onError?(failureMessage)
@@ -1582,18 +1612,13 @@ final class TerminalManager: TerminalInputHandler {
     /// SSH 连接状态摘要（供 statusbar 显示）。
     /// 返回 backend 类型 + alias/session + 连接状态。
     var connectionSummary: (type: String, host: String?, status: String) {
-        let bt = bridge?.backendType ?? "unknown"
-        let host: String?
-        switch bt {
-        case "ssh":
-            host = bridge?.sshAlias ?? bridge?.socket
-        case "tmux":
-            host = bridge?.session
-        case "local":
-            host = nil
-        default:
-            host = bridge?.session
-        }
+        let idParts = workspaceID?.split(separator: "/", maxSplits: 4, omittingEmptySubsequences: false)
+        let workspaceTransport = idParts?.first.map(String.init)
+        let isSSH = workspaceTransport == "ssh" || (workspaceTransport == nil && bridge?.sshAlias != nil)
+        let type = isSSH ? "ssh" : "local"
+        let host = isSSH
+            ? (idParts?.dropFirst().first.map(String.init) ?? bridge?.sshAlias)
+            : nil
         let statusLabel: String
         switch bridge?.lastStatus {
         case 0: statusLabel = "disconnected"
@@ -1602,6 +1627,43 @@ final class TerminalManager: TerminalInputHandler {
         case 3: statusLabel = "exited"
         default: statusLabel = "unknown"
         }
-        return (bt, host, statusLabel)
+        return (type, host, statusLabel)
+    }
+
+    /// Workspace-scoped transport counters and detected application ports.
+    func workspaceTrafficBytes() -> (down: UInt64, up: UInt64) {
+        guard let bridge, let workspaceID else { return (totalBytesReceived, 0) }
+        return bridge.workspaceTrafficBytes(workspaceID: workspaceID)
+    }
+
+    func workspaceSSHPorts() -> CoreSSHPortListing {
+        guard connectionSummary.type == "ssh", let bridge, let workspaceID else {
+            return CoreSSHPortListing(ports: [], scanPending: false, scanError: nil)
+        }
+        return bridge.workspaceSSHPorts(workspaceID: workspaceID)
+    }
+
+    @discardableResult
+    func forwardSSHPort(_ remotePort: UInt16, allowLAN: Bool = false) -> Bool {
+        guard connectionSummary.type == "ssh", let bridge, let workspaceID else { return false }
+        do {
+            try bridge.forwardSSHPort(workspaceID: workspaceID, remotePort: remotePort, allowLAN: allowLAN)
+            return true
+        } catch {
+            onError?(error.localizedDescription)
+            return false
+        }
+    }
+
+    @discardableResult
+    func ignoreSSHPort(_ remotePort: UInt16) -> Bool {
+        guard let bridge, let workspaceID else { return false }
+        return bridge.ignoreSSHPort(workspaceID: workspaceID, remotePort: remotePort) == 1
+    }
+
+    @discardableResult
+    func stopSSHPort(_ remotePort: UInt16) -> Bool {
+        guard let bridge, let workspaceID else { return false }
+        return bridge.stopSSHPort(workspaceID: workspaceID, remotePort: remotePort) == 1
     }
 }

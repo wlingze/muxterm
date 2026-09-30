@@ -32,7 +32,10 @@ pub use super::functions::open_async::{muxterm_open_poll_json, muxterm_open_star
 pub use super::functions::runtime::{
     muxterm_connect, muxterm_detach, muxterm_runtime_list_json, muxterm_shutdown,
     muxterm_status_subscription_active, muxterm_traffic_down, muxterm_traffic_up,
-    muxterm_workspace_herdr_probe_json,
+    muxterm_workspace_herdr_probe_json, muxterm_workspace_traffic_json,
+};
+pub use super::functions::runtime_update::{
+    muxterm_workspace_update_start_json, muxterm_workspace_updates_json,
 };
 pub use super::functions::search::muxterm_search_all;
 pub use super::functions::snapshot::{
@@ -43,6 +46,11 @@ pub use super::functions::snapshot::{
     muxterm_workspace_pane_latest_line_seq, muxterm_workspace_pane_viewport,
     muxterm_workspace_pane_viewport_for_seq, muxterm_workspace_set_pane_viewport,
     muxterm_workspace_take_pane_reply,
+};
+pub use super::functions::ssh_ports::{
+    muxterm_workspace_ssh_port_forward, muxterm_workspace_ssh_port_forward_with_access,
+    muxterm_workspace_ssh_port_ignore, muxterm_workspace_ssh_port_stop,
+    muxterm_workspace_ssh_ports_json,
 };
 pub use super::functions::support::MuxtermHandle;
 pub use super::functions::task::{

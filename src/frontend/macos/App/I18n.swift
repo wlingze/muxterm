@@ -189,6 +189,8 @@ enum MuxtermTextKey: CaseIterable {
     case renameWorkspace
     case renameWorkspaceDetail
     case remoteDirectoryMessage
+    case directorySuggestionHint
+    case directoryNoSuggestions
     case splitPaneHorizontal
     case splitPaneHorizontalDetail
     case splitPaneVertical
@@ -219,6 +221,18 @@ enum MuxtermTextKey: CaseIterable {
     case statusState
     case statusTransport
     case statusTransportLocal
+    case statusPorts
+    case statusForward
+    case statusForwarding
+    case statusStopForward
+    case statusIgnore
+    case statusNoPorts
+    case statusScanningPorts
+    case statusLANAccess
+    case statusCopyAddress
+    case statusOpenAddress
+    case statusOpenRemotePort
+    case statusRemoteAddressPending
     case tab
     case tabs
     case tabsAccessibility
@@ -440,6 +454,8 @@ enum MuxtermTextKey: CaseIterable {
         case .renameWorkspace: return "rename_workspace"
         case .renameWorkspaceDetail: return "rename_workspace_detail"
         case .remoteDirectoryMessage: return "remote_directory_message"
+        case .directorySuggestionHint: return "directory_suggestion_hint"
+        case .directoryNoSuggestions: return "directory_no_suggestions"
         case .splitPaneHorizontal: return "split_pane_horizontal"
         case .splitPaneHorizontalDetail: return "split_pane_horizontal_detail"
         case .splitPaneVertical: return "split_pane_vertical"
@@ -470,6 +486,18 @@ enum MuxtermTextKey: CaseIterable {
         case .statusState: return "status_state"
         case .statusTransport: return "status_transport"
         case .statusTransportLocal: return "status_transport_local"
+        case .statusPorts: return "status_ports"
+        case .statusForward: return "status_forward"
+        case .statusForwarding: return "status_forwarding"
+        case .statusStopForward: return "status_stop_forward"
+        case .statusIgnore: return "status_ignore"
+        case .statusNoPorts: return "status_no_ports"
+        case .statusScanningPorts: return "status_scanning_ports"
+        case .statusLANAccess: return "status_lan_access"
+        case .statusCopyAddress: return "status_copy_address"
+        case .statusOpenAddress: return "status_open_address"
+        case .statusOpenRemotePort: return "status_open_remote_port"
+        case .statusRemoteAddressPending: return "status_remote_address_pending"
         case .tab: return "tab"
         case .tabs: return "tabs"
         case .tabsAccessibility: return "tabs_accessibility"

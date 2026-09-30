@@ -99,6 +99,39 @@ pub trait TargetConnection: Send + Sync {
     fn transport_id(&self) -> &str;
     fn target(&self) -> &str;
     fn open_channel(&self, request: ChannelRequest) -> TransportResult<Box<dyn ByteChannel>>;
+    /// Start a user-requested local TCP forward to a target loopback port.
+    /// Transports without TCP forwarding keep the default unsupported result.
+    fn open_tcp_forward(&self, _remote_port: u16) -> TransportResult<Box<dyn TcpPortForward>> {
+        Err(TransportError::message(
+            "target transport does not support TCP port forwarding",
+        ))
+    }
+    /// Start a TCP forward with an explicit local bind scope. The default keeps
+    /// existing transports loopback-only and rejects LAN exposure.
+    fn open_tcp_forward_with_access(
+        &self,
+        remote_port: u16,
+        allow_lan: bool,
+    ) -> TransportResult<Box<dyn TcpPortForward>> {
+        if allow_lan {
+            return Err(TransportError::message(
+                "target transport does not support LAN port forwarding",
+            ));
+        }
+        self.open_tcp_forward(remote_port)
+    }
+    /// List TCP listening ports on an SSH target for its port picker.
+    fn list_tcp_listener_ports(&self) -> TransportResult<Vec<u16>> {
+        Err(TransportError::message(
+            "target transport does not support listing TCP ports",
+        ))
+    }
+    /// 浏览器可用的目标地址；可能执行配置解析 / DNS，只能在后台调用。
+    fn tcp_browser_host(&self) -> TransportResult<String> {
+        Err(TransportError::message(
+            "target transport does not expose a browser address",
+        ))
+    }
     /// Execute a bounded, non-interactive command on this target.
     ///
     /// The default keeps existing test connections source-compatible; real
@@ -109,6 +142,14 @@ pub trait TargetConnection: Send + Sync {
         ))
     }
     fn probe(&self) -> TransportResult<()>;
+}
+
+/// A local TCP forward whose lifetime is tied to the owner of this guard.
+pub trait TcpPortForward: Send {
+    fn local_port(&self) -> u16;
+    fn lan_access_enabled(&self) -> bool {
+        false
+    }
 }
 
 /// PTY 字符格尺寸。

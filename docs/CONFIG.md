@@ -151,12 +151,13 @@ frontend 不再维护第二套连接池。
 | 分组 | 字段 |
 | --- | --- |
 | `pool` | `max_slots` |
+| `quick_panel` | `attach_history_days`（默认 30，范围 1–365；快速面板按窗口内成功 attach 次数排序，历史记录另存文件） |
 | `tmux` | `auto_mouse`、`default_session`、`socket` |
 | `ssh` | `host`、`port`、`user`、`key_path` |
 | `pane` | `default_command`、`workdir` |
 | `behavior` | `on_last_pane_exit`、`on_program_exit_abnormal` |
 | `attention` | `enabled`、`blocked_regex`、`debounce_ms` |
-| `ui` | `tab_bar_position`、`tab_bar_style`、`tab_bar_height`、`show_title_bar`、`borderless` |
+| `ui` | `tab_bar_position`、`tab_bar_style`（`equal_width` / `fixed` / `compact`）、`tab_bar_height`、`show_title_bar`、`borderless` |
 | `update` | `auto_check`、`manifest_url` |
 
 `tmux` / `ssh` / `pane` 这些分组是**序列化记录**，给 resolver 写成 `WorkspaceSpec`。

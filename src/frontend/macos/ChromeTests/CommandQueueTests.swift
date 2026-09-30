@@ -3,6 +3,16 @@ import XCTest
 @testable import MuxtermChrome
 
 final class MacCommandQueueTests: XCTestCase {
+    func testRuntimeUpdatesKeepWorkspaceTargetsAndOrdering() {
+        var queue = MacCommandQueue()
+        for id in ["one", "two", "one"] {
+            queue.enqueue(QueuedMuxCommand(workspaceID: id, operation: .updateRuntime, failureMessage: "update failed"))
+        }
+        let commands = queue.drain()
+        XCTAssertEqual(commands.map(\.workspaceID), ["one", "two", "one"])
+        XCTAssertEqual(commands.map(\.operation), [.updateRuntime, .updateRuntime, .updateRuntime])
+    }
+
     private func switchCommand(
         workspaceID: String?,
         tabID: UInt32,
@@ -91,6 +101,47 @@ final class MacCommandQueueTests: XCTestCase {
         XCTAssertEqual(secondPaneID, 3)
         XCTAssertEqual(Array(secondData), [0x62, 0x0d])
         XCTAssertFalse(secondQuiet)
+    }
+
+    func testLatestHoverMotionCoalescesButClickAndReleaseStayOrdered() {
+        var queue = MacCommandQueue()
+        queue.enqueue(QueuedMuxCommand(
+            workspaceID: "one",
+            operation: .mouseMotion(paneID: 3, data: Data("move-1".utf8)),
+            failureMessage: "hover failed"
+        ))
+        queue.enqueue(QueuedMuxCommand(
+            workspaceID: "one",
+            operation: .mouseMotion(paneID: 3, data: Data("move-2".utf8)),
+            failureMessage: "hover failed"
+        ))
+        queue.enqueue(.input(
+            workspaceID: "one",
+            paneID: 3,
+            data: Data("click-press".utf8),
+            failureMessage: "click failed"
+        ))
+        queue.enqueue(.input(
+            workspaceID: "one",
+            paneID: 3,
+            data: Data("click-release".utf8),
+            failureMessage: "click failed"
+        ))
+
+        XCTAssertEqual(queue.count, 3)
+        let operations = queue.drain().map(\.operation)
+        guard case .mouseMotion(let hoverPane, let hoverData) = operations[0],
+              case .input(let pressPane, let pressData, _) = operations[1],
+              case .input(let releasePane, let releaseData, _) = operations[2]
+        else {
+            return XCTFail("hover may coalesce, but click press/release must remain ordered")
+        }
+        XCTAssertEqual(hoverPane, 3)
+        XCTAssertEqual(String(decoding: hoverData, as: UTF8.self), "move-2")
+        XCTAssertEqual(pressPane, 3)
+        XCTAssertEqual(String(decoding: pressData, as: UTF8.self), "click-press")
+        XCTAssertEqual(releasePane, 3)
+        XCTAssertEqual(String(decoding: releaseData, as: UTF8.self), "click-release")
     }
 
     func testConsecutivePaneResizeForOneWorkspaceAndPaneKeepsLastSize() {

@@ -7,6 +7,12 @@ import Foundation
 public enum TerminalInputEncoding {
     public static let backspaceByte: UInt8 = 0x7f
 
+    /// GUI 输入里孤立的 0xFF 进 zsh 会显示为 `<ffffffff>`。
+    /// 多字节的鼠标/终端协议保持原样，避免破坏原始输入通道。
+    public static func isUnexpectedSingleByte(_ data: Data) -> Bool {
+        data.count == 1 && data.first == 0xff
+    }
+
     public static func controlByte(for key: String) -> UInt8? {
         let bytes = Array(key.utf8)
         guard bytes.count == 1 else { return nil }

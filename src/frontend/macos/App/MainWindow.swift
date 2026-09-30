@@ -186,6 +186,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// SSH 连接状态 + 流量监控刷新定时器（每秒更新一次显示）。
     private var trafficMonitorTimer: Timer?
     private var trafficRateSampler = TrafficRateSampler()
+    private var uploadRateSampler = TrafficRateSampler()
     private var activeProjectFlow: ProjectConnectFlowBox?
     /// UI tasks are owned until the single main-thread event pump dispatches
     /// them to Core.  The queue stores the workspace identity so a fast scene
@@ -243,6 +244,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         var tabBarPosition = TabBarPosition.bottom
         var tabBarStyle = TabBarStyle.equalWidth
         var poolMaxSlots = MuxtermConfig.defaultPoolMaxSlots
+        var attachHistoryDays = 30
         var projects: [TargetConfig] = []
     }
 
@@ -279,6 +281,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         if let pool = values["pool"] as? [String: Any] {
             resolved.poolMaxSlots = pool["max_slots"] as? Int ?? resolved.poolMaxSlots
         }
+        if let quickPanel = values["quick_panel"] as? [String: Any] {
+            resolved.attachHistoryDays = quickPanel["attach_history_days"] as? Int
+                ?? resolved.attachHistoryDays
+        }
         if let projects = values["projects"] as? [[String: Any]] {
             resolved.projects = QuickConnectStore.targetConfigs(from: projects)
         }
@@ -294,7 +300,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         discovery.attachedRemoteSocket = bridge.sshAlias == nil ? nil : bridge.socket
         // 统一配置：初始值来自 Core 解析后的快照，不再手写解析 TOML 或读 UserDefaults。
         let resolved = Self.resolvedSettings(from: bridge)
-        let initialWorkspace = bridge.workspaceList().first
+        let initialWorkspaces = bridge.workspaceList()
+        let initialWorkspace = initialWorkspaces.first(where: \.active) ?? initialWorkspaces.first
         let initialWorkspaceID = initialWorkspace?.id
         appliedTheme = MuxtermTheme.from(name: resolved.themeName)
         MuxtermTerminalColors.activePalette = appliedTheme.palette
@@ -356,7 +363,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         if let injectedQuickConnectStore {
             quickConnectStore = injectedQuickConnectStore
         } else {
-            quickConnectStore = QuickConnectStore(projects: resolved.projects) { [weak self] updated in
+            quickConnectStore = QuickConnectStore(
+                projects: resolved.projects,
+                attachHistoryURL: QuickConnectStore.defaultAttachHistoryURL
+            ) { [weak self] updated in
                 guard let self else { return }
                 let operations: [[String: Any]] = [[
                     "op": "replace",
@@ -374,6 +384,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 }
             }
         }
+        quickConnectStore.setAttachHistoryDays(resolved.attachHistoryDays)
         window.delegate = self
         installMainSplit(in: window)
         content.statusBar.onToggleSidebar = { [weak self] in
@@ -387,6 +398,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         workspaceSidebar.onWorkspaceActivate = { [weak self] workspaceId in
             self?.activateSidebarWorkspace(workspaceId)
         }
+        workspaceSidebar.onWorkspaceUpdate = { [weak self] id in self?.updateWorkspaceRuntime(id) }
         workspaceSidebar.onWorkspaceClose = { [weak self] workspaceId in
             self?.closeWorkspace(workspaceId)
         }
@@ -470,7 +482,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             }
         )
         unifiedPanel.onWorkspaceActivate = { [weak self] workspaceId in
-            self?.activateSidebarWorkspace(workspaceId)
+            guard let self else { return }
+            if let scene = self.scene(forWorkspaceId: workspaceId) {
+                self.quickConnectStore.recordAttach(scene.targetConfig)
+            }
+            self.activateSidebarWorkspace(workspaceId)
+        }
+        unifiedPanel.attachCountForWorkspace = { [weak self] workspaceId in
+            guard let self, let scene = self.scene(forWorkspaceId: workspaceId) else { return 0 }
+            return self.quickConnectStore.attachCount(for: scene.targetConfig)
         }
         unifiedPanel.onWorkspaceClose = { [weak self] workspaceId in
             self?.closeWorkspace(workspaceId)
@@ -642,6 +662,21 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         content.statusBar.onConnectionRefresh = { [weak self] in
             self?.updateTrafficMonitor()
         }
+        content.statusBar.onSSHPortForward = { [weak self] port, allowLAN in
+            guard let self else { return }
+            _ = self.terminalManager.forwardSSHPort(port, allowLAN: allowLAN)
+            self.updateTrafficMonitor()
+        }
+        content.statusBar.onSSHPortStop = { [weak self] port in
+            guard let self else { return }
+            _ = self.terminalManager.stopSSHPort(port)
+            self.updateTrafficMonitor()
+        }
+        content.statusBar.onSSHPortIgnore = { [weak self] port in
+            guard let self else { return }
+            _ = self.terminalManager.ignoreSSHPort(port)
+            self.updateTrafficMonitor()
+        }
         // 铃铛始终打开 Attention 面板。
         content.statusBar.onAttentionClick = { [weak self] in
             self?.openAttentionPanel()
@@ -671,10 +706,20 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // 启动时由 AppDelegate 创建的首个连接也属于当前 Workspace。
         // 过去只有 Quick Connect 后续创建的连接才登记进池，导致初始 local
         // workspace 既不在 Recent，也无法在切走后保持常驻。
-        let initialTarget = bridge.resolvedTargetConfig
+        let initialTarget = initialWorkspace?.resolvedTarget?.canonical.targetConfig
+            ?? bridge.resolvedTargetConfig
+        let initialAlias: String?
+        switch initialTarget?.transport {
+        case .some(.ssh(let name)):
+            initialAlias = name
+        case .some(.local):
+            initialAlias = nil
+        case .none:
+            initialAlias = bridge.sshAlias
+        }
         let initialKey = SceneKey(
-            transport: bridge.sshAlias == nil ? "local" : "ssh",
-            alias: bridge.sshAlias,
+            transport: initialAlias == nil ? "local" : "ssh",
+            alias: initialAlias,
             session: initialTarget?.session ?? bridge.session ?? "",
             runtime: initialTarget?.runtime.rawValue
                 ?? (terminalManager.usesClientResize ? "tmux" : "shell"),
@@ -1094,7 +1139,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         )
     }
 
-    /// 当前 pane 全屏切换：tmux/ssh 发 `resize-pane -Z`，本地 shell 用布局全屏。
+    /// Runtime 有原生 zoom 时交给服务端，其余用本地布局全屏。
     @objc func toggleActivePaneFullscreen() {
         guard let pane = lastSnapshot.panes.first(where: \.isActive)?.id
             ?? lastSnapshot.panes.first?.id
@@ -1115,7 +1160,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func togglePaneFullscreen(_ pane: UInt32) {
-        if terminalManager.usesClientResize {
+        if terminalManager.supportsPaneZoom {
             _ = enqueueCoreTask(
                 MuxTask.togglePaneFullscreen(pane),
                 failureMessage: MuxtermI18n.shared.tr(.errorCommandFailed)
@@ -1178,6 +1223,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         )
         window?.appearance = appearance
         content.appearance = appearance
+        settingsWindow?.window?.appearance = appearance
         NSApp.appearance = appearance
         // 强制外观立即传播（headless 下 effectiveAppearance 可能延迟）。
         window?.contentView?.viewDidChangeEffectiveAppearance()
@@ -1253,6 +1299,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// Open the Core Schema/Manifest-backed settings window.
     @objc func openPreferences() {
         if let settingsWindow {
+            settingsWindow.window?.appearance = window?.appearance
             settingsWindow.showWindow(self)
             return
         }
@@ -1267,13 +1314,65 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             }
         )
         settingsWindow = controller
+        controller.window?.appearance = window?.appearance
         controller.onApplied = { [weak self] operations in
+            guard let self else { return }
+            var fontFamily = self.terminalFontSettings.family
+            var fontSize = self.terminalFontSettings.size
+            var fontChanged = false
             for operation in operations {
-                guard operation["path"] as? String == "/ui/tab_bar_style",
-                      let value = operation["value"] as? String,
-                      let style = TabBarStyle(rawValue: value)
-                else { continue }
-                self?.content.statusBar.tabBarStyle = style
+                guard let path = operation["path"] as? String else { continue }
+                switch path {
+                case "/quick_panel/attach_history_days":
+                    if let days = operation["value"] as? Int {
+                        self.quickConnectStore.setAttachHistoryDays(days)
+                        self.unifiedPanel.refreshData()
+                    }
+                case "/ui/tab_bar_style":
+                    if let value = operation["value"] as? String,
+                       let style = TabBarStyle(rawValue: value) {
+                        self.content.statusBar.tabBarStyle = style
+                    }
+                case "/ui/tab_bar_position":
+                    if let value = operation["value"] as? String,
+                       let position = TabBarPosition(rawValue: value) {
+                        self.content.applyTabBarPosition(position)
+                    }
+                case "/statusbar/mode":
+                    if let value = operation["value"] as? String,
+                       let mode = StatusBarMode(rawValue: value) {
+                        self.content.statusBar.colorMode = mode
+                        if let snapshot = self.statusBarSnapshot {
+                            self.content.applyStatusBar(snapshot)
+                        }
+                    }
+                case "/theme/name":
+                    if let name = operation["value"] as? String {
+                        self.applyTheme(MuxtermTheme.from(name: name), persist: false)
+                    }
+                case "/font/family":
+                    if let value = operation["value"] as? String {
+                        fontFamily = value
+                        fontChanged = true
+                    }
+                case "/font/size":
+                    if let value = operation["value"] as? NSNumber {
+                        fontSize = CGFloat(truncating: value)
+                        fontChanged = true
+                    }
+                default:
+                    break
+                }
+            }
+            if fontChanged {
+                self.terminalFontSettings.family = fontFamily
+                self.terminalFontSettings.size = fontSize
+                self.configuredFontSize = fontSize
+                self.terminalManager.setFont(
+                    family: fontFamily,
+                    size: fontSize,
+                    container: self.content.paneLayout
+                )
             }
         }
         controller.showWindow(self)
@@ -1754,6 +1853,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 } else {
                     result = bridge.sendInput(paneId: paneID, data: data)
                 }
+            case .mouseMotion(let paneID, let data):
+                if let workspaceID = command.workspaceID {
+                    result = bridge.sendInput(
+                        workspaceID: workspaceID,
+                        paneId: paneID,
+                        data: data
+                    )
+                } else {
+                    result = bridge.sendInput(paneId: paneID, data: data)
+                }
             case .resize(let resize):
                 switch resize {
                 case .pane(let paneID, let cols, let rows):
@@ -1803,6 +1912,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 } else {
                     result = bridge.setPaneViewport(paneId: paneID, offset: offset)
                 }
+            case .updateRuntime:
+                do {
+                    guard let workspaceID = command.workspaceID else {
+                        throw CoreBridgeDiscoveryError.message("Workspace unavailable")
+                    }
+                    try bridge.startRuntimeUpdate(workspaceID: workspaceID)
+                } catch {
+                    reportStatusError(error.localizedDescription)
+                }
+                result = 0
             case .closeWorkspace:
                 if let workspaceID = command.workspaceID {
                     result = bridge.closeWorkspace(workspaceID: workspaceID)
@@ -2061,6 +2180,34 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         return WorkspaceShortcutIndex.byWorkspaceID(orderedTargetIDs)[targetID]
     }
 
+    private var runtimeUpdateStatuses: [String: CoreBridge.RuntimeUpdateStatus] = [:]
+    private var runtimeUpdatePolling = false
+    private var runtimeUpdateNextPoll = Date.distantPast
+
+    func updateWorkspaceRuntime(_ workspaceID: String) {
+        runtimeUpdatePolling = true
+        runtimeUpdateNextPoll = .distantPast
+        _ = enqueueCoreCommand(QueuedMuxCommand(
+            workspaceID: workspaceID,
+            operation: .updateRuntime,
+            failureMessage: "Runtime update failed"
+        ))
+    }
+
+    private func pollRuntimeUpdates() {
+        guard runtimeUpdatePolling, Date() >= runtimeUpdateNextPoll else { return }
+        runtimeUpdateNextPoll = Date().addingTimeInterval(0.2)
+        let statuses = Dictionary(uniqueKeysWithValues: bridge.runtimeUpdates().map {
+            ($0.workspace_id, $0.status)
+        })
+        guard statuses != runtimeUpdateStatuses else { return }
+        for (id, status) in statuses where status.phase == "failed" && runtimeUpdateStatuses[id] != status {
+            reportStatusError(status.message)
+        }
+        runtimeUpdateStatuses = statuses
+        refreshWorkspaceSidebar(force: true)
+    }
+
     /// 所有真实 Workspace 的只读侧栏输入。聚合模型从这里取源事实；这里
     /// 不会制造 Shells/Agents 假 Workspace。
     func runtimeSidebarItems() -> [WorkspaceSidebarItem] {
@@ -2078,6 +2225,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 runtime: target.runtime.rawValue,
                 transport: target.transport.label,
                 isActive: slot.visibility == .visible,
+                canUpdateRuntime: bridge.runtimeSupports(target.runtime.rawValue, capability: "RuntimeUpdate"),
+                runtimeUpdatePhase: runtimeUpdateStatuses[workspaceID]?.phase,
+                runtimeUpdateMessage: runtimeUpdateStatuses[workspaceID]?.message,
                 structuredAgents: structuredAgents,
                 tabNumberByPane: tabTargets.tabNumbersByPane,
                 tabIdByPane: tabTargets.tabIdsByPane
@@ -2150,6 +2300,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 transport: item.transport,
                 isActive: workspacePresentation == .workspace && item.isActive,
                 shortcut: shortcuts[item.workspaceId],
+                canUpdateRuntime: item.canUpdateRuntime,
+                runtimeUpdatePhase: item.runtimeUpdatePhase,
+                runtimeUpdateMessage: item.runtimeUpdateMessage,
                 structuredAgents: item.structuredAgents,
                 tabNumberByPane: item.tabNumberByPane,
                 tabIdByPane: item.tabIdByPane
@@ -3608,6 +3761,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             if pendingID == nil || workspacePresentation == .connecting(pendingID!) {
                 activate(slot: slot)
             }
+            quickConnectStore.recordAttach(canonical)
             completion(.success(CatalogConnection(bridge: slot.bridge, target: canonical)))
             return
         }
@@ -3641,6 +3795,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                         if shouldActivate {
                             self.activate(slot: existing)
                         }
+                        self.quickConnectStore.recordAttach(canonical)
                         completion(.success(CatalogConnection(
                             bridge: existing.bridge,
                             target: canonical
@@ -3656,6 +3811,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     } else {
                         self.insertHidden(slot: slot)
                     }
+                    self.quickConnectStore.recordAttach(resolved)
                     completion(.success(CatalogConnection(bridge: sharedBridge, target: resolved)))
                 }
             } catch {
@@ -3809,8 +3965,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         bridge.selectWorkspace(slot.workspaceID)
         applyVisibleWorkspaceIdentity(slot)
         terminalManager = slot.terminalManager
+        content.setDisconnected(WorkspaceDisconnectOverlayPolicy.shouldShow(
+            status: slot.backendStatus,
+            usesClientResize: terminalManager.usesClientResize
+        ))
         terminalManager.setBridgeQueriesEnabled(false)
         trafficRateSampler.reset()
+        uploadRateSampler.reset()
         lastSeenLineSeq.removeAll()
         pendingLastSeenPanes.removeAll()
         lastSeenJump = nil
@@ -3993,8 +4154,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             overlayIsKey: overlayOwnsFocus()
         ) else { return }
         guard let window else { return }
-        // Surface 尚未挂进 hierarchy 时，AppKit 的 makeFirstResponder 会
-        // 触发 IMK mach-port 错误。seed 完成走 onSurfaceBecameReady 再抢一次。
+        // 视图挂进窗口即可接键盘；Herdr 首帧或 seed 尚未完成时也要立刻聚焦。
+        // 未挂进 hierarchy 的视图仍由 inWindow 门禁挡住。
         guard TerminalInputFocusPolicy.shouldAttemptFocus(
             surfaceReady: terminalManager.isSurfaceReady(for: paneId),
             inWindow: view.window === window,
@@ -4712,21 +4873,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 self?.createSession(target: target, directory: directory)
             }
         case .ssh(let host):
-            let alert = NSAlert()
-            alert.messageText = MuxtermI18n.shared.tr(.chooseRemoteDirectory)
-            alert.informativeText = MuxtermI18n.shared.tr(
-                .remoteDirectoryMessage,
-                arguments: ["host": host.alias]
-            )
-            let field = NSTextField(string: "~")
-            field.frame = NSRect(x: 0, y: 0, width: 320, height: 24)
-            alert.accessoryView = field
-            alert.addButton(withTitle: MuxtermI18n.shared.tr(.createAndAttach))
-            alert.addButton(withTitle: MuxtermI18n.shared.tr(.cancel))
-            alert.beginSheetModal(for: ownerWindow) { [weak self] response in
-                guard response == .alertFirstButtonReturn else { return }
-                let directory = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !directory.isEmpty else { return }
+            let picker = RemoteDirectoryPickerWindow(alias: host.alias, owner: ownerWindow)
+            picker.onChoose = { [weak self] directory in
                 self?.createSession(target: target, directory: directory)
             }
         }
@@ -4902,14 +5050,20 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private func updateTrafficMonitor() {
         guard !isClosing else { return }
         let summary = terminalManager.connectionSummary
-        let totalBytes = terminalManager.totalBytesReceived
+        let (downBytes, upBytes) = terminalManager.workspaceTrafficBytes()
         content.updateConnectionStatus(
             summary,
             trafficRate: trafficRateSampler.sample(
-                totalBytes: totalBytes,
+                totalBytes: downBytes,
                 now: ProcessInfo.processInfo.systemUptime
             ),
-            totalBytes: totalBytes
+            totalBytes: downBytes,
+            upRate: uploadRateSampler.sample(
+                totalBytes: upBytes,
+                now: ProcessInfo.processInfo.systemUptime
+            ),
+            upBytes: upBytes,
+            ports: terminalManager.workspaceSSHPorts()
         )
     }
 
@@ -5042,6 +5196,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let activeSlot = sceneStack.activeKey.flatMap { sceneStack.scenes[$0] }
         let events = pollSharedWorkspaceEvents(activeSlot: activeSlot)
         applyPolledEvents(events)
+        pollRuntimeUpdates()
     }
 
     /// 更新提醒：Core 推进状态机，这里只取快照并渲染 banner。
@@ -5252,20 +5407,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 needsLightweightUpdate = true
             }
             if ev.isBackendStatus {
-                if ev.paneId == 0 || ev.paneId == 4 {
-                    // 0 = disconnected, 4 = exited。
-                    // tmux/ssh 控制模式：保留最后一帧 + 水印，不关窗（W16b）。
-                    // 本地 shell 的 Exited 仍关窗（session 已结束）。
-                    if terminalManager.usesClientResize {
-                        content.setDisconnected(true)
-                    } else if ev.paneId == 4 {
-                        // Shells 是固定聚合槽；具体 shell 退出只让当前真实
-                        // Workspace 进入空拓扑，下面统一决定补 local 或关闭 remote。
-                        content.setDisconnected(true)
-                    }
-                } else {
-                    content.setDisconnected(false)
-                }
+                sceneStack.activeKey.flatMap { sceneStack.scenes[$0] }?
+                    .cacheBackendStatus(ev.paneId)
+                content.setDisconnected(WorkspaceDisconnectOverlayPolicy.shouldShow(
+                    status: ev.paneId,
+                    usesClientResize: terminalManager.usesClientResize
+                ))
             }
         }
         if needsLayoutReload || uiStateChanged {
@@ -6106,6 +6253,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             return false
         }
         let eventFlags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if event.keyCode == 4,
+           eventFlags.contains(.command),
+           !eventFlags.contains(.shift),
+           !eventFlags.contains(.option),
+           !eventFlags.contains(.control)
+        {
+            content.statusBar.openConnectionDetails()
+            return true
+        }
         let isReturn = event.keyCode == 36 || event.keyCode == 76
         // Cmd-P 统一面板可见时，Tab/Shift+Tab/Esc/Enter/↑↓ 走面板。
         // headless e2e 经 testDispatchKeyEvent 调用 handleKey，事件挂在主

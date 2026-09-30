@@ -137,9 +137,12 @@ Ctrl-L 属于终端输入，不是 UI 的 `vte.reset`。
 `visible_ansi`、`surface_seed_ansi`、`scroll_ansi` **不是** live Surface API。迁移期间若 Index/诊断仍需要，放在 Core 内部并标为临时。
 
 支持 `ServerScroll` 的 Runtime（Herdr）由服务端维护历史 viewport：frontend 将滚轮转成
-`Task::ScrollPane { target, lines }`（正数向上、负数向下），经事件泵提交；Runtime 发送
+`Task::ScrollPane { target, lines, position, modifiers }`（正数向上、负数向下），经事件泵提交；Runtime 发送
 `AttachScroll`，返回的 full/diff frame 仍走原 Surface 流。不能滚动本地空缓冲，也不能把
 `pane.read` 当历史 VT 输出重放。其他 Runtime 保持各自原有的滚动路径。
+鼠标滚轮应将 pane 内 0-based 格子位置和修饰键一并传给 `AttachScroll`；Herdr
+根据子进程的鼠标/备用屏模式决定应用输入还是历史滚动，frontend 的 VT
+`mouseMode` 不能作为 Herdr 滚轮分流依据。
 
 ---
 

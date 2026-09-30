@@ -10,12 +10,16 @@
 pub enum RuntimeCapability {
     /// shutdown/关窗后远端还在，能再 attach。
     PersistDetach,
+    /// 能更新运行时并通过非破坏性交接重新连接。
+    RuntimeUpdate,
     /// 连接前能列出可 open 的候选。
     Discover,
     /// `NewTab` / `SwitchTab` 有意义。
     MultiTab,
     /// `SplitPane` 有意义。
     SplitPane,
+    /// Runtime can zoom one pane and restore its tab layout.
+    PaneZoom,
     /// Runtime 的全部 pane 共享一个 client viewport。
     SharedClientResize,
     /// Runtime 持有终端历史，滚动通过 ScrollPane 返回权威画面。

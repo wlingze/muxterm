@@ -200,8 +200,19 @@ final class ContentView: NSView {
     }
 
     func updateConnectionStatus(_ summary: (type: String, host: String?, status: String),
-                                trafficRate: UInt64, totalBytes: UInt64) {
-        statusBar.updateConnectionStatus(summary, trafficRate: trafficRate, totalBytes: totalBytes)
+                                trafficRate: UInt64, totalBytes: UInt64,
+                                upRate: UInt64? = nil, upBytes: UInt64? = nil,
+                                ports: CoreSSHPortListing = CoreSSHPortListing(
+                                    ports: [], scanPending: false, scanError: nil
+                                )) {
+        statusBar.updateConnectionStatus(
+            summary,
+            trafficRate: trafficRate,
+            totalBytes: totalBytes,
+            upRate: upRate,
+            upBytes: upBytes,
+            portListing: ports
+        )
     }
 
     func refreshLocalization() {

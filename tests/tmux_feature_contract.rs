@@ -12,11 +12,12 @@ use muxterm::test_support::core::protocol::WorkspaceId;
 use muxterm::test_support::core::runtime::tmux::backend::TmuxRuntime;
 use muxterm::test_support::core::workspace::Workspace;
 use support::feature_e2e_contract::*;
-use support::tmux_test_support::{tmux_available, wait_capture_contains};
+use support::tmux_test_support::{tmux_available, tmux_ok, wait_capture_contains};
 
 fn connect_workspace(socket: &str, session: &str) -> (Workspace, tokio::runtime::Runtime) {
     let id = WorkspaceId::new("local", None, session, "tmux", "");
-    let runtime = TmuxRuntime::new_with_attach(Some(socket), session);
+    let mut runtime = TmuxRuntime::new_with_attach(Some(socket), session);
+    runtime.set_client_size(80, 24);
     let mut ws = Workspace::new(id, session.to_string(), Box::new(runtime));
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -59,7 +60,8 @@ fn search_finds_token_painted_before_attach() {
     let (mut ws, rt) = connect_workspace(&fx.socket, &fx.session);
     wait_search_hit(&mut ws, &fx.search_token);
     let hits = ws.search_workspace(&fx.search_token);
-    assert_eq!(hits.len(), 1, "搜索命中应恰好一条: {hits:?}");
+    // /bin/cat can show both the terminal's input echo and cat's own output.
+    assert!(!hits.is_empty(), "搜索必须命中预先写入的 token");
     assert!(
         hits[0].line.contains(&fx.search_token),
         "命中行应含 token: {}",
@@ -78,26 +80,44 @@ fn background_osc133_done_is_attention_signal() {
     let (mut ws, rt) = connect_workspace(&fx.socket, &fx.session);
     wait_search_hit(&mut ws, &fx.bg_token);
     send_background_task_done(&fx.socket, &fx.pane_target(1));
-    send_background_bel(&fx.socket, &fx.pane_target(1));
     let pane = PaneId(fx.panes[1]);
     let deadline = Instant::now() + FEATURE_TIMEOUT;
     let mut saw_done = false;
-    let mut saw_bel = false;
     while Instant::now() < deadline {
         let _ = ws.refresh();
         for sig in ws.take_attention_signals(pane) {
-            match sig {
-                AttentionSignal::CommandDone { .. } => saw_done = true,
-                AttentionSignal::AttentionRequest { .. } => saw_bel = true,
-                _ => {}
+            if matches!(sig, AttentionSignal::CommandDone { .. }) {
+                saw_done = true;
             }
         }
-        if saw_done && saw_bel {
+        if saw_done {
             break;
         }
         std::thread::sleep(Duration::from_millis(50));
     }
     assert!(saw_done, "后台 pane 的 OSC 133 D 必须变成 CommandDone 信号");
+
+    // The OSC fixture respawns the pane and exits. BEL needs a live cat to
+    // echo the control byte, so restore cat before sending it.
+    tmux_ok(
+        &fx.socket,
+        &["respawn-pane", "-k", "-t", &fx.pane_target(1), "/bin/cat"],
+    );
+    send_background_bel(&fx.socket, &fx.pane_target(1));
+    let deadline = Instant::now() + FEATURE_TIMEOUT;
+    let mut saw_bel = false;
+    while Instant::now() < deadline {
+        let _ = ws.refresh();
+        if ws
+            .take_attention_signals(pane)
+            .into_iter()
+            .any(|signal| matches!(signal, AttentionSignal::AttentionRequest { .. }))
+        {
+            saw_bel = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
     assert!(saw_bel, "后台 pane 的 BEL 必须变成 AttentionRequest");
     let _ = rt.block_on(ws.shutdown());
 }

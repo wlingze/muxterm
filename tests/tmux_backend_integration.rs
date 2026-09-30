@@ -3312,7 +3312,39 @@ fn scenario5_wrapped_agent_subscription_reports_full_argv() {
     let _ = model.poll_events();
     let tab = model.state().active_tab().expect("应有 tab").id;
     let pane = model.state().panes(&tab)[0].id;
-    let command = "exec -a node python3 -c 'import time; time.sleep(120)' codex";
+    // macOS tmux 会报告真实可执行文件名 Python，忽略 exec -a 的 argv0。
+    // 编译一个真正叫 node 的短命进程，使两平台走同一条 argv 补全路径。
+    struct FixtureDir(std::path::PathBuf);
+    impl Drop for FixtureDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let fixture = FixtureDir(std::env::temp_dir().join(format!("muxterm-test-node-{socket}")));
+    std::fs::create_dir_all(&fixture.0).expect("创建 node fixture 目录");
+    let source = fixture.0.join("node.rs");
+    let binary = fixture.0.join("node");
+    std::fs::write(
+        &source,
+        "fn main() { std::thread::sleep(std::time::Duration::from_secs(120)); }\n",
+    )
+    .expect("写 node fixture");
+    let compiled = Command::new("rustc")
+        .arg("--edition=2021")
+        .arg(&source)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("编译 node fixture");
+    assert!(
+        compiled.status.success(),
+        "编译 node fixture 失败: {}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+    let command = format!(
+        "exec {} codex",
+        muxterm::test_support::core::discovery::shell_quote(&binary.to_string_lossy())
+    );
     let type_command = Command::new("tmux")
         .args([
             "-L",
@@ -3321,7 +3353,7 @@ fn scenario5_wrapped_agent_subscription_reports_full_argv() {
             "-t",
             &format!("%{}", pane.0),
             "-l",
-            command,
+            &command,
         ])
         .output()
         .expect("输入包装进程命令失败");
@@ -3340,7 +3372,20 @@ fn scenario5_wrapped_agent_subscription_reports_full_argv() {
     assert!(enter.status.success());
     assert!(
         wait_pane_command(&socket, pane, "node", Duration::from_secs(10)),
-        "fixture 必须复现 tmux 只报告 node"
+        "fixture 必须复现 tmux 只报告 node; actual={:?}",
+        Command::new("tmux")
+            .args([
+                "-L",
+                &socket,
+                "display-message",
+                "-p",
+                "-t",
+                &format!("%{}", pane.0),
+                "#{pane_current_command}"
+            ])
+            .output()
+            .ok()
+            .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
     );
 
     let deadline = Instant::now() + Duration::from_secs(10);

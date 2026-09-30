@@ -161,7 +161,7 @@ impl SshTestEnv {
 
     /// 远端 tmux 命令（自动加 -L <socket> 前缀）。
     pub fn remote_tmux(&self, args: &str) -> (bool, String, String) {
-        let cmd = format!("tmux -L {} {}", self.remote_tmux_socket, args);
+        let cmd = remote_tmux_command(&self.remote_tmux_socket, args);
         self.remote_exec(&cmd)
     }
 }
@@ -465,8 +465,15 @@ impl LoopbackSshd {
     }
 
     pub fn remote_tmux(&self, socket: &str, args: &str) -> (bool, String, String) {
-        self.remote_exec(&format!("tmux -L {socket} {args}"))
+        self.remote_exec(&remote_tmux_command(socket, args))
     }
+}
+
+/// 测试 sshd 与产品的 Exec 通道一样，不能假设非交互 shell 包含 Homebrew。
+fn remote_tmux_command(socket: &str, args: &str) -> String {
+    format!(
+        "PATH=\"$HOME/.local/bin:$HOME/.nix-profile/bin:/opt/homebrew/bin:/usr/local/bin:/opt/local/bin:/run/current-system/sw/bin:$PATH\" tmux -L {socket} {args}"
+    )
 }
 
 impl Drop for LoopbackSshd {
@@ -486,4 +493,17 @@ fn dflt_key() -> PathBuf {
         .map(|h| h.join(".ssh").join("id_ed25519"))
         .filter(|p| p.exists())
         .unwrap_or_else(|| PathBuf::from("/dev/null"))
+}
+
+#[cfg(test)]
+mod remote_tmux_command_tests {
+    use super::remote_tmux_command;
+
+    #[test]
+    fn includes_binary_paths_and_isolated_socket() {
+        let cmd = remote_tmux_command("muxterm-test-path", "list-panes");
+        assert!(cmd.starts_with("PATH=\"$HOME/.local/bin:"));
+        assert!(cmd.contains(":/opt/homebrew/bin:"));
+        assert!(cmd.contains(":$PATH\" tmux -L muxterm-test-path list-panes"));
+    }
 }

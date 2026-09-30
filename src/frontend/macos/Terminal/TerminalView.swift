@@ -74,7 +74,42 @@ enum MuxTerminalGridMetrics {
 /// 普通文本保留 SwiftTerm → `interpretKeyEvents` → `insertText` 单路径。
 /// 仅补齐 legacy 修饰方向键编码，避免 AppKit 将其吞成选区操作。
 final class MuxTerminalView: TerminalView {
+    /// 空字符 keyDown（输入法组合键等）仍须经过 interpretKeyEvents；
+    /// SwiftTerm 的 kitty 编码有时会额外发出无意义的 CSI 0 u。
+    private var interpretingEmptyKeyEvent = false
+    private var suppressPlaceholderInsertion = false
+    /// IME 候选窗应锚定到下一个将要输入的字符。光标停在最后一列时，
+    /// 下一字符会软换行；仍返回最后一格会把候选窗挤到 pane 右边缘并裁掉。
+    override func firstRect(
+        forCharacterRange range: NSRange,
+        actualRange: NSRangePointer?
+    ) -> NSRect {
+        actualRange?.pointee = range
+        guard let window else { return .zero }
+
+        var caret = caretFrame
+        let cursor = getTerminal().getCursorLocation()
+        if getTerminal().cols > 0, cursor.x >= getTerminal().cols - 1 {
+            caret.origin.x = 0
+            caret.origin.y = max(0, caret.origin.y - caret.height)
+        }
+        return window.convertToScreen(convert(caret, to: nil))
+    }
+
     override func keyDown(with event: NSEvent) {
+        // 某些中文输入法把组合中的占位键作为 U+FFFF 放在 characters 中。
+        // SwiftTerm 会把它当文本编码成 EF BF BF，zsh 显示成 <ffff> 并污染命令行。
+        // characters 为空时仍交给 AppKit/IME，保持候选与提交事件正常工作。
+        if let characters = event.characters, !characters.isEmpty,
+           characters.unicodeScalars.allSatisfy({ $0.value == 0xffff || $0.value == 0xfffe }) {
+            return
+        }
+        if event.characters?.isEmpty == true {
+            interpretingEmptyKeyEvent = true
+            defer { interpretingEmptyKeyEvent = false }
+            super.keyDown(with: event)
+            return
+        }
         let flags = event.modifierFlags
         if !hasMarkedText(), getTerminal().keyboardEnhancementFlags.isEmpty,
            !flags.contains(.command),
@@ -97,6 +132,33 @@ final class MuxTerminalView: TerminalView {
         super.keyDown(with: event)
     }
 
+    override func insertText(_ string: Any, replacementRange: NSRange) {
+        let text: String
+        switch string {
+        case let plain as String:
+            text = plain
+        case let attributed as NSAttributedString:
+            text = attributed.string
+        default:
+            super.insertText(string, replacementRange: replacementRange)
+            return
+        }
+        let cleaned = text.unicodeScalars.reduce(into: "") { result, scalar in
+            if scalar.value != 0xffff && scalar.value != 0xfffe {
+                result.append(String(scalar))
+            }
+        }
+        if cleaned == text {
+            super.insertText(string, replacementRange: replacementRange)
+            return
+        }
+        // Let SwiftTerm clear its pending IME/kitty state, but discard any
+        // synthetic key event it emits for a placeholder-only commit.
+        suppressPlaceholderInsertion = cleaned.isEmpty
+        defer { suppressPlaceholderInsertion = false }
+        super.insertText(cleaned, replacementRange: replacementRange)
+    }
+
     /// 对应 muxterm pane id。
     let paneId: UInt32
     private var fontFamily: String
@@ -109,6 +171,10 @@ final class MuxTerminalView: TerminalView {
     private var encodingClipboardImage = false
     /// 服务端维护 viewport 的 runtime 通过任务接收滚轮，不滚动本地缓冲。
     var onServerScroll: ((Int) -> Void)?
+    var onServerScrollAt: ((Int, UInt16, UInt16, UInt8) -> Void)?
+    /// Tests and embedding frontends can observe an opened terminal URL without
+    /// launching an external browser. Production falls back to NSWorkspace.
+    var onOpenLink: ((URL) -> Void)?
     private var serverScrollRemainder: CGFloat = 0
     /// 原生 SwiftTerm scrollback 位置变化；TerminalManager 将其镜像到 core。
     var onScrollPositionChanged: ((UInt32, Double, Bool) -> Void)?
@@ -360,7 +426,7 @@ final class MuxTerminalView: TerminalView {
             mouseReporting: getTerminal().mouseMode != .off,
             shiftBypassesMouse: event.modifierFlags.contains(.shift),
             alternateScreen: getTerminal().isCurrentBufferAlternate,
-            hasServerScroll: onServerScroll != nil
+            hasServerScroll: onServerScroll != nil || onServerScrollAt != nil
         )
         switch route {
         case .applicationMouse:
@@ -377,7 +443,16 @@ final class MuxTerminalView: TerminalView {
                 serverScrollRemainder -= CGFloat(lines)
                 // ScrollPane 在 Core 内按需切焦点；每个滚轮都另发 SwitchPane
                 // 会同步等待 SSH pane.focus，把连续滚动降到网络往返速度。
-                onServerScroll?(lines)
+                if let onServerScrollAt {
+                    let (column, row) = mouseCellPosition(for: event)
+                    var modifiers: UInt8 = 0
+                    if event.modifierFlags.contains(.shift) { modifiers |= 1 }
+                    if event.modifierFlags.contains(.control) { modifiers |= 2 }
+                    if event.modifierFlags.contains(.option) { modifiers |= 4 }
+                    onServerScrollAt(lines, UInt16(column), UInt16(row), modifiers)
+                } else {
+                    onServerScroll?(lines)
+                }
             }
         case .localHistory:
             lastScrollWheelRoutedToRuntime = false
@@ -424,13 +499,9 @@ final class MuxTerminalView: TerminalView {
         guard let cell = terminalCellSizeInPoints(), cell.width > 0, cell.height > 0 else {
             return
         }
-        let term = getTerminal()
-        let point = convert(event.locationInWindow, from: nil)
-        let col = min(max(Int(point.x / cell.width), 0), max(term.cols, 1) - 1) + 1
-        let row = min(
-            max(Int((bounds.height - point.y) / cell.height), 0),
-            max(term.rows, 1) - 1
-        ) + 1
+        let (column, screenRow) = mouseCellPosition(for: event)
+        let col = column + 1
+        let row = screenRow + 1
         let button = lines > 0 ? 64 : 65
         let one = Array("\u{1b}[<\(button);\(col);\(row)M".utf8)
         var payload = [UInt8]()
@@ -441,6 +512,18 @@ final class MuxTerminalView: TerminalView {
         withUserMouseReporting {
             inputHandler?.terminal(self, send: payload[...])
         }
+    }
+
+    private func mouseCellPosition(for event: NSEvent) -> (Int, Int) {
+        let term = getTerminal()
+        guard let cell = terminalCellSizeInPoints(), cell.width > 0, cell.height > 0 else {
+            return (0, 0)
+        }
+        let point = convert(event.locationInWindow, from: nil)
+        return (
+            min(max(Int(point.x / cell.width), 0), max(term.cols, 1) - 1),
+            min(max(Int((bounds.height - point.y) / cell.height), 0), max(term.rows, 1) - 1)
+        )
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -1217,6 +1300,10 @@ extension MuxTerminalView: TerminalViewDelegate {
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
 
     func send(source: TerminalView, data: ArraySlice<UInt8>) {
+        if suppressPlaceholderInsertion { return }
+        if interpretingEmptyKeyEvent, data.elementsEqual([0x1b, 0x5b, 0x30, 0x75]) {
+            return
+        }
         inputHandler?.terminal(self, send: data)
     }
 
@@ -1230,7 +1317,10 @@ extension MuxTerminalView: TerminalViewDelegate {
     }
 
     func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {
-        if let url = URL(string: link) {
+        guard let url = URL(string: link) else { return }
+        if let onOpenLink {
+            onOpenLink(url)
+        } else {
             NSWorkspace.shared.open(url)
         }
     }

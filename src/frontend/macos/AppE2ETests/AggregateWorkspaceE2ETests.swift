@@ -4,6 +4,120 @@ import XCTest
 import MuxtermChrome
 
 final class AggregateWorkspaceE2ETests: XCTestCase {
+    func testDesktopShellTypingKeepsSingleUtf8CommandLine() throws {
+        AppE2E.ensureApp()
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("muxterm-test-desktop-shell-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try "unsetopt rcs\nPROMPT='MUXINPUT> '\nRPROMPT=''\n".write(
+            to: directory.appendingPathComponent(".zshenv"), atomically: true, encoding: .utf8)
+        let keys = ["TERM", "LANG", "LC_ALL", "LC_CTYPE", "SHELL", "ZDOTDIR"]
+        let previous = keys.map { key in getenv(key).map { String(cString: $0) } }
+        defer {
+            for (key, value) in zip(keys, previous) {
+                if let value { setenv(key, value, 1) } else { unsetenv(key) }
+            }
+            try? FileManager.default.removeItem(at: directory)
+        }
+        for key in keys { unsetenv(key) }
+        setenv("SHELL", "/bin/zsh", 1)
+        setenv("ZDOTDIR", directory.path, 1)
+
+        let bridge = try CoreBridge(backendType: "local")
+        let app = MainWindowController(bridge: bridge, debug: true)
+        defer { app.testShutdown() }
+        app.window?.setFrame(AppE2E.fixedWindowFrame(width: 960, height: 640), display: true)
+        app.window?.orderFront(nil)
+        XCTAssertTrue(app.waitReady())
+        XCTAssertTrue(app.waitTerminalContains("MUXINPUT>", timeout: 5))
+        for text in ["l", "s"] {
+            app.testSendInput(Data(text.utf8))
+            AppE2E.pump(100)
+            app.testPollOnce()
+            app.testFlushFeeds()
+        }
+        let ascii = app.testActivePaneTerminalText()
+        XCTAssertTrue(ascii.contains("MUXINPUT> ls"), ascii)
+        XCTAssertFalse(ascii.contains("lsls"), ascii)
+        app.testSendInput(Data([0x15]))
+        app.testSendInput(Data("ls".utf8))
+        AppE2E.pump(100)
+        app.testPollOnce()
+        app.testFlushFeeds()
+        let redrawn = app.testActivePaneTerminalText()
+        XCTAssertTrue(redrawn.contains("MUXINPUT> ls"), redrawn)
+        XCTAssertEqual(redrawn.components(separatedBy: "ls").count - 1, 1, redrawn)
+        app.testSendInput(Data([0x15]))
+        app.testSendInput(Data("中文测试".utf8))
+        XCTAssertTrue(app.waitTerminalContains("MUXINPUT> 中文测试", timeout: 3),
+                      app.testActivePaneTerminalText())
+    }
+
+    func testLocalShellStillPaintsCommandOutputAfterWorkspaceRoundTrip() throws {
+        let tmux = OnePaneCat(label: "shell-output-round-trip")
+        AppE2E.ensureApp()
+        let bridge = try CoreBridge(backendType: "local")
+        let app = MainWindowController(bridge: bridge, debug: true)
+        defer { app.testShutdown() }
+        app.window?.setFrame(AppE2E.fixedWindowFrame(width: 960, height: 640), display: true)
+        app.window?.orderFront(nil)
+        XCTAssertTrue(app.waitReady())
+
+        app.testNewTab()
+        XCTAssertTrue(AppE2E.wait(timeout: AppE2E.attachTimeout) {
+            app.testPollOnce()
+            return app.testPresentedTabIDs().count == 2
+        })
+        let shellPane = app.testActivePaneID()
+        app.testAttachExistingConnection(ExistingConnectionChoice(
+            target: .local,
+            session: TmuxSessionInfo(name: tmux.session, windowCount: 1, attached: false),
+            socket: tmux.socket
+        ))
+        XCTAssertTrue(AppE2E.wait(timeout: AppE2E.featureTimeout) {
+            app.testPollOnce()
+            return app.testActiveWorkspaceSession() == tmux.session
+                && app.testAllVisibleTerminalText().contains(tmux.token)
+        })
+
+        app.testSelectSidebarWorkspace(AggregateWorkspaceIdentity.shells)
+        XCTAssertTrue(AppE2E.wait(timeout: AppE2E.featureTimeout) {
+            app.testPollOnce()
+            return app.testSelectedSidebarWorkspaceID() == AggregateWorkspaceIdentity.shells
+        })
+        app.testSwitchTab(2)
+        XCTAssertTrue(AppE2E.wait(timeout: AppE2E.featureTimeout) {
+            app.testPollOnce()
+            return app.testActivePaneID() == shellPane
+        })
+        let token = "LOCAL_SHELL_OUTPUT_\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
+        app.testSendInput(Data("printf '%s\\n' \(token)\r".utf8))
+        XCTAssertTrue(AppE2E.wait(timeout: AppE2E.featureTimeout) {
+            app.testPollOnce()
+            app.testFlushFeeds()
+            return app.testActivePaneTerminalText().contains(token)
+        }, "local shell output must reach its visible surface after switching workspaces; "
+            + "pane=\(shellPane) text=\(app.testActivePaneTerminalText().suffix(400))")
+    }
+
+    func testLastLocalPaneExitCreatesShellAndClearsDisconnectOverlay() throws {
+        AppE2E.ensureApp()
+        let bridge = try CoreBridge(backendType: "local")
+        let app = MainWindowController(bridge: bridge, debug: true)
+        defer { app.testShutdown() }
+        app.showWindow(nil)
+        XCTAssertTrue(app.waitReady())
+
+        let oldPane = app.testActivePaneID()
+        app.testCloseActivePane()
+        XCTAssertTrue(AppE2E.wait(timeout: AppE2E.featureTimeout) {
+            app.testPollOnce()
+            return app.testActivePaneID() != oldPane
+                && app.testPresentedTabIDs().count == 1
+                && !app.testDisconnectOverlayVisible()
+        }, "最后一个本地 pane 退出后必须立即补建 shell，且不能留下断线水印")
+    }
+
     func testColdStartIsShellsAndCmdCtrlSReturnsToFirstLocalTab() throws {
         let project = OnePaneCat(label: "aggregate-shell-project")
         AppE2E.ensureApp()

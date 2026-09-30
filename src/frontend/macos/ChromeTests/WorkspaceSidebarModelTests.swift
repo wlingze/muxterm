@@ -96,7 +96,7 @@ final class WorkspaceSidebarModelTests: XCTestCase {
         XCTAssertNil(WorkspaceShortcutIndex.byWorkspaceID(ids)["ten"])
     }
 
-    func testCmdCtrlZeroSwitchesLastWorkspaceAndCmdZeroResetsFont() {
+    func testCmdCtrlZeroSwitchesLastWorkspaceAndCmdZeroSwitchesLastTab() {
         XCTAssertEqual(
             KeyBindings.action(for: KeyChord(command: true, control: true, key: "0")),
             .switchWorkspace(0)
@@ -107,6 +107,10 @@ final class WorkspaceSidebarModelTests: XCTestCase {
         )
         XCTAssertEqual(
             KeyBindings.action(for: KeyChord(command: true, key: "0")),
+            .switchLastTab
+        )
+        XCTAssertEqual(
+            KeyBindings.action(for: KeyChord(control: true, key: "0")),
             .resetFontSize
         )
     }

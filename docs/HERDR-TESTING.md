@@ -374,8 +374,18 @@ Rust/Herdr 不得使用 `stable` 或偶然预装版本作为 required gate 的�
   [`tmux` formula](https://github.com/Homebrew/homebrew-core/blob/HEAD/Formula/t/tmux.rb)
   负责取得对应平台的 bottle；
 - Herdr 0.8.0：[`herdrdev/herdr` release v0.8.0](https://github.com/herdrdev/herdr/releases/tag/v0.8.0)；
-- Herdr socket 语义：官方 [Socket API](https://herdr.dev/docs/socket-api/)；本分支和本机
-  `herdr 0.8.0` 的 wire contract 固定为 protocol 19。
+- Herdr socket 语义：官方 [Socket API](https://herdr.dev/docs/socket-api/)；required CI
+  夹具固定为 `herdr 0.8.0` / protocol 19。Muxterm 运行时还按 snapshot 协议号选择
+  0.8.2 / protocol 20 或 0.9.0–0.9.1 / protocol 22 的独立编码器，未知协议明确报错。
+
+新版协议依据官方 [v0.8.2 wire](https://github.com/herdrdev/herdr/blob/v0.8.2/src/protocol/wire.rs)
+和 [v0.9.1 wire](https://github.com/herdrdev/herdr/blob/v0.9.1/src/protocol/wire.rs)，
+于 `2026-09-29T10:32:52+08:00` 核验。可选真实 named-session 契约用
+`MUXTERM_TEST_HERDR_V20_BINARY` / `MUXTERM_TEST_HERDR_V22_BINARY` 指向相应版本二进制，
+运行 `cargo test --no-default-features --features tui,test-harness --test herdr_protocol_compat`。
+其中 protocol 19/20/22 均验证切 Tab 后立即输入；protocol 22 还验证直连
+mouse capture、点击、悬停和滚轮。Core CI 会另外下载并校验 0.8.2 / 0.9.1
+官方 Linux 二进制，强制执行这组契约。
 
 `~/Developer/terminal/herdr` 当前 HEAD 已是 protocol 20，不能作为 protocol-19 wire
 字节布局的直接 fixture；它只用于概念对照。测试必须同时断言 Hello/Welcome 的 exact
@@ -554,3 +564,18 @@ stream transition、topology 和 Surface 诊断。
 每个状态转换一个 L0 contract；每个 registry cell 一个 canonical workflow；真实 GTK 只保留
 attach/reattach 两条生产入口；只有新增 ordering、generation 或 payload invariant 才增加
 regression，不做完整操作笛卡尔积。
+
+## 桌面启动与中文回显回归（2026-09-29）
+
+- Shell：`AggregateWorkspaceE2ETests.testDesktopShellTypingKeepsSingleUtf8CommandLine`
+  清空 `TERM/LANG/LC_ALL/LC_CTYPE`，通过 AppKit → Core → 真实 zsh PTY → SwiftTerm
+  验证 `ls`、Ctrl-U 重绘和中文。修复前出现中文转义和旧命令残影，修复后通过。
+- Herdr：`herdr_locale_contract` 以 `LANG/LC_ALL/LC_CTYPE=C` 启动隔离 named server，
+  经 local 和隔离 loopback SSH 分别创建 workspace、tab、split；通过 `Task::WriteRaw`
+  输入中文，并断言真实服务端 shell 回显。修复前本地 workspace 回显 `<00ad>` 等转义；
+  修复后六条创建路径通过。测试纳入 `scripts/test.sh run core`。
+- UTF-8 locale 从目标 `locale -a` 选择，成功缓存，失败允许下次创建重试。
+  本地与 SSH 都显式设置新 Herdr pane 的环境，不能依赖长驻 server 的启动环境。
+- 此测试不证明旧 shell 已修复：attach 不会重新创建 shell，旧进程仍保留原 locale。
+  对旧 pane 的恢复需要用户选择新建终端或自行调整 shell；客户端不能擅自注入命令、
+  结束任务或重启用户 server。也不能据此声称所有 `<ffffffff>` 现象已被复现。

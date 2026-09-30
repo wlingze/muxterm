@@ -64,8 +64,12 @@ run_core() {
         --test tui_integration \
         --test herdr_session_contract \
         --test herdr_feature_contract \
+        --test herdr_locale_contract \
+        --test herdr_runtime_update \
+        --test tmux_locale_contract \
         --test herdr_authority_contract \
         --test herdr_stability_contract \
+        --test herdr_protocol_compat \
         --test herdr_multi_workspace_contract \
         --test herdr_worktree_contract \
         --test existing_ssh_contract \
@@ -83,10 +87,6 @@ run_core() {
         --test ssh_transport_unit \
         --test four_mode_integration \
         -- --test-threads="$THREADS"
-
-    # four-mode SSH 两个 case 是 #[ignore]（需 sshd）。
-    cargo test --no-default-features --features ffi,test-harness \
-        --test four_mode_integration -- --ignored --test-threads="$THREADS"
 }
 
 run_linux() {

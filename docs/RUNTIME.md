@@ -248,10 +248,44 @@ adapter 必须保留上一份有效 geometry；`PaneInfo` 不得看到 0×0。�
 
 **pane 上 tmux 与 Herdr 互斥。** 接 Herdr 不是把身份租出去。tmux 路径上的 OSC/BEL 必须继续自己活。
 
-远程 Herdr：Transport `ssh` + Runtime `herdr`。打开不要 `herdr --remote`（会在远端装/启 server）：
-把远端 `herdr.sock` 转发到本机。没在跑就跳过，不要替用户启动。
+远程 Herdr：Transport `ssh` + Runtime `herdr`。AttachOnly 只连接已运行的 namespace。
+用户明确选择 CreateIfMissing 时，如果指定 namespace 尚未运行，Core 通过 SSH 启动
+headless `herdr --session <name> server`，等待 socket 就绪后再发现或创建 workspace；没有
+指定 namespace 且远端没有任何 Herdr session 时使用 default。不要使用 `herdr --remote`，
+它负责远端安装/更新流程，不属于 Muxterm 的 SSH attach 路径。命令细节见
+[Herdr CLI reference](https://herdr.dev/docs/cli-reference/)（核对时间：2026-09-24 10:49:09 +08:00）。
 
 Herdr workspace id 不再复用项目 `path`。生成五段 `WorkspaceId` 时第五段优先 `workspace_id`。
+
+#### Workspace 中更新 Runtime
+
+GUI 根据 `support(RuntimeUpdate)` 显示 workspace 行的更新图标，经 C FFI 启动 Core
+后台任务并读取阶段、版本和错误。安装与连接状态由 Runtime 持有；前端只负责按钮和提示。
+
+Herdr 的流程：检查所选 server 的 `live_handoff` 能力 → 在同一 TargetConnection 独立运行
+`herdr update`（清除 `HERDR_ENV`/`HERDR_SESSION`，stdin 为 `/dev/null`）→ 读取新二进制的
+`--version` 和 `api schema --json` → 对所选 namespace 调用 `server.live_handoff`，传入
+`import_exe`、`expected_version`、`expected_protocol` → 读取权威 snapshot → 重开 pane/event
+流。同一 server 的已打开 Workspace 一起重连，保留 tab/pane id、shell 进程和旧 Surface；
+所有已启动 pane 都收到新 full baseline 后才报告完成。新打开的 Workspace 使用 connect
+时的新快照，不重放历史更新快照。同一 target 同时只允许一个安装任务。
+
+接管连接提前断开时以新 server 的 snapshot 验证结果。安装失败、缺少热交接能力、包管理器
+安装或新二进制的 wire 格式尚不支持时报告原因，保留原 server；不调用 stop，不向 pane
+注入更新命令。直接安装使用 Herdr 当前配置的更新频道；Homebrew/mise/Nix 由官方 CLI 返回
+对应更新指引。本功能不改变已有 shell 的环境，UTF-8 初始化只作用于新创建的 pane。
+
+核对来源：[Herdr installation/update](https://herdr.dev/docs/install/#update)、
+[CLI reference](https://herdr.dev/docs/cli-reference/)、
+[v0.9.1 API schema command](https://github.com/herdrdev/herdr/blob/v0.9.1/src/cli/api.rs)、
+[v0.9.1 live handoff parameters](https://github.com/herdrdev/herdr/blob/v0.9.1/src/api/schema/server.rs)。
+文档核对时间：`2026-09-30T10:53:30+08:00`；源码核对时间：`2026-09-30T10:58:52+08:00`。
+隔离 named session 的 local/loopback SSH 回归见 `tests/herdr_runtime_update.rs`；下载步骤
+使用测试通道，真实执行 socket handoff/重连，绝不替换开发机 Herdr 安装。
+指定 `MUXTERM_TEST_HERDR_UPDATE_BINARY=/absolute/path/herdr` 可运行跨版本交接。
+本机已验证官方 [v0.9.1](https://github.com/herdrdev/herdr/releases/tag/v0.9.1) 从
+0.8.0/protocol 19 到 0.9.1/protocol 22 的 local/loopback SSH 交接；二进制 SHA-256 与
+官方 asset digest 一致。发布元数据核对时间：`2026-09-30T11:33:50+08:00`。
 
 ### 6.3 Shell
 
@@ -329,3 +363,20 @@ Herdr 用 named session `muxterm-test-*`。
 - 复合 `RuntimeMode`；`WorkspaceSpec::build_runtime()` 字符串工厂作为产品路径
 - 改 live 像素契约；`visible_ansi` 进 Surface
 - 对用户默认 tmux `kill-server`；对 Herdr `herdr server stop`
+
+## 11. 终端环境与 attach
+
+Muxterm 在目标机器探测实际安装的 UTF-8 locale，不假定 SSH 目标有 `en_US.UTF-8`。
+Shell 的 PTY 与 tmux 控制客户端同时设置终端能力；Herdr 的新 workspace/tab/split 显式
+传入 locale。tmux 的 new-session 使用 `-e` 保证第一个 pane 正确；attach 后经同一条
+命令队列设置所选 session 的 `LANG/LC_CTYPE/LC_ALL` 和 `COLORTERM`，让后续 pane
+继承。不会修改 tmux 全局环境，也不会覆盖 tmux 自己管理的 pane `TERM`。
+
+attach 不能修改已经运行的 shell 的环境。恢复旧 shell 需要用户在 shell 提示符内调整
+locale 或新建 pane；客户端不以发送 `export` 文本的方式假装设置进程环境。
+`tests/tmux_locale_contract.rs` 验证本地/隔离 SSH attach、后续 pane、新 session 首个 pane，
+以及其他 session 和全局环境不变；Herdr 的六条创建路径见 `herdr_locale_contract.rs`。
+
+依据：tmux 官方 [GLOBAL AND SESSION ENVIRONMENT](https://github.com/tmux/tmux/blob/master/tmux.1)
+和 Herdr [pane API schema](https://github.com/herdrdev/herdr/blob/v0.9.1/src/api/schema/panes.rs)。
+核验时间：2026-09-29 17:04:15 +08:00。

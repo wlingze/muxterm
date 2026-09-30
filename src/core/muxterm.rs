@@ -5,7 +5,7 @@
 //! is no longer the owner of a single runtime: it owns Catalog, Projects,
 //! WorkspacePool and Activity-facing attention state together.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::ffi::{c_char, CString};
 use std::ptr;
 use std::sync::Arc;
@@ -30,6 +30,7 @@ use crate::activity::record::ActivityEvent;
 use crate::protocol::ffi::callbacks::FfiCallbacks;
 use crate::protocol::ffi::types::CLayoutNode;
 use crate::transport::registry::{ConnectionRegistry, TransportRegistry};
+use crate::transport::TcpPortForward;
 
 type PendingAttentionUpdate = (
     u32,
@@ -53,6 +54,13 @@ type PendingCommandActivity = (u32, Option<String>, CommandActivityPhase);
 /// The fields remain crate-visible while the FFI function modules are being
 /// migrated to service methods.  Frontends never receive this Rust object;
 /// they use the public FFI facade and its safe client wrapper.
+type PendingSshPortForward = std::sync::mpsc::Receiver<Result<Box<dyn TcpPortForward>, String>>;
+
+pub(crate) enum SshPortScanEvent {
+    BrowserHost(Result<String, String>),
+    Ports(Result<Vec<u16>, String>),
+}
+
 pub struct Muxterm {
     /// Catalog: provider/discovery/resolution services.
     pub(crate) catalog: crate::catalog::Catalog,
@@ -69,6 +77,19 @@ pub struct Muxterm {
     /// The product root owns the live runtime instances and the reusable
     /// target connections used to construct them.
     pub(crate) pool: WorkspacePool,
+    /// User-requested SSH forwards, scoped to the Workspace that started them.
+    pub(crate) ssh_port_forwards:
+        HashMap<(crate::protocol::WorkspaceId, u16), Box<dyn TcpPortForward>>,
+    /// SSH process startup runs away from the UI/FFI owner thread.
+    pub(crate) pending_ssh_port_forwards:
+        HashMap<(crate::protocol::WorkspaceId, u16), PendingSshPortForward>,
+    pub(crate) ssh_port_forward_errors: HashMap<(crate::protocol::WorkspaceId, u16), String>,
+    /// Remote listening ports loaded on demand for the SSH port picker.
+    pub(crate) ssh_machine_ports: HashMap<crate::protocol::WorkspaceId, BTreeSet<u16>>,
+    pub(crate) ssh_browser_hosts: HashMap<crate::protocol::WorkspaceId, Result<String, String>>,
+    pub(crate) pending_ssh_port_scans:
+        HashMap<crate::protocol::WorkspaceId, std::sync::mpsc::Receiver<SshPortScanEvent>>,
+    pub(crate) ssh_port_scan_errors: HashMap<crate::protocol::WorkspaceId, String>,
     /// Core-owned Project records projected from the same SettingsService.
     pub(crate) projects: ProjectsService,
     /// Synchronous executor used by the C ABI boundary.
@@ -93,6 +114,25 @@ pub struct Muxterm {
     pub(crate) pending_image_paste: Option<crate::clipboard::PendingImagePaste>,
     /// 客户端自更新：检查发布、下载校验、一键安装。
     pub(crate) updater: crate::update::UpdateService,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub(crate) struct SshPortSnapshot {
+    pub remote_port: u16,
+    pub local_port: Option<u16>,
+    pub lan_access_enabled: bool,
+    pub pending: bool,
+    pub error: Option<String>,
+    pub discovered: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub(crate) struct SshPortListing {
+    pub ports: Vec<SshPortSnapshot>,
+    pub scan_pending: bool,
+    pub scan_error: Option<String>,
+    pub remote_host: Option<String>,
+    pub remote_host_error: Option<String>,
 }
 
 impl Muxterm {
@@ -378,6 +418,305 @@ impl Muxterm {
 
     pub(crate) fn active_workspace_mut(&mut self) -> Option<&mut Workspace> {
         self.pool_mut().active_mut()
+    }
+
+    /// Start a forward for a port previously detected in this SSH Workspace.
+    /// The OpenSSH process is started on a worker thread so the frontend event
+    /// pump never waits for authentication or local bind retries.
+    pub(crate) fn forward_ssh_port(
+        &mut self,
+        workspace_id: &crate::protocol::WorkspaceId,
+        remote_port: u16,
+        allow_lan: bool,
+    ) -> anyhow::Result<()> {
+        let key = (workspace_id.clone(), remote_port);
+        self.poll_ssh_port_forwards(workspace_id);
+        if self
+            .ssh_port_forwards
+            .get(&key)
+            .is_some_and(|forward| forward.lan_access_enabled() == allow_lan)
+            || self.pending_ssh_port_forwards.contains_key(&key)
+        {
+            return Ok(());
+        }
+        // Changing the bind scope replaces the old listener before starting
+        // the new SSH process, so a port is never exposed in both modes.
+        self.ssh_port_forwards.remove(&key);
+
+        let (alias, discovered_in_workspace) = {
+            let workspace = self
+                .pool
+                .get(workspace_id)
+                .ok_or_else(|| anyhow::anyhow!("workspace does not exist"))?;
+            if workspace_id.transport != "ssh" {
+                anyhow::bail!("SSH application port forwarding is unavailable for this workspace");
+            }
+            let alias = workspace
+                .resolved_target()
+                .and_then(|resolved| resolved.spec.alias.clone())
+                .or_else(|| workspace_id.alias.clone())
+                .ok_or_else(|| anyhow::anyhow!("SSH workspace has no host alias"))?;
+            (alias, workspace.ssh_ports().contains(&remote_port))
+        };
+        let machine_port = self
+            .ssh_machine_ports
+            .get(workspace_id)
+            .is_some_and(|ports| ports.contains(&remote_port));
+        anyhow::ensure!(
+            discovered_in_workspace || machine_port,
+            "remote port {remote_port} was not found on this SSH target"
+        );
+        let connection = self
+            .connections
+            .get("ssh", &alias)
+            .ok_or_else(|| anyhow::anyhow!("SSH target connection is unavailable"))?;
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .name(format!("muxterm-ssh-forward-{remote_port}"))
+            .spawn(move || {
+                let result = connection
+                    .open_tcp_forward_with_access(remote_port, allow_lan)
+                    .map_err(|error| error.to_string());
+                let _ = sender.send(result);
+            })?;
+        self.ssh_port_forward_errors.remove(&key);
+        self.pending_ssh_port_forwards.insert(key, receiver);
+        Ok(())
+    }
+
+    /// Refresh the SSH target's TCP listeners away from the frontend thread.
+    pub(crate) fn refresh_ssh_ports(
+        &mut self,
+        workspace_id: &crate::protocol::WorkspaceId,
+    ) -> anyhow::Result<()> {
+        self.poll_ssh_port_scans(workspace_id);
+        if self.pending_ssh_port_scans.contains_key(workspace_id)
+            || self.ssh_machine_ports.contains_key(workspace_id)
+            || self.ssh_port_scan_errors.contains_key(workspace_id)
+        {
+            return Ok(());
+        }
+
+        let alias = {
+            let workspace = self
+                .pool
+                .get(workspace_id)
+                .ok_or_else(|| anyhow::anyhow!("workspace does not exist"))?;
+            if workspace_id.transport != "ssh" {
+                anyhow::bail!("SSH port listing is unavailable for this workspace");
+            }
+            workspace
+                .resolved_target()
+                .and_then(|resolved| resolved.spec.alias.clone())
+                .or_else(|| workspace_id.alias.clone())
+                .ok_or_else(|| anyhow::anyhow!("SSH workspace has no host alias"))?
+        };
+        let connection = self
+            .connections
+            .get("ssh", &alias)
+            .ok_or_else(|| anyhow::anyhow!("SSH target connection is unavailable"))?;
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .name("muxterm-ssh-port-scan".into())
+            .spawn(move || {
+                let host = connection
+                    .tcp_browser_host()
+                    .map_err(|error| error.to_string());
+                if sender.send(SshPortScanEvent::BrowserHost(host)).is_err() {
+                    return;
+                }
+                let result = connection
+                    .list_tcp_listener_ports()
+                    .map_err(|error| error.to_string());
+                let _ = sender.send(SshPortScanEvent::Ports(result));
+            })?;
+        self.ssh_port_scan_errors.remove(workspace_id);
+        self.pending_ssh_port_scans
+            .insert(workspace_id.clone(), receiver);
+        Ok(())
+    }
+
+    /// Return workspace-advertised and machine-listened ports with forwarding state.
+    pub(crate) fn ssh_port_snapshot(
+        &mut self,
+        workspace_id: &crate::protocol::WorkspaceId,
+    ) -> anyhow::Result<SshPortListing> {
+        self.poll_ssh_port_scans(workspace_id);
+        self.poll_ssh_port_forwards(workspace_id);
+        let (discovered, ignored) = {
+            let workspace = self
+                .pool
+                .get(workspace_id)
+                .ok_or_else(|| anyhow::anyhow!("workspace does not exist"))?;
+            let discovered: BTreeSet<_> = workspace.ssh_ports().into_iter().collect();
+            let ignored = self
+                .ssh_machine_ports
+                .get(workspace_id)
+                .into_iter()
+                .flatten()
+                .filter(|port| workspace.is_ssh_port_ignored(**port))
+                .copied()
+                .collect::<BTreeSet<_>>();
+            (discovered, ignored)
+        };
+        let mut ports = discovered.clone();
+        if let Some(machine_ports) = self.ssh_machine_ports.get(workspace_id) {
+            ports.extend(machine_ports.difference(&ignored).copied());
+        }
+        for (id, remote_port) in self
+            .ssh_port_forwards
+            .keys()
+            .chain(self.pending_ssh_port_forwards.keys())
+        {
+            if id == workspace_id {
+                ports.insert(*remote_port);
+            }
+        }
+        let ports = ports
+            .into_iter()
+            .map(|remote_port| {
+                let key = (workspace_id.clone(), remote_port);
+                SshPortSnapshot {
+                    remote_port,
+                    local_port: self
+                        .ssh_port_forwards
+                        .get(&key)
+                        .map(|forward| forward.local_port()),
+                    lan_access_enabled: self
+                        .ssh_port_forwards
+                        .get(&key)
+                        .is_some_and(|forward| forward.lan_access_enabled()),
+                    pending: self.pending_ssh_port_forwards.contains_key(&key),
+                    error: self.ssh_port_forward_errors.get(&key).cloned(),
+                    discovered: discovered.contains(&remote_port),
+                }
+            })
+            .collect();
+        Ok(SshPortListing {
+            ports,
+            scan_pending: self.pending_ssh_port_scans.contains_key(workspace_id),
+            scan_error: self.ssh_port_scan_errors.get(workspace_id).cloned(),
+            remote_host: self
+                .ssh_browser_hosts
+                .get(workspace_id)
+                .and_then(|host| host.as_ref().ok())
+                .cloned(),
+            remote_host_error: self
+                .ssh_browser_hosts
+                .get(workspace_id)
+                .and_then(|host| host.as_ref().err())
+                .cloned(),
+        })
+    }
+
+    pub(crate) fn ignore_ssh_port(
+        &mut self,
+        workspace_id: &crate::protocol::WorkspaceId,
+        remote_port: u16,
+    ) -> bool {
+        let ignored = self
+            .pool
+            .get_mut(workspace_id)
+            .is_some_and(|workspace| workspace.ignore_ssh_port(remote_port));
+        if ignored {
+            self.stop_ssh_port_forward(workspace_id, remote_port);
+        }
+        ignored
+    }
+
+    pub(crate) fn stop_ssh_port_forward(
+        &mut self,
+        workspace_id: &crate::protocol::WorkspaceId,
+        remote_port: u16,
+    ) -> bool {
+        let key = (workspace_id.clone(), remote_port);
+        self.ssh_port_forward_errors.remove(&key);
+        self.pending_ssh_port_forwards.remove(&key);
+        self.ssh_port_forwards.remove(&key).is_some()
+    }
+
+    pub(crate) fn close_workspace(&mut self, workspace_id: &crate::protocol::WorkspaceId) -> bool {
+        self.ssh_port_forwards
+            .retain(|(id, _), _| id != workspace_id);
+        self.pending_ssh_port_forwards
+            .retain(|(id, _), _| id != workspace_id);
+        self.ssh_port_forward_errors
+            .retain(|(id, _), _| id != workspace_id);
+        self.ssh_machine_ports.remove(workspace_id);
+        self.ssh_browser_hosts.remove(workspace_id);
+        self.pending_ssh_port_scans.remove(workspace_id);
+        self.ssh_port_scan_errors.remove(workspace_id);
+        self.pool.close(workspace_id)
+    }
+
+    fn poll_ssh_port_scans(&mut self, workspace_id: &crate::protocol::WorkspaceId) {
+        loop {
+            let result = match self.pending_ssh_port_scans.get(workspace_id) {
+                Some(receiver) => match receiver.try_recv() {
+                    Ok(result) => Some(result),
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        Some(SshPortScanEvent::Ports(Err(
+                            "SSH port scan worker stopped unexpectedly".to_string(),
+                        )))
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                },
+                None => None,
+            };
+            let Some(result) = result else { return };
+            let result = match result {
+                SshPortScanEvent::BrowserHost(host) => {
+                    self.ssh_browser_hosts.insert(workspace_id.clone(), host);
+                    continue;
+                }
+                SshPortScanEvent::Ports(result) => result,
+            };
+            self.pending_ssh_port_scans.remove(workspace_id);
+            match result {
+                Ok(ports) => {
+                    self.ssh_machine_ports
+                        .insert(workspace_id.clone(), ports.into_iter().collect());
+                    self.ssh_port_scan_errors.remove(workspace_id);
+                }
+                Err(error) => {
+                    self.ssh_port_scan_errors
+                        .insert(workspace_id.clone(), error);
+                }
+            }
+            return;
+        }
+    }
+
+    fn poll_ssh_port_forwards(&mut self, workspace_id: &crate::protocol::WorkspaceId) {
+        let keys: Vec<_> = self
+            .pending_ssh_port_forwards
+            .keys()
+            .filter(|(id, _)| id == workspace_id)
+            .cloned()
+            .collect();
+        for key in keys {
+            let result = match self.pending_ssh_port_forwards.get(&key) {
+                Some(receiver) => match receiver.try_recv() {
+                    Ok(result) => Some(result),
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        Some(Err("SSH forwarding worker stopped unexpectedly".to_string()))
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                },
+                None => None,
+            };
+            let Some(result) = result else { continue };
+            self.pending_ssh_port_forwards.remove(&key);
+            match result {
+                Ok(forward) => {
+                    self.ssh_port_forward_errors.remove(&key);
+                    self.ssh_port_forwards.insert(key, forward);
+                }
+                Err(error) => {
+                    self.ssh_port_forward_errors.insert(key, error);
+                }
+            }
+        }
     }
 
     pub(crate) fn clear_event_bufs(&mut self) {

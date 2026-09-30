@@ -45,9 +45,12 @@ enum TabBarPosition: String {
     case bottom
 }
 
-/// Tab 宽度策略。`equal_width` 使用 iTerm2 风格铺满可用区域，`compact`
-/// 按标题的自然宽度排列并在中间 viewport 边缘裁剪溢出。
+/// Tab 宽度策略：平铺等宽、固定宽度、按标题自然宽度适配。
 enum TabBarStyle: String {
     case equalWidth = "equal_width"
+    case fixed
     case compact
+
+    static let fixedTabWidth: CGFloat = 128
+    static let maximumFittedTabWidth: CGFloat = 280
 }

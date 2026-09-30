@@ -7,6 +7,7 @@ mod support;
 
 use std::time::{Duration, Instant};
 
+use muxterm::test_support::core::protocol::state::StateChange;
 use muxterm::test_support::core::runtime::tmux::backend::TmuxRuntime;
 use muxterm::test_support::core::workspace::TerminalModel;
 use support::tmux_test_support::{respawn_cup_flood, tmux_available};
@@ -15,8 +16,13 @@ use support::workspace_attach_contract::{
     ATTACH_TIMEOUT, CUP_FLOOD_FRAMES, MAX_OUTPUT_EVENTS_PER_SEC,
 };
 
-fn connect_attach(socket: &str, session: &str) -> (TerminalModel, tokio::runtime::Runtime) {
-    let runtime = TmuxRuntime::new_with_attach(Some(socket), session);
+fn connect_attach(
+    socket: &str,
+    session: &str,
+) -> (TerminalModel, tokio::runtime::Runtime, Vec<StateChange>) {
+    let mut runtime = TmuxRuntime::new_with_attach(Some(socket), session);
+    // A real frontend allocates the viewport before requesting attach pixels.
+    runtime.set_client_size(80, 24);
     let mut model = TerminalModel::new(Box::new(runtime));
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -25,14 +31,37 @@ fn connect_attach(socket: &str, session: &str) -> (TerminalModel, tokio::runtime
         .expect("tokio");
     rt.block_on(model.connect())
         .expect("attach connect 失败（隔离 socket，不是用户默认 server）");
-    let _ = model.poll_events();
-    (model, rt)
+    let initial = model.poll_events();
+    (model, rt, initial)
 }
 
-fn wait_topology(model: &mut TerminalModel) {
+fn collect_pixels(events: &[StateChange], surface: &mut String, index: &mut String) {
+    for event in events {
+        match event {
+            StateChange::PaneOutput { data, .. }
+            | StateChange::PaneSnapshot { data, .. }
+            | StateChange::PaneFrame { data, .. } => {
+                surface.push_str(&String::from_utf8_lossy(data));
+            }
+            StateChange::PaneIndexSnapshot { data, .. } => {
+                index.push_str(&String::from_utf8_lossy(data));
+            }
+            _ => {}
+        }
+    }
+}
+
+fn wait_painted_topology(
+    model: &mut TerminalModel,
+    painted: &support::workspace_attach_contract::PaintedWorkspace,
+    initial: &[StateChange],
+) {
     let deadline = Instant::now() + ATTACH_TIMEOUT;
+    let mut surface = String::new();
+    let mut index = String::new();
+    collect_pixels(initial, &mut surface, &mut index);
     while Instant::now() < deadline {
-        let _ = model.refresh();
+        collect_pixels(&model.refresh(), &mut surface, &mut index);
         if model.state().tabs().len() >= 2 {
             let active = model.state().tabs().iter().find(|t| t.active).map(|t| t.id);
             if let Some(tab) = active {
@@ -42,6 +71,12 @@ fn wait_topology(model: &mut TerminalModel) {
                     .map(|l| l.tree.leaves().len())
                     .unwrap_or(0)
                     == 3
+                    && painted
+                        .tab1_tokens
+                        .iter()
+                        .all(|token| surface.contains(token))
+                    && (surface.contains(&painted.tab2_token)
+                        || index.contains(&painted.tab2_token))
                 {
                     return;
                 }
@@ -49,6 +84,21 @@ fn wait_topology(model: &mut TerminalModel) {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+    assert_core_painted_topology(model.state(), painted);
+    for token in &painted.tab1_tokens {
+        assert!(
+            surface.contains(token),
+            "visible pane seed missing from Surface: {token}; bytes={}",
+            surface.len()
+        );
+    }
+    assert!(
+        surface.contains(&painted.tab2_token) || index.contains(&painted.tab2_token),
+        "hidden pane seed missing: {}; surface={} index={}",
+        painted.tab2_token,
+        surface.len(),
+        index.len()
+    );
 }
 
 /// attach 已有 2tab/3pane：core 必须有布局和播种 token（白屏 = 快照没进缓冲）。
@@ -59,8 +109,8 @@ fn attach_preexist_2tab_3pane_seeds_core_buffers() {
         return;
     }
     let painted = build_painted_2tab_3pane("core-seed");
-    let (mut model, rt) = connect_attach(&painted.socket, &painted.session);
-    wait_topology(&mut model);
+    let (mut model, rt, initial) = connect_attach(&painted.socket, &painted.session);
+    wait_painted_topology(&mut model, &painted, &initial);
     assert_core_painted_topology(model.state(), &painted);
     let _ = rt.block_on(model.shutdown());
 }
@@ -73,8 +123,8 @@ fn attach_cup_flood_bounds_pane_output_events() {
         return;
     }
     let painted = build_painted_2tab_3pane("core-flood");
-    let (mut model, rt) = connect_attach(&painted.socket, &painted.session);
-    wait_topology(&mut model);
+    let (mut model, rt, initial) = connect_attach(&painted.socket, &painted.session);
+    wait_painted_topology(&mut model, &painted, &initial);
     assert_core_painted_topology(model.state(), &painted);
 
     let target = painted.pane_target(painted.tab1_panes[0]);
@@ -83,9 +133,12 @@ fn attach_cup_flood_bounds_pane_output_events() {
     let window = Duration::from_secs(1);
     let start = Instant::now();
     let mut n = 0usize;
+    let mut flood_surface = String::new();
+    let mut flood_index = String::new();
     while start.elapsed() < window {
         let events = model.refresh();
         n += count_pane_output_events(&events);
+        collect_pixels(&events, &mut flood_surface, &mut flood_index);
         std::thread::sleep(Duration::from_millis(10));
     }
     assert!(
@@ -93,19 +146,11 @@ fn attach_cup_flood_bounds_pane_output_events() {
         "1s 内 PaneOutput={n} > {MAX_OUTPUT_EVENTS_PER_SEC}：必须 %pause 或合并（1820.log pane 39 无 pause）。"
     );
 
-    let _ = model.refresh();
-    let mut blob = String::new();
-    for tab in model.state().tabs() {
-        for pane in model.state().panes(&tab.id) {
-            if let Some(bytes) = model.state().pane_output(&pane.id) {
-                blob.push_str(&String::from_utf8_lossy(bytes));
-            }
-        }
-    }
+    collect_pixels(&model.refresh(), &mut flood_surface, &mut flood_index);
     assert!(
-        blob.contains("FLOOD_DONE") || blob.contains("frame-"),
-        "洪水后 core 缓冲应留下末帧，不能被裁成空。len={}",
-        blob.len()
+        flood_surface.contains("FLOOD_DONE") || flood_surface.contains("frame-"),
+        "洪水后 Surface 应收到末帧，不能被裁成空。len={}",
+        flood_surface.len()
     );
 
     let _ = rt.block_on(model.shutdown());

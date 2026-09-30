@@ -135,6 +135,20 @@ final class KeyBindingsTests: XCTestCase {
         )
     }
 
+    func testCommandZeroSwitchesToLastTab() {
+        XCTAssertEqual(
+            KeyBindings.action(for: KeyChord(command: true, key: "0")),
+            .switchLastTab
+        )
+    }
+
+    func testCommandShiftZeroResetsFontSize() {
+        XCTAssertEqual(
+            KeyBindings.action(for: KeyChord(command: true, shift: true, key: "0")),
+            .resetFontSize
+        )
+    }
+
     func testCommandArrowsSwitchAdjacentTabsPastTheNinth() {
         XCTAssertEqual(
             KeyBindings.action(for: KeyChord(command: true, key: "left")),
@@ -275,7 +289,7 @@ final class KeyBindingsTests: XCTestCase {
             .decreaseFontSize
         )
         XCTAssertEqual(
-            KeyBindings.action(for: KeyChord(command: true, key: "0")),
+            KeyBindings.action(for: KeyChord(command: true, shift: true, key: "0")),
             .resetFontSize
         )
     }
@@ -381,6 +395,27 @@ final class TerminalMirrorPolicyTests: XCTestCase {
                 isTmuxMirror: false
             )
         )
+    }
+
+    func testOnlyUnpressedSgrMotionCanBeCoalesced() {
+        XCTAssertTrue(TerminalMouseReportPolicy.isCoalescibleMotion(
+            Array("\u{1b}[<35;12;7M".utf8)
+        ))
+        XCTAssertTrue(TerminalMouseReportPolicy.isCoalescibleMotion(
+            Array("\u{1b}[<39;12;7M".utf8)
+        ), "modifier bits do not turn hover into a button event")
+        XCTAssertFalse(TerminalMouseReportPolicy.isCoalescibleMotion(
+            Array("\u{1b}[<0;12;7M".utf8)
+        ), "button press must never be coalesced")
+        XCTAssertFalse(TerminalMouseReportPolicy.isCoalescibleMotion(
+            Array("\u{1b}[<0;12;7m".utf8)
+        ), "button release must never be coalesced")
+        XCTAssertFalse(TerminalMouseReportPolicy.isCoalescibleMotion(
+            Array("\u{1b}[<65;12;7M".utf8)
+        ), "wheel reports must never be coalesced")
+        XCTAssertFalse(TerminalMouseReportPolicy.isCoalescibleMotion(
+            Array("\u{1b}[<35;x;7M".utf8)
+        ), "malformed coordinates must stay on the ordinary input path")
     }
 }
 
@@ -1079,7 +1114,7 @@ final class PanePaintPolicyTests: XCTestCase {
 }
 
 final class WheelPassthroughPolicyTests: XCTestCase {
-    func testMouseReportingBeatsServerScroll() {
+    func testServerScrollKeepsHerdrInChargeOfApplicationWheelRouting() {
         XCTAssertEqual(
             WheelPassthroughPolicy.route(
                 mouseReporting: true,
@@ -1087,8 +1122,8 @@ final class WheelPassthroughPolicyTests: XCTestCase {
                 alternateScreen: false,
                 hasServerScroll: true
             ),
-            .applicationMouse,
-            "Herdr ServerScroll 不得抢走 htop/Codex 的滚轮"
+            .serverScroll,
+            "Herdr must inspect the child terminal mode when routing a wheel"
         )
     }
 
@@ -1434,6 +1469,23 @@ final class ScreenTextTests: XCTestCase {
     }
 }
 
+final class WorkspaceDisconnectOverlayPolicyTests: XCTestCase {
+    func testOverlayFollowsSelectedWorkspaceStatus() {
+        XCTAssertTrue(WorkspaceDisconnectOverlayPolicy.shouldShow(
+            status: 4, usesClientResize: false
+        ))
+        XCTAssertFalse(WorkspaceDisconnectOverlayPolicy.shouldShow(
+            status: 2, usesClientResize: false
+        ))
+        XCTAssertTrue(WorkspaceDisconnectOverlayPolicy.shouldShow(
+            status: 0, usesClientResize: true
+        ))
+        XCTAssertFalse(WorkspaceDisconnectOverlayPolicy.shouldShow(
+            status: 0, usesClientResize: false
+        ))
+    }
+}
+
 final class PaneLayoutProjectionTests: XCTestCase {
     func testLayoutMustContainExactlyCurrentTabPanes() {
         XCTAssertTrue(
@@ -1759,6 +1811,16 @@ final class PaneLayoutProjectionTests: XCTestCase {
             100,
             "Herdr snapshot split 矩形不得把已分配的 grok pane 缩回去"
         )
+        XCTAssertEqual(
+            RemainingPaneGridPolicy.mergedGrid(
+                requestedCols: 120,
+                requestedRows: 45,
+                allocatedCols: 100,
+                allocatedRows: 40
+            ).cols,
+            100,
+            "旧后端格子宽于可见区域时，末列必须留在 widget 内"
+        )
         XCTAssertTrue(
             RemainingPaneGridPolicy.shouldNotifyRuntime(usesClientResize: false),
             "Herdr/shell 换树后必须把新格子写回 Runtime，否则 TUI 收不到 SIGWINCH"
@@ -1776,6 +1838,16 @@ final class PaneLayoutProjectionTests: XCTestCase {
                 mergedRows: 40
             ),
             "Herdr/shell 窗口比后端格子大时必须写回，否则输出按窄列换行"
+        )
+        XCTAssertTrue(
+            RemainingPaneGridPolicy.shouldWriteBack(
+                usesClientResize: false,
+                requestedCols: 120,
+                requestedRows: 45,
+                mergedCols: 100,
+                mergedRows: 40
+            ),
+            "Herdr/shell 窗口缩小时必须写回，否则末列被裁切"
         )
         XCTAssertFalse(
             RemainingPaneGridPolicy.shouldWriteBack(
@@ -1803,10 +1875,6 @@ final class PaneLayoutProjectionTests: XCTestCase {
             TerminalInputFocusPolicy.shouldAttemptFocus(surfaceReady: true, inWindow: true)
         )
         XCTAssertFalse(
-            TerminalInputFocusPolicy.shouldAttemptFocus(surfaceReady: false, inWindow: true),
-            "Surface 还没 ready 时不要 makeFirstResponder"
-        )
-        XCTAssertFalse(
             TerminalInputFocusPolicy.shouldAttemptFocus(surfaceReady: true, inWindow: false)
         )
         XCTAssertTrue(
@@ -1817,6 +1885,13 @@ final class PaneLayoutProjectionTests: XCTestCase {
         )
         XCTAssertFalse(
             TerminalInputFocusPolicy.shouldRetryWhenSurfaceReady(isActivePane: false, ready: true)
+        )
+    }
+
+    func testTabInputFocusDoesNotWaitForFirstRenderFrame() {
+        XCTAssertTrue(
+            TerminalInputFocusPolicy.shouldAttemptFocus(surfaceReady: false, inWindow: true),
+            "Attached terminal must accept typing before Herdr's first frame arrives"
         )
     }
 }
@@ -2035,6 +2110,13 @@ final class PaneResizeMathTests: XCTestCase {
 }
 
 final class TerminalInputEncodingTests: XCTestCase {
+    func testUnexpectedSingleFFIsRejectedWithoutChangingMouseOrBackspaceBytes() {
+        XCTAssertTrue(TerminalInputEncoding.isUnexpectedSingleByte(Data([0xff])))
+        XCTAssertFalse(TerminalInputEncoding.isUnexpectedSingleByte(Data([0x7f])))
+        XCTAssertFalse(TerminalInputEncoding.isUnexpectedSingleByte(Data([0x1b, 0x5b, 0x4d, 0xff])))
+        XCTAssertFalse(TerminalInputEncoding.isUnexpectedSingleByte(Data("中".utf8)))
+    }
+
     func testCtrlLettersBecomeTerminalControlBytes() {
         let expected: [(String, UInt8)] = [
             ("a", 0x01), ("c", 0x03), ("e", 0x05),

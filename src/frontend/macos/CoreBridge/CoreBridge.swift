@@ -126,6 +126,62 @@ struct CoreSSHHost: Decodable, Equatable {
     let user: String
 }
 
+/// SSH application port discovered in Runtime-neutral pane output.
+struct CoreSSHPort: Decodable, Equatable {
+    let remotePort: UInt16
+    let localPort: UInt16?
+    let lanAccessEnabled: Bool?
+    let pending: Bool
+    let error: String?
+    let discovered: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case remotePort = "remote_port"
+        case localPort = "local_port"
+        case lanAccessEnabled = "lan_access_enabled"
+        case pending, error, discovered
+    }
+}
+
+private struct WorkspaceSSHPortsResponse: Decodable {
+    let ok: Bool
+    let error: CoreWireError?
+    let ports: [CoreSSHPort]?
+    let scanPending: Bool?
+    let scanError: String?
+    let remoteHost: String?
+    let remoteHostError: String?
+
+    enum CodingKeys: String, CodingKey {
+        case ok, error, ports
+        case scanPending = "scan_pending"
+        case scanError = "scan_error"
+        case remoteHost = "remote_host"
+        case remoteHostError = "remote_host_error"
+    }
+}
+
+struct CoreSSHPortListing: Equatable {
+    let ports: [CoreSSHPort]
+    let scanPending: Bool
+    let scanError: String?
+    var remoteHost: String? = nil
+    var remoteHostError: String? = nil
+}
+
+private struct WorkspaceTrafficResponse: Decodable {
+    let ok: Bool
+    let error: CoreWireError?
+    let down: UInt64?
+    let up: UInt64?
+}
+
+private struct SSHPortForwardResponse: Decodable {
+    let ok: Bool
+    let error: CoreWireError?
+    let pending: Bool?
+}
+
 /// core tmux discovery 返回的 owned session 摘要。
 struct CoreTmuxSession: Decodable, Equatable {
     let name: String
@@ -552,9 +608,19 @@ struct MuxTask {
         )
     }
 
-    static func scrollPane(_ paneId: UInt32, lines: Int) -> QueuedMuxTask {
-        QueuedMuxTask(type: TASK_SCROLL_PANE, targetPane: paneId,
-            targetTab: UInt32(clamping: lines.magnitude), dir: lines > 0 ? 0 : 1)
+    static func scrollPane(
+        _ paneId: UInt32,
+        lines: Int,
+        column: UInt16? = nil,
+        row: UInt16? = nil,
+        modifiers: UInt8 = 0
+    ) -> QueuedMuxTask {
+        let location = column.flatMap { column in
+            row.map { row in "\(column),\(row),\(modifiers)" }
+        }
+        return QueuedMuxTask(type: TASK_SCROLL_PANE, targetPane: paneId,
+            targetTab: UInt32(clamping: lines.magnitude), dir: lines > 0 ? 0 : 1,
+            name: location)
     }
 
     /// Runtime 重新发送指定 pane 的权威 Surface baseline。
@@ -1588,6 +1654,117 @@ final class CoreBridge {
         guard let handle else { return -1 }
         return workspaceID.withCString { workspace in
             muxterm_workspace_close(handle, workspace)
+        }
+    }
+
+    struct RuntimeUpdateStatus: Decodable, Equatable {
+        let phase: String
+        let message: String
+        let version: String?
+        var isBusy: Bool {
+            ["checking", "installing", "handoff", "reconnecting"].contains(phase)
+        }
+    }
+    struct RuntimeUpdateEntry: Decodable {
+        let workspace_id: String
+        let status: RuntimeUpdateStatus
+    }
+    private struct RuntimeUpdatesResponse: Decodable {
+        let ok: Bool
+        let updates: [RuntimeUpdateEntry]?
+        let error: String?
+    }
+    func startRuntimeUpdate(workspaceID: String) throws {
+        guard let handle else { throw CoreBridgeDiscoveryError.message("Core unavailable") }
+        let response: RuntimeUpdatesResponse = try Self.decodeDiscoveryJSON(
+            workspaceID.withCString { muxterm_workspace_update_start_json(handle, $0) }
+        )
+        guard response.ok else {
+            throw CoreBridgeDiscoveryError.message(response.error ?? "Runtime update failed")
+        }
+    }
+    func runtimeUpdates() -> [RuntimeUpdateEntry] {
+        guard let handle else { return [] }
+        do {
+            let response: RuntimeUpdatesResponse = try Self.decodeDiscoveryJSON(
+                muxterm_workspace_updates_json(handle)
+            )
+            guard response.ok else {
+                pendingError = response.error ?? "Runtime update status unavailable"
+                return []
+            }
+            return response.updates ?? []
+        } catch {
+            pendingError = error.localizedDescription
+            return []
+        }
+    }
+
+    func workspaceTrafficBytes(workspaceID: String) -> (down: UInt64, up: UInt64) {
+        guard let handle else { return (0, 0) }
+        do {
+            let response: WorkspaceTrafficResponse = try Self.decodeDiscoveryJSON(
+                workspaceID.withCString { muxterm_workspace_traffic_json(handle, $0) }
+            )
+            guard response.ok else { return (0, 0) }
+            return (response.down ?? 0, response.up ?? 0)
+        } catch {
+            return (0, 0)
+        }
+    }
+
+    func workspaceSSHPorts(workspaceID: String) -> CoreSSHPortListing {
+        guard let handle else {
+            return CoreSSHPortListing(ports: [], scanPending: false, scanError: nil)
+        }
+        do {
+            let response: WorkspaceSSHPortsResponse = try Self.decodeDiscoveryJSON(
+                workspaceID.withCString { muxterm_workspace_ssh_ports_json(handle, $0) }
+            )
+            return response.ok
+                ? CoreSSHPortListing(
+                    ports: response.ports ?? [],
+                    scanPending: response.scanPending ?? false,
+                    scanError: response.scanError,
+                    remoteHost: response.remoteHost,
+                    remoteHostError: response.remoteHostError
+                )
+                : CoreSSHPortListing(ports: [], scanPending: false, scanError: nil)
+        } catch {
+            return CoreSSHPortListing(ports: [], scanPending: false, scanError: error.localizedDescription)
+        }
+    }
+
+    func forwardSSHPort(workspaceID: String, remotePort: UInt16, allowLAN: Bool = false) throws {
+        guard let handle else { throw CoreBridgeDiscoveryError.message("Core handle unavailable") }
+        let response: SSHPortForwardResponse = try Self.decodeDiscoveryJSON(
+            workspaceID.withCString {
+                muxterm_workspace_ssh_port_forward_with_access(
+                    handle,
+                    $0,
+                    UInt32(remotePort),
+                    allowLAN
+                )
+            }
+        )
+        guard response.ok else {
+            throw CoreBridgeDiscoveryError.message(response.error?.message ?? "Port forward failed")
+        }
+    }
+
+    @discardableResult
+    func ignoreSSHPort(workspaceID: String, remotePort: UInt16) -> Int32 {
+        guard let handle else { return -1 }
+        return workspaceID.withCString {
+            muxterm_workspace_ssh_port_ignore(handle, $0, UInt32(remotePort))
+        }
+    }
+
+    @discardableResult
+    func stopSSHPort(workspaceID: String, remotePort: UInt16) -> Int32 {
+        guard let handle else { return -1 }
+        return workspaceID.withCString {
+            muxterm_workspace_ssh_port_stop(handle, $0, UInt32(remotePort))
         }
     }
 

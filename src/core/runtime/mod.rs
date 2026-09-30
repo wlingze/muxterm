@@ -23,10 +23,12 @@ pub mod registry;
 pub mod shell;
 #[cfg(not(feature = "test-harness"))]
 mod shell;
+mod terminal_env;
 #[cfg(feature = "test-harness")]
 pub mod tmux;
 #[cfg(not(feature = "test-harness"))]
 mod tmux;
+pub mod update;
 
 pub use batch::{ControlEvent, RenderEvent, RuntimeBatch, RuntimeSignal};
 pub use capability::RuntimeCapability;

@@ -8,6 +8,56 @@ import XCTest
 /// 暴露空白/半截帧，seed 与同期间 live catch-up 完成后才一次性显示。
 final class SurfaceVisibilityE2ETests: XCTestCase {
 
+    func testHiddenDirectShellKeepsOutputBeyondCoalesceBudget() throws {
+        AppE2E.ensureApp()
+        let bridge = try CoreBridge(backendType: "local")
+        defer { bridge.shutdown() }
+        let manager = TerminalManager(bridge: bridge, runtimeID: "shell")
+        let scene = WorkspaceScene(
+            key: SceneKey(transport: "local", alias: nil, session: "", runtime: "shell", path: ""),
+            bridge: bridge, workspaceID: "shell-test", terminalManager: manager, now: 0)
+        let limit = SurfaceEventBatchPolicy.maxCoalescedOutputBytes
+        let first = Data(repeating: 0x41, count: limit - 4)
+        let second = Data("SHELL_OUTPUT_AFTER_LIMIT\r\n".utf8)
+        scene.ingestSharedEvents([
+            StateChange(type: STATE_PANE_OUTPUT, paneId: 1, tabId: 1, windowId: 0,
+                        data: first, name: ""),
+            StateChange(type: STATE_PANE_OUTPUT, paneId: 1, tabId: 1, windowId: 0,
+                        data: second, name: "")
+        ])
+
+        XCTAssertTrue(scene.viewStore.pendingSurfaceOverflowPanes.isEmpty,
+                      "direct PTY has no authoritative snapshot; dropping its output would fence future commands")
+        XCTAssertEqual(scene.viewStore.pendingSurfaceEvents.reduce(0) { $0 + $1.data.count },
+                       first.count + second.count)
+    }
+
+    func testHiddenDirectShellCreatesSurfaceBeforeOutputCacheOverflows() throws {
+        AppE2E.ensureApp()
+        let bridge = try CoreBridge(backendType: "local")
+        defer { bridge.shutdown() }
+        let manager = TerminalManager(bridge: bridge, runtimeID: "shell")
+        let scene = WorkspaceScene(
+            key: SceneKey(transport: "local", alias: nil, session: "", runtime: "shell", path: ""),
+            bridge: bridge, workspaceID: "shell-test", terminalManager: manager, now: 0)
+        let token = "SHELL_OUTPUT_AFTER_HIDDEN_BACKLOG"
+        var output = Data(repeating: 0x41, count: 256 * 1024)
+        output.append(contentsOf: Data("\r\n\(token)\r\n".utf8))
+        scene.ingestSharedEvents([
+            StateChange(type: STATE_PANE_OUTPUT, paneId: 1, tabId: 1, windowId: 0,
+                        data: output, name: "")
+        ])
+
+        XCTAssertFalse(manager.hasView(for: 1))
+        _ = scene.applyPendingSurfaceEvents()
+        XCTAssertTrue(manager.hasView(for: 1), "direct PTY must have a VT even while its scene is hidden")
+        XCTAssertTrue(AppE2E.wait(timeout: AppE2E.featureTimeout) {
+            manager.testFlushFeeds()
+            return manager.view(for: 1).visibleScreenText().contains(token)
+        },
+                      "hidden shell output must remain visible after catch-up")
+    }
+
     func testTopologySizeUpdateDoesNotReinterpretQueuedOutput() throws {
         let (bridge, manager) = try makeManager()
         defer { bridge.shutdown() }
@@ -59,6 +109,46 @@ final class SurfaceVisibilityE2ETests: XCTestCase {
         XCTAssertEqual(view.renderedGridSize.rows, 50)
         XCTAssertTrue(view.visibleScreenText().contains("TOP"))
         XCTAssertTrue(view.visibleScreenText().contains("EDGE"))
+    }
+
+    func testHerdrFullFramePaintsAtRemoteGridWhileResizeIsPending() throws {
+        let (bridge, manager) = try makeManager()
+        defer { bridge.shutdown() }
+        manager.setBridgeQueriesEnabled(false)
+        let pane: UInt32 = 61
+        let view = manager.view(for: pane)
+        view.setFrameSize(NSSize(width: 1200, height: 700))
+        let allocated = try XCTUnwrap(view.allocatedGridSize())
+        XCTAssertGreaterThan(allocated.cols, 80)
+
+        // The remote Observe stream still paints at 80 columns while the UI
+        // has requested a wider Control stream. A full frame belongs to the
+        // source grid until the server sends the new size and frame.
+        manager.handleResize(paneId: pane, cols: 80, rows: 24)
+        manager.handleFrame(paneId: pane, data: Data("\u{1b}[1;1HOLD\u{1b}[24;75HEND".utf8))
+        XCTAssertEqual(view.renderedGridSize.cols, 80)
+        XCTAssertEqual(view.renderedGridSize.rows, 24)
+        XCTAssertTrue(view.visibleScreenText().contains("END"))
+
+        manager.handleResize(paneId: pane, cols: allocated.cols, rows: allocated.rows)
+        manager.handleFrame(paneId: pane, data: Data("\u{1b}[1;1HNEW\u{1b}[\(allocated.rows);\(allocated.cols - 5)HWIDE".utf8))
+        XCTAssertEqual(view.renderedGridSize.cols, allocated.cols)
+        XCTAssertTrue(view.visibleScreenText().contains("WIDE"))
+    }
+
+    func testHiddenTabRetainsFrameSourceGridAfterActiveTabSnapshot() throws {
+        let (bridge, manager) = try makeManager()
+        defer { bridge.shutdown() }
+        manager.setBridgeQueriesEnabled(false)
+        let hidden: UInt32 = 71
+        let view = manager.view(for: hidden)
+        view.setFrameSize(NSSize(width: 1200, height: 700))
+        manager.updatePaneSizes([Pane(id: hidden, cols: 80, rows: 24, isActive: true)])
+        manager.updatePaneSizes([Pane(id: 72, cols: 100, rows: 40, isActive: true)])
+        manager.handleFrame(paneId: hidden, data: Data("\u{1b}[24;75HHIDDEN".utf8))
+        XCTAssertEqual(view.renderedGridSize.cols, 80,
+                       "active tab snapshot must not erase another tab's frame grid")
+        XCTAssertTrue(view.visibleScreenText().contains("HIDDEN"))
     }
 
     func testResizeBatchKeepsFrameAndDiffOrder() throws {
@@ -169,10 +259,10 @@ final class SurfaceVisibilityE2ETests: XCTestCase {
         )
     }
 
-    private func makeManager() throws -> (CoreBridge, TerminalManager) {
+    private func makeManager(runtimeID: String? = nil) throws -> (CoreBridge, TerminalManager) {
         AppE2E.ensureApp()
         let bridge = try CoreBridge(backendType: "local")
-        return (bridge, TerminalManager(bridge: bridge))
+        return (bridge, TerminalManager(bridge: bridge, runtimeID: runtimeID))
     }
 
     func testHostStaysHiddenUntilSeedAndLiveCatchupFinish() throws {
@@ -486,7 +576,7 @@ final class SurfaceVisibilityE2ETests: XCTestCase {
     }
 
     func testBackgroundSlotKeepsFeedingExistingSurface() throws {
-        let (bridge, manager) = try makeManager()
+        let (bridge, manager) = try makeManager(runtimeID: "tmux")
         defer { bridge.shutdown() }
         let view = MuxTerminalView(
             paneId: 1,
@@ -559,7 +649,7 @@ final class SurfaceVisibilityE2ETests: XCTestCase {
     }
 
     func testBackgroundOutputOverflowWaitsForAuthoritativeSnapshot() throws {
-        let (bridge, manager) = try makeManager()
+        let (bridge, manager) = try makeManager(runtimeID: "tmux")
         defer { bridge.shutdown() }
         let paneId: UInt32 = 7
         var requested: [UInt32] = []
@@ -698,7 +788,7 @@ final class SurfaceVisibilityE2ETests: XCTestCase {
     }
 
     func testBackgroundOutputOverflowRejectedRequestUsesOnlySafeBaseline() throws {
-        let (bridge, manager) = try makeManager()
+        let (bridge, manager) = try makeManager(runtimeID: "tmux")
         defer { bridge.shutdown() }
         let paneId: UInt32 = 7
         var requested: [UInt32] = []
@@ -726,7 +816,7 @@ final class SurfaceVisibilityE2ETests: XCTestCase {
     }
 
     func testBackgroundOutputOverflowRecoversFromFullFrameAndFollowingLive() throws {
-        let (bridge, manager) = try makeManager()
+        let (bridge, manager) = try makeManager(runtimeID: "tmux")
         defer { bridge.shutdown() }
         let paneId: UInt32 = 7
         var requested: [UInt32] = []
@@ -926,6 +1016,27 @@ final class SurfaceVisibilityE2ETests: XCTestCase {
             String(bytes: handler.bytes, encoding: .utf8)?.contains("PASTE_ME") == true,
             "粘贴必须把剪贴板字节发给 pane"
         )
+    }
+
+    func testMultilinePasteKeepsLiteralBytesWithKittyKeyboardEnabled() {
+        AppE2E.ensureApp()
+        let view = MuxTerminalView(
+            paneId: 1,
+            frame: NSRect(x: 0, y: 0, width: 640, height: 360)
+        )
+        view.feedOutput(Data("\u{1b}[>1u".utf8))
+        let handler = ClipboardRecordingHandler()
+        view.inputHandler = handler
+        let board = NSPasteboard(name: NSPasteboard.Name("muxterm.multilinePasteKitty"))
+        let text = "printf 'first\\n'\nprintf 'second\\n'\nprintf 'third\\n'"
+        board.clearContents()
+        board.setString(text, forType: .string)
+        defer { board.clearContents() }
+
+        view.paste(from: board)
+
+        XCTAssertEqual(Data(handler.bytes), Data(text.utf8),
+                       "粘贴必须保留原始换行，不能编码成单个 kitty key event")
     }
 
     func testLargePasteIsHandedOffWholeAndDrainedToTheOriginPane() throws {

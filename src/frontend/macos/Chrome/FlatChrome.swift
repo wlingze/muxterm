@@ -336,6 +336,32 @@ public enum TerminalMirrorPolicy {
     }
 }
 
+/// 鼠标 hover 是位置更新，队列拥塞时只需保留同一 pane 的最新位置。
+/// 按下、释放、拖动和滚轮序列都必须原样按序送达。
+public enum TerminalMouseReportPolicy {
+    public static func isCoalescibleMotion(_ data: [UInt8]) -> Bool {
+        guard data.count >= 9,
+              data.starts(with: [0x1b, 0x5b, 0x3c]),
+              data.last == 0x4d
+        else {
+            return false
+        }
+
+        let fields = data[3..<(data.count - 1)].split(separator: 0x3b)
+        guard fields.count == 3,
+              let button = Int(String(decoding: fields[0], as: UTF8.self)),
+              Int(String(decoding: fields[1], as: UTF8.self)) != nil,
+              Int(String(decoding: fields[2], as: UTF8.self)) != nil
+        else {
+            return false
+        }
+
+        // SGR motion without a held button uses the release code (3) plus the
+        // motion bit (32). Drag motion has button code 0/1/2 and must be kept.
+        return button >= 32 && button & 0b11 == 0b11
+    }
+}
+
 /// 检测一段 pane 输出里是否包含「终端查询」序列。
 ///
 /// 目前仅用于诊断/测试：tmux 控制模式下查询由 tmux 自己代答，前端不再
@@ -957,6 +983,13 @@ public enum FirstTabPaintPolicy {
     }
 }
 
+/// 断线水印属于当前 Workspace，不能随 ContentView 泄漏到切换后的 Scene。
+public enum WorkspaceDisconnectOverlayPolicy {
+    public static func shouldShow(status: UInt32, usesClientResize: Bool) -> Bool {
+        (status == 0 && usesClientResize) || status == 4
+    }
+}
+
 /// 窗口外框没变可以省略 `refresh-client -C`；换了一棵 pane 树时
 /// SwiftTerm 每个 host 的格子仍要按像素重算。
 public enum TabGeometrySyncPolicy {
@@ -984,18 +1017,15 @@ public enum RemainingPaneGridPolicy {
         treeChanged && !usesClientResize
     }
 
-    /// 把后端请求和当前 widget 分配合成最终格子。
-    /// 已分配时不得小于 widget；未分配时由调用方不要传 0。
+    /// 已布局的 widget 是可显示列数上限。旧 snapshot 的格子可能比它宽，
+    /// 此时必须缩到实际分配并把新尺寸写回 Runtime。
     public static func mergedGrid(
         requestedCols: Int,
         requestedRows: Int,
         allocatedCols: Int,
         allocatedRows: Int
     ) -> (cols: Int, rows: Int) {
-        (
-            cols: max(max(requestedCols, allocatedCols), 2),
-            rows: max(max(requestedRows, allocatedRows), 1)
-        )
+        treeChangeGrid(allocatedCols: allocatedCols, allocatedRows: allocatedRows)
     }
 
     /// 换树时 host 像素就是格子：关 pane 放大，split 缩小。
@@ -1011,8 +1041,7 @@ public enum RemainingPaneGridPolicy {
         !usesClientResize
     }
 
-    /// 后端格子比当前 widget 窄时，必须把合成后的格子写回。
-    /// 否则 SwiftTerm 按窗口画，PTY 仍按旧列换行，右侧留下空白。
+    /// 后端格子与当前 widget 不同时，把实际可显示格子写回 Runtime。
     public static func shouldWriteBack(
         usesClientResize: Bool,
         requestedCols: Int,
@@ -1042,16 +1071,16 @@ public enum InactivePaneDimmingPolicy {
     }
 }
 
-/// 光标必须在 SwiftTerm 输入里。Surface 还没 ready 时不要抢，ready 后立刻补。
+/// 光标必须在 SwiftTerm 输入里。首帧绘制不影响已挂载视图接收键盘输入。
 public enum TerminalInputFocusPolicy {
     public static func shouldAttemptFocus(
-        surfaceReady: Bool,
+        surfaceReady _: Bool,
         inWindow: Bool,
         windowVisible: Bool = true,
         windowKey: Bool = true,
         appActive: Bool = true
     ) -> Bool {
-        surfaceReady && inWindow && windowVisible && windowKey && appActive
+        inWindow && windowVisible && windowKey && appActive
     }
 
     public static func shouldRetryWhenSurfaceReady(isActivePane: Bool, ready: Bool) -> Bool {
@@ -1212,8 +1241,8 @@ public enum PaneHistoryScrollPolicy {
 
 /// 滚轮交给谁：对齐 Linux `handle_scroll`。
 ///
-/// 应用开了 1000/1002/1003 时必须把滚轮写成 SGR 交给 pane（htop / vim /
-/// Codex）。Herdr 的 ServerScroll 只在应用没要鼠标时滚服务端历史。
+/// 支持 ServerScroll 的 Runtime 自己知道子进程的鼠标/备用屏状态，滚轮由
+/// Runtime 分流到应用或历史。其它 Runtime 使用 Surface 的鼠标模式。
 public enum WheelPassthroughPolicy {
     public enum Route: Equatable {
         case applicationMouse
@@ -1228,11 +1257,11 @@ public enum WheelPassthroughPolicy {
         alternateScreen: Bool,
         hasServerScroll: Bool
     ) -> Route {
-        if mouseReporting, !shiftBypassesMouse {
-            return .applicationMouse
-        }
         if hasServerScroll {
             return .serverScroll
+        }
+        if mouseReporting, !shiftBypassesMouse {
+            return .applicationMouse
         }
         if alternateScreen {
             return .applicationArrows

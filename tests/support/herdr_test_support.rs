@@ -207,6 +207,7 @@ impl Drop for TempAgentCommand {
 /// 独立 Herdr named session 夹具。
 pub struct IsolatedHerdr {
     name: String,
+    binary: PathBuf,
     socket_path: PathBuf,
     client_socket_path: PathBuf,
     child: Option<Child>,
@@ -222,6 +223,20 @@ impl IsolatedHerdr {
     pub fn start_named(name: String) -> Self {
         // §13.1：任何 herdr 测试开始前校验 protocol 19（版本不符 = required failure）。
         assert_herdr_version_ok();
+        Self::start_named_with_binary(name, PathBuf::from("herdr"), &[])
+    }
+
+    /// 用显式 Herdr 二进制验证其他已知协议；仍只启动独立 named session。
+    pub fn start_with_binary(label: &str, binary: &Path) -> Self {
+        Self::start_named_with_binary(unique_name(label), binary.to_path_buf(), &[])
+    }
+
+    pub fn start_with_environment(label: &str, env: &[(String, String)]) -> Self {
+        assert_herdr_version_ok();
+        Self::start_named_with_binary(unique_name(label), PathBuf::from("herdr"), env)
+    }
+
+    fn start_named_with_binary(name: String, binary: PathBuf, env: &[(String, String)]) -> Self {
         if !name.starts_with("muxterm-test-") {
             panic!("herdr fixture 名称必须以 muxterm-test- 开头: {name}");
         }
@@ -241,16 +256,17 @@ impl IsolatedHerdr {
         #[cfg(target_os = "linux")]
         let mut server = {
             let mut command = Command::new("setsid");
-            command.args(["herdr", "--session", &name, "server"]);
+            command.arg(&binary).args(["--session", &name, "server"]);
             command
         };
         #[cfg(not(target_os = "linux"))]
         let mut server = {
-            let mut command = Command::new("herdr");
+            let mut command = Command::new(&binary);
             command.args(["--session", &name, "server"]);
             command
         };
         let child = server
+            .envs(env.iter().cloned())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -272,6 +288,7 @@ impl IsolatedHerdr {
 
         Self {
             name,
+            binary,
             socket_path,
             client_socket_path,
             child: Some(child),
@@ -292,7 +309,7 @@ impl IsolatedHerdr {
 
     /// 永远带 `--session self.name` 的 CLI。
     pub fn cli(&self) -> Command {
-        let mut c = Command::new("herdr");
+        let mut c = Command::new(&self.binary);
         c.args(["--session", &self.name]);
         c
     }
@@ -615,10 +632,10 @@ impl Drop for IsolatedHerdr {
         if self.socket_path == default_socket_path() {
             return;
         }
-        let _ = Command::new("herdr")
+        let _ = Command::new(&self.binary)
             .args(["session", "stop", &self.name])
             .output();
-        let _ = Command::new("herdr")
+        let _ = Command::new(&self.binary)
             .args(["session", "delete", &self.name])
             .output();
         if let Some(mut child) = self.child.take() {
@@ -643,7 +660,10 @@ impl TempGitRepo {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.subsec_nanos())
             .unwrap_or(0);
-        let path = std::env::temp_dir().join(format!("muxterm-test-herdr-{label}-{nanos}"));
+        let path = std::env::temp_dir()
+            .canonicalize()
+            .expect("resolve temp directory")
+            .join(format!("muxterm-test-herdr-{label}-{nanos}"));
         std::fs::create_dir_all(&path).expect("创建临时 git 仓库失败");
         let ok = |args: &[&str]| {
             let out = Command::new("git")
@@ -686,7 +706,10 @@ impl TempGitRepo {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.subsec_nanos())
             .unwrap_or(0);
-        std::env::temp_dir().join(format!("muxterm-test-herdr-wt-{label}-{nanos}"))
+        std::env::temp_dir()
+            .canonicalize()
+            .expect("resolve temp directory")
+            .join(format!("muxterm-test-herdr-wt-{label}-{nanos}"))
     }
 
     /// 记录 herdr 建出的 linked worktree（Drop 时先 remove 再删目录）。

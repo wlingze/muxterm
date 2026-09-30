@@ -1,5 +1,10 @@
 import Foundation
 
+/// 成功 attach 的时间戳单独存盘；配置文件只保存统计窗口的天数。
+private struct WorkspaceAttachHistory: Codable {
+    var events: [String: [Date]] = [:]
+}
+
 /// QuickConnect 数据（Recent + Project）的列表管理（纯逻辑，便于单测）。
 ///
 /// - Recent：最近连接过的目标（最多 N 条），去重，最近的在最前；由连接池
@@ -19,17 +24,31 @@ public final class QuickConnectStore {
 
     /// 遗留 `quickconnect.toml` 文件注入点（测试/迁移用）。
     private let fileURL: URL?
+    private let attachHistoryURL: URL?
+    private var attachHistory: WorkspaceAttachHistory
+    public private(set) var attachHistoryDays = 30
+
+    public static var defaultAttachHistoryURL: URL {
+        let directory = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        )[0].appendingPathComponent("muxterm", isDirectory: true)
+        return directory.appendingPathComponent("workspace-attach-history.json")
+    }
 
     /// Core-backed store：初始 projects 来自 `configDescribeJSON` 快照，变更
     /// 通过 `persistProjects` 写回统一配置。
     public init(
         projects initial: [TargetConfig] = [],
+        attachHistoryURL: URL? = nil,
         persistProjects: @escaping ([TargetConfig]) -> Void
     ) {
         self.recents = []
         self.projects = initial
         self.persistProjects = persistProjects
         self.fileURL = nil
+        self.attachHistoryURL = attachHistoryURL
+        self.attachHistory = Self.loadAttachHistory(from: attachHistoryURL)
     }
 
     /// 纯内存 store（测试用）。
@@ -38,8 +57,58 @@ public final class QuickConnectStore {
         self.persistProjects = nil
         self.recents = []
         self.projects = []
+        self.attachHistoryURL = nil
+        self.attachHistory = WorkspaceAttachHistory()
         if let fileURL {
             load(from: fileURL)
+        }
+    }
+
+    public func setAttachHistoryDays(_ days: Int) {
+        attachHistoryDays = min(365, max(1, days))
+        pruneAttachHistory(now: Date())
+    }
+
+    /// 成功连接或通过快速面板显式选中已打开 Workspace 计一次；Tab 切换不计数。
+    public func recordAttach(_ config: TargetConfig, at date: Date = Date()) {
+        let key = QuickConnect.uniqueID(for: config)
+        attachHistory.events[key, default: []].append(date)
+        pruneAttachHistory(now: date)
+        persistAttachHistory()
+    }
+
+    public func attachCount(for config: TargetConfig, now: Date = Date()) -> Int {
+        let cutoff = now.addingTimeInterval(-Double(attachHistoryDays) * 86_400)
+        return attachHistory.events[QuickConnect.uniqueID(for: config)]?
+            .filter { $0 >= cutoff && $0 <= now }.count ?? 0
+    }
+
+    private func pruneAttachHistory(now: Date) {
+        let cutoff = now.addingTimeInterval(-365 * 86_400)
+        attachHistory.events = attachHistory.events.compactMapValues { dates in
+            let retained = dates.filter { $0 >= cutoff && $0 <= now }
+            return retained.isEmpty ? nil : retained
+        }
+    }
+
+    private static func loadAttachHistory(from url: URL?) -> WorkspaceAttachHistory {
+        guard let url, let data = try? Data(contentsOf: url),
+              let history = try? JSONDecoder().decode(WorkspaceAttachHistory.self, from: data)
+        else { return WorkspaceAttachHistory() }
+        return history
+    }
+
+    private func persistAttachHistory() {
+        guard let attachHistoryURL else { return }
+        do {
+            try FileManager.default.createDirectory(
+                at: attachHistoryURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try JSONEncoder().encode(attachHistory).write(to: attachHistoryURL, options: .atomic)
+        } catch {
+            // Recent 排序不应让连接失败；下一次成功 attach 会再次尝试保存。
+            NSLog("Muxterm: failed to save attach history: %@", error.localizedDescription)
         }
     }
 

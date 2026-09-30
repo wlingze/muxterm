@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import MuxtermChrome
 
 /// 与命令行 `-h` 相同的 1024 进位展示，覆盖长期 SSH 会话的 GB/TB 累计值。
@@ -44,6 +45,43 @@ struct TrafficRateSampler {
     }
 }
 
+private func currentLANIPv4Address() -> String? {
+    var head: UnsafeMutablePointer<ifaddrs>?
+    guard getifaddrs(&head) == 0, let first = head else { return nil }
+    defer { freeifaddrs(first) }
+
+    var addresses: [(interface: String, address: String)] = []
+    var current: UnsafeMutablePointer<ifaddrs>? = first
+    while let entry = current {
+        let item = entry.pointee
+        current = item.ifa_next
+        guard let socketAddress = item.ifa_addr,
+              socketAddress.pointee.sa_family == sa_family_t(AF_INET)
+        else { continue }
+        let flags = item.ifa_flags
+        guard flags & UInt32(IFF_UP) != 0,
+              flags & UInt32(IFF_LOOPBACK) == 0
+        else { continue }
+
+        var sinAddress = socketAddress.withMemoryRebound(to: sockaddr_in.self, capacity: 1) {
+            $0.pointee.sin_addr
+        }
+        var buffer = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
+        let converted = withUnsafePointer(to: &sinAddress) { source in
+            buffer.withUnsafeMutableBufferPointer { destination in
+                inet_ntop(AF_INET, source, destination.baseAddress, socklen_t(destination.count))
+            }
+        }
+        guard converted != nil else { continue }
+        let address = String(cString: buffer)
+        guard !address.hasPrefix("169.254.") else { continue }
+        addresses.append((String(cString: item.ifa_name), address))
+    }
+
+    return addresses.first(where: { $0.interface == "en0" })?.address
+        ?? addresses.sorted(by: { $0.interface < $1.interface }).first?.address
+}
+
 /// 统一状态栏（tab + tmux status + 状态/通知/新建，一个 bar 全装下）。
 ///
 /// 布局（从左到右）：
@@ -66,6 +104,11 @@ final class StatusBarView: NSView {
     var onWorkspaceClick: (() -> Void)?
     var onAttentionClick: (() -> Void)?
     var onConnectionRefresh: (() -> Void)?
+    var onSSHPortForward: ((UInt16, Bool) -> Void)?
+    var onSSHPortStop: ((UInt16) -> Void)?
+    var onSSHPortIgnore: ((UInt16) -> Void)?
+    // 默认交给本机系统浏览器，测试可替换此平台入口而无需启动浏览器。
+    var openSSHPortURL: (URL) -> Void = { NSWorkspace.shared.open($0) }
     var sidebarOpen = false {
         didSet {
             sidebarToggleButton.state = sidebarOpen ? .on : .off
@@ -103,7 +146,9 @@ final class StatusBarView: NSView {
     var colorMode: StatusBarMode = .tmux {
         didSet {
             guard colorMode != oldValue else { return }
-            rebuildCurrentTabs()
+            // The snapshot may already have hidden tmux segments in theme
+            // mode. Reapply it so changing this setting updates the bar now.
+            applyTmuxSnapshot(lastTmuxSnapshot, enabled: tmuxStatusEnabled)
         }
     }
 
@@ -155,8 +200,16 @@ final class StatusBarView: NSView {
     private var connectionSummary: (type: String, host: String?, status: String) = ("local", nil, "connected")
     private var trafficRate: UInt64 = 0
     private var totalBytes: UInt64 = 0
-    private var upRate: UInt64 = 0
-    private var upBytes: UInt64 = 0
+    private var upRate: UInt64?
+    private var upBytes: UInt64?
+    private var sshPorts: [CoreSSHPort] = []
+    private var sshPortScanPending = false
+    private var sshPortScanError: String?
+    private var sshRemoteHost: String?
+    private var sshRemoteHostError: String?
+    private var statusPopoverPortStack: NSStackView?
+    private var sshPortPickerPopover: NSPopover?
+    private var sshPortPickerTitle: NSTextField?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -548,12 +601,20 @@ final class StatusBarView: NSView {
 
     func updateConnectionStatus(_ summary: (type: String, host: String?, status: String),
                                 trafficRate: UInt64, totalBytes: UInt64,
-                                upRate: UInt64 = 0, upBytes: UInt64 = 0) {
+                                upRate: UInt64? = nil, upBytes: UInt64? = nil,
+                                portListing: CoreSSHPortListing = CoreSSHPortListing(
+                                    ports: [], scanPending: false, scanError: nil
+                                )) {
         connectionSummary = summary
         self.trafficRate = trafficRate
         self.totalBytes = totalBytes
         self.upRate = upRate
         self.upBytes = upBytes
+        sshPorts = portListing.ports
+        sshPortScanPending = portListing.scanPending
+        sshPortScanError = portListing.scanError
+        sshRemoteHost = portListing.remoteHost
+        sshRemoteHostError = portListing.remoteHostError
         updateStatusDotColor()
         refreshConnectionDetails()
     }
@@ -643,9 +704,8 @@ final class StatusBarView: NSView {
         } else {
             switch connectionSummary.status {
             case "connected":
-                // SSH 时按流量速率变色：高速=黄，否则=绿。
-                if connectionSummary.type == "ssh" && trafficRate > 1_000_000 {
-                    color = .systemYellow
+                if connectionSummary.type == "ssh" {
+                    color = trafficSpeedColor(max(trafficRate, upRate ?? 0))
                 } else {
                     color = .systemGreen
                 }
@@ -664,7 +724,10 @@ final class StatusBarView: NSView {
             if let host = connectionSummary.host, !host.isEmpty { summary.append(host) }
             summary.append(localizedStatus(connectionSummary.status))
             if connectionSummary.type == "ssh", connectionSummary.status == "connected" {
-                summary.append(StatusTrafficFormatter.rate(trafficRate))
+                if let upRate {
+                    summary.append("↑ \(StatusTrafficFormatter.rate(upRate))")
+                }
+                summary.append("↓ \(StatusTrafficFormatter.rate(trafficRate))")
             }
             summary.append(MuxtermI18n.shared.tr(.statusShowConnectionDetails))
             statusDot.toolTip = summary.joined(separator: " · ")
@@ -688,6 +751,14 @@ final class StatusBarView: NSView {
         case "local": return MuxtermI18n.shared.tr(.statusTransportLocal)
         default: return connectionSummary.type
         }
+    }
+
+    /// SSH throughput colors: green below 256 KiB/s, yellow below 1 MiB/s,
+    /// and red at or above 1 MiB/s.
+    private func trafficSpeedColor(_ bytesPerSecond: UInt64) -> NSColor {
+        if bytesPerSecond >= 1_048_576 { return .systemRed }
+        if bytesPerSecond >= 262_144 { return .systemYellow }
+        return .systemGreen
     }
 
     private struct ConnectionDetailRow {
@@ -733,14 +804,15 @@ final class StatusBarView: NSView {
                 identifier: "muxterm.statusPopover.received",
                 isError: false
             ))
-            // 上行只有 transport 真正提供计数时才展示，不能把缺失数据伪装成 0 B/s。
-            if upRate > 0 || upBytes > 0 {
+            if let upRate {
                 rows.append(ConnectionDetailRow(
                     label: MuxtermI18n.shared.tr(.statusSendRate),
                     value: StatusTrafficFormatter.rate(upRate),
                     identifier: "muxterm.statusPopover.sendRate",
                     isError: false
                 ))
+            }
+            if let upBytes {
                 rows.append(ConnectionDetailRow(
                     label: MuxtermI18n.shared.tr(.statusSent),
                     value: StatusTrafficFormatter.bytes(upBytes),
@@ -764,8 +836,14 @@ final class StatusBarView: NSView {
         guard statusPopover != nil else { return }
         statusPopoverText = statusDotAccessibilityLabel
         for row in connectionDetailRows() {
-            statusPopoverValues[row.identifier]?.stringValue = row.value
+            if let value = statusPopoverValues[row.identifier] {
+                value.stringValue = row.value
+                value.textColor = row.isError
+                    ? .systemRed
+                    : connectionTrafficColor(for: row.identifier) ?? .labelColor
+            }
         }
+        refreshPopoverPorts()
     }
 
     @objc private func refreshConnectionClicked() {
@@ -773,11 +851,21 @@ final class StatusBarView: NSView {
         refreshConnectionDetails()
     }
 
+    /// Cmd-H 与连接图标共用的 SSH 连接详情入口。
+    func openConnectionDetails() {
+        statusDotClicked()
+    }
+
     /// 点击连接图标 → 原生键值弹层（连接状态 + SSH 流量 + 可选 debug 信息）。
     @objc private func statusDotClicked() {
         // 如果已有弹出框，先关闭再开（避免重复）。
+        sshPortPickerPopover?.close()
+        sshPortPickerPopover = nil
         statusPopover?.close()
         statusPopover = nil
+        statusPopoverPortStack = nil
+        sshPortPickerTitle = nil
+        statusPopoverValues = statusPopoverValues.filter { !$0.key.hasPrefix("muxterm.statusPopover.port.") }
 
         onConnectionRefresh?()
         let rows = connectionDetailRows()
@@ -824,7 +912,9 @@ final class StatusBarView: NSView {
                 || row.identifier.hasSuffix("sent")
                 ? NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
                 : NSFont.systemFont(ofSize: 11)
-            value.textColor = row.isError ? .systemRed : .labelColor
+            value.textColor = row.isError
+                ? .systemRed
+                : connectionTrafficColor(for: row.identifier) ?? .labelColor
             value.isSelectable = true
             value.setAccessibilityIdentifier(row.identifier)
             statusPopoverValues[row.identifier] = value
@@ -837,6 +927,31 @@ final class StatusBarView: NSView {
         grid.column(at: 0).xPlacement = .trailing
         grid.column(at: 1).xPlacement = .leading
         root.addArrangedSubview(grid)
+
+        if connectionSummary.type == "ssh" {
+            let separator = NSBox()
+            separator.boxType = .separator
+            root.addArrangedSubview(separator)
+            separator.widthAnchor.constraint(equalTo: root.widthAnchor).isActive = true
+            let count = sshPorts.isEmpty ? "" : " (\(sshPorts.count))"
+            let portsTitle = NSTextField(labelWithString: MuxtermI18n.shared.tr(.statusPorts) + count)
+            portsTitle.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+            let addPort = NSButton(
+                image: NSImage(systemSymbolName: "plus", accessibilityDescription: MuxtermI18n.shared.tr(.statusPorts))!,
+                target: self,
+                action: #selector(showSSHPortPicker(_:))
+            )
+            addPort.bezelStyle = .rounded
+            addPort.setAccessibilityIdentifier("muxterm.statusPopover.ports.add")
+            addPort.setAccessibilityLabel(MuxtermI18n.shared.tr(.statusPorts))
+            let portsHeader = NSStackView(views: [portsTitle, addPort])
+            portsHeader.orientation = .horizontal
+            portsHeader.alignment = .centerY
+            portsHeader.spacing = 8
+            root.addArrangedSubview(portsHeader)
+            portsHeader.widthAnchor.constraint(equalTo: root.widthAnchor).isActive = true
+        }
+
         let refresh = NSButton(title: MuxtermI18n.shared.tr(.statusRefresh),
                                target: self, action: #selector(refreshConnectionClicked))
         refresh.bezelStyle = .rounded
@@ -877,6 +992,338 @@ final class StatusBarView: NSView {
         statusPopover = popover
     }
 
+    @objc private func showSSHPortPicker(_ sender: NSButton) {
+        sshPortPickerPopover?.close()
+        onConnectionRefresh?()
+
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.animates = true
+
+        let container = SSHPortPickerBackgroundView()
+        container.setAccessibilityIdentifier("muxterm.sshPortPicker")
+
+        let root = NSStackView()
+        root.translatesAutoresizingMaskIntoConstraints = false
+        root.orientation = .vertical
+        root.alignment = .leading
+        root.spacing = 9
+        container.addSubview(root)
+
+        let title = NSTextField(labelWithString: MuxtermI18n.shared.tr(.statusPorts))
+        title.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
+        root.addArrangedSubview(title)
+
+        let ports = SSHPortListStackView()
+        ports.orientation = .vertical
+        ports.alignment = .leading
+        ports.spacing = 5
+        ports.setAccessibilityIdentifier("muxterm.statusPopover.ports")
+        ports.translatesAutoresizingMaskIntoConstraints = false
+        let scroll = NSScrollView()
+        scroll.hasVerticalScroller = true
+        scroll.drawsBackground = false
+        scroll.documentView = ports
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        root.addArrangedSubview(scroll)
+        statusPopoverPortStack = ports
+        sshPortPickerTitle = title
+
+        let refresh = NSButton(
+            title: MuxtermI18n.shared.tr(.statusRefresh),
+            target: self,
+            action: #selector(refreshConnectionClicked)
+        )
+        refresh.bezelStyle = .rounded
+        refresh.setAccessibilityIdentifier("muxterm.sshPortPicker.refresh")
+        root.addArrangedSubview(refresh)
+
+        NSLayoutConstraint.activate([
+            root.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 14),
+            root.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -14),
+            root.topAnchor.constraint(equalTo: container.topAnchor, constant: 12),
+            root.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -12),
+            scroll.widthAnchor.constraint(equalTo: root.widthAnchor),
+            scroll.heightAnchor.constraint(equalToConstant: 230),
+            ports.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
+            container.widthAnchor.constraint(equalToConstant: 500),
+        ])
+
+        let vc = NSViewController()
+        vc.view = container
+        popover.contentViewController = vc
+        popover.contentSize = NSSize(width: 500, height: 292)
+        popover.show(
+            relativeTo: sender.bounds,
+            of: sender,
+            preferredEdge: edgeAtBottom ? .minY : .maxY
+        )
+        sshPortPickerPopover = popover
+        refreshPopoverPorts()
+        container.layoutSubtreeIfNeeded()
+        if let first = ports.arrangedSubviews.first {
+            first.scrollToVisible(first.bounds)
+        }
+    }
+
+    private func connectionTrafficColor(for identifier: String) -> NSColor? {
+        switch identifier {
+        case "muxterm.statusPopover.receiveRate": return trafficSpeedColor(trafficRate)
+        case "muxterm.statusPopover.sendRate": return upRate.map(trafficSpeedColor)
+        default: return nil
+        }
+    }
+
+    private func refreshPopoverPorts() {
+        guard let stack = statusPopoverPortStack else { return }
+        while let child = stack.arrangedSubviews.first {
+            stack.removeArrangedSubview(child)
+            child.removeFromSuperview()
+        }
+        for key in statusPopoverValues.keys.filter({ $0.hasPrefix("muxterm.statusPopover.port.") }) {
+            statusPopoverValues.removeValue(forKey: key)
+        }
+        sshPortPickerTitle?.stringValue = MuxtermI18n.shared.tr(.statusPorts)
+            + (sshPorts.isEmpty ? "" : " (\(sshPorts.count))")
+        if sshPorts.isEmpty {
+            let message: String
+            if let sshPortScanError, !sshPortScanError.isEmpty {
+                message = sshPortScanError
+            } else if sshPortScanPending {
+                message = MuxtermI18n.shared.tr(.statusScanningPorts)
+            } else {
+                message = MuxtermI18n.shared.tr(.statusNoPorts)
+            }
+            let empty = NSTextField(wrappingLabelWithString: message)
+            empty.font = NSFont.systemFont(ofSize: 11)
+            empty.textColor = sshPortScanError == nil ? .secondaryLabelColor : .systemRed
+            stack.addArrangedSubview(empty)
+            resizePortPickerPopover()
+            return
+        }
+        // 所有状态共用列宽：端口 / 地址 / 复制与 LAN / Forward 或 Stop / Open / Ignore。
+        // 地址吃剩余空间，不能由端口位数、错误文本或转发状态推移操作按钮。
+        let actionWidth = max(76, [MuxtermI18n.shared.tr(.statusForward), MuxtermI18n.shared.tr(.statusStopForward)]
+            .map { NSButton(title: $0, target: nil, action: nil).fittingSize.width }.max() ?? 0)
+        let openWidth = max(54, NSButton(title: MuxtermI18n.shared.tr(.statusOpenRemotePort), target: nil, action: nil).fittingSize.width)
+        let ignoreWidth = max(50, NSButton(title: MuxtermI18n.shared.tr(.statusIgnore), target: nil, action: nil).fittingSize.width)
+        for port in sshPorts {
+            let row = NSStackView()
+            row.orientation = .horizontal
+            row.alignment = .centerY
+            row.distribution = .fill
+            row.spacing = 6
+            row.translatesAutoresizingMaskIntoConstraints = false
+
+            let remote = NSTextField(labelWithString: ":\(port.remotePort)")
+            remote.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+            remote.setAccessibilityIdentifier("muxterm.statusPopover.port.\(port.remotePort).remote")
+            row.addArrangedSubview(remote)
+            remote.widthAnchor.constraint(equalToConstant: 44).isActive = true
+
+            let valueSlot = NSView()
+            valueSlot.translatesAutoresizingMaskIntoConstraints = false
+            valueSlot.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            row.addArrangedSubview(valueSlot)
+            valueSlot.heightAnchor.constraint(equalToConstant: 24).isActive = true
+            valueSlot.widthAnchor.constraint(greaterThanOrEqualToConstant: 80).isActive = true
+            func placeValue(_ view: NSView) {
+                view.translatesAutoresizingMaskIntoConstraints = false
+                valueSlot.addSubview(view)
+                NSLayoutConstraint.activate([
+                    view.leadingAnchor.constraint(equalTo: valueSlot.leadingAnchor),
+                    view.trailingAnchor.constraint(equalTo: valueSlot.trailingAnchor),
+                    view.centerYAnchor.constraint(equalTo: valueSlot.centerYAnchor),
+                ])
+            }
+
+            let valueText: String
+            if let localPort = port.localPort {
+                valueText = sshPortAddress(localPort: localPort, lan: port.lanAccessEnabled == true)
+            } else if port.pending {
+                valueText = MuxtermI18n.shared.tr(.statusForwarding)
+            } else if let error = port.error {
+                valueText = error
+            } else {
+                valueText = remoteSSHPortURL(port.remotePort)?.absoluteString
+                    ?? sshRemoteHostError
+                    ?? MuxtermI18n.shared.tr(.statusRemoteAddressPending)
+            }
+            let forwardControls = NSStackView()
+            forwardControls.orientation = .horizontal
+            forwardControls.alignment = .centerY
+            forwardControls.spacing = 4
+            forwardControls.widthAnchor.constraint(equalToConstant: 56).isActive = true
+            if port.localPort != nil {
+                let address = NSButton(title: valueText, target: self, action: #selector(openSSHPortAddress(_:)))
+                address.isBordered = false
+                address.alignment = .left
+                address.font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
+                address.contentTintColor = .linkColor
+                address.toolTip = MuxtermI18n.shared.tr(.statusOpenAddress)
+                    + ": " + valueText
+                address.tag = Int(port.remotePort)
+                address.setAccessibilityIdentifier("muxterm.statusPopover.port.\(port.remotePort).address")
+                placeValue(address)
+                address.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+                address.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+                let copy = NSButton(
+                    image: NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: MuxtermI18n.shared.tr(.statusCopyAddress))!,
+                    target: self,
+                    action: #selector(copySSHPortAddress(_:))
+                )
+                copy.bezelStyle = .rounded
+                copy.tag = Int(port.remotePort)
+                copy.setAccessibilityLabel(MuxtermI18n.shared.tr(.statusCopyAddress))
+                copy.setAccessibilityIdentifier("muxterm.statusPopover.port.\(port.remotePort).copy")
+                forwardControls.addArrangedSubview(copy)
+                copy.widthAnchor.constraint(equalToConstant: 28).isActive = true
+
+                let lan = NSButton(title: "L", target: self, action: #selector(sshPortLANAccessClicked(_:)))
+                lan.setButtonType(.toggle)
+                lan.bezelStyle = .rounded
+                lan.state = port.lanAccessEnabled == true ? .on : .off
+                lan.toolTip = MuxtermI18n.shared.tr(.statusLANAccess)
+                lan.tag = Int(port.remotePort)
+                lan.isEnabled = !port.pending
+                lan.setAccessibilityLabel(MuxtermI18n.shared.tr(.statusLANAccess))
+                lan.setAccessibilityIdentifier("muxterm.statusPopover.port.\(port.remotePort).lan")
+                forwardControls.addArrangedSubview(lan)
+                lan.widthAnchor.constraint(equalToConstant: 24).isActive = true
+            } else {
+                let value = NSTextField(labelWithString: valueText)
+                value.font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
+                value.textColor = port.error == nil ? .secondaryLabelColor : .systemRed
+                value.isSelectable = true
+                value.lineBreakMode = .byTruncatingMiddle
+                value.toolTip = valueText
+                value.setAccessibilityIdentifier("muxterm.statusPopover.port.\(port.remotePort).value")
+                placeValue(value)
+                value.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+                value.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            }
+            row.addArrangedSubview(forwardControls)
+
+            let actionTitle = port.localPort == nil
+                ? MuxtermI18n.shared.tr(.statusForward)
+                : MuxtermI18n.shared.tr(.statusStopForward)
+            let action = NSButton(title: actionTitle, target: self, action: #selector(sshPortActionClicked(_:)))
+            action.bezelStyle = .rounded
+            action.tag = Int(port.remotePort)
+            action.isEnabled = !port.pending
+            action.setAccessibilityIdentifier("muxterm.statusPopover.port.\(port.remotePort).action")
+            row.addArrangedSubview(action)
+            action.widthAnchor.constraint(equalToConstant: actionWidth).isActive = true
+
+            let open = NSButton(title: MuxtermI18n.shared.tr(.statusOpenRemotePort), target: self, action: #selector(openRemoteSSHPort(_:)))
+            open.bezelStyle = .rounded
+            open.tag = Int(port.remotePort)
+            open.isEnabled = remoteSSHPortURL(port.remotePort) != nil
+            open.toolTip = remoteSSHPortURL(port.remotePort)?.absoluteString
+                ?? sshRemoteHostError
+                ?? MuxtermI18n.shared.tr(.statusRemoteAddressPending)
+            open.setAccessibilityIdentifier("muxterm.statusPopover.port.\(port.remotePort).open")
+            open.setAccessibilityLabel(MuxtermI18n.shared.tr(.statusOpenRemotePort) + ": " + (open.toolTip ?? ""))
+            row.addArrangedSubview(open)
+            open.widthAnchor.constraint(equalToConstant: openWidth).isActive = true
+
+            let ignoreSlot = NSView()
+            ignoreSlot.translatesAutoresizingMaskIntoConstraints = false
+            row.addArrangedSubview(ignoreSlot)
+            ignoreSlot.widthAnchor.constraint(equalToConstant: ignoreWidth).isActive = true
+            ignoreSlot.heightAnchor.constraint(equalToConstant: 24).isActive = true
+            if port.localPort == nil, port.discovered == true {
+                let ignore = NSButton(title: MuxtermI18n.shared.tr(.statusIgnore), target: self, action: #selector(sshPortIgnoreClicked(_:)))
+                ignore.bezelStyle = .rounded
+                ignore.tag = Int(port.remotePort)
+                ignore.setAccessibilityIdentifier("muxterm.statusPopover.port.\(port.remotePort).ignore")
+                ignore.translatesAutoresizingMaskIntoConstraints = false
+                ignoreSlot.addSubview(ignore)
+                NSLayoutConstraint.activate([
+                    ignore.leadingAnchor.constraint(equalTo: ignoreSlot.leadingAnchor),
+                    ignore.trailingAnchor.constraint(equalTo: ignoreSlot.trailingAnchor),
+                    ignore.centerYAnchor.constraint(equalTo: ignoreSlot.centerYAnchor),
+                ])
+            }
+            stack.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        }
+        resizePortPickerPopover()
+    }
+
+    private func resizePortPickerPopover() {
+        statusPopoverPortStack?.layoutSubtreeIfNeeded()
+    }
+
+    @objc private func sshPortActionClicked(_ sender: NSButton) {
+        guard let port = UInt16(exactly: sender.tag) else { return }
+        if sshPorts.first(where: { $0.remotePort == port })?.localPort != nil {
+            onSSHPortStop?(port)
+        } else {
+            onSSHPortForward?(port, false)
+        }
+        onConnectionRefresh?()
+    }
+
+    @objc private func sshPortLANAccessClicked(_ sender: NSButton) {
+        guard let port = UInt16(exactly: sender.tag),
+              sshPorts.first(where: { $0.remotePort == port })?.localPort != nil
+        else { return }
+        onSSHPortForward?(port, sender.state == .on)
+        onConnectionRefresh?()
+    }
+
+    @objc private func openSSHPortAddress(_ sender: NSButton) {
+        guard let port = UInt16(exactly: sender.tag),
+              let localPort = sshPorts.first(where: { $0.remotePort == port })?.localPort,
+              let url = sshPortURL(localPort: localPort, lan: sshPorts.first(where: { $0.remotePort == port })?.lanAccessEnabled == true)
+        else { return }
+        openSSHPortURL(url)
+    }
+
+    @objc private func openRemoteSSHPort(_ sender: NSButton) {
+        guard let port = UInt16(exactly: sender.tag),
+              sshPorts.contains(where: { $0.remotePort == port }),
+              let url = remoteSSHPortURL(port)
+        else { return }
+        openSSHPortURL(url)
+    }
+
+    private func remoteSSHPortURL(_ remotePort: UInt16) -> URL? {
+        guard connectionSummary.type == "ssh", let host = sshRemoteHost, !host.isEmpty else { return nil }
+        var url = URLComponents()
+        url.scheme = "http"
+        url.host = host.contains(":") ? "[\(host)]" : host
+        url.port = Int(remotePort)
+        return url.url
+    }
+
+    @objc private func copySSHPortAddress(_ sender: NSButton) {
+        guard let port = UInt16(exactly: sender.tag),
+              let entry = sshPorts.first(where: { $0.remotePort == port }),
+              let localPort = entry.localPort,
+              let url = sshPortURL(localPort: localPort, lan: entry.lanAccessEnabled == true)
+        else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(url.absoluteString, forType: .string)
+    }
+
+    private func sshPortAddress(localPort: UInt16, lan: Bool) -> String {
+        sshPortURL(localPort: localPort, lan: lan)?.absoluteString ?? "http://127.0.0.1:\(localPort)"
+    }
+
+    private func sshPortURL(localPort: UInt16, lan: Bool) -> URL? {
+        let host = lan ? currentLANIPv4Address() ?? "0.0.0.0" : "127.0.0.1"
+        return URL(string: "http://\(host):\(localPort)")
+    }
+
+    @objc private func sshPortIgnoreClicked(_ sender: NSButton) {
+        guard let port = UInt16(exactly: sender.tag) else { return }
+        onSSHPortIgnore?(port)
+        onConnectionRefresh?()
+    }
+
     // MARK: - tab 重建
 
     private struct TabBarItem {
@@ -887,24 +1334,25 @@ final class StatusBarView: NSView {
         let active: Bool
     }
 
-    private func tabTitle(_ tab: Tab) -> String {
-        StatusBarTabTitle.display(index: tab.id, name: tab.name)
+    private func tabTitle(_ tab: Tab, at position: Int) -> String {
+        StatusBarTabTitle.display(index: UInt32(position + 1), name: tab.name)
     }
 
     private func tabBarItems(activeOverride: UInt32? = nil) -> [TabBarItem] {
         let windowsByID = Dictionary(
             uniqueKeysWithValues: (lastTmuxSnapshot?.windows ?? []).map { ($0.windowId, $0) }
         )
-        let useTmuxTitles = tmuxStatusEnabled && colorMode == .tmux
+        let useTmuxStyles = tmuxStatusEnabled && colorMode == .tmux
         return currentTabs.enumerated().map { position, tab in
             let active = activeOverride.map { tab.id == $0 } ?? tab.isActive
-            if useTmuxTitles, let window = windowsByID[tab.id] {
+            let title = tabTitle(tab, at: position)
+            if useTmuxStyles, windowsByID[tab.id] != nil {
                 let styleText = active
                     ? lastTmuxSnapshot?.windowCurrentStyle ?? ""
                     : lastTmuxSnapshot?.windowStyle ?? ""
                 let style = merged(lastBase, styleText)
                 let attributed = Self.attributed(
-                    StatusBarStyleParser.parseInline(text: window.text, base: style),
+                    StatusBarStyleParser.parseInline(text: title, base: style),
                     font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
                 )
                 return TabBarItem(
@@ -917,10 +1365,7 @@ final class StatusBarView: NSView {
             }
             return TabBarItem(
                 id: tab.id,
-                title: StatusBarTabTitle.display(
-                    index: UInt32(position + 1),
-                    name: tab.name
-                ),
+                title: title,
                 attributedTitle: nil,
                 tmuxStyle: nil,
                 active: active
@@ -938,16 +1383,14 @@ final class StatusBarView: NSView {
         for (id, button) in existing where !ids.contains(id) {
             button.removeFromSuperview()
         }
-        let equalWidth = tmuxStatusEnabled
-            ? colorMode == .theme
-            : tabBarStyle == .equalWidth
-        tabStack.distribution = equalWidth ? .fillEqually : .fill
-        tabStack.spacing = equalWidth ? 1 : 3
+        let fillsViewport = tabBarStyle == .equalWidth
+        tabStack.distribution = fillsViewport ? .fillEqually : .fill
+        tabStack.spacing = fillsViewport ? 1 : 3
         tabStack.setContentHuggingPriority(
-            equalWidth ? .defaultLow : .defaultHigh,
+            fillsViewport ? .defaultLow : .required,
             for: .horizontal
         )
-        tabStackTrailingConstraint.isActive = equalWidth && !items.isEmpty
+        tabStackTrailingConstraint.isActive = fillsViewport && !items.isEmpty
         var firstEqualWidthButton: StatusTabButton?
         for (position, item) in items.enumerated() {
             let button = existing[item.id] ?? StatusTabButton()
@@ -965,7 +1408,7 @@ final class StatusBarView: NSView {
                 }
                 tabStack.insertArrangedSubview(button, at: position)
             }
-            if equalWidth {
+            if tabBarStyle == .equalWidth {
                 if let firstEqualWidthButton {
                     tabWidthConstraints.append(button.widthAnchor.constraint(equalTo: firstEqualWidthButton.widthAnchor))
                 } else {
@@ -974,6 +1417,14 @@ final class StatusBarView: NSView {
                 let minimum = button.widthAnchor.constraint(greaterThanOrEqualToConstant: 44)
                 minimum.priority = .defaultLow
                 tabWidthConstraints.append(minimum)
+            } else if tabBarStyle == .fixed {
+                tabWidthConstraints.append(
+                    button.widthAnchor.constraint(equalToConstant: TabBarStyle.fixedTabWidth)
+                )
+            } else {
+                tabWidthConstraints.append(
+                    button.widthAnchor.constraint(lessThanOrEqualToConstant: TabBarStyle.maximumFittedTabWidth)
+                )
             }
             button.tag = Int(item.id)
             button.aggregateAppearance = AggregateWorkspaceAppearance(
@@ -1283,6 +1734,15 @@ final class StatusBarView: NSView {
         statusPopover?.contentViewController?.view
     }
 
+    func testSSHPortPickerContentView() -> NSView? {
+        sshPortPickerPopover?.contentViewController?.view
+    }
+
+    func testCloseConnectionPopovers() {
+        sshPortPickerPopover?.close()
+        statusPopover?.close()
+    }
+
     func testStatusSymbolName() -> String {
         statusDot.symbolName
     }
@@ -1374,6 +1834,28 @@ final class StatusBarView: NSView {
     func testChromeMinX() -> CGFloat {
         layoutSubtreeIfNeeded()
         return statusDot.frame.minX
+    }
+}
+
+private final class SSHPortListStackView: NSStackView {
+    // 滚动文档以左上角为原点；列表增长时初次打开仍显示第一个端口。
+    override var isFlipped: Bool { true }
+}
+
+/// 在绘制时解析动态颜色，打开的端口弹窗也能立即跟随明暗外观。
+private final class SSHPortPickerBackgroundView: NSView {
+    override var isOpaque: Bool { true }
+
+    override func draw(_ dirtyRect: NSRect) {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            NSColor.windowBackgroundColor.setFill()
+            dirtyRect.fill()
+        }
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
     }
 }
 
@@ -1539,8 +2021,8 @@ private final class StatusTabButton: NSButton {
         NSLayoutConstraint.activate([
             activityView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 7),
             activityView.centerYAnchor.constraint(equalTo: centerYAnchor),
-            activityView.widthAnchor.constraint(equalToConstant: 10),
-            activityView.heightAnchor.constraint(equalToConstant: 10),
+            activityView.widthAnchor.constraint(equalToConstant: 12),
+            activityView.heightAnchor.constraint(equalToConstant: 12),
             closeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
             closeButton.centerYAnchor.constraint(equalTo: centerYAnchor),
             closeButton.widthAnchor.constraint(equalToConstant: 16),
@@ -1652,7 +2134,7 @@ private final class StatusTabButton: NSButton {
         self.font = font
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = .left
-        let leadingIndent: CGFloat = activityView.isHidden ? 8 : 21
+        let leadingIndent: CGFloat = activityView.isHidden ? 8 : 25
         paragraph.headIndent = leadingIndent
         paragraph.firstLineHeadIndent = leadingIndent
         paragraph.tailIndent = closeButton.isHidden ? -8 : -24
@@ -1764,35 +2246,52 @@ private final class TabActivityIndicatorView: NSView {
     private func updateAppearance() {
         let color: NSColor
         switch activity {
-        case .working: color = .systemYellow
+        case .working: color = workingColor
         case .blocked: color = .systemPink
         case .done: color = .systemTeal
         case .idle, nil: color = .tertiaryLabelColor
         }
         shape.strokeColor = color.cgColor
         shape.fillColor = activity == .working ? NSColor.clear.cgColor : color.cgColor
-        shape.lineWidth = activity == .working ? 1.5 : 1
+        shape.lineWidth = activity == .working ? 2.4 : 0
         shape.lineCap = .round
         updatePath()
         updateAnimation()
     }
 
+    private var workingColor: NSColor {
+        if effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua {
+            return NSColor(srgbRed: 1.0, green: 0.72, blue: 0.18, alpha: 1)
+        }
+        return NSColor(srgbRed: 0.70, green: 0.22, blue: 0.035, alpha: 1)
+    }
+
     private func updatePath() {
-        let rect = bounds.insetBy(dx: 1.5, dy: 1.5)
-        guard rect.width > 0, rect.height > 0 else { return }
+        let inset: CGFloat = activity == .working ? 2 : 3
+        let rect = bounds.insetBy(dx: inset, dy: inset)
+        guard rect.width > 0, rect.height > 0 else {
+            shape.path = nil
+            return
+        }
+        shape.frame = bounds
         if activity == .working {
             let path = CGMutablePath()
             path.addArc(
                 center: CGPoint(x: rect.midX, y: rect.midY),
                 radius: min(rect.width, rect.height) / 2,
                 startAngle: -.pi / 2,
-                endAngle: .pi,
+                endAngle: .pi * 1.25,
                 clockwise: false
             )
             shape.path = path
         } else {
             shape.path = CGPath(ellipseIn: rect, transform: nil)
         }
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateAppearance()
     }
 
     private func updateAnimation() {

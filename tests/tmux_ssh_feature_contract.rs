@@ -32,7 +32,8 @@ fn ssh_attach_preexist_token_reaches_workspace() {
     let fx = build_remote_one_pane("feat-ssh");
     fx.apply_ssh_config_env();
 
-    let runtime = TmuxRuntime::new_ssh_attach(&fx.sshd.alias, Some(&fx.socket), &fx.session);
+    let mut runtime = TmuxRuntime::new_ssh_attach(&fx.sshd.alias, Some(&fx.socket), &fx.session);
+    runtime.set_client_size(80, 24);
     let mut ws = Workspace::new(
         WorkspaceId::new("ssh", Some(&fx.sshd.alias), &fx.session, "tmux", ""),
         fx.session.clone(),
@@ -78,7 +79,8 @@ fn ssh_attach_history_scroll_matches_local_contract() {
     let (fx, tail) = build_remote_offscreen_history("history-parity");
     fx.apply_ssh_config_env();
 
-    let runtime = TmuxRuntime::new_ssh_attach(&fx.sshd.alias, Some(&fx.socket), &fx.session);
+    let mut runtime = TmuxRuntime::new_ssh_attach(&fx.sshd.alias, Some(&fx.socket), &fx.session);
+    runtime.set_client_size(80, 24);
     let mut ws = Workspace::new(
         WorkspaceId::new("ssh", Some(&fx.sshd.alias), &fx.session, "tmux", ""),
         fx.session.clone(),

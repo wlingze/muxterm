@@ -49,6 +49,8 @@ pub struct Config {
     #[serde(default)]
     pub pool: PoolConfig,
     #[serde(default)]
+    pub quick_panel: QuickPanelConfig,
+    #[serde(default)]
     pub tmux: TmuxConfig,
     #[serde(default)]
     pub ssh: SshFileConfig,
@@ -159,6 +161,26 @@ impl Default for PoolConfig {
     fn default() -> Self {
         PoolConfig {
             max_slots: default_pool_max_slots(),
+        }
+    }
+}
+
+/// `[quick_panel]`：最近 attach 排序的时间窗口。
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct QuickPanelConfig {
+    /// 只统计最近 N 天的成功 attach；计数记录单独存放，不写进 config.toml。
+    #[serde(default = "default_attach_history_days")]
+    pub attach_history_days: u32,
+}
+
+fn default_attach_history_days() -> u32 {
+    30
+}
+
+impl Default for QuickPanelConfig {
+    fn default() -> Self {
+        Self {
+            attach_history_days: default_attach_history_days(),
         }
     }
 }
@@ -424,6 +446,7 @@ impl Default for Config {
             theme: ThemeConfig::default(),
             statusbar: StatusbarConfig::default(),
             pool: PoolConfig::default(),
+            quick_panel: QuickPanelConfig::default(),
             tmux: TmuxConfig::default(),
             ssh: SshFileConfig::default(),
             scrollback: ScrollbackConfig::default(),

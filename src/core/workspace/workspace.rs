@@ -16,6 +16,7 @@ use crate::protocol::{PaneId, TabId};
 use crate::runtime::{ControlEvent, RenderEvent, Runtime, RuntimeBatch, RuntimeSignal};
 use crate::workspace::pane_buf::PaneBuf;
 use crate::workspace::provenance::WorkspaceProvenance;
+use crate::workspace::ssh_port_discovery::SshPortDiscovery;
 use crate::workspace::template::WorkspaceTemplate;
 use crate::workspace::template_apply::{TemplateApplication, TemplateApplyReport};
 use crate::workspace::terminal_model::TerminalModel;
@@ -137,6 +138,8 @@ pub struct Workspace {
     template_application: Option<TemplateApplication>,
     /// 模板应用完成后的稳定报告。
     template_apply_report: Option<TemplateApplyReport>,
+    /// SSH applications explicitly advertising loopback web-server URLs.
+    ssh_port_discovery: Option<SshPortDiscovery>,
 }
 
 impl Workspace {
@@ -153,6 +156,8 @@ impl Workspace {
         scrollback_lines: usize,
     ) -> Self {
         static NEXT_INSTANCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let ssh_port_discovery =
+            (id.transport == "ssh" && id.runtime != "herdr").then(SshPortDiscovery::default);
         Self {
             id,
             name,
@@ -168,6 +173,7 @@ impl Workspace {
             provenance: None,
             template_application: None,
             template_apply_report: None,
+            ssh_port_discovery,
         }
     }
 
@@ -235,6 +241,28 @@ impl Workspace {
         self.model.runtime_mut()
     }
 
+    /// Remote loopback ports advertised by this SSH workspace's pane output.
+    pub fn ssh_ports(&self) -> Vec<u16> {
+        self.ssh_port_discovery
+            .as_ref()
+            .map(|discovery| discovery.ports().collect())
+            .unwrap_or_default()
+    }
+
+    /// Check whether a pane-advertised SSH port was hidden by the user.
+    pub fn is_ssh_port_ignored(&self, port: u16) -> bool {
+        self.ssh_port_discovery
+            .as_ref()
+            .is_some_and(|discovery| discovery.is_ignored(port))
+    }
+
+    /// Ignore a discovered port until this workspace is closed.
+    pub fn ignore_ssh_port(&mut self, port: u16) -> bool {
+        self.ssh_port_discovery
+            .as_mut()
+            .is_some_and(|discovery| discovery.ignore(port))
+    }
+
     /// 只读访问当前状态快照。
     pub fn state(&self) -> &dyn State {
         self.model.state()
@@ -254,23 +282,24 @@ impl Workspace {
                 command,
                 workdir: None,
             } => {
+                let is_herdr = self.resolved_target.as_ref().is_some_and(|target| {
+                    target.canonical.runtime == crate::projects::TargetRuntime::Herdr
+                });
+                let usable_path = |path: &str| {
+                    let path = path.trim();
+                    (!path.is_empty() && !(is_herdr && is_herdr_workspace_token(path)))
+                        .then(|| path.to_string())
+                };
                 let workdir = self
                     .resolved_target
                     .as_ref()
-                    .map(|target| target.canonical.path.trim().to_string())
-                    .filter(|path| !path.is_empty())
+                    .and_then(|target| usable_path(&target.canonical.path))
                     .or_else(|| {
-                        self.resolved_target.as_ref().and_then(|target| {
-                            let path = target.spec.path.trim();
-                            (!path.is_empty() && !is_herdr_workspace_token(path))
-                                .then(|| path.to_string())
-                        })
+                        self.resolved_target
+                            .as_ref()
+                            .and_then(|target| usable_path(&target.spec.path))
                     })
-                    .or_else(|| {
-                        let path = self.id.path.trim();
-                        (!path.is_empty() && !is_herdr_workspace_token(path))
-                            .then(|| path.to_string())
-                    });
+                    .or_else(|| usable_path(&self.id.path));
                 Task::NewTab {
                     name,
                     command,
@@ -665,6 +694,16 @@ impl Workspace {
             })
             .collect();
 
+        if let Some(discovery) = self.ssh_port_discovery.as_mut() {
+            for event in &batch.render {
+                if let RenderEvent::PaneOutput { pane, data } = event {
+                    if !closed_panes.contains(pane) {
+                        discovery.feed(data);
+                    }
+                }
+            }
+        }
+
         for event in &batch.control {
             match event {
                 ControlEvent::PaneClosed { pane } => {
@@ -967,6 +1006,73 @@ mod tests {
             )),
             "没有 resolved_target 时退回 WorkspaceId.path，实际 {executed:?}"
         );
+    }
+
+    #[test]
+    fn existing_herdr_workspace_id_is_never_a_new_tab_directory() {
+        use std::sync::{Arc, Mutex};
+
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut runtime = MockRuntime::with_single_pane();
+        runtime.executed_log = Some(log.clone());
+        let id = WorkspaceId::new("ssh", Some("ryzen"), "default", "herdr", "w8");
+        let mut workspace = Workspace::new(id, "legion".into(), Box::new(runtime));
+        let spec = WorkspaceSpec::ssh_herdr("ryzen", "default", "w8", "/tmp/herdr.sock");
+        workspace.set_resolved_target(ResolvedTarget {
+            spec,
+            canonical: ResolvedTargetDescriptor::new(
+                "legion",
+                TargetRuntime::Herdr,
+                TargetTransport::Ssh {
+                    name: "ryzen".into(),
+                },
+                "w8",
+            ),
+        });
+        workspace
+            .execute(Task::NewTab {
+                name: None,
+                command: None,
+                workdir: None,
+            })
+            .unwrap();
+        let executed = log.lock().unwrap();
+        assert!(executed
+            .iter()
+            .any(|task| matches!(task, Task::NewTab { workdir: None, .. })));
+    }
+
+    #[test]
+    fn herdr_new_tab_prefers_project_path_over_workspace_identity() {
+        use std::sync::{Arc, Mutex};
+
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut runtime = MockRuntime::with_single_pane();
+        runtime.executed_log = Some(log.clone());
+        let id = WorkspaceId::new("ssh", Some("ryzen"), "default", "herdr", "w8");
+        let mut workspace = Workspace::new(id, "legion".into(), Box::new(runtime));
+        workspace.set_resolved_target(ResolvedTarget {
+            spec: WorkspaceSpec::ssh_herdr("ryzen", "default", "w8", "/tmp/herdr.sock"),
+            canonical: ResolvedTargetDescriptor::new(
+                "legion",
+                TargetRuntime::Herdr,
+                TargetTransport::Ssh {
+                    name: "ryzen".into(),
+                },
+                "/projects/legion",
+            ),
+        });
+        workspace
+            .execute(Task::NewTab {
+                name: None,
+                command: None,
+                workdir: None,
+            })
+            .unwrap();
+        let executed = log.lock().unwrap();
+        assert!(executed.iter().any(|task| matches!(task,
+            Task::NewTab { workdir: Some(path), .. } if path == "/projects/legion"
+        )));
     }
 
     fn workspace(name: &str) -> Workspace {

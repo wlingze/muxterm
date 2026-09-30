@@ -1,5 +1,6 @@
 import AppKit
 import XCTest
+import SwiftTerm
 @testable import MuxtermAppLib
 import MuxtermChrome
 
@@ -522,7 +523,7 @@ final class AgentRenderE2ETests: XCTestCase {
         XCTAssertFalse(view.canScroll, "服务端历史不得伪装成本地重放的 scrollback")
     }
 
-    func testMouseReportingWheelBypassesServerScroll() throws {
+    func testHerdrWheelUsesServerRoutingEvenWhenSurfaceReportsMouse() throws {
         AppE2E.ensureApp()
         let view = MuxTerminalView(paneId: 9, frame: NSRect(x: 0, y: 0, width: 640, height: 240))
         view.getTerminal().resize(cols: 40, rows: 12)
@@ -535,13 +536,51 @@ final class AgentRenderE2ETests: XCTestCase {
         let event = try XCTUnwrap(CGEvent(scrollWheelEvent2Source: nil, units: .line,
             wheelCount: 1, wheel1: 3, wheel2: 0, wheel3: 0).flatMap(NSEvent.init(cgEvent:)))
         view.scrollWheel(with: event)
-        XCTAssertTrue(server.isEmpty, "应用开了鼠标时滚轮必须进 pane，不能走 Herdr ServerScroll")
-        let payload = String(bytes: handler.bytes, encoding: .utf8) ?? ""
-        XCTAssertTrue(
-            payload.contains("\u{1b}[<64;") || payload.contains("\u{1b}[<65;"),
-            "mouse reporting 滚轮必须 SGR。got=\(handler.bytes)"
-        )
+        XCTAssertEqual(server, [3], "Herdr decides whether the child wants a wheel or history")
+        XCTAssertTrue(handler.bytes.isEmpty, "the client must not inject an extra SGR wheel")
         XCTAssertTrue(view.lastScrollWheelRoutedToRuntime)
+    }
+
+    func testHerdrWheelPassesItsPaneCellToServer() throws {
+        AppE2E.ensureApp()
+        let view = MuxTerminalView(paneId: 9, frame: NSRect(x: 0, y: 0, width: 640, height: 300))
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 300),
+            styleMask: [.titled], backing: .buffered, defer: false
+        )
+        window.contentView = view
+        window.orderFront(nil)
+        defer { window.orderOut(nil) }
+        view.getTerminal().resize(cols: 80, rows: 24)
+        view.feedOutput(Data("\u{1b}[?1003h\u{1b}[?1006h".utf8))
+        let handler = RecordingInputHandler()
+        view.inputHandler = handler
+        var received: (Int, UInt16, UInt16, UInt8)?
+        view.onServerScrollAt = { received = ($0, $1, $2, $3) }
+
+        let localPoint = NSPoint(x: view.bounds.midX, y: view.bounds.midY)
+        let screenPoint = window.convertPoint(toScreen: view.convert(localPoint, to: nil))
+        let event = try XCTUnwrap(CGEvent(
+            scrollWheelEvent2Source: nil, units: .line, wheelCount: 1,
+            wheel1: 3, wheel2: 0, wheel3: 0
+        ))
+        event.setIntegerValueField(.mouseEventWindowUnderMousePointer, value: Int64(window.windowNumber))
+        event.setIntegerValueField(
+            .mouseEventWindowUnderMousePointerThatCanHandleThisEvent,
+            value: Int64(window.windowNumber)
+        )
+        let screenMaxY = NSScreen.screens.first(where: { $0.frame.contains(screenPoint) })?
+            .frame.maxY ?? 0
+        event.location = CGPoint(x: screenPoint.x, y: screenMaxY - screenPoint.y)
+        view.scrollWheel(with: try XCTUnwrap(NSEvent(cgEvent: event)))
+
+        let result = try XCTUnwrap(received)
+        XCTAssertEqual(result.0, 3)
+        XCTAssertGreaterThan(result.1, 0, "Herdr must not always scroll at column zero")
+        XCTAssertGreaterThan(result.2, 0, "Herdr must not always scroll at row zero")
+        XCTAssertLessThan(result.1, 80)
+        XCTAssertLessThan(result.2, 24)
+        XCTAssertTrue(handler.bytes.isEmpty, "AttachScroll owns the wheel input")
     }
 
     func testAlternateAgentScrollRoutesToRuntimeNotLocalHistory() {
@@ -994,7 +1033,139 @@ final class AgentRenderE2ETests: XCTestCase {
         let wheel = try XCTUnwrap(CGEvent(scrollWheelEvent2Source: nil, units: .line,
             wheelCount: 1, wheel1: 3, wheel2: 0, wheel3: 0).flatMap(NSEvent.init(cgEvent:)))
         view.scrollWheel(with: wheel)
-        XCTAssertTrue(server.isEmpty, "鼠标模式打开后滚轮不能再走 ServerScroll")
+        XCTAssertEqual(server, [3], "Herdr's AttachScroll must select the child mouse route")
+    }
+
+    func testHerdrMouseClickAndHoverReachWorkspaceInputQueue() throws {
+        let (bridge, _) = try makeManager()
+        defer { bridge.shutdown() }
+        AppE2E.ensureApp()
+
+        let workspaceID = "ssh/test/herdr/session/w1"
+        let manager = TerminalManager(
+            bridge: bridge,
+            workspaceID: workspaceID,
+            runtimeID: "herdr"
+        )
+        let paneId: UInt32 = 29
+        manager.updatePaneSizes([Pane(id: paneId, cols: 40, rows: 12, isActive: true)])
+        var queued: [QueuedMuxCommand] = []
+        manager.enqueueCoreCommand = { command in
+            queued.append(command)
+            return true
+        }
+
+        let view = manager.view(for: paneId)
+        view.setFrameSize(NSSize(width: 640, height: 240))
+        var activations: [UInt32] = []
+        view.onActivatePane = { activations.append($0) }
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 240),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = view
+        window.makeKeyAndOrderFront(nil)
+        XCTAssertTrue(window.makeFirstResponder(view))
+        defer { window.orderOut(nil) }
+
+        var frame = Data("\u{1b}[?7l\u{1b}[1;1HREADY".utf8)
+        frame.append(Data("\u{1b}[?1003h\u{1b}[?1006h".utf8))
+        manager.handleFrame(paneId: paneId, data: frame)
+        XCTAssertEqual(view.getTerminal().mouseMode, .anyEvent)
+
+        func event(_ type: NSEvent.EventType, number: Int, clickCount: Int) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.mouseEvent(
+                with: type,
+                location: NSPoint(x: 30, y: 40),
+                modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: window.windowNumber,
+                context: nil,
+                eventNumber: number,
+                clickCount: clickCount,
+                pressure: 1
+            ))
+        }
+
+        view.mouseDown(with: try event(.leftMouseDown, number: 30, clickCount: 1))
+        view.mouseUp(with: try event(.leftMouseUp, number: 31, clickCount: 1))
+        view.mouseMoved(with: try event(.mouseMoved, number: 32, clickCount: 0))
+
+        let inputs = queued.compactMap { command -> (String?, UInt32, Data)? in
+            switch command.operation {
+            case .input(let target, let data, _), .mouseMotion(let target, let data):
+                return (command.workspaceID, target, data)
+            default:
+                return nil
+            }
+        }
+        XCTAssertEqual(inputs.count, 3,
+            "mouse down, up, and hover each need a Core input; activated=\(activations), frame=\(view.frame)")
+        XCTAssertTrue(inputs.allSatisfy { $0.0 == workspaceID && $0.1 == paneId })
+        let reports = inputs.map { String(decoding: $0.2, as: UTF8.self) }
+        XCTAssertTrue(reports.contains { $0.hasPrefix("\u{1b}[<0;") && $0.hasSuffix("M") },
+            "left click press must be queued as an SGR report: \(reports)")
+        XCTAssertTrue(reports.contains { $0.hasPrefix("\u{1b}[<0;") && $0.hasSuffix("m") },
+            "left click release must be queued as an SGR report: \(reports)")
+        XCTAssertTrue(reports.contains { $0.hasPrefix("\u{1b}[<35;") && $0.hasSuffix("M") },
+            "1003 hover must be queued as an SGR motion report: \(reports)")
+    }
+
+    func testWrappedImplicitUrlOpensWholeLinkFromContinuationRow() throws {
+        AppE2E.ensureApp()
+        let view = MuxTerminalView(
+            paneId: 30,
+            frame: NSRect(x: 0, y: 0, width: 640, height: 240)
+        )
+        view.muxtermResizeGridWithView = false
+        view.getTerminal().resize(cols: 24, rows: 6)
+        let cell = try XCTUnwrap(view.terminalCellSizeInPoints())
+        view.setFrameSize(NSSize(width: cell.width * 24, height: cell.height * 6))
+
+        let url = "https://github.com/yakang/yakang/pull/5172"
+        view.feedOutput(Data(url.utf8))
+        XCTAssertEqual(
+            view.getTerminal().link(
+                at: .buffer(Position(col: 4, row: 1)),
+                mode: .explicitAndImplicit
+            ),
+            url,
+            "视觉换行后的后半段必须解析为同一条完整链接"
+        )
+
+        view.linkHighlightMode = .hoverWithModifier
+        var opened: [URL] = []
+        view.onOpenLink = { opened.append($0) }
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: view.frame.size),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = view
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+
+        let target = NSPoint(
+            x: cell.width * 4.5,
+            y: view.bounds.height - cell.height * 1.5
+        )
+        let mouseUp = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .leftMouseUp,
+            location: target,
+            modifierFlags: [.command],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 33,
+            clickCount: 1,
+            pressure: 1
+        ))
+        view.mouseUp(with: mouseUp)
+
+        XCTAssertEqual(opened.map(\.absoluteString), [url])
     }
 
     /// 伪造 pi/Cursor 网格：顶栏 + 中间对话 + 底栏输入。历史 prepend 后

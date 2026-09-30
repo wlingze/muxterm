@@ -7,6 +7,7 @@ import MuxtermChrome
 /// 只消费这个值类型视图，不需要重新查询远端。
 final class WorkspaceViewStore {
     var snapshot = FrameSnapshot()
+    var backendStatus: UInt32 = 2
     var attentionSnapshot: AttentionSnapshot?
     var structuredAgents: [StructuredPaneAgent] = []
     var tabNumbersByPane: [UInt32: Int]?
@@ -47,6 +48,12 @@ final class WorkspaceScene: SceneProtocol {
     /// EventPump 最近一次提交的快照（只读 ViewStore）。
     var lastSnapshot: FrameSnapshot {
         return viewStore.snapshot
+    }
+
+    var backendStatus: UInt32 { viewStore.backendStatus }
+
+    func cacheBackendStatus(_ status: UInt32) {
+        viewStore.backendStatus = status
     }
 
     /// EventPump 写入的最新拓扑；场景切换时直接使用，不重新读取 Core。
@@ -162,6 +169,9 @@ final class WorkspaceScene: SceneProtocol {
             : nil
         var surface: [StateChange] = []
         for event in events {
+            if event.isBackendStatus {
+                cacheBackendStatus(event.paneId)
+            }
             // Core 已消费进程事实；Scene 不得把旧订阅异步写回 Activity。
             if event.isPaneOutput
                 || event.isPaneFrame
@@ -260,6 +270,33 @@ final class WorkspaceScene: SceneProtocol {
         }
 
         if event.isPaneOutput {
+            if terminalManager.isDirectPtyTerminal {
+                // 直接 PTY 丢字节后无法重建 VT 状态。按预算分段排队，
+                // catch-up 时仍按原顺序交付每一段。
+                if let index = viewStore.pendingSurfaceEvents.lastIndex(where: {
+                    $0.paneId == paneId
+                }) {
+                    let previous = viewStore.pendingSurfaceEvents[index]
+                    if previous.isPaneOutput,
+                       SurfaceOutputCoalescePolicy.decide(
+                           previousBytes: previous.data.count,
+                           incomingBytes: event.data.count
+                       ) == .combine
+                    {
+                        viewStore.pendingSurfaceEvents[index] = StateChange(
+                            type: previous.type,
+                            paneId: previous.paneId,
+                            tabId: previous.tabId,
+                            windowId: previous.windowId,
+                            data: Self.appendedData(previous.data, event.data),
+                            name: previous.name
+                        )
+                        return
+                    }
+                }
+                viewStore.pendingSurfaceEvents.append(event)
+                return
+            }
             guard !viewStore.pendingSurfaceOverflowPanes.contains(paneId) else { return }
             if let index = viewStore.pendingSurfaceEvents.lastIndex(where: {
                 $0.paneId == paneId

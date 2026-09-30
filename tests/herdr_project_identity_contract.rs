@@ -5,8 +5,8 @@
 //!   attach spec 身份字段和 WorkspaceId；存在同 identity Project 元数据时
 //!   ResolvedTarget 相同；
 //! - Catalog::resolve_target 是唯一 TargetConfig→ResolvedTarget resolver；
-//! - AttachOnly 无匹配不创建；CreateIfMissing 在已运行的 Herdr session
-//!   （local / SSH）上 workspace.create，不偷偷 start server；
+//! - AttachOnly 无匹配不创建；CreateIfMissing 在 SSH session 缺失时启动
+//!   隔离 named server，再通过 workspace.create 建立目标；
 //! - identity key 由 transport target/runtime/session/socket/workspace_id
 //!   构成，name/path 变更不改变身份。
 
@@ -17,13 +17,18 @@ use muxterm::test_support::core::projects::{
     Project, ProjectStore, ProjectTarget, TargetConfig, TargetRuntime, TargetTransport,
 };
 use muxterm::test_support::core::protocol::WorkspaceId;
+use muxterm::test_support::core::runtime::herdr::HerdrSession;
+use muxterm::test_support::core::transport::connection::Connect;
 use muxterm::test_support::core::transport::registry::ConnectionRegistry;
-use support::herdr_test_support::{herdr_available, IsolatedHerdr};
+use support::herdr_test_support::{herdr_available, unique_name, IsolatedHerdr};
 use support::sshd_test_support::{loopback_sshd_available, LoopbackSshd};
+
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// 本地 herdr：Project 保存 → 重载，与 discovery Existing 同一身份。
 #[test]
 fn local_project_reload_matches_existing_identity() {
+    let _env_lock = ENV_LOCK.lock().unwrap();
     if !herdr_available() {
         eprintln!("skip: 无 herdr 二进制");
         return;
@@ -115,6 +120,7 @@ fn local_project_reload_matches_existing_identity() {
 /// named session。
 #[test]
 fn local_attach_only_never_creates_and_create_requires_running_session() {
+    let _env_lock = ENV_LOCK.lock().unwrap();
     if !herdr_available() {
         eprintln!("skip: 无 herdr 二进制");
         return;
@@ -149,16 +155,18 @@ fn local_attach_only_never_creates_and_create_requires_running_session() {
     );
 }
 
-/// SSH：AttachOnly 无匹配即失败（零创建）；CreateIfMissing 在远端 session
-/// 未运行时失败，不得硬拒为「SSH 不允许创建」。
+/// SSH：AttachOnly 无匹配即失败（零创建）；显式 CreateIfMissing 启动一个
+/// 隔离 named session 后创建 workspace。
 #[test]
 fn ssh_herdr_attach_only_never_creates() {
+    let _env_lock = ENV_LOCK.lock().unwrap();
     if !herdr_available() || !loopback_sshd_available() {
         eprintln!("skip: 无 herdr 或 sshd");
         return;
     }
     let sshd = LoopbackSshd::start("w6-ssh").expect("启动 loopback sshd");
     std::env::set_var("MUXTERM_SSH_CONFIG_PATH", &sshd.config_path);
+    let test_session = unique_name("ssh-autostart");
 
     let ssh_target = TargetConfig {
         name: "w6-remote-project".into(),
@@ -168,7 +176,7 @@ fn ssh_herdr_attach_only_never_creates() {
         },
         path: "/srv/w6".into(),
         socket: Some("/tmp/remote-herdr.sock".into()),
-        session: Some("default".into()),
+        session: Some(test_session.clone()),
         workspace_id: Some("w1".into()),
     };
     let catalog = muxterm::test_support::core::catalog::Catalog::with_builtins();
@@ -183,30 +191,83 @@ fn ssh_herdr_attach_only_never_creates() {
         "SSH AttachOnly 错误语义: {err}"
     );
 
-    // 无 workspace_id：CreateIfMissing 应尝试 create；loopback 上没有对应
-    // Herdr session 时失败，但原因不能是「SSH 不允许」。
+    // 无 workspace_id：CreateIfMissing 应启动隔离 named session 并创建 workspace。
     let mut create_target = ssh_target.clone();
     create_target.workspace_id = None;
     create_target.socket = None;
-    let err = catalog
-        .resolve_target(
-            &mut connections,
-            &create_target,
-            ResolveIntent::CreateIfMissing,
+    create_target.path = "/tmp".into();
+    let created = catalog.resolve_target(
+        &mut connections,
+        &create_target,
+        ResolveIntent::CreateIfMissing,
+    );
+    let diagnostics = if created.is_err() {
+        Some(sshd.remote_exec(
+            "env -u HERDR_ENV -u HERDR_SESSION PATH=\"$HOME/.local/bin:$PATH\" herdr session list --json",
+        ))
+    } else {
+        None
+    };
+    let _ = sshd.remote_exec(&format!(
+        "env -u HERDR_ENV -u HERDR_SESSION PATH=\"$HOME/.local/bin:$PATH\" herdr session stop {test_session} >/dev/null 2>&1; env -u HERDR_ENV -u HERDR_SESSION PATH=\"$HOME/.local/bin:$PATH\" herdr session delete {test_session} >/dev/null 2>&1"
+    ));
+    let created = created.unwrap_or_else(|error| {
+        panic!(
+            "SSH CreateIfMissing 应启动 Herdr session 并创建 workspace: {error}; remote sessions: {diagnostics:?}"
         )
-        .expect_err("SSH CreateIfMissing 在 session 不可用时必须失败");
-    let text = err.to_string();
+    });
+    assert_eq!(
+        created.canonical.session.as_deref(),
+        Some(test_session.as_str())
+    );
+    assert!(created.canonical.workspace_id.is_some());
+    assert!(created.canonical.socket.is_some());
+    std::env::remove_var("MUXTERM_SSH_CONFIG_PATH");
+}
+
+#[test]
+fn ssh_herdr_shell_accepts_unicode_input_without_meta_escapes() {
+    let _env_lock = ENV_LOCK.lock().unwrap();
+    if !herdr_available() || !loopback_sshd_available() {
+        eprintln!("skip: 无 herdr 或 sshd");
+        return;
+    }
+    let sshd = LoopbackSshd::start("herdr-unicode").expect("启动 loopback sshd");
+    std::env::set_var("MUXTERM_SSH_CONFIG_PATH", &sshd.config_path);
+    let herdr = IsolatedHerdr::start("ssh-unicode");
+    let session = HerdrSession::with_connection(
+        Connect::new("ssh", &sshd.alias),
+        herdr.name(),
+        herdr.socket_path(),
+    );
+    let workspace = session.workspace_create("/tmp", "utf8-shell").unwrap();
+    let pane = session
+        .snapshot()
+        .unwrap()
+        .panes
+        .into_iter()
+        .find(|pane| pane.workspace_id == workspace.workspace_id)
+        .expect("新 workspace 应有 shell pane");
+    session
+        .pane_send_text(&pane.pane_id, "printf 'RESULT:%s\\n' '⇣⇡中文'\r")
+        .unwrap();
+
+    let mut recent = String::new();
+    for _ in 0..80 {
+        recent = String::from_utf8_lossy(&session.pane_read_recent_ansi(&pane.pane_id).unwrap())
+            .into_owned();
+        if recent.contains("RESULT:⇣⇡中文") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
     assert!(
-        !text.contains("不允许启动 workspace.create"),
-        "SSH CreateIfMissing 不得再硬拒: {err}"
+        recent.contains("RESULT:⇣⇡中文"),
+        "Unicode input/output lost: {recent}"
     );
     assert!(
-        text.contains("未运行")
-            || text.contains("socket")
-            || text.contains("session")
-            || text.contains("CreateNotAllowed")
-            || text.contains("forward"),
-        "SSH CreateIfMissing 应说明远端 Herdr 不可用: {err}"
+        !recent.contains("\\M-"),
+        "shell escaped UTF-8 as meta bytes: {recent}"
     );
     std::env::remove_var("MUXTERM_SSH_CONFIG_PATH");
 }

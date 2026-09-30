@@ -741,3 +741,20 @@ Attach 的验收不是“列表可见”或“topology 恢复”，而是以下�
 
 测试停止规则：每个生命周期转换一个单元契约，每个 registry cell 一个 canonical workflow，
 只为新的 ordering/generation/payload invariant 增加定向 regression，不扩展成全笛卡尔积。
+
+## 13. SSH 端口弹层（2026-09-30）
+
+- `transport::ssh::address::tests`：真实 `ssh -G -F` 的 Include / Match、HostName、IPv4/IPv6、
+  AddressFamily、DNS 选择及解析失败。只解析测试配置，不连接用户机器。
+- `protocol::ffi::functions::ssh_ports::tests`：地址先于慢端口扫描返回、两类错误独立、
+  Workspace 地址隔离和关闭清理；使用 MockRuntime，不操作用户服务器。
+- macOS `SSHPortPickerE2ETests`：真实弹层的 Forward / Stop 与 Open 列位置，远端 IP + 远端端口，
+  IPv6、切换目标、地址未就绪、原有转发操作及明暗外观。浏览器入口注入回调，测试不启动浏览器。
+
+核对依据：2026-09-30T15:29:19+08:00 核对
+[OpenSSH ssh(1)](https://github.com/openssh/openssh-portable/blob/master/ssh.1) 的 `-G`、
+[ssh_config(5)](https://github.com/openssh/openssh-portable/blob/master/ssh_config.5) 的 HostName / AddressFamily，
+及 [Rust ToSocketAddrs](https://doc.rust-lang.org/std/net/trait.ToSocketAddrs.html) 的 DNS 阻塞行为。
+2026-09-30T15:31:39+08:00 核对
+[AppKit alignmentRect(forFrame:)](https://developer.apple.com/documentation/appkit/nsview/alignmentrect(forframe:))：
+布局断言以内容对齐矩形为准，按钮 frame 还包含阴影等装饰。

@@ -503,9 +503,13 @@ fn backend_split_actually_creates_pane_in_tmux() {
         .lines()
         .map(str::to_owned)
         .collect::<Vec<_>>();
+    let expected_cwd = std::fs::canonicalize("/tmp")
+        .expect("resolve target pane cwd")
+        .to_string_lossy()
+        .into_owned();
     assert_eq!(
         paths,
-        vec!["/tmp", "/tmp"],
+        vec![expected_cwd.clone(), expected_cwd],
         "未指定 workdir 时，新 pane 必须继承精确 target pane 的 cwd"
     );
 

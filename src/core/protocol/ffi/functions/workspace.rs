@@ -232,7 +232,7 @@ pub unsafe extern "C" fn muxterm_workspace_close(h: *mut MuxtermHandle, id: *con
         };
         let wid = parse_workspace_id(&id);
         let handle = &mut *h;
-        if handle.pool_mut().close(&wid) {
+        if handle.close_workspace(&wid) {
             0
         } else {
             -1

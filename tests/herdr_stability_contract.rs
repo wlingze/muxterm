@@ -12,7 +12,7 @@
 mod support;
 
 use std::ffi::OsString;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{ensure, Context, Result};
@@ -715,6 +715,8 @@ fn server_scroll_reaches_history_before_and_after_attach() -> Result<()> {
             Task::ScrollPane {
                 target: pane,
                 lines: 30,
+                position: Some((37, 12)),
+                modifiers: 0,
             },
             "scroll up",
         )?;
@@ -733,6 +735,8 @@ fn server_scroll_reaches_history_before_and_after_attach() -> Result<()> {
             Task::ScrollPane {
                 target: pane,
                 lines: -65535,
+                position: None,
+                modifiers: 0,
             },
             "scroll back down",
         )?;
@@ -746,6 +750,108 @@ fn server_scroll_reaches_history_before_and_after_attach() -> Result<()> {
         })?;
     }
     Ok(())
+}
+
+struct MouseAppFixture {
+    dir: PathBuf,
+}
+
+impl MouseAppFixture {
+    fn new() -> Result<Self> {
+        let dir = std::env::temp_dir().join(support::herdr_test_support::unique_name("wheel-app"));
+        std::fs::create_dir(&dir)?;
+        std::fs::write(
+            dir.join("wheel.py"),
+            r#"import os, select, sys, termios, time
+fd = sys.stdin.fileno()
+old = termios.tcgetattr(fd)
+mode = termios.tcgetattr(fd)
+mode[3] &= ~(termios.ECHO | termios.ICANON)
+mode[6][termios.VMIN] = 1
+mode[6][termios.VTIME] = 0
+termios.tcsetattr(fd, termios.TCSANOW, mode)
+try:
+    os.write(1, b'\x1b[?1003h\x1b[?1006hWHEEL_READY\r\n')
+    received = bytearray()
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        if select.select([fd], [], [], 0.1)[0]:
+            received.extend(os.read(fd, 64))
+            if b'\x1b[<64;38;13M' in received:
+                os.write(1, b'WHEEL_RECEIVED\r\n')
+                break
+finally:
+    os.write(1, b'\x1b[?1003l\x1b[?1006l')
+    termios.tcsetattr(fd, termios.TCSANOW, old)
+"#,
+        )?;
+        Ok(Self { dir })
+    }
+}
+
+impl Drop for MouseAppFixture {
+    fn drop(&mut self) {
+        if self.dir.parent() == Some(std::env::temp_dir().as_path())
+            && self.dir.file_name().is_some_and(|name| {
+                name.to_string_lossy()
+                    .starts_with("muxterm-test-wheel-app-")
+            })
+        {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+}
+
+#[test]
+fn server_scroll_reaches_mouse_reporting_child_at_pointer_cell() -> Result<()> {
+    let executor = tokio::runtime::Runtime::new()?;
+    let _entered = executor.enter();
+    let app = MouseAppFixture::new()?;
+    let herdr = IsolatedHerdr::start("wheel-app");
+    let (workspace_id, _, wire) = herdr.create_workspace(app.dir.to_str().unwrap(), "wheel-app");
+    let spec = WorkspaceSpec::herdr(
+        herdr.name(),
+        &workspace_id,
+        herdr.socket_path().to_string_lossy(),
+    );
+    let catalog = Catalog::with_builtins();
+    let mut connections = ConnectionRegistry::new();
+    let mut pool = WorkspacePool::default();
+    let runtime = Muxterm::new_runtime(&catalog, &mut connections, &spec)?;
+    let workspace = executor.block_on(pool.open_spec_with_runtime(&spec, runtime))?;
+    let pane = active_pane(workspace)?;
+    done(
+        workspace,
+        Task::ResizePane {
+            target: pane,
+            cols: 80,
+            rows: 24,
+        },
+        "allocate mouse app",
+    )?;
+    wait_actual_mode(workspace, pane, StreamMode::Control, "mouse app controller")?;
+    let session = herdr_runtime(workspace)?.session_arc().clone();
+    session.pane_send_text(&wire, "python3 wheel.py\r")?;
+    wait_until(workspace, "mouse app ready", |_| {
+        session
+            .pane_read_recent_ansi(&wire)
+            .is_ok_and(|bytes| String::from_utf8_lossy(&bytes).contains("WHEEL_READY"))
+    })?;
+    done(
+        workspace,
+        Task::ScrollPane {
+            target: pane,
+            lines: 1,
+            position: Some((37, 12)),
+            modifiers: 0,
+        },
+        "mouse reporting wheel",
+    )?;
+    wait_until(workspace, "mouse app receives pointer wheel", |_| {
+        session
+            .pane_read_recent_ansi(&wire)
+            .is_ok_and(|bytes| String::from_utf8_lossy(&bytes).contains("WHEEL_RECEIVED"))
+    })
 }
 
 #[test]

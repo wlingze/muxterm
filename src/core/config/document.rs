@@ -91,6 +91,11 @@ impl ConfigDocument {
         if self.config.pool.max_slots == 0 {
             return Err(anyhow!("pool.max_slots 必须大于 0"));
         }
+        if !(1..=365).contains(&self.config.quick_panel.attach_history_days) {
+            return Err(anyhow!(
+                "quick_panel.attach_history_days 必须在 1 到 365 天之间"
+            ));
+        }
         if self.config.theme.name.trim().is_empty() {
             return Err(anyhow!("theme.name 不能为空"));
         }
@@ -99,9 +104,11 @@ impl ConfigDocument {
         }
         if !matches!(
             self.config.ui.tab_bar_style.as_str(),
-            "compact" | "equal_width"
+            "compact" | "equal_width" | "fixed"
         ) {
-            return Err(anyhow!("ui.tab_bar_style 只能是 compact 或 equal_width"));
+            return Err(anyhow!(
+                "ui.tab_bar_style 只能是 equal_width、fixed 或 compact"
+            ));
         }
         self.validate_projects()?;
         self.validate_templates()?;
@@ -285,8 +292,7 @@ impl ConfigDocument {
                     {"path":"/font/fallback","control":"font_fallback","apply":"immediate","title_key":"settings.font.fallback"},
                     {"path":"/theme/name","control":"theme_picker","options":["system","black","white"],"apply":"immediate","title_key":"settings.theme"},
                     {"path":"/theme/light","control":"theme_picker","options":["white","black"],"apply":"immediate","title_key":"settings.theme.light"},
-                    {"path":"/theme/dark","control":"theme_picker","options":["black","white"],"apply":"immediate","title_key":"settings.theme.dark"},
-                    {"path":"/statusbar/mode","control":"select","options":["tmux","theme"],"apply":"immediate","title_key":"settings.statusbar"}
+                    {"path":"/theme/dark","control":"theme_picker","options":["black","white"],"apply":"immediate","title_key":"settings.theme.dark"}
                 ]},
                 {"id":"runtime","title_key":"settings.runtime","fields":[
                     {"path":"/tmux/auto_mouse","control":"switch","apply":"next_workspace","title_key":"settings.tmux.auto_mouse"},
@@ -297,6 +303,9 @@ impl ConfigDocument {
                     {"path":"/pane/default_command","control":"text","apply":"next_workspace","title_key":"settings.pane.command"},
                     {"path":"/pane/workdir","control":"directory","apply":"next_workspace","title_key":"settings.pane.workdir"}
                 ]},
+                {"id":"quick_panel","title_key":"settings.quick_panel","fields":[
+                    {"path":"/quick_panel/attach_history_days","control":"number","apply":"immediate","title_key":"settings.quick_panel.attach_history_days"}
+                ]},
                 {"id":"attention","title_key":"settings.attention","fields":[
                     {"path":"/attention/enabled","control":"switch","apply":"immediate","title_key":"settings.attention.enabled"},
                     {"path":"/attention/blocked_regex","control":"multiline","apply":"immediate","title_key":"settings.attention.blocked_regex"},
@@ -304,10 +313,11 @@ impl ConfigDocument {
                 ]},
                 {"id":"ui","title_key":"settings.ui","fields":[
                     {"path":"/ui/tab_bar_position","control":"select","options":["top","bottom"],"apply":"next_workspace","title_key":"settings.ui.tab_bar_position"},
-                    {"path":"/ui/tab_bar_style","control":"select","options":["equal_width","compact"],"apply":"immediate","title_key":"settings.ui.tab_bar_style"},
-                    {"path":"/ui/tab_bar_height","control":"number","apply":"next_workspace","title_key":"settings.ui.tab_bar_height"},
-                    {"path":"/ui/show_title_bar","control":"switch","apply":"next_workspace","title_key":"settings.ui.show_title_bar"},
-                    {"path":"/ui/borderless","control":"switch","apply":"next_workspace","title_key":"settings.ui.borderless"}
+                    {"path":"/ui/tab_bar_style","control":"select","options":["equal_width","fixed","compact"],"apply":"immediate","title_key":"settings.ui.tab_bar_style"},
+                    {"path":"/statusbar/mode","control":"select","options":["tmux","theme"],"apply":"immediate","title_key":"settings.statusbar"},
+                    {"path":"/ui/tab_bar_height","control":"number","platforms":["linux"],"apply":"next_workspace","title_key":"settings.ui.tab_bar_height"},
+                    {"path":"/ui/show_title_bar","control":"switch","platforms":["linux"],"apply":"next_workspace","title_key":"settings.ui.show_title_bar"},
+                    {"path":"/ui/borderless","control":"switch","platforms":["linux"],"apply":"next_workspace","title_key":"settings.ui.borderless"}
                 ]},
                 {"id":"ssh","title_key":"settings.ssh","fields":[
                     {"path":"/ssh/host","control":"text","apply":"commit","title_key":"settings.ssh.host"},
@@ -320,8 +330,8 @@ impl ConfigDocument {
                     {"path":"/behavior/on_program_exit_abnormal","control":"select","options":["notify","close","keep"],"apply":"next_workspace","title_key":"settings.behavior.abnormal_exit"}
                 ]},
                 {"id":"platform","title_key":"settings.platform","fields":[
-                    {"path":"/platform/linux/client_side_decorations","control":"switch","apply":"next_workspace","title_key":"settings.platform.linux_csd"},
-                    {"path":"/platform/macos/option_as_alt","control":"switch","apply":"next_workspace","title_key":"settings.platform.macos_option_as_alt"}
+                    {"path":"/platform/linux/client_side_decorations","control":"switch","platforms":["linux"],"apply":"next_workspace","title_key":"settings.platform.linux_csd"},
+                    {"path":"/platform/macos/option_as_alt","control":"switch","platforms":["macos"],"apply":"next_workspace","title_key":"settings.platform.macos_option_as_alt"}
                 ]},
                 {"id":"update","title_key":"settings.update","fields":[
                     {"path":"/update/auto_check","control":"switch","apply":"commit","title_key":"settings.update.auto_check"},
@@ -584,6 +594,7 @@ fn validate_toml_shape(value: &toml::Value) -> Result<()> {
             "theme",
             "statusbar",
             "pool",
+            "quick_panel",
             "tmux",
             "ssh",
             "scrollback",
@@ -605,6 +616,7 @@ fn validate_toml_shape(value: &toml::Value) -> Result<()> {
     check_table(table, "theme", &["name", "light", "dark"])?;
     check_table(table, "statusbar", &["mode"])?;
     check_table(table, "pool", &["max_slots"])?;
+    check_table(table, "quick_panel", &["attach_history_days"])?;
     check_table(table, "tmux", &["auto_mouse", "default_session", "socket"])?;
     check_table(table, "ssh", &["host", "port", "user", "key_path"])?;
     check_table(table, "scrollback", &["lines"])?;

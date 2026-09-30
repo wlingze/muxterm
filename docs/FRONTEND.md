@@ -99,6 +99,9 @@ AppWindow
 - 嵌套分割：每次只替换当前叶子 pane，不重新平铺全树。
 - 焦点操作后回到终端，不落到工具栏。不要底部输入框发 send-keys。
 - Tab 显示：序号 + 名字；多 pane 可加数量后缀。不要每个 pane 一个 Notebook tab。
+- SSH 端口弹层：Forward / Stop 与 Open 各自统一列宽。Open 经本机系统浏览器打开
+  `http://<SSH 目标 IP>:<远端端口>`；转发后的地址仍指向本机端口，可点击、复制、用 L 切换 LAN 访问。
+  SSH HostName / DNS 由 Core 后台解析并经 FFI 返回；地址未就绪时禁用 Open。
 - 关 GUI 窗：有 `PersistDetach` 的 Runtime **detach**；shell **shutdown**。
 - 迟到输入不得改投新的 active pane。
 

@@ -85,7 +85,7 @@ final class SettingsWindowE2ETests: XCTestCase {
         settings.window?.layoutIfNeeded()
         let expandedWidth = settings.testSidebarWidth()
 
-        XCTAssertEqual(compactWidth, 208, accuracy: 1)
+        XCTAssertEqual(compactWidth, 216, accuracy: 1)
         XCTAssertEqual(expandedWidth, compactWidth, accuracy: 1)
         XCTAssertTrue(settings.testVisiblePageIsScrollable())
     }

@@ -149,6 +149,18 @@ char* muxterm_image_paste_poll_json(struct MuxtermHandle* h);
 char* muxterm_workspace_list(struct MuxtermHandle* h);
 int muxterm_workspace_activate(struct MuxtermHandle* h, const char* id);
 int muxterm_workspace_close(struct MuxtermHandle* h, const char* id);
+char* muxterm_workspace_ssh_ports_json(struct MuxtermHandle* h, const char* workspace_id);
+char* muxterm_workspace_ssh_port_forward(
+    struct MuxtermHandle* h, const char* workspace_id, uint32_t remote_port);
+char* muxterm_workspace_ssh_port_forward_with_access(
+    struct MuxtermHandle* h, const char* workspace_id, uint32_t remote_port, bool allow_lan);
+int muxterm_workspace_ssh_port_ignore(
+    struct MuxtermHandle* h, const char* workspace_id, uint32_t remote_port);
+int muxterm_workspace_ssh_port_stop(
+    struct MuxtermHandle* h, const char* workspace_id, uint32_t remote_port);
+char* muxterm_workspace_update_start_json(struct MuxtermHandle* h, const char* workspace_id);
+char* muxterm_workspace_updates_json(struct MuxtermHandle* h);
+char* muxterm_workspace_traffic_json(struct MuxtermHandle* h, const char* workspace_id);
 
 // ── Core-owned configuration transactions ──
 // Each function returns a JSON envelope allocated by Rust; release it with

@@ -10,7 +10,8 @@
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -29,6 +30,9 @@ pub struct HerdrSession {
     socket_path: PathBuf,
     client_socket_path: PathBuf,
     connection: Arc<dyn TargetConnection>,
+    process_utf8_locale: Arc<OnceLock<String>>,
+    wire_protocol: Arc<AtomicU32>,
+    pub(super) update: Arc<std::sync::Mutex<super::update::UpdateState>>,
 }
 
 /// 进程内共享的 HerdrSession 缓存（同一 named session + socket 一份 Arc）。
@@ -93,6 +97,9 @@ impl HerdrSession {
             socket_path,
             client_socket_path,
             connection,
+            process_utf8_locale: Arc::new(OnceLock::new()),
+            wire_protocol: Arc::new(AtomicU32::new(19)),
+            update: Arc::new(std::sync::Mutex::new(super::update::UpdateState::default())),
         }
     }
 
@@ -104,12 +111,30 @@ impl HerdrSession {
         self.connection.transport_id() == "ssh"
     }
 
+    /// 只探测一次目标机器安装的 locale；已运行的旧 server 可能仍是 POSIX。
+    pub(crate) fn process_utf8_locale(&self) -> Option<&str> {
+        if self.process_utf8_locale.get().is_none() {
+            // 探测失败不缓存；下次创建 pane 时重试。
+            if let Some(locale) =
+                super::super::terminal_env::installed_utf8_locale(self.connection.as_ref())
+            {
+                let _ = self.process_utf8_locale.set(locale);
+            }
+        }
+        self.process_utf8_locale.get().map(String::as_str)
+    }
+
     pub fn socket_path(&self) -> &Path {
         &self.socket_path
     }
 
     pub fn client_socket_path(&self) -> &Path {
         &self.client_socket_path
+    }
+
+    /// 由最新 API snapshot 决定 client socket 使用哪一种 bincode 格式。
+    pub(crate) fn wire_protocol(&self) -> u32 {
+        self.wire_protocol.load(Ordering::Acquire)
     }
 
     /// The transport that owns channel creation for this Herdr session.
@@ -130,8 +155,21 @@ impl HerdrSession {
     ///
     /// 每次请求一条新连接（与 herdr CLI 每次调用同构）；响应是单行 JSON。
     pub fn call(&self, method: &str, params: Value) -> Result<Value> {
+        self.call_with_timeout(method, params, REQUEST_TIMEOUT)
+    }
+
+    pub(super) fn connection(&self) -> &dyn TargetConnection {
+        self.connection.as_ref()
+    }
+
+    pub(super) fn call_with_timeout(
+        &self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<Value> {
         let channel = self.open_socket_channel(&self.socket_path)?;
-        let mut stream = ChannelIo::with_read_timeout(channel, REQUEST_TIMEOUT);
+        let mut stream = ChannelIo::with_read_timeout(channel, timeout);
         let req = serde_json::json!({
             "id": format!("muxterm-{}", self.name),
             "method": method,
@@ -172,7 +210,13 @@ impl HerdrSession {
         let snap = result
             .get("snapshot")
             .ok_or_else(|| anyhow!("session.snapshot 缺 snapshot: {result}"))?;
-        SessionSnapshot::from_json(snap)
+        let snapshot = SessionSnapshot::from_json(snap)?;
+        if let Ok(protocol) = u32::try_from(snapshot.protocol) {
+            if protocol != 0 {
+                self.wire_protocol.store(protocol, Ordering::Release);
+            }
+        }
+        Ok(snapshot)
     }
 
     /// `pane.layout`：取得 pane 所在 tab 的权威布局快照。
@@ -182,6 +226,15 @@ impl HerdrSession {
             .get("layout")
             .ok_or_else(|| anyhow!("pane.layout 缺 layout: {result}"))?;
         LayoutRecord::from_json(layout).ok_or_else(|| anyhow!("pane.layout 布局解析失败: {result}"))
+    }
+
+    /// Toggle the target pane's tab zoom on the authoritative Herdr server.
+    pub fn pane_zoom_toggle(&self, pane_id: &str) -> Result<()> {
+        self.call(
+            "pane.zoom",
+            serde_json::json!({ "pane_id": pane_id, "mode": "toggle" }),
+        )?;
+        Ok(())
     }
 
     /// `pane.read`：attach 快照（source=visible, format=ansi），返回原始 ANSI 字节。
@@ -271,14 +324,22 @@ impl HerdrSession {
 
     /// `workspace.create`：新建 Herdr workspace（New Project 用）。
     pub fn workspace_create(&self, cwd: &str, label: &str) -> Result<WorkspaceRecord> {
-        let result = self.call(
-            "workspace.create",
-            serde_json::json!({ "cwd": cwd, "label": label, "focus": false }),
-        )?;
+        let mut params = serde_json::json!({ "cwd": cwd, "label": label, "focus": false });
+        super::locale::set_process_locale(&mut params, self.process_utf8_locale());
+        let result = self.call("workspace.create", params)?;
         let ws = result
             .get("workspace")
             .ok_or_else(|| anyhow!("workspace.create 缺 workspace: {result}"))?;
         WorkspaceRecord::from_json(ws).ok_or_else(|| anyhow!("workspace.create 解析失败: {result}"))
+    }
+
+    /// `workspace.rename`：更新独立的 Herdr workspace 名称。
+    pub fn workspace_rename(&self, workspace_id: &str, label: &str) -> Result<()> {
+        self.call(
+            "workspace.rename",
+            serde_json::json!({ "workspace_id": workspace_id, "label": label }),
+        )?;
+        Ok(())
     }
 
     /// `worktree.list`：当前仓库全部 checkout（需 WorktreeList）。
@@ -370,7 +431,7 @@ pub struct SessionSnapshot {
 }
 
 impl SessionSnapshot {
-    fn from_json(v: &Value) -> Result<Self> {
+    pub(super) fn from_json(v: &Value) -> Result<Self> {
         let workspaces = v
             .get("workspaces")
             .and_then(Value::as_array)
@@ -981,6 +1042,7 @@ mod tests {
 
     struct RecordingChannel {
         response: Vec<u8>,
+        requests: std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
     }
 
     impl crate::transport::ByteChannel for RecordingChannel {
@@ -993,10 +1055,17 @@ mod tests {
         }
 
         fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-            assert!(String::from_utf8_lossy(data).contains("\"method\":\"ping\""));
-            self.response = br#"{"result":{"type":"pong"}}
+            let request: Value = serde_json::from_slice(data).unwrap();
+            self.requests.lock().unwrap().push(request.clone());
+            self.response = if request["method"] == "ping" {
+                br#"{"result":{"type":"pong"}}
 "#
-            .to_vec();
+                .to_vec()
+            } else {
+                br#"{"result":{}}
+"#
+                .to_vec()
+            };
             Ok(data.len())
         }
 
@@ -1011,11 +1080,17 @@ mod tests {
 
     struct RecordingConnection {
         path: std::sync::Arc<std::sync::Mutex<Option<PathBuf>>>,
+        requests: std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
+        locale_probes: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
     }
 
     impl crate::transport::TargetConnection for RecordingConnection {
         fn transport_id(&self) -> &str {
-            "recording"
+            if self.locale_probes.is_some() {
+                "ssh"
+            } else {
+                "recording"
+            }
         }
 
         fn target(&self) -> &str {
@@ -1034,20 +1109,46 @@ mod tests {
             *self.path.lock().unwrap() = Some(path);
             Ok(Box::new(RecordingChannel {
                 response: Vec::new(),
+                requests: std::sync::Arc::clone(&self.requests),
             }))
         }
 
         fn probe(&self) -> crate::transport::TransportResult<()> {
             Ok(())
         }
+
+        fn exec_command(
+            &self,
+            _request: crate::transport::ChannelRequest,
+        ) -> crate::transport::TransportResult<crate::transport::CommandOutput> {
+            let Some(probes) = &self.locale_probes else {
+                return Err(crate::transport::TransportError::message(
+                    "unexpected command",
+                ));
+            };
+            let count = probes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if count == 0 {
+                return Err(crate::transport::TransportError::message(
+                    "temporary SSH failure",
+                ));
+            }
+            Ok(crate::transport::CommandOutput {
+                status: 0,
+                stdout: b"C\nC.utf8\n".to_vec(),
+                stderr: Vec::new(),
+            })
+        }
     }
 
     #[test]
     fn api_calls_use_target_connection_unix_socket_channel() {
         let path = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let connection: std::sync::Arc<dyn crate::transport::TargetConnection> =
             std::sync::Arc::new(RecordingConnection {
                 path: std::sync::Arc::clone(&path),
+                requests,
+                locale_probes: None,
             });
         let session = HerdrSession::with_connection(connection, "test", "/remote/herdr.sock");
 
@@ -1058,6 +1159,45 @@ mod tests {
             path.lock().unwrap().as_deref(),
             Some(Path::new("/remote/herdr.sock"))
         );
+    }
+
+    #[test]
+    fn workspace_rename_uses_its_own_label_not_a_tab_name() {
+        let path = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let connection: std::sync::Arc<dyn crate::transport::TargetConnection> =
+            std::sync::Arc::new(RecordingConnection {
+                path,
+                requests: std::sync::Arc::clone(&requests),
+                locale_probes: None,
+            });
+        let session = HerdrSession::with_connection(connection, "test", "/remote/herdr.sock");
+
+        session
+            .workspace_rename("w7", "legion-workspace")
+            .expect("Herdr should accept an independent workspace label");
+
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests[0]["method"], "workspace.rename");
+        assert_eq!(requests[0]["params"]["workspace_id"], "w7");
+        assert_eq!(requests[0]["params"]["label"], "legion-workspace");
+    }
+
+    #[test]
+    fn ssh_locale_probe_retries_after_a_transient_failure() {
+        let probes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let connection: std::sync::Arc<dyn crate::transport::TargetConnection> =
+            std::sync::Arc::new(RecordingConnection {
+                path: std::sync::Arc::new(std::sync::Mutex::new(None)),
+                requests: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+                locale_probes: Some(std::sync::Arc::clone(&probes)),
+            });
+        let session = HerdrSession::with_connection(connection, "test", "/remote/herdr.sock");
+
+        assert_eq!(session.process_utf8_locale(), None);
+        assert_eq!(session.process_utf8_locale(), Some("C.utf8"));
+        assert_eq!(session.process_utf8_locale(), Some("C.utf8"));
+        assert_eq!(probes.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
     #[test]

@@ -134,6 +134,7 @@ pub struct PaneStreamSlot {
     /// intent-bound 的 latest resize。
     pub pending_resize: Option<(u16, u16)>,
     pub pending_scroll: i32,
+    pub pending_scroll_pointer: Option<(u16, u16, u8)>,
     /// 还没有 UI 格子，禁止每轮 reconcile 都重试 Hello。
     pub awaiting_allocation: bool,
     /// 最近一次已经交给 Surface 的 full frame 指纹。相同帧不再重灌 VTE。
@@ -175,6 +176,7 @@ impl PaneStreamSlot {
             pending_input_bytes: 0,
             pending_resize: None,
             pending_scroll: 0,
+            pending_scroll_pointer: None,
             awaiting_allocation: false,
             last_full_fingerprint: None,
             pending_mouse: None,
@@ -293,6 +295,7 @@ impl PaneStreamSlot {
         self.pending_input_bytes = 0;
         self.pending_resize = None;
         self.pending_scroll = 0;
+        self.pending_scroll_pointer = None;
         self.transitions
             .push(format!("input-not-delivered:{reason}:{dropped}"));
         dropped

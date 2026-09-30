@@ -1,12 +1,11 @@
 //! 四模式集成测试：local/ssh × shell/tmux × CLI = 4 个 case。
 //!
-//! 四模式 long-chain 集成测试。使用硬超时 + 独立 tmux socket + 共享 sshd。
-//! SSH 走 muxterm SSH transport（--remote <alias>），不用 raw ssh+tmux。
+//! 四模式 long-chain 集成测试。使用硬超时 + 独立 tmux socket + 隔离 loopback sshd。
+//! SSH 走 muxterm SSH transport（--target <alias>），不用 raw ssh+tmux。
 //!
 //! 跑 local CLI（always-on）：
 //!   cargo test --no-default-features --features ffi --test four_mode_integration -- local -- --test-threads=1
-//! 跑 SSH（需 sshd + --ignored）：
-//!   cargo test --no-default-features --features ffi --test four_mode_integration -- --ignored --test-threads=1
+//! SSH 用随机端口的测试 sshd，不依赖用户的 SSH 配置或 22 端口。
 
 #![cfg(feature = "ffi")]
 
@@ -15,7 +14,7 @@ mod support;
 use std::process::Command;
 use std::time::Duration;
 use support::behavior_driver::*;
-use support::sshd_test_support::*;
+use support::ssh_tmux_contract::{build_remote_one_pane, ssh_tmux_available};
 use support::tmux_test_support::*;
 
 /// 找到 muxterm binary 路径。
@@ -194,20 +193,22 @@ fn local_tmux_cli() {
 // 这会通过 SshProcessTransport 在远端执行 tmux 命令，
 // 而不是直接用 raw ssh + tmux。
 //
-// 前置条件：共享 loopback sshd（由 CI 或本地环境提供）。
+// 前置条件：可启动测试专用 loopback sshd。
 
 #[test]
-#[ignore = "requires sshd + SSH key setup"]
 fn ssh_shell_cli() {
+    if !ssh_tmux_available() {
+        eprintln!("skip: 无法启动 loopback sshd 或缺少 tmux");
+        return;
+    }
     run_with_timeout(Duration::from_secs(45), "ssh-shell-cli", || {
-        assert!(sshd_available(), "需要 sshd 在 127.0.0.1 监听");
-        let ssh_env = SshTestEnv::setup("ssh-shell-cli").expect("SSH 测试环境创建失败");
+        let fixture = build_remote_one_pane("four-mode-shell");
 
         let bin = muxterm_bin();
         assert!(bin.exists());
 
         // 先用 raw ssh 验证 sshd 可用（测试基础设施，不是产品路径）
-        let (ok, stdout, stderr) = ssh_env.remote_exec("echo sshd-ok");
+        let (ok, stdout, stderr) = fixture.sshd.remote_exec("echo sshd-ok");
         assert!(
             ok && stdout.contains("sshd-ok"),
             "sshd 连通性验证失败: ok={ok} stdout={stdout} stderr={stderr}"
@@ -215,23 +216,18 @@ fn ssh_shell_cli() {
 
         // 产品路径：muxterm tmux session list --target <alias>
         // 这应该通过 SSH transport 在远端列出 tmux sessions
-        let alias = ssh_env.alias.clone();
+        let alias = &fixture.sshd.alias;
         let output = Command::new(&bin)
             .args([
                 "tmux",
                 "session",
                 "list",
                 "--target",
-                &alias,
+                alias,
                 "--socket",
-                &ssh_env.remote_tmux_socket,
+                &fixture.socket,
             ])
-            .env("HOME", &ssh_env.home_dir)
-            .env("MUXTERM_TEST_SSH_HOST", &ssh_env.host)
-            .env("MUXTERM_TEST_SSH_PORT", ssh_env.port.to_string())
-            .env("MUXTERM_TEST_SSH_USER", &ssh_env.user)
-            .env("MUXTERM_TEST_SSH_KEY", &ssh_env.client_key_path)
-            .env("MUXTERM_SSH_CONFIG_PATH", &ssh_env.ssh_config_path)
+            .env("MUXTERM_SSH_CONFIG_PATH", &fixture.sshd.config_path)
             .output()
             .expect("muxterm tmux session list 失败");
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -262,37 +258,33 @@ fn ssh_shell_cli() {
 // 在远端启动 tmux -CC，不是 raw ssh+tmux。
 
 #[test]
-#[ignore = "requires sshd + SSH key setup"]
 fn ssh_tmux_cli() {
+    if !ssh_tmux_available() {
+        eprintln!("skip: 无法启动 loopback sshd 或缺少 tmux");
+        return;
+    }
     run_with_timeout(Duration::from_secs(60), "ssh-tmux-cli", || {
-        assert!(sshd_available(), "需要 sshd");
-        assert!(tmux_available(), "需要 tmux");
-        let ssh_env = SshTestEnv::setup("ssh-tmux-cli").expect("SSH 测试环境创建失败");
+        let fixture = build_remote_one_pane("four-mode-tmux");
 
         let bin = muxterm_bin();
         assert!(bin.exists());
 
-        let session_name = format!("it-ssh-tmux-{}", rand_suffix());
-
-        // 在远端创建 detached tmux session（测试基础设施）
-        let (ok, _, stderr) =
-            ssh_env.remote_tmux(&format!("new-session -d -s {} -x 80 -y 24", session_name));
-        assert!(ok, "远端 tmux session 创建失败: {stderr}");
+        let session_name = &fixture.session;
 
         // 产品路径 1：muxterm tmux session list --target <alias>
         // 应通过 SSH transport 列出远端 tmux sessions（含刚创建的 session）
-        let alias = ssh_env.alias.clone();
+        let alias = &fixture.sshd.alias;
         let output = Command::new(&bin)
             .args([
                 "tmux",
                 "session",
                 "list",
                 "--target",
-                &alias,
+                alias,
                 "--socket",
-                &ssh_env.remote_tmux_socket,
+                &fixture.socket,
             ])
-            .env("MUXTERM_SSH_CONFIG_PATH", &ssh_env.ssh_config_path)
+            .env("MUXTERM_SSH_CONFIG_PATH", &fixture.sshd.config_path)
             .output()
             .expect("muxterm tmux session list 失败");
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -303,7 +295,7 @@ fn ssh_tmux_cli() {
             "SSH session list 应成功: stdout={stdout} stderr={stderr}"
         );
         assert!(
-            stdout.contains(&session_name),
+            stdout.contains(session_name),
             "应包含远端 session 名 '{session_name}': stdout={stdout}"
         );
 
@@ -315,13 +307,13 @@ fn ssh_tmux_cli() {
                 "pane",
                 "list",
                 "--target",
-                &alias,
+                alias,
                 "--session",
-                &session_name,
+                session_name,
                 "--socket",
-                &ssh_env.remote_tmux_socket,
+                &fixture.socket,
             ])
-            .env("MUXTERM_SSH_CONFIG_PATH", &ssh_env.ssh_config_path)
+            .env("MUXTERM_SSH_CONFIG_PATH", &fixture.sshd.config_path)
             .output()
             .expect("muxterm tmux pane list 失败");
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -337,7 +329,6 @@ fn ssh_tmux_cli() {
             "应返回 pane id: stdout={stdout} stderr={stderr}"
         );
 
-        // 清理远端 tmux
-        let _ = ssh_env.remote_tmux("kill-server");
+        // fixture 的 Drop 只清理自己的隔离 tmux socket。
     });
 }

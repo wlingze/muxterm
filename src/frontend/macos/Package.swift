@@ -37,6 +37,7 @@ let appLibSources = [
     "App/AttentionPanelController.swift",
     "App/UnifiedPanelController.swift",
     "App/TargetConfigWindow.swift",
+    "App/RemoteDirectoryPickerWindow.swift",
     "App/SettingsWindow.swift",
     "App/DeveloperToolAccess.swift",
     "App/WorkspaceSidebar.swift",
@@ -149,6 +150,7 @@ let package = Package(
             name: "MuxtermAppE2ETests",
             dependencies: [
                 "MuxtermAppLib",
+                .product(name: "SwiftTerm", package: "SwiftTerm"),
             ],
             path: "AppE2ETests",
             linkerSettings: muxtermForceLoad

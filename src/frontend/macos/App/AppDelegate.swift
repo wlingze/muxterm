@@ -404,7 +404,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             keyEquivalent: "0"
         )
         lastTab.target = windowController
-        lastTab.keyEquivalentModifierMask = .option
+        lastTab.keyEquivalentModifierMask = .command
         windowMenu.addItem(lastTab)
 
         let editMenuItem = NSMenuItem()
@@ -522,7 +522,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             action: #selector(MainWindowController.resetTerminalFontSize(_:)),
             keyEquivalent: "0"
         )
-        resetFont.keyEquivalentModifierMask = .command
+        resetFont.keyEquivalentModifierMask = [.command, .shift]
         resetFont.target = windowController
         viewMenu.addItem(resetFont)
 
