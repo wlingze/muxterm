@@ -158,6 +158,8 @@ int muxterm_workspace_ssh_port_ignore(
     struct MuxtermHandle* h, const char* workspace_id, uint32_t remote_port);
 int muxterm_workspace_ssh_port_stop(
     struct MuxtermHandle* h, const char* workspace_id, uint32_t remote_port);
+char* muxterm_workspace_update_start_json(struct MuxtermHandle* h, const char* workspace_id);
+char* muxterm_workspace_updates_json(struct MuxtermHandle* h);
 char* muxterm_workspace_traffic_json(struct MuxtermHandle* h, const char* workspace_id);
 
 // ── Core-owned configuration transactions ──

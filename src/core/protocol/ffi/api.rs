@@ -34,6 +34,9 @@ pub use super::functions::runtime::{
     muxterm_status_subscription_active, muxterm_traffic_down, muxterm_traffic_up,
     muxterm_workspace_herdr_probe_json, muxterm_workspace_traffic_json,
 };
+pub use super::functions::runtime_update::{
+    muxterm_workspace_update_start_json, muxterm_workspace_updates_json,
+};
 pub use super::functions::search::muxterm_search_all;
 pub use super::functions::snapshot::{
     muxterm_pane_command_marks_json, muxterm_pane_history_max_offset, muxterm_pane_last_n_lines,

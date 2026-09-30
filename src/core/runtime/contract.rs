@@ -77,6 +77,17 @@ pub trait Runtime: State + Send {
         &[]
     }
 
+    /// 启动非阻塞更新；平台不接触 runtime 的安装命令。
+    fn start_update(&mut self) -> RuntimeResult<()> {
+        Err(RuntimeError::Unsupported {
+            operation: "RuntimeUpdate",
+        })
+    }
+
+    fn update_status(&self) -> Option<super::update::RuntimeUpdateStatus> {
+        None
+    }
+
     /// List checkouts through a Runtime-native worktree API.
     fn list_worktrees(&self) -> RuntimeResult<Vec<WorktreeInfo>> {
         Err(RuntimeError::Unsupported {

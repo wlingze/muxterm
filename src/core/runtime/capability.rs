@@ -10,6 +10,8 @@
 pub enum RuntimeCapability {
     /// shutdown/关窗后远端还在，能再 attach。
     PersistDetach,
+    /// 能更新运行时并通过非破坏性交接重新连接。
+    RuntimeUpdate,
     /// 连接前能列出可 open 的候选。
     Discover,
     /// `NewTab` / `SwitchTab` 有意义。

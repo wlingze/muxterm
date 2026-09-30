@@ -257,6 +257,36 @@ headless `herdr --session <name> server`，等待 socket 就绪后再发现或�
 
 Herdr workspace id 不再复用项目 `path`。生成五段 `WorkspaceId` 时第五段优先 `workspace_id`。
 
+#### Workspace 中更新 Runtime
+
+GUI 根据 `support(RuntimeUpdate)` 显示 workspace 行的更新图标，经 C FFI 启动 Core
+后台任务并读取阶段、版本和错误。安装与连接状态由 Runtime 持有；前端只负责按钮和提示。
+
+Herdr 的流程：检查所选 server 的 `live_handoff` 能力 → 在同一 TargetConnection 独立运行
+`herdr update`（清除 `HERDR_ENV`/`HERDR_SESSION`，stdin 为 `/dev/null`）→ 读取新二进制的
+`--version` 和 `api schema --json` → 对所选 namespace 调用 `server.live_handoff`，传入
+`import_exe`、`expected_version`、`expected_protocol` → 读取权威 snapshot → 重开 pane/event
+流。同一 server 的已打开 Workspace 一起重连，保留 tab/pane id、shell 进程和旧 Surface；
+所有已启动 pane 都收到新 full baseline 后才报告完成。新打开的 Workspace 使用 connect
+时的新快照，不重放历史更新快照。同一 target 同时只允许一个安装任务。
+
+接管连接提前断开时以新 server 的 snapshot 验证结果。安装失败、缺少热交接能力、包管理器
+安装或新二进制的 wire 格式尚不支持时报告原因，保留原 server；不调用 stop，不向 pane
+注入更新命令。直接安装使用 Herdr 当前配置的更新频道；Homebrew/mise/Nix 由官方 CLI 返回
+对应更新指引。本功能不改变已有 shell 的环境，UTF-8 初始化只作用于新创建的 pane。
+
+核对来源：[Herdr installation/update](https://herdr.dev/docs/install/#update)、
+[CLI reference](https://herdr.dev/docs/cli-reference/)、
+[v0.9.1 API schema command](https://github.com/herdrdev/herdr/blob/v0.9.1/src/cli/api.rs)、
+[v0.9.1 live handoff parameters](https://github.com/herdrdev/herdr/blob/v0.9.1/src/api/schema/server.rs)。
+文档核对时间：`2026-09-30T10:53:30+08:00`；源码核对时间：`2026-09-30T10:58:52+08:00`。
+隔离 named session 的 local/loopback SSH 回归见 `tests/herdr_runtime_update.rs`；下载步骤
+使用测试通道，真实执行 socket handoff/重连，绝不替换开发机 Herdr 安装。
+指定 `MUXTERM_TEST_HERDR_UPDATE_BINARY=/absolute/path/herdr` 可运行跨版本交接。
+本机已验证官方 [v0.9.1](https://github.com/herdrdev/herdr/releases/tag/v0.9.1) 从
+0.8.0/protocol 19 到 0.9.1/protocol 22 的 local/loopback SSH 交接；二进制 SHA-256 与
+官方 asset digest 一致。发布元数据核对时间：`2026-09-30T11:33:50+08:00`。
+
 ### 6.3 Shell
 
 自己分配 Tab/Pane id。支持 local/SSH Transport，但没有 Discover、没有 PersistDetach、没有

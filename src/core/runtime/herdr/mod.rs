@@ -24,3 +24,5 @@ pub(super) use provider::HerdrDriver;
 pub use runtime::HerdrRuntime;
 #[allow(unused_imports)]
 pub use session::HerdrSession;
+
+mod update;

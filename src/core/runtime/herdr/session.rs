@@ -32,6 +32,7 @@ pub struct HerdrSession {
     connection: Arc<dyn TargetConnection>,
     process_utf8_locale: Arc<OnceLock<String>>,
     wire_protocol: Arc<AtomicU32>,
+    pub(super) update: Arc<std::sync::Mutex<super::update::UpdateState>>,
 }
 
 /// 进程内共享的 HerdrSession 缓存（同一 named session + socket 一份 Arc）。
@@ -98,6 +99,7 @@ impl HerdrSession {
             connection,
             process_utf8_locale: Arc::new(OnceLock::new()),
             wire_protocol: Arc::new(AtomicU32::new(19)),
+            update: Arc::new(std::sync::Mutex::new(super::update::UpdateState::default())),
         }
     }
 
@@ -153,8 +155,21 @@ impl HerdrSession {
     ///
     /// 每次请求一条新连接（与 herdr CLI 每次调用同构）；响应是单行 JSON。
     pub fn call(&self, method: &str, params: Value) -> Result<Value> {
+        self.call_with_timeout(method, params, REQUEST_TIMEOUT)
+    }
+
+    pub(super) fn connection(&self) -> &dyn TargetConnection {
+        self.connection.as_ref()
+    }
+
+    pub(super) fn call_with_timeout(
+        &self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<Value> {
         let channel = self.open_socket_channel(&self.socket_path)?;
-        let mut stream = ChannelIo::with_read_timeout(channel, REQUEST_TIMEOUT);
+        let mut stream = ChannelIo::with_read_timeout(channel, timeout);
         let req = serde_json::json!({
             "id": format!("muxterm-{}", self.name),
             "method": method,
@@ -416,7 +431,7 @@ pub struct SessionSnapshot {
 }
 
 impl SessionSnapshot {
-    fn from_json(v: &Value) -> Result<Self> {
+    pub(super) fn from_json(v: &Value) -> Result<Self> {
         let workspaces = v
             .get("workspaces")
             .and_then(Value::as_array)

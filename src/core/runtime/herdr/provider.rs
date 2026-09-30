@@ -198,6 +198,7 @@ impl RuntimeProvider for HerdrDriver {
     fn support(&self) -> &'static [RuntimeCapability] {
         &[
             RuntimeCapability::PersistDetach,
+            RuntimeCapability::RuntimeUpdate,
             RuntimeCapability::ServerScroll,
             RuntimeCapability::Discover,
             RuntimeCapability::MultiTab,

@@ -9,6 +9,7 @@ pub mod events;
 pub mod handle;
 pub mod open_async;
 pub mod runtime;
+pub mod runtime_update;
 pub mod search;
 pub mod snapshot;
 pub mod ssh_ports;

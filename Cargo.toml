@@ -150,6 +150,11 @@ name = "herdr_feature_contract"
 path = "tests/herdr_feature_contract.rs"
 
 [[test]]
+name = "herdr_runtime_update"
+path = "tests/herdr_runtime_update.rs"
+required-features = ["test-harness"]
+
+[[test]]
 name = "herdr_authority_contract"
 path = "tests/herdr_authority_contract.rs"
 

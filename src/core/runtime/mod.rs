@@ -28,6 +28,7 @@ mod terminal_env;
 pub mod tmux;
 #[cfg(not(feature = "test-harness"))]
 mod tmux;
+pub mod update;
 
 pub use batch::{ControlEvent, RenderEvent, RuntimeBatch, RuntimeSignal};
 pub use capability::RuntimeCapability;

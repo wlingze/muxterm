@@ -46,6 +46,7 @@ use super::wire_compat::WireProtocol;
 /// HerdrRuntime 支持的能力（v1 不含 WorktreeRemove）。
 const HERDR_CAPABILITIES: &[RuntimeCapability] = &[
     RuntimeCapability::PersistDetach,
+    RuntimeCapability::RuntimeUpdate,
     RuntimeCapability::ServerScroll,
     RuntimeCapability::Discover,
     RuntimeCapability::MultiTab,
@@ -122,6 +123,9 @@ pub struct HerdrRuntime {
     /// tab.close 的 SSH 请求不能阻塞前台事件轮询。
     pending_closes: HashMap<TabId, mpsc::Receiver<Result<()>>>,
     pending_pane_closes: HashMap<PaneId, mpsc::Receiver<Result<()>>>,
+    update_revision: u64,
+    update_reconnecting: Option<Instant>,
+    update_error: Option<String>,
     /// 远端 focus 串行执行，排队期间只保留最后一次用户意图。
     focus_tx: Option<mpsc::Sender<FocusRequest>>,
     /// lifecycle generation：detach/shutdown 后晚到的 mutation 结果直接丢弃。
@@ -300,6 +304,7 @@ impl HerdrRuntime {
 
     /// 绑定共享 session + 一个 Herdr workspace_id（如 `w1`）。
     pub fn new(session: Arc<HerdrSession>, workspace_id: impl Into<String>) -> Self {
+        let update_revision = session.runtime_update_revision();
         Self {
             session,
             workspace_id: workspace_id.into(),
@@ -342,6 +347,9 @@ impl HerdrRuntime {
             mutation_io: None,
             pending_closes: HashMap::new(),
             pending_pane_closes: HashMap::new(),
+            update_revision,
+            update_reconnecting: None,
+            update_error: None,
             focus_tx: None,
             lifecycle_generation: 0,
             focus_pin: None,
@@ -3221,6 +3229,52 @@ impl HerdrRuntime {
         self.pane_to_herdr_pane.get(&pane).map(String::as_str)
     }
 
+    /// 更新成功后只重开协议流；前端保留旧 Surface，等新 full baseline。
+    fn poll_runtime_update(&mut self) {
+        if self.status != BackendStatus::Connected {
+            return;
+        }
+        if let Some((revision, snapshot)) = self.session.update_snapshot_after(self.update_revision)
+        {
+            self.update_revision = revision;
+            self.update_error = None;
+            let protocol = u32::try_from(snapshot.protocol)
+                .ok()
+                .and_then(|p| WireProtocol::from_number(p).ok());
+            if protocol.is_none() {
+                self.update_error = Some(format!(
+                    "Updated runtime protocol {} is unsupported",
+                    snapshot.protocol
+                ));
+                return;
+            }
+            self.reconcile_snapshot(&snapshot, true);
+            self.pending_index_seeds.clear();
+            let panes: Vec<_> = self.panes.iter().map(|p| p.id).collect();
+            for pane in panes {
+                let _ = self.execute(&Task::RequestPaneSnapshot { target: pane });
+            }
+            self.restart_event_stream();
+            self.update_reconnecting = Some(Instant::now());
+        }
+        if let Some(started) = self.update_reconnecting {
+            let ready = self
+                .stream_slots
+                .values()
+                .filter(|slot| slot.generation > 0 && !slot.awaiting_allocation)
+                .all(|slot| {
+                    slot.state == SlotState::Live && slot.surface_baseline == SurfaceBaseline::Ready
+                });
+            if ready {
+                self.update_reconnecting = None;
+            } else if started.elapsed() > Duration::from_secs(30) {
+                self.update_reconnecting = None;
+                self.update_error =
+                    Some("Runtime updated, but workspace reattach timed out".into());
+            }
+        }
+    }
+
     /// Compatibility cleanup for a Runtime constructed with `with_forward`.
     fn stop_forward(&mut self) {
         let Some(mut forward) = self.forward.take() else {
@@ -3535,6 +3589,48 @@ impl Runtime for HerdrRuntime {
 
     fn support(&self) -> &'static [RuntimeCapability] {
         HERDR_CAPABILITIES
+    }
+
+    fn start_update(&mut self) -> crate::runtime::RuntimeResult<()> {
+        if self.update_reconnecting.is_some()
+            || self
+                .session
+                .update_snapshot_after(self.update_revision)
+                .is_some()
+        {
+            return Err(anyhow!("Workspace is still reconnecting").into());
+        }
+        self.session.start_update()?;
+        self.update_error = None;
+        Ok(())
+    }
+
+    fn update_status(&self) -> Option<crate::runtime::update::RuntimeUpdateStatus> {
+        let mut status = self.session.runtime_update_status();
+        if let Some(error) = self
+            .update_error
+            .as_ref()
+            .filter(|_| status.phase == "updated")
+        {
+            status.phase = "failed".into();
+            status.message = error.clone();
+        } else if self.update_reconnecting.is_some()
+            || status.phase == "updated"
+                && self
+                    .session
+                    .update_snapshot_after(self.update_revision)
+                    .is_some()
+        {
+            status.phase = "reconnecting".into();
+            status.message = "Reconnecting workspace…".into();
+        } else if status.phase == "updated" {
+            status.phase = "succeeded".into();
+            status.message = format!(
+                "Runtime {} updated · workspace reattached",
+                status.version.as_deref().unwrap_or("")
+            );
+        }
+        Some(status)
     }
 
     fn set_foreground(&mut self, foreground: bool) {
@@ -4186,6 +4282,7 @@ impl Runtime for HerdrRuntime {
     }
 
     fn drain_events(&mut self, out: &mut RuntimeBatch) {
+        self.poll_runtime_update();
         self.drain_close_results();
         self.drain_event_start();
         self.drain_event_stream();
@@ -4426,6 +4523,46 @@ mod tests {
             batch.append(queued.clone());
         }
         batch.into_state_changes()
+    }
+
+    #[test]
+    fn runtime_update_does_not_finish_before_every_started_pane_has_full_baseline() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("muxterm-test-update", "/unused")),
+            "w1",
+        );
+        runtime.status = BackendStatus::Connected;
+        runtime.active_pane = Some(PaneId(1));
+        for id in [1, 2] {
+            let mut slot =
+                PaneStreamSlot::new(PaneId(id), format!("w1:p{id}"), StreamMode::Observe);
+            slot.generation = 1;
+            slot.state = SlotState::Live;
+            runtime.stream_slots.insert(PaneId(id), slot);
+        }
+        runtime.update_reconnecting = Some(Instant::now());
+        runtime.poll_runtime_update();
+        assert!(
+            runtime.update_reconnecting.is_some(),
+            "handshake alone is not a full frame"
+        );
+        runtime
+            .stream_slots
+            .get_mut(&PaneId(1))
+            .unwrap()
+            .surface_baseline = SurfaceBaseline::Ready;
+        runtime.poll_runtime_update();
+        assert!(
+            runtime.update_reconnecting.is_some(),
+            "the second pane still needs a baseline"
+        );
+        runtime
+            .stream_slots
+            .get_mut(&PaneId(2))
+            .unwrap()
+            .surface_baseline = SurfaceBaseline::Ready;
+        runtime.poll_runtime_update();
+        assert!(runtime.update_reconnecting.is_none());
     }
 
     #[test]
