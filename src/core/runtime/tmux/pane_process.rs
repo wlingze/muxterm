@@ -7,6 +7,9 @@
 use crate::activity::attention::engine::known_agent_process_name;
 use crate::protocol::terminal::foreground_process_command;
 
+/// 本地直接读取前台进程，订阅只传 PID 和短命令名，避免 tmux 周期性 fork shell job。
+pub(crate) const LOCAL_PANE_PROCESS_FORMAT: &str = "#{pane_pid}|#{pane_current_command}|";
+
 /// node wrapper 需要完整 argv；tmux 的 `#()` 在 server 侧异步执行，因此 SSH
 /// 也会读取远端进程。条件分支保证普通 shell/htop/cargo 不启动额外 job。
 pub(crate) const PANE_PROCESS_FORMAT: &str = concat!(
