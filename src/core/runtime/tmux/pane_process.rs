@@ -1,22 +1,20 @@
-//! tmux pane 前台进程订阅的本地增强。
+//! tmux pane 前台进程订阅。
 //!
-//! tmux 在 Linux 上把 `pane_current_command` 缩成 argv0。订阅同时携带
-//! `pane_pid` 后，本地 Runtime 可以从 `/proc` 读取前台进程组完整 argv；
-//! SSH Runtime 必须保留远端 tmux 原值，不能拿远端 PID 误查本机 `/proc`。
+//! 控制模式只订阅 tmux 内建格式。`refresh-client -B` 至多每秒展开一次，
+//! `#()` 会在展开时由 server fork shell（`format_job_get` 在新的一秒且没有
+//! 在跑的 job 时 `job_run`）。iTerm2 的 status / pane 订阅同样只用
+//! `#{T:status-left}`、`#{pane_title}`、`#{pane_current_command}`，不把
+//! shell 放进订阅。
+//!
+//! Linux 上 `pane_current_command` 只是 argv0。本地 Runtime 在短命令名是
+//! 脚本宿主时自己读 `/proc` 或一次 `ps`，并等待回收。远端 PID 不查本机，
+//! 也不交给远端 tmux 定时执行。
 
 use crate::activity::attention::engine::known_agent_process_name;
 use crate::protocol::terminal::foreground_process_command;
 
-/// 本地直接读取前台进程，订阅只传 PID 和短命令名，避免 tmux 周期性 fork shell job。
-pub(crate) const LOCAL_PANE_PROCESS_FORMAT: &str = "#{pane_pid}|#{pane_current_command}|";
-
-/// node wrapper 需要完整 argv；tmux 的 `#()` 在 server 侧异步执行，因此 SSH
-/// 也会读取远端进程。条件分支保证普通 shell/htop/cargo 不启动额外 job。
-pub(crate) const PANE_PROCESS_FORMAT: &str = concat!(
-    "#{pane_pid}|#{pane_current_command}|",
-    "#{?#{||:#{==:#{pane_current_command},node},#{==:#{pane_current_command},nodejs},#{==:#{pane_current_command},npx},#{==:#{pane_current_command},bun}},",
-    "#(ps -ww -o args= -p $(ps -o tpgid= -p #{pane_pid} 2>/dev/null) 2>/dev/null),}"
-);
+/// 本地和 SSH 共用。只有 PID 和短命令名，格式里没有 `#()`。
+pub(crate) const PANE_PROCESS_FORMAT: &str = "#{pane_pid}|#{pane_current_command}|";
 
 pub(crate) fn resolve_subscription_value(value: &str, local: bool) -> String {
     resolve_subscription_value_with(value, local, foreground_process_command)

@@ -27,8 +27,11 @@ Done/Idle 由 Core 屏幕规则或 Runtime 结构化状态决定。前端不解�
   架构检查禁止其重新出现。Agents 只显示 Core 的身份、状态和名称。
 - 本地 ShellRuntime 原来不持续观察前台进程。现在通过 Transport 提供的独立
   观察器在后台每 500ms 采样，只上报变化；关闭 pane 即取消。Runtime 不拿远端 PID
-  查本机，且不会在 UI/poll/输入通道锁内启动 ps。SSH 原始 shell 的观察器尚不提供，
-  仍可使用 OSC 命令信号；SSH tmux 继续使用远端订阅。
+  查本机，且不会在 UI/poll/输入通道锁内启动 ps。采样进程由 `Command::output`
+  等待并回收。SSH 原始 shell 的观察器尚不提供，仍可使用 OSC 命令信号。
+  本地和 SSH tmux 的 `refresh-client -B` 都只订阅
+  `#{pane_pid}|#{pane_current_command}`，不嵌入 `#()`。Herdr 用服务端
+  快照里的 `terminal_title` / `pane.process_info`，不在客户端轮询 shell。
 
 ## 测试契约
 

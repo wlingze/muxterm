@@ -283,7 +283,8 @@ pub fn foreground_process_command(pid: u32) -> Option<String> {
 }
 
 /// macOS/BSD：`ps -o tpgid= -p <pane_pid>` → `ps -ww -o args= -p <tpgid>`。
-/// 与 tmux pane-cmd 订阅里的 `#()` 同语义，供本地 Runtime 在订阅字段为空时补全。
+/// 由本地 Runtime 在订阅只带回短命令名时调用，`Command::output` 会等待并回收。
+/// 不放进 tmux `#()`，避免 server 每秒 fork。
 /// tpgid 为 0（无控制终端，如测试进程）时回退到该 pid 自身的 args。
 #[cfg(not(target_os = "linux"))]
 fn foreground_process_command_via_ps(pid: u32) -> Option<String> {

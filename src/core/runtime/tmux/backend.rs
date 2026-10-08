@@ -34,9 +34,7 @@ use crate::runtime::tmux::client::{
     ConnectMode, TmuxClient, TmuxClientConfig, TmuxClientHandle, TmuxEvent, TmuxEventReceiver,
 };
 use crate::runtime::tmux::command as cmd;
-use crate::runtime::tmux::pane_process::{
-    resolve_subscription_value, LOCAL_PANE_PROCESS_FORMAT, PANE_PROCESS_FORMAT,
-};
+use crate::runtime::tmux::pane_process::{resolve_subscription_value, PANE_PROCESS_FORMAT};
 use crate::runtime::tmux::protocol::{
     parse_layout_tree, LayoutTree, Message, NotificationKind, TmuxSessionId,
 };
@@ -3862,17 +3860,12 @@ impl TmuxRuntime {
             "#{T:status-right}",
         );
         // pane 前台命令订阅：Working 粗判来源（LINUX-PLAN §9 C2.5b）。
-        // 本地前台 argv 由 resolve_subscription_value 补全，不让 tmux 定时执行 #()。
-        // SSH 的 PID 属于远端，仍需保留远端 server 的完整 argv 采集。
-        let pane_format = if self.config.ssh_alias.is_none() {
-            LOCAL_PANE_PROCESS_FORMAT
-        } else {
-            PANE_PROCESS_FORMAT
-        };
+        // 本地和 SSH 都只用内建格式。完整 argv 由 resolve_subscription_value
+        // 在本机按需补全；远端 PID 不查本机，订阅里也不放 #()。
         let pane_cmd = crate::runtime::tmux::command::refresh_client_subscribe(
             PANE_CMD_SUBSCRIPTION,
             "%*",
-            pane_format,
+            PANE_PROCESS_FORMAT,
         );
         // 必须走 dispatch_command：它会给每条命令登记一个 Ignore 响应槽，
         // 保持与 %begin/%end 的 FIFO 对齐；直接 tx.send 会吃掉后续真实查询
@@ -5633,7 +5626,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_process_subscription_keeps_server_foreground_argv() {
+    fn remote_process_subscription_uses_builtin_formats_only() {
         let mut backend = TmuxRuntime::new(None);
         backend.config.ssh_alias = Some("fixture-remote".into());
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
@@ -5644,9 +5637,12 @@ mod tests {
         while let Ok(line) = rx.try_recv() {
             lines.push(line);
         }
-        assert!(lines
-            .iter()
-            .any(|line| { line.contains("muxterm.pane-cmd") && line.contains("ps -o tpgid=") }));
+        assert!(lines.iter().any(|line| {
+            line.contains("muxterm.pane-cmd")
+                && line.contains("#{pane_pid}|#{pane_current_command}|")
+        }));
+        assert!(lines.iter().all(|line| !line.contains("#(")));
+        assert!(lines.iter().all(|line| !line.contains("ps ")));
     }
 
     #[test]
