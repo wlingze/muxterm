@@ -1075,6 +1075,39 @@ mod tests {
         )));
     }
 
+    #[test]
+    fn herdr_new_tab_passes_tilde_project_path_to_runtime() {
+        use std::sync::{Arc, Mutex};
+
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut runtime = MockRuntime::with_single_pane();
+        runtime.executed_log = Some(log.clone());
+        let id = WorkspaceId::new("ssh", Some("ryzen"), "default", "herdr", "w8");
+        let mut workspace = Workspace::new(id, "legion".into(), Box::new(runtime));
+        workspace.set_resolved_target(ResolvedTarget {
+            spec: WorkspaceSpec::ssh_herdr("ryzen", "default", "w8", "/tmp/herdr.sock"),
+            canonical: ResolvedTargetDescriptor::new(
+                "legion",
+                TargetRuntime::Herdr,
+                TargetTransport::Ssh {
+                    name: "ryzen".into(),
+                },
+                "~/Developer/work/legion",
+            ),
+        });
+        workspace
+            .execute(Task::NewTab {
+                name: None,
+                command: None,
+                workdir: None,
+            })
+            .unwrap();
+        let executed = log.lock().unwrap();
+        assert!(executed.iter().any(|task| matches!(task,
+            Task::NewTab { workdir: Some(path), .. } if path == "~/Developer/work/legion"
+        )));
+    }
+
     fn workspace(name: &str) -> Workspace {
         let id = WorkspaceId::new("local", None, name, "tmux", "");
         Workspace::new(

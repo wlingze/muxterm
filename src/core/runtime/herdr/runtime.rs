@@ -197,23 +197,86 @@ fn surface_blit(bytes: Vec<u8>) -> Vec<u8> {
     out
 }
 
+/// 把 Project 路径变成 Herdr 能 `chdir` 的目录。
+///
+/// `tab.create` 的 cwd 会进 portable-pty。目录不存在时，Unix
+/// `CommandBuilder::as_command` 改用进程 `$HOME`（portable-pty 0.8.1）。
+/// SSH 上的 `~/project` 在远端不是目录，原样送出会让新 tab 落到 home。
+/// 也不能用本机 HOME 去展开远端路径。
+pub(crate) fn herdr_launch_directory(
+    raw: &str,
+    is_ssh: bool,
+    remote_home: Option<&str>,
+) -> Option<String> {
+    let raw = raw.trim();
+    if raw.is_empty() || is_herdr_workspace_token(raw) {
+        return None;
+    }
+    let expanded = if is_ssh {
+        expand_remote_home_prefix(raw, remote_home)?
+    } else {
+        crate::executable::expand_config_value(raw)
+    };
+    let expanded = expanded.trim();
+    if expanded.is_empty()
+        || is_herdr_workspace_token(expanded)
+        || expanded.starts_with('~')
+        || expanded.starts_with("$HOME")
+    {
+        return None;
+    }
+    Some(expanded.to_string())
+}
+
+/// 非 home 前缀原样返回。`~user` 这类无法展开的前缀返回 None，避免送出无效 cwd。
+fn expand_remote_home_prefix(raw: &str, remote_home: Option<&str>) -> Option<String> {
+    let relative = if raw == "~" || raw == "$HOME" {
+        ""
+    } else if let Some(rest) = raw
+        .strip_prefix("~/")
+        .or_else(|| raw.strip_prefix("$HOME/"))
+    {
+        rest
+    } else if raw.starts_with('~') || raw.starts_with("$HOME") {
+        return None;
+    } else {
+        return Some(raw.to_string());
+    };
+    let home = usable_remote_home(remote_home)?;
+    if relative.is_empty() {
+        Some(home)
+    } else {
+        Some(format!("{home}/{relative}"))
+    }
+}
+
+fn usable_remote_home(remote_home: Option<&str>) -> Option<String> {
+    let home = remote_home?.trim();
+    if home.starts_with('/') && home != "/" && !home.contains('\n') && !home.contains('\0') {
+        Some(home.trim_end_matches('/').to_string())
+    } else {
+        None
+    }
+}
+
+fn is_herdr_workspace_token(path: &str) -> bool {
+    let mut chars = path.chars();
+    matches!(chars.next(), Some('w')) && chars.all(|ch| ch.is_ascii_digit()) && path.len() > 1
+}
+
 fn new_tab_params(
     workspace_id: &str,
     name: Option<&str>,
     workdir: Option<&str>,
     is_ssh: bool,
     locale: Option<&str>,
+    remote_home: Option<&str>,
 ) -> serde_json::Value {
     let mut params = serde_json::json!({ "workspace_id": workspace_id, "focus": true });
     if let Some(name) = name {
         params["label"] = serde_json::json!(name);
     }
-    if let Some(workdir) = workdir {
-        let cwd = if is_ssh {
-            workdir.to_string()
-        } else {
-            crate::executable::expand_config_value(workdir)
-        };
+    if let Some(cwd) = workdir.and_then(|dir| herdr_launch_directory(dir, is_ssh, remote_home)) {
         params["cwd"] = serde_json::json!(cwd);
     }
     super::locale::set_process_locale(&mut params, locale);
@@ -543,34 +606,37 @@ impl HerdrRuntime {
         if update_workspace_name {
             self.workspace_name = ws.label.clone();
         }
-        if self.workspace_default_cwd.is_none() {
-            self.workspace_default_cwd = ws
-                .worktree
-                .as_ref()
-                .map(|worktree| worktree.checkout_path.as_str())
-                .filter(|path| !path.trim().is_empty())
-                .or_else(|| {
-                    snap.panes
-                        .iter()
-                        .filter(|pane| pane.workspace_id == self.workspace_id)
-                        .find(|pane| {
-                            pane.focused
-                                && pane
-                                    .cwd
-                                    .as_deref()
-                                    .is_some_and(|cwd| !cwd.trim().is_empty())
-                        })
-                        .or_else(|| {
-                            snap.panes.iter().find(|pane| {
-                                pane.workspace_id == self.workspace_id
-                                    && pane
-                                        .cwd
-                                        .as_deref()
-                                        .is_some_and(|cwd| !cwd.trim().is_empty())
-                            })
-                        })
-                        .and_then(|pane| pane.cwd.as_deref())
+        // worktree checkout 是项目目录。后到的 checkout 必须盖过第一次
+        // snapshot 里 latch 住的 home pane cwd，否则新 tab 会一直停在 home。
+        if let Some(checkout) = ws
+            .worktree
+            .as_ref()
+            .map(|worktree| worktree.checkout_path.trim())
+            .filter(|path| !path.is_empty())
+        {
+            self.workspace_default_cwd = Some(checkout.to_string());
+        } else if self.workspace_default_cwd.is_none() {
+            self.workspace_default_cwd = snap
+                .panes
+                .iter()
+                .filter(|pane| pane.workspace_id == self.workspace_id)
+                .find(|pane| {
+                    pane.focused
+                        && pane
+                            .cwd
+                            .as_deref()
+                            .is_some_and(|cwd| !cwd.trim().is_empty())
                 })
+                .or_else(|| {
+                    snap.panes.iter().find(|pane| {
+                        pane.workspace_id == self.workspace_id
+                            && pane
+                                .cwd
+                                .as_deref()
+                                .is_some_and(|cwd| !cwd.trim().is_empty())
+                    })
+                })
+                .and_then(|pane| pane.cwd.as_deref())
                 .map(str::to_string);
         }
         let previous_pane_sizes = self
@@ -2819,6 +2885,7 @@ impl HerdrRuntime {
         });
         std::thread::spawn(move || {
             let result = (|| -> Result<MutationIoValue> {
+                let remote_home = session.target_home();
                 let result = match kind {
                     MutationKind::NewTab => session.call(
                         "tab.create",
@@ -2828,6 +2895,7 @@ impl HerdrRuntime {
                             workdir.as_deref(),
                             session.is_ssh(),
                             session.process_utf8_locale(),
+                            remote_home.as_deref(),
                         ),
                     ),
                     MutationKind::SplitPane => {
@@ -2843,7 +2911,9 @@ impl HerdrRuntime {
                             "pane_id": target,
                             "direction": direction,
                         });
-                        if let Some(cwd) = &workdir {
+                        if let Some(cwd) = workdir.as_deref().and_then(|raw| {
+                            herdr_launch_directory(raw, session.is_ssh(), remote_home.as_deref())
+                        }) {
                             params["cwd"] = serde_json::json!(cwd);
                         }
                         super::locale::set_process_locale(
@@ -5992,24 +6062,77 @@ mod tests {
     }
 
     #[test]
-    fn new_tab_wire_keeps_remote_directory_and_omits_implicit_label() {
-        let params = new_tab_params("w8", None, Some("~/projects/legion"), true, None);
+    fn new_tab_wire_sends_expanded_project_directory() {
+        let params = new_tab_params(
+            "w8",
+            None,
+            Some("~/projects/legion"),
+            true,
+            None,
+            Some("/home/wlz"),
+        );
         assert_eq!(params["workspace_id"], "w8");
-        assert_eq!(params["cwd"], "~/projects/legion");
+        assert_eq!(params["cwd"], "/home/wlz/projects/legion");
         assert_eq!(params["focus"], true);
         assert!(params.get("label").is_none());
     }
 
     #[test]
+    fn ssh_project_tilde_becomes_remote_directory_not_home() {
+        assert_eq!(
+            herdr_launch_directory("~/projects/legion", true, Some("/home/wlz")).as_deref(),
+            Some("/home/wlz/projects/legion")
+        );
+        assert_eq!(
+            herdr_launch_directory("$HOME/projects/legion", true, Some("/home/wlz")).as_deref(),
+            Some("/home/wlz/projects/legion")
+        );
+        assert_eq!(
+            herdr_launch_directory("~", true, Some("/home/wlz")).as_deref(),
+            Some("/home/wlz")
+        );
+        // 没有远端 HOME 时不能送出 `~/...`，也不能用本机 HOME 代替。
+        assert_eq!(
+            herdr_launch_directory("~/projects/legion", true, None),
+            None
+        );
+        assert_eq!(
+            herdr_launch_directory("/projects/legion", true, None).as_deref(),
+            Some("/projects/legion")
+        );
+        assert_eq!(herdr_launch_directory("w8", true, Some("/home/wlz")), None);
+        assert_eq!(
+            herdr_launch_directory("~other/projects", true, Some("/home/wlz")),
+            None
+        );
+    }
+
+    #[test]
+    fn local_tilde_uses_local_home_not_remote_home() {
+        let home = std::env::var("HOME").expect("HOME");
+        let got = herdr_launch_directory("~/projects/legion", false, Some("/home/remote"))
+            .expect("本地 ~ 必须展开");
+        assert_eq!(got, format!("{home}/projects/legion"));
+        assert_ne!(got, "/home/remote/projects/legion");
+    }
+
+    #[test]
+    fn new_tab_wire_omits_unexpanded_remote_tilde() {
+        let params = new_tab_params("w8", None, Some("~/projects/legion"), true, None, None);
+        assert!(params.get("cwd").is_none());
+        assert!(params.get("label").is_none());
+    }
+
+    #[test]
     fn new_ssh_tab_starts_with_utf8_locale() {
-        let params = new_tab_params("w8", None, None, true, Some("C.utf8"));
+        let params = new_tab_params("w8", None, None, true, Some("C.utf8"), None);
         assert_eq!(params["env"]["LANG"], "C.utf8");
         assert_eq!(params["env"]["LC_ALL"], "C.utf8");
     }
 
     #[test]
     fn new_local_tab_does_not_override_its_locale() {
-        let params = new_tab_params("w8", None, None, false, None);
+        let params = new_tab_params("w8", None, None, false, None, None);
         assert!(params.get("env").is_none());
     }
 
@@ -6032,6 +6155,68 @@ mod tests {
             .unwrap();
         let pending = runtime.mutation_queue.next_undispatched().unwrap();
         assert_eq!(pending.workdir.as_deref(), Some("/projects/legion"));
+    }
+
+    #[test]
+    fn latched_home_does_not_hide_a_later_project_checkout() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w1",
+        );
+        runtime.status = BackendStatus::Connected;
+        let mut home = agent_snapshot(HerdrAgentStatus::Idle, 0, 0, None, false);
+        home.panes[0].cwd = Some("/home/wlz".into());
+        assert!(runtime.apply_snapshot(&home, true));
+        let mut project = agent_snapshot(HerdrAgentStatus::Idle, 0, 0, None, false);
+        project.workspaces[0].worktree =
+            Some(crate::runtime::herdr::session::WorkspaceWorktreeRecord {
+                repo_key: "/projects/legion/.git".into(),
+                repo_name: "legion".into(),
+                repo_root: "/projects/legion".into(),
+                checkout_path: "/projects/legion".into(),
+                linked: false,
+            });
+        project.panes[0].cwd = Some("/home/wlz".into());
+        assert!(runtime.apply_snapshot(&project, false));
+        runtime
+            .execute(&Task::NewTab {
+                name: None,
+                command: None,
+                workdir: None,
+            })
+            .unwrap();
+        let pending = runtime.mutation_queue.next_undispatched().unwrap();
+        assert_eq!(pending.workdir.as_deref(), Some("/projects/legion"));
+    }
+
+    #[test]
+    fn explicit_project_path_wins_over_latched_home() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w1",
+        );
+        runtime.status = BackendStatus::Connected;
+        let mut home = agent_snapshot(HerdrAgentStatus::Idle, 0, 0, None, false);
+        home.panes[0].cwd = Some("/home/wlz".into());
+        assert!(runtime.apply_snapshot(&home, true));
+        runtime
+            .execute(&Task::NewTab {
+                name: None,
+                command: None,
+                workdir: Some("~/projects/legion".into()),
+            })
+            .unwrap();
+        let pending = runtime.mutation_queue.next_undispatched().unwrap();
+        assert_eq!(pending.workdir.as_deref(), Some("~/projects/legion"));
+        let params = new_tab_params(
+            "w1",
+            None,
+            pending.workdir.as_deref(),
+            true,
+            None,
+            Some("/home/wlz"),
+        );
+        assert_eq!(params["cwd"], "/home/wlz/projects/legion");
     }
 
     #[test]

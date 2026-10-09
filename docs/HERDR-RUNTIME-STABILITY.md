@@ -442,6 +442,10 @@ in-flight probe，且 probe 不得越过 end-to-end deadline。5 秒仍不满足
 - 上述“权威数字 label”是 Herdr raw tab name 契约；tab bar 仍可按既有通用规则加视觉
   顺序前缀。tmux 的 raw window name 不要求改成数字，不能把 Herdr fallback 误套到其它
   Runtime。
+- `tab.create` 的 `cwd` 必须是目标机器上的绝对目录。Project 路径里的 `~` / `$HOME`
+  用目标 HOME 展开；没有目标 HOME 时省略 `cwd`，禁止把未展开的 `~/project` 送出去。
+  Herdr 使用的 portable-pty 在目录不存在时会改落到 `$HOME`。显式 task workdir 仍优先于
+  snapshot 里 latch 的 pane cwd。后到的 worktree `checkout_path` 必须替换先前 latch 的 home。
 
 ### 6.4 Mutation 完成条件
 

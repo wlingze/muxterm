@@ -18,10 +18,35 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde_json::Value;
 
 use super::channel::{open_unix_socket, ChannelIo, SharedChannel};
-use crate::transport::{Connect, TargetConnection};
+use crate::transport::{ChannelRequest, Connect, TargetConnection};
 
 /// 单次请求超时。
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// 读目标机器的 `$HOME`。只接受绝对路径，避免把空输出或 `~` 当成目录。
+pub(crate) fn probe_target_home(connection: &dyn TargetConnection) -> Option<String> {
+    let output = connection
+        .exec_command(ChannelRequest::Exec {
+            argv: vec!["printenv".into(), "HOME".into()],
+            cwd: None,
+            env: Vec::new(),
+            pty: None,
+        })
+        .ok()?;
+    if output.status != 0 {
+        return None;
+    }
+    parse_target_home(&String::from_utf8_lossy(&output.stdout))
+}
+
+pub(crate) fn parse_target_home(raw: &str) -> Option<String> {
+    let home = raw.lines().next()?.trim();
+    if home.starts_with('/') && home != "/" && !home.contains('\0') {
+        Some(home.trim_end_matches('/').to_string())
+    } else {
+        None
+    }
+}
 
 /// 一条 Herdr named session 的连接身份（不是产品 Session 类型）。
 #[derive(Clone)]
@@ -31,6 +56,8 @@ pub struct HerdrSession {
     client_socket_path: PathBuf,
     connection: Arc<dyn TargetConnection>,
     process_utf8_locale: Arc<OnceLock<String>>,
+    /// SSH 目标的 `$HOME`。只缓存成功结果；探测失败下次再建 tab 时重试。
+    target_home: Arc<OnceLock<String>>,
     wire_protocol: Arc<AtomicU32>,
     pub(super) update: Arc<std::sync::Mutex<super::update::UpdateState>>,
 }
@@ -98,6 +125,7 @@ impl HerdrSession {
             client_socket_path,
             connection,
             process_utf8_locale: Arc::new(OnceLock::new()),
+            target_home: Arc::new(OnceLock::new()),
             wire_protocol: Arc::new(AtomicU32::new(19)),
             update: Arc::new(std::sync::Mutex::new(super::update::UpdateState::default())),
         }
@@ -122,6 +150,19 @@ impl HerdrSession {
             }
         }
         self.process_utf8_locale.get().map(String::as_str)
+    }
+
+    /// SSH 目标的 home。本地 session 返回 None，展开 `~` 仍走本机 HOME。
+    pub(crate) fn target_home(&self) -> Option<String> {
+        if !self.is_ssh() {
+            return None;
+        }
+        if let Some(home) = self.target_home.get() {
+            return Some(home.clone());
+        }
+        let home = probe_target_home(self.connection.as_ref())?;
+        let _ = self.target_home.set(home.clone());
+        Some(home)
     }
 
     pub fn socket_path(&self) -> &Path {
@@ -324,7 +365,10 @@ impl HerdrSession {
 
     /// `workspace.create`：新建 Herdr workspace（New Project 用）。
     pub fn workspace_create(&self, cwd: &str, label: &str) -> Result<WorkspaceRecord> {
-        let mut params = serde_json::json!({ "cwd": cwd, "label": label, "focus": false });
+        let mut params = serde_json::json!({ "label": label, "focus": false });
+        if !cwd.trim().is_empty() {
+            params["cwd"] = serde_json::json!(cwd);
+        }
         super::locale::set_process_locale(&mut params, self.process_utf8_locale());
         let result = self.call("workspace.create", params)?;
         let ws = result
@@ -1039,6 +1083,16 @@ impl HerdrWorktreeRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_target_home_accepts_only_an_absolute_directory() {
+        assert_eq!(parse_target_home("/home/wlz\n"), Some("/home/wlz".into()));
+        assert_eq!(parse_target_home("/home/wlz/\n"), Some("/home/wlz".into()));
+        assert_eq!(parse_target_home(""), None);
+        assert_eq!(parse_target_home("~\n"), None);
+        assert_eq!(parse_target_home("wlz\n"), None);
+        assert_eq!(parse_target_home("/\n"), None);
+    }
 
     struct RecordingChannel {
         response: Vec<u8>,

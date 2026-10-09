@@ -397,6 +397,13 @@ impl RuntimeProvider for HerdrDriver {
         label: Option<&str>,
     ) -> RuntimeResult<RuntimeSpec> {
         let is_ssh = connection.transport_id() == "ssh";
+        // `~/project` 必须展开成目标机器上的绝对路径。原样送给 Herdr 时，
+        // portable-pty 发现目录不存在，会把新 workspace 落到 home。
+        let remote_home = if is_ssh {
+            super::session::probe_target_home(connection)
+        } else {
+            None
+        };
         let mut spec = spec.clone();
         if spec.session.is_empty() {
             return Err(RuntimeError::message(
@@ -421,12 +428,9 @@ impl RuntimeProvider for HerdrDriver {
                 "Herdr session `{session_name}` 无法通过 socket `{socket}` 响应；请检查远端 Herdr 启动状态"
             )));
         }
-        // SSH cwd 保持远端字面量（含 ~）；本地才展开本机 HOME。
-        let cwd = if is_ssh {
-            spec.path.clone()
-        } else {
-            crate::executable::expand_config_value(&spec.path)
-        };
+        let cwd =
+            super::runtime::herdr_launch_directory(&spec.path, is_ssh, remote_home.as_deref())
+                .unwrap_or_default();
         let created = herdr
             .workspace_create(&cwd, label.unwrap_or(&spec.session))
             .map_err(RuntimeError::message)?;
