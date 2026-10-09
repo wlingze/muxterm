@@ -87,6 +87,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     var onConnect: ((TargetConfig) -> Void)?
     var onWorkspaceActivate: ((String) -> Void)?
     var onWorkspaceClose: ((String) -> Void)?
+    var onWorkspaceUpdate: ((String) -> Void)?
     var onLoadExistingConnections: ((@escaping (Result<[ExistingConnectionChoice], Error>) -> Void) -> Void)?
     var onLoadSSHAliases: ((@escaping (Result<[String], Error>) -> Void) -> Void)?
     var onAttachExistingConnection: ((ExistingConnectionChoice) -> Void)?
@@ -1215,6 +1216,9 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                 ) { [weak self] workspaceID in
                     self?.onWorkspaceClose?(workspaceID)
                 }
+                cell.configureWorkspaceUpdate { [weak self] workspaceID in
+                    self?.onWorkspaceUpdate?(workspaceID)
+                }
                 return cell
             case .existingConnections:
                 let id = NSUserInterfaceItemIdentifier("ExistingConnectionsFolder")
@@ -1229,6 +1233,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                     ?? QuickTargetCellView(identifier: id)
                 cell.workspace = nil
                 cell.configureWorkspaceClose(nil, action: nil)
+                cell.configureWorkspaceUpdate(action: nil)
                 cell.config = config
                 cell.badges = badges
                 cell.isCurrent = isCurrent

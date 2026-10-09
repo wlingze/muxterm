@@ -281,7 +281,9 @@ enum QuickRowMetrics {
     static let edge: CGFloat = 14
     static let gutter: CGFloat = 22
     static let titleGap: CGFloat = 6
-    static var titleLeading: CGFloat { edge + gutter + titleGap }
+    static let actionWidth: CGFloat = 42
+    static let actionGap: CGFloat = 12
+    static var titleLeading: CGFloat { edge + gutter + titleGap + actionWidth + actionGap }
 }
 
 /// Quick Connect 的轻量动作行，标题与目标行对齐。
@@ -312,6 +314,12 @@ final class QuickActionCellView: NSTableCellView {
     }
 }
 
+private final class QuickUpdateProgressIndicator: NSProgressIndicator {
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+}
+
 /// 紧凑两行目标 cell：完整 name + 8pt 色块徽章，下一行 runtime/transport/path。
 /// 名称绝不截断；徽章缩成小色块，不跟名字抢宽度。
 final class QuickTargetCellView: NSTableCellView {
@@ -322,13 +330,13 @@ final class QuickTargetCellView: NSTableCellView {
     private let detailLabel = NSTextField(labelWithString: "")
     private let badgeStack = NSStackView()
     private let workspaceIndexLabel = NSTextField(labelWithString: "")
+    private let actionContainer = NSView()
     private let closeButton = NSButton()
+    private let runtimeUpdateButton = NSButton()
+    private let updateSpinner = QuickUpdateProgressIndicator()
     private var onCloseWorkspace: ((String) -> Void)?
+    private var onUpdateWorkspace: ((String) -> Void)?
     private var closeWorkspaceID: String?
-    private var badgeTrailingWithClose: NSLayoutConstraint!
-    private var badgeTrailingWithoutClose: NSLayoutConstraint!
-    private var detailTrailingWithClose: NSLayoutConstraint!
-    private var detailTrailingWithoutClose: NSLayoutConstraint!
     private var aggregateAppearance: AggregateWorkspaceAppearance?
 
     /// 已打开 Workspace 直接消费侧边栏投影，避免 Quick Panel 再造一套
@@ -401,34 +409,37 @@ final class QuickTargetCellView: NSTableCellView {
         closeButton.action = #selector(closeWorkspaceClicked)
         closeButton.translatesAutoresizingMaskIntoConstraints = false
         closeButton.isHidden = true
+        runtimeUpdateButton.title = ""
+        runtimeUpdateButton.imagePosition = .imageOnly
+        runtimeUpdateButton.imageScaling = .scaleProportionallyDown
+        runtimeUpdateButton.bezelStyle = .shadowlessSquare
+        runtimeUpdateButton.isBordered = false
+        runtimeUpdateButton.focusRingType = .none
+        runtimeUpdateButton.target = self
+        runtimeUpdateButton.action = #selector(updateWorkspaceClicked)
+        runtimeUpdateButton.translatesAutoresizingMaskIntoConstraints = false
+        runtimeUpdateButton.isHidden = true
+        actionContainer.translatesAutoresizingMaskIntoConstraints = false
+        actionContainer.addSubview(runtimeUpdateButton)
+        actionContainer.addSubview(closeButton)
+        updateSpinner.translatesAutoresizingMaskIntoConstraints = false
+        updateSpinner.style = .spinning
+        updateSpinner.controlSize = .small
+        updateSpinner.isDisplayedWhenStopped = false
+        updateSpinner.isHidden = true
         addSubview(titleLabel)
         addSubview(detailLabel)
         addSubview(badgeStack)
         addSubview(workspaceIndexLabel)
-        addSubview(closeButton)
-        badgeTrailingWithClose = badgeStack.trailingAnchor.constraint(
-            lessThanOrEqualTo: closeButton.leadingAnchor,
-            constant: -6
-        )
-        badgeTrailingWithoutClose = badgeStack.trailingAnchor.constraint(
-            lessThanOrEqualTo: trailingAnchor,
-            constant: -14
-        )
-        detailTrailingWithClose = detailLabel.trailingAnchor.constraint(
-            equalTo: closeButton.leadingAnchor,
-            constant: -6
-        )
-        detailTrailingWithoutClose = detailLabel.trailingAnchor.constraint(
-            equalTo: trailingAnchor,
-            constant: -14
-        )
+        addSubview(actionContainer)
+        actionContainer.addSubview(updateSpinner)
         NSLayoutConstraint.activate([
             workspaceIndexLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: QuickRowMetrics.edge),
             workspaceIndexLabel.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
             workspaceIndexLabel.widthAnchor.constraint(equalToConstant: QuickRowMetrics.gutter),
             titleLabel.leadingAnchor.constraint(
-                equalTo: workspaceIndexLabel.trailingAnchor,
-                constant: QuickRowMetrics.titleGap
+                equalTo: actionContainer.trailingAnchor,
+                constant: QuickRowMetrics.actionGap
             ),
             titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 5),
             badgeStack.leadingAnchor.constraint(equalTo: titleLabel.trailingAnchor, constant: 6),
@@ -436,12 +447,27 @@ final class QuickTargetCellView: NSTableCellView {
             detailLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
             detailLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 2),
             detailLabel.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -5),
-            closeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
-            closeButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            actionContainer.leadingAnchor.constraint(
+                equalTo: workspaceIndexLabel.trailingAnchor,
+                constant: QuickRowMetrics.titleGap
+            ),
+            actionContainer.centerYAnchor.constraint(equalTo: centerYAnchor),
+            actionContainer.heightAnchor.constraint(equalToConstant: 18),
+            actionContainer.widthAnchor.constraint(equalToConstant: QuickRowMetrics.actionWidth),
+            closeButton.trailingAnchor.constraint(equalTo: actionContainer.trailingAnchor),
+            closeButton.centerYAnchor.constraint(equalTo: actionContainer.centerYAnchor),
             closeButton.widthAnchor.constraint(equalToConstant: 18),
             closeButton.heightAnchor.constraint(equalToConstant: 18),
-            badgeTrailingWithoutClose,
-            detailTrailingWithoutClose,
+            runtimeUpdateButton.leadingAnchor.constraint(equalTo: actionContainer.leadingAnchor),
+            runtimeUpdateButton.centerYAnchor.constraint(equalTo: actionContainer.centerYAnchor),
+            runtimeUpdateButton.widthAnchor.constraint(equalToConstant: 18),
+            runtimeUpdateButton.heightAnchor.constraint(equalToConstant: 18),
+            updateSpinner.centerXAnchor.constraint(equalTo: runtimeUpdateButton.centerXAnchor),
+            updateSpinner.centerYAnchor.constraint(equalTo: runtimeUpdateButton.centerYAnchor),
+            updateSpinner.widthAnchor.constraint(equalToConstant: 16),
+            updateSpinner.heightAnchor.constraint(equalToConstant: 16),
+            badgeStack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -14),
+            detailLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
         ])
     }
 
@@ -452,6 +478,7 @@ final class QuickTargetCellView: NSTableCellView {
 
     private func updateLayout() {
         let shortcutText: String?
+        detailLabel.textColor = .secondaryLabelColor
         if let workspace {
             aggregateAppearance = AggregateWorkspaceAppearance(
                 workspaceID: workspace.workspaceId
@@ -461,6 +488,15 @@ final class QuickTargetCellView: NSTableCellView {
             detailLabel.stringValue = workspace.openingStage.map {
                 "Opening · \($0) · \(workspace.runtime) @ \(workspace.transport)"
             } ?? "\(workspace.runtime) @ \(workspace.transport)"
+            if let phase = workspace.runtimeUpdatePhase, phase != "idle",
+               let message = workspace.runtimeUpdateMessage
+            {
+                detailLabel.stringValue += " · \(message)"
+                detailLabel.toolTip = message
+                detailLabel.textColor = phase == "failed" ? .systemOrange : .secondaryLabelColor
+            } else {
+                detailLabel.toolTip = nil
+            }
             shortcutText = workspace.shortcutText
             titleLabel.textColor = aggregateAppearance?.accentColor
                 ?? (workspace.isOpening ? .systemYellow : .labelColor)
@@ -469,6 +505,7 @@ final class QuickTargetCellView: NSTableCellView {
             isCurrent = workspace.isActive
         } else if let config {
             aggregateAppearance = nil
+            detailLabel.toolTip = nil
             titleLabel.stringValue = config.name
             titleLabel.toolTip = config.name
             shortcutText = workspaceIndex.map(String.init)
@@ -511,15 +548,48 @@ final class QuickTargetCellView: NSTableCellView {
             visible ? MuxtermI18n.shared.tr(.closeWorkspace) : nil
         )
         closeButton.toolTip = visible ? MuxtermI18n.shared.tr(.closeWorkspace) : nil
-        badgeTrailingWithoutClose.isActive = !visible
-        detailTrailingWithoutClose.isActive = !visible
-        badgeTrailingWithClose.isActive = visible
-        detailTrailingWithClose.isActive = visible
+        updateActionLayout()
+    }
+
+    func configureWorkspaceUpdate(action: ((String) -> Void)?) {
+        onUpdateWorkspace = action
+        let available = workspace?.canUpdateRuntime == true && action != nil
+        let phase = workspace?.runtimeUpdatePhase ?? "idle"
+        let busy = available && ["checking", "installing", "handoff", "reconnecting"].contains(phase)
+        let failed = phase == "failed"
+        runtimeUpdateButton.isHidden = !available
+        runtimeUpdateButton.isEnabled = available && !busy
+        runtimeUpdateButton.image = busy ? nil : NSImage(
+            systemSymbolName: failed ? "exclamationmark.arrow.circlepath" : "arrow.down.circle",
+            accessibilityDescription: "Update runtime"
+        )
+        runtimeUpdateButton.contentTintColor = failed ? .systemOrange : .secondaryLabelColor
+        runtimeUpdateButton.toolTip = workspace?.runtimeUpdateMessage ?? "Update runtime and reconnect"
+        runtimeUpdateButton.setAccessibilityIdentifier(
+            available ? workspace.map { "muxterm.panel.workspace.update.\($0.workspaceId)" } : nil
+        )
+        runtimeUpdateButton.setAccessibilityLabel(available ? "Update runtime and reconnect" : nil)
+        updateSpinner.isHidden = !busy
+        if busy {
+            updateSpinner.startAnimation(nil)
+        } else {
+            updateSpinner.stopAnimation(nil)
+        }
+        updateActionLayout()
+    }
+
+    private func updateActionLayout() {
+        actionContainer.isHidden = closeButton.isHidden && runtimeUpdateButton.isHidden
     }
 
     @objc private func closeWorkspaceClicked() {
         guard let closeWorkspaceID else { return }
         onCloseWorkspace?(closeWorkspaceID)
+    }
+
+    @objc private func updateWorkspaceClicked() {
+        guard let workspace, workspace.canUpdateRuntime else { return }
+        onUpdateWorkspace?(workspace.workspaceId)
     }
 
     private func updateHighlight() {

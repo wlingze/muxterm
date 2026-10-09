@@ -495,6 +495,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         unifiedPanel.onWorkspaceClose = { [weak self] workspaceId in
             self?.closeWorkspace(workspaceId)
         }
+        unifiedPanel.onWorkspaceUpdate = { [weak self] workspaceId in
+            self?.updateWorkspaceRuntime(workspaceId)
+        }
         unifiedPanel.onConnect = { [weak self] config in
             self?.connect(config: config)
         }
@@ -1918,8 +1921,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                         throw CoreBridgeDiscoveryError.message("Workspace unavailable")
                     }
                     try bridge.startRuntimeUpdate(workspaceID: workspaceID)
+                    runtimeUpdateRequestStatuses.removeValue(forKey: workspaceID)
+                    runtimeUpdateNextPoll = .distantPast
                 } catch {
+                    if let workspaceID = command.workspaceID {
+                        runtimeUpdateRequestStatuses[workspaceID] = CoreBridge.RuntimeUpdateStatus(
+                            phase: "failed", message: error.localizedDescription, version: nil
+                        )
+                    }
                     reportStatusError(error.localizedDescription)
+                    refreshWorkspaceSidebar(force: true)
+                    unifiedPanel.refreshData()
                 }
                 result = 0
             case .closeWorkspace:
@@ -2181,17 +2193,31 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private var runtimeUpdateStatuses: [String: CoreBridge.RuntimeUpdateStatus] = [:]
+    private var runtimeUpdateRequestStatuses: [String: CoreBridge.RuntimeUpdateStatus] = [:]
     private var runtimeUpdatePolling = false
     private var runtimeUpdateNextPoll = Date.distantPast
 
     func updateWorkspaceRuntime(_ workspaceID: String) {
+        guard !isClosing else { return }
+        guard let slot = scene(forWorkspaceId: workspaceID), let coreWorkspaceID = slot.workspaceID else {
+            reportStatusError("Workspace unavailable")
+            return
+        }
+        guard runtimeUpdateRequestStatuses[coreWorkspaceID]?.isBusy != true,
+              runtimeUpdateStatuses[coreWorkspaceID]?.isBusy != true
+        else { return }
+        runtimeUpdateRequestStatuses[coreWorkspaceID] = CoreBridge.RuntimeUpdateStatus(
+            phase: "checking", message: "Requesting runtime update…", version: nil
+        )
         runtimeUpdatePolling = true
         runtimeUpdateNextPoll = .distantPast
         _ = enqueueCoreCommand(QueuedMuxCommand(
-            workspaceID: workspaceID,
+            workspaceID: coreWorkspaceID,
             operation: .updateRuntime,
             failureMessage: "Runtime update failed"
         ))
+        refreshWorkspaceSidebar(force: true)
+        unifiedPanel.refreshData()
     }
 
     private func pollRuntimeUpdates() {
@@ -2206,6 +2232,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         runtimeUpdateStatuses = statuses
         refreshWorkspaceSidebar(force: true)
+        unifiedPanel.refreshData()
     }
 
     /// 所有真实 Workspace 的只读侧栏输入。聚合模型从这里取源事实；这里
@@ -2216,6 +2243,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         return slots.enumerated().compactMap { index, slot in
             let target = slot.targetConfig
             let workspaceID = workspaceIDs[index]
+            let updateStatus = slot.workspaceID.flatMap {
+                runtimeUpdateRequestStatuses[$0] ?? runtimeUpdateStatuses[$0]
+            }
             let structuredAgents = structuredAgentTestOverrides[workspaceID]
                 ?? slot.cachedStructuredAgents
             let tabTargets = tabTargetsByPane(for: slot)
@@ -2226,8 +2256,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 transport: target.transport.label,
                 isActive: slot.visibility == .visible,
                 canUpdateRuntime: bridge.runtimeSupports(target.runtime.rawValue, capability: "RuntimeUpdate"),
-                runtimeUpdatePhase: runtimeUpdateStatuses[workspaceID]?.phase,
-                runtimeUpdateMessage: runtimeUpdateStatuses[workspaceID]?.message,
+                runtimeUpdatePhase: updateStatus?.phase,
+                runtimeUpdateMessage: updateStatus?.message,
                 structuredAgents: structuredAgents,
                 tabNumberByPane: tabTargets.tabNumbersByPane,
                 tabIdByPane: tabTargets.tabIdsByPane

@@ -259,8 +259,14 @@ Herdr workspace id 不再复用项目 `path`。生成五段 `WorkspaceId` 时第
 
 #### Workspace 中更新 Runtime
 
-GUI 根据 `support(RuntimeUpdate)` 显示 workspace 行的更新图标，经 C FFI 启动 Core
-后台任务并读取阶段、版本和错误。安装与连接状态由 Runtime 持有；前端只负责按钮和提示。
+GUI 根据 `support(RuntimeUpdate)` 在 workspace 侧栏与快速面板的已打开 workspace 行显示
+更新图标，经 C FFI 启动 Core 后台任务并读取阶段、版本和错误。更新期间显示进度并禁用
+重复点击，失败后可重试。安装与连接状态由 Runtime 持有；前端只负责按钮和提示。
+快速面板的更新/关闭按钮固定在左侧操作栏，位于编号与名称之间；隐藏更新按钮不移动
+关闭按钮或名称列，窗口缩放和名称长度也不改变按钮位置。
+macOS 行操作先把展示用 replica/attention id 映射到 Scene 的 Core WorkspaceId，再进入
+CommandQueue；状态也按 Core WorkspaceId 读取并投影回行。排队期间立即显示等待状态，
+启动请求被拒绝时在原行显示错误，不只提示被快速面板遮住的主窗口状态栏。
 
 Herdr 的流程：检查所选 server 的 `live_handoff` 能力 → 在同一 TargetConnection 独立运行
 `herdr update`（清除 `HERDR_ENV`/`HERDR_SESSION`，stdin 为 `/dev/null`）→ 读取新二进制的
