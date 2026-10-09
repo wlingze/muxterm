@@ -141,6 +141,48 @@ final class UnifiedPanelE2ETests: XCTestCase {
         XCTAssertEqual(app.testActiveWorkspaceSession(), second.session)
     }
 
+    func testOpenWorkspaceRowsStayInShortcutOrderWhenAttachCountsDiffer() throws {
+        AppE2E.ensureApp()
+        let workspaces = [
+            WorkspaceSidebarItem(
+                workspaceId: AggregateWorkspaceIdentity.agents, name: "Agents", runtime: "aggregate",
+                transport: "all workspaces", isActive: false, shortcut: nil,
+                isClosable: false, isReorderable: false
+            ),
+            WorkspaceSidebarItem(
+                workspaceId: "yaklang", name: "yaklang-workspace", runtime: "herdr",
+                transport: "ryzen", isActive: false, shortcut: 1
+            ),
+            WorkspaceSidebarItem(
+                workspaceId: "muxterm", name: "muxterm", runtime: "tmux",
+                transport: "local", isActive: false, shortcut: 2
+            ),
+            WorkspaceSidebarItem(
+                workspaceId: "mac-home", name: "mac-home", runtime: "tmux",
+                transport: "local", isActive: true, shortcut: 3
+            ),
+            WorkspaceSidebarItem(
+                workspaceId: "ryzen-home", name: "ryzen-home", runtime: "tmux",
+                transport: "ryzen", isActive: false, shortcut: 4
+            ),
+        ]
+        let counts = ["yaklang": 1, "muxterm": 2, "mac-home": 1, "ryzen-home": 9]
+        let panel = UnifiedPanelController(
+            store: QuickConnectStore(), ownerWindow: nil, snapshot: { nil },
+            sendInput: { _, _ in }, search: { _ in }, sidebarWorkspaces: { workspaces }
+        )
+        panel.attachCountForWorkspace = { counts[$0] ?? 0 }
+        defer { panel.dismiss() }
+        panel.present()
+
+        let names = ["yaklang-workspace", "muxterm", "mac-home", "ryzen-home"]
+        let titles = panel.testWorkspaceTitles()
+        let positions = names.compactMap { titles.firstIndex(of: $0) }
+        XCTAssertEqual(positions, positions.sorted(), "编号必须按侧栏顺序出现：\(titles)")
+        XCTAssertEqual(positions, Array(positions[0]..<positions[0] + names.count))
+        XCTAssertEqual(names.map { panel.testWorkspaceShortcutText(matching: $0) }, ["1", "2", "3", "4"])
+    }
+
     func testAggregateRowsActivateTheSameSidebarDestinations() throws {
         AppE2E.ensureApp()
         let bridge = try CoreBridge(backendType: "local")

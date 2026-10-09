@@ -403,21 +403,11 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
             chromeWorkspaces.compactMap(\.openingTargetID)
         )
         let currentId = currentConfig.map { QuickConnect.uniqueID(for: $0) }
-        let rankedWorkspaces = chromeWorkspaces.enumerated().sorted { lhs, rhs in
-            if lhs.element.isAggregate != rhs.element.isAggregate {
-                return lhs.element.isAggregate
-            }
-            if lhs.element.isAggregate { return lhs.offset < rhs.offset }
-            if lhs.element.isOpening != rhs.element.isOpening {
-                return lhs.element.isOpening
-            }
-            let leftCount = attachCountForWorkspace?(lhs.element.workspaceId) ?? 0
-            let rightCount = attachCountForWorkspace?(rhs.element.workspaceId) ?? 0
-            return leftCount == rightCount ? lhs.offset < rhs.offset : leftCount > rightCount
-        }.map(\.element)
+        // 已打开项沿用侧栏投影。编号按这个顺序从 1 递增，使用次数不能把
+        // 4 排到 3 前面。最近使用只影响默认选中行和搜索排序。
         allItems = chromeWorkspaces.isEmpty
             ? [.existingConnections]
-            : rankedWorkspaces.map(UnifiedWorkspaceItem.workspace)
+            : chromeWorkspaces.map(UnifiedWorkspaceItem.workspace)
         let queryIsNonEmpty = !model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let entries = QuickConnect.entries(
             recents: store.recents,
