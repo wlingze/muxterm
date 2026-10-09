@@ -271,13 +271,16 @@ CommandQueue；状态也按 Core WorkspaceId 读取并投影回行。排队期�
 
 Herdr 的流程：检查所选 server 的 `live_handoff` 能力 → 在同一 TargetConnection 独立运行
 `herdr update`（清除 `HERDR_ENV`/`HERDR_SESSION`，stdin 为 `/dev/null`）→ 读取新二进制的
-`--version` 和 `api schema --json`。安装后的版本与正在运行的 server 相同时到此结束：
-不调用 `server.live_handoff`，不重开 pane/event 流，workspace 保持当前画面。
-版本不同才对所选 namespace 调用 `server.live_handoff`，传入
-`import_exe`、`expected_version`、`expected_protocol` → 读取权威 snapshot → 重开 pane/event
-流。同一 server 的已打开 Workspace 一起重连，保留 tab/pane id、shell 进程和旧 Surface；
-所有已启动 pane 都收到新 full baseline 后才报告完成。新打开的 Workspace 使用 connect
-时的新快照，不重放历史更新快照。同一 target 同时只允许一个安装任务。
+`--version` 和 `api schema --json`。plain `herdr update` 只替换磁盘上的客户端；正在运行的
+server 仍是更新前启动的旧进程。ping 的 `version` 或 `protocol` 与这份新二进制不同时，对所选
+namespace 调用 `server.live_handoff`，传入 `import_exe`、`expected_version`、
+`expected_protocol`。这是更新按钮的主要路径：把旧进程换成新二进制，pane 进程继续跑。
+只有 ping 已经同时报出安装后的版本和 protocol，才说明这个进程就是那份二进制，此时不交接、
+不重开流。交接后的 snapshot 必须仍包含 workspace；空列表或缺少当前 workspace 时不发布关闭，
+pane/tab 保持原 id。重连前钉住用户当前 tab/pane，避免快照焦点跳到第一个 tab。同一 server
+的已打开 Workspace 一起重连，保留 tab/pane id、shell 进程和旧 Surface；所有已启动 pane 都
+收到新 full baseline 后才报告完成。新打开的 Workspace 使用 connect 时的新快照，不重放历史
+更新快照。同一 target 同时只允许一个安装任务。
 
 接管连接提前断开时以新 server 的 snapshot 验证结果。安装失败、缺少热交接能力、包管理器
 安装或新二进制的 wire 格式尚不支持时报告原因，保留原 server；不调用 stop，不向 pane
@@ -291,7 +294,10 @@ endpoint-generation-1 server；`--handoff` 才替换正在运行的 server）、
 [v0.9.1 API schema command](https://github.com/herdrdev/herdr/blob/v0.9.1/src/cli/api.rs)、
 [v0.9.1 live handoff parameters](https://github.com/herdrdev/herdr/blob/v0.9.1/src/api/schema/server.rs)。
 文档核对时间：`2026-09-30T10:53:30+08:00`；源码核对时间：`2026-09-30T10:58:52+08:00`。
-同版本不交接的依据复核时间：`2026-10-09T15:00:53+08:00`。
+旧进程与新二进制的交接依据复核时间：`2026-10-09T15:23:47+08:00`
+（[Session state](https://herdr.dev/docs/session-state/)：plain `herdr update` 保留正在运行的
+server；`--handoff` / `server.live_handoff` 才在不结束 pane 进程的前提下替换它。本机
+`herdr 0.8.0` 的 `herdr status --json` 把 client 与 server 分开，并带 `restart_needed`）。
 隔离 named session 的 local/loopback SSH 回归见 `tests/herdr_runtime_update.rs`；下载步骤
 使用测试通道，真实执行 socket handoff/重连，绝不替换开发机 Herdr 安装。
 指定 `MUXTERM_TEST_HERDR_UPDATE_BINARY=/absolute/path/herdr` 可运行跨版本交接。

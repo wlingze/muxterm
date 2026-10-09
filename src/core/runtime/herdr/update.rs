@@ -41,20 +41,28 @@ fn update(
     let protocol = backend.installed_protocol()?;
     ensure!(WireProtocol::from_number(protocol).is_ok(),
         "Installed Herdr protocol {protocol} is not supported by this Muxterm. The existing server was left running; update Muxterm before reconnecting.");
-    // 版本没变就停在这里。继续 snapshot/重开流只是把 workspace 关掉再启动，
-    // 不是升级。Herdr 文档：plain `herdr update` 保留兼容的正在运行的 server。
-    if ping["version"].as_str() == Some(version.as_str()) {
+    // plain `herdr update` 只换磁盘上的二进制，正在跑的 server 仍是旧进程。
+    // 版本或 protocol 任一不同，就是这次更新要做的 live handoff。
+    // 只有 ping 已经同时报出安装后的版本和 protocol，才说明这个进程就是那份二进制。
+    let running_version = ping["version"].as_str().unwrap_or_default();
+    let running_protocol = ping["protocol"].as_u64();
+    if running_version == version && running_protocol == Some(u64::from(protocol)) {
         return Ok(UpdateFinish::AlreadyCurrent(version));
     }
+    let previous = if running_version.is_empty() {
+        "the running server".to_owned()
+    } else {
+        running_version.to_owned()
+    };
     progress(RuntimeUpdateStatus::new(
         "handoff",
-        "Handing over to the updated server…",
+        format!("Handing the running server {previous} to {version}…"),
     ));
     // 交接可能已经成功但回复连接提前断开；snapshot 才是最终事实。
     let handoff_error = backend.handoff(&version, protocol).err();
     progress(RuntimeUpdateStatus::new(
         "reconnecting",
-        "Reconnecting workspace…",
+        "Keeping panes on the updated server…",
     ));
     let snapshot = backend
         .wait_snapshot(&version)
@@ -65,11 +73,19 @@ fn update(
             None => error,
         })?;
     ensure!(
+        !snapshot.workspaces.is_empty(),
+        "Updated server snapshot has no workspaces; the running workspace was left unchanged"
+    );
+    ensure!(
         snapshot.protocol == u64::from(protocol),
         "Updated server protocol {} differs from installed protocol {protocol}",
         snapshot.protocol
     );
-    Ok(UpdateFinish::Updated(version, Box::new(snapshot)))
+    Ok(UpdateFinish::Updated {
+        version,
+        previous,
+        snapshot: Box::new(snapshot),
+    })
 }
 
 static INSTALLING: LazyLock<Mutex<HashSet<(String, String)>>> =
@@ -86,7 +102,12 @@ impl Drop for InstallGuard {
 enum UpdateFinish {
     /// 安装后的版本和正在运行的 server 相同。不要再重开 pane 流。
     AlreadyCurrent(String),
-    Updated(String, Box<SessionSnapshot>),
+    /// 旧进程已交给安装后的二进制。`previous` 是交接前 ping 到的 server 版本。
+    Updated {
+        version: String,
+        previous: String,
+        snapshot: Box<SessionSnapshot>,
+    },
 }
 enum UpdateEvent {
     Progress(RuntimeUpdateStatus),
@@ -132,10 +153,19 @@ impl UpdateState {
                             );
                             self.status.version = Some(version);
                         }
-                        Ok(UpdateFinish::Updated(version, snapshot)) => {
+                        Ok(UpdateFinish::Updated {
+                            version,
+                            previous,
+                            snapshot,
+                        }) => {
                             self.revision += 1;
                             self.snapshot = Some(*snapshot);
-                            self.status = RuntimeUpdateStatus::new("updated", "Server updated");
+                            self.status = RuntimeUpdateStatus::new(
+                                "updated",
+                                format!(
+                                    "Runtime {previous} handed off to {version}; pane processes kept"
+                                ),
+                            );
                             self.status.version = Some(version);
                         }
                         Err(e) => {
@@ -200,6 +230,26 @@ impl HerdrSession {
         (state.revision > revision)
             .then(|| state.snapshot.clone().map(|s| (state.revision, s)))
             .flatten()
+    }
+
+    #[cfg(test)]
+    pub(super) fn publish_test_handoff(
+        &self,
+        version: &str,
+        previous: &str,
+        snapshot: SessionSnapshot,
+    ) {
+        let mut state = self
+            .update
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        state.revision += 1;
+        state.snapshot = Some(snapshot);
+        state.status = RuntimeUpdateStatus::new(
+            "updated",
+            format!("Runtime {previous} handed off to {version}; pane processes kept"),
+        );
+        state.status.version = Some(version.to_owned());
     }
 }
 
@@ -331,7 +381,9 @@ printf '\nMUXTERM_UPDATE_EXIT=%s\n' "$result"
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             if let Ok(snap) = self.snapshot() {
-                if snap.version == version {
+                // 新 server 刚起来时可能先报出版本、workspace 还是空的。
+                // 空列表不能当成交接完成，否则上层会把 space 关掉。
+                if snap.version == version && !snap.workspaces.is_empty() {
                     return Ok(snap);
                 }
             }
@@ -354,11 +406,17 @@ mod tests {
         same_version: bool,
         handoff_reply_lost: bool,
         protocol: u32,
+        ping_protocol: u32,
+        empty_workspaces: bool,
     }
     impl UpdateBackend for Fake {
         fn ping(&self) -> Result<Value> {
             self.calls.borrow_mut().push("ping");
-            Ok(json!({"version":"0.8.0","capabilities":{"live_handoff":self.supported}}))
+            Ok(json!({
+                "version": "0.8.0",
+                "protocol": self.ping_protocol,
+                "capabilities": {"live_handoff": self.supported}
+            }))
         }
         fn install(&self) -> Result<()> {
             self.calls.borrow_mut().push("install");
@@ -384,9 +442,18 @@ mod tests {
         }
         fn wait_snapshot(&self, _: &str) -> Result<SessionSnapshot> {
             self.calls.borrow_mut().push("snapshot");
-            SessionSnapshot::from_json(
-                &json!({"version":if self.same_version { "0.8.0" } else { "0.9.1" },"protocol":self.protocol,"workspaces":[],"tabs":[],"panes":[]}),
-            )
+            let workspaces = if self.empty_workspaces {
+                json!([])
+            } else {
+                json!([{"workspace_id":"w1","label":"kept"}])
+            };
+            SessionSnapshot::from_json(&json!({
+                "version": if self.same_version { "0.8.0" } else { "0.9.1" },
+                "protocol": self.protocol,
+                "workspaces": workspaces,
+                "tabs": [],
+                "panes": []
+            }))
         }
     }
     fn fake() -> Fake {
@@ -397,12 +464,61 @@ mod tests {
             same_version: false,
             handoff_reply_lost: false,
             protocol: 22,
+            ping_protocol: 22,
+            empty_workspaces: false,
         }
     }
     #[test]
     fn update_handoffs_then_reads_authoritative_snapshot() {
         let f = fake();
-        assert!(update(&f, |_| {}).is_ok());
+        let finish = update(&f, |_| {}).unwrap();
+        match finish {
+            UpdateFinish::Updated {
+                version,
+                previous,
+                snapshot,
+            } => {
+                assert_eq!(version, "0.9.1");
+                assert_eq!(previous, "0.8.0");
+                assert!(!snapshot.workspaces.is_empty());
+            }
+            other => panic!("old server must hand off, got {other:?}"),
+        }
+        assert_eq!(
+            *f.calls.borrow(),
+            ["ping", "install", "version", "protocol", "handoff", "snapshot"]
+        );
+    }
+    #[test]
+    fn old_running_protocol_hands_off_even_when_the_version_string_matches() {
+        let f = Fake {
+            same_version: true,
+            ping_protocol: 19,
+            protocol: 22,
+            ..fake()
+        };
+        let finish = update(&f, |_| {}).unwrap();
+        assert!(
+            matches!(
+                &finish,
+                UpdateFinish::Updated { version, previous, .. }
+                    if version == "0.8.0" && previous == "0.8.0"
+            ),
+            "{finish:?}"
+        );
+        assert_eq!(
+            *f.calls.borrow(),
+            ["ping", "install", "version", "protocol", "handoff", "snapshot"]
+        );
+    }
+    #[test]
+    fn empty_handoff_snapshot_does_not_count_as_an_update() {
+        let f = Fake {
+            empty_workspaces: true,
+            ..fake()
+        };
+        let error = update(&f, |_| {}).unwrap_err().to_string();
+        assert!(error.contains("no workspaces"), "{error}");
         assert_eq!(
             *f.calls.borrow(),
             ["ping", "install", "version", "protocol", "handoff", "snapshot"]
@@ -472,16 +588,21 @@ mod tests {
             "panes": []
         }))
         .unwrap();
-        tx.send(UpdateEvent::Finished(Ok(UpdateFinish::Updated(
-            "0.9.1".into(),
-            Box::new(snapshot),
-        ))))
+        tx.send(UpdateEvent::Finished(Ok(UpdateFinish::Updated {
+            version: "0.9.1".into(),
+            previous: "0.8.0".into(),
+            snapshot: Box::new(snapshot),
+        })))
         .unwrap();
         state.poll();
         assert_eq!(state.revision, 1);
         assert!(state.snapshot.is_some());
         assert_eq!(state.status.phase, "updated");
         assert_eq!(state.status.version.as_deref(), Some("0.9.1"));
+        assert_eq!(
+            state.status.message,
+            "Runtime 0.8.0 handed off to 0.9.1; pane processes kept"
+        );
     }
     #[test]
     fn successful_handoff_with_lost_reply_uses_snapshot_to_confirm_completion() {

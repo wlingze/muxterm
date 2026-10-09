@@ -3229,6 +3229,28 @@ impl HerdrRuntime {
         self.pane_to_herdr_pane.get(&pane).map(String::as_str)
     }
 
+    /// 交接快照的 active tab 经常是第一个 tab。钉住用户当前焦点，避免界面跳走。
+    fn pin_focus_across_handoff(&mut self) {
+        let Some(tab) = self.active_tab else {
+            return;
+        };
+        let Some(pane) = self.active_pane else {
+            return;
+        };
+        if !self
+            .panes
+            .iter()
+            .any(|candidate| candidate.id == pane && candidate.tab == tab)
+        {
+            return;
+        }
+        self.focus_pin = Some(FocusPin {
+            tab,
+            pane,
+            until: Instant::now() + Duration::from_secs(15),
+        });
+    }
+
     /// 更新成功后只重开协议流；前端保留旧 Surface，等新 full baseline。
     fn poll_runtime_update(&mut self) {
         if self.status != BackendStatus::Connected {
@@ -3248,6 +3270,20 @@ impl HerdrRuntime {
                 ));
                 return;
             }
+            if !snapshot
+                .workspaces
+                .iter()
+                .any(|workspace| workspace.workspace_id == self.workspace_id)
+            {
+                // 交接后的空快照不能走 reconcile 的缺失分支，那会把 pane/tab 全关掉。
+                self.update_error = Some(
+                    "Updated server snapshot did not include this workspace; pane processes were left running"
+                        .into(),
+                );
+                self.restart_event_stream();
+                return;
+            }
+            self.pin_focus_across_handoff();
             self.reconcile_snapshot(&snapshot, true);
             self.pending_index_seeds.clear();
             let panes: Vec<_> = self.panes.iter().map(|p| p.id).collect();
@@ -3622,13 +3658,15 @@ impl Runtime for HerdrRuntime {
                     .is_some()
         {
             status.phase = "reconnecting".into();
-            status.message = "Reconnecting workspace…".into();
+            status.message = "Keeping panes on the updated server…".into();
         } else if status.phase == "updated" {
             status.phase = "succeeded".into();
-            status.message = format!(
-                "Runtime {} updated · workspace reattached",
-                status.version.as_deref().unwrap_or("")
-            );
+            if !status.message.contains("handed off") {
+                status.message = format!(
+                    "Runtime {} handed off; pane processes kept",
+                    status.version.as_deref().unwrap_or("")
+                );
+            }
         }
         Some(status)
     }
@@ -4563,6 +4601,125 @@ mod tests {
             .surface_baseline = SurfaceBaseline::Ready;
         runtime.poll_runtime_update();
         assert!(runtime.update_reconnecting.is_none());
+    }
+
+    fn connected_runtime_on_tab_six() -> HerdrRuntime {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("muxterm-test-update-handoff", "/unused")),
+            "w1",
+        );
+        runtime.status = BackendStatus::Connected;
+        runtime.tabs = vec![
+            TabInfo {
+                id: TabId(1),
+                name: "one".into(),
+                active: false,
+            },
+            TabInfo {
+                id: TabId(6),
+                name: "six".into(),
+                active: true,
+            },
+        ];
+        runtime.panes = vec![
+            PaneInfo {
+                id: PaneId(1),
+                tab: TabId(1),
+                active: false,
+                title: "a".into(),
+                cols: 80,
+                rows: 24,
+            },
+            PaneInfo {
+                id: PaneId(6),
+                tab: TabId(6),
+                active: true,
+                title: "b".into(),
+                cols: 80,
+                rows: 24,
+            },
+        ];
+        runtime.active_tab = Some(TabId(6));
+        runtime.active_pane = Some(PaneId(6));
+        runtime.tab_to_herdr_tab.insert(TabId(1), "w1:t1".into());
+        runtime.tab_to_herdr_tab.insert(TabId(6), "w1:t6".into());
+        runtime.pane_to_herdr_pane.insert(PaneId(1), "w1:p1".into());
+        runtime.pane_to_herdr_pane.insert(PaneId(6), "w1:p6".into());
+        runtime
+    }
+
+    fn handoff_snapshot(workspace_id: &str, active_tab: &str) -> SessionSnapshot {
+        SessionSnapshot::from_json(&serde_json::json!({
+            "version": "0.9.1",
+            "protocol": 19,
+            "workspaces": [{
+                "workspace_id": workspace_id,
+                "label": "yaklang",
+                "active_tab_id": active_tab
+            }],
+            "tabs": [
+                {"tab_id": "w1:t1", "workspace_id": "w1", "label": "one"},
+                {"tab_id": "w1:t6", "workspace_id": "w1", "label": "six"}
+            ],
+            "panes": [
+                {"pane_id": "w1:p1", "workspace_id": "w1", "tab_id": "w1:t1", "label": "a"},
+                {"pane_id": "w1:p6", "workspace_id": "w1", "tab_id": "w1:t6", "label": "b"}
+            ],
+            "layouts": [],
+            "agents": []
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn handoff_keeps_the_current_tab_and_does_not_close_panes() {
+        let mut runtime = connected_runtime_on_tab_six();
+        runtime
+            .session
+            .publish_test_handoff("0.9.1", "0.8.0", handoff_snapshot("w1", "w1:t1"));
+        runtime.poll_runtime_update();
+        assert_eq!(runtime.active_tab, Some(TabId(6)));
+        assert_eq!(runtime.active_pane, Some(PaneId(6)));
+        assert_eq!(runtime.panes.len(), 2);
+        assert_eq!(runtime.tabs.len(), 2);
+        let changes = queued_state_changes(&runtime);
+        assert!(
+            changes.iter().all(|change| !matches!(
+                change,
+                StateChange::PaneClosed { .. }
+                    | StateChange::TabClosed { .. }
+                    | StateChange::ActiveTabChanged { .. }
+            )),
+            "{changes:?}"
+        );
+        let status = runtime.update_status().unwrap();
+        assert!(
+            status.message.contains("handed off") || status.message.contains("Keeping panes"),
+            "{}",
+            status.message
+        );
+    }
+
+    #[test]
+    fn handoff_snapshot_missing_this_workspace_does_not_close_it() {
+        let mut runtime = connected_runtime_on_tab_six();
+        runtime
+            .session
+            .publish_test_handoff("0.9.1", "0.8.0", handoff_snapshot("w9", "w1:t1"));
+        runtime.poll_runtime_update();
+        assert_eq!(runtime.panes.len(), 2);
+        assert_eq!(runtime.tabs.len(), 2);
+        assert_eq!(runtime.active_tab, Some(TabId(6)));
+        let error = runtime.update_error.as_deref().unwrap_or("");
+        assert!(error.contains("left running"), "{error}");
+        let changes = queued_state_changes(&runtime);
+        assert!(
+            changes.iter().all(|change| !matches!(
+                change,
+                StateChange::PaneClosed { .. } | StateChange::TabClosed { .. }
+            )),
+            "{changes:?}"
+        );
     }
 
     #[test]
