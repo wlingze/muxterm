@@ -161,6 +161,23 @@ check_absent \
     "frontend must not name concrete Runtime types" \
     'TmuxRuntime|HerdrRuntime|ShellRuntime' \
     src/frontend
+check_absent \
+    "herdr runtime must not poll processes with a shell" \
+    'Command::new\("ps"\)|ps -o ' \
+    src/core/runtime/herdr
+
+# `#()` 写进发给 tmux 的格式后，refresh-client -B 会每秒 fork。
+# 断言和注释里可以提到这两个字符，真正的格式字符串不行。
+checks=$((checks + 1))
+if shell_jobs="$(search_matches '#\(' src/core/runtime src/core/protocol \
+    | grep -v -E ':[0-9]+:[[:space:]]*(//|///|//!)' \
+    | grep -v -E 'contains\("#\("' \
+    || true)" \
+    && [[ -n "$shell_jobs" ]]; then
+    echo "architecture: FAIL: runtime format must not embed a shell job" >&2
+    printf '%s\n' "$shell_jobs" | head -50 >&2 || true
+    failures=$((failures + 1))
+fi
 
 # Concrete provider modules must stay inside their directories in production
 # source. test-harness may re-export them for integration tests.

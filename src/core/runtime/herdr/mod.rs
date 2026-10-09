@@ -5,6 +5,8 @@
 //! 生产代码不在本机执行 `Command::new("herdr")`：API 走 socket JSON，
 //! 直播字节走 client socket 的 observe 流（bincode 帧）。SSH 的显式
 //! CreateIfMissing 经 TargetConnection::Exec 启动远端 headless server。
+//! 前台进程用快照里的 `terminal_title` 和 `pane.process_info`，不要在
+//! 客户端用 `ps` 或 tmux `#()` 做周期采样。
 
 mod channel;
 pub mod events;

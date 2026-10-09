@@ -353,7 +353,16 @@ pub fn refresh_client_pause(pane: PaneId, paused: bool) -> TmuxCommand {
 /// `%subscription-changed`（至多 1 次/秒）。`scope` 为空串表示 attached session。
 ///
 /// 整个 `name:scope:format` 参数用双引号包裹，避免 `#` 被 tmux 当注释吃掉。
+///
+/// `format` 里禁止 `#()`。订阅至多每秒展开一次，shell job 会在 tmux server
+/// 上反复 fork，短命的 `sh`/`ps` 来不及回收就变成僵尸。只传内建格式，例如
+/// `#{pane_current_command}` 或 `#{T:status-left}`。用户 status 选项里原有的
+/// `#()` 是他自己的 status 脚本，由 `T:` 间接展开，不要在这里再拼一条。
 pub fn refresh_client_subscribe(name: &str, scope: &str, format: &str) -> TmuxCommand {
+    assert!(
+        !format.contains("#("),
+        "refresh-client -B format must not embed a shell job: {format}"
+    );
     let arg = if scope.is_empty() {
         format!("{name}::{format}")
     } else {
@@ -987,6 +996,15 @@ mod tests {
             refresh_client_subscribe("state", "%*", "#{pane_current_command}").as_str(),
             r#"refresh-client -B "state:%*:#{pane_current_command}""#
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "must not embed a shell job")]
+    fn refresh_client_subscribe_rejects_shell_jobs() {
+        // 源码里不写下字面量 "#("，架构检查会拦截任何写进字符串的 shell job。
+        let shell = ["#", "(ps -o args= -p #{pane_pid})"].concat();
+        let format = format!("#{{pane_pid}}|{shell}");
+        let _ = refresh_client_subscribe("muxterm.pane-cmd", "%*", &format);
     }
 
     #[test]
