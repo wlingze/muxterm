@@ -262,15 +262,18 @@ Herdr workspace id 不再复用项目 `path`。生成五段 `WorkspaceId` 时第
 GUI 根据 `support(RuntimeUpdate)` 在 workspace 侧栏与快速面板的已打开 workspace 行显示
 更新图标，经 C FFI 启动 Core 后台任务并读取阶段、版本和错误。更新期间显示进度并禁用
 重复点击，失败后可重试。安装与连接状态由 Runtime 持有；前端只负责按钮和提示。
-快速面板的更新/关闭按钮固定在左侧操作栏，位于编号与名称之间；隐藏更新按钮不移动
-关闭按钮或名称列，窗口缩放和名称长度也不改变按钮位置。
+快速面板的更新/关闭按钮固定在行尾，和侧栏一样：关闭贴右，更新紧挨在关闭左侧。
+隐藏更新按钮不移动关闭按钮。名称从编号右侧开始，不为左侧操作栏留空。窗口缩放
+不改变按钮到右边缘的距离。
 macOS 行操作先把展示用 replica/attention id 映射到 Scene 的 Core WorkspaceId，再进入
 CommandQueue；状态也按 Core WorkspaceId 读取并投影回行。排队期间立即显示等待状态，
 启动请求被拒绝时在原行显示错误，不只提示被快速面板遮住的主窗口状态栏。
 
 Herdr 的流程：检查所选 server 的 `live_handoff` 能力 → 在同一 TargetConnection 独立运行
 `herdr update`（清除 `HERDR_ENV`/`HERDR_SESSION`，stdin 为 `/dev/null`）→ 读取新二进制的
-`--version` 和 `api schema --json` → 对所选 namespace 调用 `server.live_handoff`，传入
+`--version` 和 `api schema --json`。安装后的版本与正在运行的 server 相同时到此结束：
+不调用 `server.live_handoff`，不重开 pane/event 流，workspace 保持当前画面。
+版本不同才对所选 namespace 调用 `server.live_handoff`，传入
 `import_exe`、`expected_version`、`expected_protocol` → 读取权威 snapshot → 重开 pane/event
 流。同一 server 的已打开 Workspace 一起重连，保留 tab/pane id、shell 进程和旧 Surface；
 所有已启动 pane 都收到新 full baseline 后才报告完成。新打开的 Workspace 使用 connect
@@ -283,9 +286,12 @@ Herdr 的流程：检查所选 server 的 `live_handoff` 能力 → 在同一 Ta
 
 核对来源：[Herdr installation/update](https://herdr.dev/docs/install/#update)、
 [CLI reference](https://herdr.dev/docs/cli-reference/)、
+[Session state](https://herdr.dev/docs/session-state/)（plain `herdr update` 保留
+endpoint-generation-1 server；`--handoff` 才替换正在运行的 server）、
 [v0.9.1 API schema command](https://github.com/herdrdev/herdr/blob/v0.9.1/src/cli/api.rs)、
 [v0.9.1 live handoff parameters](https://github.com/herdrdev/herdr/blob/v0.9.1/src/api/schema/server.rs)。
 文档核对时间：`2026-09-30T10:53:30+08:00`；源码核对时间：`2026-09-30T10:58:52+08:00`。
+同版本不交接的依据复核时间：`2026-10-09T15:00:53+08:00`。
 隔离 named session 的 local/loopback SSH 回归见 `tests/herdr_runtime_update.rs`；下载步骤
 使用测试通道，真实执行 socket handoff/重连，绝不替换开发机 Herdr 安装。
 指定 `MUXTERM_TEST_HERDR_UPDATE_BINARY=/absolute/path/herdr` 可运行跨版本交接。

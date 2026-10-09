@@ -22,7 +22,7 @@ trait UpdateBackend {
 fn update(
     backend: &dyn UpdateBackend,
     progress: impl Fn(RuntimeUpdateStatus),
-) -> Result<(String, SessionSnapshot)> {
+) -> Result<UpdateFinish> {
     let ping = backend.ping()?;
     ensure!(
         ping["capabilities"]["live_handoff"] == true,
@@ -41,16 +41,17 @@ fn update(
     let protocol = backend.installed_protocol()?;
     ensure!(WireProtocol::from_number(protocol).is_ok(),
         "Installed Herdr protocol {protocol} is not supported by this Muxterm. The existing server was left running; update Muxterm before reconnecting.");
-    let handoff_error = if ping["version"].as_str() != Some(version.as_str()) {
-        progress(RuntimeUpdateStatus::new(
-            "handoff",
-            "Handing over to the updated server…",
-        ));
-        // 交接可能已经成功但回复连接提前断开；snapshot 才是最终事实。
-        backend.handoff(&version, protocol).err()
-    } else {
-        None
-    };
+    // 版本没变就停在这里。继续 snapshot/重开流只是把 workspace 关掉再启动，
+    // 不是升级。Herdr 文档：plain `herdr update` 保留兼容的正在运行的 server。
+    if ping["version"].as_str() == Some(version.as_str()) {
+        return Ok(UpdateFinish::AlreadyCurrent(version));
+    }
+    progress(RuntimeUpdateStatus::new(
+        "handoff",
+        "Handing over to the updated server…",
+    ));
+    // 交接可能已经成功但回复连接提前断开；snapshot 才是最终事实。
+    let handoff_error = backend.handoff(&version, protocol).err();
     progress(RuntimeUpdateStatus::new(
         "reconnecting",
         "Reconnecting workspace…",
@@ -68,7 +69,7 @@ fn update(
         "Updated server protocol {} differs from installed protocol {protocol}",
         snapshot.protocol
     );
-    Ok((version, snapshot))
+    Ok(UpdateFinish::Updated(version, Box::new(snapshot)))
 }
 
 static INSTALLING: LazyLock<Mutex<HashSet<(String, String)>>> =
@@ -81,9 +82,15 @@ impl Drop for InstallGuard {
         }
     }
 }
+#[derive(Debug)]
+enum UpdateFinish {
+    /// 安装后的版本和正在运行的 server 相同。不要再重开 pane 流。
+    AlreadyCurrent(String),
+    Updated(String, Box<SessionSnapshot>),
+}
 enum UpdateEvent {
     Progress(RuntimeUpdateStatus),
-    Finished(Result<(String, SessionSnapshot)>),
+    Finished(Result<UpdateFinish>),
 }
 pub(super) struct UpdateState {
     status: RuntimeUpdateStatus,
@@ -118,9 +125,16 @@ impl UpdateState {
                 UpdateEvent::Finished(result) => {
                     self.receiver = None;
                     match result {
-                        Ok((version, snapshot)) => {
+                        Ok(UpdateFinish::AlreadyCurrent(version)) => {
+                            self.status = RuntimeUpdateStatus::new(
+                                "succeeded",
+                                format!("Runtime {version} is already current"),
+                            );
+                            self.status.version = Some(version);
+                        }
+                        Ok(UpdateFinish::Updated(version, snapshot)) => {
                             self.revision += 1;
-                            self.snapshot = Some(snapshot);
+                            self.snapshot = Some(*snapshot);
                             self.status = RuntimeUpdateStatus::new("updated", "Server updated");
                             self.status.version = Some(version);
                         }
@@ -413,13 +427,61 @@ mod tests {
         assert_eq!(*f.calls.borrow(), ["ping", "install"]);
     }
     #[test]
-    fn current_server_only_reattaches() {
+    fn current_server_does_not_restart_the_workspace() {
         let f = Fake {
             same_version: true,
             ..fake()
         };
-        assert!(update(&f, |_| {}).is_ok());
-        assert!(!f.calls.borrow().contains(&"handoff"));
+        let finish = update(&f, |_| {}).unwrap();
+        assert!(matches!(finish, UpdateFinish::AlreadyCurrent(version) if version == "0.8.0"));
+        assert_eq!(
+            *f.calls.borrow(),
+            ["ping", "install", "version", "protocol"]
+        );
+    }
+    #[test]
+    fn already_current_does_not_publish_a_reconnect_snapshot() {
+        let (tx, rx) = mpsc::channel();
+        let mut state = UpdateState {
+            receiver: Some(rx),
+            ..UpdateState::default()
+        };
+        tx.send(UpdateEvent::Finished(Ok(UpdateFinish::AlreadyCurrent(
+            "0.8.0".into(),
+        ))))
+        .unwrap();
+        state.poll();
+        assert_eq!(state.revision, 0);
+        assert!(state.snapshot.is_none());
+        assert_eq!(state.status.phase, "succeeded");
+        assert_eq!(state.status.message, "Runtime 0.8.0 is already current");
+        assert!(!state.status.busy());
+    }
+    #[test]
+    fn version_change_publishes_one_reconnect_snapshot() {
+        let (tx, rx) = mpsc::channel();
+        let mut state = UpdateState {
+            receiver: Some(rx),
+            ..UpdateState::default()
+        };
+        let snapshot = SessionSnapshot::from_json(&json!({
+            "version": "0.9.1",
+            "protocol": 22,
+            "workspaces": [],
+            "tabs": [],
+            "panes": []
+        }))
+        .unwrap();
+        tx.send(UpdateEvent::Finished(Ok(UpdateFinish::Updated(
+            "0.9.1".into(),
+            Box::new(snapshot),
+        ))))
+        .unwrap();
+        state.poll();
+        assert_eq!(state.revision, 1);
+        assert!(state.snapshot.is_some());
+        assert_eq!(state.status.phase, "updated");
+        assert_eq!(state.status.version.as_deref(), Some("0.9.1"));
     }
     #[test]
     fn successful_handoff_with_lost_reply_uses_snapshot_to_confirm_completion() {
