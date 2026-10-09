@@ -1,4 +1,5 @@
 import AppKit
+import MuxtermChrome
 
 /// 快速浮层列表共用的上下导航。方向键与 Emacs 的 Ctrl-N/Ctrl-P
 /// 使用同一条选择路径，避免每个 panel 对修饰键的处理逐渐分叉。
@@ -133,6 +134,109 @@ struct PaletteItem: Equatable {
 
     var searchText: String {
         "\(title) \(detail) \(keywords)".lowercased()
+    }
+
+    /// 快速面板 Cmd-K 复用同一条命令，不另建一份目录。
+    func quickPanelCommand() -> QuickPanelCommand? {
+        guard case .command(let command) = kind else { return nil }
+        return QuickPanelCommand(
+            id: command.quickPanelCommandID,
+            title: title,
+            detail: detail,
+            keywords: keywords,
+            section: .global
+        )
+    }
+}
+
+extension PaletteCommand {
+    /// 面板动作 id。`palette.*` 只是这条 macOS 命令的桥，执行仍走
+    /// `handlePaletteSelection`。
+    var quickPanelCommandID: String {
+        switch self {
+        case .local: return "palette.local"
+        case .ssh: return "palette.ssh"
+        case .newTab: return "palette.newTab"
+        case .quickConnect: return "palette.quickConnect"
+        case .searchPanes: return "palette.searchPanes"
+        case .renameTab: return "palette.renameTab"
+        case .renameWorkspace: return "palette.renameWorkspace"
+        case .moveTabLeft: return "palette.moveTabLeft"
+        case .moveTabRight: return "palette.moveTabRight"
+        case .switchTab(let index): return "palette.switchTab.\(index)"
+        case .switchLastTab: return "palette.switchLastTab"
+        case .previousTab: return "palette.previousTab"
+        case .nextTab: return "palette.nextTab"
+        case .movePaneToNewTab: return "palette.movePaneToNewTab"
+        case .splitHorizontal: return "palette.splitHorizontal"
+        case .splitVertical: return "palette.splitVertical"
+        case .nextPane: return "palette.nextPane"
+        case .prevPane: return "palette.prevPane"
+        case .previousCommand: return "palette.previousCommand"
+        case .nextCommand: return "palette.nextCommand"
+        case .closePane: return "palette.closePane"
+        case .closeTab: return "palette.closeTab"
+        case .closeWindow: return "palette.closeWindow"
+        case .detach: return "palette.detach"
+        case .language: return "palette.language"
+        case .theme: return "palette.theme"
+        case .statusBarMode: return "palette.statusBarMode"
+        case .tabBarTop: return "palette.tabBarTop"
+        case .tabBarBottom: return "palette.tabBarBottom"
+        case .togglePaneFullscreen: return "palette.togglePaneFullscreen"
+        case .cycleLayout: return "palette.cycleLayout"
+        case .increaseFontSize: return "palette.increaseFontSize"
+        case .decreaseFontSize: return "palette.decreaseFontSize"
+        case .resetFontSize: return "palette.resetFontSize"
+        case .quit: return "palette.quit"
+        }
+    }
+
+    static func fromQuickPanelCommandID(_ id: String) -> PaletteCommand? {
+        let switchPrefix = "palette.switchTab."
+        if id.hasPrefix(switchPrefix),
+           let index = Int(id.dropFirst(switchPrefix.count)),
+           index > 0
+        {
+            return .switchTab(index)
+        }
+        switch id {
+        case "palette.local": return .local
+        case "palette.ssh": return .ssh
+        case "palette.newTab": return .newTab
+        case "palette.quickConnect": return .quickConnect
+        case "palette.searchPanes": return .searchPanes
+        case "palette.renameTab": return .renameTab
+        case "palette.renameWorkspace": return .renameWorkspace
+        case "palette.moveTabLeft": return .moveTabLeft
+        case "palette.moveTabRight": return .moveTabRight
+        case "palette.switchLastTab": return .switchLastTab
+        case "palette.previousTab": return .previousTab
+        case "palette.nextTab": return .nextTab
+        case "palette.movePaneToNewTab": return .movePaneToNewTab
+        case "palette.splitHorizontal": return .splitHorizontal
+        case "palette.splitVertical": return .splitVertical
+        case "palette.nextPane": return .nextPane
+        case "palette.prevPane": return .prevPane
+        case "palette.previousCommand": return .previousCommand
+        case "palette.nextCommand": return .nextCommand
+        case "palette.closePane": return .closePane
+        case "palette.closeTab": return .closeTab
+        case "palette.closeWindow": return .closeWindow
+        case "palette.detach": return .detach
+        case "palette.language": return .language
+        case "palette.theme": return .theme
+        case "palette.statusBarMode": return .statusBarMode
+        case "palette.tabBarTop": return .tabBarTop
+        case "palette.tabBarBottom": return .tabBarBottom
+        case "palette.togglePaneFullscreen": return .togglePaneFullscreen
+        case "palette.cycleLayout": return .cycleLayout
+        case "palette.increaseFontSize": return .increaseFontSize
+        case "palette.decreaseFontSize": return .decreaseFontSize
+        case "palette.resetFontSize": return .resetFontSize
+        case "palette.quit": return .quit
+        default: return nil
+        }
     }
 }
 

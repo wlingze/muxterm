@@ -567,6 +567,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         unifiedPanel.onDismissed = { [weak self] in
             self?.restoreTerminalFocusIfAllowed()
         }
+        unifiedPanel.commandProvider = { [weak self] in
+            self?.rootPaletteItems().compactMap { $0.quickPanelCommand() } ?? []
+        }
+        unifiedPanel.onQuickCommand = { [weak self] command in
+            self?.handleQuickPanelCommand(command)
+        }
         commandPalette.onDismissed = { [weak self] in
             self?.restoreTerminalFocusIfAllowed()
         }
@@ -4665,6 +4671,65 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             )
         }
         return items
+    }
+
+    /// 快速面板 Cmd-K 选中的全局命令。行内动作由面板自己调用已有回调。
+    private func handleQuickPanelCommand(_ command: QuickPanelCommand) {
+        guard let unifiedPanel else { return }
+        switch command.id {
+        case "palette.quickConnect":
+            unifiedPanel.leaveQuickActions()
+            unifiedPanel.show(tab: .workspaces)
+        case "palette.searchPanes":
+            unifiedPanel.leaveQuickActions()
+            openSearchPanel()
+        case "palette.language":
+            unifiedPanel.pushQuickCommands(languageQuickCommands())
+        case let id where id.hasPrefix("palette.language."):
+            let raw = String(id.dropFirst("palette.language.".count))
+            if let language = MuxtermLanguage(rawValue: raw) {
+                _ = MuxtermI18n.shared.setLanguage(language)
+            }
+            unifiedPanel.leaveQuickActions()
+        case "palette.local", "palette.ssh":
+            // 本机 / SSH 的 session 列表是异步发现，仍交给原来的命令面板。
+            unifiedPanel.dismiss()
+            presentPaletteCommand(command)
+        default:
+            unifiedPanel.dismiss()
+            presentPaletteCommand(command)
+        }
+    }
+
+    private func presentPaletteCommand(_ command: QuickPanelCommand) {
+        guard let paletteCommand = PaletteCommand.fromQuickPanelCommandID(command.id) else {
+            return
+        }
+        if command.id == "palette.local" || command.id == "palette.ssh" {
+            commandPalette.present(items: rootPaletteItems())
+        }
+        handlePaletteSelection(
+            PaletteItem(
+                title: command.title,
+                detail: command.detail,
+                keywords: command.keywords,
+                kind: .command(paletteCommand)
+            )
+        )
+    }
+
+    private func languageQuickCommands() -> [QuickPanelCommand] {
+        let i18n = MuxtermI18n.shared
+        return MuxtermLanguage.allCases.map { language in
+            let current = i18n.language == language ? i18n.tr(.languageCurrent) : ""
+            return QuickPanelCommand(
+                id: "palette.language.\(language.rawValue)",
+                title: i18n.tr(language.displayNameKey),
+                detail: current,
+                keywords: "language locale 语言 \(language.rawValue)",
+                section: .global
+            )
+        }
     }
 
     private func handlePaletteSelection(_ item: PaletteItem) {

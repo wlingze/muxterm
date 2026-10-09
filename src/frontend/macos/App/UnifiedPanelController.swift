@@ -103,6 +103,9 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     /// 明确打开 Attention 条目时确认已读；仅切到列表或查看状态不触发。
     var onAcknowledge: ((String, UInt32) -> Void)? // (workspaceId, paneId)
     var onDismissed: (() -> Void)?
+    /// 命令面板里的同一批全局命令。行内动作由面板按当前行另算。
+    var commandProvider: (() -> [QuickPanelCommand])?
+    var onQuickCommand: ((QuickPanelCommand) -> Void)?
     var currentConfig: TargetConfig?
     /// Core WorkspaceId 到持久 attach 频次的只读投影，由窗口拥有身份映射。
     var attachCountForWorkspace: ((String) -> Int)?
@@ -122,6 +125,9 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     private let attentionMuteButton = NSPopUpButton(frame: .zero, pullsDown: true)
     private let attentionVisibilityButton = NSButton(title: "", target: nil, action: nil)
     private let attentionHiddenButton = NSButton(title: "", target: nil, action: nil)
+    private let actionHint = NSButton(title: "⌘K", target: nil, action: nil)
+    private var actionSession: QuickPanelActionSession?
+    private var actionTarget = QuickActionTarget()
     private var selectionAliases: [String: PanelAccessibilityAliasButton] = [:]
     private var allItems: [UnifiedWorkspaceItem] = []
     private var visibleItems: [UnifiedWorkspaceItem] = []
@@ -222,6 +228,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     // MARK: - 打开 / 关闭
 
     func present(initial: PanelTab = .workspaces, scope: SearchScope = .workspace) {
+        clearQuickActions()
         model.tab = initial
         // Linux `PanelModel::open(initial)` 语义：重新打开时 query 清空，
         // query 只在本次打开期间跨 tab 保留。
@@ -255,6 +262,11 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     /// 显示指定 tab。面板已打开时只切换内容，不把 Cmd-P/R/F 解释成 toggle。
     /// 这样连续按快捷键始终是可预测的导航动作；query 在 tab 之间保留。
     func show(tab: PanelTab, scope: SearchScope? = nil) {
+        if let saved = actionSession?.savedQuery {
+            model.query = saved
+            input.stringValue = saved
+            clearQuickActions()
+        }
         if window?.isVisible == true {
             if tab == .workspaces, workspaceNavigation != .root {
                 workspaceNavigation = .root
@@ -284,6 +296,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     func dismiss() {
+        clearQuickActions()
         existingRequestGeneration &+= 1
         searchRequestGeneration &+= 1
         window?.orderOut(nil)
@@ -294,6 +307,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     // MARK: - 数据
 
     private func reload() {
+        guard actionSession == nil else { return }
         if model.tab == .workspaces, workspaceNavigation == .root {
             ensureRootExistingChoicesIfNeeded()
         }
@@ -347,7 +361,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                             return
                         }
                         self.unfilteredHits = unfilteredHits
-                        guard self.model.tab == .search else { return }
+                        guard self.actionSession == nil, self.model.tab == .search else { return }
                         self.hits = self.filterSearchHits(unfilteredHits, self.model.scope)
                         self.table.reloadData()
                         if !self.hits.isEmpty {
@@ -675,6 +689,17 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     private func activateSelected() {
+        if let session = actionSession {
+            let visible = session.visibleCommands
+            guard table.selectedRow >= 0, table.selectedRow < visible.count else { return }
+            let command = visible[table.selectedRow]
+            if command.section == .contextual {
+                performContextual(command)
+            } else {
+                onQuickCommand?(command)
+            }
+            return
+        }
         guard table.selectedRow >= 0 else { return }
         switch model.tab {
         case .workspaces:
@@ -728,7 +753,9 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         content.addSubview(root)
 
         buildTabControl()
+        buildActionHint()
         root.addSubview(tabControl)
+        root.addSubview(actionHint)
 
         input.translatesAutoresizingMaskIntoConstraints = false
         input.font = NSFont.systemFont(ofSize: 14)
@@ -832,6 +859,12 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
 
             tabControl.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 14),
             tabControl.topAnchor.constraint(equalTo: root.topAnchor, constant: 10),
+            tabControl.trailingAnchor.constraint(
+                lessThanOrEqualTo: actionHint.leadingAnchor,
+                constant: -8
+            ),
+            actionHint.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -14),
+            actionHint.centerYAnchor.constraint(equalTo: tabControl.centerYAnchor),
 
             input.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 14),
             input.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -14),
@@ -990,6 +1023,10 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     @objc private func tabClicked(_ sender: NSSegmentedControl) {
+        guard actionSession == nil else {
+            sender.selectedSegment = model.tab.rawValue
+            return
+        }
         guard let tab = PanelTab(rawValue: sender.selectedSegment) else { return }
         model.tab = tab
         applyTab()
@@ -997,6 +1034,10 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     private func applyTab() {
+        if actionSession != nil {
+            applyActionChrome()
+            return
+        }
         tabControl.selectedSegment = model.tab.rawValue
         scopeControl.selectedSegment = scopeSegment(model.scope)
         updateSelectionAliases()
@@ -1051,6 +1092,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         attentionOpenButton.title = MuxtermI18n.shared.tr(.attentionOpen)
         attentionMuteButton.item(at: 0)?.title = MuxtermI18n.shared.tr(.attentionMute)
         attentionHiddenButton.title = MuxtermI18n.shared.tr(.attentionShowHidden)
+        actionHint.toolTip = MuxtermI18n.shared.tr(.panelActions)
         applyTab()
         table.reloadData()
     }
@@ -1104,9 +1146,15 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                 self.moveSelection(offset: offset)
                 return nil
             }
+            if !event.isARepeat, self.isBareCommandK(event) {
+                self.toggleQuickActions()
+                return nil
+            }
             switch event.keyCode {
             case 53: // Escape
-                if self.model.tab == .workspaces,
+                if self.actionSession != nil {
+                    self.popQuickActions()
+                } else if self.model.tab == .workspaces,
                    self.workspaceNavigation == .existingConnections
                 {
                     self.returnToWorkspaceRoot()
@@ -1115,6 +1163,10 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                 }
                 return nil
             case 48: // Tab
+                // 动作列表是临时模式，Tab 不循环三个 tab，避免查询串回去。
+                if self.actionSession != nil {
+                    return nil
+                }
                 if self.completeCurrentWorkspaceToken() {
                     return nil
                 }
@@ -1131,9 +1183,28 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         }
     }
 
+    /// Cmd-K，不含 Shift / Option / Control。字符优先，物理 K 只作回退。
+    private func isBareCommandK(_ event: NSEvent) -> Bool {
+        let flags = event.modifierFlags
+            .intersection(.deviceIndependentFlagsMask)
+            .intersection([.command, .option, .control, .shift])
+        guard flags == [.command] else { return false }
+        // 有字符时只认 K，避免 Colemak 等布局把物理 K 键误当成 Cmd-K。
+        if let characters = event.charactersIgnoringModifiers?.lowercased(), !characters.isEmpty {
+            return characters == "k"
+        }
+        return event.keyCode == 40
+    }
+
     // MARK: - 输入
 
     func controlTextDidChange(_ obj: Notification) {
+        if var session = actionSession {
+            session.setQuery(input.stringValue)
+            actionSession = session
+            reloadActionList()
+            return
+        }
         model.query = input.stringValue
         loadSSHAliasesIfNeeded()
         reload()
@@ -1183,6 +1254,9 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     // MARK: - 表格
 
     func numberOfRows(in tableView: NSTableView) -> Int {
+        if let session = actionSession {
+            return session.visibleCommands.count
+        }
         switch model.tab {
         case .workspaces: return visibleItems.count
         case .attention: return rows.count
@@ -1191,6 +1265,18 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        if let session = actionSession {
+            let commands = session.visibleCommands
+            guard row < commands.count else { return nil }
+            let command = commands[row]
+            let id = NSUserInterfaceItemIdentifier("QuickCommand")
+            let cell = tableView.makeView(withIdentifier: id, owner: self) as? QuickCommandCellView
+                ?? QuickCommandCellView(identifier: id)
+            cell.title = command.title
+            cell.detail = command.detail
+            cell.setAccessibilityIdentifier("muxterm.panel.action.\(command.id)")
+            return cell
+        }
         switch model.tab {
         case .workspaces:
             guard row < visibleItems.count else { return nil }
@@ -1332,6 +1418,10 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     @objc private func tableDoubleActivated() {
+        guard actionSession == nil else {
+            activateSelected()
+            return
+        }
         let row = table.clickedRow
         guard row >= 0, model.tab == .workspaces, row < visibleItems.count else {
             activateSelected()
@@ -1640,6 +1730,276 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     func testUsesSegmentedNavigation() -> Bool {
         tabControl.segmentCount == 3 && scopeControl.segmentCount == 3
     }
+
+    func testIsQuickActionMode() -> Bool {
+        actionSession != nil
+    }
+
+    func testQuickActionIDs() -> [String] {
+        actionSession?.visibleCommands.map(\.id) ?? []
+    }
+
+    func testEnterQuickActions() {
+        enterQuickActions()
+    }
+
+    func testLeaveQuickActions() {
+        leaveQuickActions()
+    }
+
+    func testPopQuickActions() {
+        popQuickActions()
+    }
+
+    func testSetQuickActionQuery(_ query: String) {
+        input.stringValue = query
+        controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
+    }
+}
+
+/// Cmd-K 快照。动作列表换掉表格后，原来的选中行已经不在 `visibleItems` 里。
+private struct QuickActionTarget {
+    var workspace: WorkspaceSidebarItem?
+    var target: TargetConfig?
+    var existing: ExistingConnectionChoice?
+    var attention: AttentionRow?
+    var hit: SearchHit?
+    var newProject = false
+}
+
+extension UnifiedPanelController {
+    func leaveQuickActions() {
+        let saved = actionSession?.savedQuery ?? model.query
+        clearQuickActions()
+        model.query = saved
+        input.stringValue = saved
+        applyTab()
+        reload()
+        window?.makeFirstResponder(input)
+    }
+
+    func pushQuickCommands(_ commands: [QuickPanelCommand]) {
+        guard var session = actionSession else { return }
+        session.push(commands)
+        actionSession = session
+        input.stringValue = ""
+        reloadActionList()
+    }
+
+    fileprivate func clearQuickActions() {
+        actionSession = nil
+        actionTarget = QuickActionTarget()
+        tabControl.isEnabled = true
+        actionHint.contentTintColor = .labelColor
+    }
+
+    fileprivate func buildActionHint() {
+        actionHint.translatesAutoresizingMaskIntoConstraints = false
+        actionHint.bezelStyle = .rounded
+        actionHint.controlSize = .small
+        actionHint.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        actionHint.target = self
+        actionHint.action = #selector(toggleQuickActions)
+        actionHint.setAccessibilityIdentifier("muxterm.panel.actions")
+        actionHint.toolTip = MuxtermI18n.shared.tr(.panelActions)
+    }
+
+    @objc fileprivate func toggleQuickActions() {
+        if actionSession != nil {
+            leaveQuickActions()
+        } else {
+            enterQuickActions()
+        }
+    }
+
+    fileprivate func enterQuickActions() {
+        let captured = captureActionTarget()
+        actionTarget = captured.target
+        let commands = QuickPanelActions.merge(
+            contextual: QuickPanelActions.contextual(
+                for: captured.context,
+                labels: actionLabels()
+            ),
+            global: commandProvider?() ?? []
+        )
+        actionSession = QuickPanelActionSession(savedQuery: model.query, commands: commands)
+        input.stringValue = ""
+        reloadActionList()
+        window?.makeFirstResponder(input)
+    }
+
+    fileprivate func popQuickActions() {
+        guard var session = actionSession else { return }
+        switch session.escape() {
+        case .stay:
+            actionSession = session
+            input.stringValue = session.query
+            reloadActionList()
+        case .leave(let saved):
+            clearQuickActions()
+            model.query = saved
+            input.stringValue = saved
+            applyTab()
+            reload()
+            window?.makeFirstResponder(input)
+        }
+    }
+
+    fileprivate func reloadActionList() {
+        guard actionSession != nil else { return }
+        applyActionChrome()
+        table.reloadData()
+        let count = actionSession?.visibleCommands.count ?? 0
+        if count > 0 {
+            table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+            table.scrollRowToVisible(0)
+        } else {
+            table.deselectAll(nil)
+        }
+        QuickConnectTableLayout.fit(table)
+    }
+
+    fileprivate func applyActionChrome() {
+        tabControl.isEnabled = false
+        scopeBar.isHidden = true
+        attentionActions.isHidden = true
+        accessoryHeightConstraint?.constant = 0
+        input.placeholderString = MuxtermI18n.shared.tr(.panelActionsPlaceholder)
+        actionHint.toolTip = MuxtermI18n.shared.tr(.panelActions)
+        actionHint.contentTintColor = .controlAccentColor
+        let isEmpty = actionSession?.visibleCommands.isEmpty ?? true
+        emptyLabel.stringValue = MuxtermI18n.shared.tr(.commandPaletteNoResults)
+        emptyLabel.isHidden = !isEmpty
+        scrollView.isHidden = isEmpty
+    }
+
+    fileprivate func actionLabels() -> QuickPanelActionLabels {
+        let i18n = MuxtermI18n.shared
+        return QuickPanelActionLabels(
+            open: i18n.tr(.panelActionOpen),
+            close: i18n.tr(.closeWorkspace),
+            update: i18n.tr(.panelActionUpdate),
+            connect: i18n.tr(.panelActionConnect),
+            edit: i18n.tr(.panelActionEdit),
+            create: i18n.tr(.panelNewProject),
+            attach: i18n.tr(.panelActionAttach),
+            jump: i18n.tr(.attentionJump),
+            hide: i18n.tr(.attentionHide),
+            show: i18n.tr(.attentionShow),
+            openAttention: i18n.tr(.attentionOpen)
+        )
+    }
+
+    fileprivate func captureActionTarget() -> (context: QuickPanelRowContext, target: QuickActionTarget) {
+        let index = table.selectedRow >= 0 ? table.selectedRow : 0
+        switch model.tab {
+        case .workspaces:
+            guard visibleItems.indices.contains(index) else {
+                return (.none, QuickActionTarget())
+            }
+            switch visibleItems[index] {
+            case .workspace(let item):
+                return (
+                    .workspace(
+                        name: item.displayTitle,
+                        closable: item.isClosable,
+                        canUpdate: item.canUpdateRuntime
+                    ),
+                    QuickActionTarget(workspace: item)
+                )
+            case .target(let config, _, _, _):
+                return (.target(name: config.name), QuickActionTarget(target: config))
+            case .existing(let choice):
+                return (
+                    .existingConnection(name: choice.config.name),
+                    QuickActionTarget(existing: choice)
+                )
+            case .newProject:
+                return (.newProject, QuickActionTarget(newProject: true))
+            case .existingConnections, .back, .loading, .empty:
+                return (.none, QuickActionTarget())
+            }
+        case .attention:
+            guard rows.indices.contains(index) else {
+                return (.none, QuickActionTarget())
+            }
+            let row = rows[index]
+            let hidden = isAttentionHidden?(row.visibilityKey) == true
+            return (
+                .attention(title: row.title, hidden: hidden),
+                QuickActionTarget(attention: row)
+            )
+        case .search:
+            guard hits.indices.contains(index) else {
+                return (.none, QuickActionTarget())
+            }
+            let hit = hits[index]
+            return (.search(line: hit.line), QuickActionTarget(hit: hit))
+        }
+    }
+
+    fileprivate func performContextual(_ command: QuickPanelCommand) {
+        let target = actionTarget
+        switch command.id {
+        case QuickPanelActions.open:
+            if let id = target.workspace?.workspaceId {
+                onWorkspaceActivate?(id)
+                dismiss()
+            }
+        case QuickPanelActions.close:
+            if let id = target.workspace?.workspaceId {
+                onWorkspaceClose?(id)
+                leaveQuickActions()
+            }
+        case QuickPanelActions.update:
+            if let id = target.workspace?.workspaceId {
+                onWorkspaceUpdate?(id)
+                leaveQuickActions()
+            }
+        case QuickPanelActions.connect:
+            if let config = target.target {
+                onConnect?(config)
+            }
+        case QuickPanelActions.edit:
+            if let config = target.target {
+                onEditProject?(config)
+            }
+        case QuickPanelActions.create:
+            onNewProject?()
+        case QuickPanelActions.attach:
+            if let choice = target.existing {
+                onAttachExistingConnection?(choice)
+            }
+        case QuickPanelActions.jump:
+            if let row = target.attention {
+                onAcknowledge?(row.workspaceId, row.pane.paneId)
+                onJump?(row.workspaceId, nil, row.pane.paneId, 0, "")
+                dismiss()
+            } else if let hit = target.hit {
+                onJump?(
+                    hit.workspaceId,
+                    hit.tabId,
+                    hit.paneId,
+                    hit.seq,
+                    actionSession?.savedQuery ?? model.query
+                )
+                dismiss()
+            }
+        case QuickPanelActions.openAttention:
+            if let row = target.attention {
+                onAcknowledge?(row.workspaceId, row.pane.paneId)
+                onPreview?(row.workspaceId, row.pane.paneId)
+                leaveQuickActions()
+            }
+        case QuickPanelActions.hide, QuickPanelActions.show:
+            if let row = target.attention {
+                onAttentionVisibilityChange?(row.visibilityKey, command.id == QuickPanelActions.hide)
+                leaveQuickActions()
+            }
+        default:
+            break
+        }
+    }
 }
 
 /// Attention 行：左侧 8pt 色块表示状态，两行文字保持正常前景色。
@@ -1846,6 +2206,55 @@ private final class PanelAccessibilityAliasButton: NSButton {
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+}
+
+/// Cmd-K 动作行：标题与工作区行对齐，说明放在第二行。
+private final class QuickCommandCellView: NSTableCellView {
+    private let titleLabel = NSTextField(labelWithString: "")
+    private let detailLabel = NSTextField(labelWithString: "")
+
+    var title: String {
+        get { titleLabel.stringValue }
+        set { titleLabel.stringValue = newValue }
+    }
+
+    var detail: String {
+        get { detailLabel.stringValue }
+        set {
+            detailLabel.stringValue = newValue
+            detailLabel.isHidden = newValue.isEmpty
+        }
+    }
+
+    init(identifier: NSUserInterfaceItemIdentifier) {
+        super.init(frame: .zero)
+        self.identifier = identifier
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+        titleLabel.lineBreakMode = .byTruncatingTail
+        detailLabel.translatesAutoresizingMaskIntoConstraints = false
+        detailLabel.font = NSFont.systemFont(ofSize: 11)
+        detailLabel.textColor = .secondaryLabelColor
+        detailLabel.lineBreakMode = .byTruncatingTail
+        addSubview(titleLabel)
+        addSubview(detailLabel)
+        NSLayoutConstraint.activate([
+            titleLabel.leadingAnchor.constraint(
+                equalTo: leadingAnchor,
+                constant: QuickRowMetrics.titleLeading
+            ),
+            titleLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+            titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 6),
+            detailLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
+            detailLabel.trailingAnchor.constraint(equalTo: titleLabel.trailingAnchor),
+            detailLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 1),
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
         nil
     }
 }

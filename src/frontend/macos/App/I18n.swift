@@ -149,6 +149,13 @@ enum MuxtermTextKey: CaseIterable {
     case panelSearchPlaceholder
     case panelSearchPrompt
     case panelWorkspaces
+    case panelActions
+    case panelActionsPlaceholder
+    case panelActionOpen
+    case panelActionConnect
+    case panelActionEdit
+    case panelActionAttach
+    case panelActionUpdate
     case pane
     case paneRenameAction
     case paneRenameCancel
@@ -414,6 +421,13 @@ enum MuxtermTextKey: CaseIterable {
         case .panelSearchPlaceholder: return "panel_search_placeholder"
         case .panelSearchPrompt: return "panel_search_prompt"
         case .panelWorkspaces: return "panel_workspaces"
+        case .panelActions: return "panel_actions"
+        case .panelActionsPlaceholder: return "panel_actions_placeholder"
+        case .panelActionOpen: return "panel_action_open"
+        case .panelActionConnect: return "panel_action_connect"
+        case .panelActionEdit: return "panel_action_edit"
+        case .panelActionAttach: return "panel_action_attach"
+        case .panelActionUpdate: return "panel_action_update"
         case .pane: return "pane"
         case .paneRenameAction: return "pane_rename_action"
         case .paneRenameCancel: return "pane_rename_cancel"

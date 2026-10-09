@@ -136,6 +136,8 @@ public enum KeyBindings {
             if key == "a" { return .openAgents }
             if key == "s" { return .openShells }
         }
+        // Cmd-K 不在这里绑定。快速面板自己消费 Cmd-K，弹出当前行的动作
+        // 和这套命令。Shells 保持 Cmd-Ctrl-S，避免和面板动作抢同一个键。
         // Cmd+Shift+P：旧命令面板（保留）。
         if chord.command, chord.shift, !chord.option, key == "p" {
             return .commandPalette
