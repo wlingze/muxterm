@@ -277,13 +277,15 @@ enum QuickConnectItem {
 
 /// 列表文字列。编号占左侧 22pt，标题从同一条竖线开始，
 /// 没有编号的 Project / Existing 也不能另起一行缩进。
+/// 更新和关闭贴在行尾，跟侧栏一样；隐藏更新不挪动关闭按钮。
 enum QuickRowMetrics {
     static let edge: CGFloat = 14
     static let gutter: CGFloat = 22
     static let titleGap: CGFloat = 6
-    static let actionWidth: CGFloat = 42
-    static let actionGap: CGFloat = 12
-    static var titleLeading: CGFloat { edge + gutter + titleGap + actionWidth + actionGap }
+    static let actionTrailing: CGFloat = 12
+    static let actionButton: CGFloat = 18
+    static let actionGap: CGFloat = 6
+    static var titleLeading: CGFloat { edge + gutter + titleGap }
 }
 
 /// Quick Connect 的轻量动作行，标题与目标行对齐。
@@ -330,10 +332,12 @@ final class QuickTargetCellView: NSTableCellView {
     private let detailLabel = NSTextField(labelWithString: "")
     private let badgeStack = NSStackView()
     private let workspaceIndexLabel = NSTextField(labelWithString: "")
-    private let actionContainer = NSView()
     private let closeButton = NSButton()
     private let runtimeUpdateButton = NSButton()
     private let updateSpinner = QuickUpdateProgressIndicator()
+    private var closeButtonWidth: NSLayoutConstraint!
+    private var updateButtonWidth: NSLayoutConstraint!
+    private var updateToCloseGap: NSLayoutConstraint!
     private var onCloseWorkspace: ((String) -> Void)?
     private var onUpdateWorkspace: ((String) -> Void)?
     private var closeWorkspaceID: String?
@@ -371,7 +375,8 @@ final class QuickTargetCellView: NSTableCellView {
         // image/text 模板重排，把名字压成一个字母。
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         titleLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
-        titleLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        // 长名称停在右侧按钮前面。required 抗压缩会顶破 trailing 约束，盖住关闭。
+        titleLabel.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
         titleLabel.setContentHuggingPriority(.required, for: .horizontal)
         // `maximumNumberOfLines = 1` + truncatingTail 会把
         // preferredMaxLayoutWidth 锁成当前 bounds，启动时 0pt → 只剩一个字形。
@@ -419,9 +424,6 @@ final class QuickTargetCellView: NSTableCellView {
         runtimeUpdateButton.action = #selector(updateWorkspaceClicked)
         runtimeUpdateButton.translatesAutoresizingMaskIntoConstraints = false
         runtimeUpdateButton.isHidden = true
-        actionContainer.translatesAutoresizingMaskIntoConstraints = false
-        actionContainer.addSubview(runtimeUpdateButton)
-        actionContainer.addSubview(closeButton)
         updateSpinner.translatesAutoresizingMaskIntoConstraints = false
         updateSpinner.style = .spinning
         updateSpinner.controlSize = .small
@@ -431,43 +433,51 @@ final class QuickTargetCellView: NSTableCellView {
         addSubview(detailLabel)
         addSubview(badgeStack)
         addSubview(workspaceIndexLabel)
-        addSubview(actionContainer)
-        actionContainer.addSubview(updateSpinner)
+        addSubview(closeButton)
+        addSubview(runtimeUpdateButton)
+        addSubview(updateSpinner)
+        closeButtonWidth = closeButton.widthAnchor.constraint(equalToConstant: 0)
+        updateButtonWidth = runtimeUpdateButton.widthAnchor.constraint(equalToConstant: 0)
+        updateToCloseGap = runtimeUpdateButton.trailingAnchor.constraint(
+            equalTo: closeButton.leadingAnchor
+        )
         NSLayoutConstraint.activate([
             workspaceIndexLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: QuickRowMetrics.edge),
             workspaceIndexLabel.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
             workspaceIndexLabel.widthAnchor.constraint(equalToConstant: QuickRowMetrics.gutter),
             titleLabel.leadingAnchor.constraint(
-                equalTo: actionContainer.trailingAnchor,
-                constant: QuickRowMetrics.actionGap
+                equalTo: workspaceIndexLabel.trailingAnchor,
+                constant: QuickRowMetrics.titleGap
             ),
             titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 5),
             badgeStack.leadingAnchor.constraint(equalTo: titleLabel.trailingAnchor, constant: 6),
             badgeStack.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
+            badgeStack.trailingAnchor.constraint(
+                lessThanOrEqualTo: runtimeUpdateButton.leadingAnchor,
+                constant: -8
+            ),
             detailLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
             detailLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 2),
             detailLabel.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -5),
-            actionContainer.leadingAnchor.constraint(
-                equalTo: workspaceIndexLabel.trailingAnchor,
-                constant: QuickRowMetrics.titleGap
+            detailLabel.trailingAnchor.constraint(
+                lessThanOrEqualTo: runtimeUpdateButton.leadingAnchor,
+                constant: -8
             ),
-            actionContainer.centerYAnchor.constraint(equalTo: centerYAnchor),
-            actionContainer.heightAnchor.constraint(equalToConstant: 18),
-            actionContainer.widthAnchor.constraint(equalToConstant: QuickRowMetrics.actionWidth),
-            closeButton.trailingAnchor.constraint(equalTo: actionContainer.trailingAnchor),
-            closeButton.centerYAnchor.constraint(equalTo: actionContainer.centerYAnchor),
-            closeButton.widthAnchor.constraint(equalToConstant: 18),
-            closeButton.heightAnchor.constraint(equalToConstant: 18),
-            runtimeUpdateButton.leadingAnchor.constraint(equalTo: actionContainer.leadingAnchor),
-            runtimeUpdateButton.centerYAnchor.constraint(equalTo: actionContainer.centerYAnchor),
-            runtimeUpdateButton.widthAnchor.constraint(equalToConstant: 18),
-            runtimeUpdateButton.heightAnchor.constraint(equalToConstant: 18),
+            closeButton.trailingAnchor.constraint(
+                equalTo: trailingAnchor,
+                constant: -QuickRowMetrics.actionTrailing
+            ),
+            closeButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            closeButtonWidth,
+            closeButton.heightAnchor.constraint(equalToConstant: QuickRowMetrics.actionButton),
+            updateToCloseGap,
+            runtimeUpdateButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            updateButtonWidth,
+            runtimeUpdateButton.heightAnchor.constraint(equalToConstant: QuickRowMetrics.actionButton),
             updateSpinner.centerXAnchor.constraint(equalTo: runtimeUpdateButton.centerXAnchor),
             updateSpinner.centerYAnchor.constraint(equalTo: runtimeUpdateButton.centerYAnchor),
             updateSpinner.widthAnchor.constraint(equalToConstant: 16),
             updateSpinner.heightAnchor.constraint(equalToConstant: 16),
-            badgeStack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -14),
-            detailLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
         ])
     }
 
@@ -579,7 +589,12 @@ final class QuickTargetCellView: NSTableCellView {
     }
 
     private func updateActionLayout() {
-        actionContainer.isHidden = closeButton.isHidden && runtimeUpdateButton.isHidden
+        let showsClose = !closeButton.isHidden
+        let showsUpdate = !runtimeUpdateButton.isHidden
+        closeButtonWidth.constant = showsClose ? QuickRowMetrics.actionButton : 0
+        updateButtonWidth.constant = showsUpdate ? QuickRowMetrics.actionButton : 0
+        // 只有两个按钮都在时才留间隙。更新隐藏时关闭仍贴右，不会跟着左移。
+        updateToCloseGap.constant = showsUpdate && showsClose ? -QuickRowMetrics.actionGap : 0
     }
 
     @objc private func closeWorkspaceClicked() {

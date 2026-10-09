@@ -46,12 +46,17 @@ final class UnifiedPanelRuntimeUpdateE2ETests: XCTestCase {
         let updateFrame = cell.convert(button.bounds, from: button)
         let closeFrame = cell.convert(closeButton.bounds, from: closeButton)
         XCTAssertEqual(updateFrame.width, 18, accuracy: 0.5)
-        XCTAssertLessThanOrEqual(updateFrame.maxX + 6, closeFrame.minX + 0.5)
-        XCTAssertEqual(updateFrame.minX, 42, accuracy: 0.5)
-        XCTAssertEqual(closeFrame.minX, 66, accuracy: 0.5)
+        XCTAssertEqual(closeFrame.minX - updateFrame.maxX, 6, accuracy: 0.5)
+        XCTAssertEqual(cell.bounds.width - closeFrame.maxX, 12, accuracy: 1)
+        let title = try XCTUnwrap(cell.subviews.compactMap { $0 as? NSTextField }.first {
+            $0.stringValue == "background"
+        })
+        let titleFrame = title.alignmentRect(forFrame: cell.convert(title.bounds, from: title))
+        XCTAssertEqual(titleFrame.minX, 42, accuracy: 0.5)
+        XCTAssertLessThanOrEqual(titleFrame.maxX, updateFrame.minX)
     }
 
-    func testWorkspaceActionsStayInLeadingGutterWhenResized() throws {
+    func testWorkspaceActionsStayOnTrailingEdgeWhenResized() throws {
         AppE2E.ensureApp()
         let workspaces = [item("supported", supported: true), item("unsupported", supported: false)]
         let panel = makePanel { workspaces }
@@ -69,19 +74,23 @@ final class UnifiedPanelRuntimeUpdateE2ETests: XCTestCase {
                 cell.layoutSubtreeIfNeeded()
                 XCTAssertEqual(cell.bounds.width, columnWidth, accuracy: 2)
                 let close = try XCTUnwrap(findView(cell, id: "muxterm.panel.workspace.close.\(workspace.workspaceId)") as? NSButton)
-                let closeFrame = close.alignmentRect(forFrame: cell.convert(close.bounds, from: close))
-                XCTAssertEqual(closeFrame.minX, 66, accuracy: 0.5)
+                let closeFrame = cell.convert(close.bounds, from: close)
+                XCTAssertEqual(cell.bounds.width - closeFrame.maxX, 12, accuracy: 1)
+                XCTAssertEqual(closeFrame.width, 18, accuracy: 0.5)
                 let title = try XCTUnwrap(cell.subviews.compactMap { $0 as? NSTextField }.first {
                     $0.stringValue == workspace.name
                 })
                 let titleFrame = title.alignmentRect(forFrame: cell.convert(title.bounds, from: title))
-                XCTAssertEqual(titleFrame.minX, 96, accuracy: 0.5)
-                XCTAssertGreaterThanOrEqual(titleFrame.minX - closeFrame.maxX, 12)
+                XCTAssertEqual(titleFrame.minX, 42, accuracy: 0.5)
+                XCTAssertLessThanOrEqual(titleFrame.maxX, closeFrame.minX)
                 if workspace.canUpdateRuntime {
                     let update = try XCTUnwrap(findView(cell, id: "muxterm.panel.workspace.update.\(workspace.workspaceId)") as? NSButton)
-                    let updateFrame = update.alignmentRect(forFrame: cell.convert(update.bounds, from: update))
-                    XCTAssertEqual(updateFrame.minX, 42, accuracy: 0.5)
+                    let updateFrame = cell.convert(update.bounds, from: update)
                     XCTAssertEqual(closeFrame.minX - updateFrame.maxX, 6, accuracy: 0.5)
+                    XCTAssertEqual(cell.bounds.width - updateFrame.maxX, 36, accuracy: 1)
+                    XCTAssertLessThanOrEqual(titleFrame.maxX, updateFrame.minX)
+                } else {
+                    XCTAssertNil(findView(cell, id: "muxterm.panel.workspace.update.\(workspace.workspaceId)"))
                 }
             }
         }
