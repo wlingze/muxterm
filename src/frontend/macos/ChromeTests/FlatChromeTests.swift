@@ -1174,13 +1174,35 @@ final class KeyPassthroughPolicyTests: XCTestCase {
     func testOptionOnlyChordsReachTheTerminal() {
         XCTAssertFalse(
             KeyPassthroughPolicy.consumeInMacOSWindow(KeyChord(option: true, key: "s")),
-            "Option-S 必须进 pane，不能再当 TUI 左右切分"
+            "没绑定的 Option-S 必须进 pane，不能再当 TUI 左右切分"
         )
         XCTAssertFalse(
             KeyPassthroughPolicy.consumeInMacOSWindow(KeyChord(option: true, key: "d"))
         )
         XCTAssertFalse(
             KeyPassthroughPolicy.consumeInMacOSWindow(KeyChord(option: true, key: "t"))
+        )
+        XCTAssertFalse(
+            KeyPassthroughPolicy.consumeInMacOSWindow(KeyChord(shift: true, option: true, key: "p"))
+        )
+    }
+
+    func testConfiguredOptionChordIsConsumed() {
+        let chord = KeyChord(option: true, key: "p")
+        XCTAssertTrue(
+            KeyPassthroughPolicy.consumeInMacOSWindow(chord, configured: true),
+            "配置里的 Alt+P 不能漏进终端变成 ^P"
+        )
+        XCTAssertTrue(
+            KeyPassthroughPolicy.consumeInMacOSWindow(
+                KeyChord(shift: true, option: true, key: "p"),
+                configured: true
+            )
+        )
+        XCTAssertTrue(
+            KeyPassthroughPolicy.consumeInMacOSWindow(
+                KeyChord(option: true, control: true, key: "1")
+            )
         )
     }
 
@@ -2788,6 +2810,49 @@ final class KeyBindingsConfigTests: XCTestCase {
         XCTAssertEqual((project["runtime"] as? [String: Any])?["id"] as? String, "tmux")
         XCTAssertEqual((project["transport"] as? [String: Any])?["id"] as? String, "ssh")
         XCTAssertEqual((project["transport"] as? [String: Any])?["target"] as? String, "ryzen")
+    }
+
+    func testSnapshotKeepsConfiguredAltShortcuts() {
+        let values: [String: Any] = [
+            "keybindings": [
+                ["key": "p", "mods": ["alt"], "action": "quick_connect"],
+                ["key": "n", "mods": ["alt"], "action": "new_window"],
+                ["key": "r", "mods": ["alt"], "action": "search"],
+                ["key": "return", "mods": ["control"], "action": "toggle_pane_fullscreen"],
+            ],
+            "shortcuts": [
+                "overrides": [
+                    [
+                        "action": "quick_connect",
+                        "bindings": [
+                            ["key": "q", "modifiers": ["alt"]],
+                        ],
+                    ],
+                    [
+                        "action": "search",
+                        "bindings": [] as [[String: Any]],
+                    ],
+                ],
+            ],
+        ]
+        let map = KeyBindingsConfig.parse(values: values)
+        let altP = KeyChord(option: true, key: "p")
+        XCTAssertEqual(map[altP], .quickConnect)
+        XCTAssertEqual(
+            KeyBindings.action(for: altP, custom: map),
+            .quickConnect
+        )
+        XCTAssertTrue(KeyPassthroughPolicy.consumeInMacOSWindow(altP, configured: map[altP] != nil))
+        XCTAssertEqual(map[KeyChord(option: true, key: "n")], .newTab)
+        XCTAssertEqual(map[KeyChord(option: true, key: "q")], .quickConnect)
+        XCTAssertNil(map[KeyChord(option: true, key: "r")])
+        XCTAssertEqual(map[KeyChord(control: true, key: "\r")], .togglePaneFullscreen)
+        XCTAssertFalse(
+            KeyPassthroughPolicy.consumeInMacOSWindow(
+                KeyChord(option: true, key: "e"),
+                configured: map[KeyChord(option: true, key: "e")] != nil
+            )
+        )
     }
 
     func testCustomTakesPrecedenceOverDefault() {

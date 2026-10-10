@@ -26,6 +26,7 @@ public enum KeyBindingsConfig {
         case "close_window": return .closeWindow
         case "command_palette": return .commandPalette
         case "quick_connect": return .quickConnect
+        case "search": return .searchWorkspace
         case "quit": return .quit
         case "increase_font_size": return .increaseFontSize
         case "decrease_font_size": return .decreaseFontSize
@@ -72,15 +73,10 @@ public enum KeyBindingsConfig {
             guard inSection, let key = currentKey, let actionName = currentAction else {
                 return
             }
-            guard let action = action(from: actionName) else { return }
-            let chord = KeyChord(
-                command: currentMods.contains { $0 == "command" || $0 == "super" },
-                shift: currentMods.contains("shift"),
-                option: currentMods.contains { $0 == "option" || $0 == "alt" },
-                control: currentMods.contains("control"),
-                key: key
-            )
-            result[chord] = action
+            guard let parsed = Self.binding(key: key, mods: currentMods, action: actionName) else {
+                return
+            }
+            result[parsed.chord] = parsed.action
         }
 
         for rawLine in toml.split(separator: "\n") {
@@ -121,6 +117,94 @@ public enum KeyBindingsConfig {
         }
         flush()
         return result
+    }
+
+    /// Core `configDescribeJSON` 的 `values`。同时吃旧 `keybindings` 和新
+    /// `shortcuts.overrides`；后者后写入，同键覆盖。空 bindings 表示关掉该动作。
+    public static func parse(values: [String: Any]) -> [KeyChord: KeyAction] {
+        var result: [KeyChord: KeyAction] = [:]
+        if let rows = values["keybindings"] as? [[String: Any]] {
+            for row in rows {
+                guard let key = row["key"] as? String,
+                      let actionName = row["action"] as? String,
+                      let parsed = binding(
+                          key: key,
+                          mods: stringList(row["mods"]),
+                          action: actionName
+                      )
+                else { continue }
+                result[parsed.chord] = parsed.action
+            }
+        }
+        if let shortcuts = values["shortcuts"] as? [String: Any],
+           let overrides = shortcuts["overrides"] as? [[String: Any]] {
+            for item in overrides {
+                guard let actionName = item["action"] as? String,
+                      let action = action(from: actionName)
+                else { continue }
+                let bindings = item["bindings"] as? [[String: Any]] ?? []
+                if bindings.isEmpty {
+                    result = result.filter { $0.value != action }
+                    continue
+                }
+                for row in bindings {
+                    guard let key = row["key"] as? String,
+                          let parsed = binding(
+                              key: key,
+                              mods: stringList(row["modifiers"] ?? row["mods"]),
+                              action: actionName
+                          )
+                    else { continue }
+                    result[parsed.chord] = parsed.action
+                }
+            }
+        }
+        return result
+    }
+
+    static func binding(
+        key rawKey: String,
+        mods: [String],
+        action actionName: String
+    ) -> (chord: KeyChord, action: KeyAction)? {
+        guard let action = action(from: actionName) else { return nil }
+        let key = normalizedKey(rawKey)
+        guard !key.isEmpty else { return nil }
+        let chord = KeyChord(
+            command: mods.contains { $0 == "command" || $0 == "super" },
+            shift: mods.contains("shift"),
+            option: mods.contains { $0 == "option" || $0 == "alt" },
+            control: mods.contains("control"),
+            key: key
+        )
+        return (chord, action)
+    }
+
+    /// 配置里的键名对齐 NSEvent：`return` 是回车，`plus`/`equal`/`minus` 是字符。
+    static func normalizedKey(_ raw: String) -> String {
+        let key = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch key {
+        case "return", "enter":
+            return "\r"
+        case "plus":
+            return "+"
+        case "equal", "equals":
+            return "="
+        case "minus", "hyphen":
+            return "-"
+        default:
+            return key
+        }
+    }
+
+    private static func stringList(_ value: Any?) -> [String] {
+        if let list = value as? [String] {
+            return list
+        }
+        if let list = value as? [Any] {
+            return list.compactMap { $0 as? String }
+        }
+        return []
     }
 
     /// 解码 TOML 字符串字面量里的转义（`\r` / `\n` / `\t` / `\\` / `\"`）。

@@ -85,10 +85,10 @@ AppWindow
 - **快速面板**：fuzzy 候选 = Catalog `Candidate`（Project / Worktree / Existing / Recent）
   + 已开 workspace + activity record 跳转。选择产出 `OpenRequest`。
 - **命令面板**：Action Catalog，不按 GTK/AppKit 类型存盘。
-- **快速面板里的 Cmd-K**：面板是 key window 时，`Cmd-K` 临时换成当前行的动作
-  （打开、关闭、更新、连接、跳转等），后面接命令面板里的同一批命令。输入继续
-  过滤这份列表。`Esc` 先退出嵌套列表，再恢复进入前的查询和原来的 tab，不关掉
-  面板，也不增加第四个 tab。`Cmd-Shift-P` 仍打开独立命令面板。Shells 仍是
+- **快速面板里的 Cmd-K**：面板是 key window 时，`Cmd-K` 只换成当前选中行的动作
+  （工作区打开 / 关闭 / 更新，连接 attach，提醒跳转 / 隐藏等）。不带命令面板的全局命令。
+  输入继续过滤这份短列表。`Esc` 先退出这一层，再恢复进入前的查询和原来的 tab，
+  不关掉面板，也不增加第四个 tab。`Cmd-Shift-P` 仍打开独立命令面板。Shells 仍是
   `Cmd-Ctrl-S`。
 - **设置页**：schema-driven，见 §4。
 
