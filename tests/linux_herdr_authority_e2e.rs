@@ -308,6 +308,26 @@ fn focus_pane_with_actions(
     anyhow::bail!("无法通过生产 SwitchPaneNext 聚焦 pane {target}")
 }
 
+fn wait_for_server_focus_where(
+    app: &AppWindow,
+    session: &HerdrSession,
+    workspace_id: &str,
+    mut predicate: impl FnMut(&str, &str) -> bool,
+) -> Result<(String, String)> {
+    let deadline = Instant::now() + TIMEOUT;
+    let mut last = String::from("<none>");
+    while Instant::now() < deadline {
+        tick(app);
+        if let Ok((tab, pane)) = server_focus(session, workspace_id) {
+            if predicate(&tab, &pane) {
+                return Ok((tab, pane));
+            }
+            last = format!("{tab}/{pane}");
+        }
+    }
+    anyhow::bail!("server focus 没有离开旧 pane，last={last}")
+}
+
 fn wait_for_server_focus(
     app: &AppWindow,
     authority: Authority<'_>,
@@ -381,11 +401,17 @@ fn run_case(sshd: &LoopbackSshd, transport: &str) -> Result<()> {
 
     app.test_handle_action(Action::NewTab);
     wait_for(&app, "创建 Tab 2", |candidate| {
-        candidate.test_tab_ids().len() == 2 && candidate.test_active_tab_id() != product_tab1
+        candidate.test_tab_ids().len() == 2
+            && candidate.test_active_tab_id() != product_tab1
+            && candidate.test_active_pane_id() != product_pane1
     })?;
     let product_tab2 = app.test_active_tab_id();
     let product_left = app.test_active_pane_id();
-    let (wire_tab2, wire_left) = server_focus(&session, &workspace_id)?;
+    // 新 tab 的 GTK id 先变。SSH 上 snapshot 可能还停在旧 pane，不能拿来建映射。
+    let (wire_tab2, wire_left) =
+        wait_for_server_focus_where(&app, &session, &workspace_id, |tab, pane| {
+            tab != wire_tab1 && pane != wire_pane1
+        })?;
     assert_three_party_focus(
         &app,
         authority,
@@ -404,7 +430,10 @@ fn run_case(sshd: &LoopbackSshd, transport: &str) -> Result<()> {
             && candidate.test_active_pane_id() != product_left
     })?;
     let product_right_top = app.test_active_pane_id();
-    let (server_tab, wire_right_top) = server_focus(&session, &workspace_id)?;
+    let (server_tab, wire_right_top) =
+        wait_for_server_focus_where(&app, &session, &workspace_id, |tab, pane| {
+            tab == wire_tab2 && pane != wire_left
+        })?;
     ensure!(server_tab == wire_tab2, "右 split 后服务端切错 tab");
     assert_three_party_focus(
         &app,
@@ -424,7 +453,10 @@ fn run_case(sshd: &LoopbackSshd, transport: &str) -> Result<()> {
             && candidate.test_active_pane_id() != product_right_top
     })?;
     let product_right_bottom = app.test_active_pane_id();
-    let (server_tab, wire_right_bottom) = server_focus(&session, &workspace_id)?;
+    let (server_tab, wire_right_bottom) =
+        wait_for_server_focus_where(&app, &session, &workspace_id, |tab, pane| {
+            tab == wire_tab2 && pane != wire_left && pane != wire_right_top
+        })?;
     ensure!(server_tab == wire_tab2, "下 split 后服务端切错 tab");
     assert_three_party_focus(
         &app,
@@ -450,7 +482,10 @@ fn run_case(sshd: &LoopbackSshd, transport: &str) -> Result<()> {
         (product_right_top, wire_right_top.clone()),
         (product_right_bottom, wire_right_bottom.clone()),
     ]);
-    ensure!(pane_map.len() == 4, "四个产品 pane id 必须唯一");
+    ensure!(
+        pane_map.len() == 4,
+        "四个产品 pane id 必须唯一: {pane_map:?}"
+    );
 
     switch_tab_and_assert(
         &app,
