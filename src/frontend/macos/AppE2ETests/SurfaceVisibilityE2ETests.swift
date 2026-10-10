@@ -243,6 +243,40 @@ final class SurfaceVisibilityE2ETests: XCTestCase {
         }
     }
 
+    func testFullFrameDoesNotExpandPastVisibleGrid() throws {
+        let (bridge, manager) = try makeManager()
+        defer { bridge.shutdown() }
+        manager.setBridgeQueriesEnabled(false)
+        let pane: UInt32 = 62
+        let view = manager.view(for: pane)
+        view.setFrameSize(NSSize(width: 900, height: 500))
+        let allocated = try XCTUnwrap(view.allocatedGridSize())
+        let model = view.renderedGridSize
+        let optimal = view.getOptimalFrameSize().size
+        let cellWidth = optimal.width / CGFloat(max(model.cols, 1))
+        let cellHeight = optimal.height / CGFloat(max(model.rows, 1))
+        XCTAssertGreaterThan(cellWidth, 1)
+        XCTAssertGreaterThan(cellHeight, 1)
+        XCTAssertLessThanOrEqual(
+            CGFloat(allocated.cols) * cellWidth,
+            view.bounds.width + 0.5,
+            "分配列数乘 SwiftTerm 字符宽不得超过视图"
+        )
+        XCTAssertLessThanOrEqual(
+            CGFloat(allocated.rows) * cellHeight,
+            view.bounds.height + 0.5
+        )
+        manager.handleResize(paneId: pane, cols: allocated.cols + 12, rows: allocated.rows)
+        manager.handleFrame(paneId: pane, data: Data("\u{1b}[1;1HEDGE".utf8))
+        XCTAssertLessThanOrEqual(view.renderedGridSize.cols, allocated.cols)
+        XCTAssertLessThanOrEqual(view.renderedGridSize.rows, allocated.rows)
+        XCTAssertEqual(
+            view.gridClampedToView(cols: 80, rows: 24).cols,
+            80,
+            "比视图窄的远端格子不能被撑开"
+        )
+    }
+
     func testPaneHostClipsTerminalGlyphsAtSplitBoundary() {
         AppE2E.ensureApp()
         let view = MuxTerminalView(

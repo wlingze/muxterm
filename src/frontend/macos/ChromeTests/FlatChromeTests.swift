@@ -1685,6 +1685,30 @@ final class PaneLayoutProjectionTests: XCTestCase {
         )
     }
 
+    /// test-2026-1010-1103：分屏第一帧把 host 量成半高，窗口外框没变，
+    /// 没人再量一次，格子就停在 12 行。
+    func testHostBoundsResyncIgnoresFirstLayoutAndOnePointJitter() {
+        XCTAssertFalse(
+            HostBoundsResyncPolicy.shouldResync(previous: nil, next: (880, 240)),
+            "第一次 layout 已经由换树同步排过"
+        )
+        XCTAssertFalse(
+            HostBoundsResyncPolicy.shouldResync(previous: (880, 400), next: (881, 400)),
+            "1pt 抖动不再量"
+        )
+        XCTAssertFalse(
+            HostBoundsResyncPolicy.shouldResync(previous: (880, 400), next: (880, 401))
+        )
+        XCTAssertTrue(
+            HostBoundsResyncPolicy.shouldResync(previous: (880, 240), next: (880, 900)),
+            "半高被拉开成整窗时必须再量格子"
+        )
+        XCTAssertTrue(
+            HostBoundsResyncPolicy.shouldResync(previous: (440, 900), next: (880, 900)),
+            "半宽被拉开时必须再量格子"
+        )
+    }
+
     /// test-2026-0922-1758.log：zoom tab 量出 178x50，分屏 tab 量出 178x49，
     /// 来回切就来回发 refresh-client -C。shell 重画提示符，旧行留在画面上。
     func testTabSwitchTitleRowDoesNotResizeTheWholeClient() {

@@ -251,7 +251,7 @@ final class MuxTerminalView: TerminalView {
         // 隐藏滚动条让模型宽度 = pane 宽度，与 `refresh-client -C` 列数一致。
         // 触控板交给 SwiftTerm：htop/Cursor 在 alt-screen 里自己消化滚动；
         // 普通 shell 滚 attach 之后的本地 scrollback。禁止 RIS 喂历史 dump。
-        subviews.first(where: { $0 is NSScroller })?.isHidden = true
+        hideOverlayScrollers()
         getTerminal().changeHistorySize(Self.fallbackHistoryCapacity)
         terminalDelegate = self
         // OSC 133 是 shell/agent 的 FinalTerm command lifecycle 标记。
@@ -1102,18 +1102,81 @@ final class MuxTerminalView: TerminalView {
         return true
     }
 
+    private var hidingScrollers = false
+
+    override func layout() {
+        // 先藏滚动条，再让 SwiftTerm 按整宽算列。后藏的话这一轮会少掉
+        // 滚动条那几列，接着又被 allocation 加回去，字形画出右边界。
+        if !hidingScrollers {
+            hidingScrollers = true
+            hideOverlayScrollers()
+            hidingScrollers = false
+        }
+        super.layout()
+    }
+
+    /// SwiftTerm 用可见滚动条的宽度扣列。滚动条后出现时再藏一次，
+    /// 否则 `processSizeChange` 和这里会差 1–3 列，Herdr 整帧对不上。
+    private func hideOverlayScrollers() {
+        for case let scroller as NSScroller in subviews where !scroller.isHidden {
+            scroller.isHidden = true
+        }
+    }
+
+    /// 与 SwiftTerm `computeFontDimensions` 相同的像素对齐，不再做第二次 round。
+    private func swiftTermCellSize() -> (width: CGFloat, height: CGFloat) {
+        let font = Self.makeFont(family: fontFamily, size: fontSize)
+        let glyph = font.glyph(withName: "W")
+        let rawWidth = font.advancement(forGlyph: glyph).width
+        let rawHeight = ceil(font.ascender - font.descender + font.leading)
+        let scale = window?.backingScaleFactor
+            ?? NSScreen.main?.backingScaleFactor
+            ?? 1
+        return TerminalCellGrid.snapped(
+            rawWidth: rawWidth,
+            rawHeight: rawHeight,
+            scale: scale
+        )
+    }
+
+    /// SwiftTerm 正在画的单格。`getOptimalFrameSize` 是 `cell * cols`，
+    /// 除回当前列数就是绘制宽度。
+    ///
+    /// 不用光标框：光标停在全角字上时框是两格宽。也不重新量字体：
+    /// 估算偏窄时列数变多，`cols * cell` 画出右边界，host 把字从中间裁掉。
+    private func drawnCellSize() -> (width: CGFloat, height: CGFloat) {
+        let term = getTerminal()
+        let optimal = getOptimalFrameSize().size
+        if term.cols >= 2, term.rows >= 1, optimal.width > 1, optimal.height > 1 {
+            return (
+                width: optimal.width / CGFloat(term.cols),
+                height: optimal.height / CGFloat(term.rows)
+            )
+        }
+        return swiftTermCellSize()
+    }
+
     /// 当前 widget 分配折算成字符格；未布局 / 字号未知时返回 nil。
     func allocatedGridSize() -> (cols: Int, rows: Int)? {
         layoutSubtreeIfNeeded()
+        hideOverlayScrollers()
         let size = bounds.size
         guard size.width >= 40, size.height >= 24 else { return nil }
-        guard let cell = terminalCellSizeInPoints(), cell.width > 0, cell.height > 0 else {
-            return nil
-        }
+        let cell = drawnCellSize()
+        guard cell.width > 0, cell.height > 0 else { return nil }
         return (
-            cols: max(2, Int((size.width / cell.width).rounded(.down))),
-            rows: max(1, Int((size.height / cell.height).rounded(.down)))
+            cols: max(2, TerminalCellGrid.fittingCount(length: size.width, cell: cell.width)),
+            rows: max(1, TerminalCellGrid.fittingCount(length: size.height, cell: cell.height))
         )
+    }
+
+    /// 远端格子不能比当前视图更宽。更宽的整帧会把字画过 pane 右边界。
+    /// 比视图窄的格子保持原样，避免把还在 80 列的帧撑开。
+    func gridClampedToView(cols: Int, rows: Int) -> (cols: Int, rows: Int) {
+        guard let fitted = allocatedGridSize() else {
+            return (max(cols, 2), max(rows, 1))
+        }
+        return (min(max(cols, 2), fitted.cols), min(max(rows, 1), fitted.rows))
     }
 
     /// 乐观全屏/缓存投影刚挂载时，后端 pane size 事件还在路上。先让

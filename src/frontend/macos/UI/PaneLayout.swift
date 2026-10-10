@@ -282,6 +282,7 @@ final class PaneLayoutView: NSView, TerminalClientContentSizing {
         )
 
         needsLayout = true
+        watchHostBounds()
         // 窗口外框没变可以省略 refresh-client -C（hysteresis 在
         // syncAllVisibleSizes 里）。换了一棵 pane 树仍要按每个 host
         // 的像素重算 SwiftTerm 格子，否则切 tab 后字体/结构会错，
@@ -399,6 +400,7 @@ final class PaneLayoutView: NSView, TerminalClientContentSizing {
             host.setTitleDragEnabled(allowsPaneBreak && currentPaneIds.count > 1)
         }
         markActivePane(cached.activePaneId)
+        watchHostBounds()
         if TabGeometrySyncPolicy.shouldSyncOnCachedReveal() {
             scheduleGeometrySync(paneIds: cached.paneIds, kind: .cachedReveal)
         }
@@ -586,6 +588,18 @@ final class PaneLayoutView: NSView, TerminalClientContentSizing {
         scheduleGeometrySync(paneIds: currentPaneIds, kind: .window)
     }
 
+    /// 分屏不改变窗口外框。host 从半高被 Auto Layout 拉开后，这里再排一次
+    /// 格子同步；否则第一帧量到的 12 行会一直写在 Runtime 上。
+    private func watchHostBounds() {
+        for host in hostByPane.values {
+            host.onBoundsChanged = { [weak self, weak host] in
+                guard let self, let host else { return }
+                guard self.currentPaneIds.contains(host.paneId) else { return }
+                self.scheduleGeometrySync(paneIds: self.currentPaneIds, kind: .treeChange)
+            }
+        }
+    }
+
     private func scheduleGeometrySync(
         paneIds: Set<UInt32>,
         kind: GeometrySyncKind = .window
@@ -745,6 +759,9 @@ final class PaneHostView: NSView {
     private let dimOverlay = InactivePaneDimView()
     private var titleBarHeightConstraint: NSLayoutConstraint!
     private var titleTrackingArea: NSTrackingArea?
+    /// 分屏后 host 像素变了、窗口外框没变时通知布局再量一次格子。
+    var onBoundsChanged: (() -> Void)?
+    private var lastBoundsToken: (Int, Int)?
 
     init(paneId: UInt32, title: String = "", terminal: MuxTerminalView) {
         self.paneId = paneId
@@ -977,6 +994,11 @@ final class PaneHostView: NSView {
     override func layout() {
         super.layout()
         publishGeometry()
+        let token = (Int(bounds.width.rounded()), Int(bounds.height.rounded()))
+        if HostBoundsResyncPolicy.shouldResync(previous: lastBoundsToken, next: token) {
+            onBoundsChanged?()
+        }
+        lastBoundsToken = token
     }
 
     override func mouseDown(with event: NSEvent) {

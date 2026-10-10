@@ -904,6 +904,19 @@ public enum GeometrySyncPolicy {
     }
 }
 
+/// 分屏后 host 自己的像素变了，容器外框却没变。
+///
+/// 第一次 layout 已经由换树同步排过。之后 host 被拉开（12 行变成整窗）
+/// 才再量一次。1pt 抖动忽略，避免和窗口 resize 互相追。
+public enum HostBoundsResyncPolicy {
+    public static func shouldResync(previous: (Int, Int)?, next: (Int, Int)) -> Bool {
+        guard let previous else { return false }
+        let dw = abs(previous.0 - next.0)
+        let dh = abs(previous.1 - next.1)
+        return dw > 1 || dh > 1
+    }
+}
+
 /// 计划格子没变不发。窗口测量抖动走 hysteresis。
 ///
 /// 切 tab 或测量抖动出现的 ±1 不应 `refresh-client -C`，否则整条 tmux

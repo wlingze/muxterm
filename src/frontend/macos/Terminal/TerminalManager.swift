@@ -65,6 +65,11 @@ final class TerminalManager: TerminalInputHandler {
     /// 已排队但尚未发送的整体尺寸；窗口 live resize 期间只保留最后一帧。
     private var pendingClientSize: (UInt16, UInt16)?
     private var clientResizeWorkItem: DispatchWorkItem?
+    /// Herdr/shell 的 pane resize。分屏第一帧经常量到半高，立刻写回会把
+    /// 下一格 Observe 锁在 12 行。短延迟只保留最后一格。
+    private var coalescedPaneSizes: [UInt32: (UInt16, UInt16)] = [:]
+    private var paneResizeWorkItems: [UInt32: DispatchWorkItem] = [:]
+    private static let paneResizeCoalesce: TimeInterval = 0.08
     /// 同一 pane 待合并的增量输出：codex/agent 一帧会被拆成多个 PaneOutput
     /// 事件，分帧喂给 SwiftTerm 会让中间态把输入行逐帧推走（一直换行），
     /// 也造成高频重绘；合并后一次 feed 保持稳定。
@@ -151,6 +156,9 @@ final class TerminalManager: TerminalInputHandler {
 
     deinit {
         clientResizeWorkItem?.cancel()
+        for item in paneResizeWorkItems.values {
+            item.cancel()
+        }
         seedFlushWorkItem?.cancel()
     }
 
@@ -193,6 +201,11 @@ final class TerminalManager: TerminalInputHandler {
         pendingClientSize = nil
         clientResizeWorkItem?.cancel()
         clientResizeWorkItem = nil
+        coalescedPaneSizes.removeAll()
+        for item in paneResizeWorkItems.values {
+            item.cancel()
+        }
+        paneResizeWorkItems.removeAll()
         feedFlushWorkItem?.cancel()
         feedFlushWorkItem = nil
         pendingFeeds.removeAll()
@@ -283,6 +296,14 @@ final class TerminalManager: TerminalInputHandler {
             pendingClientSize = nil
             clientResizeWorkItem?.cancel()
             clientResizeWorkItem = nil
+            for (paneId, size) in coalescedPaneSizes {
+                pendingPtySizes[paneId] = size
+            }
+            coalescedPaneSizes.removeAll()
+            for item in paneResizeWorkItems.values {
+                item.cancel()
+            }
+            paneResizeWorkItems.removeAll()
             return
         }
         flushDeferredBridgeWork()
@@ -806,8 +827,12 @@ final class TerminalManager: TerminalInputHandler {
         ensureValidModelSize(view)
         // 整帧按 Runtime 格子绝对定位。先把模型对齐，否则满行进度和
         // TUI 会画进旧的 80 列里，折行后只剩一块白。
+        // Herdr/shell 的格子不能超过视图：否则最右侧字形画出 pane 边界。
         if let size = sourcePaneSizes[paneId], size.cols >= 2, size.rows >= 1 {
-            view.applyGridSize(cols: size.cols, rows: size.rows, followTail: true)
+            let fitted = usesClientResize
+                ? (cols: size.cols, rows: size.rows)
+                : view.gridClampedToView(cols: size.cols, rows: size.rows)
+            view.applyGridSize(cols: fitted.cols, rows: fitted.rows, followTail: true)
         }
         view.feedFull(data)
         swiftTermSeeded.insert(paneId)
@@ -995,6 +1020,9 @@ final class TerminalManager: TerminalInputHandler {
         sourcePaneSizes.removeValue(forKey: paneId)
         pendingViewportOffsets.removeValue(forKey: paneId)
         pendingPtySizes.removeValue(forKey: paneId)
+        coalescedPaneSizes.removeValue(forKey: paneId)
+        paneResizeWorkItems[paneId]?.cancel()
+        paneResizeWorkItems.removeValue(forKey: paneId)
         pendingInputs.removeAll { $0.paneId == paneId }
         pendingSeeds.removeValue(forKey: paneId)
         seedingPanes.remove(paneId)
@@ -1391,14 +1419,37 @@ final class TerminalManager: TerminalInputHandler {
         guard !usesClientResize else { return }
         let c = UInt16(cols)
         let r = UInt16(rows)
-        if let prev = lastPtySize[view.paneId], prev.0 == c, prev.1 == r {
+        let paneId = view.paneId
+        if let prev = lastPtySize[paneId], prev.0 == c, prev.1 == r {
+            paneResizeWorkItems[paneId]?.cancel()
+            paneResizeWorkItems.removeValue(forKey: paneId)
+            coalescedPaneSizes.removeValue(forKey: paneId)
             return
         }
         guard bridgeQueriesEnabled else {
-            pendingPtySizes[view.paneId] = (c, r)
+            pendingPtySizes[paneId] = (c, r)
             return
         }
-        sendPtyResize(paneId: view.paneId, cols: c, rows: r)
+        let size = (c, r)
+        coalescedPaneSizes[paneId] = size
+        paneResizeWorkItems[paneId]?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            guard let pending = self.coalescedPaneSizes[paneId],
+                  pending.0 == size.0, pending.1 == size.1 else { return }
+            self.coalescedPaneSizes.removeValue(forKey: paneId)
+            self.paneResizeWorkItems.removeValue(forKey: paneId)
+            guard self.bridgeQueriesEnabled else {
+                self.pendingPtySizes[paneId] = size
+                return
+            }
+            if let sent = self.lastPtySize[paneId], sent.0 == size.0, sent.1 == size.1 {
+                return
+            }
+            self.sendPtyResize(paneId: paneId, cols: size.0, rows: size.1)
+        }
+        paneResizeWorkItems[paneId] = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.paneResizeCoalesce, execute: work)
     }
 
     private func sendPtyResize(paneId: UInt32, cols: UInt16, rows: UInt16) {
