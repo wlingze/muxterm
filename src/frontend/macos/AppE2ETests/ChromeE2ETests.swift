@@ -391,7 +391,13 @@ final class ChromeE2ETests: XCTestCase {
         XCTAssertEqual(bar.testTabTitle(21), "1  core-first")
         XCTAssertEqual(bar.testTabTitle(18), "2  core-second")
         let widths = bar.testTabButtonWidths()
-        XCTAssertGreaterThanOrEqual(widths[1], widths[0], "Muxterm 顺序与标题应共同决定 tab 标号和内容")
+        XCTAssertEqual(widths.count, 2)
+        // 默认 equalWidth 下两个 tab 应一样宽；AppKit 像素取整可以差 1pt。
+        XCTAssertLessThanOrEqual(
+            widths[0] - widths[1],
+            1,
+            "等宽 tab 允许 1pt 取整；更长标题不应明显更窄"
+        )
     }
 
     func testStatusDotClickOpensPopoverWithSshSummary() {
