@@ -493,13 +493,14 @@ impl StatusBar {
             .iter()
             .map(|w| format!("{}|{}|{}|{};", w.window_id, w.name, w.current, w.text))
             .collect();
+        // 建 tab 按钮时要用当前样式；不能只在 render 里持有，rebuild_tabs 看不到。
+        let tab_style = self.tab_bar_style.get();
         if self.last_tab_signature.borrow().as_deref() != Some(signature.as_str()) {
-            self.rebuild_tabs(&snapshot, use_tmux_colors, plain_fg);
+            self.rebuild_tabs(&snapshot, use_tmux_colors, plain_fg, tab_style);
             *self.last_tab_signature.borrow_mut() = Some(signature);
         }
 
         // justify 只影响中区。
-        let tab_style = self.tab_bar_style.get();
         self.tabs.set_halign(if tab_style.fills_viewport() {
             Align::Fill
         } else {
@@ -537,6 +538,7 @@ impl StatusBar {
         snapshot: &StatusBarSnapshot,
         use_tmux_colors: bool,
         plain_fg: Option<&str>,
+        tab_style: TabBarStyle,
     ) {
         while let Some(child) = self.tabs.first_child() {
             self.tabs.remove(&child);
