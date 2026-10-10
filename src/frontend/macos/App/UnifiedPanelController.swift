@@ -126,8 +126,16 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     private let attentionVisibilityButton = NSButton(title: "", target: nil, action: nil)
     private let attentionHiddenButton = NSButton(title: "", target: nil, action: nil)
     private let actionHint = NSButton(title: "⌘K", target: nil, action: nil)
+    private let actionPopover = NSVisualEffectView()
+    private let actionTitleLabel = NSTextField(labelWithString: "")
+    private let actionSearch = NSSearchField()
+    private let actionTable = NSTableView()
+    private let actionScroll = NSScrollView()
+    private var actionPopoverWidthConstraint: NSLayoutConstraint?
+    private var actionPopoverHeightConstraint: NSLayoutConstraint?
     private var actionSession: QuickPanelActionSession?
     private var actionTarget = QuickActionTarget()
+    private var actionContextTitle = ""
     private var selectionAliases: [String: PanelAccessibilityAliasButton] = [:]
     private var allItems: [UnifiedWorkspaceItem] = []
     private var visibleItems: [UnifiedWorkspaceItem] = []
@@ -680,19 +688,20 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     private func selectRow(offset: Int) {
-        let count = table.numberOfRows
+        let list = actionSession != nil ? actionTable : table
+        let count = list.numberOfRows
         guard count > 0 else { return }
-        let current = table.selectedRow >= 0 ? table.selectedRow : 0
+        let current = list.selectedRow >= 0 ? list.selectedRow : 0
         let next = ((current + offset) % count + count) % count
-        table.selectRowIndexes(IndexSet(integer: next), byExtendingSelection: false)
-        table.scrollRowToVisible(next)
+        list.selectRowIndexes(IndexSet(integer: next), byExtendingSelection: false)
+        list.scrollRowToVisible(next)
     }
 
     private func activateSelected() {
         if let session = actionSession {
             let visible = session.visibleCommands
-            guard table.selectedRow >= 0, table.selectedRow < visible.count else { return }
-            let command = visible[table.selectedRow]
+            guard actionTable.selectedRow >= 0, actionTable.selectedRow < visible.count else { return }
+            let command = visible[actionTable.selectedRow]
             if command.section == .contextual {
                 performContextual(command)
             } else {
@@ -887,6 +896,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         let accessoryHeight = accessoryContainer.heightAnchor.constraint(equalToConstant: 0)
         accessoryHeight.isActive = true
         accessoryHeightConstraint = accessoryHeight
+        buildActionPopover(on: root)
     }
 
     private func buildTabControl() {
@@ -1034,10 +1044,6 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     private func applyTab() {
-        if actionSession != nil {
-            applyActionChrome()
-            return
-        }
         tabControl.selectedSegment = model.tab.rawValue
         scopeControl.selectedSegment = scopeSegment(model.scope)
         updateSelectionAliases()
@@ -1200,7 +1206,9 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
 
     func controlTextDidChange(_ obj: Notification) {
         if var session = actionSession {
-            session.setQuery(input.stringValue)
+            let field = obj.object as? NSTextField
+            guard field === actionSearch else { return }
+            session.setQuery(actionSearch.stringValue)
             actionSession = session
             reloadActionList()
             return
@@ -1254,8 +1262,8 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     // MARK: - 表格
 
     func numberOfRows(in tableView: NSTableView) -> Int {
-        if let session = actionSession {
-            return session.visibleCommands.count
+        if tableView === actionTable {
+            return actionSession?.visibleCommands.count ?? 0
         }
         switch model.tab {
         case .workspaces: return visibleItems.count
@@ -1265,15 +1273,15 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        if let session = actionSession {
-            let commands = session.visibleCommands
-            guard row < commands.count else { return nil }
+        if tableView === actionTable {
+            guard let commands = actionSession?.visibleCommands, row < commands.count else {
+                return nil
+            }
             let command = commands[row]
-            let id = NSUserInterfaceItemIdentifier("QuickCommand")
-            let cell = tableView.makeView(withIdentifier: id, owner: self) as? QuickCommandCellView
-                ?? QuickCommandCellView(identifier: id)
+            let id = NSUserInterfaceItemIdentifier("QuickActionPopoverRow")
+            let cell = tableView.makeView(withIdentifier: id, owner: self) as? QuickActionPopoverCell
+                ?? QuickActionPopoverCell(identifier: id)
             cell.title = command.title
-            cell.detail = command.detail
             cell.setAccessibilityIdentifier("muxterm.panel.action.\(command.id)")
             return cell
         }
@@ -1410,18 +1418,22 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
+        if (notification.object as? NSTableView) === actionTable { return }
         updatePeek()
     }
 
     @objc private func tableActivated() {
+        guard actionSession == nil else { return }
+        activateSelected()
+    }
+
+    @objc private func actionRowActivated() {
+        guard actionSession != nil else { return }
         activateSelected()
     }
 
     @objc private func tableDoubleActivated() {
-        guard actionSession == nil else {
-            activateSelected()
-            return
-        }
+        guard actionSession == nil else { return }
         let row = table.clickedRow
         guard row >= 0, model.tab == .workspaces, row < visibleItems.count else {
             activateSelected()
@@ -1752,12 +1764,28 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     func testSetQuickActionQuery(_ query: String) {
-        input.stringValue = query
-        controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
+        actionSearch.stringValue = query
+        controlTextDidChange(
+            Notification(name: NSControl.textDidChangeNotification, object: actionSearch)
+        )
+    }
+
+    func testMainQuery() -> String {
+        input.stringValue
+    }
+
+    func testQuickActionPopoverFrame() -> CGRect? {
+        guard actionSession != nil, !actionPopover.isHidden, let content = window?.contentView else {
+            return nil
+        }
+        content.layoutSubtreeIfNeeded()
+        placeActionPopover()
+        content.layoutSubtreeIfNeeded()
+        return actionPopover.convert(actionPopover.bounds, to: content)
     }
 }
 
-/// Cmd-K 快照。动作列表换掉表格后，原来的选中行已经不在 `visibleItems` 里。
+/// Cmd-K 快照。菜单打开后主列表仍在，但选中行可能变化，动作打到这份快照上。
 private struct QuickActionTarget {
     var workspace: WorkspaceSidebarItem?
     var target: TargetConfig?
@@ -1782,13 +1810,16 @@ extension UnifiedPanelController {
         guard var session = actionSession else { return }
         session.push(commands)
         actionSession = session
-        input.stringValue = ""
+        actionSearch.stringValue = ""
         reloadActionList()
     }
 
     fileprivate func clearQuickActions() {
         actionSession = nil
         actionTarget = QuickActionTarget()
+        actionContextTitle = ""
+        actionSearch.stringValue = ""
+        actionPopover.isHidden = true
         tabControl.isEnabled = true
         actionHint.contentTintColor = .labelColor
     }
@@ -1815,6 +1846,7 @@ extension UnifiedPanelController {
     fileprivate func enterQuickActions() {
         let captured = captureActionTarget()
         actionTarget = captured.target
+        actionContextTitle = actionPopoverTitle(for: captured.context)
         let commands = QuickPanelActions.merge(
             contextual: QuickPanelActions.contextual(
                 for: captured.context,
@@ -1823,9 +1855,9 @@ extension UnifiedPanelController {
             global: commandProvider?() ?? []
         )
         actionSession = QuickPanelActionSession(savedQuery: model.query, commands: commands)
-        input.stringValue = ""
+        actionSearch.stringValue = ""
         reloadActionList()
-        window?.makeFirstResponder(input)
+        window?.makeFirstResponder(actionSearch)
     }
 
     fileprivate func popQuickActions() {
@@ -1833,8 +1865,9 @@ extension UnifiedPanelController {
         switch session.escape() {
         case .stay:
             actionSession = session
-            input.stringValue = session.query
+            actionSearch.stringValue = session.query
             reloadActionList()
+            window?.makeFirstResponder(actionSearch)
         case .leave(let saved):
             clearQuickActions()
             model.query = saved
@@ -1848,29 +1881,136 @@ extension UnifiedPanelController {
     fileprivate func reloadActionList() {
         guard actionSession != nil else { return }
         applyActionChrome()
-        table.reloadData()
+        actionTable.reloadData()
         let count = actionSession?.visibleCommands.count ?? 0
         if count > 0 {
-            table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
-            table.scrollRowToVisible(0)
+            actionTable.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+            actionTable.scrollRowToVisible(0)
         } else {
-            table.deselectAll(nil)
+            actionTable.deselectAll(nil)
         }
-        QuickConnectTableLayout.fit(table)
     }
 
     fileprivate func applyActionChrome() {
-        tabControl.isEnabled = false
-        scopeBar.isHidden = true
-        attentionActions.isHidden = true
-        accessoryHeightConstraint?.constant = 0
-        input.placeholderString = MuxtermI18n.shared.tr(.panelActionsPlaceholder)
         actionHint.toolTip = MuxtermI18n.shared.tr(.panelActions)
         actionHint.contentTintColor = .controlAccentColor
-        let isEmpty = actionSession?.visibleCommands.isEmpty ?? true
-        emptyLabel.stringValue = MuxtermI18n.shared.tr(.commandPaletteNoResults)
-        emptyLabel.isHidden = !isEmpty
-        scrollView.isHidden = isEmpty
+        actionTitleLabel.stringValue = actionContextTitle
+        actionSearch.placeholderString = MuxtermI18n.shared.tr(.panelActionsPlaceholder)
+        actionPopover.isHidden = false
+        placeActionPopover()
+    }
+
+    fileprivate func placeActionPopover() {
+        guard let root = actionPopover.superview else { return }
+        let count = max(actionSession?.visibleCommands.count ?? 1, 1)
+        let frame = QuickActionPopoverLayout.frame(in: root.bounds, rowCount: count)
+        actionPopoverWidthConstraint?.constant = frame.width
+        actionPopoverHeightConstraint?.constant = frame.height
+    }
+
+    fileprivate func actionPopoverTitle(for context: QuickPanelRowContext) -> String {
+        switch context {
+        case .workspace(let name, _, _):
+            return name
+        case .target(let name), .existingConnection(let name):
+            return name
+        case .newProject:
+            return MuxtermI18n.shared.tr(.panelNewProject)
+        case .attention(let title, _):
+            return title
+        case .search(let line):
+            return line
+        case .none:
+            return MuxtermI18n.shared.tr(.panelActions)
+        }
+    }
+
+    fileprivate func buildActionPopover(on root: NSView) {
+        actionPopover.translatesAutoresizingMaskIntoConstraints = false
+        actionPopover.material = .popover
+        actionPopover.blendingMode = .behindWindow
+        actionPopover.state = .active
+        actionPopover.wantsLayer = true
+        actionPopover.layer?.cornerRadius = 8
+        actionPopover.layer?.masksToBounds = true
+        actionPopover.layer?.borderWidth = 1
+        actionPopover.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.85).cgColor
+        actionPopover.isHidden = true
+        actionPopover.setAccessibilityIdentifier("muxterm.panel.actionPopover")
+        root.addSubview(actionPopover)
+
+        actionTitleLabel.translatesAutoresizingMaskIntoConstraints = false
+        actionTitleLabel.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        actionTitleLabel.textColor = .secondaryLabelColor
+        actionTitleLabel.lineBreakMode = .byTruncatingTail
+        actionTitleLabel.setAccessibilityIdentifier("muxterm.panel.actionTitle")
+        actionPopover.addSubview(actionTitleLabel)
+
+        actionSearch.translatesAutoresizingMaskIntoConstraints = false
+        actionSearch.controlSize = .small
+        actionSearch.focusRingType = .none
+        actionSearch.font = NSFont.systemFont(ofSize: 12)
+        actionSearch.delegate = self
+        actionSearch.placeholderString = MuxtermI18n.shared.tr(.panelActionsPlaceholder)
+        actionSearch.setAccessibilityIdentifier("muxterm.panel.actionSearch")
+        actionPopover.addSubview(actionSearch)
+
+        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("action"))
+        actionTable.addTableColumn(column)
+        actionTable.headerView = nil
+        actionTable.rowHeight = QuickActionPopoverLayout.rowHeight
+        actionTable.intercellSpacing = NSSize(width: 0, height: 0)
+        actionTable.usesAlternatingRowBackgroundColors = false
+        actionTable.backgroundColor = .clear
+        actionTable.selectionHighlightStyle = .regular
+        actionTable.style = .plain
+        actionTable.dataSource = self
+        actionTable.delegate = self
+        actionTable.target = self
+        actionTable.action = #selector(actionRowActivated)
+        actionTable.doubleAction = #selector(actionRowActivated)
+        actionTable.setAccessibilityIdentifier("muxterm.panel.actionList")
+
+        actionScroll.translatesAutoresizingMaskIntoConstraints = false
+        actionScroll.documentView = actionTable
+        actionScroll.hasVerticalScroller = true
+        actionScroll.hasHorizontalScroller = false
+        actionScroll.autohidesScrollers = true
+        actionScroll.drawsBackground = false
+        actionScroll.borderType = .noBorder
+        actionPopover.addSubview(actionScroll)
+
+        let width = actionPopover.widthAnchor.constraint(
+            equalToConstant: QuickActionPopoverLayout.width
+        )
+        let height = actionPopover.heightAnchor.constraint(
+            equalToConstant: QuickActionPopoverLayout.chromeHeight + QuickActionPopoverLayout.rowHeight
+        )
+        actionPopoverWidthConstraint = width
+        actionPopoverHeightConstraint = height
+        NSLayoutConstraint.activate([
+            actionPopover.trailingAnchor.constraint(
+                equalTo: root.trailingAnchor,
+                constant: -QuickActionPopoverLayout.margin
+            ),
+            actionPopover.bottomAnchor.constraint(
+                equalTo: root.bottomAnchor,
+                constant: -QuickActionPopoverLayout.margin
+            ),
+            width,
+            height,
+            actionTitleLabel.leadingAnchor.constraint(equalTo: actionPopover.leadingAnchor, constant: 12),
+            actionTitleLabel.trailingAnchor.constraint(equalTo: actionPopover.trailingAnchor, constant: -12),
+            actionTitleLabel.topAnchor.constraint(equalTo: actionPopover.topAnchor, constant: 10),
+            actionSearch.leadingAnchor.constraint(equalTo: actionPopover.leadingAnchor, constant: 8),
+            actionSearch.trailingAnchor.constraint(equalTo: actionPopover.trailingAnchor, constant: -8),
+            actionSearch.bottomAnchor.constraint(equalTo: actionPopover.bottomAnchor, constant: -8),
+            actionSearch.heightAnchor.constraint(equalToConstant: 24),
+            actionScroll.leadingAnchor.constraint(equalTo: actionPopover.leadingAnchor, constant: 4),
+            actionScroll.trailingAnchor.constraint(equalTo: actionPopover.trailingAnchor, constant: -4),
+            actionScroll.topAnchor.constraint(equalTo: actionTitleLabel.bottomAnchor, constant: 6),
+            actionScroll.bottomAnchor.constraint(equalTo: actionSearch.topAnchor, constant: -6),
+        ])
     }
 
     fileprivate func actionLabels() -> QuickPanelActionLabels {
@@ -2210,46 +2350,27 @@ private final class PanelAccessibilityAliasButton: NSButton {
     }
 }
 
-/// Cmd-K 动作行：标题与工作区行对齐，说明放在第二行。
-private final class QuickCommandCellView: NSTableCellView {
+/// Cmd-K 小菜单里的一行。28pt，只放动作名。
+private final class QuickActionPopoverCell: NSTableCellView {
     private let titleLabel = NSTextField(labelWithString: "")
-    private let detailLabel = NSTextField(labelWithString: "")
 
     var title: String {
         get { titleLabel.stringValue }
         set { titleLabel.stringValue = newValue }
     }
 
-    var detail: String {
-        get { detailLabel.stringValue }
-        set {
-            detailLabel.stringValue = newValue
-            detailLabel.isHidden = newValue.isEmpty
-        }
-    }
-
     init(identifier: NSUserInterfaceItemIdentifier) {
         super.init(frame: .zero)
         self.identifier = identifier
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        titleLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+        titleLabel.font = NSFont.systemFont(ofSize: 13)
         titleLabel.lineBreakMode = .byTruncatingTail
-        detailLabel.translatesAutoresizingMaskIntoConstraints = false
-        detailLabel.font = NSFont.systemFont(ofSize: 11)
-        detailLabel.textColor = .secondaryLabelColor
-        detailLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.maximumNumberOfLines = 1
         addSubview(titleLabel)
-        addSubview(detailLabel)
         NSLayoutConstraint.activate([
-            titleLabel.leadingAnchor.constraint(
-                equalTo: leadingAnchor,
-                constant: QuickRowMetrics.titleLeading
-            ),
-            titleLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
-            titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 6),
-            detailLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
-            detailLabel.trailingAnchor.constraint(equalTo: titleLabel.trailingAnchor),
-            detailLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 1),
+            titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            titleLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
     }
 

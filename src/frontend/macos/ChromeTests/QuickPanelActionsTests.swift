@@ -140,4 +140,37 @@ final class QuickPanelActionsTests: XCTestCase {
         XCTAssertEqual(session.visibleCommands.map(\.id), ["palette.language"])
         XCTAssertEqual(session.escape(), .leave(savedQuery: "ryzen"))
     }
+
+    func testActionPopoverSitsAtTheBottomRight() {
+        let bounds = CGRect(x: 0, y: 0, width: 640, height: 420)
+        let frame = QuickActionPopoverLayout.frame(in: bounds, rowCount: 4)
+        XCTAssertEqual(frame.width, 300, accuracy: 0.1)
+        XCTAssertEqual(frame.maxX, bounds.maxX - QuickActionPopoverLayout.margin, accuracy: 0.1)
+        XCTAssertEqual(frame.minY, bounds.minY + QuickActionPopoverLayout.margin, accuracy: 0.1)
+        XCTAssertLessThan(frame.width, bounds.width / 2)
+        XCTAssertLessThan(frame.height, bounds.height / 2)
+    }
+
+    /// yaklang 里 grok 白屏：字符宽先按 2x 对齐成 11.5，再按 scale 1 round 成 12。
+    /// 1020pt 上就是 88 列和 85 列。两套列数来回 resize，整帧被丢掉，TUI 停在白底。
+    func testPixelRoundingAtUnitScaleInventsThreeColumns() {
+        let snapped = TerminalCellGrid.snapped(rawWidth: 11.2, rawHeight: 21, scale: 2)
+        XCTAssertEqual(snapped.width, 11.5, accuracy: 0.01)
+        let shrunk = TerminalCellGrid.pixelRoundedWidth(snappedWidth: snapped.width, scale: 1)
+        XCTAssertEqual(shrunk, 12, accuracy: 0.01)
+        let width: CGFloat = 1020
+        let live = TerminalCellGrid.columns(width: width, cellWidth: snapped.width)
+        let rounded = TerminalCellGrid.columns(width: width, cellWidth: shrunk)
+        XCTAssertEqual(live, 88)
+        XCTAssertEqual(rounded, 85)
+    }
+
+    func testFittingCountDoesNotPaintPastTheView() {
+        let cell: CGFloat = 11.5
+        let width: CGFloat = 1020
+        let cols = TerminalCellGrid.fittingCount(length: width, cell: cell)
+        XCTAssertEqual(cols, 88)
+        XCTAssertLessThanOrEqual(CGFloat(cols) * cell, width + 0.01)
+        XCTAssertGreaterThan(CGFloat(cols + 1) * cell, width)
+    }
 }

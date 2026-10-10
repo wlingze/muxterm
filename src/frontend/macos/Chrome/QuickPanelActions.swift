@@ -1,10 +1,10 @@
 import Foundation
 
-/// 快速面板里的临时动作列表，交互对齐用户要求的 Cmd-K 快速命令。
+/// 快速面板里的临时动作列表，交互对齐 Raycast 的 Cmd-K。
 ///
-/// 这不是第四个 `PanelTab`。面板仍是工作区 / 提醒 / 搜索；Cmd-K 只在
-/// 同一次打开里换成「当前行的动作 + 已有命令」。Esc 先退出嵌套列表，
-/// 再把进入前的查询交还给原来的 tab。
+/// 这不是第四个 `PanelTab`，也不替换工作区 / 提醒 / 搜索列表。Cmd-K 在
+/// 面板右下角叠一个小动作菜单。Esc 先退出嵌套列表，再关掉菜单，原来的
+/// 查询和 tab 保持不动。
 public struct QuickPanelCommand: Equatable, Sendable {
     public let id: String
     public let title: String
@@ -298,5 +298,68 @@ public struct QuickPanelActionSession: Equatable, Sendable {
             return .stay
         }
         return .leave(savedQuery: savedQuery)
+    }
+}
+
+/// Cmd-K 动作菜单贴在快速面板右下角，盖住列表的一角，不占满面板。
+///
+/// AppKit 原点在左下，所以「右下」是 `maxX` 附近、`minY` 附近。
+public enum QuickActionPopoverLayout {
+    public static let width: CGFloat = 300
+    public static let maxVisibleRows = 7
+    public static let rowHeight: CGFloat = 28
+    /// 标题、搜索框和内边距，不含动作行。
+    public static let chromeHeight: CGFloat = 76
+    public static let margin: CGFloat = 8
+
+    public static func size(rowCount: Int) -> CGSize {
+        let rows = min(max(rowCount, 1), maxVisibleRows)
+        return CGSize(width: width, height: chromeHeight + CGFloat(rows) * rowHeight)
+    }
+
+    public static func frame(in bounds: CGRect, rowCount: Int) -> CGRect {
+        let fitted = size(rowCount: rowCount)
+        let width = min(fitted.width, max(160, bounds.width - margin * 2))
+        let height = min(fitted.height, max(chromeHeight, bounds.height - margin * 2))
+        return CGRect(
+            x: bounds.maxX - margin - width,
+            y: bounds.minY + margin,
+            width: width,
+            height: height
+        )
+    }
+}
+
+/// SwiftTerm `processSizeChange` 用 `ceil(raw * scale) / scale` 当字符宽。
+/// 再 `round(cell * scale) / scale` 会把格子变窄，同一块像素会多出几列。
+/// Herdr 上这两套列数会来回 resize，TUI 被清成默认背景后停在白屏。
+public enum TerminalCellGrid {
+    public static func snapped(rawWidth: CGFloat, rawHeight: CGFloat, scale: CGFloat) -> (width: CGFloat, height: CGFloat) {
+        let scale = max(scale, 1)
+        return (
+            width: max(ceil(rawWidth * scale) / scale, 1),
+            height: max(ceil(rawHeight * scale) / scale, 1)
+        )
+    }
+
+    /// 错误的二次取整。测试用它证明会比 `snapped` 多出列。
+    public static func pixelRoundedWidth(snappedWidth: CGFloat, scale: CGFloat) -> CGFloat {
+        let scale = max(scale, 1)
+        return max(CGFloat(Int((snappedWidth * scale).rounded())) / scale, 1)
+    }
+
+    public static func columns(width: CGFloat, cellWidth: CGFloat) -> Int {
+        guard width > 0, cellWidth > 0 else { return 0 }
+        return Int(width / cellWidth)
+    }
+
+    /// 列数乘字符宽不得超过可用长度。浮点误差多出的一列会把最右侧字形裁掉。
+    public static func fittingCount(length: CGFloat, cell: CGFloat) -> Int {
+        guard length > 0, cell > 0 else { return 0 }
+        var count = Int(length / cell)
+        while count > 0, CGFloat(count) * cell > length + 0.01 {
+            count -= 1
+        }
+        return count
     }
 }

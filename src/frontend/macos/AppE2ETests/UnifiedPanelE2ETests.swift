@@ -183,6 +183,36 @@ final class UnifiedPanelE2ETests: XCTestCase {
         XCTAssertEqual(names.map { panel.testWorkspaceShortcutText(matching: $0) }, ["1", "2", "3", "4"])
     }
 
+    func testQuickActionsStayInABottomRightPopover() throws {
+        AppE2E.ensureApp()
+        let workspaces = [
+            WorkspaceSidebarItem(
+                workspaceId: "yaklang", name: "yaklang-workspace", runtime: "herdr",
+                transport: "ryzen", isActive: true, shortcut: 1
+            ),
+        ]
+        let panel = UnifiedPanelController(
+            store: QuickConnectStore(), ownerWindow: nil, snapshot: { nil },
+            sendInput: { _, _ in }, search: { _ in }, sidebarWorkspaces: { workspaces }
+        )
+        defer { panel.dismiss() }
+        panel.present()
+        panel.testSetQuery("yak")
+        let titles = panel.testWorkspaceTitles()
+        XCTAssertTrue(titles.contains("yaklang-workspace"))
+        panel.testEnterQuickActions()
+        XCTAssertEqual(panel.testWorkspaceTitles(), titles)
+        XCTAssertEqual(panel.testMainQuery(), "yak")
+        XCTAssertTrue(panel.testIsQuickActionMode())
+        let frame = try XCTUnwrap(panel.testQuickActionPopoverFrame())
+        let width = panel.testContentSize().width
+        XCTAssertLessThan(frame.width, 360)
+        XCTAssertGreaterThan(frame.width, 160)
+        XCTAssertGreaterThan(frame.maxX, width - 24)
+        XCTAssertLessThan(frame.minY, 24)
+        XCTAssertLessThan(frame.width, width / 2)
+    }
+
     func testAggregateRowsActivateTheSameSidebarDestinations() throws {
         AppE2E.ensureApp()
         let bridge = try CoreBridge(backendType: "local")
