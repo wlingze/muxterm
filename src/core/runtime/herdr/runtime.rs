@@ -3318,6 +3318,37 @@ impl HerdrRuntime {
         }
     }
 
+    /// 编辑键交给 `pane.send_keys`，其余字节仍走 control `Input`。
+    ///
+    /// Herdr VT 会跟 shell 协商 kitty / modifyOtherKeys。控制流把 `0x05`
+    /// 原样写进 PTY 时，shell 把它回显成 `^E`，行编辑不认。tmux 没有这层
+    /// 协商，`send-keys -H` 的同一个字节就能用。这里只翻译纯控制字节
+    /// （Ctrl-A/E/P/N、Tab、Enter、Esc、Backspace），粘贴和 CSI 保持原样。
+    fn protocol_keys(data: &[u8]) -> Option<Vec<String>> {
+        if data.is_empty() || data.len() > 32 {
+            return None;
+        }
+        let mut keys = Vec::with_capacity(data.len());
+        for &byte in data {
+            keys.push(Self::protocol_key_byte(byte)?);
+        }
+        Some(keys)
+    }
+
+    fn protocol_key_byte(byte: u8) -> Option<String> {
+        match byte {
+            0x09 => Some("tab".into()),
+            0x0d => Some("enter".into()),
+            0x08 | 0x7f => Some("backspace".into()),
+            0x1b => Some("esc".into()),
+            0x01..=0x1a => {
+                let letter = (b'a' + byte - 1) as char;
+                Some(format!("ctrl+{letter}"))
+            }
+            _ => None,
+        }
+    }
+
     /// 把 KeyEvent 映射成 herdr key-combo 字符串。
     fn key_to_herdr(key: &KeyEvent) -> String {
         match key {
@@ -3974,10 +4005,16 @@ impl Runtime for HerdrRuntime {
                 Ok(TaskOutcome::Done)
             }
             Task::WriteRaw { target, data } => {
-                if self.herdr_pane(*target).is_none() {
+                let Some(herdr_pane) = self.herdr_pane(*target).map(str::to_owned) else {
                     return Ok(TaskOutcome::Rejected {
                         reason: format!("pane {target} 不存在"),
                     });
+                };
+                if let Some(keys) = Self::protocol_keys(data) {
+                    self.session
+                        .pane_send_keys(&herdr_pane, &keys)
+                        .map_err(|e| anyhow!("pane.send_keys 失败: {e}"))?;
+                    return Ok(TaskOutcome::Done);
                 }
                 self.send_control_input(*target, data)
                     .map_err(|e| anyhow!("terminal control input 失败: {e}"))?;
@@ -4579,6 +4616,34 @@ mod tests {
         WorkspaceRecord,
     };
     use crate::runtime::herdr::wire::{read_message, ClientMessage, MAX_FRAME_SIZE};
+
+    #[test]
+    fn protocol_keys_translate_readline_controls_and_leave_pastes_raw() {
+        assert_eq!(
+            HerdrRuntime::protocol_keys(&[0x05, 0x10, 0x0e, 0x01, 0x05]),
+            Some(vec![
+                "ctrl+e".into(),
+                "ctrl+p".into(),
+                "ctrl+n".into(),
+                "ctrl+a".into(),
+                "ctrl+e".into(),
+            ])
+        );
+        assert_eq!(
+            HerdrRuntime::protocol_keys(&[0x03, 0x09, 0x0d, 0x1b, 0x7f]),
+            Some(vec![
+                "ctrl+c".into(),
+                "tab".into(),
+                "enter".into(),
+                "esc".into(),
+                "backspace".into(),
+            ])
+        );
+        assert!(HerdrRuntime::protocol_keys(b"ls\n").is_none());
+        assert!(HerdrRuntime::protocol_keys(b"\x1b[A").is_none());
+        assert!(HerdrRuntime::protocol_keys(b"\x1b[<0;1;1M").is_none());
+        assert!(HerdrRuntime::protocol_keys(&[]).is_none());
+    }
 
     #[test]
     fn surface_blit_restores_autowrap_after_the_rendered_frame() {

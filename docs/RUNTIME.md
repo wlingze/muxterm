@@ -322,8 +322,10 @@ Live 路径不因 Runtime 而改：
 - Herdr `pane.read` 只生成 Index 快照，永不 feed Surface
 - gap 后 live 必须先 fenced；只有权威 `PaneSnapshot` / full `PaneFrame` 后才能恢复
 
-输入：tmux `send-keys`（字节通道用 `-H`）；Herdr 原样写字节走 `pane.send_text`，语义按键走
-`pane.send_keys`。禁止逐键 `pane.send_input`（会自动加 bracketed-paste）。
+输入：tmux `send-keys`（字节通道用 `-H`）。Herdr 的普通文本和 CSI 仍写 control
+`Input`（不要逐键 `pane.send_input`，那会自动加 bracketed-paste）。Ctrl / Tab /
+Enter / Esc / Backspace 走 `pane.send_keys`，由 Herdr 按 pane 当前键盘协议编码；
+原样写入 `0x05` 会被协商过 kitty / modifyOtherKeys 的 shell 回显成 `^E`。
 
 Herdr 同一终端同时只有一个 controller 的约束是 **adapter 内部**的 wire 事实，不是 frontend
 的「前台校准」或 `set_foreground` 产品 API。frontend 不再维护 foreground/background slot。
