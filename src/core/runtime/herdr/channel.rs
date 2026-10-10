@@ -73,6 +73,11 @@ impl ChannelIo {
         self.read_timeout = None;
     }
 
+    /// 事件流合并 snapshot 时短等下一行。`None` 恢复无期限阻塞。
+    pub fn set_read_timeout(&mut self, timeout: Option<Duration>) {
+        self.read_timeout = timeout;
+    }
+
     pub fn channel(&self) -> SharedChannel {
         Arc::clone(&self.channel)
     }
