@@ -30,7 +30,13 @@ final class HerdrZoomE2ETests: XCTestCase {
         AppE2E.pump(200)
 
         XCTAssertTrue(app.waitReady(minLeaves: 2), "Herdr split must paint both panes")
-        XCTAssertTrue(app.waitTerminalContains(fixture.token), "painted Herdr pane must not be blank")
+        // attach 会改格子。CI 上这次 resize 把开窗前打印的 token 卷进 scrollback，
+        // 可见区只剩主机名提示符。布局稳定后再打一次，断言的才是当前屏幕。
+        try fixture.paintToken()
+        XCTAssertTrue(
+            app.waitTerminalContains(fixture.token, timeout: AppE2E.featureTimeout),
+            "painted Herdr pane must show the token after layout; text=\(app.testAllVisibleTerminalText().prefix(180))"
+        )
         let herdrSidebarID = try XCTUnwrap(
             app.testWorkspaceIDs().first(where: { $0.contains(fixture.name) })
         )
@@ -192,7 +198,7 @@ private final class NamedHerdrZoomFixture {
                 throw NSError(domain: "HerdrZoomFixture", code: 3,
                               userInfo: [NSLocalizedDescriptionKey: "named Herdr pane shell did not start"])
             }
-            _ = try cli(["pane", "run", paneID, "printf", "%s\\n", token])
+            try paintToken()
             guard AppE2E.wait(timeout: 8, { [self] in
                 guard let data = try? cli(["pane", "read", paneID, "--source", "recent", "--format", "text"]),
                       let screen = String(data: data, encoding: .utf8) else { return false }
@@ -205,6 +211,10 @@ private final class NamedHerdrZoomFixture {
             stop()
             throw error
         }
+    }
+
+    func paintToken() throws {
+        _ = try cli(["pane", "run", paneID, "printf", "%s\\n", token])
     }
 
     var isZoomed: Bool {
