@@ -254,7 +254,8 @@ fn switch_tab_and_assert(
                 .test_layout_leaf_ids()
                 .contains(&target.product_pane)
     })?;
-    assert_three_party_focus(app, authority, target, label)
+    // GTK 先切 tab。SSH 上 tab.focus 还在 worker 里时 snapshot 仍是旧 tab。
+    wait_for_server_focus(app, authority, target, label)
 }
 
 fn focus_pane_with_actions(
@@ -270,7 +271,7 @@ fn focus_pane_with_actions(
             let wire = pane_map
                 .get(&target)
                 .context("target product pane 缺 wire id")?;
-            return assert_three_party_focus(
+            return wait_for_server_focus(
                 app,
                 authority,
                 FocusTarget {
@@ -291,7 +292,8 @@ fn focus_pane_with_actions(
         let wire = pane_map
             .get(&current)
             .with_context(|| format!("SwitchPaneNext 到未知产品 pane {current}"))?;
-        assert_three_party_focus(
+        // pane.focus 是异步的。本地焦点变了不代表服务端 snapshot 已经跟上。
+        wait_for_server_focus(
             app,
             authority,
             FocusTarget {
@@ -304,6 +306,30 @@ fn focus_pane_with_actions(
         )?;
     }
     anyhow::bail!("无法通过生产 SwitchPaneNext 聚焦 pane {target}")
+}
+
+fn wait_for_server_focus(
+    app: &AppWindow,
+    authority: Authority<'_>,
+    target: FocusTarget<'_>,
+    label: &str,
+) -> Result<()> {
+    let deadline = Instant::now() + TIMEOUT;
+    while Instant::now() < deadline {
+        tick(app);
+        let gtk_ok = app.test_active_tab_id() == target.product_tab
+            && app.test_active_pane_id() == target.product_pane
+            && app.test_layout_leaf_ids().contains(&target.product_pane);
+        if !gtk_ok {
+            break;
+        }
+        let server_ok = server_focus(authority.session, authority.workspace_id)
+            .is_ok_and(|(tab, pane)| tab == target.wire_tab && pane == target.wire_pane);
+        if server_ok {
+            return assert_three_party_focus(app, authority, target, label);
+        }
+    }
+    assert_three_party_focus(app, authority, target, label)
 }
 
 fn run_case(sshd: &LoopbackSshd, transport: &str) -> Result<()> {
