@@ -34,15 +34,30 @@ final class HerdrZoomE2ETests: XCTestCase {
         let herdrSidebarID = try XCTUnwrap(
             app.testWorkspaceIDs().first(where: { $0.contains(fixture.name) })
         )
+        // 分屏后焦点可能停在没有 token 的那一格。Cmd-Enter 只放大当前 pane，
+        // 放大错格会把画着 token 的格子藏起来。面板开着时 Cmd-Enter 也不会缩放。
+        app.searchPanel.dismiss()
+        let paintedPane = app.testLayoutLeafIDs().first {
+            app.testPaneTerminalText($0).contains(fixture.token)
+        }
+        XCTAssertNotNil(paintedPane, "token must be on a visible Herdr pane before zoom")
+        if let paintedPane {
+            app.testSwitchPane(paintedPane)
+            app.testMakeActiveTerminalFirstResponder()
+        }
         let key = try XCTUnwrap(app.testMakeCmdEnterEvent())
         XCTAssertTrue(app.testDispatchKeyEvent(key))
-        XCTAssertTrue(AppE2E.wait(timeout: AppE2E.attachTimeout) {
+        let zoomed = AppE2E.wait(timeout: AppE2E.featureTimeout) {
             app.testPollOnce()
             app.testFlushFeeds()
             return fixture.isZoomed
                 && app.testLayoutLeafIDs().count == 1
                 && app.testAllVisibleTerminalText().contains(fixture.token)
-        }, "Cmd-Enter must zoom the server and retain the painted SwiftTerm surface")
+        }
+        XCTAssertTrue(zoomed, "Cmd-Enter must zoom the server and retain the painted SwiftTerm surface; "
+            + "serverZoomed=\(fixture.isZoomed) leaves=\(app.testLayoutLeafIDs()) "
+            + "active=\(app.testActivePaneID()) text=\(app.testAllVisibleTerminalText().prefix(180))")
+        guard zoomed else { return }
 
         XCTAssertTrue(app.testDispatchKeyEvent(key))
         XCTAssertTrue(AppE2E.wait(timeout: AppE2E.attachTimeout) {
