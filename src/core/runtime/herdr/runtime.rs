@@ -1837,20 +1837,43 @@ impl HerdrRuntime {
         (DEFAULT_HERDR_COLS, DEFAULT_HERDR_ROWS)
     }
 
+    /// 窗口级 Hello 尺寸。
+    ///
+    /// 还没量过的 pane 用 preferred 做 Observe Hello。分屏子 pane 更矮；
+    /// 若每次 ResizePane 都覆盖 preferred，下一个 pane 会锁在 12 行。
+    /// 只有整窗变大，或这次尺寸来自当前 preferred 对应的那格（窗口在缩），
+    /// 才更新。
+    fn record_preferred_from_pane(&mut self, previous: Option<(u16, u16)>, next: (u16, u16)) {
+        match self.preferred_client_size {
+            None => self.preferred_client_size = Some(next),
+            Some(current) if next.0 >= current.0 && next.1 >= current.1 => {
+                self.preferred_client_size = Some(next);
+            }
+            Some(current) if previous == Some(current) || self.pane_client_sizes.len() <= 1 => {
+                self.preferred_client_size = Some(next);
+            }
+            Some(_) => {}
+        }
+    }
+
     /// resize 发给 current control（PTY）与 Observe（client viewport）。
     /// Starting/Backoff 期间 latest-wins 暂存。
     /// 首次写入 preferred 后 reconcile，把 deferred Observe 升到 Control。
     fn resize_control_stream(&mut self, pane: PaneId, cols: u16, rows: u16) -> Result<()> {
         let first_preferred = self.preferred_client_size.is_none();
         let (cols, rows) = normalize_pane_size(cols, rows, None);
-        self.preferred_client_size = Some((cols, rows));
         let previous_size = self.pane_client_sizes.insert(pane, (cols, rows));
+        // 窗口格子给还没量过的新 pane 当 Hello。分屏子 pane 更矮，不能
+        // 把 preferred 盖成 12 行，否则下一个 pane 的 Observe 也锁在半截。
+        self.record_preferred_from_pane(previous_size, (cols, rows));
         let first_allocation = previous_size.is_none();
         // 视图格子变了之后 SwiftTerm 会 reflow，旧画面经常变成白屏。
         // 下一帧即使字节相同也必须再画一次，不能被指纹去重吃掉。
         if previous_size.is_some_and(|old| old != (cols, rows)) {
             if let Some(slot) = self.stream_slots.get_mut(&pane) {
                 slot.last_full_fingerprint = None;
+                slot.stale_repaint_count = 0;
+                slot.stale_repaint_size = None;
             }
         }
         let Some(slot) = self.stream_slots.get_mut(&pane) else {
@@ -1958,6 +1981,12 @@ impl HerdrRuntime {
                     if let Some(allocation) = self.pane_client_sizes.get(&pane).copied() {
                         let frame_size = normalize_pane_size(width, height, Some(allocation));
                         if frame_size != allocation {
+                            // 80×24 / 高度 24 的 Hello 不能把已布局的 pane 缩回去。
+                            // 真正的 TUI 帧只是慢了一拍：再要一次当前格子，否则
+                            // SwiftTerm 已经按新格子清成背景，匹配帧再也画不上。
+                            if full && !is_placeholder_client_frame(frame_size, allocation) {
+                                note_stale_full_frame(slot, allocation);
+                            }
                             tracing::debug!(
                                 target = "muxterm::herdr",
                                 pane = %pane,
@@ -1969,6 +1998,10 @@ impl HerdrRuntime {
                                 "drop stale Herdr frame after pane allocation"
                             );
                             continue;
+                        }
+                        if full {
+                            slot.stale_repaint_count = 0;
+                            slot.stale_repaint_size = None;
                         }
                     }
                     let synthetic_observe_frame = slot.stream.is_none()
@@ -2531,6 +2564,16 @@ impl HerdrRuntime {
                 }
                 EventStreamEvent::Layout(layout) => {
                     self.apply_layout_record(&layout, true);
+                }
+                EventStreamEvent::RefreshFailed(message) => {
+                    // 订阅还活着。一次 session.snapshot 超时不能拆流，
+                    // 否则 grok 启动那一波失败会把 poll 拖进重启。
+                    tracing::warn!(
+                        target = "muxterm::herdr",
+                        workspace = %self.workspace_id,
+                        error = %message,
+                        "Herdr snapshot 刷新失败，保留 event 订阅"
+                    );
                 }
                 EventStreamEvent::Closed => {
                     tracing::info!(
@@ -3421,6 +3464,31 @@ fn numeric_suffix(id: &str) -> u32 {
         .unwrap_or(0)
 }
 
+/// Hello 默认 80×24，或分配已经高于 24 行时仍送来的 24 行帧。
+/// 这些帧不能触发 repaint，否则会把已经布局好的 pane 再缩回去。
+fn is_placeholder_client_frame(frame: (u16, u16), allocation: (u16, u16)) -> bool {
+    frame == (DEFAULT_HERDR_COLS, DEFAULT_HERDR_ROWS)
+        || (frame.1 == DEFAULT_HERDR_ROWS && allocation.1 > DEFAULT_HERDR_ROWS)
+}
+
+/// 丢掉的真实 full frame 再向当前 allocation 要一次画面，同一格子最多两次。
+fn note_stale_full_frame(slot: &mut PaneStreamSlot, allocation: (u16, u16)) {
+    const MAX_REPAINTS: u8 = 2;
+    if slot.stale_repaint_size != Some(allocation) {
+        slot.stale_repaint_size = Some(allocation);
+        slot.stale_repaint_count = 0;
+    }
+    if slot.stale_repaint_count >= MAX_REPAINTS {
+        return;
+    }
+    slot.stale_repaint_count = slot.stale_repaint_count.saturating_add(1);
+    if let Some(stream) = slot.stream.as_mut() {
+        let _ = stream.resize(allocation.0, allocation.1);
+    } else {
+        slot.pending_resize = Some(allocation);
+    }
+}
+
 /// 把 Herdr 的零尺寸 wire sentinel 收敛成通用 Runtime 可用的终端尺寸。
 fn normalize_pane_size(width: u16, height: u16, previous: Option<(u16, u16)>) -> (u16, u16) {
     let previous = previous.unwrap_or((DEFAULT_HERDR_COLS, DEFAULT_HERDR_ROWS));
@@ -3941,7 +4009,6 @@ impl Runtime for HerdrRuntime {
                 match self.resize_control_stream(*target, cols, rows) {
                     Ok(()) => {}
                     Err(_) if !self.stream_slots.contains_key(target) => {
-                        self.preferred_client_size = Some((cols, rows));
                         if first_preferred {
                             self.reconcile_stream_modes();
                         }
@@ -3974,7 +4041,7 @@ impl Runtime for HerdrRuntime {
             }
             Task::ResizeClient { cols, rows } => {
                 // 前端 attach 时把窗口格子先写成 preferred，Hello 才不会用 80×24。
-                // 分屏的精确格子仍由后续 ResizePane 覆盖。
+                // 分屏子 pane 的 ResizePane 只记自己的格子，不能把 preferred 缩成半截。
                 let first = self.preferred_client_size.is_none();
                 let (cols, rows) = normalize_pane_size(*cols, *rows, self.preferred_client_size);
                 self.preferred_client_size = Some((cols, rows));
@@ -5970,7 +6037,111 @@ mod tests {
                     .count(),
                 if wire_seq == 1 { 0 } else { 1 },
             );
+            if width == 80 {
+                assert_eq!(
+                    runtime
+                        .stream_slots
+                        .get(&pane)
+                        .and_then(|slot| slot.pending_resize),
+                    None,
+                    "80x24 placeholder must not schedule another resize"
+                );
+                assert_eq!(
+                    runtime
+                        .stream_slots
+                        .get(&pane)
+                        .map(|slot| slot.stale_repaint_count),
+                    Some(0)
+                );
+            }
         }
+    }
+
+    #[test]
+    fn stale_live_frame_requests_allocated_repaint_without_painting() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w4",
+        );
+        runtime.status = BackendStatus::Connected;
+        runtime.preferred_client_size = Some((88, 50));
+        let pane = PaneId(34);
+        runtime.panes.push(PaneInfo {
+            id: pane,
+            tab: TabId(1),
+            active: true,
+            title: "grok".into(),
+            cols: 88,
+            rows: 50,
+        });
+        runtime.pane_client_sizes.insert(pane, (88, 50));
+        let (tx, rx) = std::sync::mpsc::channel();
+        runtime.stream_tx = Some(tx);
+        runtime.stream_rx = Some(rx);
+        let mut slot = PaneStreamSlot::new(pane, "w4:p12", StreamMode::Control);
+        slot.generation = 2;
+        slot.state = SlotState::Live;
+        slot.actual_mode = Some(StreamMode::Control);
+        slot.surface_baseline = SurfaceBaseline::Ready;
+        runtime.stream_slots.insert(pane, slot);
+
+        for (event_ordinal, wire_seq) in [(1, 1), (2, 2), (3, 3)] {
+            runtime
+                .stream_tx
+                .as_ref()
+                .unwrap()
+                .send(PaneStreamEvent::Frame {
+                    pane,
+                    generation: 2,
+                    event_ordinal,
+                    wire_seq,
+                    bytes: b"GROK".to_vec(),
+                    width: 85,
+                    height: 50,
+                    full: true,
+                })
+                .unwrap();
+            runtime.drain_stream();
+            let slot = runtime.stream_slots.get(&pane).unwrap();
+            assert_eq!(slot.pending_resize, Some((88, 50)));
+            let expected_repaints = u8::try_from(event_ordinal).unwrap_or(2).min(2);
+            assert_eq!(slot.stale_repaint_count, expected_repaints);
+            assert!(
+                !queued_state_changes(&runtime).iter().any(|event| {
+                    matches!(event, StateChange::PaneFrame { pane: id, .. } if *id == pane)
+                }),
+                "a mismatched live frame must not paint"
+            );
+        }
+
+        runtime
+            .stream_tx
+            .as_ref()
+            .unwrap()
+            .send(PaneStreamEvent::Frame {
+                pane,
+                generation: 2,
+                event_ordinal: 4,
+                wire_seq: 4,
+                bytes: b"GROK-LIVE".to_vec(),
+                width: 88,
+                height: 50,
+                full: true,
+            })
+            .unwrap();
+        runtime.drain_stream();
+        assert_eq!(
+            queued_state_changes(&runtime)
+                .iter()
+                .filter(|event| {
+                    matches!(event, StateChange::PaneFrame { pane: id, .. } if *id == pane)
+                })
+                .count(),
+            1
+        );
+        let slot = runtime.stream_slots.get(&pane).unwrap();
+        assert_eq!(slot.stale_repaint_count, 0);
+        assert_eq!(slot.stale_repaint_size, None);
     }
 
     #[test]
@@ -6037,6 +6208,58 @@ mod tests {
                 .get(&pane)
                 .and_then(|s| s.pending_resize),
             Some((132, 41))
+        );
+    }
+
+    /// test-2026-1010-1103：分屏把新 pane 量成 88×12 后，下一个 Observe
+    /// 也从 12 行 Hello。矮格子只属于那一格，窗口 preferred 保持 88×50。
+    #[test]
+    fn smaller_split_pane_does_not_replace_window_preferred() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w4",
+        );
+        for (id, herdr) in [(PaneId(1), "w4:p1"), (PaneId(2), "w4:p2")] {
+            runtime.panes.push(PaneInfo {
+                id,
+                tab: TabId(1),
+                active: id == PaneId(1),
+                title: String::new(),
+                cols: 80,
+                rows: 24,
+            });
+            let mut slot = PaneStreamSlot::new(id, herdr, StreamMode::Observe);
+            slot.state = SlotState::Starting;
+            runtime.stream_slots.insert(id, slot);
+        }
+
+        runtime
+            .resize_control_stream(PaneId(1), 88, 50)
+            .expect("window pane resize");
+        assert_eq!(runtime.preferred_client_size, Some((88, 50)));
+
+        runtime
+            .resize_control_stream(PaneId(2), 88, 12)
+            .expect("split child resize");
+        assert_eq!(
+            runtime.preferred_client_size,
+            Some((88, 50)),
+            "12 行的分屏子 pane 不能变成下一个 Observe 的 Hello"
+        );
+        assert_eq!(runtime.hello_client_size(PaneId(2)), (88, 12));
+        assert_eq!(
+            runtime.hello_client_size(PaneId(3)),
+            (88, 50),
+            "还没量过的 pane 继续用窗口格子"
+        );
+
+        runtime
+            .resize_control_stream(PaneId(1), 80, 40)
+            .expect("window pane shrink");
+        assert_eq!(
+            runtime.preferred_client_size,
+            Some((80, 40)),
+            "窗口 pane 自己变小仍要更新 preferred"
         );
     }
 

@@ -139,6 +139,11 @@ pub struct PaneStreamSlot {
     pub awaiting_allocation: bool,
     /// 最近一次已经交给 Surface 的 full frame 指纹。相同帧不再重灌 VTE。
     pub last_full_fingerprint: Option<u64>,
+    /// 同一 allocation 上，因尺寸不合而丢掉的真实 full frame 已经重发了几次 resize。
+    /// 上限 2，避免格子来回跳时把 resize 打成环。
+    pub stale_repaint_count: u8,
+    /// `stale_repaint_count` 对应的 allocation。格子一变就重新计数。
+    pub stale_repaint_size: Option<(u16, u16)>,
     /// Herdr 把应用的 DECSET 吃掉后，用这条告诉客户端鼠标是否打开。
     /// 它经常早于第一帧到达；那时 Surface 还不能吃字节，必须留到 full 之后。
     pub pending_mouse: Option<(bool, bool)>,
@@ -179,6 +184,8 @@ impl PaneStreamSlot {
             pending_scroll_pointer: None,
             awaiting_allocation: false,
             last_full_fingerprint: None,
+            stale_repaint_count: 0,
+            stale_repaint_size: None,
             pending_mouse: None,
             mouse_dirty: false,
             transitions: Vec::new(),

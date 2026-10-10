@@ -109,6 +109,9 @@ named-session 契约验证。Herdr 自己的直连终端握手也要求 client/s
 - `terminal.frame` 解开的 ANSI 字节可以进入 Surface；`pane.read visible_ansi` 不能进入 Surface。
 - full frame 是当前 generation 的原始完整帧，不是永久历史；它不得触发
   `visible_ansi -> reset -> feed`。
+- 已经记下 UI allocation 之后，80×24 和「分配高于 24 行时仍送来的 24 行」整帧继续丢掉，
+  不能把格子缩回去。尺寸只差几列的真实整帧也不写入当前 Surface；同一 allocation 最多再向
+  流要两次当前格子的重绘。匹配帧到达后计数清零。
 - tab/workspace 切换只 show/hide 已存在的 PaneView，不销毁再播种。
 - 结构和字符格尺寸必须先收敛，Surface frame/output 后 feed。
 - Ctrl-L 清掉的画面不能被旧 snapshot、旧 generation 或 tab 切换恢复。
