@@ -3,8 +3,8 @@ import Foundation
 /// 快速面板里的临时动作列表，交互对齐 Raycast 的 Cmd-K。
 ///
 /// 这不是第四个 `PanelTab`，也不替换工作区 / 提醒 / 搜索列表。Cmd-K 在
-/// 面板右下角叠一个小动作菜单。Esc 先退出嵌套列表，再关掉菜单，原来的
-/// 查询和 tab 保持不动。
+/// 面板右下角叠一个小动作菜单，只放当前选中行的动作（打开、关闭、更新、attach、跳转等）。
+/// 不带命令面板的全局命令。Esc 先退出嵌套列表，再关掉菜单，原来的查询和 tab 保持不动。
 public struct QuickPanelCommand: Equatable, Sendable {
     public let id: String
     public let title: String

@@ -291,6 +291,20 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         return resolved
     }
 
+    private static func configValues(from bridge: CoreBridge) -> [String: Any] {
+        guard let text = bridge.configDescribeJSON(),
+              let data = text.data(using: .utf8),
+              let envelope = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let payload = envelope["data"] as? [String: Any],
+              let values = payload["values"] as? [String: Any]
+        else { return [:] }
+        return values
+    }
+
+    private func reloadCustomKeybindings() {
+        customKeybindings = KeyBindingsConfig.parse(values: Self.configValues(from: bridge))
+    }
+
     init(
         bridge: CoreBridge,
         debug: Bool = false,
@@ -300,6 +314,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         discovery.attachedRemoteSocket = bridge.sshAlias == nil ? nil : bridge.socket
         // 统一配置：初始值来自 Core 解析后的快照，不再手写解析 TOML 或读 UserDefaults。
         let resolved = Self.resolvedSettings(from: bridge)
+        customKeybindings = KeyBindingsConfig.parse(values: Self.configValues(from: bridge))
         let initialWorkspaces = bridge.workspaceList()
         let initialWorkspace = initialWorkspaces.first(where: \.active) ?? initialWorkspaces.first
         let initialWorkspaceID = initialWorkspace?.id
@@ -566,9 +581,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         unifiedPanel.onDismissed = { [weak self] in
             self?.restoreTerminalFocusIfAllowed()
-        }
-        unifiedPanel.commandProvider = { [weak self] in
-            self?.rootPaletteItems().compactMap { $0.quickPanelCommand() } ?? []
         }
         unifiedPanel.onQuickCommand = { [weak self] command in
             self?.handleQuickPanelCommand(command)
@@ -1369,6 +1381,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                         fontSize = CGFloat(truncating: value)
                         fontChanged = true
                     }
+                case "/shortcuts/preset", "/shortcuts/primary_key", "/shortcuts/overrides",
+                     "/keybindings":
+                    self.reloadCustomKeybindings()
                 default:
                     break
                 }
@@ -6460,8 +6475,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             }
             return true
         }
+        let configured = customKeybindings[chord] != nil
         guard let action = KeyBindings.action(for: chord, custom: customKeybindings),
-              KeyPassthroughPolicy.consumeInMacOSWindow(chord)
+              KeyPassthroughPolicy.consumeInMacOSWindow(chord, configured: configured)
         else {
             // Ctrl+C/D/L 等不是 Muxterm 的窗口快捷键时，窗口级 monitor 先
             // 把它们送成真实控制字节。这样不依赖 SwiftTerm 的 NSText

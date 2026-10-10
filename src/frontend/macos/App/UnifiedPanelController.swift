@@ -103,8 +103,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     /// 明确打开 Attention 条目时确认已读；仅切到列表或查看状态不触发。
     var onAcknowledge: ((String, UInt32) -> Void)? // (workspaceId, paneId)
     var onDismissed: (() -> Void)?
-    /// 命令面板里的同一批全局命令。行内动作由面板按当前行另算。
-    var commandProvider: (() -> [QuickPanelCommand])?
+    /// 行内动作之外的命令（目前只剩语言等二级列表）。全局命令不进 Cmd-K。
     var onQuickCommand: ((QuickPanelCommand) -> Void)?
     var currentConfig: TargetConfig?
     /// Core WorkspaceId 到持久 attach 频次的只读投影，由窗口拥有身份映射。
@@ -1847,12 +1846,11 @@ extension UnifiedPanelController {
         let captured = captureActionTarget()
         actionTarget = captured.target
         actionContextTitle = actionPopoverTitle(for: captured.context)
-        let commands = QuickPanelActions.merge(
-            contextual: QuickPanelActions.contextual(
-                for: captured.context,
-                labels: actionLabels()
-            ),
-            global: commandProvider?() ?? []
+        // 只留当前行：打开 / 关闭 / 更新 / attach 等。命令面板的全局动作
+        // 不进这里，那些仍走 Cmd-Shift-P。
+        let commands = QuickPanelActions.contextual(
+            for: captured.context,
+            labels: actionLabels()
         )
         actionSession = QuickPanelActionSession(savedQuery: model.query, commands: commands)
         actionSearch.stringValue = ""

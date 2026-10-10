@@ -1283,12 +1283,15 @@ public enum WheelPassthroughPolicy {
     }
 }
 
-/// macOS 窗口只消费我们 hook 的 Cmd/Ctrl 快捷键。
-/// Option 单修饰（Alt-S 等 TUI 兼容键）必须进 pane，否则 Herdr/vim/emacs
-/// 的 Meta 组合会被 Muxterm 吃掉。
+/// macOS 窗口消费已绑定的快捷键。没写进配置的 Option 单修饰
+///（含 Option+Shift）必须进 pane，否则 Herdr/vim/emacs 的 Meta 会被吃掉。
+/// 配置里明确的 Alt 键（例如 Alt+P）要消费，不能漏进终端变成 `^P`。
 public enum KeyPassthroughPolicy {
-    public static func consumeInMacOSWindow(_ chord: KeyChord) -> Bool {
-        if chord.option, !chord.command, !chord.control {
+    public static func consumeInMacOSWindow(
+        _ chord: KeyChord,
+        configured: Bool = false
+    ) -> Bool {
+        if chord.option, !chord.command, !chord.control, !configured {
             return false
         }
         return true
