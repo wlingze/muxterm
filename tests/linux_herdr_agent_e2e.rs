@@ -492,7 +492,7 @@ fn focus_pane(
                 .pane_map
                 .get(&target)
                 .context("目标产品 pane 缺 Herdr mapping")?;
-            return assert_focus(
+            return wait_for_server_focus(
                 app,
                 authority,
                 FocusTarget {
@@ -514,7 +514,9 @@ fn focus_pane(
             .pane_map
             .get(&current)
             .with_context(|| format!("SwitchPaneNext 到未知 pane {current}"))?;
-        assert_focus(
+        // GTK 焦点同步切走，pane.focus 走异步 worker。SSH 上立刻读 snapshot
+        // 还是上一格，要等服务端跟上再算这一步完成。
+        wait_for_server_focus(
             app,
             authority,
             FocusTarget {
@@ -527,6 +529,32 @@ fn focus_pane(
         )?;
     }
     anyhow::bail!("无法经 SwitchPaneNext 聚焦 pane {target}")
+}
+
+/// 本地焦点已经在目标 pane 上时，等 Herdr 的 pane.focus 落地。
+/// 不要重发 SwitchPaneNext：那会再往前走一格。
+fn wait_for_server_focus(
+    app: &AppWindow,
+    authority: Authority<'_>,
+    target: FocusTarget<'_>,
+    label: &str,
+) -> Result<()> {
+    let deadline = Instant::now() + HERDR_TIMEOUT;
+    while Instant::now() < deadline {
+        tick(app);
+        let gtk_ok = app.test_active_tab_id() == target.product_tab
+            && app.test_active_pane_id() == target.product_pane
+            && app.test_layout_leaf_ids().contains(&target.product_pane);
+        if !gtk_ok {
+            break;
+        }
+        let herdr_ok = server_workspace_focus(authority.session, authority.workspace_id)
+            .is_ok_and(|(tab, pane)| tab == target.wire_tab && pane == target.wire_pane);
+        if herdr_ok {
+            return assert_focus(app, authority, target, label);
+        }
+    }
+    assert_focus(app, authority, target, label)
 }
 
 fn build_scenario(
