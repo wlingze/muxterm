@@ -24,6 +24,8 @@ final class ContentView: NSView {
     let replyOverlayContainer = NSView()
     /// 更新提醒条：有新版本时给出「一键更新」按钮。
     let updateBanner = UpdateBannerView()
+    /// 图片粘贴反馈条：粘贴一按下就出现，上传中转圈，结果留一小会儿。
+    let imagePasteBanner = ImagePasteBannerView()
 
     private var topConstraints: [NSLayoutConstraint] = []
     private var bottomConstraints: [NSLayoutConstraint] = []
@@ -102,6 +104,8 @@ final class ContentView: NSView {
         addSubview(replyOverlayContainer)
         addSubview(updateBanner)
         updateBanner.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(imagePasteBanner)
+        imagePasteBanner.translatesAutoresizingMaskIntoConstraints = false
 
         let railWidth = commandMarkRail.widthAnchor.constraint(
             equalToConstant: CommandMarkRailLayout.collapsedWidth
@@ -139,6 +143,12 @@ final class ContentView: NSView {
             updateBanner.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
             updateBanner.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
             updateBanner.topAnchor.constraint(equalTo: topAnchor, constant: 6),
+            imagePasteBanner.centerXAnchor.constraint(equalTo: centerXAnchor),
+            imagePasteBanner.topAnchor.constraint(equalTo: paneLayout.topAnchor, constant: 10),
+            imagePasteBanner.widthAnchor.constraint(greaterThanOrEqualToConstant: 220),
+            imagePasteBanner.widthAnchor.constraint(lessThanOrEqualToConstant: 560),
+            imagePasteBanner.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 10),
+            imagePasteBanner.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -10),
         ])
 
         // 顶部：status | pane
@@ -217,6 +227,7 @@ final class ContentView: NSView {
 
     func refreshLocalization() {
         statusBar.refreshLocalization()
+        imagePasteBanner.refreshLocalization()
     }
 
     /// 连接进度页：stage 为 nil 时隐藏。页面只覆盖 PaneGrid，因此等待时

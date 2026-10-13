@@ -135,6 +135,10 @@ final class TerminalManager: TerminalInputHandler {
     /// 回调只在主线程触发；后台 slot 不创建/重建 AppKit view。
     var onSurfaceReadinessChanged: ((UInt32, Bool) -> Void)?
     var onError: ((String) -> Void)?
+    /// 图片粘贴开始编码。MainWindow 据此立刻显示反馈条，不必等 Core 上传开始。
+    var onImagePasteEncoding: (() -> Void)?
+    /// 图片粘贴在上传之前就失败（图片无效、已有粘贴在进行）。
+    var onImagePasteFailed: ((String) -> Void)?
     /// 测试可替换；生产默认通过 CoreBridge 发 runtime-neutral snapshot task。
     var onAuthoritativeSnapshotRequired: ((UInt32) -> Bool)?
     /// viewport 变化（滚轮 / 回底）：窗口用来显示跳转最新按钮。
@@ -534,7 +538,15 @@ final class TerminalManager: TerminalInputHandler {
                 failureMessage: MuxtermI18n.shared.tr(.imagePasteFailed)
             ))
         }
-        view.onImagePasteError = { [weak self] message in self?.onError?(message) }
+        view.onImagePasteError = { [weak self] message in
+            guard let self else { return }
+            if let onImagePasteFailed = self.onImagePasteFailed {
+                onImagePasteFailed(message)
+            } else {
+                self.onError?(message)
+            }
+        }
+        view.onImagePasteEncoding = { [weak self] in self?.onImagePasteEncoding?() }
         view.onLargePaste = { [weak self] payload in
             self?.beginLargePaste(paneID: paneId, payload: payload)
         }

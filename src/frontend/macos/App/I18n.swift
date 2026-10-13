@@ -4,6 +4,8 @@ import Foundation
 enum MuxtermTextKey: CaseIterable {
     case imagePasteFailed
     case imagePasteProgress
+    case imagePasteEncoding
+    case imagePasteDone
     case imagePasteBusy
     case imagePasteInvalid
     case textPasteBusy
@@ -276,6 +278,8 @@ enum MuxtermTextKey: CaseIterable {
         switch self {
         case .imagePasteFailed: return "image_paste_failed"
         case .imagePasteProgress: return "image_paste_progress"
+        case .imagePasteEncoding: return "image_paste_encoding"
+        case .imagePasteDone: return "image_paste_done"
         case .imagePasteBusy: return "image_paste_busy"
         case .imagePasteInvalid: return "image_paste_invalid"
         case .textPasteBusy: return "text_paste_busy"

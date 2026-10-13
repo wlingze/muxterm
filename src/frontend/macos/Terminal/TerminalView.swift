@@ -166,6 +166,8 @@ final class MuxTerminalView: TerminalView {
     weak var inputHandler: TerminalInputHandler?
     var onImagePaste: ((Data) -> Void)?
     var onImagePasteError: ((String) -> Void)?
+    /// 开始读剪贴板并转 PNG 时触发：上传前这段时间也要让用户看见反馈。
+    var onImagePasteEncoding: (() -> Void)?
     /// 超过单次控制命令的粘贴。调用方分批写回发起时的 pane，并显示进度。
     var onLargePaste: ((Data) -> Void)?
     private var encodingClipboardImage = false
@@ -605,6 +607,7 @@ final class MuxTerminalView: TerminalView {
                 return
             }
             encodingClipboardImage = true
+            onImagePasteEncoding?()
             // 先复制剪贴板和目标回调；异步编码期间切换 pane 不改变目的地。
             DispatchQueue.global(qos: .userInitiated).async { [weak self] in
                 let result = Result { try ClipboardImageCodec.png(from: data) }
