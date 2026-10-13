@@ -820,6 +820,36 @@ extension MainWindowController {
         pollOnce()
     }
 
+    // MARK: - 图片粘贴反馈条
+
+    /// 反馈条当前渲染的阶段。
+    func testImagePasteStage() -> ImagePasteStage { content.imagePasteBanner.renderedStage }
+
+    /// 反馈条是否可见；粘贴一按下用户就必须看到它。
+    func testImagePasteBannerVisible() -> Bool { !content.imagePasteBanner.isHidden }
+
+    /// 反馈条当前文案。
+    func testImagePasteBannerMessage() -> String { content.imagePasteBanner.testMessageText() }
+
+    /// 进度阶段是否在转圈。
+    func testImagePasteBannerSpinning() -> Bool { content.imagePasteBanner.testSpinnerAnimating() }
+
+    /// 关闭键是否可见：只有结果阶段才应该有。
+    func testImagePasteBannerDismissVisible() -> Bool { content.imagePasteBanner.testDismissVisible() }
+
+    /// 点真实关闭按钮，走生产回调链：按钮 → onDismiss → 时间线。
+    @discardableResult
+    func testClickImagePasteDismiss() -> Bool {
+        guard let button = Self.findView(
+            content.imagePasteBanner,
+            identifier: "muxterm.imagePasteBanner.dismiss"
+        ) as? NSButton, !button.isHidden else {
+            return false
+        }
+        button.performClick(nil)
+        return true
+    }
+
     // MARK: - 更新提醒条
 
     /// 提醒条是否可见：Core 说「有更新」时前端必须把它渲染出来。

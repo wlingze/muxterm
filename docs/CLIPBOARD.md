@@ -6,7 +6,28 @@ Linux 从截图工具、浏览器等复制**图片内容**后，在终端按 Ctr
 焦点在终端且剪贴板包含图片时，Ctrl+V 也走图片通路；其它 Ctrl+V 保持应用原有语义。
 
 macOS 从截图或浏览器复制图片后，按 Cmd+V 或使用粘贴菜单。支持 PNG/TIFF 剪贴板内容，
-后台转换成 PNG；上传期间状态栏显示蓝色上传图标，悬停可查看状态，失败显示错误。
+后台转换成 PNG。
+
+### 反馈
+
+粘贴到路径出现在 pane 里，中间要经过「转 PNG → 上传到目标机器 → 写入路径」。SSH
+目标的上传可能要几百毫秒到数十秒，这段时间终端里什么都不会出现，所以 macOS 在内容区
+顶部居中显示一条反馈条（`muxterm.imagePasteBanner`），从按下粘贴的那一刻就出现：
+
+| 阶段 | 横幅 | 停留 |
+| --- | --- | --- |
+| 转 PNG | 转圈 + 「正在处理剪贴板图片…」 | 直到上传开始 |
+| 上传 | 转圈 + 「正在上传剪贴板图片…」 | 直到完成或失败，不会自己消失 |
+| 完成 | 绿色 + 「图片已粘贴：<文件名>」，悬停看完整路径 | 2.5 秒，可手动关闭 |
+| 失败 | 红色 + 失败原因 | 10 秒，可手动关闭 |
+
+进度至少显示 0.4 秒，本地写盘几毫秒就完成时也能看见。失败原因同时保留在状态栏红点的
+tooltip 里。阶段和停留时间是纯逻辑（`ImagePasteTimeline`，MuxtermChrome），横幅只负责渲染。
+
+Core 在 `muxterm::clipboard` target 记录 `image paste upload started`（目标、pane、字节数）、
+`image paste finished`（耗时、路径）和 `image paste failed`（耗时、原因）。用户反馈
+「粘贴后没反应，过一会才出现」时，日志里的 `elapsed_ms` 就是这一段的真实耗时；上传成功
+但原 workspace 已被替换时，失败日志里仍带着文件路径，可以找回。
 
 文本粘贴不变。文件管理器复制文件路径/URI 不等于复制图片像素，本轮不做文件拖放。
 
@@ -29,7 +50,7 @@ SSH 目标来自 Core 打开的 workspace，不从终端内容、进程名或用
 
 ## Core / Transport / Frontend 分工
 
-- Frontend：异步读取系统剪贴板，PNG 编码，显示上传状态/错误；不构造 SSH 命令。
+- Frontend：异步读取系统剪贴板，PNG 编码，显示反馈条（编码/上传/完成/失败）；不构造 SSH 命令。
 - Core `clipboard`：检查格式/大小/尺寸、绑定原 workspace 实例和 pane、后台任务、
   bracketed paste 与路径引用、完成时验证原目标仍有效。不借用后台的 live handle。
 - Transport `TargetConnection::store_temporary_file`：目标文件落地/传输。SSH 使用系统

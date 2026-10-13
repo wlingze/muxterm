@@ -1,6 +1,7 @@
 //! 跨前端图片粘贴：Core 决定目标、异步传输、输入编码及实例有效性。
 //! 前端只把系统剪贴板图片归一化为 PNG；不实现 SSH 或目标路径策略。
 use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::time::Instant;
 
 use crate::muxterm::Muxterm;
 use crate::protocol::task::{Task, TaskOutcome};
@@ -14,6 +15,9 @@ pub(crate) struct PendingImagePaste {
     workspace: WorkspaceId,
     instance: u64,
     pane: PaneId,
+    /// 开始上传的时刻与字节数：完成/失败时写日志，才能看出「过一会才出现」慢在哪。
+    started: Instant,
+    bytes: usize,
 }
 
 pub fn validate_png(bytes: &[u8]) -> Result<()> {
@@ -80,13 +84,29 @@ impl Muxterm {
                 workspace.alias.as_deref().unwrap_or(""),
             )
             .context("image paste target connection is unavailable")?;
+        let bytes = png.len();
+        tracing::info!(
+            target = "muxterm::clipboard",
+            transport = %workspace.transport,
+            alias = workspace.alias.as_deref().unwrap_or(""),
+            pane = pane.0,
+            bytes,
+            "image paste upload started"
+        );
         let (sender, receiver) = mpsc::channel();
         std::thread::Builder::new()
             .name("muxterm-image-paste".into())
             .spawn(move || {
-                let result = connection
+                let transfer = Instant::now();
+                let result: Result<String> = connection
                     .store_temporary_file(&png, "png")
                     .map_err(Into::into);
+                tracing::debug!(
+                    target = "muxterm::clipboard",
+                    transfer_ms = transfer.elapsed().as_millis() as u64,
+                    ok = result.is_ok(),
+                    "image paste transfer finished"
+                );
                 let _ = sender.send(result);
             })?;
         self.pending_image_paste = Some(PendingImagePaste {
@@ -94,6 +114,8 @@ impl Muxterm {
             workspace,
             instance,
             pane,
+            started: Instant::now(),
+            bytes,
         });
         Ok(())
     }
@@ -112,25 +134,47 @@ impl Muxterm {
             }
         };
         let job = self.pending_image_paste.take().unwrap();
-        let path = result?;
-        let ws = self
-            .pool
-            .get_mut(&job.workspace)
-            .filter(|ws| ws.instance_id() == job.instance)
-            .with_context(|| format!("original workspace closed; image retained at {path}"))?;
-        if ws.state().pane(&job.pane).is_none() {
-            bail!("original pane closed; image retained at {path}");
-        }
-        let data = path_input(&path, ws.pane_bracketed_paste(job.pane));
-        match ws.execute(Task::WriteRaw {
-            target: job.pane,
-            data,
-        })? {
-            TaskOutcome::Done | TaskOutcome::Accepted { .. } => Ok(Some(path)),
-            TaskOutcome::Rejected { reason } => {
-                bail!("image saved at {path}, but paste failed: {reason}")
+        let elapsed_ms = job.started.elapsed().as_millis() as u64;
+        let outcome = (|| -> Result<String> {
+            let path = result?;
+            let ws = self
+                .pool
+                .get_mut(&job.workspace)
+                .filter(|ws| ws.instance_id() == job.instance)
+                .with_context(|| format!("original workspace closed; image retained at {path}"))?;
+            if ws.state().pane(&job.pane).is_none() {
+                bail!("original pane closed; image retained at {path}");
             }
+            let data = path_input(&path, ws.pane_bracketed_paste(job.pane));
+            match ws.execute(Task::WriteRaw {
+                target: job.pane,
+                data,
+            })? {
+                TaskOutcome::Done | TaskOutcome::Accepted { .. } => Ok(path),
+                TaskOutcome::Rejected { reason } => {
+                    bail!("image saved at {path}, but paste failed: {reason}")
+                }
+            }
+        })();
+        match &outcome {
+            Ok(path) => tracing::info!(
+                target = "muxterm::clipboard",
+                pane = job.pane.0,
+                bytes = job.bytes,
+                elapsed_ms,
+                path = %path,
+                "image paste finished"
+            ),
+            Err(error) => tracing::warn!(
+                target = "muxterm::clipboard",
+                pane = job.pane.0,
+                bytes = job.bytes,
+                elapsed_ms,
+                error = %error,
+                "image paste failed"
+            ),
         }
+        outcome.map(Some)
     }
 }
 
@@ -162,6 +206,131 @@ mod tests {
         assert!(validate_png(&png).is_err());
     }
 
+    /// 把 tracing 输出收进内存，用来断言日志里真的有上传耗时和失败原因。
+    #[derive(Clone, Default)]
+    struct Captured(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Captured {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Captured {
+        type Writer = Captured;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    impl Captured {
+        fn text(&self) -> String {
+            String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+        }
+    }
+
+    /// 完成 `poll_image_paste` 一次，返回（结果，捕获到的日志）。
+    fn finish_paste(
+        send: Result<String>,
+        drop_sender: bool,
+        replace_workspace: bool,
+    ) -> (Result<Option<String>>, String) {
+        use crate::runtime::MockRuntime;
+        use crate::workspace::Workspace;
+        let captured = Captured::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::DEBUG)
+            .with_writer(captured.clone())
+            .finish();
+        let result = tracing::subscriber::with_default(subscriber, || {
+            let handle = crate::ffi::muxterm_catalog_new();
+            assert!(!handle.is_null());
+            let h = unsafe { &mut *handle };
+            let id = WorkspaceId::new("local", None, "image-log", "shell", "/tmp");
+            let ws = Workspace::new(
+                id.clone(),
+                "image-log".into(),
+                Box::new(MockRuntime::with_single_pane()),
+            );
+            let instance = ws.instance_id();
+            h.pool.insert_connected(ws);
+            let (sender, receiver) = mpsc::channel();
+            h.pending_image_paste = Some(PendingImagePaste {
+                receiver,
+                workspace: id.clone(),
+                instance,
+                pane: PaneId(1),
+                started: Instant::now() - std::time::Duration::from_millis(1500),
+                bytes: 4096,
+            });
+            if replace_workspace {
+                h.pool.insert_connected(Workspace::new(
+                    id,
+                    "replacement".into(),
+                    Box::new(MockRuntime::with_single_pane()),
+                ));
+            }
+            if drop_sender {
+                drop(sender);
+            } else {
+                sender.send(send).unwrap();
+            }
+            let result = h.poll_image_paste();
+            unsafe { crate::ffi::muxterm_free(handle) };
+            result
+        });
+        (result, captured.text())
+    }
+
+    #[test]
+    fn finished_paste_logs_elapsed_time_size_and_path() {
+        let (result, log) = finish_paste(Ok("/tmp/muxterm-paste-log.png".into()), false, false);
+        assert_eq!(result.unwrap(), Some("/tmp/muxterm-paste-log.png".into()));
+        assert!(log.contains("image paste finished"), "{log}");
+        assert!(log.contains("/tmp/muxterm-paste-log.png"), "{log}");
+        assert!(log.contains("bytes=4096"), "{log}");
+        // 起始时间被回拨 1.5s：日志里的耗时必须是真实流逝时间，不是 0。
+        let elapsed: u64 = log
+            .split("elapsed_ms=")
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+            .and_then(|value| value.parse().ok())
+            .unwrap_or_else(|| panic!("no elapsed_ms in log: {log}"));
+        assert!(elapsed >= 1500, "elapsed_ms={elapsed}\n{log}");
+    }
+
+    #[test]
+    fn transfer_failure_is_logged_with_its_reason() {
+        let (result, log) = finish_paste(
+            Err(anyhow::anyhow!("SSH image transfer timed out")),
+            false,
+            false,
+        );
+        assert!(result.is_err());
+        assert!(log.contains("image paste failed"), "{log}");
+        assert!(log.contains("SSH image transfer timed out"), "{log}");
+        assert!(!log.contains("image paste finished"), "{log}");
+    }
+
+    #[test]
+    fn dead_worker_and_replaced_workspace_are_both_logged_as_failures() {
+        let (dead, log) = finish_paste(Ok(String::new()), true, false);
+        assert!(dead.is_err());
+        assert!(log.contains("image transfer worker stopped"), "{log}");
+
+        // 上传成功但原 workspace 已被同 ID 的新实例替换：文件已落盘，路径必须出现在日志
+        // 里，用户才能找回——这正是「图片传了却没出现路径」时唯一的线索。
+        let (replaced, log) = finish_paste(Ok("/tmp/muxterm-paste-kept.png".into()), false, true);
+        assert!(replaced.is_err());
+        assert!(log.contains("image paste failed"), "{log}");
+        assert!(log.contains("/tmp/muxterm-paste-kept.png"), "{log}");
+    }
+
     #[test]
     fn completion_targets_original_workspace_and_rejects_reopened_instances() {
         use crate::runtime::MockRuntime;
@@ -184,6 +353,8 @@ mod tests {
                 workspace: id.clone(),
                 instance,
                 pane: PaneId(1),
+                started: Instant::now(),
+                bytes: 0,
             });
             assert!(h.poll_image_paste().unwrap().is_none());
             if replace_original {

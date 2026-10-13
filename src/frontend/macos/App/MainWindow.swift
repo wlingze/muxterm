@@ -80,6 +80,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private var structuredAgentTestOverrides: [String: [StructuredPaneAgent]] = [:]
     private var quickConnectStore: QuickConnectStore!
     private var imagePasteBridge: CoreBridge?
+    /// 图片粘贴反馈条的时间线：事件泵每个 tick 推进，横幅只负责渲染它。
+    private var imagePasteTimeline = ImagePasteTimeline()
     /// 大段粘贴转圈的起点。写完后仍保持到最短显示时间，避免一帧闪完。
     private var textPasteStartedAt: Date?
     private var textPasteWasBusy = false
@@ -767,6 +769,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             )
         }
 
+        content.imagePasteBanner.onDismiss = { [weak self] in
+            self?.imagePasteTimeline.dismiss()
+            self?.renderImagePasteFeedback()
+        }
         content.updateBanner.onPrimaryAction = { [weak self] in
             self?.performUpdateAction()
         }
@@ -1853,8 +1859,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     try bridge.startImagePaste(workspaceID: workspaceID, paneID: paneID, png: png)
                     imagePasteBridge = bridge
                     content.statusBar.setImagePasteInProgress(true)
+                    advanceImagePaste(to: .uploading)
                 } catch {
-                    reportStatusError(MuxtermI18n.shared.tr(.imagePasteFailed) + ": " + error.localizedDescription)
+                    failImagePaste(error)
                 }
                 result = 0
             case .input(let paneID, let data, let quiet):
@@ -2143,14 +2150,38 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func pollImagePaste() {
+        defer { tickImagePasteFeedback() }
         guard let source = imagePasteBridge else { return }
         do {
-            guard try source.pollImagePaste() != nil else { return }
+            guard let path = try source.pollImagePaste() else { return }
+            advanceImagePaste(to: .done(path: path))
         } catch {
-            reportStatusError(MuxtermI18n.shared.tr(.imagePasteFailed) + ": " + error.localizedDescription)
+            failImagePaste(error)
         }
         imagePasteBridge = nil
         content.statusBar.setImagePasteInProgress(false)
+    }
+
+    /// 推进图片粘贴的反馈阶段并立即渲染；横幅文案和停留时间都在 `ImagePasteTimeline`。
+    private func advanceImagePaste(to stage: ImagePasteStage) {
+        imagePasteTimeline.advance(to: stage, now: Date())
+        renderImagePasteFeedback()
+    }
+
+    private func failImagePaste(_ error: Error) {
+        let message = error.localizedDescription
+        advanceImagePaste(to: .failed(message: message))
+        // 状态栏红点保留一份：横幅消失后用户仍能悬停找回原因。
+        reportStatusError(MuxtermI18n.shared.tr(.imagePasteFailed) + ": " + message)
+    }
+
+    private func tickImagePasteFeedback() {
+        imagePasteTimeline.tick(now: Date())
+        renderImagePasteFeedback()
+    }
+
+    private func renderImagePasteFeedback() {
+        content.imagePasteBanner.apply(imagePasteTimeline.visibleStage(now: Date()))
     }
 
     private func reorderWorkspaces(_ workspaceIds: [String]) {
@@ -3463,6 +3494,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         terminalManager.onLargePasteActivityChanged = { [weak self] in
             self?.refreshPasteSpinner()
+        }
+        terminalManager.onImagePasteEncoding = { [weak self] in
+            self?.advanceImagePaste(to: .encoding)
+        }
+        terminalManager.onImagePasteFailed = { [weak self] message in
+            self?.advanceImagePaste(to: .failed(message: message))
         }
         terminalManager.onViewportChanged = { [weak self, weak manager = terminalManager] paneId, offset in
             guard let self, let manager, manager === self.terminalManager else { return }
