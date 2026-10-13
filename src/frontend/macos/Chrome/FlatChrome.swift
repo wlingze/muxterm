@@ -972,6 +972,29 @@ public enum ClientGridHysteresis {
     }
 }
 
+/// pane 格子的唯一写入者。
+///
+/// Herdr / shell 的格子由 allocation 决定。SwiftTerm 的 `processSizeChange`
+/// 也按像素算列，而且停驻（隐藏 tab）的 view 被重新布局时也会回调 PTY resize：
+/// 两套取整在同一块像素上给出 88 与 85 两列数，hidden pane 也会被改尺寸。
+/// Herdr 随后把每一帧都判为 stale 丢掉并重新 SIGWINCH，shell 重画换行提示符，
+/// 画面就重复并跳动。
+public enum LocalPaneGridPolicy {
+    /// 只有 tmux 的 client resize 才让 SwiftTerm 自己改格子。
+    public static func allowsViewGridResize(usesClientResize: Bool) -> Bool {
+        usesClientResize
+    }
+
+    /// 非 client-resize 运行时连窗口 resize 也必须走 allocation 格子；
+    /// 否则关掉直接写入者后就没人按像素改尺寸了。
+    public static func pinsAllocationOnWindowResize(
+        pinToAllocation: Bool,
+        usesClientResize: Bool
+    ) -> Bool {
+        !usesClientResize || pinToAllocation
+    }
+}
+
 /// 已打开的 tab 再次切入只挂缓存树，不拆 Auto Layout，也不 refresh-client -C。
 public enum TabSwitchPaintPolicy {
     public static func needsLayoutReload(cacheHit: Bool) -> Bool {
