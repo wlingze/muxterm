@@ -181,9 +181,10 @@ public enum KeyBindingsConfig {
     }
 
     /// 配置里的键名对齐 NSEvent：`return` 是回车，`plus`/`equal`/`minus` 是字符。
+    /// 只裁空白，不能裁换行：`key = "\r"` 解出来就是一个 CR 键。
     static func normalizedKey(_ raw: String) -> String {
-        let key = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        switch key {
+        let key = raw.lowercased()
+        switch key.trimmingCharacters(in: .whitespaces) {
         case "return", "enter":
             return "\r"
         case "plus":
