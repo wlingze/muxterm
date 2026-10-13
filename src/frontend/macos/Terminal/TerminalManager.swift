@@ -510,7 +510,9 @@ final class TerminalManager: TerminalInputHandler {
             fontFamily: fontFamily,
             fontSize: fontSize
         )
-        view.muxtermResizeGridWithView = !usesClientResize
+        view.muxtermResizeGridWithView = LocalPaneGridPolicy.allowsViewGridResize(
+            usesClientResize: usesClientResize
+        )
         view.inputHandler = self
         if bridge?.runtimeSupports(runtimeID ?? "", capability: "ServerScroll") == true {
             view.onServerScrollAt = { [weak self] lines, column, row, modifiers in
@@ -1092,8 +1094,8 @@ final class TerminalManager: TerminalInputHandler {
         pinToAllocation: Bool = false,
         clientTreeChanged: Bool = false
     ) {
-        let pin = RemainingPaneGridPolicy.usesAllocatedGridAfterTreeChange(
-            pinToAllocation,
+        let pin = LocalPaneGridPolicy.pinsAllocationOnWindowResize(
+            pinToAllocation: pinToAllocation,
             usesClientResize: usesClientResize
         )
         for id in paneIds {

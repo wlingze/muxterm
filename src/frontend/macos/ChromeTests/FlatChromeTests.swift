@@ -1758,6 +1758,48 @@ final class PaneLayoutProjectionTests: XCTestCase {
         XCTAssertTrue(AttentionBadgePolicy.showsCount(3))
     }
 
+    /// test-2026-1013-1431.log：hdr pane 的格子被 88 与 85 两个写入者
+    /// 互相改写，Herdr 每帧被判 stale，shell 重复 SIGWINCH 把提示符画两遍。
+    func testOnlyClientResizeRuntimesLetSwiftTermOwnTheGrid() {
+        XCTAssertFalse(
+            LocalPaneGridPolicy.allowsViewGridResize(usesClientResize: false),
+            "Herdr/shell 的 allocation 是唯一格子权威"
+        )
+        XCTAssertTrue(
+            LocalPaneGridPolicy.allowsViewGridResize(usesClientResize: true),
+            "tmux 的格子由 layout 与 refresh-client -C 决定"
+        )
+    }
+
+    func testWindowResizeStillPinsTheAllocationGrid() {
+        XCTAssertTrue(
+            LocalPaneGridPolicy.pinsAllocationOnWindowResize(
+                pinToAllocation: false,
+                usesClientResize: false
+            ),
+            "关掉 SwiftTerm 写入者后，窗口 resize 必须由 allocation 改格子"
+        )
+        XCTAssertTrue(
+            LocalPaneGridPolicy.pinsAllocationOnWindowResize(
+                pinToAllocation: true,
+                usesClientResize: false
+            )
+        )
+        XCTAssertFalse(
+            LocalPaneGridPolicy.pinsAllocationOnWindowResize(
+                pinToAllocation: false,
+                usesClientResize: true
+            ),
+            "tmux 窗口 resize 仍走 refresh-client -C"
+        )
+        XCTAssertTrue(
+            LocalPaneGridPolicy.pinsAllocationOnWindowResize(
+                pinToAllocation: true,
+                usesClientResize: true
+            )
+        )
+    }
+
     func testSplitKeepsCurrentFocusUntilNewPaneIsActive() {
         XCTAssertEqual(
             PaneFocusStickiness.resolvedActive(

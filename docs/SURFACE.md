@@ -126,6 +126,7 @@ ivyTerm / psmux：`send-keys -t %N -H`。Muxterm Surface 输入必须是字节�
 7. **`%pause` 是数据丢失屏障，不是切 tab 刷新。** 正常切换禁止 pause + capture；OutputGap / 平台缓存溢出 / tmux 主动 `%pause` 必须保持该 pane fenced，安装一次权威 snapshot/full frame 后才能恢复 live。洪水 pane 的主动 `pause-after` **尚未实现**（TODO，见 §7.4）。
 8. **Pane id.** 控制协议里 pane 是 `%N`。`缺少 @ 前缀: %64` 必须当 bug 修。
 9. **Index never becomes Surface.** `visible_ansi` / `surface_seed_ansi` / `scroll_ansi` / `paneSurfaceSeedANSI` **不得**进 VTE/SwiftTerm。Herdr `pane.read` 也只播种 Index。
+9b. **One grid writer.** 一个 pane 的格子只能有一个写入者。tmux 由 layout / `refresh-client -C` 决定；Herdr / shell 一律由 allocation 决定（`LocalPaneGridPolicy`）。SwiftTerm 的 `processSizeChange` 在非 client-resize 运行时必须关掉：它按像素自己算列，而且停驻（隐藏 tab）的 view 被重新布局时也会回调 pane resize。两个写入者会在同一块像素上给出 88 与 85 两列数，互相改写 —— Herdr 把每一帧都判 stale 丢掉，shell 反复收 SIGWINCH 重画换行提示符，画面就重复并跳动（test-2026-1013-1431.log）。
 10. **Open Surfaces keep eating.** Surface 以 `(WorkspaceId, PaneId)` 为 key 常驻；隐藏 tab 与隐藏 workspace 的 PaneSurface 继续 `feed` 原始字节，只是不绘制。切回时只能 show/hide。
 11. **No recapture on navigation.** 已经 seed 过的 pane，切 tab/pane/workspace 不得再抓屏。
 12. **History is lines, not a stream.** 第一次打开时 Runtime 把 capture 解析成行写入 Surface scrollback，不是 VT `feed()` 重放。

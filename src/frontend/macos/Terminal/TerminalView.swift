@@ -1066,6 +1066,12 @@ final class MuxTerminalView: TerminalView {
             modelRows = target.rows
             minimumModelCols = target.cols
             minimumModelRows = target.rows
+        } else if let allocated = allocatedGridSize() {
+            // allocation 是唯一权威：像素分配算出的格子就是模型格子。
+            modelCols = allocated.cols
+            modelRows = allocated.rows
+            minimumModelCols = modelCols
+            minimumModelRows = modelRows
         } else {
             modelCols = term.cols
             modelRows = term.rows
