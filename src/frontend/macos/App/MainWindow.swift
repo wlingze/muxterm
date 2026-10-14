@@ -415,6 +415,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         workspaceSidebar.onWorkspaceActivate = { [weak self] workspaceId in
             self?.activateSidebarWorkspace(workspaceId)
         }
+        workspaceSidebar.onAddWorkspace = { [weak self] in
+            self?.openQuickConnect()
+        }
         workspaceSidebar.onWorkspaceUpdate = { [weak self] id in self?.updateWorkspaceRuntime(id) }
         workspaceSidebar.onWorkspaceClose = { [weak self] workspaceId in
             self?.closeWorkspace(workspaceId)
@@ -1443,14 +1446,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         sidebarController.view = workspaceSidebar
         let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebarController)
         sidebarItem.canCollapse = true
-        sidebarItem.minimumThickness = 160
-        sidebarItem.maximumThickness = 420
+        sidebarItem.minimumThickness = 200
+        sidebarItem.maximumThickness = 480
         sidebarItem.preferredThicknessFraction = 0.25
+        sidebarItem.holdingPriority = NSLayoutConstraint.Priority(260)
 
         let contentController = NSViewController()
         contentController.view = content
         let contentItem = NSSplitViewItem(viewController: contentController)
         contentItem.minimumThickness = 300
+        contentItem.holdingPriority = NSLayoutConstraint.Priority(200)
 
         mainSplitController.splitView.isVertical = true
         mainSplitController.splitView.dividerStyle = .thin
@@ -1477,6 +1482,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         content.statusBar.sidebarOpen = open
         if open {
             refreshWorkspaceSidebar(force: true)
+            if workspaceSidebar.frame.width < 220 {
+                mainSplitController.splitView.setPosition(240, ofDividerAt: 0)
+            }
         }
         // NSSplitViewController owns the divider geometry. Laying out only
         // NSWindow.contentView can leave the toggle changed while the sidebar
