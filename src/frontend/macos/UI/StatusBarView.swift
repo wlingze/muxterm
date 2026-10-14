@@ -117,7 +117,7 @@ final class StatusBarView: NSView {
         }
     }
     var allowsTabCreation = true {
-        didSet { newTabButton.isHidden = !allowsTabCreation }
+        didSet { updateTrailingButtonsVisibility() }
     }
     var allowsTabRenaming = true {
         didSet {
@@ -168,6 +168,19 @@ final class StatusBarView: NSView {
     private let newTabButton = NSButton()
     private let edgeLine = CALayer()
     private var edgeLineThickness: CGFloat = 1
+
+    private var newTabWidthConstraint: NSLayoutConstraint!
+    private var attentionWidthConstraint: NSLayoutConstraint!
+    private var workspaceWidthConstraint: NSLayoutConstraint!
+    private var statusDotWidthConstraint: NSLayoutConstraint!
+
+    /// 是否在状态栏右侧显示 [statusDot, workspaceButton, attentionButton, newTabButton] 四个按钮。
+    /// 默认关闭（根据用户要求移除），由侧边栏加号与 Cmd-P 统一管理；可在配置中按需打开。
+    var showsTrailingButtons: Bool = false {
+        didSet {
+            updateTrailingButtonsVisibility()
+        }
+    }
 
     // 状态点弹出框（点击展开 debug 信息）
     private var statusPopover: NSPopover?
@@ -330,6 +343,8 @@ final class StatusBarView: NSView {
             addSubview(view)
         }
 
+        // 只在等宽样式激活（见 rebuildTabButtons）：把 stack 拉满视口，
+        // 每个 tab 的宽度由 fillEqually 推导。
         tabStackTrailingConstraint = tabStack.trailingAnchor.constraint(
             equalTo: tabViewport.trailingAnchor
         )
@@ -338,6 +353,11 @@ final class StatusBarView: NSView {
             equalTo: leadingAnchor,
             constant: 4
         )
+        newTabWidthConstraint = newTabButton.widthAnchor.constraint(equalToConstant: 0)
+        attentionWidthConstraint = attentionButton.widthAnchor.constraint(equalToConstant: 0)
+        workspaceWidthConstraint = workspaceButton.widthAnchor.constraint(equalToConstant: 0)
+        statusDotWidthConstraint = statusDot.widthAnchor.constraint(equalToConstant: 0)
+
         NSLayoutConstraint.activate([
             heightConstraint,
 
@@ -356,24 +376,24 @@ final class StatusBarView: NSView {
             tabStack.centerYAnchor.constraint(equalTo: tabViewport.centerYAnchor),
             tabStack.heightAnchor.constraint(equalTo: tabViewport.heightAnchor),
 
-            // 最右侧三个图标：状态点 → 通知 → 新建。
+            // 最右侧三个图标：状态点 → 通知 → 新建（默认隐藏，showsTrailingButtons 开关控制）。
             newTabButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
             newTabButton.centerYAnchor.constraint(equalTo: centerYAnchor),
-            newTabButton.widthAnchor.constraint(equalToConstant: FlatChrome.newTabButtonWidth),
+            newTabWidthConstraint,
 
             attentionButton.trailingAnchor.constraint(equalTo: newTabButton.leadingAnchor, constant: -2),
             attentionButton.centerYAnchor.constraint(equalTo: centerYAnchor),
-            attentionButton.widthAnchor.constraint(equalToConstant: 24),
+            attentionWidthConstraint,
             attentionButton.heightAnchor.constraint(equalToConstant: 20),
 
             workspaceButton.trailingAnchor.constraint(equalTo: attentionButton.leadingAnchor, constant: -2),
             workspaceButton.centerYAnchor.constraint(equalTo: centerYAnchor),
-            workspaceButton.widthAnchor.constraint(equalToConstant: 24),
+            workspaceWidthConstraint,
             workspaceButton.heightAnchor.constraint(equalToConstant: 20),
 
             statusDot.trailingAnchor.constraint(equalTo: workspaceButton.leadingAnchor, constant: -2),
             statusDot.centerYAnchor.constraint(equalTo: centerYAnchor),
-            statusDot.widthAnchor.constraint(equalToConstant: 18),
+            statusDotWidthConstraint,
             statusDot.heightAnchor.constraint(equalToConstant: 18),
 
             pasteSpinner.trailingAnchor.constraint(equalTo: statusDot.leadingAnchor, constant: -2),
@@ -382,7 +402,20 @@ final class StatusBarView: NSView {
         ])
         pasteSpinnerWidth = pasteSpinner.widthAnchor.constraint(equalToConstant: 0)
         pasteSpinnerWidth.isActive = true
+        updateTrailingButtonsVisibility()
         refreshLocalization()
+    }
+
+    private func updateTrailingButtonsVisibility() {
+        newTabButton.isHidden = !showsTrailingButtons || !allowsTabCreation
+        attentionButton.isHidden = !showsTrailingButtons
+        workspaceButton.isHidden = !showsTrailingButtons
+        statusDot.isHidden = !showsTrailingButtons
+        newTabWidthConstraint?.constant = showsTrailingButtons ? FlatChrome.newTabButtonWidth : 0
+        attentionWidthConstraint?.constant = showsTrailingButtons ? 24 : 0
+        workspaceWidthConstraint?.constant = showsTrailingButtons ? 24 : 0
+        statusDotWidthConstraint?.constant = showsTrailingButtons ? 18 : 0
+        needsLayout = true
     }
 
     @available(*, unavailable)
@@ -1383,15 +1416,19 @@ final class StatusBarView: NSView {
         for (id, button) in existing where !ids.contains(id) {
             button.removeFromSuperview()
         }
+        // 只有等宽样式铺满视口，宽度完全交给 fillEqually 推导；
+        // compact/fixed 保持自然宽度从左排，不 pin 到 trailing。
+        // 有多余空间时不再把它塞进某个 tab 前面（截图里那个大空洞）。
         let fillsViewport = tabBarStyle == .equalWidth
         tabStack.distribution = fillsViewport ? .fillEqually : .fill
-        tabStack.spacing = fillsViewport ? 1 : 3
+        tabStack.spacing = fillsViewport ? 2 : 3
         tabStack.setContentHuggingPriority(
             fillsViewport ? .defaultLow : .required,
             for: .horizontal
         )
+        tabStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         tabStackTrailingConstraint.isActive = fillsViewport && !items.isEmpty
-        var firstEqualWidthButton: StatusTabButton?
+
         for (position, item) in items.enumerated() {
             let button = existing[item.id] ?? StatusTabButton()
             button.configureTitle(
@@ -1409,11 +1446,9 @@ final class StatusBarView: NSView {
                 tabStack.insertArrangedSubview(button, at: position)
             }
             if tabBarStyle == .equalWidth {
-                if let firstEqualWidthButton {
-                    tabWidthConstraints.append(button.widthAnchor.constraint(equalTo: firstEqualWidthButton.widthAnchor))
-                } else {
-                    firstEqualWidthButton = button
-                }
+                // 额外钉 “等于第一个 tab 的宽度” 会把旧宽度锁住：
+                // 窗口变宽后多出来的空间只能挤在最后一个 tab 前面，
+                // 看起来就是 tab 条中间空掉一大块。等宽交给 fillEqually。
                 let minimum = button.widthAnchor.constraint(greaterThanOrEqualToConstant: 44)
                 minimum.priority = .defaultLow
                 tabWidthConstraints.append(minimum)
@@ -1424,6 +1459,9 @@ final class StatusBarView: NSView {
             } else {
                 tabWidthConstraints.append(
                     button.widthAnchor.constraint(lessThanOrEqualToConstant: TabBarStyle.maximumFittedTabWidth)
+                )
+                tabWidthConstraints.append(
+                    button.widthAnchor.constraint(greaterThanOrEqualToConstant: 44)
                 )
             }
             button.tag = Int(item.id)
@@ -1814,6 +1852,16 @@ final class StatusBarView: NSView {
     func testTabButtonWidths() -> [CGFloat] {
         layoutSubtreeIfNeeded()
         return tabStack.arrangedSubviews.map(\.frame.width)
+    }
+
+    func testTabButtonFrames() -> [NSRect] {
+        layoutSubtreeIfNeeded()
+        return tabStack.arrangedSubviews.map(\.frame)
+    }
+
+    func testTabButtonMaxXs() -> [CGFloat] {
+        layoutSubtreeIfNeeded()
+        return tabStack.arrangedSubviews.map(\.frame.maxX)
     }
 
     func testMiddleFrame() -> NSRect {
