@@ -895,7 +895,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         row.addSubview(copy)
         row.addSubview(control)
 
-        let isFullWidth = control is NSScrollView || control is SettingsProjectEditorView
+        let isFullWidth = control is NSScrollView
+            || control is SettingsProjectEditorView
+            || control is SettingsShortcutEditorView
         if isFullWidth {
             NSLayoutConstraint.activate([
                 copy.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 18),
@@ -1047,14 +1049,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
             projectEditorView = editor
             return editor
         case "shortcut_editor":
-            let label = NSTextField(labelWithString: settingsText(
-                "settings.shortcuts.manager_hint",
-                fallback: "Open the shortcut manager from the main command palette."
-            ))
-            label.identifier = NSUserInterfaceItemIdentifier(path)
-            label.textColor = .secondaryLabelColor
-            label.font = .systemFont(ofSize: 11)
-            return label
+            let editor = SettingsShortcutEditorView(
+                overrides: Self.shortcutOverrides(from: values)
+            )
+            editor.onChange = { [weak self] in
+                self?.dirty = true
+            }
+            editor.setAccessibilityIdentifier("muxterm.settings.shortcuts.editor")
+            return editor
         default:
             let entry = NSTextField()
             entry.identifier = NSUserInterfaceItemIdentifier(path)
@@ -1195,6 +1197,21 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
 
     // MARK: - Value collection and Apply/Cancel
 
+    private static func shortcutOverrides(from values: [String: Any]) -> [(action: String, bindings: [ShortcutChord])] {
+        guard let shortcuts = values["shortcuts"] as? [String: Any],
+              let rows = shortcuts["overrides"] as? [[String: Any]]
+        else { return [] }
+        return rows.compactMap { row in
+            guard let action = row["action"] as? String else { return nil }
+            let bindings = (row["bindings"] as? [[String: Any]] ?? []).compactMap { binding -> ShortcutChord? in
+                guard let key = binding["key"] as? String else { return nil }
+                let modifiers = binding["modifiers"] as? [String] ?? binding["mods"] as? [String] ?? []
+                return ShortcutChord(key: key, modifiers: modifiers)
+            }
+            return (action, bindings)
+        }
+    }
+
     private func collectOperations() -> [[String: Any]] {
         var operations: [[String: Any]] = []
         for (path, view) in controls {
@@ -1210,8 +1227,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         if let editor = view as? SettingsProjectEditorView {
             return QuickConnectStore.projectJSON(from: editor.projects)
         }
-        if path == "/shortcuts/overrides" {
-            return nil
+        if let editor = view as? SettingsShortcutEditorView {
+            return editor.overrideJSON()
         }
         if let popup = view as? NSPopUpButton {
             return popup.selectedItem?.representedObject as? String ?? popup.titleOfSelectedItem
@@ -1989,5 +2006,209 @@ private final class SettingsProjectEditorView: NSView {
 
     @objc private func deleteProject(_ sender: NSButton) {
         onDelete?(sender.tag)
+    }
+}
+
+/// 设置页里直接查看和修改快捷键，不再跳到外部管理器。
+private final class SettingsShortcutEditorView: NSView {
+    var onChange: (() -> Void)?
+
+    private var rows: [ShortcutEditorRow]
+    private var recordingAction: String?
+    private let list = NSStackView()
+    private let hint = NSTextField(labelWithString: "")
+
+    init(overrides: [(action: String, bindings: [ShortcutChord])]) {
+        let defaults = ShortcutCatalog.defaults()
+        rows = ShortcutEditor.rows(defaults: defaults, overrides: overrides)
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+
+        hint.font = .systemFont(ofSize: 11)
+        hint.textColor = .secondaryLabelColor
+        hint.stringValue = settingsText(
+            "settings.shortcuts.manager_hint",
+            fallback: "Click a shortcut, press the new keys, then Apply."
+        )
+        hint.lineBreakMode = .byWordWrapping
+        hint.maximumNumberOfLines = 2
+
+        list.orientation = .vertical
+        list.alignment = .width
+        list.spacing = 4
+        list.translatesAutoresizingMaskIntoConstraints = false
+
+        let scroll = NSScrollView()
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.hasVerticalScroller = true
+        scroll.drawsBackground = false
+        scroll.documentView = list
+        scroll.heightAnchor.constraint(equalToConstant: 280).isActive = true
+
+        let stack = NSStackView(views: [hint, scroll])
+        stack.orientation = .vertical
+        stack.alignment = .width
+        stack.spacing = 8
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
+            stack.topAnchor.constraint(equalTo: topAnchor),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor),
+            list.widthAnchor.constraint(equalTo: scroll.widthAnchor),
+        ])
+        rebuild()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override var acceptsFirstResponder: Bool { recordingAction != nil }
+
+    func overrideJSON() -> [[String: Any]] {
+        ShortcutEditor.overrideValues(from: rows)
+    }
+
+    override func keyDown(with event: NSEvent) {
+        guard let action = recordingAction else {
+            super.keyDown(with: event)
+            return
+        }
+        if event.keyCode == 53 {
+            recordingAction = nil
+            rebuild()
+            return
+        }
+        guard let chord = Self.chord(from: event) else { return }
+        guard let next = ShortcutEditor.bind(rows, action: action, chord: chord) else {
+            NSSound.beep()
+            return
+        }
+        rows = next
+        recordingAction = nil
+        onChange?()
+        rebuild()
+    }
+
+    private func rebuild() {
+        list.arrangedSubviews.forEach {
+            list.removeArrangedSubview($0)
+            $0.removeFromSuperview()
+        }
+        for row in rows {
+            list.addArrangedSubview(makeRow(row))
+        }
+    }
+
+    private func makeRow(_ row: ShortcutEditorRow) -> NSView {
+        let title = NSTextField(labelWithString: row.title)
+        title.font = .systemFont(ofSize: 12, weight: .medium)
+        title.lineBreakMode = .byTruncatingTail
+        title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        let binding = NSButton(title: bindingTitle(row), target: self, action: #selector(record(_:)))
+        binding.bezelStyle = .rounded
+        binding.identifier = NSUserInterfaceItemIdentifier(row.action)
+        binding.setAccessibilityIdentifier("muxterm.settings.shortcut.\(row.action)")
+        binding.setContentHuggingPriority(.required, for: .horizontal)
+
+        let disable = NSButton(
+            title: settingsText("settings.shortcuts.disable", fallback: "Disable"),
+            target: self,
+            action: #selector(disable(_:))
+        )
+        disable.bezelStyle = .rounded
+        disable.identifier = NSUserInterfaceItemIdentifier(row.action)
+        disable.setContentHuggingPriority(.required, for: .horizontal)
+
+        let reset = NSButton(
+            title: settingsText("settings.shortcuts.reset", fallback: "Reset"),
+            target: self,
+            action: #selector(reset(_:))
+        )
+        reset.bezelStyle = .rounded
+        reset.identifier = NSUserInterfaceItemIdentifier(row.action)
+        reset.isEnabled = row.customized
+        reset.setContentHuggingPriority(.required, for: .horizontal)
+
+        let line = NSStackView(views: [title, binding, disable, reset])
+        line.orientation = .horizontal
+        line.alignment = .centerY
+        line.spacing = 6
+        line.edgeInsets = NSEdgeInsets(top: 2, left: 8, bottom: 2, right: 8)
+        settingsStyleCard(line, fill: NSColor.controlBackgroundColor.withAlphaComponent(0.42))
+        return line
+    }
+
+    private func bindingTitle(_ row: ShortcutEditorRow) -> String {
+        if recordingAction == row.action {
+            return settingsText("settings.shortcuts.recording", fallback: "Press shortcut…")
+        }
+        if row.customized, row.bindings.isEmpty {
+            return settingsText("settings.shortcuts.disabled", fallback: "Disabled")
+        }
+        if row.effective.isEmpty {
+            return settingsText("settings.shortcuts.unset", fallback: "Not set")
+        }
+        return row.effective.map(\.symbolLabel).joined(separator: ", ")
+    }
+
+    @objc private func record(_ sender: NSButton) {
+        recordingAction = sender.identifier?.rawValue
+        window?.makeFirstResponder(self)
+        rebuild()
+    }
+
+    @objc private func disable(_ sender: NSButton) {
+        guard let action = sender.identifier?.rawValue else { return }
+        rows = ShortcutEditor.disable(rows, action: action)
+        recordingAction = nil
+        onChange?()
+        rebuild()
+    }
+
+    @objc private func reset(_ sender: NSButton) {
+        guard let action = sender.identifier?.rawValue else { return }
+        rows = ShortcutEditor.reset(rows, action: action)
+        recordingAction = nil
+        onChange?()
+        rebuild()
+    }
+
+    private static func chord(from event: NSEvent) -> ShortcutChord? {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let command = flags.contains(.command)
+        let option = flags.contains(.option)
+        let control = flags.contains(.control)
+        let shift = flags.contains(.shift)
+        guard command || option || control else { return nil }
+        let key: String
+        switch event.keyCode {
+        case 36, 76:
+            key = "\r"
+        case 123:
+            key = "left"
+        case 124:
+            key = "right"
+        case 125:
+            key = "down"
+        case 126:
+            key = "up"
+        default:
+            guard let raw = event.charactersIgnoringModifiers?.lowercased(),
+                  let first = raw.first,
+                  first.isLetter || first.isNumber || "+-=[]\\".contains(first)
+            else { return nil }
+            key = String(first)
+        }
+        var modifiers: [String] = []
+        if control { modifiers.append("control") }
+        if option { modifiers.append("option") }
+        if shift { modifiers.append("shift") }
+        if command { modifiers.append("command") }
+        return ShortcutChord(key: key, modifiers: modifiers)
     }
 }
