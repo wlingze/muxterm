@@ -127,31 +127,28 @@ public enum KeyBindings {
             return .nextCommand
         }
 
-        // Cmd+P：QuickConnect 面板（Recent + Project）。
-        if chord.command, !chord.shift, !chord.option, key == "p" {
-            return .quickConnect
-        }
         // Cmd+Ctrl+A/S：进入 Agents / Shells 前端聚合槽。
         if chord.command, chord.control, !chord.option, !chord.shift {
             if key == "a" { return .openAgents }
             if key == "s" { return .openShells }
         }
-        // Cmd-K 不在这里绑定。快速面板自己消费 Cmd-K，弹出当前行的动作
-        // 和这套命令。Shells 保持 Cmd-Ctrl-S，避免和面板动作抢同一个键。
+
+        // Cmd+P：QuickConnect 面板。右侧四个状态按钮已去掉，这个快捷键保留。
+        if chord.command, !chord.shift, !chord.option, !chord.control, key == "p" {
+            return .quickConnect
+        }
+
         // Cmd+Shift+P：旧命令面板（保留）。
         if chord.command, chord.shift, !chord.option, key == "p" {
             return .commandPalette
         }
         // Cmd+R：通知 / Attention 面板。
-        if chord.command, !chord.shift, !chord.option, key == "r" {
+        if chord.command, !chord.shift, !chord.option, !chord.control, key == "r" {
             return .attention
         }
-        // Cmd+F：当前 Workspace；Cmd+Shift+F：所有已打开 Workspace。
+        // Cmd+F：当前 Workspace
         if chord.command, !chord.shift, !chord.option, key == "f" {
             return .searchWorkspace
-        }
-        if chord.command, chord.shift, !chord.option, key == "f" {
-            return .searchGlobal
         }
         // Cmd+= / Cmd++ 增大字体，Cmd+- 减小，Cmd+Shift+0 重置。
         if chord.command, !chord.option {
@@ -172,12 +169,19 @@ public enum KeyBindings {
         if chord.command, chord.shift, !chord.option, !chord.control, key == "l" {
             return .cycleLayout
         }
-        // Cmd+Enter / Alt+Enter：当前 pane 全屏切换（tmux `resize-pane -Z` / 本地布局）。
-        if !chord.shift, key == "\r" || key == "\n" {
+        // Cmd+Enter / Alt+Enter / Cmd+Shift+Enter / Cmd+Shift+F / Cmd+Shift+E：全屏切换
+        // 用户习惯 Colemak（Cmd+Shift+F / Cmd+Shift+Enter），对应 QWERTY 物理键位为
+        // Cmd+Shift+E / Cmd+Shift+Enter；统一支持，保持手部肌肉记忆一致。
+        if key == "\r" || key == "\n" {
             if chord.command, !chord.option {
                 return .togglePaneFullscreen
             }
             if chord.option, !chord.command {
+                return .togglePaneFullscreen
+            }
+        }
+        if chord.command, chord.shift, !chord.option, !chord.control {
+            if key == "f" || key == "e" {
                 return .togglePaneFullscreen
             }
         }
