@@ -567,9 +567,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let searchAll = NSMenuItem(
             title: MuxtermI18n.shared.tr(.menuSearchPanes),
             action: #selector(MainWindowController.openGlobalSearchPanel),
-            keyEquivalent: "f"
+            keyEquivalent: ""
         )
-        searchAll.keyEquivalentModifierMask = [.command, .shift]
         searchAll.target = windowController
         viewMenu.addItem(searchAll)
 
