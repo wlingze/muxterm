@@ -1,7 +1,7 @@
 import Foundation
 
 /// macOS 客户端快捷键动作（与菜单 / Cmd 映射一致）。
-public enum KeyAction: Equatable, Sendable {
+public enum KeyAction: Equatable, Hashable, Sendable {
     case newTab
     case splitHorizontal
     case splitVertical
@@ -64,9 +64,16 @@ public struct KeyChord: Equatable, Hashable, Sendable {
 public enum KeyBindings {
     /// 解析键位；`custom` 来自 `~/.config/muxterm/config.toml` 的 `[[keybindings]]`，
     /// 命中时优先于内置默认。
-    public static func action(for chord: KeyChord, custom: [KeyChord: KeyAction]? = nil) -> KeyAction? {
+    public static func action(
+        for chord: KeyChord,
+        custom: [KeyChord: KeyAction]? = nil,
+        suppressed: Set<KeyAction> = []
+    ) -> KeyAction? {
         if let custom, let action = custom[chord] {
             return action
+        }
+        if let builtin = action(for: chord), suppressed.contains(builtin) {
+            return nil
         }
         return action(for: chord)
     }

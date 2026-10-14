@@ -60,6 +60,41 @@ public enum KeyBindingsConfig {
         }
     }
 
+    /// Action 对应的稳定配置标识符（与 core action_catalog 一致）。
+    public static func name(for action: KeyAction) -> String? {
+        switch action {
+        case .newTab: return "new_tab"
+        case .splitHorizontal: return "new_pane"
+        case .splitVertical: return "new_pane_vertical"
+        case .splitAuto: return "split_auto"
+        case .closeWindow: return "close_window"
+        case .closePane: return "close_pane"
+        case .switchTab(let n): return "switch_tab_\(n)"
+        case .switchLastTab: return "switch_tab_last"
+        case .previousTab: return "previous_tab"
+        case .nextTab: return "next_tab"
+        case .nextPane: return "switch_pane_next"
+        case .prevPane: return "switch_pane_prev"
+        case .previousCommand: return "previous_command"
+        case .nextCommand: return "next_command"
+        case .commandPalette: return "command_palette"
+        case .quickConnect: return "quick_connect"
+        case .attention: return "attention"
+        case .searchWorkspace: return "search"
+        case .searchGlobal: return "search_global"
+        case .quit: return "quit"
+        case .increaseFontSize: return "increase_font_size"
+        case .decreaseFontSize: return "decrease_font_size"
+        case .resetFontSize: return "reset_font_size"
+        case .togglePaneFullscreen: return "toggle_pane_fullscreen"
+        case .cycleLayout: return "cycle_layout"
+        case .toggleSidebar: return "toggle_sidebar"
+        case .openShells: return "open_shells"
+        case .openAgents: return "open_agents"
+        case .switchWorkspace(let n): return n == 0 ? "switch_workspace_last" : "switch_workspace_\(n)"
+        }
+    }
+
     /// 解析整个 config.toml 文本，返回自定义键位映射。
     public static func parse(toml: String) -> [KeyChord: KeyAction] {
         var result: [KeyChord: KeyAction] = [:]
@@ -160,6 +195,28 @@ public enum KeyBindingsConfig {
             }
         }
         return result
+    }
+
+    /// 空 bindings 的 override 才是禁用：core 的 `resolve_effective_keybindings`
+    /// 对空数组会删掉该动作的全部预设键，非空则是在预设键之外**追加**。
+    /// 所以只有显式禁用的动作才需要把内置键也压掉；否则 Linux 时代写下的
+    /// Alt 类 override（`primary_key = "auto"` 在 macOS 是 Command）会把
+    /// Cmd-1 / Cmd-[ 这类内置键一起杀掉。
+    public static func suppressedActions(in values: [String: Any]) -> Set<KeyAction> {
+        guard let shortcuts = values["shortcuts"] as? [String: Any],
+              let overrides = shortcuts["overrides"] as? [[String: Any]]
+        else { return [] }
+        var suppressed = Set<KeyAction>()
+        for item in overrides {
+            guard let name = item["action"] as? String, let action = action(from: name) else {
+                continue
+            }
+            let bindings = item["bindings"] as? [[String: Any]] ?? []
+            if bindings.isEmpty {
+                suppressed.insert(action)
+            }
+        }
+        return suppressed
     }
 
     static func binding(

@@ -68,6 +68,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private var settingsWindow: SettingsWindowController?
     /// 来自 ~/.config/muxterm/config.toml 的自定义快捷键（可选）。
     private var customKeybindings: [KeyChord: KeyAction] = [:]
+    /// overrides 覆盖过的动作不再走内置键。
+    private var suppressedShortcutActions: Set<KeyAction> = []
     private var nextWorkspaceOpenedOrder: UInt64 = 1
     private var workspacePresentation: WorkspacePresentation = .workspace
     /// Agents 是前端投影槽；离开后仍应回到用户最后查看的源 Tab。
@@ -304,7 +306,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func reloadCustomKeybindings() {
-        customKeybindings = KeyBindingsConfig.parse(values: Self.configValues(from: bridge))
+        let values = Self.configValues(from: bridge)
+        customKeybindings = KeyBindingsConfig.parse(values: values)
+        suppressedShortcutActions = KeyBindingsConfig.suppressedActions(in: values)
+    }
+
+    private func resolvedShortcutAction(for chord: KeyChord) -> KeyAction? {
+        KeyBindings.action(
+            for: chord,
+            custom: customKeybindings,
+            suppressed: suppressedShortcutActions
+        )
     }
 
     init(
@@ -316,7 +328,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         discovery.attachedRemoteSocket = bridge.sshAlias == nil ? nil : bridge.socket
         // 统一配置：初始值来自 Core 解析后的快照，不再手写解析 TOML 或读 UserDefaults。
         let resolved = Self.resolvedSettings(from: bridge)
-        customKeybindings = KeyBindingsConfig.parse(values: Self.configValues(from: bridge))
+        let shortcutValues = Self.configValues(from: bridge)
+        customKeybindings = KeyBindingsConfig.parse(values: shortcutValues)
+        suppressedShortcutActions = KeyBindingsConfig.suppressedActions(in: shortcutValues)
         let initialWorkspaces = bridge.workspaceList()
         let initialWorkspace = initialWorkspaces.first(where: \.active) ?? initialWorkspaces.first
         let initialWorkspaceID = initialWorkspace?.id
@@ -6521,7 +6535,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             return true
         }
         let configured = customKeybindings[chord] != nil
-        guard let action = KeyBindings.action(for: chord, custom: customKeybindings),
+        guard let action = resolvedShortcutAction(for: chord),
               KeyPassthroughPolicy.consumeInMacOSWindow(chord, configured: configured)
         else {
             // Ctrl+C/D/L 等不是 Muxterm 的窗口快捷键时，窗口级 monitor 先
@@ -6615,7 +6629,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             control: flags.contains(.control),
             key: String(first)
         )
-        guard let action = KeyBindings.action(for: chord, custom: customKeybindings) else {
+        guard let action = resolvedShortcutAction(for: chord) else {
             return nil
         }
         switch action {

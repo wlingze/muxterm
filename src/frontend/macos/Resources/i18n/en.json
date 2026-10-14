@@ -270,7 +270,7 @@
   "settings.apply": "Apply",
   "settings.apply.tooltip": "Write changes to config.toml",
   "settings.choose": "Choose…",
-  "settings.shortcuts.manager_hint": "Open the shortcut manager from the main command palette.",
+  "settings.shortcuts.manager_hint": "Click a shortcut, press the new keys, then Apply.",
   "settings.summary": "Synced with Core · {{count}} project(s)",
   "settings.unsaved": "Unsaved changes",
   "settings.save_error": "Unable to save settings",
