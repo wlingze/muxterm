@@ -13,6 +13,7 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
     var onWorkspaceReorder: (([String]) -> Void)?
     var onAgentActivate: ((String, UInt32?, UInt32) -> Void)?
     var onCommandActivate: ((String, UInt32?, UInt32) -> Void)?
+    var onAddWorkspace: (() -> Void)?
     private static let workspaceDragType = NSPasteboard.PasteboardType("muxterm.sidebar.workspace")
 
     private let sections = NSSplitView()
@@ -28,6 +29,7 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
     private let commandScroll = NSScrollView()
     private let hiddenCommandScroll = NSScrollView()
     private let workspaceHeader = NSButton()
+    private let addWorkspaceButton = NSButton()
     private let agentHeader = NSButton()
     private let commandHeader = NSButton()
     private let hiddenCommandHeader = NSButton()
@@ -90,7 +92,24 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
         )
         hiddenCommandHeader.state = .off
 
-        let workspaceSection = section(header: workspaceHeader, scroll: workspaceScroll)
+        addWorkspaceButton.image = NSImage(
+            systemSymbolName: "plus",
+            accessibilityDescription: "Add workspace"
+        )
+        addWorkspaceButton.imagePosition = .imageOnly
+        addWorkspaceButton.imageScaling = .scaleProportionallyDown
+        addWorkspaceButton.isBordered = false
+        addWorkspaceButton.contentTintColor = .secondaryLabelColor
+        addWorkspaceButton.target = self
+        addWorkspaceButton.action = #selector(addWorkspaceClicked)
+        addWorkspaceButton.setAccessibilityIdentifier("muxterm.sidebar.workspaces.add")
+        addWorkspaceButton.toolTip = "New Workspace"
+
+        let workspaceSection = section(
+            header: workspaceHeader,
+            scroll: workspaceScroll,
+            accessory: addWorkspaceButton
+        )
         workspaceSection.setAccessibilityIdentifier("muxterm.sidebar.workspaces.section")
         let agentSection = section(header: agentHeader, scroll: agentScroll)
         agentSection.setAccessibilityIdentifier("muxterm.sidebar.agents.section")
@@ -640,23 +659,52 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
         button.setAccessibilityIdentifier("muxterm.sidebar.\(title.lowercased()).toggle")
     }
 
-    private func section(header: NSButton, scroll: NSScrollView) -> NSView {
+    private func section(
+        header: NSButton,
+        scroll: NSScrollView,
+        accessory: NSButton? = nil
+    ) -> NSView {
         let view = NSView()
         header.translatesAutoresizingMaskIntoConstraints = false
         scroll.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(header)
         view.addSubview(scroll)
-        NSLayoutConstraint.activate([
-            header.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 6),
-            header.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -6),
-            header.topAnchor.constraint(equalTo: view.topAnchor),
-            header.heightAnchor.constraint(equalToConstant: 26),
-            scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            scroll.topAnchor.constraint(equalTo: header.bottomAnchor),
-            scroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-        ])
+        if let accessory {
+            accessory.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview(accessory)
+            NSLayoutConstraint.activate([
+                header.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 6),
+                header.trailingAnchor.constraint(lessThanOrEqualTo: accessory.leadingAnchor, constant: -4),
+                header.topAnchor.constraint(equalTo: view.topAnchor),
+                header.heightAnchor.constraint(equalToConstant: 26),
+
+                accessory.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -6),
+                accessory.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+                accessory.widthAnchor.constraint(equalToConstant: 20),
+                accessory.heightAnchor.constraint(equalToConstant: 20),
+
+                scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                scroll.topAnchor.constraint(equalTo: header.bottomAnchor),
+                scroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            ])
+        } else {
+            NSLayoutConstraint.activate([
+                header.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 6),
+                header.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -6),
+                header.topAnchor.constraint(equalTo: view.topAnchor),
+                header.heightAnchor.constraint(equalToConstant: 26),
+                scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                scroll.topAnchor.constraint(equalTo: header.bottomAnchor),
+                scroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            ])
+        }
         return view
+    }
+
+    @objc private func addWorkspaceClicked() {
+        onAddWorkspace?()
     }
 
     private func setSection(_ scroll: NSScrollView, expanded: Bool) {
