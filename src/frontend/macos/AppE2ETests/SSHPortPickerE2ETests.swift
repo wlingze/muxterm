@@ -14,6 +14,7 @@ final class SSHPortPickerE2ETests: XCTestCase {
             styleMask: [.titled, .closable], backing: .buffered, defer: false
         )
         bar = StatusBarView(frame: .zero)
+        bar.showsTrailingButtons = true
         window.contentView = bar
         window.orderFront(nil)
     }

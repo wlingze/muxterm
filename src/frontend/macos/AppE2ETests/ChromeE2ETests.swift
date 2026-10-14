@@ -156,6 +156,7 @@ final class ChromeE2ETests: XCTestCase {
 
     func testWorkspaceButtonShowsAggregatePresentationAndInvokesPanel() {
         let bar = StatusBarView(frame: .zero)
+        bar.showsTrailingButtons = true
         window.contentView = bar
         window.setContentSize(NSSize(width: 900, height: 24))
         window.orderFront(nil)
@@ -177,6 +178,7 @@ final class ChromeE2ETests: XCTestCase {
 
     func testNotifyButtonInvokesAttentionCallbackWhenNPositive() {
         let bar = StatusBarView(frame: .zero)
+        bar.showsTrailingButtons = true
         window.contentView = bar
         window.orderFront(nil)
         var clicks = 0
@@ -239,6 +241,7 @@ final class ChromeE2ETests: XCTestCase {
 
     func testStatusButtonsReceivePhysicalHitTesting() throws {
         let bar = StatusBarView(frame: NSRect(x: 0, y: 0, width: 900, height: 28))
+        bar.showsTrailingButtons = true
         window.contentView = bar
         window.orderFront(nil)
         bar.layoutSubtreeIfNeeded()
@@ -366,6 +369,66 @@ final class ChromeE2ETests: XCTestCase {
         XCTAssertTrue(naturalWidths.allSatisfy { $0 < StatusBarTabOverflow.fixedTabWidth })
     }
 
+    /// 等宽 tab 必须在窗口变宽后重新铺满：不能锁住旧宽度，把多出来的
+    /// 空间塞在最后一个 tab 前面（截图里的空洞）。
+    func testEqualWidthTabsTileViewportAfterWindowGrows() {
+        let host = NSView(frame: NSRect(x: 0, y: 0, width: 900, height: 24))
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 24),
+            styleMask: [.titled], backing: .buffered, defer: false
+        )
+        let bar = StatusBarView(frame: .zero)
+        bar.translatesAutoresizingMaskIntoConstraints = false
+        host.addSubview(bar)
+        NSLayoutConstraint.activate([
+            bar.leadingAnchor.constraint(equalTo: host.leadingAnchor),
+            bar.trailingAnchor.constraint(equalTo: host.trailingAnchor),
+            bar.topAnchor.constraint(equalTo: host.topAnchor),
+            bar.bottomAnchor.constraint(equalTo: host.bottomAnchor),
+        ])
+        window.contentView = host
+        window.orderFront(nil)
+        defer { window.orderOut(nil) }
+
+        bar.tabBarStyle = .equalWidth
+        bar.updateTabs([
+            Tab(id: 1, name: "muxterm", isActive: false),
+            Tab(id: 2, name: "yaklang-workspace", isActive: false),
+            Tab(id: 3, name: "yaklang-workspace", isActive: false),
+            Tab(id: 4, name: "yaklang-workspace", isActive: false),
+            Tab(id: 5, name: "legion", isActive: false),
+            Tab(id: 6, name: "ssa.to", isActive: true),
+        ])
+
+        for width in [900.0, 1400.0, 1100.0] {
+            host.frame = NSRect(x: 0, y: 0, width: width, height: 24)
+            window.setContentSize(NSSize(width: width, height: 24))
+            host.layoutSubtreeIfNeeded()
+
+            let frames = bar.testTabButtonFrames()
+            XCTAssertEqual(frames.count, 6)
+            let widths = frames.map(\.width)
+            XCTAssertLessThanOrEqual(
+                (widths.max() ?? 0) - (widths.min() ?? 0),
+                1,
+                "等宽样式下每个 tab 必须等宽: \(widths)"
+            )
+            for index in 1..<frames.count {
+                XCTAssertLessThanOrEqual(
+                    frames[index].minX - frames[index - 1].maxX,
+                    3,
+                    "tab 必须首尾相接，不能出现空洞: \(frames) @\(width)"
+                )
+            }
+            XCTAssertEqual(
+                frames[frames.count - 1].maxX,
+                bar.testTabViewportFrame().width,
+                accuracy: 1,
+                "最后一个 tab 必须收在视口右边界，不能贴到最右边留出空洞 @\(width)"
+            )
+        }
+    }
+
     func testTmuxStatusDoesNotOverrideCoreTabOrder() {
         let bar = StatusBarView(frame: .zero)
         window.contentView = bar
@@ -402,6 +465,7 @@ final class ChromeE2ETests: XCTestCase {
 
     func testStatusDotClickOpensPopoverWithSshSummary() {
         let bar = StatusBarView(frame: .zero)
+        bar.showsTrailingButtons = true
         window.contentView = bar
         window.setFrame(NSRect(x: 0, y: 0, width: 960, height: 80), display: true)
         window.orderFront(nil)
@@ -438,6 +502,7 @@ final class ChromeE2ETests: XCTestCase {
 
     func testSshPopoverDoesNotInventUnavailableUploadMetrics() {
         let bar = StatusBarView(frame: .zero)
+        bar.showsTrailingButtons = true
         window.contentView = bar
         window.orderFront(nil)
         bar.updateConnectionStatus(
@@ -456,6 +521,7 @@ final class ChromeE2ETests: XCTestCase {
 
     func testConnectionPopoverUpdatesAndRefreshesWithoutReopening() throws {
         let bar = StatusBarView(frame: .zero)
+        bar.showsTrailingButtons = true
         window.contentView = bar
         window.orderFront(nil)
         var refreshes = 0
@@ -481,6 +547,7 @@ final class ChromeE2ETests: XCTestCase {
 
     func testConnectionErrorUsesNativeErrorIconAndDetailRow() {
         let bar = StatusBarView(frame: .zero)
+        bar.showsTrailingButtons = true
         window.contentView = bar
         window.orderFront(nil)
         bar.updateConnectionStatus(
