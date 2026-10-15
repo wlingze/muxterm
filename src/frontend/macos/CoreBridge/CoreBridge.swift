@@ -691,6 +691,51 @@ final class CoreBridge {
         }
     }
 
+    struct LaunchLog {
+        var debug: Bool
+        var file: String?
+    }
+
+    struct BuildInfo {
+        var version: String
+        var commit: String
+        var logFile: String
+    }
+
+    /// CLI 参数优先，否则读配置 `[debug]`。开启后日志写到临时目录或 `log_dir`。
+    static func resolveLaunchLog(cliDebug: Bool, cliLogFile: String?) -> LaunchLog {
+        let pointer = withOptionalCString(cliLogFile) { filePtr in
+            muxterm_resolve_launch_log_json(nil, cliDebug ? 1 : 0, filePtr)
+        }
+        guard let pointer else { return LaunchLog(debug: cliDebug, file: cliLogFile) }
+        defer { muxterm_free_string(pointer) }
+        let text = String(cString: pointer)
+        guard let data = text.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return LaunchLog(debug: cliDebug, file: cliLogFile) }
+        let debug = object["debug"] as? Bool ?? cliDebug
+        let file = object["file"] as? String
+        return LaunchLog(debug: debug, file: file?.isEmpty == true ? nil : file)
+    }
+
+    static func buildInfo() -> BuildInfo {
+        guard let pointer = muxterm_build_info_json() else {
+            return BuildInfo(version: "unknown", commit: "unknown", logFile: "")
+        }
+        defer { muxterm_free_string(pointer) }
+        let text = String(cString: pointer)
+        guard let data = text.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return BuildInfo(version: "unknown", commit: "unknown", logFile: "")
+        }
+        return BuildInfo(
+            version: object["version"] as? String ?? "unknown",
+            commit: object["commit"] as? String ?? "unknown",
+            logFile: object["log_file"] as? String ?? ""
+        )
+    }
+
     /// 初始化 core 的 tracing 日志（debug 级别 + 可选文件）。
     /// 由 CLI `muxterm gui --debug --log-file` 转发参数后调用；返回 0=成功。
     static func initLogging(debug: Bool, logFile: String?) -> Int32 {

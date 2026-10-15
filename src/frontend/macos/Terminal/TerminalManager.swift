@@ -23,6 +23,8 @@ final class TerminalManager: TerminalInputHandler {
     private var sourcePaneSizes: [UInt32: (cols: Int, rows: Int)] = [:]
     private var fontFamily: String
     private var fontSize: CGFloat
+    private var lineSpacing: CGFloat
+    private var columnSpacing: CGFloat
     /// 隐藏 Workspace 仍然消费 Core 事件，但不创建不可见的 AppKit/SwiftTerm
     /// view。已有 view 继续 feed PTY。
     private var viewCreationEnabled = true
@@ -171,13 +173,17 @@ final class TerminalManager: TerminalInputHandler {
         workspaceID: String? = nil,
         runtimeID: String? = nil,
         fontFamily: String = MuxtermTerminalFont.defaultFamily,
-        fontSize: CGFloat = MuxtermTerminalFont.defaultSize
+        fontSize: CGFloat = MuxtermTerminalFont.defaultSize,
+        lineSpacing: CGFloat = MuxtermTerminalFont.defaultSpacing,
+        columnSpacing: CGFloat = MuxtermTerminalFont.defaultSpacing
     ) {
         self.bridge = bridge
         self.workspaceID = workspaceID
         self.runtimeID = runtimeID
         self.fontFamily = fontFamily
         self.fontSize = MuxtermTerminalFont.clamp(fontSize)
+        self.lineSpacing = MuxtermTerminalFont.clampSpacing(lineSpacing)
+        self.columnSpacing = MuxtermTerminalFont.clampSpacing(columnSpacing)
     }
 
     /// 连接面板切换 local / SSH session 后更新桥接对象。
@@ -512,7 +518,9 @@ final class TerminalManager: TerminalInputHandler {
         let view = MuxTerminalView(
             paneId: paneId,
             fontFamily: fontFamily,
-            fontSize: fontSize
+            fontSize: fontSize,
+            lineSpacing: lineSpacing,
+            columnSpacing: columnSpacing
         )
         view.muxtermResizeGridWithView = LocalPaneGridPolicy.allowsViewGridResize(
             usesClientResize: usesClientResize
@@ -1271,7 +1279,9 @@ final class TerminalManager: TerminalInputHandler {
             bounds: contentSize,
             family: fontFamily,
             size: fontSize,
-            backingScale: scale
+            backingScale: scale,
+            lineSpacing: lineSpacing,
+            columnSpacing: columnSpacing
         )
     }
 
@@ -1316,15 +1326,33 @@ final class TerminalManager: TerminalInputHandler {
 
     /// 运行期调整所有终端视图的字体（Cmd +/- / Cmd 0），
     /// 并立即按新字符格重新同步 PTY / tmux client 尺寸。
-    func setFont(family: String? = nil, size: CGFloat, container: NSView?) {
+    func setFont(
+        family: String? = nil,
+        size: CGFloat,
+        lineSpacing: CGFloat? = nil,
+        columnSpacing: CGFloat? = nil,
+        container: NSView?
+    ) {
         let nextFamily = family.flatMap { $0.isEmpty ? nil : $0 } ?? fontFamily
         let nextSize = MuxtermTerminalFont.clamp(size)
-        let changed = nextFamily != fontFamily || nextSize != fontSize
+        let nextLine = lineSpacing.map(MuxtermTerminalFont.clampSpacing) ?? self.lineSpacing
+        let nextColumn = columnSpacing.map(MuxtermTerminalFont.clampSpacing) ?? self.columnSpacing
+        let changed = nextFamily != fontFamily
+            || nextSize != fontSize
+            || abs(nextLine - self.lineSpacing) > 0.001
+            || abs(nextColumn - self.columnSpacing) > 0.001
         fontFamily = nextFamily
         fontSize = nextSize
+        self.lineSpacing = nextLine
+        self.columnSpacing = nextColumn
         guard changed else { return }
         for view in views.values {
-            view.setFont(family: fontFamily, size: fontSize)
+            view.setFont(
+                family: fontFamily,
+                size: fontSize,
+                lineSpacing: self.lineSpacing,
+                columnSpacing: self.columnSpacing
+            )
         }
         guard !views.isEmpty else { return }
         let ids = Set(views.keys)

@@ -39,6 +39,8 @@ let appLibSources = [
     "App/TargetConfigWindow.swift",
     "App/RemoteDirectoryPickerWindow.swift",
     "App/SettingsWindow.swift",
+    "App/FontPicker.swift",
+    "App/AboutWindow.swift",
     "App/DeveloperToolAccess.swift",
     "App/WorkspaceSidebar.swift",
     "Terminal/TerminalView.swift",

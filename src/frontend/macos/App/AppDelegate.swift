@@ -207,16 +207,19 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         do {
             let options = Self.resolveBackend(from: CommandLine.arguments)
-            // `--log-file` 时把 stderr 也接到同一文件，NSSplitView / IMK /
-            // NSLog 不再刷终端。
-            if let logFile = options.logFile,
+            let launchLog = CoreBridge.resolveLaunchLog(
+                cliDebug: options.debug,
+                cliLogFile: options.logFile
+            )
+            // `--log-file` 或配置里的 debug 目录时，把 stderr 也接到同一文件。
+            if let logFile = launchLog.file,
                GuiLogFilePolicy.shouldRedirectStandardError(logFile: logFile),
                !NativeNotificationService.isSuppressedProcess
             {
                 Self.redirectStandardError(to: logFile)
             }
-            if options.debug || options.logFile != nil {
-                let rc = CoreBridge.initLogging(debug: options.debug, logFile: options.logFile)
+            if launchLog.debug || launchLog.file != nil {
+                let rc = CoreBridge.initLogging(debug: launchLog.debug, logFile: launchLog.file)
                 if rc != 0 {
                     fputs("muxterm: 初始化日志失败\n", Darwin.stderr)
                     CoreBridge.log("初始化日志失败", level: "error")
@@ -232,7 +235,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 Thread.sleep(forTimeInterval: 0.3)
                 _ = bridge.pollWorkspaceEvents()
             }
-            let wc = MainWindowController(bridge: bridge, debug: options.debug)
+            let wc = MainWindowController(
+                bridge: bridge,
+                debug: options.debug || launchLog.debug
+            )
             mainWindow = wc
             NativeNotificationService.shared.configure { [weak wc] in
                 wc?.revealAttentionFromSystemNotification()

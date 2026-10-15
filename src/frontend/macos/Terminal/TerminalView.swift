@@ -1,4 +1,5 @@
 import AppKit
+import CoreText
 import ImageIO
 import MuxtermChrome
 import SwiftTerm
@@ -29,20 +30,38 @@ enum ClipboardImageCodec {
 /// 已创建的 view 直接读取 SwiftTerm 实际 backing-pixel 尺寸；这里只供
 /// attach spawn 前尚无 Surface 时计算初始 client hint。
 enum MuxTerminalGridMetrics {
-    static func makeFont(family: String, size: CGFloat) -> NSFont {
-        NSFont(name: family, size: size)
+    static func makeFont(
+        family: String,
+        size: CGFloat,
+        columnSpacing: CGFloat = MuxtermTerminalFont.defaultSpacing
+    ) -> NSFont {
+        let base = NSFont(name: family, size: size)
             ?? NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
+        let spacing = MuxtermTerminalFont.clampSpacing(columnSpacing)
+        guard abs(spacing - 1) > 0.001 else { return base }
+        // SwiftTerm 的字符格宽度来自字形 advance。水平间距用字体矩阵加宽，
+        // 100% 时保持原字形，不额外拉伸。
+        var transform = CGAffineTransform(scaleX: spacing, y: 1)
+        let scaled = CTFontCreateWithFontDescriptor(
+            base.fontDescriptor,
+            size,
+            &transform
+        )
+        return scaled as NSFont
     }
 
     static func cellSizeInPoints(
         family: String,
         size: CGFloat,
-        backingScale: CGFloat
+        backingScale: CGFloat,
+        lineSpacing: CGFloat = MuxtermTerminalFont.defaultSpacing,
+        columnSpacing: CGFloat = MuxtermTerminalFont.defaultSpacing
     ) -> (width: CGFloat, height: CGFloat) {
-        let font = makeFont(family: family, size: size)
+        let font = makeFont(family: family, size: size, columnSpacing: columnSpacing)
         let glyph = font.glyph(withName: "W")
         let rawWidth = font.advancement(forGlyph: glyph).width
         let rawHeight = ceil(font.ascender - font.descender + font.leading)
+            * MuxtermTerminalFont.clampSpacing(lineSpacing)
         let scale = max(backingScale, 1)
         return (
             max(ceil(rawWidth * scale) / scale, 1),
@@ -54,13 +73,17 @@ enum MuxTerminalGridMetrics {
         bounds: NSSize,
         family: String,
         size: CGFloat,
-        backingScale: CGFloat
+        backingScale: CGFloat,
+        lineSpacing: CGFloat = MuxtermTerminalFont.defaultSpacing,
+        columnSpacing: CGFloat = MuxtermTerminalFont.defaultSpacing
     ) -> (UInt16, UInt16)? {
         guard bounds.width >= 16, bounds.height >= 17 else { return nil }
         let cell = cellSizeInPoints(
             family: family,
             size: size,
-            backingScale: backingScale
+            backingScale: backingScale,
+            lineSpacing: lineSpacing,
+            columnSpacing: columnSpacing
         )
         let cols = Int(floor(bounds.width / cell.width))
         let rows = Int(floor(bounds.height / cell.height))
@@ -238,15 +261,20 @@ final class MuxTerminalView: TerminalView {
     /// PTY 没有这个查询，继续保留原来的 10k 行体验。
     private static let fallbackHistoryCapacity = 10_000
 
+    private var columnSpacing = MuxtermTerminalFont.defaultSpacing
+
     init(
         paneId: UInt32,
         fontFamily: String = MuxtermTerminalFont.defaultFamily,
         fontSize: CGFloat = MuxtermTerminalFont.defaultSize,
+        lineSpacing: CGFloat = MuxtermTerminalFont.defaultSpacing,
+        columnSpacing: CGFloat = MuxtermTerminalFont.defaultSpacing,
         frame: NSRect = .zero
     ) {
         self.paneId = paneId
         self.fontFamily = fontFamily
         self.fontSize = MuxtermTerminalFont.clamp(fontSize)
+        self.columnSpacing = MuxtermTerminalFont.clampSpacing(columnSpacing)
         super.init(frame: frame)
         // SwiftTerm 为每条可见滚动条预留 ~16pt，模型列数会比 tmux pane 少
         // 1–2 列（`processSizeChange` 用 getEffectiveWidth 扣掉滚动条宽度）。
@@ -262,7 +290,11 @@ final class MuxTerminalView: TerminalView {
         // 原始字节从 Surface feed 路径移除或改写。
         getTerminal().registerOscHandler(code: 133) { _ in }
         wantsLayer = true
-        font = Self.makeFont(family: fontFamily, size: self.fontSize)
+        font = Self.makeFont(family: fontFamily, size: self.fontSize, columnSpacing: self.columnSpacing)
+        let nextLineSpacing = MuxtermTerminalFont.clampSpacing(lineSpacing)
+        if abs(self.lineSpacing - nextLineSpacing) > 0.001 {
+            self.lineSpacing = nextLineSpacing
+        }
         // 主题与终端内所有颜色绑定：新建视图用当前 activePalette
         // （默认浅色白底黑字；dark 才是 Mocha 深色）。
         applyPalette(MuxtermTerminalColors.activePalette)
@@ -1134,10 +1166,15 @@ final class MuxTerminalView: TerminalView {
 
     /// 与 SwiftTerm `computeFontDimensions` 相同的像素对齐，不再做第二次 round。
     private func swiftTermCellSize() -> (width: CGFloat, height: CGFloat) {
-        let font = Self.makeFont(family: fontFamily, size: fontSize)
+        let font = Self.makeFont(
+            family: fontFamily,
+            size: fontSize,
+            columnSpacing: columnSpacing
+        )
         let glyph = font.glyph(withName: "W")
         let rawWidth = font.advancement(forGlyph: glyph).width
         let rawHeight = ceil(font.ascender - font.descender + font.leading)
+            * MuxtermTerminalFont.clampSpacing(lineSpacing)
         let scale = window?.backingScaleFactor
             ?? NSScreen.main?.backingScaleFactor
             ?? 1
@@ -1319,20 +1356,49 @@ final class MuxTerminalView: TerminalView {
     }
 
     /// 运行期修改字体（Cmd +/- / Cmd 0）；SwiftTerm 会重算字符格并 resize 模型。
-    func setFont(family: String? = nil, size: CGFloat? = nil) {
+    /// 字号和间距都没变时不赋值，避免 resetFont 清掉选区。
+    func setFont(
+        family: String? = nil,
+        size: CGFloat? = nil,
+        lineSpacing: CGFloat? = nil,
+        columnSpacing: CGFloat? = nil
+    ) {
         if let family, !family.isEmpty, family != fontFamily {
             fontFamily = family
         }
         if let size {
             fontSize = MuxtermTerminalFont.clamp(size)
         }
-        let next = Self.makeFont(family: fontFamily, size: fontSize)
-        if font == next { return }
-        font = next
+        if let columnSpacing {
+            self.columnSpacing = MuxtermTerminalFont.clampSpacing(columnSpacing)
+        }
+        let next = Self.makeFont(
+            family: fontFamily,
+            size: fontSize,
+            columnSpacing: self.columnSpacing
+        )
+        let nextLineSpacing = lineSpacing.map(MuxtermTerminalFont.clampSpacing) ?? self.lineSpacing
+        let fontChanged = font != next
+        let lineChanged = abs(self.lineSpacing - nextLineSpacing) > 0.001
+        guard fontChanged || lineChanged else { return }
+        if fontChanged {
+            font = next
+        }
+        if lineChanged {
+            self.lineSpacing = nextLineSpacing
+        }
     }
 
-    private static func makeFont(family: String, size: CGFloat) -> NSFont {
-        MuxTerminalGridMetrics.makeFont(family: family, size: size)
+    private static func makeFont(
+        family: String,
+        size: CGFloat,
+        columnSpacing: CGFloat
+    ) -> NSFont {
+        MuxTerminalGridMetrics.makeFont(
+            family: family,
+            size: size,
+            columnSpacing: columnSpacing
+        )
     }
 
     /// 覆写 SwiftTerm 模拟器输出通道：只有 `Terminal.sendResponse` /

@@ -54,9 +54,13 @@ private func settingsHumanize(_ raw: String) -> String {
 
 private func settingsFieldTitle(path: String, titleKey: String) -> String {
     let fallback: String = switch path {
-    case "/font/family": "Font family"
+    case "/font/family": "Font"
     case "/font/size": "Font size"
+    case "/font/line_spacing": "Line height"
+    case "/font/column_spacing": "Character width"
     case "/font/fallback": "Fallback fonts"
+    case "/debug/enabled": "Debug log"
+    case "/debug/log_dir": "Debug log directory"
     case "/theme/name": "Theme"
     case "/theme/light": "Light theme"
     case "/theme/dark": "Dark theme"
@@ -101,9 +105,13 @@ private func settingsFieldTitle(path: String, titleKey: String) -> String {
 
 private func settingsFieldDescription(path: String, titleKey: String) -> String {
     let fallback: String = switch path {
-    case "/font/family": "The typeface used to draw terminal text."
+    case "/font/family": "Search a monospace font, then set size, line height, and character width. 100 is the font's natural spacing."
     case "/font/size": "Adjust the terminal scale without changing your display settings."
+    case "/font/line_spacing": "Vertical spacing as a percent. 100 keeps the font's natural line height."
+    case "/font/column_spacing": "Horizontal spacing as a percent. 100 keeps the font's natural width."
     case "/font/fallback": "Comma-separated fonts used when the primary family is missing a glyph."
+    case "/debug/enabled": "Write a debug log on launch, without running Muxterm from a terminal."
+    case "/debug/log_dir": "Directory for the debug log. Empty uses a temporary muxterm-logs folder."
     case "/theme/name": "Choose a fixed theme or follow your system appearance."
     case "/theme/light": "Theme used when the system is in light mode."
     case "/theme/dark": "Theme used when the system is in dark mode."
@@ -194,6 +202,7 @@ private func settingsCategoryHint(_ id: String) -> String {
     case "platform": "Desktop specific"
     case "projects": "Launch profiles"
     case "shortcuts": "Keyboard"
+    case "debug": "Launch log"
     default: "General"
     }
     return settingsText("settings.category.\(id).hint", fallback: fallback)
@@ -202,6 +211,7 @@ private func settingsCategoryHint(_ id: String) -> String {
 private func settingsCategoryDescription(_ id: String) -> String {
     let fallback: String = switch id {
     case "appearance": "Tune the terminal you look at all day: type, scale, and color."
+    case "debug": "Turn on a debug log and choose where it is written."
     case "runtime": "Set defaults for new workspaces, panes, and terminal history."
     case "quick_panel": "Choose how far back recent workspace usage affects Quick Panel order."
     case "attention": "Decide when Muxterm should surface work that needs your attention."
@@ -228,6 +238,7 @@ private func settingsCategoryIcon(_ id: String) -> String {
     case "platform": return "⌘"
     case "projects": return "▦"
     case "shortcuts": return "⌨"
+    case "debug": return "🐞"
     default: return "•"
     }
 }
@@ -244,6 +255,7 @@ private func settingsSectionTitle(_ id: String) -> String {
     case "platform": "Platform"
     case "projects": "Workspace profiles"
     case "shortcuts": "Keyboard shortcuts"
+    case "debug": "Debug log"
     default: "Settings"
     }
     return settingsText("settings.section.\(id)", fallback: fallback)
@@ -303,7 +315,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
     private let configTransaction: MuxtermConfigTransactionHandler
     private var controls: [String: NSView] = [:]
     private var baselines: [String: Any] = [:]
-    private var pendingFontPath: String?
     private var dirty = false {
         didSet { updateFooterPresentation() }
     }
@@ -788,11 +799,25 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         stack.addArrangedSubview(fieldGroup)
         fieldGroup.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: contentWidth).isActive = true
 
-        for (index, field) in category.fields.enumerated() {
+        let renderedFields = category.fields.filter { field in
+            let path = field["path"] as? String ?? ""
+            if category.id == "appearance",
+               path == "/font/size" || path == "/font/line_spacing" || path == "/font/column_spacing" {
+                return false
+            }
+            return true
+        }
+        for (index, field) in renderedFields.enumerated() {
             guard let path = field["path"] as? String else { continue }
             let control = makeControl(field: field, values: values)
             controls[path] = control
             baselines[path] = value(at: path, in: values)
+            if let cluster = control as? FontSettingsCluster {
+                for (extraPath, extra) in cluster.extraControls {
+                    controls[extraPath] = extra
+                    baselines[extraPath] = value(at: extraPath, in: values)
+                }
+            }
             let titleKey = field["title_key"] as? String ?? ""
             let row = settingRow(
                 title: settingsFieldTitle(
@@ -808,7 +833,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
             row.widthAnchor.constraint(
                 equalTo: fieldGroup.widthAnchor
             ).isActive = true
-            if index < category.fields.count - 1 || category.id == "platform" {
+            if index < renderedFields.count - 1 || category.id == "platform" {
                 let divider = settingsRowDivider()
                 fieldGroup.addArrangedSubview(divider)
                 divider.widthAnchor.constraint(equalTo: fieldGroup.widthAnchor).isActive = true
@@ -898,6 +923,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         let isFullWidth = control is NSScrollView
             || control is SettingsProjectEditorView
             || control is SettingsShortcutEditorView
+            || control is FontSettingsCluster
         if isFullWidth {
             NSLayoutConstraint.activate([
                 copy.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 18),
@@ -911,11 +937,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
             return row
         }
 
-        let controlWidth: CGFloat = 250
-        if control is NSPopUpButton || control is NSTextField {
+        let controlWidth: CGFloat = 220
+        if let field = control as? NSTextField {
+            let width: CGFloat = field.alignment == .right ? 88 : controlWidth
+            field.widthAnchor.constraint(equalToConstant: width).isActive = true
+        } else if control is NSPopUpButton || control is NSStackView {
             control.widthAnchor.constraint(equalToConstant: controlWidth).isActive = true
-        } else if let composite = control as? NSStackView {
-            composite.widthAnchor.constraint(equalToConstant: controlWidth).isActive = true
         } else if !(control is NSButton) {
             control.widthAnchor.constraint(lessThanOrEqualToConstant: controlWidth).isActive = true
         }
@@ -955,7 +982,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
                 field.stringValue = number.stringValue
             }
             field.controlSize = .regular
-            field.widthAnchor.constraint(greaterThanOrEqualToConstant: 110).isActive = true
             field.setContentHuggingPriority(.defaultHigh, for: .horizontal)
             return field
         case "multiline":
@@ -1010,31 +1036,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
             entry.setContentHuggingPriority(.defaultLow, for: .horizontal)
             return entry
         case "font_picker":
-            let row = NSStackView()
-            row.orientation = .horizontal
-            row.spacing = 8
-            let entry = NSTextField()
-            entry.identifier = NSUserInterfaceItemIdentifier(path)
-            entry.target = self
-            entry.action = #selector(controlChanged(_:))
-            entry.delegate = self
-            entry.placeholderString = "JetBrains Mono"
-            if let family = baseline as? String {
-                entry.stringValue = family
-            }
-            entry.controlSize = .regular
-            entry.setContentHuggingPriority(.defaultLow, for: .horizontal)
-            let choose = NSButton(
-                title: settingsText("settings.choose", fallback: "Choose…"),
+            return FontSettingsCluster(
+                values: values,
                 target: self,
-                action: #selector(chooseFont(_:))
+                action: #selector(controlChanged(_:))
             )
-            choose.identifier = NSUserInterfaceItemIdentifier(path)
-            choose.bezelStyle = .rounded
-            row.addArrangedSubview(entry)
-            row.addArrangedSubview(choose)
-            row.setContentHuggingPriority(.defaultLow, for: .horizontal)
-            return row
         case "project_editor":
             let editor = SettingsProjectEditorView(projects: quickConnectStore.projects)
             editor.onNew = { [weak self] in
@@ -1236,6 +1242,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         if let checkbox = view as? NSButton {
             return checkbox.state == .on
         }
+        if let cluster = view as? FontSettingsCluster {
+            return cluster.family
+        }
         if let field = view as? NSTextField {
             if path == "/font/fallback" || path.hasSuffix("/fallback") {
                 return field.stringValue
@@ -1243,14 +1252,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
                     .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                     .filter { !$0.isEmpty }
             }
-            if let number = baseline as? NSNumber, let parsed = Double(field.stringValue) {
-                let type = number.objCType.pointee
-                if type == Int8(Character("q").asciiValue!)
-                    || type == Int8(Character("Q").asciiValue!)
-                    || type == Int8(Character("i").asciiValue!)
-                    || type == Int8(Character("I").asciiValue!) {
-                    return Int(parsed.rounded())
+            if path == "/font/line_spacing" || path == "/font/column_spacing" {
+                if let ratio = MuxtermTerminalFont.spacingRatio(from: field.stringValue) {
+                    return Double(ratio)
                 }
+                return baseline
+            }
+            if baseline is NSNumber || path.hasSuffix("/size") {
+                let trimmed = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard let parsed = Double(trimmed) else { return baseline }
                 return parsed
             }
             return field.stringValue
@@ -1390,21 +1400,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         let row = categoryTable.selectedRow
         guard visibleCategoryIDs.indices.contains(row) else { return }
         selectCategory(visibleCategoryIDs[row])
-    }
-
-    @objc private func chooseFont(_ sender: NSButton) {
-        pendingFontPath = sender.identifier?.rawValue
-        let fontManager = NSFontManager.shared
-        fontManager.target = self
-        fontManager.action = #selector(changeFont(_:))
-        fontManager.orderFrontFontPanel(sender)
-    }
-
-    @objc private func changeFont(_ sender: NSFontManager) {
-        guard let path = pendingFontPath, let field = textField(at: path) else { return }
-        let current = NSFont(name: field.stringValue, size: 13) ?? NSFont.systemFont(ofSize: 13)
-        field.stringValue = sender.convert(current).fontName
-        dirty = true
     }
 
     private func textField(at path: String) -> NSTextField? {

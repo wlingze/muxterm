@@ -503,6 +503,34 @@ final class MuxtermTerminalFontTests: XCTestCase {
         XCTAssertEqual(MuxtermTerminalFont.zoomed(MuxtermTerminalFont.maxSize, direction: 1), MuxtermTerminalFont.maxSize)
         XCTAssertEqual(MuxtermTerminalFont.zoomed(MuxtermTerminalFont.minSize, direction: -1), MuxtermTerminalFont.minSize)
     }
+
+    func testSpacingPercentRoundTripAndClamp() {
+        XCTAssertEqual(MuxtermTerminalFont.spacingRatio(from: "100"), 1)
+        XCTAssertEqual(MuxtermTerminalFont.spacingRatio(from: "1.1"), 1.1)
+        XCTAssertEqual(MuxtermTerminalFont.spacingRatio(from: "10"), 0.5)
+        XCTAssertEqual(MuxtermTerminalFont.spacingPercent(1.25), 125)
+        XCTAssertNil(MuxtermTerminalFont.spacingRatio(from: "wide"))
+        let settings = MuxtermTerminalFont.settings(from: """
+        [font]
+        family = "Menlo"
+        size = 18
+        line_spacing = 1.2
+        column_spacing = 0.9
+        """)
+        XCTAssertEqual(settings.lineSpacing, 1.2)
+        XCTAssertEqual(settings.columnSpacing, 0.9)
+    }
+}
+
+final class MuxtermIssueReportTests: XCTestCase {
+    func testTailKeepsTheEndAndRedactsSecrets() {
+        let text = "hello\npassword = hunter2\nline-end"
+        let tail = MuxtermIssueReport.tail(text, maxBytes: 64)
+        XCTAssertTrue(tail.contains("[redacted]"))
+        XCTAssertFalse(tail.contains("hunter2"))
+        XCTAssertTrue(tail.contains("line-end"))
+        XCTAssertEqual(MuxtermIssueReport.tail("abcdef", maxBytes: 3), "def")
+    }
 }
 
 final class MuxtermConfigTests: XCTestCase {
