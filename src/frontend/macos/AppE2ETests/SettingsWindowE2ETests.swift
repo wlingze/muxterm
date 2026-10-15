@@ -90,6 +90,58 @@ final class SettingsWindowE2ETests: XCTestCase {
         XCTAssertTrue(settings.testVisiblePageIsScrollable())
     }
 
+    func testCategoryTitlesAndHintsFitTheSidebarColumn() throws {
+        AppE2E.ensureApp()
+        let bridge = try CoreBridge(backendType: "local")
+        let settings = SettingsWindowController(bridge: bridge)
+        defer {
+            settings.window?.orderOut(nil)
+            bridge.shutdown()
+        }
+        settings.showWindow(nil)
+        settings.window?.layoutIfNeeded()
+        let columnWidth = settings.testCategoryColumnWidth()
+        XCTAssertGreaterThanOrEqual(columnWidth, 200, "分类列必须铺满侧栏，不能停在默认 100pt")
+        XCTAssertEqual(settings.testCategoryCopyOverflows(), [])
+    }
+
+    func testShortcutDialogSearchesDisablesAndSavesWithoutChangingCancel() throws {
+        AppE2E.ensureApp()
+        let bridge = try CoreBridge(backendType: "local")
+        let settings = SettingsWindowController(bridge: bridge)
+        defer {
+            settings.window?.orderOut(nil)
+            settings.testCancelShortcutDialog()
+            bridge.shutdown()
+        }
+        settings.showWindow(nil)
+        settings.testSelectCategory("shortcuts")
+        XCTAssertNotNil(findView(settings.window?.contentView, id: "muxterm.settings.shortcuts.open"))
+        XCTAssertNil(
+            findView(settings.window?.contentView, id: "muxterm.settings.shortcut.toggle_window_fullscreen"),
+            "快捷键行不应再铺在设置页里"
+        )
+
+        let before = settings.testShortcutOverrideActions()
+        settings.testOpenShortcutDialog()
+        XCTAssertTrue(settings.testShortcutDialogIsVisible())
+        settings.testSearchShortcuts("window full")
+        XCTAssertTrue(settings.testVisibleShortcutActions().contains("toggle_window_fullscreen"))
+        XCTAssertFalse(settings.testVisibleShortcutActions().contains("new_tab"))
+        settings.testSelectShortcut("toggle_window_fullscreen")
+        settings.testDisableSelectedShortcut()
+        settings.testCancelShortcutDialog()
+        XCTAssertEqual(settings.testShortcutOverrideActions(), before)
+
+        settings.testOpenShortcutDialog()
+        settings.testSearchShortcuts("")
+        settings.testSelectShortcut("toggle_window_fullscreen")
+        settings.testBindSelectedShortcut(key: "f", modifiers: ["command", "shift"])
+        settings.testSaveShortcutDialog()
+        XCTAssertTrue(settings.testShortcutOverrideActions().contains("toggle_window_fullscreen"))
+        XCTAssertFalse(settings.testShortcutDialogIsVisible())
+    }
+
     func testSettingsControlsFillAvailablePageWidth() throws {
         AppE2E.ensureApp()
         let bridge = try CoreBridge(backendType: "local")

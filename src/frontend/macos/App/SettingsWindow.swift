@@ -323,7 +323,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
     private var languageObserver: NSObjectProtocol?
     private let searchField = NSSearchField()
     private let categoryTable = NSTableView()
-    private let categoryScroll = NSScrollView()
+    private let categoryScroll = MuxtermFillWidthScrollView()
     private let sidebarView = NSView()
     private let pagesContainer = NSView()
     private var categories: [Category] = []
@@ -586,7 +586,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         pagesContainer.setAccessibilityIdentifier("muxterm.settings.pages")
 
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("category"))
+        column.minWidth = 180
+        column.width = 216
+        column.resizingMask = .autoresizingMask
         categoryTable.addTableColumn(column)
+        categoryTable.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
+        categoryTable.autoresizingMask = [.width, .height]
         categoryTable.headerView = nil
         categoryTable.rowHeight = 46
         categoryTable.intercellSpacing = NSSize(width: 0, height: 3)
@@ -1387,7 +1392,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         let cell = (tableView.makeView(withIdentifier: identifier, owner: self) as? SettingsCategoryCellView)
             ?? SettingsCategoryCellView(frame: .zero)
         cell.identifier = identifier
-        cell.configure(title: category.title, hint: category.hint, icon: settingsCategoryIcon(category.id))
+        cell.configure(
+            title: category.title,
+            hint: category.hint,
+            icon: settingsCategoryIcon(category.id),
+            identifier: category.id
+        )
         cell.setAccessibilityIdentifier("muxterm.settings.category.\(category.id)")
         return cell
     }
@@ -1534,6 +1544,89 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
     func testSidebarWidth() -> CGFloat {
         window?.contentView?.layoutSubtreeIfNeeded()
         return sidebarView.frame.width
+    }
+
+    func testCategoryColumnWidth() -> CGFloat {
+        window?.contentView?.layoutSubtreeIfNeeded()
+        categoryScroll.tile()
+        return categoryTable.tableColumns.first?.width ?? 0
+    }
+
+    /// 逐行强制创建 cell，返回仍然放不下的标题或说明。
+    func testCategoryCopyOverflows() -> [String] {
+        window?.contentView?.layoutSubtreeIfNeeded()
+        categoryScroll.tile()
+        var overflows: [String] = []
+        for row in 0..<categoryTable.numberOfRows {
+            categoryTable.scrollRowToVisible(row)
+            categoryTable.layoutSubtreeIfNeeded()
+            guard let cell = categoryTable.view(atColumn: 0, row: row, makeIfNecessary: true) else {
+                overflows.append("row \(row) missing")
+                continue
+            }
+            cell.layoutSubtreeIfNeeded()
+            func visit(_ view: NSView) {
+                if let label = view as? NSTextField,
+                   (label.font?.pointSize ?? 99) <= 12,
+                   !label.stringValue.isEmpty {
+                    let needed = ceil(label.attributedStringValue.size().width)
+                    if needed > label.bounds.width + 1 {
+                        overflows.append("\(label.stringValue) needs \(needed) has \(label.bounds.width)")
+                    }
+                }
+                view.subviews.forEach(visit)
+            }
+            visit(cell)
+        }
+        return overflows
+    }
+
+    func testOpenShortcutDialog() {
+        shortcutEditor?.openDialog()
+    }
+
+    func testShortcutDialogIsVisible() -> Bool {
+        shortcutEditor?.dialogIsVisible ?? false
+    }
+
+    func testSearchShortcuts(_ query: String) {
+        shortcutEditor?.search(query)
+    }
+
+    func testVisibleShortcutActions() -> [String] {
+        shortcutEditor?.visibleActions() ?? []
+    }
+
+    func testSelectShortcut(_ action: String) {
+        shortcutEditor?.select(action)
+    }
+
+    func testDisableSelectedShortcut() {
+        shortcutEditor?.disableSelected()
+    }
+
+    func testResetSelectedShortcut() {
+        shortcutEditor?.resetSelected()
+    }
+
+    func testSaveShortcutDialog() {
+        shortcutEditor?.saveDialog()
+    }
+
+    func testCancelShortcutDialog() {
+        shortcutEditor?.cancelDialog()
+    }
+
+    func testBindSelectedShortcut(key: String, modifiers: [String]) {
+        shortcutEditor?.bindSelected(key: key, modifiers: modifiers)
+    }
+
+    func testShortcutOverrideActions() -> [String] {
+        shortcutEditor?.overrideJSON().compactMap { $0["action"] as? String } ?? []
+    }
+
+    private var shortcutEditor: SettingsShortcutEditorView? {
+        controls["/shortcuts/overrides"] as? SettingsShortcutEditorView
     }
 
     func testSearchPlaceholder() -> String? {
@@ -1740,10 +1833,12 @@ private final class SettingsCategoryCellView: NSTableCellView {
         build()
     }
 
-    func configure(title: String, hint: String, icon: String) {
+    func configure(title: String, hint: String, icon: String, identifier: String) {
         titleLabel.stringValue = title
         hintLabel.stringValue = hint
         iconLabel.stringValue = icon
+        titleLabel.setAccessibilityIdentifier("muxterm.settings.category.title.\(identifier)")
+        hintLabel.setAccessibilityIdentifier("muxterm.settings.category.hint.\(identifier)")
     }
 
     private func build() {
@@ -1759,12 +1854,14 @@ private final class SettingsCategoryCellView: NSTableCellView {
 
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         titleLabel.font = .systemFont(ofSize: 12, weight: .semibold)
-        titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.lineBreakMode = .byClipping
+        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         hintLabel.translatesAutoresizingMaskIntoConstraints = false
         hintLabel.font = .systemFont(ofSize: 10)
         hintLabel.textColor = .secondaryLabelColor
-        hintLabel.lineBreakMode = .byTruncatingTail
+        hintLabel.lineBreakMode = .byClipping
+        hintLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         let copy = NSStackView(views: [titleLabel, hintLabel])
         copy.translatesAutoresizingMaskIntoConstraints = false
@@ -2004,14 +2101,13 @@ private final class SettingsProjectEditorView: NSView {
     }
 }
 
-/// 设置页里直接查看和修改快捷键，不再跳到外部管理器。
+/// 设置页只放入口。搜索、录制、禁用、重置和保存都在独立弹窗里完成。
 private final class SettingsShortcutEditorView: NSView {
     var onChange: (() -> Void)?
 
     private var rows: [ShortcutEditorRow]
-    private var recordingAction: String?
-    private let list = NSStackView()
-    private let hint = NSTextField(labelWithString: "")
+    private var dialog: ShortcutSettingsDialog?
+    private let summary = NSTextField(labelWithString: "")
 
     init(overrides: [(action: String, bindings: [ShortcutChord])]) {
         let defaults = ShortcutCatalog.defaults()
@@ -2019,30 +2115,30 @@ private final class SettingsShortcutEditorView: NSView {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
 
+        let hint = NSTextField(labelWithString: settingsText(
+            "settings.shortcuts.manager_hint",
+            fallback: "Search, record, disable, or reset shortcuts in a separate window. Save here, then Apply."
+        ))
         hint.font = .systemFont(ofSize: 11)
         hint.textColor = .secondaryLabelColor
-        hint.stringValue = settingsText(
-            "settings.shortcuts.manager_hint",
-            fallback: "Click a shortcut, press the new keys, then Apply."
-        )
         hint.lineBreakMode = .byWordWrapping
         hint.maximumNumberOfLines = 2
 
-        list.orientation = .vertical
-        list.alignment = .width
-        list.spacing = 4
-        list.translatesAutoresizingMaskIntoConstraints = false
+        summary.font = .systemFont(ofSize: 11, weight: .medium)
+        summary.textColor = .labelColor
+        summary.lineBreakMode = .byTruncatingTail
 
-        let scroll = NSScrollView()
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-        scroll.hasVerticalScroller = true
-        scroll.drawsBackground = false
-        scroll.documentView = list
-        scroll.heightAnchor.constraint(equalToConstant: 280).isActive = true
+        let open = NSButton(
+            title: settingsText("settings.shortcuts.open", fallback: "Edit shortcuts…"),
+            target: self,
+            action: #selector(openDialog)
+        )
+        open.bezelStyle = .rounded
+        open.setAccessibilityIdentifier("muxterm.settings.shortcuts.open")
 
-        let stack = NSStackView(views: [hint, scroll])
+        let stack = NSStackView(views: [hint, summary, open])
         stack.orientation = .vertical
-        stack.alignment = .width
+        stack.alignment = .leading
         stack.spacing = 8
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
@@ -2051,9 +2147,8 @@ private final class SettingsShortcutEditorView: NSView {
             stack.trailingAnchor.constraint(equalTo: trailingAnchor),
             stack.topAnchor.constraint(equalTo: topAnchor),
             stack.bottomAnchor.constraint(equalTo: bottomAnchor),
-            list.widthAnchor.constraint(equalTo: scroll.widthAnchor),
         ])
-        rebuild()
+        refreshSummary()
     }
 
     @available(*, unavailable)
@@ -2061,116 +2156,309 @@ private final class SettingsShortcutEditorView: NSView {
         nil
     }
 
-    override var acceptsFirstResponder: Bool { recordingAction != nil }
-
     func overrideJSON() -> [[String: Any]] {
         ShortcutEditor.overrideValues(from: rows)
     }
 
-    override func keyDown(with event: NSEvent) {
-        guard let action = recordingAction else {
-            super.keyDown(with: event)
+    var dialogIsVisible: Bool { dialog?.window?.isVisible == true }
+
+    @objc func openDialog() {
+        let dialog = ShortcutSettingsDialog(rows: rows)
+        dialog.onSave = { [weak self] next in
+            guard let self else { return }
+            self.rows = next
+            self.refreshSummary()
+            self.onChange?()
+        }
+        self.dialog = dialog
+        guard let window, let sheet = dialog.window else {
+            dialog.showWindow(nil)
             return
         }
-        if event.keyCode == 53 {
-            recordingAction = nil
-            rebuild()
-            return
+        window.beginSheet(sheet) { [weak self] _ in
+            self?.dialog = nil
         }
-        guard let chord = Self.chord(from: event) else { return }
+    }
+
+    func search(_ query: String) { dialog?.search(query) }
+    func visibleActions() -> [String] { dialog?.visibleActions() ?? [] }
+    func select(_ action: String) { dialog?.select(action) }
+    func disableSelected() { dialog?.disableSelected() }
+    func resetSelected() { dialog?.resetSelected() }
+    func saveDialog() { dialog?.save() }
+    func cancelDialog() { dialog?.cancel() }
+    func bindSelected(key: String, modifiers: [String]) {
+        dialog?.bindSelected(ShortcutChord(key: key, modifiers: modifiers))
+    }
+
+    private func refreshSummary() {
+        let count = rows.filter(\.customized).count
+        summary.stringValue = settingsText(
+            "settings.shortcuts.summary",
+            fallback: "{{count}} custom shortcut(s)",
+            arguments: ["count": "\(count)"]
+        )
+    }
+}
+
+/// 快捷键表格：搜索、录制、禁用、重置，保存后才写回设置草稿。
+private final class ShortcutSettingsDialog: NSWindowController, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
+    var onSave: (([ShortcutEditorRow]) -> Void)?
+
+    private var rows: [ShortcutEditorRow]
+    private var selectedAction: String?
+    private var recording = false
+    private let table = NSTableView()
+    private let searchField = NSSearchField()
+    private let bindingLabel = NSTextField(labelWithString: "")
+    private let capture = ShortcutCaptureView()
+
+    init(rows: [ShortcutEditorRow]) {
+        self.rows = rows
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 760, height: 520),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = settingsText("settings.shortcuts.dialog.title", fallback: "Shortcuts")
+        super.init(window: window)
+        window.isReleasedWhenClosed = false
+        build()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    func search(_ query: String) {
+        searchField.stringValue = query
+        reload()
+    }
+
+    func visibleActions() -> [String] {
+        filtered.map(\.action)
+    }
+
+    func select(_ action: String) {
+        selectedAction = action
+        if let index = filtered.firstIndex(where: { $0.action == action }) {
+            table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+        }
+        refreshBinding()
+    }
+
+    func disableSelected() {
+        guard let action = selectedAction else { return }
+        rows = ShortcutEditor.disable(rows, action: action)
+        recording = false
+        reload()
+    }
+
+    func resetSelected() {
+        guard let action = selectedAction else { return }
+        rows = ShortcutEditor.reset(rows, action: action)
+        recording = false
+        reload()
+    }
+
+    func bindSelected(_ chord: ShortcutChord) {
+        guard let action = selectedAction else { return }
         guard let next = ShortcutEditor.bind(rows, action: action, chord: chord) else {
             NSSound.beep()
             return
         }
         rows = next
-        recordingAction = nil
-        onChange?()
-        rebuild()
+        recording = false
+        reload()
     }
 
-    private func rebuild() {
-        list.arrangedSubviews.forEach {
-            list.removeArrangedSubview($0)
-            $0.removeFromSuperview()
-        }
-        for row in rows {
-            list.addArrangedSubview(makeRow(row))
+    func save() {
+        onSave?(rows)
+        closeSheet(returnCode: .OK)
+    }
+
+    func cancel() {
+        closeSheet(returnCode: .cancel)
+    }
+
+    private var filtered: [ShortcutEditorRow] {
+        let query = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !query.isEmpty else { return rows }
+        return rows.filter { row in
+            row.action.lowercased().contains(query)
+                || row.title.lowercased().contains(query)
+                || row.effective.contains { $0.symbolLabel.lowercased().contains(query) }
         }
     }
 
-    private func makeRow(_ row: ShortcutEditorRow) -> NSView {
-        let title = NSTextField(labelWithString: row.title)
-        title.font = .systemFont(ofSize: 12, weight: .medium)
-        title.lineBreakMode = .byTruncatingTail
-        title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+    private func build() {
+        guard let content = window?.contentView else { return }
+        content.setAccessibilityIdentifier("muxterm.shortcuts.dialog")
+        searchField.placeholderString = settingsText("settings.shortcuts.search", fallback: "Search actions")
+        searchField.delegate = self
+        searchField.setAccessibilityIdentifier("muxterm.shortcuts.search")
+        searchField.translatesAutoresizingMaskIntoConstraints = false
 
-        let binding = NSButton(title: bindingTitle(row), target: self, action: #selector(record(_:)))
-        binding.bezelStyle = .rounded
-        binding.identifier = NSUserInterfaceItemIdentifier(row.action)
-        binding.setAccessibilityIdentifier("muxterm.settings.shortcut.\(row.action)")
-        binding.setContentHuggingPriority(.required, for: .horizontal)
+        let actionColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("action"))
+        actionColumn.title = settingsText("settings.shortcuts.column.action", fallback: "Action")
+        actionColumn.width = 280
+        let bindingColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("binding"))
+        bindingColumn.title = settingsText("settings.shortcuts.column.binding", fallback: "Shortcut")
+        bindingColumn.width = 420
+        table.addTableColumn(actionColumn)
+        table.addTableColumn(bindingColumn)
+        table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
+        table.headerView = NSTableHeaderView()
+        table.dataSource = self
+        table.delegate = self
+        table.allowsEmptySelection = false
+        table.setAccessibilityIdentifier("muxterm.shortcuts.table")
+        if let first = rows.first { selectedAction = first.action }
 
-        let disable = NSButton(
-            title: settingsText("settings.shortcuts.disable", fallback: "Disable"),
-            target: self,
-            action: #selector(disable(_:))
+        let scroll = MuxtermFillWidthScrollView()
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.hasVerticalScroller = true
+        scroll.documentView = table
+
+        bindingLabel.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        bindingLabel.setAccessibilityIdentifier("muxterm.shortcuts.binding")
+        capture.onKey = { [weak self] event in self?.handleKey(event) ?? false }
+
+        let record = button("settings.shortcuts.record", "Record", #selector(recordSelected), "muxterm.shortcuts.record")
+        let disable = button("settings.shortcuts.disable", "Disable", #selector(disableClicked), "muxterm.shortcuts.disable")
+        let reset = button("settings.shortcuts.reset", "Reset", #selector(resetClicked), "muxterm.shortcuts.reset")
+        let saveButton = button("settings.shortcuts.save", "Save", #selector(saveClicked), "muxterm.shortcuts.save")
+        let cancelButton = button("settings.shortcuts.cancel", "Cancel", #selector(cancelClicked), "muxterm.shortcuts.cancel")
+        let actions = NSStackView(views: [bindingLabel, record, disable, reset, NSView(), cancelButton, saveButton])
+        actions.orientation = .horizontal
+        actions.alignment = .centerY
+        actions.spacing = 8
+        actions.translatesAutoresizingMaskIntoConstraints = false
+
+        content.addSubview(searchField)
+        content.addSubview(scroll)
+        content.addSubview(actions)
+        content.addSubview(capture)
+        NSLayoutConstraint.activate([
+            searchField.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
+            searchField.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
+            searchField.topAnchor.constraint(equalTo: content.topAnchor, constant: 16),
+            scroll.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
+            scroll.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
+            scroll.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 12),
+            scroll.bottomAnchor.constraint(equalTo: actions.topAnchor, constant: -12),
+            actions.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
+            actions.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
+            actions.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -16),
+            capture.widthAnchor.constraint(equalToConstant: 1),
+            capture.heightAnchor.constraint(equalToConstant: 1),
+        ])
+        reload()
+    }
+
+    private func button(_ key: String, _ fallback: String, _ action: Selector, _ identifier: String) -> NSButton {
+        let button = NSButton(title: settingsText(key, fallback: fallback), target: self, action: action)
+        button.bezelStyle = .rounded
+        button.setAccessibilityIdentifier(identifier)
+        return button
+    }
+
+    private func reload() {
+        let selected = selectedAction
+        table.reloadData()
+        if let selected, let index = filtered.firstIndex(where: { $0.action == selected }) {
+            table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+        } else if !filtered.isEmpty {
+            selectedAction = filtered[0].action
+            table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        }
+        refreshBinding()
+        window?.contentView?.layoutSubtreeIfNeeded()
+        (table.enclosingScrollView as? MuxtermFillWidthScrollView)?.tile()
+    }
+
+    private func refreshBinding() {
+        guard let row = rows.first(where: { $0.action == selectedAction }) else {
+            bindingLabel.stringValue = ""
+            return
+        }
+        if recording {
+            bindingLabel.stringValue = settingsText("settings.shortcuts.recording", fallback: "Press shortcut…")
+        } else if row.isDisabled {
+            bindingLabel.stringValue = settingsText("settings.shortcuts.disabled", fallback: "Disabled")
+        } else if row.effective.isEmpty {
+            bindingLabel.stringValue = settingsText("settings.shortcuts.unset", fallback: "Not set")
+        } else {
+            bindingLabel.stringValue = row.effective.map(\.symbolLabel).joined(separator: ", ")
+        }
+    }
+
+    private func handleKey(_ event: NSEvent) -> Bool {
+        guard recording else { return false }
+        if event.keyCode == 53 {
+            recording = false
+            refreshBinding()
+            return true
+        }
+        guard let chord = Self.chord(from: event) else {
+            NSSound.beep()
+            return true
+        }
+        bindSelected(chord)
+        return true
+    }
+
+    private func closeSheet(returnCode: NSApplication.ModalResponse) {
+        guard let window else { return }
+        if let parent = window.sheetParent {
+            parent.endSheet(window, returnCode: returnCode)
+        }
+        window.orderOut(nil)
+    }
+
+    @objc private func recordSelected() {
+        guard selectedAction != nil else { return }
+        recording = true
+        refreshBinding()
+        window?.makeFirstResponder(capture)
+    }
+
+    @objc private func disableClicked() { disableSelected() }
+    @objc private func resetClicked() { resetSelected() }
+    @objc private func saveClicked() { save() }
+    @objc private func cancelClicked() { cancel() }
+
+    func controlTextDidChange(_ notification: Notification) {
+        guard (notification.object as? NSSearchField) === searchField else { return }
+        reload()
+    }
+
+    func numberOfRows(in tableView: NSTableView) -> Int { filtered.count }
+
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        let item = filtered[row]
+        let label = NSTextField(labelWithString: tableColumn?.identifier.rawValue == "binding"
+            ? item.effective.map(\.symbolLabel).joined(separator: ", ")
+            : item.title)
+        if item.isDisabled, tableColumn?.identifier.rawValue == "binding" {
+            label.stringValue = settingsText("settings.shortcuts.disabled", fallback: "Disabled")
+        }
+        label.lineBreakMode = .byTruncatingTail
+        label.setAccessibilityIdentifier(
+            tableColumn?.identifier.rawValue == "binding"
+                ? "muxterm.shortcuts.binding.\(item.action)"
+                : "muxterm.shortcuts.action.\(item.action)"
         )
-        disable.bezelStyle = .rounded
-        disable.identifier = NSUserInterfaceItemIdentifier(row.action)
-        disable.setContentHuggingPriority(.required, for: .horizontal)
-
-        let reset = NSButton(
-            title: settingsText("settings.shortcuts.reset", fallback: "Reset"),
-            target: self,
-            action: #selector(reset(_:))
-        )
-        reset.bezelStyle = .rounded
-        reset.identifier = NSUserInterfaceItemIdentifier(row.action)
-        reset.isEnabled = row.customized
-        reset.setContentHuggingPriority(.required, for: .horizontal)
-
-        let line = NSStackView(views: [title, binding, disable, reset])
-        line.orientation = .horizontal
-        line.alignment = .centerY
-        line.spacing = 6
-        line.edgeInsets = NSEdgeInsets(top: 2, left: 8, bottom: 2, right: 8)
-        settingsStyleCard(line, fill: NSColor.controlBackgroundColor.withAlphaComponent(0.42))
-        return line
+        return label
     }
 
-    private func bindingTitle(_ row: ShortcutEditorRow) -> String {
-        if recordingAction == row.action {
-            return settingsText("settings.shortcuts.recording", fallback: "Press shortcut…")
-        }
-        if row.customized, row.bindings.isEmpty {
-            return settingsText("settings.shortcuts.disabled", fallback: "Disabled")
-        }
-        if row.effective.isEmpty {
-            return settingsText("settings.shortcuts.unset", fallback: "Not set")
-        }
-        return row.effective.map(\.symbolLabel).joined(separator: ", ")
-    }
-
-    @objc private func record(_ sender: NSButton) {
-        recordingAction = sender.identifier?.rawValue
-        window?.makeFirstResponder(self)
-        rebuild()
-    }
-
-    @objc private func disable(_ sender: NSButton) {
-        guard let action = sender.identifier?.rawValue else { return }
-        rows = ShortcutEditor.disable(rows, action: action)
-        recordingAction = nil
-        onChange?()
-        rebuild()
-    }
-
-    @objc private func reset(_ sender: NSButton) {
-        guard let action = sender.identifier?.rawValue else { return }
-        rows = ShortcutEditor.reset(rows, action: action)
-        recordingAction = nil
-        onChange?()
-        rebuild()
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        let index = table.selectedRow
+        guard filtered.indices.contains(index) else { return }
+        selectedAction = filtered[index].action
+        refreshBinding()
     }
 
     private static func chord(from event: NSEvent) -> ShortcutChord? {
@@ -2182,16 +2470,11 @@ private final class SettingsShortcutEditorView: NSView {
         guard command || option || control else { return nil }
         let key: String
         switch event.keyCode {
-        case 36, 76:
-            key = "\r"
-        case 123:
-            key = "left"
-        case 124:
-            key = "right"
-        case 125:
-            key = "down"
-        case 126:
-            key = "up"
+        case 36, 76: key = "\r"
+        case 123: key = "left"
+        case 124: key = "right"
+        case 125: key = "down"
+        case 126: key = "up"
         default:
             guard let raw = event.charactersIgnoringModifiers?.lowercased(),
                   let first = raw.first,
@@ -2205,5 +2488,15 @@ private final class SettingsShortcutEditorView: NSView {
         if shift { modifiers.append("shift") }
         if command { modifiers.append("command") }
         return ShortcutChord(key: key, modifiers: modifiers)
+    }
+}
+
+private final class ShortcutCaptureView: NSView {
+    var onKey: ((NSEvent) -> Bool)?
+    override var acceptsFirstResponder: Bool { true }
+    override func keyDown(with event: NSEvent) {
+        if onKey?(event) != true {
+            super.keyDown(with: event)
+        }
     }
 }
