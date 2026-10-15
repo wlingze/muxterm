@@ -116,6 +116,7 @@ enum PaletteCommand: Equatable {
     case decreaseFontSize
     case resetFontSize
     case quit
+    case appInfo
 }
 
 enum PaletteItemKind: Equatable {
@@ -189,6 +190,7 @@ extension PaletteCommand {
         case .decreaseFontSize: return "palette.decreaseFontSize"
         case .resetFontSize: return "palette.resetFontSize"
         case .quit: return "palette.quit"
+        case .appInfo: return "palette.appInfo"
         }
     }
 
@@ -235,6 +237,7 @@ extension PaletteCommand {
         case "palette.decreaseFontSize": return .decreaseFontSize
         case "palette.resetFontSize": return .resetFontSize
         case "palette.quit": return .quit
+        case "palette.appInfo": return .appInfo
         default: return nil
         }
     }

@@ -212,11 +212,17 @@ public enum MuxtermTerminalFont {
     public struct Settings: Equatable, Sendable {
         public var family: String
         public var size: CGFloat
+        public var lineSpacing: CGFloat
+        public var columnSpacing: CGFloat
 
         public init(family: String = MuxtermTerminalFont.defaultFamily,
-                    size: CGFloat = MuxtermTerminalFont.defaultSize) {
+                    size: CGFloat = MuxtermTerminalFont.defaultSize,
+                    lineSpacing: CGFloat = MuxtermTerminalFont.defaultSpacing,
+                    columnSpacing: CGFloat = MuxtermTerminalFont.defaultSpacing) {
             self.family = family
             self.size = size
+            self.lineSpacing = MuxtermTerminalFont.clampSpacing(lineSpacing)
+            self.columnSpacing = MuxtermTerminalFont.clampSpacing(columnSpacing)
         }
     }
 
@@ -225,12 +231,18 @@ public enum MuxtermTerminalFont {
     public static let minSize: CGFloat = 9
     public static let maxSize: CGFloat = 36
     public static let zoomStep: CGFloat = 1
+    /// 1.0 是字体本来的行高/字宽。界面按百分比显示（100）。
+    public static let defaultSpacing: CGFloat = 1
+    public static let minSpacing: CGFloat = 0.5
+    public static let maxSpacing: CGFloat = 2
 
     public static func settings(from toml: String?) -> Settings {
         guard let toml else { return Settings() }
         var inFont = false
         var family = defaultFamily
         var size = defaultSize
+        var lineSpacing = defaultSpacing
+        var columnSpacing = defaultSpacing
         for rawLine in toml.split(separator: "\n") {
             let line = rawLine.trimmingCharacters(in: .whitespaces)
             if line.hasPrefix("[") && line.hasSuffix("]") {
@@ -248,11 +260,24 @@ public enum MuxtermTerminalFont {
                 if let v = Double(unquote(rawValue)) {
                     size = CGFloat(v)
                 }
+            case "line_spacing":
+                if let v = Double(unquote(rawValue)) {
+                    lineSpacing = CGFloat(v)
+                }
+            case "column_spacing":
+                if let v = Double(unquote(rawValue)) {
+                    columnSpacing = CGFloat(v)
+                }
             default:
                 break
             }
         }
-        return Settings(family: family.isEmpty ? defaultFamily : family, size: clamp(size))
+        return Settings(
+            family: family.isEmpty ? defaultFamily : family,
+            size: clamp(size),
+            lineSpacing: lineSpacing,
+            columnSpacing: columnSpacing
+        )
     }
 
     /// 从当前字号按方向缩放（+1 增大 / -1 减小），并夹在合法区间。
@@ -262,6 +287,23 @@ public enum MuxtermTerminalFont {
 
     public static func clamp(_ size: CGFloat) -> CGFloat {
         min(max(size, minSize), maxSize)
+    }
+
+    public static func clampSpacing(_ value: CGFloat) -> CGFloat {
+        guard value.isFinite else { return defaultSpacing }
+        return min(max(value, minSpacing), maxSpacing)
+    }
+
+    /// 设置框显示百分比。大于 3 的输入视为百分比（100 = 1.0），否则视为倍数。
+    public static func spacingRatio(from display: String) -> CGFloat? {
+        let trimmed = display.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let value = Double(trimmed), value.isFinite else { return nil }
+        let ratio = value > 3 ? value / 100 : value
+        return clampSpacing(CGFloat(ratio))
+    }
+
+    public static func spacingPercent(_ ratio: CGFloat) -> Int {
+        Int((clampSpacing(ratio) * 100).rounded())
     }
 
     private static func unquote(_ raw: String) -> String {

@@ -243,6 +243,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private struct ResolvedSettings {
         var fontFamily = MuxtermTerminalFont.defaultFamily
         var fontSize = MuxtermTerminalFont.defaultSize
+        var lineSpacing = MuxtermTerminalFont.defaultSpacing
+        var columnSpacing = MuxtermTerminalFont.defaultSpacing
         var themeName = "light"
         var statusBarMode = StatusBarMode.tmux
         var tabBarPosition = TabBarPosition.bottom
@@ -262,7 +264,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         else { return resolved }
         if let font = values["font"] as? [String: Any] {
             resolved.fontFamily = font["family"] as? String ?? resolved.fontFamily
-            resolved.fontSize = CGFloat(font["size"] as? Double ?? Double(resolved.fontSize))
+            if let size = Self.cgFloatValue(font["size"]) {
+                resolved.fontSize = size
+            }
+            if let line = Self.cgFloatValue(font["line_spacing"]) {
+                resolved.lineSpacing = line
+            }
+            if let column = Self.cgFloatValue(font["column_spacing"]) {
+                resolved.columnSpacing = column
+            }
         }
         if let theme = values["theme"] as? [String: Any] {
             resolved.themeName = theme["name"] as? String ?? resolved.themeName
@@ -293,6 +303,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             resolved.projects = QuickConnectStore.targetConfigs(from: projects)
         }
         return resolved
+    }
+
+    private static func cgFloatValue(_ value: Any?) -> CGFloat? {
+        guard let number = value as? NSNumber else { return nil }
+        return CGFloat(truncating: number)
     }
 
     private static func configValues(from bridge: CoreBridge) -> [String: Any] {
@@ -339,7 +354,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         configuredFontSize = MuxtermTerminalFont.clamp(resolved.fontSize)
         terminalFontSettings = MuxtermTerminalFont.Settings(
             family: resolved.fontFamily,
-            size: configuredFontSize
+            size: configuredFontSize,
+            lineSpacing: resolved.lineSpacing,
+            columnSpacing: resolved.columnSpacing
         )
         self.bridge = bridge
         self.terminalManager = TerminalManager(
@@ -347,7 +364,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             workspaceID: initialWorkspaceID,
             runtimeID: initialWorkspace?.runtime,
             fontFamily: terminalFontSettings.family,
-            fontSize: terminalFontSettings.size
+            fontSize: terminalFontSettings.size,
+            lineSpacing: terminalFontSettings.lineSpacing,
+            columnSpacing: terminalFontSettings.columnSpacing
         )
         self.content = ContentView(terminalManager: terminalManager)
         content.statusBar.setDebug(debug)
@@ -1363,6 +1382,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             guard let self else { return }
             var fontFamily = self.terminalFontSettings.family
             var fontSize = self.terminalFontSettings.size
+            var lineSpacing = self.terminalFontSettings.lineSpacing
+            var columnSpacing = self.terminalFontSettings.columnSpacing
             var fontChanged = false
             for operation in operations {
                 guard let path = operation["path"] as? String else { continue }
@@ -1400,8 +1421,18 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                         fontChanged = true
                     }
                 case "/font/size":
-                    if let value = operation["value"] as? NSNumber {
-                        fontSize = CGFloat(truncating: value)
+                    if let value = Self.cgFloatValue(operation["value"]) {
+                        fontSize = value
+                        fontChanged = true
+                    }
+                case "/font/line_spacing":
+                    if let value = Self.cgFloatValue(operation["value"]) {
+                        lineSpacing = value
+                        fontChanged = true
+                    }
+                case "/font/column_spacing":
+                    if let value = Self.cgFloatValue(operation["value"]) {
+                        columnSpacing = value
                         fontChanged = true
                     }
                 case "/shortcuts/preset", "/shortcuts/primary_key", "/shortcuts/overrides",
@@ -1414,10 +1445,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             if fontChanged {
                 self.terminalFontSettings.family = fontFamily
                 self.terminalFontSettings.size = fontSize
+                self.terminalFontSettings.lineSpacing = lineSpacing
+                self.terminalFontSettings.columnSpacing = columnSpacing
                 self.configuredFontSize = fontSize
                 self.terminalManager.setFont(
                     family: fontFamily,
                     size: fontSize,
+                    lineSpacing: lineSpacing,
+                    columnSpacing: columnSpacing,
                     container: self.content.paneLayout
                 )
             }
@@ -3777,7 +3812,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             bounds: bounds.size,
             family: terminalFontSettings.family,
             size: terminalFontSettings.size,
-            backingScale: scale
+            backingScale: scale,
+            lineSpacing: terminalFontSettings.lineSpacing,
+            columnSpacing: terminalFontSettings.columnSpacing
         )
     }
 
@@ -3973,7 +4010,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 workspaceID: opened.id,
                 runtimeID: resolved.runtime.rawValue,
                 fontFamily: terminalFontSettings.family,
-                fontSize: terminalFontSettings.size
+                fontSize: terminalFontSettings.size,
+                lineSpacing: terminalFontSettings.lineSpacing,
+                columnSpacing: terminalFontSettings.columnSpacing
             ),
             targetConfig: resolved,
             now: 0
@@ -4106,6 +4145,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         terminalManager.setFont(
             family: terminalFontSettings.family,
             size: terminalFontSettings.size,
+            lineSpacing: terminalFontSettings.lineSpacing,
+            columnSpacing: terminalFontSettings.columnSpacing,
             container: content.paneLayout
         )
         // scene 的视图沿用当前主题 palette（终端跟随主题）。
@@ -4681,6 +4722,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 keywords: "quit exit 退出",
                 kind: .command(.quit)
             ),
+            PaletteItem(
+                title: i18n.trDynamic("command.muxtermInfo", fallback: "Muxterm Info"),
+                detail: i18n.trDynamic(
+                    "command.muxtermInfo.detail",
+                    fallback: "Version, debug log, and GitHub issue"
+                ),
+                keywords: "about info version commit debug log github issue 关于 版本 日志",
+                kind: .command(.appInfo)
+            ),
         ]
 
         let tabItems = tabEntriesForSwitching().map { entry in
@@ -4911,6 +4961,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         case .command(.quit):
             commandPalette.dismiss()
             NSApp.terminate(nil)
+        case .command(.appInfo):
+            commandPalette.dismiss()
+            MuxtermInfoWindowController.show(relativeTo: window)
         case .command:
             break
         case .host(let host):
