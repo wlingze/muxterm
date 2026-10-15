@@ -2757,15 +2757,15 @@ final class KeyBindingsConfigTests: XCTestCase {
         )
         XCTAssertEqual(
             KeyBindings.action(for: KeyChord(command: true, shift: true, key: "f")),
-            .togglePaneFullscreen
+            .toggleWindowFullscreen
         )
         XCTAssertEqual(
             KeyBindings.action(for: KeyChord(command: true, shift: true, key: "e")),
-            .togglePaneFullscreen
+            .toggleWindowFullscreen
         )
         XCTAssertEqual(
             KeyBindings.action(for: KeyChord(command: true, shift: true, key: "\r")),
-            .togglePaneFullscreen
+            .toggleWindowFullscreen
         )
     }
 

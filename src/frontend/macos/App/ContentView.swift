@@ -122,7 +122,10 @@ final class ContentView: NSView {
         jumpLatestTrailing = jumpTrailing
         lastSeenTrailing = seenTrailing
 
+        let notificationWidth = imagePasteBanner.widthAnchor.constraint(equalToConstant: 420)
+        notificationWidth.priority = .defaultHigh
         NSLayoutConstraint.activate([
+            notificationWidth,
             disconnectOverlay.centerXAnchor.constraint(equalTo: centerXAnchor),
             disconnectOverlay.centerYAnchor.constraint(equalTo: centerYAnchor),
             seenTrailing,
@@ -143,12 +146,11 @@ final class ContentView: NSView {
             updateBanner.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
             updateBanner.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
             updateBanner.topAnchor.constraint(equalTo: topAnchor, constant: 6),
-            imagePasteBanner.centerXAnchor.constraint(equalTo: centerXAnchor),
-            imagePasteBanner.topAnchor.constraint(equalTo: paneLayout.topAnchor, constant: 10),
+            imagePasteBanner.bottomAnchor.constraint(equalTo: paneLayout.bottomAnchor, constant: -12),
             imagePasteBanner.widthAnchor.constraint(greaterThanOrEqualToConstant: 220),
-            imagePasteBanner.widthAnchor.constraint(lessThanOrEqualToConstant: 560),
-            imagePasteBanner.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 10),
-            imagePasteBanner.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -10),
+            imagePasteBanner.widthAnchor.constraint(lessThanOrEqualToConstant: 420),
+            imagePasteBanner.leadingAnchor.constraint(greaterThanOrEqualTo: paneLayout.leadingAnchor, constant: 12),
+            imagePasteBanner.trailingAnchor.constraint(equalTo: paneLayout.trailingAnchor, constant: -12),
         ])
 
         // 顶部：status | pane

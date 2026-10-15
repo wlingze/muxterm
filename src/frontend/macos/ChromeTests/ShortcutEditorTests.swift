@@ -119,7 +119,7 @@ final class ShortcutEditorTests: XCTestCase {
 
     func testCatalogUsesQwertyPositionForColemakFullscreen() throws {
         let rows = ShortcutCatalog.defaults()
-        let fullscreen = try XCTUnwrap(rows.first { $0.action == "toggle_pane_fullscreen" })
+        let fullscreen = try XCTUnwrap(rows.first { $0.action == "toggle_window_fullscreen" })
         XCTAssertTrue(fullscreen.chords.contains(ShortcutChord(key: "f", modifiers: ["command", "shift"])))
         XCTAssertTrue(fullscreen.chords.contains(ShortcutChord(key: "e", modifiers: ["command", "shift"])))
         XCTAssertTrue(fullscreen.chords.contains(ShortcutChord(key: "\r", modifiers: ["command", "shift"])))

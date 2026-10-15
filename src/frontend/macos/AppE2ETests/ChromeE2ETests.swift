@@ -156,7 +156,7 @@ final class ChromeE2ETests: XCTestCase {
 
     func testWorkspaceButtonShowsAggregatePresentationAndInvokesPanel() {
         let bar = StatusBarView(frame: .zero)
-        bar.showsTrailingButtons = true
+        bar.showsWorkspaceButton = true
         window.contentView = bar
         window.setContentSize(NSSize(width: 900, height: 24))
         window.orderFront(nil)
@@ -237,6 +237,35 @@ final class ChromeE2ETests: XCTestCase {
             bar.testAttentionCountLabel().contains("3"),
             "阻塞色铃铛应显示阻塞数 3，而不是总数 4: \(bar.testAttentionCountLabel())"
         )
+    }
+
+    func testOnlyWorkspaceIconIsHiddenByDefault() throws {
+        let bar = StatusBarView(frame: NSRect(x: 0, y: 0, width: 900, height: 28))
+        window.contentView = bar
+        window.orderFront(nil)
+        bar.layoutSubtreeIfNeeded()
+        let workspace = try XCTUnwrap(find(bar, "muxterm.statusWorkspaces"))
+        XCTAssertTrue(workspace.isHidden)
+        XCTAssertEqual(workspace.frame.width, 0, accuracy: 0.5)
+        for id in ["muxterm.statusDot", "muxterm.statusAttention", "muxterm.newTabButton", "muxterm.windowFullscreen", "muxterm.openSettings"] {
+            let button = try XCTUnwrap(find(bar, id))
+            XCTAssertFalse(button.isHidden, "\(id) 应默认保留")
+            XCTAssertGreaterThan(button.frame.width, 0)
+            let point = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: bar.superview)
+            XCTAssertTrue(bar.hitTest(point) === button, "\(id) 必须可点击")
+        }
+        var fullscreen = 0
+        var settings = 0
+        bar.onToggleWindowFullscreen = { fullscreen += 1 }
+        bar.onOpenSettings = { settings += 1 }
+        (find(bar, "muxterm.windowFullscreen") as? NSButton)?.performClick(nil)
+        (find(bar, "muxterm.openSettings") as? NSButton)?.performClick(nil)
+        XCTAssertEqual(fullscreen, 1)
+        XCTAssertEqual(settings, 1)
+        bar.allowsTabCreation = false
+        bar.layoutSubtreeIfNeeded()
+        XCTAssertTrue(try XCTUnwrap(find(bar, "muxterm.newTabButton")).isHidden)
+        XCTAssertEqual(try XCTUnwrap(find(bar, "muxterm.newTabButton")).frame.width, 0, accuracy: 0.5)
     }
 
     func testStatusButtonsReceivePhysicalHitTesting() throws {

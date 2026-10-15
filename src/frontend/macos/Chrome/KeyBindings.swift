@@ -28,6 +28,9 @@ public enum KeyAction: Equatable, Hashable, Sendable {
     case decreaseFontSize
     case resetFontSize
     case togglePaneFullscreen
+    /// macOS 原生整个窗口全屏，与 pane zoom 分开。
+    case toggleWindowFullscreen
+    case openSettings
     case cycleLayout
     case toggleSidebar
     /// 进入前端 Shells 聚合槽；不会向终端发送清屏字符。
@@ -140,7 +143,7 @@ public enum KeyBindings {
             if key == "s" { return .openShells }
         }
 
-        // Cmd+P：QuickConnect 面板。右侧四个状态按钮已去掉，这个快捷键保留。
+        // Cmd+P：QuickConnect 面板。右侧 workspace 图标隐藏，但快捷键保留。
         if chord.command, !chord.shift, !chord.option, !chord.control, key == "p" {
             return .quickConnect
         }
@@ -176,19 +179,19 @@ public enum KeyBindings {
         if chord.command, chord.shift, !chord.option, !chord.control, key == "l" {
             return .cycleLayout
         }
-        // Cmd+Enter / Alt+Enter / Cmd+Shift+Enter / Cmd+Shift+F / Cmd+Shift+E：全屏切换
-        // 用户习惯 Colemak（Cmd+Shift+F / Cmd+Shift+Enter），对应 QWERTY 物理键位为
-        // Cmd+Shift+E / Cmd+Shift+Enter；统一支持，保持手部肌肉记忆一致。
-        if key == "\r" || key == "\n" {
-            if chord.command, !chord.option {
-                return .togglePaneFullscreen
+        // 无红绿灯时，Cmd-Shift-F/E/Enter 切换整个 macOS 窗口全屏。
+        // Colemak 和 QWERTY 两个物理手位都保留；Cmd/Alt-Enter 仍只放大 pane。
+        if chord.command, !chord.option, !chord.control {
+            if chord.shift, ["f", "e", "\r", "\n"].contains(key) {
+                return .toggleWindowFullscreen
             }
-            if chord.option, !chord.command {
-                return .togglePaneFullscreen
+            if !chord.shift, key == "," {
+                return .openSettings
             }
         }
-        if chord.command, chord.shift, !chord.option, !chord.control {
-            if key == "f" || key == "e" {
+        if key == "\r" || key == "\n" {
+            if !chord.shift, !chord.control,
+               (chord.command && !chord.option) || (chord.option && !chord.command) {
                 return .togglePaneFullscreen
             }
         }
