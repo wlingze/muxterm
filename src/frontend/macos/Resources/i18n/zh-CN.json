@@ -435,6 +435,8 @@
   "settings.shortcuts.open": "编辑快捷键…",
   "settings.shortcuts.dialog.title": "快捷键",
   "settings.shortcuts.search": "搜索操作",
+  "settings.shortcuts.layout_hint": "QWERTY 和 Colemak 同一个键上印的字母不同，手的位置不变。窗口全屏在 QWERTY 上是 ⌘⇧E，在 Colemak 上是 ⌘⇧F。数字和标点位置不变。改过的快捷键会在这一行出现「复位」。",
+  "settings.shortcuts.restore": "复位",
   "settings.shortcuts.summary": "{{count}} 个自定义快捷键",
   "settings.shortcuts.column.action": "操作",
   "settings.shortcuts.column.binding": "按键",
