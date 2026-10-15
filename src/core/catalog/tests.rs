@@ -431,6 +431,70 @@ fn herdr_workspace_id_shared_by_namespaces_is_ambiguous() {
 }
 
 #[test]
+fn missing_explicit_herdr_workspace_is_recreated() {
+    let (catalog, create_calls, created_specs) = herdr_resolver_catalog(
+        Vec::new(),
+        vec![herdr_candidate(
+            "default",
+            "/home/wlz/.config/herdr/herdr.sock",
+            "w1",
+        )],
+    );
+    let mut connections = ConnectionRegistry::new();
+    let mut target = provisional_ssh_herdr_target();
+    target.session = Some("default".into());
+    target.socket = Some("/home/wlz/.config/herdr/herdr.sock".into());
+    target.workspace_id = Some("w8".into());
+
+    let resolved = catalog
+        .resolve_target(&mut connections, &target, ResolveIntent::CreateIfMissing)
+        .expect("失效的 workspace id 应按 CreateIfMissing 新建");
+
+    assert_eq!(create_calls.load(Ordering::SeqCst), 1);
+    let created = created_specs.lock().unwrap();
+    assert_eq!(created.len(), 1);
+    assert_eq!(created[0].path, "~/Developer/yaklang-workspace");
+    assert_eq!(created[0].session, "default");
+    assert_eq!(
+        created[0].socket.as_deref(),
+        Some("/home/wlz/.config/herdr/herdr.sock")
+    );
+    assert_ne!(created[0].path, "w8");
+    assert_eq!(
+        resolved.canonical.workspace_id.as_deref(),
+        Some("w-created")
+    );
+    assert_ne!(resolved.canonical.workspace_id.as_deref(), Some("w1"));
+    assert_eq!(resolved.spec.path, "w-created");
+    assert!(resolved.spec.create);
+    assert_eq!(resolved.canonical.path, target.path);
+}
+
+#[test]
+fn missing_explicit_herdr_workspace_stays_unmatched_for_attach_only() {
+    let (catalog, create_calls, _) = herdr_resolver_catalog(
+        Vec::new(),
+        vec![herdr_candidate(
+            "default",
+            "/home/wlz/.config/herdr/herdr.sock",
+            "w1",
+        )],
+    );
+    let mut connections = ConnectionRegistry::new();
+    let mut target = provisional_ssh_herdr_target();
+    target.session = Some("default".into());
+    target.socket = Some("/home/wlz/.config/herdr/herdr.sock".into());
+    target.workspace_id = Some("w8".into());
+
+    let error = catalog
+        .resolve_target(&mut connections, &target, ResolveIntent::AttachOnly)
+        .expect_err("AttachOnly 不能把失效身份建成新 workspace");
+
+    assert!(matches!(error, ResolveError::NoMatch { .. }));
+    assert_eq!(create_calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
 fn herdr_exact_workspace_requires_the_configured_socket() {
     let (catalog, create_calls, _) = herdr_resolver_catalog(
         Vec::new(),

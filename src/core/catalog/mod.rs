@@ -395,12 +395,22 @@ impl Catalog {
                             });
                         }
                         _ => {
-                            // 显式 workspace 身份失效时不可退回同名匹配或创建。
-                            // 否则保存的 Project 会悄悄连到另一个 workspace。
-                            return Err(resolver::ResolveError::NoMatch {
-                                identity,
-                                intent: format!("{intent:?}"),
-                            });
+                            // 显式 id 已经不在这台 Herdr 上。AttachOnly 仍失败，
+                            // 且绝不挂到同名的另一个 workspace。CreateIfMissing 则
+                            // 在原 session/socket 上新建，调用方用返回的 workspace id
+                            // 更新保存的身份。
+                            return match intent {
+                                ResolveIntent::AttachOnly => Err(resolver::ResolveError::NoMatch {
+                                    identity,
+                                    intent: format!("{intent:?}"),
+                                }),
+                                ResolveIntent::CreateIfMissing => materialize_created_herdr(
+                                    driver,
+                                    connect.as_ref(),
+                                    &scoped_descriptor,
+                                    &identity,
+                                ),
+                            };
                         }
                     }
                 }
@@ -467,27 +477,12 @@ impl Catalog {
                                     }
                                 }
                             }
-                            let runtime_spec =
-                                descriptor_to_spec(&create_descriptor).runtime_spec();
-                            let created = driver
-                                .create_identity(
-                                    connect.as_ref(),
-                                    &runtime_spec,
-                                    Some(scoped_descriptor.name.as_str()),
-                                )
-                                .map_err(|error| resolver::ResolveError::CreateNotAllowed {
-                                    identity: identity.clone(),
-                                    reason: error.to_string(),
-                                })?;
-                            let mut canonical = create_descriptor;
-                            canonical.workspace_id = Some(created.path.clone());
-                            if !created.session.is_empty() {
-                                canonical.session = Some(created.session.clone());
-                            }
-                            canonical.socket = created.socket.clone();
-                            let mut spec = descriptor_to_spec(&canonical);
-                            spec.create = true;
-                            Ok(ResolvedTarget { canonical, spec })
+                            materialize_created_herdr(
+                                driver,
+                                connect.as_ref(),
+                                &create_descriptor,
+                                &identity,
+                            )
                         }
                     },
                     [one] => Ok(self.resolved_from_candidate(&scoped_descriptor, one)),
@@ -963,6 +958,36 @@ impl Catalog {
     pub fn inventory_mut(&mut self) -> &mut Inventory {
         &mut self.inventory
     }
+}
+
+/// 在已经选好的 session/socket 上新建 Herdr workspace。
+///
+/// 创建用的 path 是项目目录。显式 workspace id 失效时也走这里，
+/// 旧 id 不会被当成工作目录，也不会挂到同名的另一个 workspace。
+fn materialize_created_herdr(
+    driver: &dyn RuntimeProvider,
+    connect: &dyn TargetConnection,
+    descriptor: &ResolvedTargetDescriptor,
+    identity: &str,
+) -> Result<ResolvedTarget, resolver::ResolveError> {
+    let mut create_descriptor = descriptor.clone();
+    create_descriptor.workspace_id = None;
+    let runtime_spec = descriptor_to_spec(&create_descriptor).runtime_spec();
+    let created = driver
+        .create_identity(connect, &runtime_spec, Some(descriptor.name.as_str()))
+        .map_err(|error| resolver::ResolveError::CreateNotAllowed {
+            identity: identity.to_string(),
+            reason: error.to_string(),
+        })?;
+    let mut canonical = create_descriptor;
+    canonical.workspace_id = Some(created.path.clone());
+    if !created.session.is_empty() {
+        canonical.session = Some(created.session.clone());
+    }
+    canonical.socket = created.socket.clone();
+    let mut spec = descriptor_to_spec(&canonical);
+    spec.create = true;
+    Ok(ResolvedTarget { canonical, spec })
 }
 
 fn normalized_optional(value: &Option<String>) -> Option<String> {
