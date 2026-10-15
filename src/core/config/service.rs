@@ -209,14 +209,17 @@ impl SettingsService {
         };
         let disk_document = ConfigDocument::from_toml(&disk_raw)?;
         let disk_revision = revision_for(&disk_raw);
+        let disk_value = serde_json::to_value(&disk_document)?;
+        // 磁盘在 begin/commit 之间被另一个窗口或迁移改过时，先做三路合并。
+        // 重复的 shortcut action 这类无法逐项对齐的数组不再让整次保存失败：
+        // 退回「磁盘为底、只覆盖用户真正改过的字段」。
         let candidate = if disk_revision == state.base_revision {
             state.draft
         } else {
-            merge_three_way(
-                &state.baseline,
-                &state.draft,
-                &serde_json::to_value(disk_document)?,
-            )?
+            match merge_three_way(&state.baseline, &state.draft, &disk_value) {
+                Ok(merged) => merged,
+                Err(_) => overlay_user_edits(&state.baseline, &state.draft, &disk_value),
+            }
         };
         let document: ConfigDocument =
             serde_json::from_value(candidate).context("合并后的配置无效")?;
@@ -526,12 +529,12 @@ fn merge_three_way(base: &Value, mine: &Value, disk: &Value) -> Result<Value> {
 }
 
 fn is_keyed_array(items: &[Value], key: &str) -> bool {
-    let mut seen = BTreeSet::new();
+    // 空数组也是键数组。重复键（同一 action 写了两次）按出现次序区分，
+    // 不能因为键不唯一就把整个配置事务判成冲突。
     items.iter().all(|item| {
         item.get(key)
             .and_then(Value::as_str)
-            .map(|value| seen.insert(value.to_string()))
-            .unwrap_or(false)
+            .is_some_and(|value| !value.is_empty())
     })
 }
 
@@ -560,14 +563,51 @@ fn merge_keyed_array(base: &[Value], mine: &[Value], disk: &[Value], key: &str) 
 }
 
 fn keyed_index<'a>(items: &'a [Value], key: &str) -> BTreeMap<String, &'a Value> {
-    items
-        .iter()
-        .filter_map(|item| {
-            item.get(key)
-                .and_then(Value::as_str)
-                .map(|id| (id.to_string(), item))
-        })
-        .collect()
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    let mut index = BTreeMap::new();
+    for item in items {
+        let Some(id) = item.get(key).and_then(Value::as_str) else {
+            continue;
+        };
+        let occurrence = counts.entry(id.to_string()).or_insert(0);
+        index.insert(format!("{id}\u{0}{occurrence}"), item);
+        *occurrence += 1;
+    }
+    index
+}
+
+/// 三路合并失败时的兜底：以磁盘为底，只覆盖用户相对基线改过的路径。
+///
+/// 对象继续向下比较。数组和标量无法安全对齐时采用用户值，避免字体保存
+/// 被无关的 shortcuts 重复项整单拒绝。用户删除的键会从结果里去掉。
+fn overlay_user_edits(base: &Value, mine: &Value, disk: &Value) -> Value {
+    if mine == base {
+        return disk.clone();
+    }
+    match (base, mine, disk) {
+        (Value::Object(base_map), Value::Object(mine_map), Value::Object(disk_map)) => {
+            let mut merged = disk_map.clone();
+            let keys: BTreeSet<String> = base_map.keys().chain(mine_map.keys()).cloned().collect();
+            for key in keys {
+                match (base_map.get(&key), mine_map.get(&key)) {
+                    (Some(base_value), Some(mine_value)) if base_value == mine_value => {}
+                    (Some(base_value), Some(mine_value)) => {
+                        let disk_value = disk_map.get(&key).unwrap_or(&Value::Null);
+                        merged.insert(key, overlay_user_edits(base_value, mine_value, disk_value));
+                    }
+                    (None, Some(mine_value)) => {
+                        merged.insert(key, mine_value.clone());
+                    }
+                    (Some(_), None) => {
+                        merged.remove(&key);
+                    }
+                    (None, None) => {}
+                }
+            }
+            Value::Object(merged)
+        }
+        _ => mine.clone(),
+    }
 }
 
 fn merge_optional(
@@ -763,6 +803,90 @@ mod tests {
         // 旧文件保留为可恢复备份，不删除。
         assert!(legacy.exists());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn duplicate_shortcut_actions_do_not_fail_three_way_merge() {
+        let item = |key: &str| serde_json::json!({"action": "new_pane_vertical", "bindings": [{"key": key}]});
+        let base = serde_json::json!({"overrides": [item("d"), item("v")]});
+        let mine = serde_json::json!({"overrides": [item("d"), item("x")]});
+        let disk = serde_json::json!({"overrides": [item("d"), item("v")]});
+        let merged = merge_three_way(&base, &mine, &disk).unwrap();
+        assert_eq!(merged["overrides"][1]["bindings"][0]["key"], "x");
+        assert_eq!(merged["overrides"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn overlay_keeps_unrelated_disk_edits_when_only_font_changes() {
+        let base = serde_json::json!({
+            "font": {"size": 13.0},
+            "shortcuts": {"overrides": [
+                {"action": "new_pane_vertical", "bindings": [{"key": "d"}]},
+                {"action": "new_pane_vertical", "bindings": [{"key": "v"}]}
+            ]}
+        });
+        let mine = serde_json::json!({
+            "font": {"size": 18.0},
+            "shortcuts": {"overrides": [
+                {"action": "new_pane_vertical", "bindings": [{"key": "d"}]},
+                {"action": "new_pane_vertical", "bindings": [{"key": "v"}]}
+            ]}
+        });
+        let disk = serde_json::json!({
+            "font": {"size": 13.0},
+            "scrollback": {"lines": 20000},
+            "shortcuts": {"overrides": [
+                {"action": "new_pane_vertical", "bindings": [{"key": "d"}]},
+                {"action": "new_pane_vertical", "bindings": [{"key": "v"}]},
+                {"action": "close_pane", "bindings": []}
+            ]}
+        });
+        let merged = overlay_user_edits(&base, &mine, &disk);
+        assert_eq!(merged["font"]["size"], 18.0);
+        assert_eq!(merged["scrollback"]["lines"], 20000);
+        assert_eq!(
+            merged["shortcuts"]["overrides"].as_array().unwrap().len(),
+            3
+        );
+    }
+
+    #[test]
+    fn commit_saves_font_when_disk_changed_under_duplicate_shortcuts() {
+        let path = temp_path("duplicate-shortcuts.toml");
+        let _ = fs::remove_file(&path);
+        fs::write(
+            &path,
+            "config_version = 1\n\n[font]\nfamily = \"Menlo\"\nsize = 13.0\n\n[shortcuts]\npreset = \"qwerty\"\nprimary_key = \"auto\"\n\n[[shortcuts.overrides]]\naction = \"new_pane_vertical\"\n\n[[shortcuts.overrides.bindings]]\nkey = \"d\"\nmodifiers = [\"alt\"]\n\n[[shortcuts.overrides]]\naction = \"new_pane_vertical\"\n\n[[shortcuts.overrides.bindings]]\nkey = \"v\"\nmodifiers = [\"alt\"]\n",
+        )
+        .unwrap();
+        let mut service = SettingsService::open(&path).unwrap();
+        let transaction = service.begin();
+        let mut disk = fs::read_to_string(&path).unwrap();
+        disk.push_str("\n[scrollback]\nlines = 20000\n");
+        fs::write(&path, disk).unwrap();
+        service
+            .patch(
+                &transaction,
+                &[JsonPatchOperation {
+                    op: "replace".into(),
+                    path: "/font/size".into(),
+                    value: Some(Value::from(18.0)),
+                }],
+            )
+            .unwrap();
+        service
+            .commit(&transaction)
+            .expect("重复 shortcut action 不能让字体保存失败");
+        assert_eq!(service.document().config.font.size, 18.0);
+        assert_eq!(service.document().config.scrollback.lines, 20_000);
+        assert_eq!(service.document().shortcuts.overrides.len(), 2);
+        assert!(service
+            .document()
+            .shortcuts
+            .overrides
+            .iter()
+            .all(|item| item.action == "new_pane_vertical"));
+        let _ = fs::remove_file(&path);
     }
 
     #[test]

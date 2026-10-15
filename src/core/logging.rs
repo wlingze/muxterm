@@ -11,8 +11,8 @@
 //! 全局 subscriber 只能初始化一次，重复 `try_init` 会返回
 //! `AlreadyInitialized`，这里视为成功，避免 FFI 与 CLI 双层初始化 panic。
 
-use std::path::PathBuf;
-use std::sync::Once;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, Once};
 
 /// 日志初始化参数。
 #[derive(Debug, Clone)]
@@ -58,6 +58,94 @@ pub fn resolve_config(cli_level: Option<String>, cli_file: Option<PathBuf>) -> L
 }
 
 static LOGGING_INIT: Once = Once::new();
+static ACTIVE_LOG_FILE: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// 当前进程实际写入的日志文件。未落盘时为 `None`。
+pub fn active_log_file() -> Option<PathBuf> {
+    ACTIVE_LOG_FILE.lock().ok().and_then(|slot| slot.clone())
+}
+
+/// debug 模式的默认日志文件：`<临时目录>/muxterm-logs/muxterm.log`。
+///
+/// `log_dir` 为空时用系统临时目录。应用可以只打开 debug，不必再从终端
+/// 重定向 `--log-file`。
+pub fn default_debug_log_file(log_dir: Option<&str>) -> PathBuf {
+    let dir = log_dir
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join("muxterm-logs"));
+    dir.join("muxterm.log")
+}
+
+/// 从配置原文里读 `[debug]`。配置整体无效时也不要挡住启动，视为未开启。
+pub fn debug_settings_from_toml(raw: &str) -> (bool, String) {
+    let Ok(value) = raw.parse::<toml::Value>() else {
+        return (false, String::new());
+    };
+    let Some(debug) = value.get("debug").and_then(toml::Value::as_table) else {
+        return (false, String::new());
+    };
+    let enabled = debug
+        .get("enabled")
+        .and_then(toml::Value::as_bool)
+        .unwrap_or(false);
+    let log_dir = debug
+        .get("log_dir")
+        .and_then(toml::Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    (enabled, log_dir)
+}
+
+/// 应用启动时的日志决定。
+///
+/// 优先级：CLI `--log-file` > CLI `--debug` > 配置 `[debug]` > 不落盘。
+/// `--debug` 不再要求调用方再给一个文件；缺省写到临时目录。
+pub fn resolve_launch_log(
+    cli_debug: bool,
+    cli_file: Option<&Path>,
+    config_toml: Option<&str>,
+) -> LoggingConfig {
+    if let Some(file) = cli_file.filter(|path| !path.as_os_str().is_empty()) {
+        return LoggingConfig {
+            level: if cli_debug {
+                "debug".into()
+            } else {
+                "info".into()
+            },
+            file: Some(file.to_path_buf()),
+        };
+    }
+    if cli_debug {
+        return LoggingConfig {
+            level: "debug".into(),
+            file: Some(default_debug_log_file(None)),
+        };
+    }
+    if let Some(raw) = config_toml {
+        let (enabled, log_dir) = debug_settings_from_toml(raw);
+        if enabled {
+            return LoggingConfig {
+                level: "debug".into(),
+                file: Some(default_debug_log_file(Some(log_dir.as_str()))),
+            };
+        }
+    }
+    LoggingConfig {
+        level: "info".into(),
+        file: None,
+    }
+}
+
+pub fn build_version() -> &'static str {
+    env!("MUXTERM_BUILD_VERSION")
+}
+
+pub fn build_commit() -> &'static str {
+    env!("MUXTERM_GIT_COMMIT")
+}
 
 /// 构造应用日志过滤器。
 ///
@@ -91,11 +179,21 @@ fn init_logging_inner(config: LoggingConfig) -> anyhow::Result<()> {
 
     match config.file {
         Some(path) => {
+            if let Some(parent) = path.parent() {
+                if !parent.as_os_str().is_empty() {
+                    std::fs::create_dir_all(parent).map_err(|e| {
+                        anyhow::anyhow!("创建日志目录失败 {}: {e}", parent.display())
+                    })?;
+                }
+            }
             let file = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
                 .open(&path)
                 .map_err(|e| anyhow::anyhow!("打开日志文件失败 {}: {e}", path.display()))?;
+            if let Ok(mut slot) = ACTIVE_LOG_FILE.lock() {
+                *slot = Some(path.clone());
+            }
             builder
                 .with_writer(std::sync::Mutex::new(file))
                 .try_init()
@@ -181,6 +279,41 @@ mod tests {
         log_message("debug", "workspace activation begin");
         log_message("error", "clipboard write failed");
         log_message("info", "ok");
+    }
+
+    #[test]
+    fn launch_log_uses_config_debug_file_without_a_terminal() {
+        let (enabled, dir) = debug_settings_from_toml(
+            "[debug]\nenabled = true\nlog_dir = \"/tmp/muxterm-custom\"\n",
+        );
+        assert!(enabled);
+        assert_eq!(dir, "/tmp/muxterm-custom");
+        let cfg = resolve_launch_log(
+            false,
+            None,
+            Some("[debug]\nenabled = true\nlog_dir = \"/tmp/muxterm-custom\"\n"),
+        );
+        assert_eq!(cfg.level, "debug");
+        assert_eq!(
+            cfg.file.as_deref(),
+            Some(Path::new("/tmp/muxterm-custom/muxterm.log"))
+        );
+
+        let cli = resolve_launch_log(true, None, Some("[debug]\nenabled = false\n"));
+        assert_eq!(cli.level, "debug");
+        assert_eq!(
+            cli.file.as_deref(),
+            Some(default_debug_log_file(None).as_path())
+        );
+
+        let file = PathBuf::from("/tmp/explicit.log");
+        let explicit = resolve_launch_log(false, Some(&file), Some("[debug]\nenabled = true\n"));
+        assert_eq!(explicit.level, "info");
+        assert_eq!(explicit.file.as_deref(), Some(file.as_path()));
+
+        let off = resolve_launch_log(false, None, Some("font = {}\n"));
+        assert!(off.file.is_none());
+        assert_eq!(off.level, "info");
     }
 
     #[test]

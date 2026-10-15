@@ -67,6 +67,8 @@ pub struct Config {
     #[serde(default)]
     pub update: UpdateConfig,
     #[serde(default)]
+    pub debug: DebugConfig,
+    #[serde(default)]
     pub keybindings: Vec<KeyBinding>,
 }
 
@@ -80,6 +82,12 @@ pub struct FontConfig {
     /// Optional fallback families, ordered from most to least preferred.
     #[serde(default)]
     pub fallback: Vec<String>,
+    /// Vertical cell spacing multiplier. `1.0` keeps the font's natural line height.
+    #[serde(default = "default_font_spacing")]
+    pub line_spacing: f32,
+    /// Horizontal cell spacing multiplier. `1.0` keeps the font's natural advance.
+    #[serde(default = "default_font_spacing")]
+    pub column_spacing: f32,
 }
 fn default_font_family() -> String {
     "Monospace".into()
@@ -87,12 +95,36 @@ fn default_font_family() -> String {
 fn default_font_size() -> f32 {
     12.0
 }
+fn default_font_spacing() -> f32 {
+    1.0
+}
 impl Default for FontConfig {
     fn default() -> Self {
         FontConfig {
             family: default_font_family(),
             size: default_font_size(),
             fallback: Vec::new(),
+            line_spacing: default_font_spacing(),
+            column_spacing: default_font_spacing(),
+        }
+    }
+}
+
+/// `[debug]`。打开后应用启动即把 debug 日志写入文件，不需要终端重定向。
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct DebugConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// 空字符串表示使用系统临时目录下的 `muxterm-logs`。
+    #[serde(default)]
+    pub log_dir: String,
+}
+
+impl Default for DebugConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            log_dir: String::new(),
         }
     }
 }
@@ -455,6 +487,7 @@ impl Default for Config {
             pane: PaneConfig::default(),
             behavior: BehaviorConfig::default(),
             update: UpdateConfig::default(),
+            debug: DebugConfig::default(),
             keybindings: default_keybindings(),
         }
     }

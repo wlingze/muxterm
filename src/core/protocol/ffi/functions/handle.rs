@@ -6,7 +6,10 @@ use std::ptr;
 
 use crate::activity::ActivityState;
 use crate::config::SettingsService;
-use crate::logging::{init_logging, log_message, LoggingConfig};
+use crate::logging::{
+    active_log_file, build_commit, build_version, init_logging, log_message, resolve_launch_log,
+    LoggingConfig,
+};
 use crate::muxterm::Muxterm;
 use crate::projects::{ProjectStore, ProjectsService};
 use crate::protocol::task::Task;
@@ -18,7 +21,7 @@ use crate::workspace::WorkspaceSpec;
 use crate::workspace::{TemplateRegistry, WorkspaceTemplate};
 
 use super::super::callbacks::FfiCallbacks;
-use super::support::{cstr_opt, MuxtermHandle};
+use super::support::{cstr_opt, json_string, MuxtermHandle};
 
 fn open_settings_service() -> SettingsService {
     match SettingsService::default_user() {
@@ -425,6 +428,65 @@ pub extern "C" fn muxterm_init_logging(log_file: *const c_char, level: *const c_
         }
     }))
     .unwrap_or(-1)
+}
+
+/// 决定应用启动时是否把 debug 日志写入文件。
+///
+/// `config_path` 为空时读用户配置。CLI `--log-file` 优先，其次 `--debug`，
+/// 再次配置 `[debug]`。返回的字符串用 `muxterm_free_string` 释放。
+#[no_mangle]
+pub extern "C" fn muxterm_resolve_launch_log_json(
+    config_path: *const c_char,
+    cli_debug: i32,
+    cli_log_file: *const c_char,
+) -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| {
+        let explicit = cstr_opt(config_path).map(std::path::PathBuf::from);
+        let path = explicit.unwrap_or_else(|| {
+            crate::config::Config::user_config_path()
+                .unwrap_or_else(|| std::path::PathBuf::from(""))
+        });
+        let raw = if path.as_os_str().is_empty() {
+            None
+        } else {
+            std::fs::read_to_string(&path).ok()
+        };
+        let cli_file = cstr_opt(cli_log_file)
+            .filter(|value| !value.trim().is_empty())
+            .map(std::path::PathBuf::from);
+        let resolved = resolve_launch_log(cli_debug != 0, cli_file.as_deref(), raw.as_deref());
+        json_string(serde_json::json!({
+            "level": resolved.level,
+            "debug": resolved.level == "debug",
+            "file": resolved.file.map(|path| path.display().to_string()),
+        }))
+    }))
+    .unwrap_or_else(|_| {
+        json_string(serde_json::json!({
+            "level": "info",
+            "debug": false,
+            "file": serde_json::Value::Null,
+        }))
+    })
+}
+
+/// 版本、commit 和当前日志文件。返回的字符串用 `muxterm_free_string` 释放。
+#[no_mangle]
+pub extern "C" fn muxterm_build_info_json() -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| {
+        json_string(serde_json::json!({
+            "version": build_version(),
+            "commit": build_commit(),
+            "log_file": active_log_file().map(|path| path.display().to_string()),
+        }))
+    }))
+    .unwrap_or_else(|_| {
+        json_string(serde_json::json!({
+            "version": "unknown",
+            "commit": "unknown",
+            "log_file": serde_json::Value::Null,
+        }))
+    })
 }
 
 /// 把一行 UI 诊断写入 tracing（与 `--log-file` 同一文件）。
