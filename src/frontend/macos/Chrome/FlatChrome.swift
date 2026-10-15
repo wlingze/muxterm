@@ -202,6 +202,32 @@ public enum MuxtermTheme: String, CaseIterable, Sendable {
         default: return .light
         }
     }
+
+    /// 固定主题盖过系统外观。white/light 永远是浅色，即使系统正在用深色模式。
+    public var appearanceName: String {
+        self == .dark ? "darkAqua" : "aqua"
+    }
+}
+
+/// 在当前桌面里占满或还原，不进入 macOS 全屏 Space。
+public enum WindowFrameZoom {
+    public static func next(
+        current: NSRect,
+        saved: NSRect?,
+        visible: NSRect
+    ) -> (frame: NSRect, saved: NSRect?) {
+        if approximately(current, visible), let saved {
+            return (saved, nil)
+        }
+        return (visible, current)
+    }
+
+    private static func approximately(_ lhs: NSRect, _ rhs: NSRect) -> Bool {
+        abs(lhs.origin.x - rhs.origin.x) < 2
+            && abs(lhs.origin.y - rhs.origin.y) < 2
+            && abs(lhs.width - rhs.width) < 2
+            && abs(lhs.height - rhs.height) < 2
+    }
 }
 
 /// 终端字体配置与缩放（纯逻辑，便于单测）。

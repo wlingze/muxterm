@@ -324,7 +324,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
     private let searchField = NSSearchField()
     private let categoryTable = NSTableView()
     private let categoryScroll = MuxtermFillWidthScrollView()
-    private let sidebarView = NSView()
+    private let sidebarView = SettingsChromeBackground(style: .sidebar)
     private let pagesContainer = NSView()
     private var categories: [Category] = []
     private var visibleCategoryIDs: [String] = []
@@ -358,6 +358,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         window.titlebarSeparatorStyle = .none
         window.isMovableByWindowBackground = true
         window.minSize = NSSize(width: 780, height: 540)
+        window.appearance = NSApp.appearance
         super.init(window: window)
         window.delegate = self
         window.setAccessibilityIdentifier("muxterm.settingsWindow")
@@ -539,15 +540,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         }
         visibleCategoryIDs = categories.map(\.id)
 
-        let root = NSView()
-        root.wantsLayer = true
-        root.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        let root = SettingsChromeBackground(style: .window)
         root.setAccessibilityIdentifier("muxterm.settings.root")
 
-        let header = NSView()
+        let header = SettingsChromeBackground(style: .header)
         header.translatesAutoresizingMaskIntoConstraints = false
-        header.wantsLayer = true
-        header.layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.35).cgColor
         root.addSubview(header)
 
         let headerTitle = NSTextField(labelWithString: settingsText(
@@ -579,8 +576,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         root.addSubview(headerSeparator)
 
         sidebarView.translatesAutoresizingMaskIntoConstraints = false
-        sidebarView.wantsLayer = true
-        sidebarView.layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.52).cgColor
         sidebarView.setAccessibilityIdentifier("muxterm.settings.categories")
         pagesContainer.translatesAutoresizingMaskIntoConstraints = false
         pagesContainer.setAccessibilityIdentifier("muxterm.settings.pages")
@@ -645,10 +640,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         separator.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(separator)
 
-        let footer = NSView()
+        let footer = SettingsChromeBackground(style: .header)
         footer.translatesAutoresizingMaskIntoConstraints = false
-        footer.wantsLayer = true
-        footer.layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.35).cgColor
         right.addSubview(footer)
         summaryLabel.textColor = .secondaryLabelColor
         summaryLabel.font = .systemFont(ofSize: 11)
@@ -1629,6 +1622,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         shortcutEditor?.cancelDialog()
     }
 
+    func testShortcutDialogOverflows() -> [String] {
+        shortcutEditor?.dialogOverflows() ?? ["dialog missing"]
+    }
+
     func testBindSelectedShortcut(key: String, modifiers: [String]) {
         shortcutEditor?.bindSelected(key: key, modifiers: modifiers)
     }
@@ -1817,6 +1814,44 @@ private func settingsAppearancePreview(values: [String: Any]) -> NSView {
     summaryRow.edgeInsets = NSEdgeInsets(top: 0, left: 16, bottom: 16, right: 16)
     preview.addArrangedSubview(summaryRow)
     return preview
+}
+
+/// 背景色按当前主题外观现算，避免系统深色把白色主题烤成黑色。
+private final class SettingsChromeBackground: NSView {
+    enum Style {
+        case window
+        case header
+        case sidebar
+    }
+
+    private let style: Style
+
+    init(style: Style) {
+        self.style = style
+        super.init(frame: .zero)
+        wantsLayer = true
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override var wantsUpdateLayer: Bool { true }
+
+    override func updateLayer() {
+        let appearance = window?.effectiveAppearance ?? effectiveAppearance
+        appearance.performAsCurrentDrawingAppearance {
+            switch style {
+            case .window:
+                layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+            case .header:
+                layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.35).cgColor
+            case .sidebar:
+                layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.52).cgColor
+            }
+        }
+    }
 }
 
 private final class SettingsCategoryRowView: NSTableRowView {
@@ -2199,6 +2234,7 @@ private final class SettingsShortcutEditorView: NSView {
     func resetSelected() { dialog?.resetSelected() }
     func saveDialog() { dialog?.save() }
     func cancelDialog() { dialog?.cancel() }
+    func dialogOverflows() -> [String] { dialog?.horizontalOverflows() ?? ["dialog missing"] }
     func layoutHint() -> String { dialog?.layoutHint() ?? "" }
     func restoreVisible(_ action: String) -> Bool { dialog?.restoreVisible(action) ?? false }
     func restoreRow(_ action: String) { dialog?.restoreRow(action) }
@@ -2339,8 +2375,9 @@ private final class ShortcutSettingsDialog: NSWindowController, NSTableViewDataS
         table.addTableColumn(actionColumn)
         table.addTableColumn(bindingColumn)
         table.addTableColumn(restoreColumn)
-        table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
+        table.columnAutoresizingStyle = .noColumnAutoresizing
         table.rowHeight = 28
+        table.clipsToBounds = true
         table.headerView = NSTableHeaderView()
         table.dataSource = self
         table.delegate = self
@@ -2353,9 +2390,14 @@ private final class ShortcutSettingsDialog: NSWindowController, NSTableViewDataS
         scroll.hasVerticalScroller = true
         scroll.hasHorizontalScroller = false
         scroll.autohidesScrollers = true
+        scroll.clipsToBounds = true
+        scroll.contentView.clipsToBounds = true
         scroll.documentView = table
 
         bindingLabel.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        bindingLabel.lineBreakMode = .byTruncatingMiddle
+        bindingLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        bindingLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
         bindingLabel.setAccessibilityIdentifier("muxterm.shortcuts.binding")
         capture.onKey = { [weak self] event in self?.handleKey(event) ?? false }
 
@@ -2364,11 +2406,16 @@ private final class ShortcutSettingsDialog: NSWindowController, NSTableViewDataS
         let reset = button("settings.shortcuts.reset", "Reset", #selector(resetClicked), "muxterm.shortcuts.reset")
         let saveButton = button("settings.shortcuts.save", "Save", #selector(saveClicked), "muxterm.shortcuts.save")
         let cancelButton = button("settings.shortcuts.cancel", "Cancel", #selector(cancelClicked), "muxterm.shortcuts.cancel")
+        for control in [record, disable, reset, cancelButton, saveButton] {
+            control.setContentCompressionResistancePriority(.required, for: .horizontal)
+            control.setContentHuggingPriority(.required, for: .horizontal)
+        }
         let actions = NSStackView(views: [bindingLabel, record, disable, reset, NSView(), cancelButton, saveButton])
         actions.orientation = .horizontal
         actions.alignment = .centerY
         actions.spacing = 8
         actions.translatesAutoresizingMaskIntoConstraints = false
+        content.clipsToBounds = true
 
         content.addSubview(layoutHintLabel)
         content.addSubview(searchField)
@@ -2431,14 +2478,54 @@ private final class ShortcutSettingsDialog: NSWindowController, NSTableViewDataS
         reload()
     }
 
+    func horizontalOverflows() -> [String] {
+        window?.layoutIfNeeded()
+        fitColumns()
+        guard let content = window?.contentView else { return ["missing content"] }
+        var problems: [String] = []
+        for identifier in [
+            "muxterm.shortcuts.search",
+            "muxterm.shortcuts.record",
+            "muxterm.shortcuts.disable",
+            "muxterm.shortcuts.reset",
+            "muxterm.shortcuts.cancel",
+            "muxterm.shortcuts.save",
+            "muxterm.shortcuts.binding",
+        ] {
+            guard let view = find(content, identifier) else { continue }
+            let frame = view.convert(view.bounds, to: content)
+            if frame.minX < -1 || frame.maxX > content.bounds.width + 1 {
+                problems.append("\(identifier) \(frame.minX)...\(frame.maxX) of \(content.bounds.width)")
+            }
+        }
+        if let scroll = table.enclosingScrollView,
+           table.frame.width > scroll.contentView.bounds.width + 1 {
+            problems.append("table \(table.frame.width) > clip \(scroll.contentView.bounds.width)")
+        }
+        return problems
+    }
+
+    private func find(_ root: NSView, _ identifier: String) -> NSView? {
+        if root.accessibilityIdentifier() == identifier { return root }
+        for child in root.subviews {
+            if let match = find(child, identifier) { return match }
+        }
+        return nil
+    }
+
     private func fitColumns() {
         guard let scroll = table.enclosingScrollView else { return }
-        let width = max(360, scroll.contentView.bounds.width)
-        table.tableColumns.first { $0.identifier.rawValue == "action" }?.width = 230
-        table.tableColumns.first { $0.identifier.rawValue == "restore" }?.width = 76
-        table.tableColumns.first { $0.identifier.rawValue == "binding" }?.width = max(160, width - 306)
+        scroll.contentView.clipsToBounds = true
+        let width = scroll.contentView.bounds.width
+        guard width > 160 else { return }
+        let restore = min(104, max(84, width * 0.16))
+        let action = min(240, max(140, width * 0.34))
+        let binding = max(80, width - action - restore)
+        table.tableColumns.first { $0.identifier.rawValue == "action" }?.width = action
+        table.tableColumns.first { $0.identifier.rawValue == "restore" }?.width = restore
+        table.tableColumns.first { $0.identifier.rawValue == "binding" }?.width = binding
         var frame = table.frame
-        frame.size.width = width
+        frame.size.width = action + binding + restore
         table.frame = frame
     }
 

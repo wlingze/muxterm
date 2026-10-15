@@ -523,6 +523,12 @@ final class StatusBarView: NSView {
         window?.performDrag(with: event)
     }
 
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        // 主题从系统深色切到白色时，重算已经烤进 layer 的背景。
+        setWorkspacePresentation(workspacePresentation)
+    }
+
     func setEdgeLineAtBottom(_ atBottom: Bool) {
         edgeAtBottom = atBottom
         needsLayout = true

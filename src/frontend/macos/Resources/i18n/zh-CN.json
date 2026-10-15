@@ -176,6 +176,8 @@
   "toggle_pane_fullscreen": "放大/还原当前 Pane",
   "window.fullscreen.enter": "进入窗口全屏",
   "window.fullscreen.exit": "退出窗口全屏",
+  "window.zoom.enter": "占满当前桌面",
+  "window.zoom.exit": "还原窗口大小",
   "toggle_pane_fullscreen_detail": "当前 pane 放大到整个窗口（Cmd+Enter）",
   "tabs_accessibility": "标签页",
   "new_tab_tooltip": "新建标签页（Cmd+T）",

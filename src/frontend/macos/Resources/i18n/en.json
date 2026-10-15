@@ -176,6 +176,8 @@
   "toggle_pane_fullscreen": "Toggle Pane Zoom",
   "window.fullscreen.enter": "Enter Window Full Screen",
   "window.fullscreen.exit": "Exit Window Full Screen",
+  "window.zoom.enter": "Fill the Desktop",
+  "window.zoom.exit": "Restore Window Size",
   "toggle_pane_fullscreen_detail": "Zoom the current pane to fill the window (Cmd+Enter)",
   "tabs_accessibility": "Tabs",
   "new_tab_tooltip": "New Tab (Cmd+T)",
