@@ -39,12 +39,33 @@ final class WindowFullscreenTests: XCTestCase {
         XCTAssertEqual(button.accessibilityValue() as? String, "fullscreen")
         app.windowDidExitFullScreen(Notification(name: NSWindow.didExitFullScreenNotification, object: window))
         XCTAssertEqual(button.accessibilityValue() as? String, "windowed")
+        var zooms = 0
+        app.performWindowZoom = { _ in zooms += 1 }
+        let zoom = try XCTUnwrap(app.testMakeKeyEvent(
+            key: "t", keyCode: 17, command: true, shift: true
+        ))
+        XCTAssertTrue(app.testDispatchKeyEvent(zoom))
+        XCTAssertEqual(zooms, 1)
+        XCTAssertEqual(toggles, 5, "桌面最大化不能顺手触发全屏")
+    }
+
+    func testDesktopZoomFillsTheVisibleFrameWithoutFullscreen() {
+        let small = NSRect(x: 40, y: 40, width: 800, height: 500)
+        let visible = NSRect(x: 0, y: 40, width: 1440, height: 860)
+        let maximized = WindowFrameZoom.next(current: small, saved: nil, visible: visible)
+        XCTAssertEqual(maximized.frame, visible)
+        XCTAssertEqual(maximized.saved, small)
+        let restored = WindowFrameZoom.next(current: maximized.frame, saved: maximized.saved, visible: visible)
+        XCTAssertEqual(restored.frame, small)
+        XCTAssertNil(restored.saved)
     }
 
     func testFullscreenAndPaneZoomHaveIndependentShortcutActions() {
         XCTAssertEqual(KeyBindings.action(for: .init(command: true, key: "\r")), .togglePaneFullscreen)
         XCTAssertEqual(KeyBindings.action(for: .init(option: true, key: "\r")), .togglePaneFullscreen)
         XCTAssertEqual(KeyBindings.action(for: .init(command: true, shift: true, key: "f")), .toggleWindowFullscreen)
+        XCTAssertEqual(KeyBindings.action(for: .init(command: true, shift: true, key: "t")), .toggleWindowZoom)
+        XCTAssertEqual(KeyBindings.action(for: .init(command: true, shift: true, key: "g")), .toggleWindowZoom)
         XCTAssertEqual(KeyBindings.action(for: .init(command: true, key: ",")), .openSettings)
         XCTAssertEqual(KeyBindingsConfig.action(from: "toggle_window_fullscreen"), .toggleWindowFullscreen)
         let rows = ShortcutCatalog.defaults()

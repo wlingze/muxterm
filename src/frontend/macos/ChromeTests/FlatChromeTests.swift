@@ -459,6 +459,8 @@ final class MuxtermThemeTests: XCTestCase {
         XCTAssertEqual(MuxtermTheme.from(name: "black"), .dark)
         XCTAssertEqual(MuxtermTheme.from(name: "black.toml"), .dark)
         XCTAssertEqual(MuxtermTheme.from(name: "white"), .light)
+        XCTAssertEqual(MuxtermTheme.from(name: "white").appearanceName, "aqua")
+        XCTAssertEqual(MuxtermTheme.from(name: "black").appearanceName, "darkAqua")
         XCTAssertEqual(MuxtermTheme.from(name: "bogus"), .light)
     }
 

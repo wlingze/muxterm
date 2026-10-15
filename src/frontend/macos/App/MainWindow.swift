@@ -353,6 +353,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let initialWorkspace = initialWorkspaces.first(where: \.active) ?? initialWorkspaces.first
         let initialWorkspaceID = initialWorkspace?.id
         appliedTheme = MuxtermTheme.from(name: resolved.themeName)
+        // 先盖过系统深色，再创建会把 NSColor 烤进 layer 的视图。
+        NSApp.appearance = NSAppearance(named: appliedTheme == .dark ? .darkAqua : .aqua)
         MuxtermTerminalColors.activePalette = appliedTheme.palette
         configuredFontSize = MuxtermTerminalFont.clamp(resolved.fontSize)
         terminalFontSettings = MuxtermTerminalFont.Settings(
@@ -1248,6 +1250,28 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     @objc func toggleWindowFullscreen() {
         guard let window else { return }
         performWindowFullscreenToggle(window)
+    }
+
+    private var frameBeforeDesktopZoom: NSRect?
+    /// 测试可替换，避免把测试窗口铺到真实桌面。
+    var performWindowZoom: ((NSWindow) -> Void)?
+
+    /// 当前屏幕可见区域内最大化或还原。不创建全屏 Space。
+    @objc func toggleWindowZoom() {
+        guard let window else { return }
+        if let performWindowZoom {
+            performWindowZoom(window)
+            return
+        }
+        guard !window.styleMask.contains(.fullScreen) else { return }
+        let visible = (window.screen ?? NSScreen.main)?.visibleFrame ?? window.frame
+        let next = WindowFrameZoom.next(
+            current: window.frame,
+            saved: frameBeforeDesktopZoom,
+            visible: visible
+        )
+        frameBeforeDesktopZoom = next.saved
+        window.setFrame(next.frame, display: true, animate: false)
     }
 
     @objc func increaseTerminalFontSize(_ sender: Any?) {
@@ -4625,6 +4649,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 kind: .command(.toggleWindowFullscreen)
             ),
             PaletteItem(
+                title: i18n.trDynamic(
+                    frameBeforeDesktopZoom == nil ? "window.zoom.enter" : "window.zoom.exit",
+                    fallback: frameBeforeDesktopZoom == nil ? "Fill the Desktop" : "Restore Window Size"
+                ),
+                detail: "⇧⌘T / ⇧⌘G",
+                keywords: "zoom maximize desktop window 最大化 当前桌面 占满",
+                kind: .command(.toggleWindowZoom)
+            ),
+            PaletteItem(
                 title: i18n.tr(.cmdPreferences),
                 detail: "⌘,",
                 keywords: "settings preferences configuration 设置 偏好",
@@ -4938,6 +4971,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         case .command(.toggleWindowFullscreen):
             commandPalette.dismiss()
             toggleWindowFullscreen()
+        case .command(.toggleWindowZoom):
+            commandPalette.dismiss()
+            toggleWindowZoom()
         case .command(.openSettings):
             commandPalette.dismiss()
             openPreferences()
@@ -6698,6 +6734,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             resetTerminalFontSize(nil)
         case .toggleWindowFullscreen:
             toggleWindowFullscreen()
+        case .toggleWindowZoom:
+            toggleWindowZoom()
         case .openSettings:
             openPreferences()
         case .togglePaneFullscreen:

@@ -30,6 +30,8 @@ public enum KeyAction: Equatable, Hashable, Sendable {
     case togglePaneFullscreen
     /// macOS 原生整个窗口全屏，与 pane zoom 分开。
     case toggleWindowFullscreen
+    /// 只在当前桌面里把窗口铺满，不进入全屏 Space。
+    case toggleWindowZoom
     case openSettings
     case cycleLayout
     case toggleSidebar
@@ -179,11 +181,15 @@ public enum KeyBindings {
         if chord.command, chord.shift, !chord.option, !chord.control, key == "l" {
             return .cycleLayout
         }
-        // 无红绿灯时，Cmd-Shift-F/E/Enter 切换整个 macOS 窗口全屏。
-        // Colemak 和 QWERTY 两个物理手位都保留；Cmd/Alt-Enter 仍只放大 pane。
+        // Cmd-Shift-F/E/Enter：整个 macOS 窗口全屏。
+        // Cmd-Shift-T/G：当前桌面内最大化。Colemak 和 QWERTY 是同一物理键的两个字母。
+        // Cmd/Alt-Enter 仍只放大 pane。
         if chord.command, !chord.option, !chord.control {
             if chord.shift, ["f", "e", "\r", "\n"].contains(key) {
                 return .toggleWindowFullscreen
+            }
+            if chord.shift, key == "t" || key == "g" {
+                return .toggleWindowZoom
             }
             if !chord.shift, key == "," {
                 return .openSettings

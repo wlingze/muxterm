@@ -125,6 +125,7 @@ final class SettingsWindowE2ETests: XCTestCase {
         let before = settings.testShortcutOverrideActions()
         settings.testOpenShortcutDialog()
         XCTAssertTrue(settings.testShortcutDialogIsVisible())
+        XCTAssertEqual(settings.testShortcutDialogOverflows(), [])
         let hint = settings.testShortcutLayoutHint()
         XCTAssertTrue(hint.contains("QWERTY") && hint.contains("Colemak"))
         XCTAssertTrue(hint.contains("⌘⇧E") && hint.contains("⌘⇧F"))
