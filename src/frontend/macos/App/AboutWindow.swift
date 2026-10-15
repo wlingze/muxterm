@@ -7,22 +7,25 @@ final class MuxtermInfoWindowController: NSWindowController {
     private let versionValue = NSTextField(labelWithString: "")
     private let commitValue = NSTextField(labelWithString: "")
     private let logValue = NSTextField(labelWithString: "")
+    private let copyFeedback = NSTextField(labelWithString: " ")
+    private let pasteboard: NSPasteboard
     private var logPath = ""
 
-    static func show(relativeTo owner: NSWindow?) {
-        let controller = MuxtermInfoWindowController()
-        controller.window?.appearance = owner?.appearance
-        if let owner, let window = controller.window {
+    /// 由主窗口持有 controller。NSWindow 和按钮 target 都不会替调用方保活它。
+    func show(relativeTo owner: NSWindow?) {
+        window?.appearance = owner?.appearance
+        if let owner, let window {
             window.setFrameOrigin(NSPoint(
                 x: owner.frame.midX - window.frame.width / 2,
                 y: owner.frame.midY - window.frame.height / 2
             ))
         }
-        controller.showWindow(nil)
-        controller.window?.makeKeyAndOrderFront(nil)
+        showWindow(nil)
+        window?.makeKeyAndOrderFront(nil)
     }
 
-    init() {
+    init(info: CoreBridge.BuildInfo = CoreBridge.buildInfo(), pasteboard: NSPasteboard = .general) {
+        self.pasteboard = pasteboard
         let panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 520, height: 280),
             styleMask: [.titled, .closable],
@@ -30,13 +33,19 @@ final class MuxtermInfoWindowController: NSWindowController {
             defer: false
         )
         panel.title = "Muxterm Info"
+        panel.identifier = NSUserInterfaceItemIdentifier("muxterm.info")
+        panel.isReleasedWhenClosed = false
         super.init(window: panel)
-        let info = CoreBridge.buildInfo()
         logPath = info.logFile
         versionValue.stringValue = info.version.isEmpty ? "unknown" : info.version
         commitValue.stringValue = info.commit.isEmpty ? "unknown" : info.commit
         logValue.stringValue = info.logFile.isEmpty ? "Debug log is off" : info.logFile
         logValue.lineBreakMode = .byTruncatingMiddle
+        logValue.toolTip = logPath
+        logValue.setAccessibilityIdentifier("muxterm.info.logPath")
+        logValue.addGestureRecognizer(NSClickGestureRecognizer(
+            target: self, action: #selector(copyLogPath)
+        ))
         build(in: panel)
     }
 
@@ -48,7 +57,7 @@ final class MuxtermInfoWindowController: NSWindowController {
     private func build(in panel: NSPanel) {
         let rows = NSStackView()
         rows.orientation = .vertical
-        rows.alignment = .leading
+        rows.alignment = .width
         rows.spacing = 10
         rows.translatesAutoresizingMaskIntoConstraints = false
         rows.addArrangedSubview(line("Version", versionValue))
@@ -58,11 +67,17 @@ final class MuxtermInfoWindowController: NSWindowController {
         let copyLog = button("Copy debug log path", #selector(copyLogPath))
         let copyCommit = button("Copy commit", #selector(copyCommit))
         let issue = button("Submit GitHub issue", #selector(submitIssue))
+        copyLog.setAccessibilityIdentifier("muxterm.info.copyLog")
+        copyCommit.setAccessibilityIdentifier("muxterm.info.copyCommit")
+        issue.setAccessibilityIdentifier("muxterm.info.submitIssue")
         copyLog.isEnabled = !logPath.isEmpty
         let actions = NSStackView(views: [copyLog, copyCommit, issue])
         actions.orientation = .horizontal
         actions.spacing = 8
         rows.addArrangedSubview(actions)
+        copyFeedback.font = .systemFont(ofSize: 11)
+        copyFeedback.setAccessibilityIdentifier("muxterm.info.copyFeedback")
+        rows.addArrangedSubview(copyFeedback)
 
         let note = NSTextField(wrappingLabelWithString: "Debug logging starts from Settings → Debug, or with --debug. The issue includes the version, commit, and the tail of the debug log.")
         note.font = .systemFont(ofSize: 11)
@@ -108,9 +123,14 @@ final class MuxtermInfoWindowController: NSWindowController {
 
     private func copy(_ text: String) {
         guard !text.isEmpty else { return }
-        let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
+        let copied = pasteboard.setString(text, forType: .string)
+        copyFeedback.stringValue = MuxtermI18n.shared.trDynamic(
+            copied ? "info.copied" : "info.copyFailed",
+            fallback: copied ? "Copied to clipboard" : "Could not copy to clipboard"
+        )
+        copyFeedback.textColor = copied ? .systemGreen : .systemRed
+        CoreBridge.log("info clipboard copy \(copied ? "succeeded" : "failed")", level: copied ? "debug" : "warn")
     }
 
     @objc private func submitIssue() {

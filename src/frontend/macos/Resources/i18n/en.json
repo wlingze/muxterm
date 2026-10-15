@@ -340,6 +340,8 @@
   "settings.category.debug.description": "Turn on a debug log and choose where it is written.",
   "command.muxtermInfo": "Muxterm Info",
   "command.muxtermInfo.detail": "Version, debug log, and GitHub issue",
+  "info.copied": "Copied to clipboard",
+  "info.copyFailed": "Could not copy to clipboard",
   "settings.apply.immediate": "ON APPLY",
   "settings.apply.next_workspace": "NEXT WORKSPACE",
   "settings.apply.commit": "ON SAVE",

@@ -340,6 +340,8 @@
   "settings.category.debug.description": "打开调试日志，并选择写到哪里。",
   "command.muxtermInfo": "Muxterm 信息",
   "command.muxtermInfo.detail": "版本、调试日志和 GitHub issue",
+  "info.copied": "已复制到剪贴板",
+  "info.copyFailed": "复制失败，请重试",
   "settings.apply.immediate": "应用后生效",
   "settings.apply.next_workspace": "下个工作区",
   "settings.apply.commit": "保存时",
