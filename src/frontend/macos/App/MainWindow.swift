@@ -66,6 +66,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     var commandPalette: CommandPaletteController!
     var unifiedPanel: UnifiedPanelController!
     private var settingsWindow: SettingsWindowController?
+    private var infoWindow: MuxtermInfoWindowController?
     /// 来自 ~/.config/muxterm/config.toml 的自定义快捷键（可选）。
     private var customKeybindings: [KeyChord: KeyAction] = [:]
     /// overrides 覆盖过的动作不再走内置键。
@@ -4963,7 +4964,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             NSApp.terminate(nil)
         case .command(.appInfo):
             commandPalette.dismiss()
-            MuxtermInfoWindowController.show(relativeTo: window)
+            if infoWindow == nil {
+                infoWindow = MuxtermInfoWindowController()
+            }
+            infoWindow?.show(relativeTo: window)
         case .command:
             break
         case .host(let host):
