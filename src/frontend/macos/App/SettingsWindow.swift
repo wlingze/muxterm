@@ -1609,6 +1609,18 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         shortcutEditor?.resetSelected()
     }
 
+    func testShortcutLayoutHint() -> String {
+        shortcutEditor?.layoutHint() ?? ""
+    }
+
+    func testShortcutRestoreVisible(_ action: String) -> Bool {
+        shortcutEditor?.restoreVisible(action) ?? false
+    }
+
+    func testRestoreShortcutRow(_ action: String) {
+        shortcutEditor?.restoreRow(action)
+    }
+
     func testSaveShortcutDialog() {
         shortcutEditor?.saveDialog()
     }
@@ -2187,6 +2199,9 @@ private final class SettingsShortcutEditorView: NSView {
     func resetSelected() { dialog?.resetSelected() }
     func saveDialog() { dialog?.save() }
     func cancelDialog() { dialog?.cancel() }
+    func layoutHint() -> String { dialog?.layoutHint() ?? "" }
+    func restoreVisible(_ action: String) -> Bool { dialog?.restoreVisible(action) ?? false }
+    func restoreRow(_ action: String) { dialog?.restoreRow(action) }
     func bindSelected(key: String, modifiers: [String]) {
         dialog?.bindSelected(ShortcutChord(key: key, modifiers: modifiers))
     }
@@ -2210,6 +2225,7 @@ private final class ShortcutSettingsDialog: NSWindowController, NSTableViewDataS
     private var recording = false
     private let table = NSTableView()
     private let searchField = NSSearchField()
+    private let layoutHintLabel = NSTextField(wrappingLabelWithString: "")
     private let bindingLabel = NSTextField(labelWithString: "")
     private let capture = ShortcutCaptureView()
 
@@ -2296,6 +2312,15 @@ private final class ShortcutSettingsDialog: NSWindowController, NSTableViewDataS
     private func build() {
         guard let content = window?.contentView else { return }
         content.setAccessibilityIdentifier("muxterm.shortcuts.dialog")
+        layoutHintLabel.stringValue = settingsText(
+            "settings.shortcuts.layout_hint",
+            fallback: "QWERTY and Colemak print different letters on the same physical key, so the hand position stays the same. Window full screen is ⌘⇧E on QWERTY and ⌘⇧F on Colemak. Digits and punctuation do not move. After you change a shortcut, Restore appears on that row."
+        )
+        layoutHintLabel.font = .systemFont(ofSize: 12)
+        layoutHintLabel.textColor = .secondaryLabelColor
+        layoutHintLabel.maximumNumberOfLines = 4
+        layoutHintLabel.setAccessibilityIdentifier("muxterm.shortcuts.layoutHint")
+        layoutHintLabel.translatesAutoresizingMaskIntoConstraints = false
         searchField.placeholderString = settingsText("settings.shortcuts.search", fallback: "Search actions")
         searchField.delegate = self
         searchField.setAccessibilityIdentifier("muxterm.shortcuts.search")
@@ -2306,10 +2331,16 @@ private final class ShortcutSettingsDialog: NSWindowController, NSTableViewDataS
         actionColumn.width = 280
         let bindingColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("binding"))
         bindingColumn.title = settingsText("settings.shortcuts.column.binding", fallback: "Shortcut")
-        bindingColumn.width = 420
+        bindingColumn.width = 340
+        let restoreColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("restore"))
+        restoreColumn.title = ""
+        restoreColumn.width = 76
+        restoreColumn.resizingMask = []
         table.addTableColumn(actionColumn)
         table.addTableColumn(bindingColumn)
+        table.addTableColumn(restoreColumn)
         table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
+        table.rowHeight = 28
         table.headerView = NSTableHeaderView()
         table.dataSource = self
         table.delegate = self
@@ -2317,9 +2348,11 @@ private final class ShortcutSettingsDialog: NSWindowController, NSTableViewDataS
         table.setAccessibilityIdentifier("muxterm.shortcuts.table")
         if let first = rows.first { selectedAction = first.action }
 
-        let scroll = MuxtermFillWidthScrollView()
+        let scroll = NSScrollView()
         scroll.translatesAutoresizingMaskIntoConstraints = false
         scroll.hasVerticalScroller = true
+        scroll.hasHorizontalScroller = false
+        scroll.autohidesScrollers = true
         scroll.documentView = table
 
         bindingLabel.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
@@ -2337,14 +2370,18 @@ private final class ShortcutSettingsDialog: NSWindowController, NSTableViewDataS
         actions.spacing = 8
         actions.translatesAutoresizingMaskIntoConstraints = false
 
+        content.addSubview(layoutHintLabel)
         content.addSubview(searchField)
         content.addSubview(scroll)
         content.addSubview(actions)
         content.addSubview(capture)
         NSLayoutConstraint.activate([
+            layoutHintLabel.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
+            layoutHintLabel.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
+            layoutHintLabel.topAnchor.constraint(equalTo: content.topAnchor, constant: 14),
             searchField.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
             searchField.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
-            searchField.topAnchor.constraint(equalTo: content.topAnchor, constant: 16),
+            searchField.topAnchor.constraint(equalTo: layoutHintLabel.bottomAnchor, constant: 10),
             scroll.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
             scroll.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
             scroll.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 12),
@@ -2376,7 +2413,42 @@ private final class ShortcutSettingsDialog: NSWindowController, NSTableViewDataS
         }
         refreshBinding()
         window?.contentView?.layoutSubtreeIfNeeded()
-        (table.enclosingScrollView as? MuxtermFillWidthScrollView)?.tile()
+        fitColumns()
+    }
+
+    func layoutHint() -> String {
+        layoutHintLabel.stringValue
+    }
+
+    func restoreVisible(_ action: String) -> Bool {
+        guard let button = restoreButton(for: action) else { return false }
+        return !button.isHidden && button.isEnabled
+    }
+
+    func restoreRow(_ action: String) {
+        rows = ShortcutEditor.reset(rows, action: action)
+        recording = false
+        reload()
+    }
+
+    private func fitColumns() {
+        guard let scroll = table.enclosingScrollView else { return }
+        let width = max(360, scroll.contentView.bounds.width)
+        table.tableColumns.first { $0.identifier.rawValue == "action" }?.width = 230
+        table.tableColumns.first { $0.identifier.rawValue == "restore" }?.width = 76
+        table.tableColumns.first { $0.identifier.rawValue == "binding" }?.width = max(160, width - 306)
+        var frame = table.frame
+        frame.size.width = width
+        table.frame = frame
+    }
+
+    private func restoreButton(for action: String) -> NSButton? {
+        guard let index = filtered.firstIndex(where: { $0.action == action }),
+              let column = table.tableColumns.firstIndex(where: { $0.identifier.rawValue == "restore" })
+        else { return nil }
+        table.scrollRowToVisible(index)
+        table.layoutSubtreeIfNeeded()
+        return table.view(atColumn: column, row: index, makeIfNecessary: true) as? NSButton
     }
 
     private func refreshBinding() {
@@ -2427,6 +2499,11 @@ private final class ShortcutSettingsDialog: NSWindowController, NSTableViewDataS
 
     @objc private func disableClicked() { disableSelected() }
     @objc private func resetClicked() { resetSelected() }
+
+    @objc private func restoreRowClicked(_ sender: NSButton) {
+        guard let action = sender.identifier?.rawValue else { return }
+        restoreRow(action)
+    }
     @objc private func saveClicked() { save() }
     @objc private func cancelClicked() { cancel() }
 
@@ -2439,6 +2516,21 @@ private final class ShortcutSettingsDialog: NSWindowController, NSTableViewDataS
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let item = filtered[row]
+        if tableColumn?.identifier.rawValue == "restore" {
+            let button = NSButton(
+                title: settingsText("settings.shortcuts.restore", fallback: "Restore"),
+                target: self,
+                action: #selector(restoreRowClicked(_:))
+            )
+            button.bezelStyle = .rounded
+            button.controlSize = .small
+            button.font = .systemFont(ofSize: 11)
+            button.identifier = NSUserInterfaceItemIdentifier(item.action)
+            button.isHidden = !item.customized
+            button.isEnabled = item.customized
+            button.setAccessibilityIdentifier("muxterm.shortcuts.restore.\(item.action)")
+            return button
+        }
         let label = NSTextField(labelWithString: tableColumn?.identifier.rawValue == "binding"
             ? item.effective.map(\.symbolLabel).joined(separator: ", ")
             : item.title)
