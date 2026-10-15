@@ -19,6 +19,29 @@ final class ImagePasteBannerTests: XCTestCase {
         return nil
     }
 
+    func testToastStaysAtBottomRightForEitherTabBarPosition() throws {
+        AppE2E.ensureApp()
+        let bridge = try CoreBridge(backendType: "local")
+        defer { bridge.shutdown() }
+        let content = ContentView(terminalManager: TerminalManager(bridge: bridge))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = content
+        window.orderFront(nil)
+        defer { window.orderOut(nil) }
+        for position in [TabBarPosition.top, .bottom] {
+            content.applyTabBarPosition(position)
+            content.imagePasteBanner.apply(.done(path: "/tmp/muxterm-paste-hash.png"))
+            content.layoutSubtreeIfNeeded()
+            let toast = content.imagePasteBanner.frame
+            let pane = content.paneLayout.frame
+            XCTAssertEqual(toast.maxX, pane.maxX - 12, accuracy: 1)
+            XCTAssertEqual(toast.minY, pane.minY + 12, accuracy: 1)
+            XCTAssertLessThanOrEqual(toast.width, 420)
+            XCTAssertFalse(toast.intersects(content.statusBar.frame))
+        }
+    }
+
     func testStartsHiddenAndIdle() {
         let view = banner()
         XCTAssertTrue(view.isHidden)

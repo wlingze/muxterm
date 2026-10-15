@@ -111,6 +111,8 @@ enum PaletteCommand: Equatable {
     case tabBarTop
     case tabBarBottom
     case togglePaneFullscreen
+    case toggleWindowFullscreen
+    case openSettings
     case cycleLayout
     case increaseFontSize
     case decreaseFontSize
@@ -185,6 +187,8 @@ extension PaletteCommand {
         case .tabBarTop: return "palette.tabBarTop"
         case .tabBarBottom: return "palette.tabBarBottom"
         case .togglePaneFullscreen: return "palette.togglePaneFullscreen"
+        case .toggleWindowFullscreen: return "palette.toggleWindowFullscreen"
+        case .openSettings: return "palette.openSettings"
         case .cycleLayout: return "palette.cycleLayout"
         case .increaseFontSize: return "palette.increaseFontSize"
         case .decreaseFontSize: return "palette.decreaseFontSize"
@@ -232,6 +236,8 @@ extension PaletteCommand {
         case "palette.tabBarTop": return .tabBarTop
         case "palette.tabBarBottom": return .tabBarBottom
         case "palette.togglePaneFullscreen": return .togglePaneFullscreen
+        case "palette.toggleWindowFullscreen": return .toggleWindowFullscreen
+        case "palette.openSettings": return .openSettings
         case "palette.cycleLayout": return .cycleLayout
         case "palette.increaseFontSize": return .increaseFontSize
         case "palette.decreaseFontSize": return .decreaseFontSize

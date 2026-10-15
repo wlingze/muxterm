@@ -103,6 +103,8 @@ final class StatusBarView: NSView {
     var onMoveTab: ((UInt32, UInt32, Bool) -> Void)?
     var onWorkspaceClick: (() -> Void)?
     var onAttentionClick: (() -> Void)?
+    var onToggleWindowFullscreen: (() -> Void)?
+    var onOpenSettings: (() -> Void)?
     var onConnectionRefresh: (() -> Void)?
     var onSSHPortForward: ((UInt16, Bool) -> Void)?
     var onSSHPortStop: ((UInt16) -> Void)?
@@ -165,6 +167,9 @@ final class StatusBarView: NSView {
     private var pasteSpinnerWidth: NSLayoutConstraint!
     private let workspaceButton = NSButton()
     private let attentionButton = AttentionBellButton()
+    private let fullscreenButton = NSButton()
+    private let settingsButton = NSButton()
+    private var windowIsFullscreen = false
     private let newTabButton = NSButton()
     private let edgeLine = CALayer()
     private var edgeLineThickness: CGFloat = 1
@@ -173,10 +178,14 @@ final class StatusBarView: NSView {
     private var attentionWidthConstraint: NSLayoutConstraint!
     private var workspaceWidthConstraint: NSLayoutConstraint!
     private var statusDotWidthConstraint: NSLayoutConstraint!
+    private var fullscreenWidthConstraint: NSLayoutConstraint!
+    private var settingsWidthConstraint: NSLayoutConstraint!
 
-    /// 是否在状态栏右侧显示 [statusDot, workspaceButton, attentionButton, newTabButton] 四个按钮。
-    /// 默认关闭（根据用户要求移除），由侧边栏加号与 Cmd-P 统一管理；可在配置中按需打开。
-    var showsTrailingButtons: Bool = false {
+    /// 状态、通知和新建入口默认保留；仅 workspace 图标交给侧栏/Cmd-P。
+    var showsWorkspaceButton = false {
+        didSet { updateTrailingButtonsVisibility() }
+    }
+    var showsTrailingButtons: Bool = true {
         didSet {
             updateTrailingButtonsVisibility()
         }
@@ -315,6 +324,19 @@ final class StatusBarView: NSView {
         attentionButton.setAccessibilityLabel(MuxtermI18n.shared.tr(.statusAttention))
         attentionButton.translatesAutoresizingMaskIntoConstraints = false
 
+        for (button, symbol, identifier, action) in [
+            (fullscreenButton, "arrow.up.left.and.arrow.down.right", "muxterm.windowFullscreen", #selector(fullscreenClicked)),
+            (settingsButton, "gearshape", "muxterm.openSettings", #selector(settingsClicked)),
+        ] {
+            button.isBordered = false
+            button.focusRingType = .none
+            button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+            button.contentTintColor = .secondaryLabelColor
+            button.target = self
+            button.action = action
+            button.setAccessibilityIdentifier(identifier)
+        }
+
         // 「+」新建 tab
         newTabButton.title = "+"
         newTabButton.bezelStyle = .shadowlessSquare
@@ -337,7 +359,7 @@ final class StatusBarView: NSView {
 
         for view in [
             sidebarToggleButton, middleStack,
-            statusDot, pasteSpinner, workspaceButton, attentionButton, newTabButton,
+            statusDot, pasteSpinner, workspaceButton, fullscreenButton, settingsButton, attentionButton, newTabButton,
         ] {
             view.translatesAutoresizingMaskIntoConstraints = false
             addSubview(view)
@@ -357,6 +379,8 @@ final class StatusBarView: NSView {
         attentionWidthConstraint = attentionButton.widthAnchor.constraint(equalToConstant: 0)
         workspaceWidthConstraint = workspaceButton.widthAnchor.constraint(equalToConstant: 0)
         statusDotWidthConstraint = statusDot.widthAnchor.constraint(equalToConstant: 0)
+        fullscreenWidthConstraint = fullscreenButton.widthAnchor.constraint(equalToConstant: 0)
+        settingsWidthConstraint = settingsButton.widthAnchor.constraint(equalToConstant: 0)
 
         NSLayoutConstraint.activate([
             heightConstraint,
@@ -376,7 +400,7 @@ final class StatusBarView: NSView {
             tabStack.centerYAnchor.constraint(equalTo: tabViewport.centerYAnchor),
             tabStack.heightAnchor.constraint(equalTo: tabViewport.heightAnchor),
 
-            // 最右侧三个图标：状态点 → 通知 → 新建（默认隐藏，showsTrailingButtons 开关控制）。
+            // 状态 → 窗口全屏 → 设置 → 通知 → 新建；workspace 默认零宽隐藏。
             newTabButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
             newTabButton.centerYAnchor.constraint(equalTo: centerYAnchor),
             newTabWidthConstraint,
@@ -386,7 +410,17 @@ final class StatusBarView: NSView {
             attentionWidthConstraint,
             attentionButton.heightAnchor.constraint(equalToConstant: 20),
 
-            workspaceButton.trailingAnchor.constraint(equalTo: attentionButton.leadingAnchor, constant: -2),
+            settingsButton.trailingAnchor.constraint(equalTo: attentionButton.leadingAnchor, constant: -2),
+            settingsButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            settingsWidthConstraint,
+            settingsButton.heightAnchor.constraint(equalToConstant: 20),
+
+            fullscreenButton.trailingAnchor.constraint(equalTo: settingsButton.leadingAnchor, constant: -2),
+            fullscreenButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            fullscreenWidthConstraint,
+            fullscreenButton.heightAnchor.constraint(equalToConstant: 20),
+
+            workspaceButton.trailingAnchor.constraint(equalTo: fullscreenButton.leadingAnchor),
             workspaceButton.centerYAnchor.constraint(equalTo: centerYAnchor),
             workspaceWidthConstraint,
             workspaceButton.heightAnchor.constraint(equalToConstant: 20),
@@ -409,12 +443,16 @@ final class StatusBarView: NSView {
     private func updateTrailingButtonsVisibility() {
         newTabButton.isHidden = !showsTrailingButtons || !allowsTabCreation
         attentionButton.isHidden = !showsTrailingButtons
-        workspaceButton.isHidden = !showsTrailingButtons
+        workspaceButton.isHidden = !showsTrailingButtons || !showsWorkspaceButton
         statusDot.isHidden = !showsTrailingButtons
-        newTabWidthConstraint?.constant = showsTrailingButtons ? FlatChrome.newTabButtonWidth : 0
+        fullscreenButton.isHidden = !showsTrailingButtons
+        settingsButton.isHidden = !showsTrailingButtons
+        newTabWidthConstraint?.constant = showsTrailingButtons && allowsTabCreation ? FlatChrome.newTabButtonWidth : 0
         attentionWidthConstraint?.constant = showsTrailingButtons ? 24 : 0
-        workspaceWidthConstraint?.constant = showsTrailingButtons ? 24 : 0
+        workspaceWidthConstraint?.constant = showsTrailingButtons && showsWorkspaceButton ? 24 : 0
         statusDotWidthConstraint?.constant = showsTrailingButtons ? 18 : 0
+        fullscreenWidthConstraint?.constant = showsTrailingButtons ? 24 : 0
+        settingsWidthConstraint?.constant = showsTrailingButtons ? 24 : 0
         needsLayout = true
     }
 
@@ -1445,6 +1483,10 @@ final class StatusBarView: NSView {
                 }
                 tabStack.insertArrangedSubview(button, at: position)
             }
+            button.setContentCompressionResistancePriority(
+                fillsViewport ? .defaultLow : .defaultHigh, for: .horizontal
+            )
+            button.setContentHuggingPriority(.defaultLow, for: .horizontal)
             if tabBarStyle == .equalWidth {
                 // 额外钉 “等于第一个 tab 的宽度” 会把旧宽度锁住：
                 // 窗口变宽后多出来的空间只能挤在最后一个 tab 前面，
@@ -1623,7 +1665,25 @@ final class StatusBarView: NSView {
         needsLayout = true
     }
 
+    func setWindowFullscreen(_ fullscreen: Bool) {
+        windowIsFullscreen = fullscreen
+        let symbol = fullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right"
+        fullscreenButton.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+        fullscreenButton.toolTip = MuxtermI18n.shared.trDynamic(
+            fullscreen ? "window.fullscreen.exit" : "window.fullscreen.enter",
+            fallback: fullscreen ? "Exit Window Full Screen" : "Enter Window Full Screen"
+        ) + " · ⇧⌘F / ⇧⌘E"
+        fullscreenButton.setAccessibilityLabel(fullscreenButton.toolTip)
+        fullscreenButton.setAccessibilityValue(fullscreen ? "fullscreen" : "windowed")
+    }
+
+    @objc private func fullscreenClicked() { onToggleWindowFullscreen?() }
+    @objc private func settingsClicked() { onOpenSettings?() }
+
     func refreshLocalization() {
+        setWindowFullscreen(windowIsFullscreen)
+        settingsButton.toolTip = MuxtermI18n.shared.tr(.cmdPreferences) + " · ⌘,"
+        settingsButton.setAccessibilityLabel(settingsButton.toolTip)
         attentionButton.setAccessibilityLabel(MuxtermI18n.shared.tr(.statusAttention))
         updateAttentionAccessibility()
         newTabButton.toolTip = MuxtermI18n.shared.tr(.newTabTooltip)

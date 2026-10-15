@@ -67,6 +67,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     var unifiedPanel: UnifiedPanelController!
     private var settingsWindow: SettingsWindowController?
     private var infoWindow: MuxtermInfoWindowController?
+    /// 原生窗口动作单独注入，自动测试不切换用户桌面的 macOS Space。
+    var performWindowFullscreenToggle: (NSWindow) -> Void = { $0.toggleFullScreen(nil) }
     /// 来自 ~/.config/muxterm/config.toml 的自定义快捷键（可选）。
     private var customKeybindings: [KeyChord: KeyAction] = [:]
     /// overrides 覆盖过的动作不再走内置键。
@@ -397,6 +399,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         window.standardWindowButton(.miniaturizeButton)?.isHidden = true
         window.standardWindowButton(.zoomButton)?.isHidden = true
         window.minSize = NSSize(width: 480, height: 320)
+        window.collectionBehavior.insert(.fullScreenPrimary)
         window.center()
         window.contentView = content
         window.setAccessibilityIdentifier("muxterm.mainWindow")
@@ -443,6 +446,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         content.statusBar.onWorkspaceClick = { [weak self] in
             self?.openQuickConnect()
+        }
+        content.statusBar.onToggleWindowFullscreen = { [weak self] in
+            self?.toggleWindowFullscreen()
+        }
+        content.statusBar.onOpenSettings = { [weak self] in
+            self?.openPreferences()
         }
         wireTerminalManagerCallbacks()
 
@@ -1233,6 +1242,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             content.paneLayout.toggleFullscreen(paneId: pane)
             content.paneLayout.refreshSurfaceGeometry(paneId: pane)
         }
+    }
+
+    /// 整个原生窗口进入/退出全屏；不向 Runtime 发 pane zoom 指令。
+    @objc func toggleWindowFullscreen() {
+        guard let window else { return }
+        performWindowFullscreenToggle(window)
     }
 
     @objc func increaseTerminalFontSize(_ sender: Any?) {
@@ -4601,6 +4616,21 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 kind: .command(.splitVertical)
             ),
             PaletteItem(
+                title: i18n.trDynamic(
+                    window?.styleMask.contains(.fullScreen) == true ? "window.fullscreen.exit" : "window.fullscreen.enter",
+                    fallback: window?.styleMask.contains(.fullScreen) == true ? "Exit Window Full Screen" : "Enter Window Full Screen"
+                ),
+                detail: "⇧⌘F / ⇧⌘E / ⇧⌘↩",
+                keywords: "window fullscreen screen 窗口全屏 整个窗口",
+                kind: .command(.toggleWindowFullscreen)
+            ),
+            PaletteItem(
+                title: i18n.tr(.cmdPreferences),
+                detail: "⌘,",
+                keywords: "settings preferences configuration 设置 偏好",
+                kind: .command(.openSettings)
+            ),
+            PaletteItem(
                 title: i18n.tr(.togglePaneFullscreen),
                 detail: i18n.tr(.togglePaneFullscreenDetail),
                 keywords: "pane fullscreen zoom toggle 全屏 放大",
@@ -4905,6 +4935,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         case .command(.splitVertical):
             commandPalette.dismiss()
             splitVertical()
+        case .command(.toggleWindowFullscreen):
+            commandPalette.dismiss()
+            toggleWindowFullscreen()
+        case .command(.openSettings):
+            commandPalette.dismiss()
+            openPreferences()
         case .command(.togglePaneFullscreen):
             commandPalette.dismiss()
             toggleActivePaneFullscreen()
@@ -6660,6 +6696,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             decreaseTerminalFontSize(nil)
         case .resetFontSize:
             resetTerminalFontSize(nil)
+        case .toggleWindowFullscreen:
+            toggleWindowFullscreen()
+        case .openSettings:
+            openPreferences()
         case .togglePaneFullscreen:
             toggleActivePaneFullscreen()
         case .cycleLayout:
@@ -6710,6 +6750,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             return false
         }
         return true
+    }
+
+    func windowDidEnterFullScreen(_ notification: Notification) {
+        content.statusBar.setWindowFullscreen(true)
+    }
+
+    func windowDidExitFullScreen(_ notification: Notification) {
+        content.statusBar.setWindowFullscreen(false)
     }
 
     func windowDidBecomeKey(_ notification: Notification) {
