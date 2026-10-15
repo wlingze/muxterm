@@ -108,6 +108,8 @@ config_version = 1
 | --- | --- | --- | --- |
 | `font.family` | string | `JetBrains Mono` | 立即预览 |
 | `font.size` | number，9–72 | `13.0` | 立即预览 |
+| `font.line_spacing` | number，0.5–2.0 | `1.0` | 立即预览 |
+| `font.column_spacing` | number，0.5–2.0 | `1.0` | 立即预览 |
 | `font.fallback` | string array | `[]` | 立即预览 |
 | `theme.name` | string | `system` | 立即预览 |
 | `theme.light` | string | `white` | 立即预览 |
@@ -122,6 +124,18 @@ config_version = 1
 
 字体选择遵循：用户选中的可用字体、应用捆绑的 JetBrains Mono、系统 monospace。
 缺少用户字体只产生 warning，不修改用户配置，也不安装系统字体。
+`line_spacing` / `column_spacing` 是字符格高宽倍数，`1.0` 表示 100%。macOS 设置页
+按百分比编辑，选中等宽字体即写入，不再依赖系统字体面板。
+
+`[debug]`：
+
+| 路径 | 类型 | 默认值 | 生效 |
+| --- | --- | --- | --- |
+| `debug.enabled` | bool | `false` | 下次启动 |
+| `debug.log_dir` | string | 空（系统临时目录 `muxterm-logs`） | 下次启动 |
+
+`debug.enabled = true` 时，应用自己把 debug 日志写到 `log_dir/muxterm.log`，
+不需要从终端执行 `--debug --log-file`。CLI 的 `--log-file` 仍然优先。
 
 `pool.max_slots` 是 WorkspacePool 的软提醒阈值，不是硬上限，也**不是** warm slot 容量。
 超过阈值时池保留全部已打开 Workspace，界面只列出最久未使用的项，让用户选择性关闭；

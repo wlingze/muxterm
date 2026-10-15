@@ -85,6 +85,12 @@ impl ConfigDocument {
         if !(9.0..=72.0).contains(&self.config.font.size) {
             return Err(anyhow!("font.size 必须在 9 到 72 之间"));
         }
+        if !(0.5..=2.0).contains(&self.config.font.line_spacing) {
+            return Err(anyhow!("font.line_spacing 必须在 0.5 到 2.0 之间"));
+        }
+        if !(0.5..=2.0).contains(&self.config.font.column_spacing) {
+            return Err(anyhow!("font.column_spacing 必须在 0.5 到 2.0 之间"));
+        }
         if self.config.scrollback.lines == 0 {
             return Err(anyhow!("scrollback.lines 必须大于 0"));
         }
@@ -261,6 +267,19 @@ impl ConfigDocument {
                 font["properties"]["size"]["default"] = Value::from(13.0);
                 font["properties"]["fallback"]["default"] =
                     serde_json::json!(["Noto Sans Mono", "monospace"]);
+                if let Some(properties) = font.get_mut("properties").and_then(Value::as_object_mut)
+                {
+                    for (name, default) in [
+                        ("line_spacing", Value::from(1.0)),
+                        ("column_spacing", Value::from(1.0)),
+                    ] {
+                        if let Some(property) = properties.get_mut(name) {
+                            if let Some(object) = property.as_object_mut() {
+                                object.insert("default".into(), default);
+                            }
+                        }
+                    }
+                }
             }
             if let Some(theme) = defs.get_mut("ThemeConfig") {
                 theme["properties"]["name"]["default"] = Value::String("system".into());
@@ -271,7 +290,9 @@ impl ConfigDocument {
         schema["properties"]["font"]["default"] = serde_json::json!({
             "family": "JetBrains Mono",
             "size": 13.0,
-            "fallback": ["Noto Sans Mono", "monospace"]
+            "fallback": ["Noto Sans Mono", "monospace"],
+            "line_spacing": 1.0,
+            "column_spacing": 1.0
         });
         schema["properties"]["theme"]["default"] = serde_json::json!({
             "name": "system",
@@ -289,6 +310,8 @@ impl ConfigDocument {
                 {"id":"appearance","title_key":"settings.appearance","fields":[
                     {"path":"/font/family","control":"font_picker","apply":"immediate","title_key":"settings.font.family"},
                     {"path":"/font/size","control":"number","apply":"immediate","title_key":"settings.font.size"},
+                    {"path":"/font/line_spacing","control":"number","apply":"immediate","title_key":"settings.font.line_spacing"},
+                    {"path":"/font/column_spacing","control":"number","apply":"immediate","title_key":"settings.font.column_spacing"},
                     {"path":"/font/fallback","control":"font_fallback","apply":"immediate","title_key":"settings.font.fallback"},
                     {"path":"/theme/name","control":"theme_picker","options":["system","black","white"],"apply":"immediate","title_key":"settings.theme"},
                     {"path":"/theme/light","control":"theme_picker","options":["white","black"],"apply":"immediate","title_key":"settings.theme.light"},
@@ -339,6 +362,10 @@ impl ConfigDocument {
                 ]},
                 {"id":"projects","title_key":"settings.projects","fields":[
                     {"path":"/projects","control":"project_editor","apply":"commit","title_key":"settings.projects"}
+                ]},
+                {"id":"debug","title_key":"settings.debug","fields":[
+                    {"path":"/debug/enabled","control":"switch","apply":"commit","title_key":"settings.debug.enabled"},
+                    {"path":"/debug/log_dir","control":"text","apply":"commit","title_key":"settings.debug.log_dir"}
                 ]},
                 {"id":"shortcuts","title_key":"settings.shortcuts","fields":[
                     {"path":"/shortcuts/preset","control":"select","options":["qwerty","colemak"],"apply":"immediate","title_key":"settings.shortcuts.preset"},
@@ -603,6 +630,7 @@ fn validate_toml_shape(value: &toml::Value) -> Result<()> {
             "pane",
             "behavior",
             "update",
+            "debug",
             "keybindings",
             "projects",
             "templates",
@@ -612,7 +640,17 @@ fn validate_toml_shape(value: &toml::Value) -> Result<()> {
         ],
         "root",
     )?;
-    check_table(table, "font", &["family", "size", "fallback"])?;
+    check_table(
+        table,
+        "font",
+        &[
+            "family",
+            "size",
+            "fallback",
+            "line_spacing",
+            "column_spacing",
+        ],
+    )?;
     check_table(table, "theme", &["name", "light", "dark"])?;
     check_table(table, "statusbar", &["mode"])?;
     check_table(table, "pool", &["max_slots"])?;
@@ -626,6 +664,7 @@ fn validate_toml_shape(value: &toml::Value) -> Result<()> {
         &["enabled", "blocked_regex", "debounce_ms"],
     )?;
     check_table(table, "update", &["auto_check", "manifest_url"])?;
+    check_table(table, "debug", &["enabled", "log_dir"])?;
     check_table(
         table,
         "ui",

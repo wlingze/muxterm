@@ -88,9 +88,14 @@ pub fn atomic_write(path: &Path, raw: &str) -> Result<()> {
         fs::set_permissions(&temp, permissions)
             .with_context(|| format!("保留配置权限失败: {}", temp.display()))?;
     }
-    if let Err(error) = fs::rename(&temp, path) {
-        let _ = fs::remove_file(&temp);
-        return Err(error).with_context(|| format!("原子替换配置失败: {}", path.display()));
+    if let Err(first) = fs::rename(&temp, path) {
+        // 另一个进程正在读配置时，替换偶发失败。重试一次，避免字体保存被丢掉。
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        if let Err(error) = fs::rename(&temp, path) {
+            let _ = fs::remove_file(&temp);
+            return Err(error)
+                .with_context(|| format!("原子替换配置失败: {}（首次: {first}）", path.display()));
+        }
     }
     if let Ok(parent_file) = fs::File::open(parent) {
         let _ = parent_file.sync_all();
