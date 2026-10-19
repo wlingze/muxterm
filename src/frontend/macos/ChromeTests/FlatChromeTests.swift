@@ -2761,9 +2761,12 @@ final class KeyBindingsConfigTests: XCTestCase {
             KeyBindings.action(for: KeyChord(command: true, shift: true, key: "f")),
             .toggleWindowFullscreen
         )
+        XCTAssertNil(
+            KeyBindings.action(for: KeyChord(command: true, shift: true, key: "e"))
+        )
         XCTAssertEqual(
-            KeyBindings.action(for: KeyChord(command: true, shift: true, key: "e")),
-            .toggleWindowFullscreen
+            KeyBindings.action(for: KeyChord(command: true, shift: true, key: "t")),
+            .toggleWindowZoom
         )
         XCTAssertEqual(
             KeyBindings.action(for: KeyChord(command: true, shift: true, key: "\r")),

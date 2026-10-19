@@ -4644,7 +4644,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     window?.styleMask.contains(.fullScreen) == true ? "window.fullscreen.exit" : "window.fullscreen.enter",
                     fallback: window?.styleMask.contains(.fullScreen) == true ? "Exit Window Full Screen" : "Enter Window Full Screen"
                 ),
-                detail: "⇧⌘F / ⇧⌘E / ⇧⌘↩",
+                detail: "⇧⌘F / ⇧⌘↩",
                 keywords: "window fullscreen screen 窗口全屏 整个窗口",
                 kind: .command(.toggleWindowFullscreen)
             ),
@@ -4653,7 +4653,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     frameBeforeDesktopZoom == nil ? "window.zoom.enter" : "window.zoom.exit",
                     fallback: frameBeforeDesktopZoom == nil ? "Fill the Desktop" : "Restore Window Size"
                 ),
-                detail: "⇧⌘T / ⇧⌘G",
+                detail: "⇧⌘T",
                 keywords: "zoom maximize desktop window 最大化 当前桌面 占满",
                 kind: .command(.toggleWindowZoom)
             ),

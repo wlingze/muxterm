@@ -17,23 +17,27 @@ final class WindowFullscreenTests: XCTestCase {
             toggles += 1
         }
         XCTAssertTrue(window.collectionBehavior.contains(.fullScreenPrimary))
-        for (key, code) in [("f", UInt16(3)), ("e", UInt16(14)), ("\r", UInt16(36))] {
+        for (key, code) in [("f", UInt16(3)), ("\r", UInt16(36))] {
             let event = try XCTUnwrap(app.testMakeKeyEvent(
                 key: key, keyCode: code, command: true, shift: true
             ))
             XCTAssertTrue(app.testDispatchKeyEvent(event))
         }
-        XCTAssertEqual(toggles, 3)
+        let colemakE = try XCTUnwrap(app.testMakeKeyEvent(
+            key: "e", keyCode: 14, command: true, shift: true
+        ))
+        XCTAssertFalse(app.testDispatchKeyEvent(colemakE))
+        XCTAssertEqual(toggles, 2)
         app.testOpenCommandPalette()
         let title = MuxtermI18n.shared.trDynamic("window.fullscreen.enter", fallback: "Enter Window Full Screen")
         XCTAssertTrue(app.testPaletteTitles().contains(title))
         app.testSelectPaletteTitle(title)
-        XCTAssertEqual(toggles, 4)
+        XCTAssertEqual(toggles, 3)
         let button = try XCTUnwrap(app.content.statusBar.subviews.first {
             $0.accessibilityIdentifier() == "muxterm.windowFullscreen"
         } as? NSButton)
         button.performClick(nil)
-        XCTAssertEqual(toggles, 5)
+        XCTAssertEqual(toggles, 4)
         XCTAssertEqual(app.testLayoutLeafIDs(), before, "窗口全屏入口不能修改 pane zoom")
         app.windowDidEnterFullScreen(Notification(name: NSWindow.didEnterFullScreenNotification, object: window))
         XCTAssertEqual(button.accessibilityValue() as? String, "fullscreen")
@@ -46,7 +50,7 @@ final class WindowFullscreenTests: XCTestCase {
         ))
         XCTAssertTrue(app.testDispatchKeyEvent(zoom))
         XCTAssertEqual(zooms, 1)
-        XCTAssertEqual(toggles, 5, "桌面最大化不能顺手触发全屏")
+        XCTAssertEqual(toggles, 4, "桌面最大化不能顺手触发全屏")
     }
 
     func testDesktopZoomFillsTheVisibleFrameWithoutFullscreen() {
@@ -65,7 +69,8 @@ final class WindowFullscreenTests: XCTestCase {
         XCTAssertEqual(KeyBindings.action(for: .init(option: true, key: "\r")), .togglePaneFullscreen)
         XCTAssertEqual(KeyBindings.action(for: .init(command: true, shift: true, key: "f")), .toggleWindowFullscreen)
         XCTAssertEqual(KeyBindings.action(for: .init(command: true, shift: true, key: "t")), .toggleWindowZoom)
-        XCTAssertEqual(KeyBindings.action(for: .init(command: true, shift: true, key: "g")), .toggleWindowZoom)
+        XCTAssertNil(KeyBindings.action(for: .init(command: true, shift: true, key: "e")))
+        XCTAssertNil(KeyBindings.action(for: .init(command: true, shift: true, key: "g")))
         XCTAssertEqual(KeyBindings.action(for: .init(command: true, key: ",")), .openSettings)
         XCTAssertEqual(KeyBindingsConfig.action(from: "toggle_window_fullscreen"), .toggleWindowFullscreen)
         let rows = ShortcutCatalog.defaults()
