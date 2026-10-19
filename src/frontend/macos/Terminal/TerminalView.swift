@@ -1101,8 +1101,11 @@ final class MuxTerminalView: TerminalView {
             modelRows = target.rows
             minimumModelCols = target.cols
             minimumModelRows = target.rows
-        } else if let allocated = allocatedGridSize() {
-            // allocation 是唯一权威：像素分配算出的格子就是模型格子。
+        } else if !muxtermResizeGridWithView,
+                  let allocated = allocatedGridSize() {
+            // 非 client-resize 运行时 allocation 是唯一权威：像素分配算出的
+            // 格子就是模型格子。tmux 的格子由 layout / refresh-client -C 决定，
+            // 不能让 allocation 覆盖权威网格（否则 178x50 会被压成 36x14）。
             modelCols = allocated.cols
             modelRows = allocated.rows
             minimumModelCols = modelCols

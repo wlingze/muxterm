@@ -111,22 +111,13 @@ impl Default for FontConfig {
 }
 
 /// `[debug]`。打开后应用启动即把 debug 日志写入文件，不需要终端重定向。
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct DebugConfig {
     #[serde(default)]
     pub enabled: bool,
     /// 空字符串表示使用系统临时目录下的 `muxterm-logs`。
     #[serde(default)]
     pub log_dir: String,
-}
-
-impl Default for DebugConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            log_dir: String::new(),
-        }
-    }
 }
 
 /// `[theme]`。

@@ -1795,9 +1795,9 @@ final class PaneLayoutProjectionTests: XCTestCase {
             LocalPaneGridPolicy.allowsViewGridResize(usesClientResize: false),
             "Herdr/shell 的 allocation 是唯一格子权威"
         )
-        XCTAssertTrue(
+        XCTAssertFalse(
             LocalPaneGridPolicy.allowsViewGridResize(usesClientResize: true),
-            "tmux 的格子由 layout 与 refresh-client -C 决定"
+            "tmux 的格子由 layout 与 refresh-client -C 决定，view 不能再按像素改写"
         )
     }
 
