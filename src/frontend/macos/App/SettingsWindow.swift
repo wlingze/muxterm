@@ -794,6 +794,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         fieldGroup.spacing = 0
         fieldGroup.setContentHuggingPriority(.required, for: .vertical)
         settingsStyleCard(fieldGroup, fill: NSColor.controlBackgroundColor.withAlphaComponent(0.28))
+        if category.id == "appearance" {
+            let preview = settingsAppearancePreview(values: values)
+            stack.addArrangedSubview(preview)
+            preview.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: contentWidth).isActive = true
+        }
         stack.addArrangedSubview(fieldGroup)
         fieldGroup.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: contentWidth).isActive = true
 
@@ -836,11 +841,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
                 fieldGroup.addArrangedSubview(divider)
                 divider.widthAnchor.constraint(equalTo: fieldGroup.widthAnchor).isActive = true
             }
-        }
-        if category.id == "appearance" {
-            let preview = settingsAppearancePreview(values: values)
-            stack.addArrangedSubview(preview)
-            preview.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: contentWidth).isActive = true
         }
         if category.id == "platform" {
             let row = makeDeveloperToolsRow()
@@ -904,7 +904,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         titleRow.setContentHuggingPriority(.defaultLow, for: .horizontal)
         let copy = NSStackView(views: [titleRow, descriptionLabel])
         copy.orientation = .vertical
-        copy.alignment = .width
+        copy.alignment = .leading
+        descriptionLabel.alignment = .left
         copy.spacing = 4
         copy.setContentHuggingPriority(.defaultLow, for: .horizontal)
         copy.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -1731,6 +1732,7 @@ private func settingsAppearancePreview(values: [String: Any]) -> NSView {
     let preview = NSStackView()
     preview.orientation = .vertical
     preview.alignment = .width
+    preview.setAccessibilityIdentifier("muxterm.settings.preview")
     preview.spacing = 12
     preview.setContentHuggingPriority(.required, for: .vertical)
     preview.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -1767,12 +1769,24 @@ private func settingsAppearancePreview(values: [String: Any]) -> NSView {
     terminal.spacing = 8
     terminal.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
     terminal.setContentHuggingPriority(.required, for: .vertical)
-    terminal.setContentHuggingPriority(.defaultLow, for: .horizontal)
-    terminal.setContentCompressionResistancePriority(.required, for: .horizontal)
-    terminal.heightAnchor.constraint(equalToConstant: 96).isActive = true
+    terminal.setContentHuggingPriority(.init(1), for: .horizontal)
+    terminal.setContentCompressionResistancePriority(.init(1), for: .horizontal)
     terminal.wantsLayer = true
+    terminal.clipsToBounds = true
     terminal.layer?.backgroundColor = NSColor(calibratedRed: 0.06, green: 0.08, blue: 0.11, alpha: 1).cgColor
     terminal.layer?.cornerRadius = 8
+    terminal.setAccessibilityIdentifier("muxterm.settings.preview.terminal")
+    terminal.heightAnchor.constraint(equalToConstant: 118).isActive = true
+    let terminalInset = NSView()
+    terminalInset.translatesAutoresizingMaskIntoConstraints = false
+    terminalInset.addSubview(terminal)
+    terminal.translatesAutoresizingMaskIntoConstraints = false
+    NSLayoutConstraint.activate([
+        terminal.leadingAnchor.constraint(equalTo: terminalInset.leadingAnchor, constant: 16),
+        terminal.trailingAnchor.constraint(equalTo: terminalInset.trailingAnchor, constant: -16),
+        terminal.topAnchor.constraint(equalTo: terminalInset.topAnchor),
+        terminal.bottomAnchor.constraint(equalTo: terminalInset.bottomAnchor),
+    ])
 
     let dots = NSStackView()
     dots.orientation = .horizontal
@@ -1798,7 +1812,8 @@ private func settingsAppearancePreview(values: [String: Any]) -> NSView {
     output.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
     output.textColor = NSColor(calibratedRed: 0.66, green: 0.71, blue: 0.78, alpha: 1)
     terminal.addArrangedSubview(output)
-    preview.addArrangedSubview(terminal)
+    preview.addArrangedSubview(terminalInset)
+    terminal.widthAnchor.constraint(equalTo: preview.widthAnchor, constant: -64).isActive = true
 
     let family = (settingsValue(at: "/font/family", in: values) as? String)
         .flatMap { $0.isEmpty ? nil : $0 } ?? "JetBrains Mono"

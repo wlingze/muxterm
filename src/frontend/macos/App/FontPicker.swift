@@ -90,29 +90,42 @@ final class FontSettingsCluster: NSView {
             tip: "Horizontal spacing"
         )
 
-        let sizeCaption = Self.caption("字号")
-        let lineCaption = Self.caption("行高")
-        let columnCaption = Self.caption("字宽")
-        let row = NSStackView(views: [
-            familyButton, favoriteButton,
-            sizeCaption, sizeField, sizeStepper,
-            lineCaption, lineSpacingField, lineStepper,
-            columnCaption, columnSpacingField, columnStepper,
+        let sizeCaption = Self.caption(Self.localized("settings.font.size.short", "Size"))
+        let lineCaption = Self.caption(Self.localized("settings.font.line_spacing.short", "Line"))
+        let columnCaption = Self.caption(Self.localized("settings.font.column_spacing.short", "Width"))
+        familyButton.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        familyButton.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        favoriteButton.setContentHuggingPriority(.required, for: .horizontal)
+        let familyRow = NSStackView(views: [familyButton, favoriteButton])
+        familyRow.orientation = .horizontal
+        familyRow.alignment = .centerY
+        familyRow.spacing = 6
+
+        let metrics = NSStackView(views: [
+            Self.metric(sizeCaption, sizeField, sizeStepper),
+            Self.spacer(),
+            Self.metric(lineCaption, lineSpacingField, lineStepper),
+            Self.spacer(),
+            Self.metric(columnCaption, columnSpacingField, columnStepper),
         ])
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = 4
-        row.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(row)
-        familyButton.widthAnchor.constraint(equalToConstant: 168).isActive = true
+        metrics.orientation = .horizontal
+        metrics.alignment = .centerY
+        metrics.spacing = 8
+
+        let rows = NSStackView(views: [familyRow, metrics])
+        rows.orientation = .vertical
+        rows.alignment = .width
+        rows.spacing = 8
+        rows.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(rows)
         for field in [sizeField, lineSpacingField, columnSpacingField] {
-            field.widthAnchor.constraint(equalToConstant: 44).isActive = true
+            field.widthAnchor.constraint(equalToConstant: 52).isActive = true
         }
         NSLayoutConstraint.activate([
-            row.leadingAnchor.constraint(equalTo: leadingAnchor),
-            row.trailingAnchor.constraint(equalTo: trailingAnchor),
-            row.topAnchor.constraint(equalTo: topAnchor),
-            row.bottomAnchor.constraint(equalTo: bottomAnchor),
+            rows.leadingAnchor.constraint(equalTo: leadingAnchor),
+            rows.trailingAnchor.constraint(equalTo: trailingAnchor),
+            rows.topAnchor.constraint(equalTo: topAnchor),
+            rows.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
     }
 
@@ -196,11 +209,32 @@ final class FontSettingsCluster: NSView {
         stepper.controlSize = .small
     }
 
+    private static func localized(_ key: String, _ fallback: String) -> String {
+        MuxtermI18n.shared.trDynamic(key, fallback: fallback)
+    }
+
     private static func caption(_ text: String) -> NSTextField {
         let label = NSTextField(labelWithString: text)
         label.font = .systemFont(ofSize: 11)
         label.textColor = .secondaryLabelColor
+        label.setContentHuggingPriority(.required, for: .horizontal)
         return label
+    }
+
+    private static func metric(_ caption: NSTextField, _ field: NSTextField, _ stepper: NSStepper) -> NSStackView {
+        let group = NSStackView(views: [caption, field, stepper])
+        group.orientation = .horizontal
+        group.alignment = .centerY
+        group.spacing = 4
+        group.setContentHuggingPriority(.required, for: .horizontal)
+        return group
+    }
+
+    private static func spacer() -> NSView {
+        let view = NSView()
+        view.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return view
     }
 
     private static func whole(_ value: CGFloat) -> String {
