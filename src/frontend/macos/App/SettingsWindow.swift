@@ -348,7 +348,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
             configTransaction: configTransaction
         )
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 940, height: 680),
+            contentRect: NSRect(x: 0, y: 0, width: 740, height: 530),
             styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -358,7 +358,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
         window.isMovableByWindowBackground = true
-        window.minSize = NSSize(width: 780, height: 540)
+        window.minSize = NSSize(width: 660, height: 460)
         window.appearance = NSApp.appearance
         super.init(window: window)
         window.delegate = self
@@ -563,8 +563,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         pagesContainer.setAccessibilityIdentifier("muxterm.settings.pages")
 
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("category"))
-        column.minWidth = 180
-        column.width = 216
+        column.minWidth = 170
+        column.width = 200
         column.resizingMask = .autoresizingMask
         categoryTable.addTableColumn(column)
         categoryTable.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
@@ -653,7 +653,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
             sidebarView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             sidebarView.topAnchor.constraint(equalTo: root.topAnchor),
             sidebarView.bottomAnchor.constraint(equalTo: root.bottomAnchor),
-            sidebarView.widthAnchor.constraint(equalToConstant: 216),
+            sidebarView.widthAnchor.constraint(equalToConstant: 200),
             searchField.leadingAnchor.constraint(equalTo: sidebarView.leadingAnchor, constant: 12),
             searchField.trailingAnchor.constraint(equalTo: sidebarView.trailingAnchor, constant: -12),
             searchField.topAnchor.constraint(equalTo: sidebarView.topAnchor, constant: 52),
@@ -705,10 +705,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         stack.orientation = .vertical
         stack.alignment = .width
         stack.spacing = 16
-        stack.edgeInsets = NSEdgeInsets(top: 30, left: 30, bottom: 32, right: 30)
+        stack.edgeInsets = NSEdgeInsets(top: 24, left: 24, bottom: 24, right: 24)
         stack.setContentHuggingPriority(.defaultLow, for: .horizontal)
         stack.setContentCompressionResistancePriority(.required, for: .horizontal)
-        let contentWidth: CGFloat = -60
+        let contentWidth: CGFloat = -48
 
         let sectionTitle = NSTextField(labelWithString: "")
         sectionTitle.attributedStringValue = NSAttributedString(
@@ -862,7 +862,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
             return row
         }
 
-        let controlWidth: CGFloat = 220
+        let controlWidth: CGFloat = 200
         if control is NSSwitch {
             control.setContentHuggingPriority(.required, for: .horizontal)
         } else 
@@ -879,8 +879,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         NSLayoutConstraint.activate([
             copy.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 18),
             copy.trailingAnchor.constraint(lessThanOrEqualTo: control.leadingAnchor, constant: -20),
-            copy.topAnchor.constraint(equalTo: row.topAnchor, constant: 17),
-            copy.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -17),
+            copy.topAnchor.constraint(equalTo: row.topAnchor, constant: 14),
+            copy.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -14),
             control.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -18),
             control.centerYAnchor.constraint(equalTo: row.centerYAnchor),
         ])

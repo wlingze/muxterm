@@ -85,7 +85,7 @@ final class SettingsWindowE2ETests: XCTestCase {
         settings.window?.layoutIfNeeded()
         let expandedWidth = settings.testSidebarWidth()
 
-        XCTAssertEqual(compactWidth, 216, accuracy: 1)
+        XCTAssertEqual(compactWidth, 200, accuracy: 1)
         XCTAssertEqual(expandedWidth, compactWidth, accuracy: 1)
         XCTAssertTrue(settings.testVisiblePageIsScrollable())
     }
@@ -101,7 +101,7 @@ final class SettingsWindowE2ETests: XCTestCase {
         settings.showWindow(nil)
         settings.window?.layoutIfNeeded()
         let columnWidth = settings.testCategoryColumnWidth()
-        XCTAssertGreaterThanOrEqual(columnWidth, 200, "分类列必须铺满侧栏，不能停在默认 100pt")
+        XCTAssertGreaterThanOrEqual(columnWidth, 180, "分类列必须铺满侧栏，不能停在默认 100pt")
         XCTAssertEqual(settings.testCategoryCopyOverflows(), [])
     }
 
