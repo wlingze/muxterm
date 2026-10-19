@@ -105,6 +105,38 @@ final class SettingsWindowE2ETests: XCTestCase {
         XCTAssertEqual(settings.testCategoryCopyOverflows(), [])
     }
 
+    func testAppearancePreviewStaysCompleteAboveTheForm() throws {
+        AppE2E.ensureApp()
+        let bridge = try CoreBridge(backendType: "local")
+        let settings = SettingsWindowController(bridge: bridge)
+        defer {
+            settings.window?.orderOut(nil)
+            bridge.shutdown()
+        }
+        settings.showWindow(nil)
+        settings.window?.setContentSize(NSSize(width: 980, height: 720))
+        settings.testSelectCategory("appearance")
+        settings.window?.contentView?.layoutSubtreeIfNeeded()
+        let page = try XCTUnwrap(
+            findView(settings.window?.contentView, id: "muxterm.settings.page.appearance") as? NSScrollView
+        )
+        let preview = try XCTUnwrap(findView(page, id: "muxterm.settings.preview"))
+        let terminal = try XCTUnwrap(findView(page, id: "muxterm.settings.preview.terminal"))
+        page.contentView.layoutSubtreeIfNeeded()
+        let frame = preview.convert(preview.bounds, to: page.contentView)
+        XCTAssertGreaterThan(preview.bounds.height, 140)
+        XCTAssertGreaterThanOrEqual(frame.minY, -1)
+        XCTAssertLessThanOrEqual(
+            frame.maxY,
+            page.contentView.bounds.height + 1,
+            "预览必须完整出现在首屏，不能被底栏切掉"
+        )
+        XCTAssertGreaterThan(terminal.bounds.width, preview.bounds.width * 0.75)
+        let form = try XCTUnwrap(settings.testControl(path: "/theme/name"))
+        let formFrame = form.convert(form.bounds, to: page.contentView)
+        XCTAssertLessThan(frame.maxY, formFrame.minY, "预览应在表单上面")
+    }
+
     func testShortcutDialogSearchesDisablesAndSavesWithoutChangingCancel() throws {
         AppE2E.ensureApp()
         let bridge = try CoreBridge(backendType: "local")
