@@ -228,18 +228,19 @@ private func settingsCategoryDescription(_ id: String) -> String {
 
 private func settingsCategoryIcon(_ id: String) -> String {
     switch id {
-    case "appearance": return "Aa"
-    case "runtime": return "▣"
-    case "quick_panel": return "↺"
-    case "attention": return "◉"
-    case "ui": return "▤"
-    case "ssh": return "↗"
-    case "behavior": return "↯"
-    case "platform": return "⌘"
-    case "projects": return "▦"
-    case "shortcuts": return "⌨"
-    case "debug": return "🐞"
-    default: return "•"
+    case "appearance": return "textformat"
+    case "runtime": return "terminal"
+    case "quick_panel": return "clock.arrow.circlepath"
+    case "attention": return "bell"
+    case "ui": return "macwindow"
+    case "ssh": return "network"
+    case "behavior": return "arrow.turn.down.right"
+    case "platform": return "desktopcomputer"
+    case "update": return "arrow.down.circle"
+    case "projects": return "folder"
+    case "shortcuts": return "keyboard"
+    case "debug": return "ladybug"
+    default: return "gearshape"
     }
 }
 
@@ -543,22 +544,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         let root = SettingsChromeBackground(style: .window)
         root.setAccessibilityIdentifier("muxterm.settings.root")
 
-        let header = SettingsChromeBackground(style: .header)
-        header.translatesAutoresizingMaskIntoConstraints = false
-        root.addSubview(header)
-
-        let headerTitle = NSTextField(labelWithString: settingsText(
-            "settings.window.title",
-            fallback: "Settings"
-        ))
-        headerTitle.translatesAutoresizingMaskIntoConstraints = false
-        headerTitle.font = .systemFont(ofSize: 16, weight: .semibold)
-        header.addSubview(headerTitle)
-
         searchField.translatesAutoresizingMaskIntoConstraints = false
         searchField.placeholderString = settingsText(
             "settings.search.placeholder",
-            fallback: "Search settings"
+            fallback: "Search"
         )
         searchField.toolTip = settingsText(
             "settings.search.tooltip",
@@ -567,13 +556,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         searchField.delegate = self
         searchField.stringValue = ""
         searchField.setAccessibilityIdentifier("muxterm.settings.search")
-        header.addSubview(searchField)
-
-        let headerSeparator = NSView()
-        headerSeparator.translatesAutoresizingMaskIntoConstraints = false
-        headerSeparator.wantsLayer = true
-        headerSeparator.layer?.backgroundColor = NSColor.separatorColor.cgColor
-        root.addSubview(headerSeparator)
 
         sidebarView.translatesAutoresizingMaskIntoConstraints = false
         sidebarView.setAccessibilityIdentifier("muxterm.settings.categories")
@@ -588,8 +570,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         categoryTable.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
         categoryTable.autoresizingMask = [.width, .height]
         categoryTable.headerView = nil
-        categoryTable.rowHeight = 46
-        categoryTable.intercellSpacing = NSSize(width: 0, height: 3)
+        categoryTable.rowHeight = 34
+        categoryTable.intercellSpacing = NSSize(width: 0, height: 1)
         categoryTable.style = .plain
         categoryTable.selectionHighlightStyle = .regular
         categoryTable.backgroundColor = .clear
@@ -604,14 +586,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         categoryScroll.autohidesScrollers = true
         categoryScroll.documentView = categoryTable
 
-        let sidebarTitle = NSTextField(labelWithString: settingsText(
-            "settings.sidebar.title",
-            fallback: "CONFIGURATION"
-        ))
-        sidebarTitle.translatesAutoresizingMaskIntoConstraints = false
-        sidebarTitle.font = .systemFont(ofSize: 10, weight: .bold)
-        sidebarTitle.textColor = .tertiaryLabelColor
-        sidebarView.addSubview(sidebarTitle)
+        sidebarView.addSubview(searchField)
         sidebarView.addSubview(categoryScroll)
         root.addSubview(sidebarView)
 
@@ -675,38 +650,24 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         footer.addSubview(apply)
 
         NSLayoutConstraint.activate([
-            header.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            header.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            header.topAnchor.constraint(equalTo: root.topAnchor),
-            header.heightAnchor.constraint(equalToConstant: 58),
-            headerTitle.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 78),
-            headerTitle.centerYAnchor.constraint(equalTo: header.centerYAnchor),
-            headerTitle.trailingAnchor.constraint(lessThanOrEqualTo: searchField.leadingAnchor, constant: -20),
-            searchField.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -20),
-            searchField.centerYAnchor.constraint(equalTo: header.centerYAnchor),
-            searchField.widthAnchor.constraint(equalToConstant: 230),
-            headerSeparator.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            headerSeparator.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            headerSeparator.topAnchor.constraint(equalTo: header.bottomAnchor),
-            headerSeparator.heightAnchor.constraint(equalToConstant: 1),
             sidebarView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            sidebarView.topAnchor.constraint(equalTo: headerSeparator.bottomAnchor),
+            sidebarView.topAnchor.constraint(equalTo: root.topAnchor),
             sidebarView.bottomAnchor.constraint(equalTo: root.bottomAnchor),
             sidebarView.widthAnchor.constraint(equalToConstant: 216),
-            sidebarTitle.leadingAnchor.constraint(equalTo: sidebarView.leadingAnchor, constant: 18),
-            sidebarTitle.trailingAnchor.constraint(equalTo: sidebarView.trailingAnchor, constant: -12),
-            sidebarTitle.topAnchor.constraint(equalTo: sidebarView.topAnchor, constant: 14),
+            searchField.leadingAnchor.constraint(equalTo: sidebarView.leadingAnchor, constant: 12),
+            searchField.trailingAnchor.constraint(equalTo: sidebarView.trailingAnchor, constant: -12),
+            searchField.topAnchor.constraint(equalTo: sidebarView.topAnchor, constant: 52),
             categoryScroll.leadingAnchor.constraint(equalTo: sidebarView.leadingAnchor),
             categoryScroll.trailingAnchor.constraint(equalTo: sidebarView.trailingAnchor),
-            categoryScroll.topAnchor.constraint(equalTo: sidebarTitle.bottomAnchor, constant: 8),
+            categoryScroll.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 8),
             categoryScroll.bottomAnchor.constraint(equalTo: sidebarView.bottomAnchor, constant: -8),
             separator.leadingAnchor.constraint(equalTo: sidebarView.trailingAnchor),
-            separator.topAnchor.constraint(equalTo: headerSeparator.bottomAnchor),
+            separator.topAnchor.constraint(equalTo: root.topAnchor),
             separator.bottomAnchor.constraint(equalTo: root.bottomAnchor),
             separator.widthAnchor.constraint(equalToConstant: 1),
             right.leadingAnchor.constraint(equalTo: separator.trailingAnchor),
             right.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            right.topAnchor.constraint(equalTo: headerSeparator.bottomAnchor),
+            right.topAnchor.constraint(equalTo: root.topAnchor),
             right.bottomAnchor.constraint(equalTo: root.bottomAnchor),
             pagesContainer.leadingAnchor.constraint(equalTo: right.leadingAnchor),
             pagesContainer.trailingAnchor.constraint(equalTo: right.trailingAnchor),
@@ -749,39 +710,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         stack.setContentCompressionResistancePriority(.required, for: .horizontal)
         let contentWidth: CGFloat = -60
 
-        let title = NSTextField(labelWithString: category.title)
-        title.font = .systemFont(ofSize: 23, weight: .semibold)
-        title.textColor = .labelColor
-        let description = NSTextField(labelWithString: category.description)
-        description.font = .systemFont(ofSize: 12.5)
-        description.textColor = .secondaryLabelColor
-        description.lineBreakMode = .byWordWrapping
-        description.maximumNumberOfLines = 2
-        let headingCopy = NSStackView(views: [title, description])
-        headingCopy.orientation = .vertical
-        headingCopy.alignment = .leading
-        headingCopy.spacing = 5
-        let icon = NSTextField(labelWithString: settingsCategoryIcon(category.id))
-        icon.setAccessibilityIdentifier("muxterm.settings.pageIcon.\(category.id)")
-        icon.alignment = .center
-        icon.font = .systemFont(ofSize: 16, weight: .semibold)
-        icon.textColor = .labelColor
-        icon.wantsLayer = true
-        icon.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.065).cgColor
-        icon.layer?.cornerRadius = 11
-        icon.widthAnchor.constraint(equalToConstant: 40).isActive = true
-        icon.heightAnchor.constraint(equalToConstant: 40).isActive = true
-        let pageHeader = NSStackView(views: [icon, headingCopy])
-        pageHeader.orientation = .horizontal
-        pageHeader.alignment = .centerY
-        pageHeader.spacing = 13
-        pageHeader.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        stack.addArrangedSubview(pageHeader)
-        pageHeader.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: contentWidth).isActive = true
-
-        let sectionTitle = NSTextField(labelWithString: settingsSectionTitle(category.id))
-        sectionTitle.font = .systemFont(ofSize: 10, weight: .semibold)
-        sectionTitle.textColor = .secondaryLabelColor
+        let sectionTitle = NSTextField(labelWithString: "")
+        sectionTitle.attributedStringValue = NSAttributedString(
+            string: settingsSectionTitle(category.id).uppercased(),
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 12, weight: .semibold),
+                .foregroundColor: NSColor.secondaryLabelColor,
+                .kern: 1.1,
+            ]
+        )
         stack.addArrangedSubview(sectionTitle)
         sectionTitle.widthAnchor.constraint(
             equalTo: stack.widthAnchor,
@@ -793,12 +730,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         fieldGroup.alignment = .width
         fieldGroup.spacing = 0
         fieldGroup.setContentHuggingPriority(.required, for: .vertical)
-        settingsStyleCard(fieldGroup, fill: NSColor.controlBackgroundColor.withAlphaComponent(0.28))
-        if category.id == "appearance" {
-            let preview = settingsAppearancePreview(values: values)
-            stack.addArrangedSubview(preview)
-            preview.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: contentWidth).isActive = true
-        }
+        settingsStyleCard(fieldGroup, fill: NSColor.controlBackgroundColor.withAlphaComponent(0.45))
         stack.addArrangedSubview(fieldGroup)
         fieldGroup.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: contentWidth).isActive = true
 
@@ -874,39 +806,23 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         path: String,
         control: NSView
     ) -> NSView {
+        _ = apply
         let titleLabel = NSTextField(labelWithString: title)
-        titleLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
         titleLabel.textColor = .labelColor
         titleLabel.lineBreakMode = .byTruncatingTail
 
         let descriptionLabel = NSTextField(labelWithString: description)
-        descriptionLabel.font = .systemFont(ofSize: 11)
+        descriptionLabel.font = .systemFont(ofSize: 12)
         descriptionLabel.textColor = .secondaryLabelColor
         descriptionLabel.lineBreakMode = .byWordWrapping
-        descriptionLabel.maximumNumberOfLines = 2
+        descriptionLabel.maximumNumberOfLines = 3
+        descriptionLabel.alignment = .left
 
-        let badge = NSTextField(labelWithString: apply)
-        badge.font = .systemFont(ofSize: 8.5, weight: .bold)
-        badge.textColor = .secondaryLabelColor
-        badge.alignment = .center
-        badge.wantsLayer = true
-        badge.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.055).cgColor
-        badge.layer?.cornerRadius = 4
-        badge.setContentHuggingPriority(.required, for: .horizontal)
-        badge.setContentCompressionResistancePriority(.required, for: .horizontal)
-        badge.widthAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
-        badge.heightAnchor.constraint(equalToConstant: 17).isActive = true
-
-        let titleRow = NSStackView(views: [titleLabel, badge, NSView()])
-        titleRow.orientation = .horizontal
-        titleRow.alignment = .centerY
-        titleRow.spacing = 8
-        titleRow.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let copy = NSStackView(views: [titleRow, descriptionLabel])
+        let copy = NSStackView(views: description.isEmpty ? [titleLabel] : [titleLabel, descriptionLabel])
         copy.orientation = .vertical
         copy.alignment = .leading
-        descriptionLabel.alignment = .left
-        copy.spacing = 4
+        copy.spacing = 3
         copy.setContentHuggingPriority(.defaultLow, for: .horizontal)
         copy.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
@@ -919,10 +835,20 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         row.addSubview(copy)
         row.addSubview(control)
 
+        if control is FontSettingsCluster {
+            copy.removeFromSuperview()
+            NSLayoutConstraint.activate([
+                control.leadingAnchor.constraint(equalTo: row.leadingAnchor),
+                control.trailingAnchor.constraint(equalTo: row.trailingAnchor),
+                control.topAnchor.constraint(equalTo: row.topAnchor),
+                control.bottomAnchor.constraint(equalTo: row.bottomAnchor),
+            ])
+            return row
+        }
+
         let isFullWidth = control is NSScrollView
             || control is SettingsProjectEditorView
             || control is SettingsShortcutEditorView
-            || control is FontSettingsCluster
         if isFullWidth {
             NSLayoutConstraint.activate([
                 copy.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 18),
@@ -937,6 +863,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         }
 
         let controlWidth: CGFloat = 220
+        if control is NSSwitch {
+            control.setContentHuggingPriority(.required, for: .horizontal)
+        } else 
         if let field = control as? NSTextField {
             let width: CGFloat = field.alignment == .right ? 88 : controlWidth
             field.widthAnchor.constraint(equalToConstant: width).isActive = true
@@ -965,10 +894,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
 
         switch kind {
         case "switch":
-            let checkbox = NSButton(checkboxWithTitle: "", target: self, action: #selector(controlChanged(_:)))
-            checkbox.identifier = NSUserInterfaceItemIdentifier(path)
-            checkbox.state = (baseline as? Bool == true) ? .on : .off
-            return checkbox
+            let toggle = NSSwitch()
+            toggle.identifier = NSUserInterfaceItemIdentifier(path)
+            toggle.target = self
+            toggle.action = #selector(controlChanged(_:))
+            toggle.state = (baseline as? Bool == true) ? .on : .off
+            toggle.controlSize = .regular
+            return toggle
         case "number":
             let field = NSTextField()
             field.identifier = NSUserInterfaceItemIdentifier(path)
@@ -1237,6 +1169,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         }
         if let popup = view as? NSPopUpButton {
             return popup.selectedItem?.representedObject as? String ?? popup.titleOfSelectedItem
+        }
+        if let toggle = view as? NSSwitch {
+            return toggle.state == .on
         }
         if let checkbox = view as? NSButton {
             return checkbox.state == .on
@@ -1728,109 +1663,6 @@ private func settingsInputPlaceholder(_ path: String) -> String? {
     }
 }
 
-private func settingsAppearancePreview(values: [String: Any]) -> NSView {
-    let preview = NSStackView()
-    preview.orientation = .vertical
-    preview.alignment = .width
-    preview.setAccessibilityIdentifier("muxterm.settings.preview")
-    preview.spacing = 12
-    preview.setContentHuggingPriority(.required, for: .vertical)
-    preview.setContentHuggingPriority(.defaultLow, for: .horizontal)
-    preview.setContentCompressionResistancePriority(.required, for: .horizontal)
-    settingsStyleCard(preview, fill: NSColor.controlBackgroundColor.withAlphaComponent(0.56))
-
-    let title = NSTextField(labelWithString: settingsText(
-        "settings.preview.title",
-        fallback: "Terminal preview"
-    ))
-    title.font = .systemFont(ofSize: 13, weight: .bold)
-    let badge = NSTextField(labelWithString: settingsText(
-        "settings.preview.badge",
-        fallback: "PREVIEW"
-    ))
-    badge.font = .systemFont(ofSize: 9, weight: .bold)
-    badge.alignment = .center
-    badge.textColor = .secondaryLabelColor
-    badge.wantsLayer = true
-    badge.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.055).cgColor
-    badge.layer?.cornerRadius = 5
-    badge.widthAnchor.constraint(greaterThanOrEqualToConstant: 70).isActive = true
-    let titleRow = NSStackView(views: [title, NSView(), badge])
-    titleRow.orientation = .horizontal
-    titleRow.alignment = .centerY
-    titleRow.spacing = 8
-    titleRow.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 0, right: 16)
-    titleRow.setContentHuggingPriority(.defaultLow, for: .horizontal)
-    preview.addArrangedSubview(titleRow)
-
-    let terminal = NSStackView()
-    terminal.orientation = .vertical
-    terminal.alignment = .width
-    terminal.spacing = 8
-    terminal.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
-    terminal.setContentHuggingPriority(.required, for: .vertical)
-    terminal.setContentHuggingPriority(.init(1), for: .horizontal)
-    terminal.setContentCompressionResistancePriority(.init(1), for: .horizontal)
-    terminal.wantsLayer = true
-    terminal.clipsToBounds = true
-    terminal.layer?.backgroundColor = NSColor(calibratedRed: 0.06, green: 0.08, blue: 0.11, alpha: 1).cgColor
-    terminal.layer?.cornerRadius = 8
-    terminal.setAccessibilityIdentifier("muxterm.settings.preview.terminal")
-    terminal.heightAnchor.constraint(equalToConstant: 118).isActive = true
-    let terminalInset = NSView()
-    terminalInset.translatesAutoresizingMaskIntoConstraints = false
-    terminalInset.addSubview(terminal)
-    terminal.translatesAutoresizingMaskIntoConstraints = false
-    NSLayoutConstraint.activate([
-        terminal.leadingAnchor.constraint(equalTo: terminalInset.leadingAnchor, constant: 16),
-        terminal.trailingAnchor.constraint(equalTo: terminalInset.trailingAnchor, constant: -16),
-        terminal.topAnchor.constraint(equalTo: terminalInset.topAnchor),
-        terminal.bottomAnchor.constraint(equalTo: terminalInset.bottomAnchor),
-    ])
-
-    let dots = NSStackView()
-    dots.orientation = .horizontal
-    dots.spacing = 5
-    for color in [NSColor.systemRed, NSColor.systemYellow, NSColor.systemGreen] {
-        let dot = NSTextField(labelWithString: "●")
-        dot.font = .systemFont(ofSize: 9)
-        dot.textColor = color
-        dots.addArrangedSubview(dot)
-    }
-    terminal.addArrangedSubview(dots)
-    let prompt = NSTextField(labelWithString: settingsText(
-        "settings.preview.prompt",
-        fallback: "$ muxterm  --workspace ready"
-    ))
-    prompt.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-    prompt.textColor = NSColor(calibratedRed: 0.55, green: 0.91, blue: 1, alpha: 1)
-    terminal.addArrangedSubview(prompt)
-    let output = NSTextField(labelWithString: settingsText(
-        "settings.preview.output",
-        fallback: "Connected  ·  2 panes  ·  waiting for input"
-    ))
-    output.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-    output.textColor = NSColor(calibratedRed: 0.66, green: 0.71, blue: 0.78, alpha: 1)
-    terminal.addArrangedSubview(output)
-    preview.addArrangedSubview(terminalInset)
-    terminal.widthAnchor.constraint(equalTo: preview.widthAnchor, constant: -64).isActive = true
-
-    let family = (settingsValue(at: "/font/family", in: values) as? String)
-        .flatMap { $0.isEmpty ? nil : $0 } ?? "JetBrains Mono"
-    let size = (settingsValue(at: "/font/size", in: values) as? NSNumber)?.doubleValue ?? 13
-    let themeValue = settingsValue(at: "/theme/name", in: values) as? String ?? "system"
-    let sizeText = String(format: "%.1f", size)
-    let themeText = settingsOptionLabel(path: "/theme/name", value: themeValue)
-    let summary = NSTextField(labelWithString: family + "  ·  " + sizeText + " pt  ·  " + themeText)
-    summary.font = .systemFont(ofSize: 10)
-    summary.textColor = .tertiaryLabelColor
-    let summaryRow = NSStackView(views: [summary])
-    summaryRow.alignment = .leading
-    summaryRow.edgeInsets = NSEdgeInsets(top: 0, left: 16, bottom: 16, right: 16)
-    preview.addArrangedSubview(summaryRow)
-    return preview
-}
-
 /// 背景色按当前主题外观现算，避免系统深色把白色主题烤成黑色。
 private final class SettingsChromeBackground: NSView {
     enum Style {
@@ -1871,19 +1703,18 @@ private final class SettingsChromeBackground: NSView {
 
 private final class SettingsCategoryRowView: NSTableRowView {
     override func drawSelection(in dirtyRect: NSRect) {
-        NSColor.labelColor.withAlphaComponent(0.09).setFill()
+        NSColor.labelColor.withAlphaComponent(0.08).setFill()
         NSBezierPath(
-            roundedRect: bounds.insetBy(dx: 8, dy: 2),
-            xRadius: 9,
-            yRadius: 9
+            roundedRect: bounds.insetBy(dx: 8, dy: 1),
+            xRadius: 7,
+            yRadius: 7
         ).fill()
     }
 }
 
 private final class SettingsCategoryCellView: NSTableCellView {
-    private let iconLabel = NSTextField(labelWithString: "")
+    private let iconView = NSImageView()
     private let titleLabel = NSTextField(labelWithString: "")
-    private let hintLabel = NSTextField(labelWithString: "")
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -1896,50 +1727,31 @@ private final class SettingsCategoryCellView: NSTableCellView {
     }
 
     func configure(title: String, hint: String, icon: String, identifier: String) {
+        _ = hint
         titleLabel.stringValue = title
-        hintLabel.stringValue = hint
-        iconLabel.stringValue = icon
+        iconView.image = NSImage(systemSymbolName: icon, accessibilityDescription: title)
+        iconView.contentTintColor = .secondaryLabelColor
         titleLabel.setAccessibilityIdentifier("muxterm.settings.category.title.\(identifier)")
-        hintLabel.setAccessibilityIdentifier("muxterm.settings.category.hint.\(identifier)")
     }
 
     private func build() {
-        iconLabel.translatesAutoresizingMaskIntoConstraints = false
-        iconLabel.alignment = .center
-        iconLabel.font = .systemFont(ofSize: 15, weight: .bold)
-        iconLabel.textColor = .secondaryLabelColor
-        iconLabel.wantsLayer = true
-        iconLabel.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.055).cgColor
-        iconLabel.layer?.cornerRadius = 8
-        iconLabel.widthAnchor.constraint(equalToConstant: 30).isActive = true
-        iconLabel.heightAnchor.constraint(equalToConstant: 30).isActive = true
-
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        iconView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        titleLabel.font = .systemFont(ofSize: 12, weight: .semibold)
-        titleLabel.lineBreakMode = .byClipping
+        titleLabel.font = .systemFont(ofSize: 13, weight: .medium)
+        titleLabel.lineBreakMode = .byTruncatingTail
         titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-
-        hintLabel.translatesAutoresizingMaskIntoConstraints = false
-        hintLabel.font = .systemFont(ofSize: 10)
-        hintLabel.textColor = .secondaryLabelColor
-        hintLabel.lineBreakMode = .byClipping
-        hintLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-
-        let copy = NSStackView(views: [titleLabel, hintLabel])
-        copy.translatesAutoresizingMaskIntoConstraints = false
-        copy.orientation = .vertical
-        copy.alignment = .leading
-        copy.spacing = 1
-
-        addSubview(iconLabel)
-        addSubview(copy)
+        addSubview(iconView)
+        addSubview(titleLabel)
         textField = titleLabel
         NSLayoutConstraint.activate([
-            iconLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
-            iconLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
-            copy.leadingAnchor.constraint(equalTo: iconLabel.trailingAnchor, constant: 10),
-            copy.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
-            copy.centerYAnchor.constraint(equalTo: centerYAnchor),
+            iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
+            iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            iconView.widthAnchor.constraint(equalToConstant: 18),
+            iconView.heightAnchor.constraint(equalToConstant: 18),
+            titleLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 10),
+            titleLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
     }
 }
