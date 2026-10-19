@@ -90,37 +90,47 @@ final class FontSettingsCluster: NSView {
             tip: "Horizontal spacing"
         )
 
-        let sizeCaption = Self.caption(Self.localized("settings.font.size.short", "Size"))
-        let lineCaption = Self.caption(Self.localized("settings.font.line_spacing.short", "Line"))
-        let columnCaption = Self.caption(Self.localized("settings.font.column_spacing.short", "Width"))
-        familyButton.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        familyButton.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        refreshFamilyFace()
+        familyButton.setContentHuggingPriority(.required, for: .horizontal)
         favoriteButton.setContentHuggingPriority(.required, for: .horizontal)
-        let familyRow = NSStackView(views: [familyButton, favoriteButton])
-        familyRow.orientation = .horizontal
-        familyRow.alignment = .centerY
-        familyRow.spacing = 6
-
-        let metrics = NSStackView(views: [
-            Self.metric(sizeCaption, sizeField, sizeStepper),
-            Self.spacer(),
-            Self.metric(lineCaption, lineSpacingField, lineStepper),
-            Self.spacer(),
-            Self.metric(columnCaption, columnSpacingField, columnStepper),
+        familyButton.widthAnchor.constraint(equalToConstant: 220).isActive = true
+        for field in [sizeField, lineSpacingField, columnSpacingField] {
+            field.widthAnchor.constraint(equalToConstant: 56).isActive = true
+        }
+        let fontControls = NSStackView(views: [familyButton, favoriteButton])
+        fontControls.orientation = .horizontal
+        fontControls.alignment = .centerY
+        fontControls.spacing = 6
+        let rows = NSStackView(views: [
+            Self.optionRow(
+                Self.localized("settings.font.family", "Font"),
+                Self.localized("settings.font.family.description", "Monospace font used by the terminal."),
+                fontControls
+            ),
+            Self.hairline(),
+            Self.optionRow(
+                Self.localized("settings.font.size", "Size"),
+                Self.localized("settings.font.size.description", "Point size."),
+                Self.metric(sizeField, sizeStepper)
+            ),
+            Self.hairline(),
+            Self.optionRow(
+                Self.localized("settings.font.line_spacing", "Vertical spacing"),
+                Self.localized("settings.font.line_spacing.description", "100 keeps the font's natural line height."),
+                Self.metric(lineSpacingField, lineStepper)
+            ),
+            Self.hairline(),
+            Self.optionRow(
+                Self.localized("settings.font.column_spacing", "Horizontal spacing"),
+                Self.localized("settings.font.column_spacing.description", "100 keeps the font's natural character width."),
+                Self.metric(columnSpacingField, columnStepper)
+            ),
         ])
-        metrics.orientation = .horizontal
-        metrics.alignment = .centerY
-        metrics.spacing = 8
-
-        let rows = NSStackView(views: [familyRow, metrics])
         rows.orientation = .vertical
         rows.alignment = .width
-        rows.spacing = 8
+        rows.spacing = 0
         rows.translatesAutoresizingMaskIntoConstraints = false
         addSubview(rows)
-        for field in [sizeField, lineSpacingField, columnSpacingField] {
-            field.widthAnchor.constraint(equalToConstant: 52).isActive = true
-        }
         NSLayoutConstraint.activate([
             rows.leadingAnchor.constraint(equalTo: leadingAnchor),
             rows.trailingAnchor.constraint(equalTo: trailingAnchor),
@@ -138,7 +148,7 @@ final class FontSettingsCluster: NSView {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         familyField.stringValue = trimmed
-        familyButton.title = trimmed
+        refreshFamilyFace()
         refreshFavoriteTitle()
         notifyChange()
         fontPopover?.performClose(nil)
@@ -213,6 +223,48 @@ final class FontSettingsCluster: NSView {
         MuxtermI18n.shared.trDynamic(key, fallback: fallback)
     }
 
+    private func refreshFamilyFace() {
+        familyButton.title = familyField.stringValue
+        familyButton.font = NSFont(name: familyField.stringValue, size: 13) ?? .systemFont(ofSize: 13)
+    }
+
+    private static func optionRow(_ title: String, _ detail: String, _ control: NSView) -> NSView {
+        let titleLabel = NSTextField(labelWithString: title)
+        titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        let detailLabel = NSTextField(labelWithString: detail)
+        detailLabel.font = .systemFont(ofSize: 12)
+        detailLabel.textColor = .secondaryLabelColor
+        detailLabel.lineBreakMode = .byWordWrapping
+        detailLabel.maximumNumberOfLines = 2
+        let copy = NSStackView(views: [titleLabel, detailLabel])
+        copy.orientation = .vertical
+        copy.alignment = .leading
+        copy.spacing = 3
+        copy.translatesAutoresizingMaskIntoConstraints = false
+        control.translatesAutoresizingMaskIntoConstraints = false
+        control.setContentHuggingPriority(.required, for: .horizontal)
+        let row = NSView()
+        row.addSubview(copy)
+        row.addSubview(control)
+        NSLayoutConstraint.activate([
+            copy.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 16),
+            copy.trailingAnchor.constraint(lessThanOrEqualTo: control.leadingAnchor, constant: -16),
+            copy.topAnchor.constraint(equalTo: row.topAnchor, constant: 14),
+            copy.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -14),
+            control.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -16),
+            control.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+        ])
+        return row
+    }
+
+    private static func hairline() -> NSView {
+        let line = NSView()
+        line.wantsLayer = true
+        line.layer?.backgroundColor = NSColor.separatorColor.cgColor
+        line.heightAnchor.constraint(equalToConstant: 1).isActive = true
+        return line
+    }
+
     private static func caption(_ text: String) -> NSTextField {
         let label = NSTextField(labelWithString: text)
         label.font = .systemFont(ofSize: 11)
@@ -221,20 +273,13 @@ final class FontSettingsCluster: NSView {
         return label
     }
 
-    private static func metric(_ caption: NSTextField, _ field: NSTextField, _ stepper: NSStepper) -> NSStackView {
-        let group = NSStackView(views: [caption, field, stepper])
+    private static func metric(_ field: NSTextField, _ stepper: NSStepper) -> NSStackView {
+        let group = NSStackView(views: [field, stepper])
         group.orientation = .horizontal
         group.alignment = .centerY
         group.spacing = 4
         group.setContentHuggingPriority(.required, for: .horizontal)
         return group
-    }
-
-    private static func spacer() -> NSView {
-        let view = NSView()
-        view.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        return view
     }
 
     private static func whole(_ value: CGFloat) -> String {

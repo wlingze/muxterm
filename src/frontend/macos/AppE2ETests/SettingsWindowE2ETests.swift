@@ -105,7 +105,7 @@ final class SettingsWindowE2ETests: XCTestCase {
         XCTAssertEqual(settings.testCategoryCopyOverflows(), [])
     }
 
-    func testAppearancePreviewStaysCompleteAboveTheForm() throws {
+    func testAppearanceUsesSeparateFontRows() throws {
         AppE2E.ensureApp()
         let bridge = try CoreBridge(backendType: "local")
         let settings = SettingsWindowController(bridge: bridge)
@@ -114,27 +114,21 @@ final class SettingsWindowE2ETests: XCTestCase {
             bridge.shutdown()
         }
         settings.showWindow(nil)
-        settings.window?.setContentSize(NSSize(width: 980, height: 720))
         settings.testSelectCategory("appearance")
         settings.window?.contentView?.layoutSubtreeIfNeeded()
         let page = try XCTUnwrap(
-            findView(settings.window?.contentView, id: "muxterm.settings.page.appearance") as? NSScrollView
+            findView(settings.window?.contentView, id: "muxterm.settings.page.appearance")
         )
-        let preview = try XCTUnwrap(findView(page, id: "muxterm.settings.preview"))
-        let terminal = try XCTUnwrap(findView(page, id: "muxterm.settings.preview.terminal"))
-        page.contentView.layoutSubtreeIfNeeded()
-        let frame = preview.convert(preview.bounds, to: page.contentView)
-        XCTAssertGreaterThan(preview.bounds.height, 140)
-        XCTAssertGreaterThanOrEqual(frame.minY, -1)
-        XCTAssertLessThanOrEqual(
-            frame.maxY,
-            page.contentView.bounds.height + 1,
-            "预览必须完整出现在首屏，不能被底栏切掉"
-        )
-        XCTAssertGreaterThan(terminal.bounds.width, preview.bounds.width * 0.75)
-        let form = try XCTUnwrap(settings.testControl(path: "/theme/name"))
-        let formFrame = form.convert(form.bounds, to: page.contentView)
-        XCTAssertLessThan(frame.maxY, formFrame.minY, "预览应在表单上面")
+        let font = try XCTUnwrap(findView(page, id: "muxterm.settings.font.family") as? NSButton)
+        XCTAssertFalse(font.title.isEmpty)
+        let labels = textValues(page)
+        XCTAssertTrue(labels.contains { $0.localizedCaseInsensitiveContains("size") || $0.contains("字号") })
+        XCTAssertTrue(labels.contains { $0.localizedCaseInsensitiveContains("vertical") || $0.contains("垂直") })
+        XCTAssertTrue(labels.contains { $0.localizedCaseInsensitiveContains("horizontal") || $0.contains("水平") })
+        XCTAssertNil(findView(page, id: "muxterm.settings.preview"))
+        let search = try XCTUnwrap(findView(settings.window?.contentView, id: "muxterm.settings.search"))
+        let sidebar = try XCTUnwrap(findView(settings.window?.contentView, id: "muxterm.settings.categories"))
+        XCTAssertTrue(sidebar.bounds.contains(search.convert(search.bounds, to: sidebar).origin))
     }
 
     func testShortcutDialogSearchesDisablesAndSavesWithoutChangingCancel() throws {
@@ -275,11 +269,11 @@ final class SettingsWindowE2ETests: XCTestCase {
         )
         XCTAssertEqual(settings.testSearchPlaceholder(), "搜索设置")
         XCTAssertNotNil(
-            findView(settings.window?.contentView, id: "muxterm.settings.pageIcon.appearance")
+            findView(settings.window?.contentView, id: "muxterm.settings.category.title.appearance")
         )
         XCTAssertNotNil(
             findView(settings.window?.contentView, id: "muxterm.settings.row./font/family"),
-            "每个设置应使用独立平坦行，而不是整页单一卡片"
+            "字体设置必须仍是可定位的一行"
         )
     }
 
@@ -460,5 +454,16 @@ final class SettingsWindowE2ETests: XCTestCase {
             }
         }
         return nil
+    }
+
+    private func textValues(_ root: NSView) -> [String] {
+        var values: [String] = []
+        if let label = root as? NSTextField, !label.stringValue.isEmpty {
+            values.append(label.stringValue)
+        }
+        for child in root.subviews {
+            values.append(contentsOf: textValues(child))
+        }
+        return values
     }
 }
