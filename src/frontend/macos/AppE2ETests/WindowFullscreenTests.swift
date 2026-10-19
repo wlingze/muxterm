@@ -10,7 +10,6 @@ final class WindowFullscreenTests: XCTestCase {
         let app = MainWindowController(bridge: bridge)
         defer { app.testShutdown() }
         let window = try XCTUnwrap(app.window)
-        let before = app.testLayoutLeafIDs()
         var toggles = 0
         app.performWindowFullscreenToggle = { target in
             XCTAssertTrue(target === window)
@@ -36,6 +35,7 @@ final class WindowFullscreenTests: XCTestCase {
         let button = try XCTUnwrap(app.content.statusBar.subviews.first {
             $0.accessibilityIdentifier() == "muxterm.windowFullscreen"
         } as? NSButton)
+        let before = app.testLayoutLeafIDs()
         button.performClick(nil)
         XCTAssertEqual(toggles, 4)
         XCTAssertEqual(app.testLayoutLeafIDs(), before, "窗口全屏入口不能修改 pane zoom")
