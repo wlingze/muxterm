@@ -181,14 +181,13 @@ public enum KeyBindings {
         if chord.command, chord.shift, !chord.option, !chord.control, key == "l" {
             return .cycleLayout
         }
-        // Cmd-Shift-F/E/Enter：整个 macOS 窗口全屏。
-        // Cmd-Shift-T/G：当前桌面内最大化。Colemak 和 QWERTY 是同一物理键的两个字母。
-        // Cmd/Alt-Enter 仍只放大 pane。
+        // Colemak 字母：Cmd-Shift-F 是整个窗口全屏，Cmd-Shift-T 只铺满当前桌面。
+        // 不再绑定 E。Cmd-Shift-Enter 仍可全屏；Cmd/Alt-Enter 只放大 pane。
         if chord.command, !chord.option, !chord.control {
-            if chord.shift, ["f", "e", "\r", "\n"].contains(key) {
+            if chord.shift, ["f", "\r", "\n"].contains(key) {
                 return .toggleWindowFullscreen
             }
-            if chord.shift, key == "t" || key == "g" {
+            if chord.shift, key == "t" {
                 return .toggleWindowZoom
             }
             if !chord.shift, key == "," {

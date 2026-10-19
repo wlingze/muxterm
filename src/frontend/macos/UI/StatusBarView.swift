@@ -1678,7 +1678,7 @@ final class StatusBarView: NSView {
         fullscreenButton.toolTip = MuxtermI18n.shared.trDynamic(
             fullscreen ? "window.fullscreen.exit" : "window.fullscreen.enter",
             fallback: fullscreen ? "Exit Window Full Screen" : "Enter Window Full Screen"
-        ) + " · ⇧⌘F / ⇧⌘E"
+        ) + " · ⇧⌘F"
         fullscreenButton.setAccessibilityLabel(fullscreenButton.toolTip)
         fullscreenButton.setAccessibilityValue(fullscreen ? "fullscreen" : "windowed")
     }

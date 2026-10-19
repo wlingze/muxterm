@@ -2350,7 +2350,7 @@ private final class ShortcutSettingsDialog: NSWindowController, NSTableViewDataS
         content.setAccessibilityIdentifier("muxterm.shortcuts.dialog")
         layoutHintLabel.stringValue = settingsText(
             "settings.shortcuts.layout_hint",
-            fallback: "QWERTY and Colemak print different letters on the same physical key, so the hand position stays the same. Window full screen is ⌘⇧E on QWERTY and ⌘⇧F on Colemak. Digits and punctuation do not move. After you change a shortcut, Restore appears on that row."
+            fallback: "Shortcuts use Colemak letters. ⌘⇧T fills the current desktop, and ⌘⇧F enters full screen. QWERTY and Colemak print different letters on the same physical key, so the hand position stays the same. Digits and punctuation do not move. After you change a shortcut, Restore appears on that row."
         )
         layoutHintLabel.font = .systemFont(ofSize: 12)
         layoutHintLabel.textColor = .secondaryLabelColor
