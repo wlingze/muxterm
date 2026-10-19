@@ -671,10 +671,11 @@ impl TmuxClient {
         connection: Arc<dyn TargetConnection>,
         config: TmuxClientConfig,
     ) -> Result<(TmuxClientHandle, TmuxEventReceiver)> {
-        let bin = config
-            .tmux_bin
-            .clone()
-            .unwrap_or_else(crate::executable::resolve_tmux_binary);
+        // 远端不能用本机解析出的绝对路径。macOS GUI 的 PATH 没有
+        // Homebrew 时，本地会得到 `/opt/homebrew/bin/tmux`；ryzen 这类
+        // Linux 上没有这个文件，exec 会立刻退出，SSH 只看到 EOF。
+        // 发现会话已经用远端 PATH 里的 `tmux`，attach 必须用同一个名字。
+        let bin = tmux_program_for_transport(connection.transport_id(), config.tmux_bin.clone());
         let mut argv = Vec::with_capacity(1 + config.extra_args.len() + 8);
         argv.push(bin);
         let mut env = super::super::terminal_env::terminal_metadata();
@@ -852,6 +853,18 @@ impl TmuxClient {
     /// 便捷：attach。
     pub async fn attach(config: TmuxClientConfig) -> Result<(TmuxClientHandle, TmuxEventReceiver)> {
         Self::spawn(config).await
+    }
+}
+
+/// 本地 GUI 需要绝对路径；SSH 和其他远端只执行 `tmux`，由远端 PATH 查找。
+pub(crate) fn tmux_program_for_transport(transport_id: &str, configured: Option<String>) -> String {
+    if let Some(configured) = configured {
+        return configured;
+    }
+    if transport_id == "local" {
+        crate::executable::resolve_tmux_binary()
+    } else {
+        "tmux".to_string()
     }
 }
 
@@ -1594,7 +1607,16 @@ mod tests {
         else {
             panic!("tmux must use an Exec channel");
         };
-        assert_eq!(argv[0], "tmux");
+        assert_eq!(
+            argv[0], "tmux",
+            "非本机通道不能把本机绝对路径发给远端: {}",
+            argv[0]
+        );
+        assert_eq!(tmux_program_for_transport("ssh", None), "tmux");
+        assert_eq!(
+            tmux_program_for_transport("ssh", Some("/opt/homebrew/bin/tmux".into())),
+            "/opt/homebrew/bin/tmux"
+        );
         assert!(argv.contains(&"-CC".to_string()));
         assert_eq!(cwd, None);
         assert_eq!(env.len(), 5);
