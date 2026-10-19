@@ -498,12 +498,12 @@ final class QuickTargetCellView: NSTableCellView {
             detailLabel.stringValue = workspace.openingStage.map {
                 "Opening · \($0) · \(workspace.runtime) @ \(workspace.transport)"
             } ?? "\(workspace.runtime) @ \(workspace.transport)"
-            if let phase = workspace.runtimeUpdatePhase, phase != "idle",
-               let message = workspace.runtimeUpdateMessage
+            let showUpdateStatus = workspace.runtimeUpdatePhase != nil && workspace.runtimeUpdatePhase != "idle" && workspace.runtimeUpdatePhase != "succeeded"
+            if showUpdateStatus, let message = workspace.runtimeUpdateMessage
             {
                 detailLabel.stringValue += " · \(message)"
                 detailLabel.toolTip = message
-                detailLabel.textColor = phase == "failed" ? .systemOrange : .secondaryLabelColor
+                detailLabel.textColor = workspace.runtimeUpdatePhase == "failed" ? .systemOrange : .secondaryLabelColor
             } else {
                 detailLabel.toolTip = nil
             }
@@ -567,18 +567,19 @@ final class QuickTargetCellView: NSTableCellView {
         let phase = workspace?.runtimeUpdatePhase ?? "idle"
         let busy = available && ["checking", "installing", "handoff", "reconnecting"].contains(phase)
         let failed = phase == "failed"
+        let succeeded = phase == "succeeded"
         runtimeUpdateButton.isHidden = !available
-        runtimeUpdateButton.isEnabled = available && !busy
+        runtimeUpdateButton.isEnabled = available && !busy && !succeeded
         runtimeUpdateButton.image = busy ? nil : NSImage(
-            systemSymbolName: failed ? "exclamationmark.arrow.circlepath" : "arrow.down.circle",
-            accessibilityDescription: "Update runtime"
+            systemSymbolName: failed ? "exclamationmark.arrow.circlepath" : (succeeded ? "checkmark.circle" : "arrow.down.circle"),
+            accessibilityDescription: succeeded ? "Runtime is up to date" : "Update runtime"
         )
-        runtimeUpdateButton.contentTintColor = failed ? .systemOrange : .secondaryLabelColor
-        runtimeUpdateButton.toolTip = workspace?.runtimeUpdateMessage ?? "Update runtime and reconnect"
+        runtimeUpdateButton.contentTintColor = failed ? .systemOrange : (succeeded ? .systemGreen : .secondaryLabelColor)
+        runtimeUpdateButton.toolTip = succeeded ? "Runtime is up to date" : (workspace?.runtimeUpdateMessage ?? "Update runtime and reconnect")
         runtimeUpdateButton.setAccessibilityIdentifier(
             available ? workspace.map { "muxterm.panel.workspace.update.\($0.workspaceId)" } : nil
         )
-        runtimeUpdateButton.setAccessibilityLabel(available ? "Update runtime and reconnect" : nil)
+        runtimeUpdateButton.setAccessibilityLabel(available ? (succeeded ? "Runtime is up to date" : "Update runtime and reconnect") : nil)
         updateSpinner.isHidden = !busy
         if busy {
             updateSpinner.startAnimation(nil)

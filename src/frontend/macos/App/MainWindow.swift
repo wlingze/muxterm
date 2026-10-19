@@ -2379,6 +2379,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         for (id, status) in statuses where status.phase == "failed" && runtimeUpdateStatuses[id] != status {
             reportStatusError(status.message)
         }
+        for (id, status) in statuses where status.phase == "succeeded" && runtimeUpdateStatuses[id]?.phase != "succeeded" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) { [weak self] in
+                guard let self else { return }
+                if self.runtimeUpdateStatuses[id]?.phase == "succeeded" {
+                    self.runtimeUpdateStatuses.removeValue(forKey: id)
+                    self.refreshWorkspaceSidebar(force: true)
+                    self.unifiedPanel.refreshData()
+                }
+            }
+        }
         runtimeUpdateStatuses = statuses
         refreshWorkspaceSidebar(force: true)
         unifiedPanel.refreshData()

@@ -483,7 +483,7 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
                     ?? (item.isActive ? .controlAccentColor : .tertiaryLabelColor)),
             title: item.name,
             detail: item.openingStage.map { "Opening · \($0)" }
-                ?? (item.runtimeUpdatePhase != nil && item.runtimeUpdatePhase != "idle" ? item.runtimeUpdateMessage : nil)
+                ?? (item.runtimeUpdatePhase != nil && item.runtimeUpdatePhase != "idle" && item.runtimeUpdatePhase != "succeeded" ? item.runtimeUpdateMessage : nil)
                 ?? "\(item.runtime) @ \(item.transport)",
             shortcut: item.shortcutText,
             emphasized: item.isAggregate,
