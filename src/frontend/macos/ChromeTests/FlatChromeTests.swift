@@ -2570,6 +2570,40 @@ final class QuickConnectStoreTests: XCTestCase {
         XCTAssertEqual(store.projects, [resolved])
     }
 
+    func testResolvedHerdrProjectUpdatesWhenWorkspaceIDChanges() {
+        let store = QuickConnectStore()
+        var first = TargetConfig(
+            name: "legion",
+            runtime: .herdr,
+            transport: .ssh(name: "ryzen"),
+            path: "~/Developer/work/legion"
+        )
+        first.session = "default"
+        first.socket = "/home/wlz/.config/herdr/herdr.sock"
+        first.workspaceID = "w8"
+
+        var second = first
+        second.workspaceID = "wB"
+
+        XCTAssertTrue(store.upsertProject(first))
+        XCTAssertFalse(store.upsertProject(second), "重新建连产生的新 Herdr workspaceID 必须原位更新同一个项目，严禁新增重复项")
+        XCTAssertEqual(store.projects.count, 1)
+        XCTAssertEqual(store.projects.first?.workspaceID, "wB")
+    }
+
+    func testDeduplicateProjectsCollapsesExistingDuplicates() {
+        var p1 = TargetConfig(name: "legion", runtime: .herdr, transport: .ssh(name: "ryzen"), path: "~/Developer/work/legion")
+        p1.workspaceID = "w8"
+        var p2 = p1
+        p2.workspaceID = "wB"
+        var p3 = p1
+        p3.workspaceID = "wC"
+
+        let deduped = QuickConnectStore.deduplicateProjects([p1, p2, p3])
+        XCTAssertEqual(deduped.count, 1)
+        XCTAssertEqual(deduped.first?.workspaceID, "wC")
+    }
+
     func testEncodeDecodeRoundTrip() {
         let store = QuickConnectStore()
         store.recordRecent(cfg("recent", "/x/r", transport: .ssh(name: "ryzen")))

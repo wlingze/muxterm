@@ -44,11 +44,15 @@ public final class QuickConnectStore {
         persistProjects: @escaping ([TargetConfig]) -> Void
     ) {
         self.recents = []
-        self.projects = initial
+        let deduped = Self.deduplicateProjects(initial)
+        self.projects = deduped
         self.persistProjects = persistProjects
         self.fileURL = nil
         self.attachHistoryURL = attachHistoryURL
         self.attachHistory = Self.loadAttachHistory(from: attachHistoryURL)
+        if deduped.count != initial.count {
+            persistProjects(deduped)
+        }
     }
 
     /// 纯内存 store（测试用）。
@@ -138,21 +142,61 @@ public final class QuickConnectStore {
     /// 新增或更新一个 project。返回是否新增。
     ///
     /// Herdr Project 第一次保存时还没有 workspace identity；连接成功后 Core 会返回
-    /// canonical identity，此时用它替换同一个 Project 的占位记录，避免列表出现两条。
+    /// canonical identity，此时用它替换同一个 Project 的记录，避免列表因 workspace id 变动出现多条。
     @discardableResult
     public func upsertProject(_ config: TargetConfig) -> Bool {
-        let id = QuickConnect.uniqueID(for: config)
         if let idx = projects.firstIndex(where: {
-            QuickConnect.uniqueID(for: $0) == id
-                || Self.isMatchingHerdrProvisional($0, resolved: config)
+            Self.isSameProject($0, config)
         }) {
-            projects[idx] = config
+            var updated = config
+            if updated.path.isEmpty && !projects[idx].path.isEmpty {
+                updated.path = projects[idx].path
+            }
+            projects[idx] = updated
             persistProjects?(projects)
             return false
         }
         projects.append(config)
         persistProjects?(projects)
         return true
+    }
+
+    /// 判断两个 TargetConfig 是否属于同一个 Project（名称、runtime、transport、目录一致）。
+    public static func isSameProject(_ lhs: TargetConfig, _ rhs: TargetConfig) -> Bool {
+        if QuickConnect.uniqueID(for: lhs) == QuickConnect.uniqueID(for: rhs) {
+            return true
+        }
+        guard lhs.runtime == rhs.runtime,
+              lhs.transport == rhs.transport,
+              lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedSame
+        else {
+            return false
+        }
+        let p1 = lhs.path.trimmingCharacters(in: .whitespacesAndNewlines)
+        let p2 = rhs.path.trimmingCharacters(in: .whitespacesAndNewlines)
+        if p1.isEmpty || p2.isEmpty || p1 == p2 {
+            return true
+        }
+        let s1 = p1.hasSuffix("/") ? String(p1.dropLast()) : p1
+        let s2 = p2.hasSuffix("/") ? String(p2.dropLast()) : p2
+        return s1 == s2 || s1.hasSuffix(s2) || s2.hasSuffix(s1)
+    }
+
+    /// 对项目列表做去重，合并同名同位置的项目配置，保留最新或更完备的记录。
+    public static func deduplicateProjects(_ raw: [TargetConfig]) -> [TargetConfig] {
+        var deduped: [TargetConfig] = []
+        for item in raw {
+            if let idx = deduped.firstIndex(where: { isSameProject($0, item) }) {
+                var merged = item
+                if merged.path.isEmpty && !deduped[idx].path.isEmpty {
+                    merged.path = deduped[idx].path
+                }
+                deduped[idx] = merged
+            } else {
+                deduped.append(item)
+            }
+        }
+        return deduped
     }
 
     /// Replace an existing project while allowing its attach identity to change.
@@ -257,7 +301,7 @@ public final class QuickConnectStore {
         if !recentsBuf.isEmpty {
             recents = recentsBuf
         }
-        projects = projectsBuf
+        projects = Self.deduplicateProjects(projectsBuf)
     }
 
     // MARK: - 持久化

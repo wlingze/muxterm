@@ -3939,7 +3939,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     ) {
         let pendingID = pendingWorkspaceOpen?.id
         let requestedKey = Self.connectionKey(config: config, session: config.session)
-        if let slot = sceneStack.scenes[requestedKey], slot.visibility != .closed {
+        let matchingSlot = sceneStack.scenes[requestedKey] ?? sceneStack.scenes.values.first(where: {
+            $0.visibility != .closed && QuickConnectStore.isSameProject($0.targetConfig, config)
+        })
+        if let slot = matchingSlot, slot.visibility != .closed {
             let canonical = QuickConnect.mergingProjectMetadata(
                 resolved: slot.targetConfig,
                 requested: config
@@ -3971,7 +3974,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     self.sharedCoreOperationInFlight = false
                     let shouldActivate = pendingID == nil
                         || self.workspacePresentation == .connecting(pendingID!)
-                    if let existing = self.sceneStack.scenes[key],
+                    let matchingExisting = self.sceneStack.scenes[key] ?? self.sceneStack.scenes.values.first(where: {
+                        $0.visibility != .closed && QuickConnectStore.isSameProject($0.targetConfig, resolved)
+                    })
+                    if let existing = matchingExisting,
                        existing.visibility != .closed
                     {
                         let canonical = QuickConnect.mergingProjectMetadata(

@@ -24,12 +24,22 @@ impl ProjectStore {
     /// second config parse and makes migrations performed during startup
     /// visible to the Projects domain immediately.
     pub fn from_settings(settings: &SettingsService) -> Result<Self> {
-        let projects = settings
-            .document()
-            .projects
-            .iter()
-            .map(Project::from_document)
-            .collect::<Result<Vec<_>>>()?;
+        let mut projects: Vec<Project> = Vec::new();
+        for doc in &settings.document().projects {
+            let project = Project::from_document(doc)?;
+            if let Some(index) = projects.iter().position(|p| {
+                p.name.eq_ignore_ascii_case(&project.name)
+                    && p.target.runtime() == project.target.runtime()
+                    && p.target.transport() == project.target.transport()
+                    && (p.target.path() == project.target.path()
+                        || p.target.path().is_empty()
+                        || project.target.path().is_empty())
+            }) {
+                projects[index] = project;
+            } else {
+                projects.push(project);
+            }
+        }
         Ok(Self {
             projects,
             config_path: Some(settings.path().to_path_buf()),
