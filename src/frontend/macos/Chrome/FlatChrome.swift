@@ -1048,9 +1048,13 @@ public enum ClientGridHysteresis {
 /// Herdr 随后把每一帧都判为 stale 丢掉并重新 SIGWINCH，shell 重画换行提示符，
 /// 画面就重复并跳动。
 public enum LocalPaneGridPolicy {
-    /// 只有 tmux 的 client resize 才让 SwiftTerm 自己改格子。
+    /// 任何运行时都不让 SwiftTerm 按像素自己改格子：tmux 的格子由 layout /
+    /// `refresh-client -C` 决定，Herdr / shell 由 allocation 决定。
+    /// view 如果也写，就会和权威网格互相覆盖（tmux 178x50 被压成 36x14；
+    /// hdr 的 88/85 抖动）。
     public static func allowsViewGridResize(usesClientResize: Bool) -> Bool {
-        usesClientResize
+        _ = usesClientResize
+        return false
     }
 
     /// 非 client-resize 运行时连窗口 resize 也必须走 allocation 格子；
