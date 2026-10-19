@@ -677,4 +677,51 @@ final class ChromeE2ETests: XCTestCase {
             text: text
         )
     }
+
+    func testTabRebuildingLeavesNoOrphanSubviewsOrOverlappingButtons() {
+        let bar = StatusBarView(frame: NSRect(x: 0, y: 0, width: 1200, height: 24))
+        bar.tabBarStyle = .equalWidth
+        window.contentView = bar
+        window.orderFront(nil)
+
+        // 初始只有 1, 6, 10 三个 tab
+        bar.updateTabs([
+            Tab(id: 1, name: "yaklang-workspace", isActive: true),
+            Tab(id: 6, name: "yaklang-workspace", isActive: false),
+            Tab(id: 10, name: "ryzen-home", isActive: false),
+        ])
+        window.layoutIfNeeded()
+        XCTAssertEqual(bar.testTabSubviewsCount(), 3)
+        XCTAssertEqual(bar.testTabArrangedSubviewsCount(), 3)
+
+        // 切到 Agents 聚合，出现 10 个 tab，且部分复用旧 ID，部分为全新 ID
+        bar.setWorkspacePresentation(.agents)
+        bar.updateTabs((1...10).map {
+            Tab(id: UInt32($0), name: "tab-\($0)", isActive: $0 == 1)
+        })
+        window.layoutIfNeeded()
+        XCTAssertEqual(bar.testTabSubviewsCount(), 10, "subviews 中严禁残留旧 tab 按钮幽灵")
+        XCTAssertEqual(bar.testTabArrangedSubviewsCount(), 10)
+
+        let frames = bar.testTabButtonFrames()
+        XCTAssertEqual(frames.count, 10)
+        for i in 1..<frames.count {
+            XCTAssertGreaterThanOrEqual(
+                frames[i].minX,
+                frames[i - 1].maxX - 1,
+                "tab-\(i + 1) 不能与前一个 tab 重叠: 当前 \(frames[i]) 前者 \(frames[i - 1])"
+            )
+        }
+
+        // 再次切回 3 个 tab，多余按钮必须从 subviews 彻底移除
+        bar.setWorkspacePresentation(.workspace)
+        bar.updateTabs([
+            Tab(id: 1, name: "yaklang-workspace", isActive: true),
+            Tab(id: 6, name: "yaklang-workspace", isActive: false),
+            Tab(id: 10, name: "ryzen-home", isActive: false),
+        ])
+        window.layoutIfNeeded()
+        XCTAssertEqual(bar.testTabSubviewsCount(), 3, "切回较少 tab 时必须移除所有多余 subview")
+        XCTAssertEqual(bar.testTabArrangedSubviewsCount(), 3)
+    }
 }

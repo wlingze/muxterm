@@ -464,6 +464,7 @@ final class StatusBarView: NSView {
     override func layout() {
         super.layout()
         layoutMiddleContent()
+        tabViewport.layoutSubtreeIfNeeded()
         let y: CGFloat = edgeAtBottom ? bounds.height - edgeLineThickness : 0
         edgeLine.frame = CGRect(
             x: 0,
@@ -1452,14 +1453,26 @@ final class StatusBarView: NSView {
 
     private func rebuildTabButtons(_ items: [TabBarItem]) {
         // 标题/状态刷新复用按钮，避免 working 动画每次从零开始。
-        let existing = Dictionary(uniqueKeysWithValues: tabStack.arrangedSubviews
-            .compactMap { $0 as? StatusTabButton }.map { (UInt32($0.tag), $0) })
         let ids = Set(items.map(\.id))
         NSLayoutConstraint.deactivate(tabWidthConstraints)
         tabWidthConstraints.removeAll()
-        for (id, button) in existing where !ids.contains(id) {
-            button.removeFromSuperview()
+
+        // 彻底检查 subviews，移除所有不属于当前 items 或重复的幽灵按钮，
+        // 保证脱离 arrangedSubviews 的视图不会留在 subviews 里重叠绘制。
+        var existing: [UInt32: StatusTabButton] = [:]
+        for subview in tabStack.subviews {
+            guard let button = subview as? StatusTabButton else {
+                subview.removeFromSuperview()
+                continue
+            }
+            let tag = UInt32(button.tag)
+            if ids.contains(tag) && existing[tag] == nil {
+                existing[tag] = button
+            } else {
+                button.removeFromSuperview()
+            }
         }
+
         // 只有等宽样式铺满视口，宽度完全交给 fillEqually 推导；
         // compact/fixed 保持自然宽度从左排，不 pin 到 trailing。
         // 有多余空间时不再把它塞进某个 tab 前面（截图里那个大空洞）。
@@ -1473,22 +1486,16 @@ final class StatusBarView: NSView {
         tabStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         tabStackTrailingConstraint.isActive = fillsViewport && !items.isEmpty
 
+        var orderedButtons: [StatusTabButton] = []
         for (position, item) in items.enumerated() {
             let button = existing[item.id] ?? StatusTabButton()
+            button.tag = Int(item.id)
             button.configureTitle(
                 item.title,
                 attributed: item.attributedTitle,
                 tmuxStyle: item.tmuxStyle
             )
-            // 等宽约束连接两个按钮，必须先让它们拥有共同父视图；否则
-            // AppKit 会在约束激活时抛出 NSGenericException。
-            if position >= tabStack.arrangedSubviews.count
-                || tabStack.arrangedSubviews[position] !== button {
-                if tabStack.arrangedSubviews.contains(where: { $0 === button }) {
-                    tabStack.removeArrangedSubview(button)
-                }
-                tabStack.insertArrangedSubview(button, at: position)
-            }
+            orderedButtons.append(button)
             button.setContentCompressionResistancePriority(
                 fillsViewport ? .defaultLow : .defaultHigh, for: .horizontal
             )
@@ -1512,7 +1519,6 @@ final class StatusBarView: NSView {
                     button.widthAnchor.constraint(greaterThanOrEqualToConstant: 44)
                 )
             }
-            button.tag = Int(item.id)
             button.aggregateAppearance = AggregateWorkspaceAppearance(
                 presentation: workspacePresentation
             )
@@ -1583,6 +1589,30 @@ final class StatusBarView: NSView {
             }
             button.menu = menu.items.isEmpty ? nil : menu
         }
+
+        // 把 orderedButtons 同步到 tabStack.arrangedSubviews，
+        // 彻底清理多余项并保证 subviews 与 arrangedSubviews 严格一致。
+        for (position, button) in orderedButtons.enumerated() {
+            if position < tabStack.arrangedSubviews.count {
+                if tabStack.arrangedSubviews[position] !== button {
+                    if tabStack.arrangedSubviews.contains(where: { $0 === button }) {
+                        tabStack.removeArrangedSubview(button)
+                    }
+                    tabStack.insertArrangedSubview(button, at: position)
+                }
+            } else {
+                tabStack.addArrangedSubview(button)
+            }
+        }
+        while tabStack.arrangedSubviews.count > orderedButtons.count {
+            tabStack.arrangedSubviews.last?.removeFromSuperview()
+        }
+        for subview in tabStack.subviews {
+            if !tabStack.arrangedSubviews.contains(where: { $0 === subview }) {
+                subview.removeFromSuperview()
+            }
+        }
+
         needsLayout = true
         NSLayoutConstraint.activate(tabWidthConstraints)
     }
@@ -1948,6 +1978,14 @@ final class StatusBarView: NSView {
     func testChromeMinX() -> CGFloat {
         layoutSubtreeIfNeeded()
         return statusDot.frame.minX
+    }
+
+    func testTabSubviewsCount() -> Int {
+        tabStack.subviews.count
+    }
+
+    func testTabArrangedSubviewsCount() -> Int {
+        tabStack.arrangedSubviews.count
     }
 }
 
