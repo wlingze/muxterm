@@ -1524,17 +1524,44 @@ final class ScreenTextTests: XCTestCase {
 final class WorkspaceDisconnectOverlayPolicyTests: XCTestCase {
     func testOverlayFollowsSelectedWorkspaceStatus() {
         XCTAssertTrue(WorkspaceDisconnectOverlayPolicy.shouldShow(
-            status: 4, usesClientResize: false
+            status: WorkspaceBackendStatus.exited, usesClientResize: false
         ))
         XCTAssertFalse(WorkspaceDisconnectOverlayPolicy.shouldShow(
-            status: 2, usesClientResize: false
+            status: WorkspaceBackendStatus.connected, usesClientResize: false
         ))
         XCTAssertTrue(WorkspaceDisconnectOverlayPolicy.shouldShow(
-            status: 0, usesClientResize: true
+            status: WorkspaceBackendStatus.disconnected, usesClientResize: true
+        ))
+        XCTAssertTrue(WorkspaceDisconnectOverlayPolicy.shouldShow(
+            status: WorkspaceBackendStatus.error, usesClientResize: true
         ))
         XCTAssertFalse(WorkspaceDisconnectOverlayPolicy.shouldShow(
-            status: 0, usesClientResize: false
+            status: WorkspaceBackendStatus.disconnected, usesClientResize: false
         ))
+    }
+
+    func testReconnectActionOnlyAppearsForDisconnectedSharedClientWorkspaces() {
+        XCTAssertTrue(WorkspaceDisconnectOverlayPolicy.canReconnect(
+            status: WorkspaceBackendStatus.disconnected, usesClientResize: true
+        ))
+        XCTAssertTrue(WorkspaceDisconnectOverlayPolicy.canReconnect(
+            status: WorkspaceBackendStatus.exited, usesClientResize: true
+        ))
+        XCTAssertFalse(WorkspaceDisconnectOverlayPolicy.canReconnect(
+            status: WorkspaceBackendStatus.connecting, usesClientResize: true
+        ))
+        XCTAssertFalse(WorkspaceDisconnectOverlayPolicy.canReconnect(
+            status: WorkspaceBackendStatus.disconnected, usesClientResize: false
+        ))
+    }
+
+    func testBackendStatusLabelsUseCoreABIValues() {
+        XCTAssertEqual(WorkspaceBackendStatus.label(0), "disconnected")
+        XCTAssertEqual(WorkspaceBackendStatus.label(1), "connecting")
+        XCTAssertEqual(WorkspaceBackendStatus.label(2), "connected")
+        XCTAssertEqual(WorkspaceBackendStatus.label(3), "error")
+        XCTAssertEqual(WorkspaceBackendStatus.label(4), "exited")
+        XCTAssertEqual(WorkspaceBackendStatus.label(5), "unknown")
     }
 }
 

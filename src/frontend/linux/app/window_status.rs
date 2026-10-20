@@ -96,8 +96,35 @@ fn connection_status(status: Option<u32>) -> &'static str {
         Some(BACKEND_STATUS_CONNECTED) => "connected",
         Some(BACKEND_STATUS_CONNECTING) => "connecting",
         Some(BACKEND_STATUS_DISCONNECTED) => "disconnected",
-        Some(_) => "error",
+        Some(BACKEND_STATUS_ERROR) => "error",
+        Some(BACKEND_STATUS_EXITED) => "exited",
         None => "unknown",
+        Some(_) => "unknown",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::connection_status;
+    use crate::protocol::ffi::types::*;
+
+    #[test]
+    fn connection_status_maps_all_backend_states() {
+        assert_eq!(
+            connection_status(Some(BACKEND_STATUS_DISCONNECTED)),
+            "disconnected"
+        );
+        assert_eq!(
+            connection_status(Some(BACKEND_STATUS_CONNECTING)),
+            "connecting"
+        );
+        assert_eq!(
+            connection_status(Some(BACKEND_STATUS_CONNECTED)),
+            "connected"
+        );
+        assert_eq!(connection_status(Some(BACKEND_STATUS_ERROR)), "error");
+        assert_eq!(connection_status(Some(BACKEND_STATUS_EXITED)), "exited");
+        assert_eq!(connection_status(None), "unknown");
     }
 }
 

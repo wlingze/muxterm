@@ -352,6 +352,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let initialWorkspaces = bridge.workspaceList()
         let initialWorkspace = initialWorkspaces.first(where: \.active) ?? initialWorkspaces.first
         let initialWorkspaceID = initialWorkspace?.id
+        let initialTargetConfig = initialWorkspace?.resolvedTarget?.canonical.targetConfig
+            ?? bridge.resolvedTargetConfig
         appliedTheme = MuxtermTheme.from(name: resolved.themeName)
         // 先盖过系统深色，再创建会把 NSColor 烤进 layer 的视图。
         NSApp.appearance = NSAppearance(named: appliedTheme == .dark ? .darkAqua : .aqua)
@@ -368,6 +370,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             bridge: bridge,
             workspaceID: initialWorkspaceID,
             runtimeID: initialWorkspace?.runtime,
+            targetConfig: initialTargetConfig,
             fontFamily: terminalFontSettings.family,
             fontSize: terminalFontSettings.size,
             lineSpacing: terminalFontSettings.lineSpacing,
@@ -414,6 +417,20 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         content.appearance = initialAppearance
 
         super.init(window: window)
+        content.onDisconnectReconnect = { [weak self] in
+            guard let self,
+                  let slot = self.sceneStack.activeKey.flatMap({ self.sceneStack.scenes[$0] }),
+                  let workspaceID = slot.workspaceID
+            else { return }
+            _ = self.enqueueCoreCommand(QueuedMuxCommand.reconnectWorkspace(
+                workspaceID: workspaceID,
+                failureMessage: MuxtermI18n.shared.tr(.errorCommandFailed)
+            ))
+        }
+        content.onDisconnectClose = { [weak self] in
+            guard let self, let workspaceID = self.activeWorkspaceReplicaID else { return }
+            self.closeWorkspace(workspaceID)
+        }
         // Project 列表来自 Core 快照；变更通过主线程 event pump 排队写回
         // 统一 config.toml（`[[projects]]`），不再从 UI 回调直接碰 Core。
         if let injectedQuickConnectStore {
@@ -777,8 +794,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // 启动时由 AppDelegate 创建的首个连接也属于当前 Workspace。
         // 过去只有 Quick Connect 后续创建的连接才登记进池，导致初始 local
         // workspace 既不在 Recent，也无法在切走后保持常驻。
-        let initialTarget = initialWorkspace?.resolvedTarget?.canonical.targetConfig
-            ?? bridge.resolvedTargetConfig
+        let initialTarget = initialTargetConfig
         let initialAlias: String?
         switch initialTarget?.transport {
         case .some(.ssh(let name)):
@@ -2059,6 +2075,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     unifiedPanel.refreshData()
                 }
                 result = 0
+            case .reconnect:
+                if let workspaceID = command.workspaceID {
+                    result = bridge.reconnectWorkspace(workspaceID: workspaceID)
+                } else {
+                    result = -1
+                }
             case .closeWorkspace:
                 if let workspaceID = command.workspaceID {
                     result = bridge.closeWorkspace(workspaceID: workspaceID)
@@ -2414,6 +2436,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 runtime: target.runtime.rawValue,
                 transport: target.transport.label,
                 isActive: slot.visibility == .visible,
+                backendStatus: slot.backendStatus,
                 canUpdateRuntime: bridge.runtimeSupports(target.runtime.rawValue, capability: "RuntimeUpdate"),
                 runtimeUpdatePhase: updateStatus?.phase,
                 runtimeUpdateMessage: updateStatus?.message,
@@ -4065,6 +4088,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 bridge: sharedBridge,
                 workspaceID: opened.id,
                 runtimeID: resolved.runtime.rawValue,
+                targetConfig: resolved,
                 fontFamily: terminalFontSettings.family,
                 fontSize: terminalFontSettings.size,
                 lineSpacing: terminalFontSettings.lineSpacing,
@@ -4170,10 +4194,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         bridge.selectWorkspace(slot.workspaceID)
         applyVisibleWorkspaceIdentity(slot)
         terminalManager = slot.terminalManager
-        content.setDisconnected(WorkspaceDisconnectOverlayPolicy.shouldShow(
-            status: slot.backendStatus,
-            usesClientResize: terminalManager.usesClientResize
-        ))
+        content.setDisconnected(
+            WorkspaceDisconnectOverlayPolicy.shouldShow(
+                status: slot.backendStatus,
+                usesClientResize: terminalManager.usesClientResize
+            ),
+            canReconnect: WorkspaceDisconnectOverlayPolicy.canReconnect(
+                status: slot.backendStatus,
+                usesClientResize: terminalManager.usesClientResize
+            ),
+            status: slot.backendStatus
+        )
         terminalManager.setBridgeQueriesEnabled(false)
         trafficRateSampler.reset()
         uploadRateSampler.reset()
@@ -5340,7 +5371,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         alert.messageText = MuxtermI18n.shared.tr(.errorPaletteFailed)
         alert.informativeText = detail
         alert.alertStyle = .warning
-        alert.beginSheetModal(for: ownerWindow)
+        let closeButton = alert.addButton(withTitle: MuxtermI18n.shared.tr(.cancel))
+        closeButton.keyEquivalent = "\r"
+        let copyButton = alert.addButton(withTitle: MuxtermI18n.shared.tr(.menuCopy))
+        copyButton.setAccessibilityIdentifier("muxterm.error.copy")
+        alert.beginSheetModal(for: ownerWindow) { response in
+            guard response == .alertSecondButtonReturn else { return }
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.setString(detail, forType: .string)
+        }
     }
 
     // MARK: - 事件循环
@@ -5398,6 +5438,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         guard !sharedSlots.isEmpty else { return [] }
 
         var activeEvents: [StateChange] = []
+        var workspaceStatusChanged = false
         var polledBridges = Set<ObjectIdentifier>()
         while let slot = sharedSlots.popLast() {
             let bridgeID = ObjectIdentifier(slot.bridge)
@@ -5452,7 +5493,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                         activeEvents.append(contentsOf: workspaceEvents)
                     }
                 } else {
+                    let oldStatus = candidate.backendStatus
                     candidate.ingestSharedEvents(workspaceEvents)
+                    workspaceStatusChanged = workspaceStatusChanged
+                        || candidate.backendStatus != oldStatus
                     if candidate.hasPendingSurfaceWork {
                         enqueueSurfaceCatchUp(candidate)
                     }
@@ -5461,6 +5505,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             if let error = slot.bridge.takeError() {
                 reportStatusError(error)
             }
+        }
+        if workspaceStatusChanged {
+            refreshWorkspaceSidebar(force: true)
+            unifiedPanel.refreshData()
         }
         return activeEvents
     }
@@ -5561,6 +5609,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         var outputSeen = false
         var uiStateChanged = false
+        var backendStatusChanged = false
         // 轻量更新标记：tab 标题变化 / pane 尺寸变化不需要全量 snapshot。
         var needsTabRefresh = false
         var needsLightweightUpdate = false
@@ -5723,11 +5772,24 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             if ev.isBackendStatus {
                 sceneStack.activeKey.flatMap { sceneStack.scenes[$0] }?
                     .cacheBackendStatus(ev.paneId)
-                content.setDisconnected(WorkspaceDisconnectOverlayPolicy.shouldShow(
-                    status: ev.paneId,
-                    usesClientResize: terminalManager.usesClientResize
-                ))
+                content.setDisconnected(
+                    WorkspaceDisconnectOverlayPolicy.shouldShow(
+                        status: ev.paneId,
+                        usesClientResize: terminalManager.usesClientResize
+                    ),
+                    canReconnect: WorkspaceDisconnectOverlayPolicy.canReconnect(
+                        status: ev.paneId,
+                        usesClientResize: terminalManager.usesClientResize
+                    ),
+                    status: ev.paneId
+                )
+                backendStatusChanged = true
+                uiStateChanged = true
             }
+        }
+        if backendStatusChanged {
+            refreshWorkspaceSidebar(force: true)
+            unifiedPanel.refreshData()
         }
         if needsLayoutReload || uiStateChanged {
             refreshUI()
@@ -5999,6 +6061,27 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     private func refreshUI() {
         let snap = bridge.snapshot()
+        if snap.tabs.isEmpty && snap.panes.isEmpty,
+           let slot = sceneStack.activeKey.flatMap({ sceneStack.scenes[$0] }),
+           slot.terminalManager.usesClientResize,
+           WorkspaceDisconnectOverlayPolicy.shouldShow(
+                status: slot.backendStatus,
+                usesClientResize: true
+           )
+        {
+            // A transport-level exit is not an instruction to destroy the scene:
+            // preserve the last painted pane until the user reconnects or closes it.
+            content.setDisconnected(
+                true,
+                canReconnect: WorkspaceDisconnectOverlayPolicy.canReconnect(
+                    status: slot.backendStatus,
+                    usesClientResize: true
+                ),
+                status: slot.backendStatus
+            )
+            refreshWorkspaceSidebar(force: true)
+            return
+        }
         tabSwitchGate.onSnapshot(tabs: snap.tabs.map(\.id))
         if !tabSwitchGate.isReleased() {
             // 乐观切 tab 已经挂了缓存树；不能用还没切过去的 snapshot 盖回去。
@@ -6328,8 +6411,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 只有再也没有打开的 Workspace 才关整个窗口。
     private func maybeCloseIfSessionEnded() {
         let snap = lastSnapshot
-        guard snap.tabs.isEmpty && snap.panes.isEmpty else { return }
         let current = sceneStack.activeKey.flatMap { sceneStack.scenes[$0] }
+        if let current,
+           current.terminalManager.usesClientResize,
+           WorkspaceDisconnectOverlayPolicy.shouldShow(
+                status: current.backendStatus,
+                usesClientResize: true
+           )
+        {
+            return
+        }
+        guard snap.tabs.isEmpty && snap.panes.isEmpty else { return }
         if let current,
            current.targetConfig.runtime == .shell,
            current.targetConfig.transport == .local

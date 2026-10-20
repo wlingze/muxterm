@@ -13,6 +13,8 @@ final class TerminalManager: TerminalInputHandler {
     /// Stable Core workspace identity for shared-handle scenes.  `nil` keeps
     /// the legacy single-workspace bridge calls used by isolated test clients.
     private(set) var workspaceID: String?
+    private var connectionTarget: TargetConfig?
+    private(set) var backendStatus: UInt32 = WorkspaceBackendStatus.connected
     private var views: [UInt32: MuxTerminalView] = [:]
     /// 后端报告的 pane 字符格尺寸：视图创建时先按它 resize SwiftTerm 模型，
     /// 再喂快照/增量。否则模型默认 80 列，codex 的 93 列帧会折行、erase-up
@@ -172,6 +174,7 @@ final class TerminalManager: TerminalInputHandler {
         bridge: CoreBridge,
         workspaceID: String? = nil,
         runtimeID: String? = nil,
+        targetConfig: TargetConfig? = nil,
         fontFamily: String = MuxtermTerminalFont.defaultFamily,
         fontSize: CGFloat = MuxtermTerminalFont.defaultSize,
         lineSpacing: CGFloat = MuxtermTerminalFont.defaultSpacing,
@@ -180,16 +183,23 @@ final class TerminalManager: TerminalInputHandler {
         self.bridge = bridge
         self.workspaceID = workspaceID
         self.runtimeID = runtimeID
+        self.connectionTarget = targetConfig
         self.fontFamily = fontFamily
         self.fontSize = MuxtermTerminalFont.clamp(fontSize)
         self.lineSpacing = MuxtermTerminalFont.clampSpacing(lineSpacing)
         self.columnSpacing = MuxtermTerminalFont.clampSpacing(columnSpacing)
     }
 
+    /// Update the backend status for this scene without consulting the active bridge slot.
+    func cacheBackendStatus(_ status: UInt32) {
+        backendStatus = status
+    }
+
     /// 连接面板切换 local / SSH session 后更新桥接对象。
     func updateBridge(_ bridge: CoreBridge, workspaceID: String? = nil) {
         self.bridge = bridge
         self.workspaceID = workspaceID
+        backendStatus = WorkspaceBackendStatus.connected
         viewCreationEnabled = true
         bridgeQueriesEnabled = true
         for view in views.values {
@@ -1705,22 +1715,29 @@ final class TerminalManager: TerminalInputHandler {
     /// SSH 连接状态摘要（供 statusbar 显示）。
     /// 返回 backend 类型 + alias/session + 连接状态。
     var connectionSummary: (type: String, host: String?, status: String) {
-        let idParts = workspaceID?.split(separator: "/", maxSplits: 4, omittingEmptySubsequences: false)
-        let workspaceTransport = idParts?.first.map(String.init)
-        let isSSH = workspaceTransport == "ssh" || (workspaceTransport == nil && bridge?.sshAlias != nil)
-        let type = isSSH ? "ssh" : "local"
-        let host = isSSH
-            ? (idParts?.dropFirst().first.map(String.init) ?? bridge?.sshAlias)
-            : nil
-        let statusLabel: String
-        switch bridge?.lastStatus {
-        case 0: statusLabel = "disconnected"
-        case 1: statusLabel = "connecting"
-        case 2: statusLabel = "connected"
-        case 3: statusLabel = "exited"
-        default: statusLabel = "unknown"
+        let type: String
+        let host: String?
+        if let connectionTarget {
+            switch connectionTarget.transport {
+            case .ssh(let name):
+                type = "ssh"
+                host = name
+            case .local:
+                type = "local"
+                host = nil
+            }
+        } else {
+            let idParts = workspaceID?.split(
+                separator: "/", maxSplits: 4, omittingEmptySubsequences: false
+            )
+            let isSSH = idParts?.first.map(String.init) == "ssh"
+                || (idParts == nil && bridge?.sshAlias != nil)
+            type = isSSH ? "ssh" : "local"
+            host = isSSH
+                ? (idParts?.dropFirst().first.map(String.init) ?? bridge?.sshAlias)
+                : nil
         }
-        return (type, host, statusLabel)
+        return (type, host, WorkspaceBackendStatus.label(backendStatus))
     }
 
     /// Workspace-scoped transport counters and detected application ports.

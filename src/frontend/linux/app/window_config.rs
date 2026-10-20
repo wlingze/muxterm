@@ -125,14 +125,35 @@ pub(super) fn open_target_config(
                     let detail = error.to_string();
                     s.notification_log.push(format!("Project: {detail}"));
                     drop(s);
+                    let copy_text = detail.clone();
                     let dialog = gtk4::MessageDialog::builder()
                         .transient_for(&win)
                         .modal(true)
                         .message_type(gtk4::MessageType::Error)
-                        .buttons(gtk4::ButtonsType::Close)
+                        .buttons(gtk4::ButtonsType::None)
                         .text(&detail)
                         .build();
-                    dialog.connect_response(|dialog, _| dialog.close());
+                    let copy = dialog.add_button(
+                        &crate::frontend::utils::i18n::tr(
+                            crate::frontend::utils::i18n::Key::MenuCopy,
+                        ),
+                        gtk4::ResponseType::Accept,
+                    );
+                    copy.set_widget_name("muxterm-project-error-copy");
+                    dialog.add_button(
+                        &crate::frontend::utils::i18n::tr(
+                            crate::frontend::utils::i18n::Key::Cancel,
+                        ),
+                        gtk4::ResponseType::Close,
+                    );
+                    dialog.connect_response(move |dialog, response| {
+                        if response == gtk4::ResponseType::Accept {
+                            if let Some(display) = gtk4::gdk::Display::default() {
+                                display.clipboard().set_text(&copy_text);
+                            }
+                        }
+                        dialog.close();
+                    });
                     dialog.present();
                     return;
                 }

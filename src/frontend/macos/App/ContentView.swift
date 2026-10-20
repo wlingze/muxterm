@@ -9,6 +9,10 @@ final class ContentView: NSView {
     let statusBar = StatusBarView()
     /// 断线水印（W16b：tmux server 死后保留最后一帧 + 覆盖提示）。
     let disconnectOverlay = NSTextField(labelWithString: "")
+    let disconnectReconnectButton = NSButton()
+    let disconnectCloseButton = NSButton()
+    var onDisconnectReconnect: (() -> Void)?
+    var onDisconnectClose: (() -> Void)?
     /// 回底胶囊（愿景：滚离底部后显示「↓ 最新 · +N」）。
     let jumpLatestButton = NSButton()
     /// 最近一次离开 pane 时的行位置。
@@ -47,6 +51,24 @@ final class ContentView: NSView {
         disconnectOverlay.isHidden = true
         disconnectOverlay.setAccessibilityIdentifier("muxterm.disconnectOverlay")
         disconnectOverlay.setAccessibilityElement(true)
+
+        disconnectReconnectButton.translatesAutoresizingMaskIntoConstraints = false
+        disconnectReconnectButton.title = MuxtermI18n.shared.tr(.statusReconnect)
+        disconnectReconnectButton.bezelStyle = .rounded
+        disconnectReconnectButton.controlSize = .small
+        disconnectReconnectButton.target = self
+        disconnectReconnectButton.action = #selector(disconnectReconnectClicked)
+        disconnectReconnectButton.setAccessibilityIdentifier("muxterm.disconnectOverlay.reconnect")
+        disconnectReconnectButton.isHidden = true
+
+        disconnectCloseButton.translatesAutoresizingMaskIntoConstraints = false
+        disconnectCloseButton.title = MuxtermI18n.shared.tr(.closeWorkspace)
+        disconnectCloseButton.bezelStyle = .rounded
+        disconnectCloseButton.controlSize = .small
+        disconnectCloseButton.target = self
+        disconnectCloseButton.action = #selector(disconnectCloseClicked)
+        disconnectCloseButton.setAccessibilityIdentifier("muxterm.disconnectOverlay.close")
+        disconnectCloseButton.isHidden = true
 
         replyOverlayContainer.translatesAutoresizingMaskIntoConstraints = false
         replyOverlayContainer.wantsLayer = true
@@ -97,6 +119,8 @@ final class ContentView: NSView {
         addSubview(paneLayout)
         addSubview(statusBar)
         addSubview(disconnectOverlay)
+        addSubview(disconnectReconnectButton)
+        addSubview(disconnectCloseButton)
         addSubview(lastSeenButton)
         addSubview(commandMarkRail)
         addSubview(jumpLatestButton)
@@ -127,7 +151,13 @@ final class ContentView: NSView {
         NSLayoutConstraint.activate([
             notificationWidth,
             disconnectOverlay.centerXAnchor.constraint(equalTo: centerXAnchor),
-            disconnectOverlay.centerYAnchor.constraint(equalTo: centerYAnchor),
+            disconnectOverlay.centerYAnchor.constraint(equalTo: centerYAnchor, constant: -18),
+            disconnectReconnectButton.centerYAnchor.constraint(equalTo: centerYAnchor, constant: 18),
+            disconnectReconnectButton.trailingAnchor.constraint(equalTo: centerXAnchor, constant: -4),
+            disconnectReconnectButton.heightAnchor.constraint(equalToConstant: 25),
+            disconnectCloseButton.leadingAnchor.constraint(equalTo: centerXAnchor, constant: 4),
+            disconnectCloseButton.centerYAnchor.constraint(equalTo: disconnectReconnectButton.centerYAnchor),
+            disconnectCloseButton.heightAnchor.constraint(equalToConstant: 25),
             seenTrailing,
             lastSeenButton.topAnchor.constraint(equalTo: paneLayout.topAnchor, constant: 12),
             lastSeenButton.heightAnchor.constraint(equalToConstant: 24),
@@ -242,11 +272,41 @@ final class ContentView: NSView {
         connectProgressOverlay.show(stage: stage, title: title)
     }
 
-    /// 断线水印：tmux server 死后保留最后一帧 + 覆盖提示。
-    func setDisconnected(_ disconnected: Bool) {
+    func setDisconnected(
+        _ disconnected: Bool,
+        canReconnect: Bool = false,
+        status: UInt32? = nil
+    ) {
         disconnectOverlay.isHidden = !disconnected
-        disconnectOverlay.stringValue = MuxtermI18n.shared.tr(.statusDisconnected)
+        disconnectOverlay.stringValue = Self.disconnectStatusLabel(status)
+        disconnectReconnectButton.isHidden = !disconnected || !canReconnect
+        disconnectCloseButton.isHidden = !disconnected
         needsLayout = true
+    }
+
+    private static func disconnectStatusLabel(_ status: UInt32?) -> String {
+        return switch status {
+        case .some(WorkspaceBackendStatus.disconnected):
+            MuxtermI18n.shared.tr(.statusDisconnected)
+        case .some(WorkspaceBackendStatus.connecting):
+            MuxtermI18n.shared.tr(.statusConnecting)
+        case .some(WorkspaceBackendStatus.error):
+            MuxtermI18n.shared.tr(.statusError)
+        case .some(WorkspaceBackendStatus.exited):
+            MuxtermI18n.shared.tr(.statusExited)
+        case .some(WorkspaceBackendStatus.connected), .none:
+            MuxtermI18n.shared.tr(.statusDisconnected)
+        case .some:
+            MuxtermI18n.shared.tr(.statusUnknown)
+        }
+    }
+
+    @objc private func disconnectReconnectClicked() {
+        onDisconnectReconnect?()
+    }
+
+    @objc private func disconnectCloseClicked() {
+        onDisconnectClose?()
     }
 
     /// 回底胶囊：viewport 滚离底部时显示；有未读行时显示 `↓ 最新 · +N`。

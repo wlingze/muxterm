@@ -13,6 +13,22 @@ final class MacCommandQueueTests: XCTestCase {
         XCTAssertEqual(commands.map(\.operation), [.updateRuntime, .updateRuntime, .updateRuntime])
     }
 
+    func testReconnectCommandsKeepExplicitWorkspaceIdentityAndOrder() {
+        var queue = MacCommandQueue()
+        queue.enqueue(.reconnectWorkspace(
+            workspaceID: "ssh/ryzen/work/tmux//work",
+            failureMessage: "reconnect failed"
+        ))
+        queue.enqueue(.reconnectWorkspace(
+            workspaceID: "local//other/tmux//other",
+            failureMessage: "reconnect failed"
+        ))
+
+        let commands = queue.drain()
+        XCTAssertEqual(commands.map(\.workspaceID), ["ssh/ryzen/work/tmux//work", "local//other/tmux//other"])
+        XCTAssertEqual(commands.map(\.operation), [.reconnect, .reconnect])
+    }
+
     private func switchCommand(
         workspaceID: String?,
         tabID: UInt32,

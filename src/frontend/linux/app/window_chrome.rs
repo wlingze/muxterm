@@ -196,6 +196,7 @@ pub(super) fn chrome_css(theme: &Theme) -> String {
         .muxterm-sidebar-row-detail.blocked, .quick-pick-detail.blocked {{ color: #e64553; }}
         .muxterm-sidebar-agent-dot.done,
         .muxterm-sidebar-row-detail.done, .quick-pick-detail.done {{ color: #179299; }}
+        .muxterm-sidebar-row-detail.disconnected {{ color: #e64553; opacity: 1; }}
         .muxterm-sidebar-row-detail.working, .muxterm-sidebar-row-detail.idle,
         .muxterm-sidebar-row-detail.blocked, .muxterm-sidebar-row-detail.done,
         .quick-pick-detail.working, .quick-pick-detail.idle,

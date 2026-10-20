@@ -475,16 +475,38 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
         let aggregateAppearance = AggregateWorkspaceAppearance(
             workspaceID: item.workspaceId
         )
+        let connectionLabel: String? = switch item.backendStatus {
+        case WorkspaceBackendStatus.disconnected:
+            MuxtermI18n.shared.tr(.statusDisconnected)
+        case WorkspaceBackendStatus.connecting:
+            MuxtermI18n.shared.tr(.statusConnecting)
+        case WorkspaceBackendStatus.connected:
+            nil
+        case WorkspaceBackendStatus.error:
+            MuxtermI18n.shared.tr(.statusError)
+        case WorkspaceBackendStatus.exited:
+            MuxtermI18n.shared.tr(.statusExited)
+        default:
+            MuxtermI18n.shared.tr(.statusUnknown)
+        }
+        let connectionLost = item.backendStatus == WorkspaceBackendStatus.disconnected
+            || item.backendStatus == WorkspaceBackendStatus.error
+            || item.backendStatus == WorkspaceBackendStatus.exited
+        let workspaceDetail = "\(item.runtime) @ \(item.transport)"
+            + (connectionLabel.map { " · \($0)" } ?? "")
         cell.set(
-            marker: item.isOpening ? "◌" : (item.isAggregate ? "◆" : (item.isActive ? "●" : "○")),
+            marker: item.isOpening ? "◌" : (item.isAggregate ? "◆" : (connectionLost ? "!" : (item.isActive ? "●" : "○"))),
             markerColor: item.isOpening
                 ? .systemYellow
-                : (aggregateAppearance?.accentColor
-                    ?? (item.isActive ? .controlAccentColor : .tertiaryLabelColor)),
+                : (connectionLost
+                    ? .systemRed
+                    : (aggregateAppearance?.accentColor
+                        ?? (item.isActive ? .controlAccentColor : .tertiaryLabelColor))),
             title: item.name,
             detail: item.openingStage.map { "Opening · \($0)" }
                 ?? (item.runtimeUpdatePhase != nil && item.runtimeUpdatePhase != "idle" && item.runtimeUpdatePhase != "succeeded" ? item.runtimeUpdateMessage : nil)
-                ?? "\(item.runtime) @ \(item.transport)",
+                ?? workspaceDetail,
+            detailColor: connectionLost ? .systemRed : .secondaryLabelColor,
             shortcut: item.shortcutText,
             emphasized: item.isAggregate,
             accentColor: aggregateAppearance?.accentColor,

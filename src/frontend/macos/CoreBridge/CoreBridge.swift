@@ -1692,6 +1692,15 @@ final class CoreBridge {
         )
     }
 
+    /// Reconnect one workspace in the Core-owned pool by stable identity.
+    @discardableResult
+    func reconnectWorkspace(workspaceID: String) -> Int32 {
+        guard let handle else { return -1 }
+        return workspaceID.withCString { workspace in
+            muxterm_workspace_reconnect(handle, workspace)
+        }
+    }
+
     /// Close one workspace in the Core-owned pool without shutting down the
     /// shared product handle.
     @discardableResult

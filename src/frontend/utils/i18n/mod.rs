@@ -383,6 +383,7 @@ define_text_keys! {
     StatusConnected => "status_connected",
     StatusConnecting => "status_connecting",
     StatusDisconnected => "status_disconnected",
+    StatusReconnect => "status_reconnect",
     StatusError => "status_error",
     StatusExited => "status_exited",
     StatusUnknown => "status_unknown",

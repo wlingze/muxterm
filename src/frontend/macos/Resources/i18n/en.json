@@ -136,6 +136,7 @@
   "status_connected": "connected",
   "status_connecting": "connecting",
   "status_disconnected": "disconnected",
+  "status_reconnect": "Reconnect",
   "status_error": "error",
   "status_exited": "exited",
   "status_unknown": "unknown",

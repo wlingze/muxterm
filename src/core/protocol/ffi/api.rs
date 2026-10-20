@@ -78,5 +78,5 @@ pub use super::functions::workspace::{
     muxterm_get_panes, muxterm_get_tabs, muxterm_workspace_activate, muxterm_workspace_close,
     muxterm_workspace_create, muxterm_workspace_get_layout, muxterm_workspace_get_pane_output,
     muxterm_workspace_get_panes, muxterm_workspace_get_tabs, muxterm_workspace_list,
-    muxterm_workspace_open,
+    muxterm_workspace_open, muxterm_workspace_reconnect,
 };

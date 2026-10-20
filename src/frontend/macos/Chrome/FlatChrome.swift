@@ -1091,10 +1091,44 @@ public enum FirstTabPaintPolicy {
     }
 }
 
+/// Values mirror `BackendStatus` in the public Core FFI ABI.
+public enum WorkspaceBackendStatus {
+    public static let disconnected: UInt32 = 0
+    public static let connecting: UInt32 = 1
+    public static let connected: UInt32 = 2
+    public static let error: UInt32 = 3
+    public static let exited: UInt32 = 4
+
+    public static func label(_ status: UInt32) -> String {
+        return switch status {
+        case disconnected: "disconnected"
+        case connecting: "connecting"
+        case connected: "connected"
+        case error: "error"
+        case exited: "exited"
+        default: "unknown"
+        }
+    }
+
+    public static func includesActivity(_ status: UInt32) -> Bool {
+        status == connected
+    }
+}
+
 /// 断线水印属于当前 Workspace，不能随 ContentView 泄漏到切换后的 Scene。
 public enum WorkspaceDisconnectOverlayPolicy {
     public static func shouldShow(status: UInt32, usesClientResize: Bool) -> Bool {
-        (status == 0 && usesClientResize) || status == 4
+        status == WorkspaceBackendStatus.exited
+            || (usesClientResize
+                && (status == WorkspaceBackendStatus.disconnected
+                    || status == WorkspaceBackendStatus.error))
+    }
+
+    public static func canReconnect(status: UInt32, usesClientResize: Bool) -> Bool {
+        usesClientResize
+            && (status == WorkspaceBackendStatus.disconnected
+                || status == WorkspaceBackendStatus.error
+                || status == WorkspaceBackendStatus.exited)
     }
 }
 

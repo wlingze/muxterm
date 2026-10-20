@@ -246,6 +246,37 @@ mod tests {
     }
 
     #[test]
+    fn disconnected_workspace_stays_in_workspaces_but_leaves_activity_aggregates() {
+        let id = workspace_id("ssh", Some("ryzen"), "default", "tmux", "/work/remote");
+        let mut store = ViewStore::default();
+        add_workspace(&mut store, &id, "remote", true);
+        store.ensure_workspace(&id.as_str()).backend_status =
+            Some(crate::protocol::ffi::types::BACKEND_STATUS_EXITED);
+
+        let rows = WorkspaceSidebarItem::from_views(&store);
+        assert_eq!(rows.len(), 1, "断连的 tmux Workspace 仍必须留在列表");
+        assert_eq!(rows[0].id, id);
+        assert!(rows[0].is_connection_lost());
+        assert_eq!(
+            rows[0].connection_status_label(),
+            Some(crate::frontend::utils::i18n::tr_static(
+                crate::frontend::utils::i18n::Key::StatusExited
+            ))
+        );
+
+        let agent = activity(&id, "working", false, Some("codex"), true, Some("Codex"));
+        assert!(
+            AgentSidebarItem::from_views(&store, &agent).is_empty(),
+            "断连 workspace 上一次的 agent activity 不能残留在聚合中"
+        );
+        let command = activity(&id, "working", false, Some("cargo test"), false, None);
+        assert!(
+            CommandSidebarItem::from_views(&store, &command).is_empty(),
+            "断连 workspace 上一次的 command activity 不能残留在聚合中"
+        );
+    }
+
+    #[test]
     fn agent_rows_use_core_activity_identity_without_pane_title_guessing() {
         let id = workspace_id("local", None, "muxterm", "herdr", "/work/muxterm");
         let mut store = ViewStore::default();

@@ -204,6 +204,7 @@ public struct WorkspaceSidebarItem: Sendable, Equatable {
     public let runtime: String
     public let transport: String
     public let isActive: Bool
+    public let backendStatus: UInt32
     public let shortcut: Int?
     /// 固定聚合槽不能关闭或参与真实 Workspace 的拖动改序。
     public let isClosable: Bool
@@ -262,6 +263,7 @@ public struct WorkspaceSidebarItem: Sendable, Equatable {
         runtime: String,
         transport: String,
         isActive: Bool,
+        backendStatus: UInt32 = WorkspaceBackendStatus.connected,
         shortcut: Int? = nil,
         isClosable: Bool = true,
         isReorderable: Bool = true,
@@ -279,6 +281,7 @@ public struct WorkspaceSidebarItem: Sendable, Equatable {
         self.runtime = runtime
         self.transport = transport
         self.isActive = isActive
+        self.backendStatus = backendStatus
         self.shortcut = shortcut
         self.isClosable = isClosable
         self.isReorderable = isReorderable
@@ -432,7 +435,9 @@ public enum WorkspaceSidebarProjection {
         }
         var result: [AgentSidebarItem] = []
 
-        for workspace in workspaces where !workspace.isAggregate && !workspace.isOpening {
+        for workspace in workspaces where !workspace.isAggregate && !workspace.isOpening
+            && WorkspaceBackendStatus.includesActivity(workspace.backendStatus)
+        {
             var structuredPaneIDs = Set<UInt32>()
             for agent in workspace.structuredAgents {
                 structuredPaneIDs.insert(agent.paneId)
@@ -534,12 +539,16 @@ public enum WorkspaceSidebarProjection {
         attention: AttentionSnapshot?
     ) -> [CommandSidebarItem] {
         var agentPaneKeys = Set<PaneKey>()
-        for workspace in workspaces where !workspace.isAggregate && !workspace.isOpening {
+        for workspace in workspaces where !workspace.isAggregate && !workspace.isOpening
+            && WorkspaceBackendStatus.includesActivity(workspace.backendStatus)
+        {
             for agent in workspace.structuredAgents {
                 agentPaneKeys.insert(PaneKey(workspaceId: workspace.workspaceId, paneId: agent.paneId))
             }
         }
-        for workspace in workspaces where !workspace.isAggregate && !workspace.isOpening {
+        for workspace in workspaces where !workspace.isAggregate && !workspace.isOpening
+            && WorkspaceBackendStatus.includesActivity(workspace.backendStatus)
+        {
             for pane in attention?.workspaces.first(where: {
                 $0.workspaceId == workspace.workspaceId
             })?.panes ?? [] where pane.processIsAgent {
@@ -548,7 +557,9 @@ public enum WorkspaceSidebarProjection {
         }
 
         var result: [CommandSidebarItem] = []
-        for workspace in workspaces where !workspace.isAggregate && !workspace.isOpening {
+        for workspace in workspaces where !workspace.isAggregate && !workspace.isOpening
+            && WorkspaceBackendStatus.includesActivity(workspace.backendStatus)
+        {
             guard let panes = attention?.workspaces
                 .first(where: { $0.workspaceId == workspace.workspaceId })?
                 .panes

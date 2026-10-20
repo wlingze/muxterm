@@ -462,14 +462,17 @@ pub(super) fn paste_pane(s: &UiState, state: &Rc<RefCell<UiState>>, pane_id: u32
 }
 
 fn image_paste_error(s: &mut UiState, message: &str) {
+    use crate::frontend::utils::i18n::{tr, Key};
     s.notification_log.push(format!("Image paste: {message}"));
+    let copy_text = image_paste_error_copy_text(message);
     let dialog = gtk4::MessageDialog::builder()
-        .text(crate::frontend::utils::i18n::tr(
-            crate::frontend::utils::i18n::TextKey::ImagePasteFailed,
-        ))
+        .text(tr(Key::ImagePasteFailed))
         .secondary_text(message)
-        .buttons(gtk4::ButtonsType::Close)
+        .buttons(gtk4::ButtonsType::None)
         .build();
+    let copy = dialog.add_button(&tr(Key::MenuCopy), gtk4::ResponseType::Accept);
+    copy.set_widget_name("muxterm-image-paste-copy");
+    dialog.add_button(&tr(Key::Cancel), gtk4::ResponseType::Close);
     if let Some(parent) = s
         .scenes
         .widget()
@@ -478,8 +481,24 @@ fn image_paste_error(s: &mut UiState, message: &str) {
     {
         dialog.set_transient_for(Some(&parent));
     }
-    dialog.connect_response(|dialog, _| dialog.close());
+    dialog.connect_response(move |dialog, response| {
+        if response == gtk4::ResponseType::Accept {
+            if let Some(display) = gtk4::gdk::Display::default() {
+                display.clipboard().set_text(&copy_text);
+            }
+        }
+        dialog.close();
+    });
     dialog.present();
+}
+
+fn image_paste_error_copy_text(message: &str) -> String {
+    format!(
+        "{}: {message}",
+        crate::frontend::utils::i18n::tr_static(
+            crate::frontend::utils::i18n::Key::ImagePasteFailed
+        )
+    )
 }
 
 pub(super) fn poll_image_paste(s: &mut UiState) {
@@ -577,5 +596,20 @@ pub(super) fn handle_pane_menu_action(
             let mut s = state.borrow_mut();
             split_pane_from_menu(&mut s, pane_id, false);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::image_paste_error_copy_text;
+    use crate::frontend::utils::i18n::{tr_static, Key};
+
+    #[test]
+    fn image_paste_error_copy_text_keeps_the_complete_reason() {
+        let message = "image exceeds 20 MiB and 64 megapixels";
+        assert_eq!(
+            image_paste_error_copy_text(message),
+            format!("{}: {message}", tr_static(Key::ImagePasteFailed))
+        );
     }
 }

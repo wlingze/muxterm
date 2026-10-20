@@ -439,6 +439,24 @@ extension MainWindowController {
         !content.disconnectOverlay.isHidden
     }
 
+    func testDisconnectReconnectVisible() -> Bool {
+        !content.disconnectReconnectButton.isHidden
+    }
+
+    func testDisconnectCloseVisible() -> Bool {
+        !content.disconnectCloseButton.isHidden
+    }
+
+    func testClickDisconnectReconnect() {
+        content.disconnectReconnectButton.performClick(nil)
+        pollOnce()
+    }
+
+    func testClickDisconnectClose() {
+        content.disconnectCloseButton.performClick(nil)
+        pollOnce()
+    }
+
     func testWindowVisible() -> Bool {
         window?.isVisible == true && !isClosing
     }

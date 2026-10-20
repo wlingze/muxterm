@@ -548,6 +548,31 @@ final class ChromeE2ETests: XCTestCase {
         XCTAssertNil(bar.testPopoverValue("muxterm.statusPopover.sent"))
     }
 
+    func testWorkspaceConnectionSummaryUsesResolvedTransportAndBackendStatus() throws {
+        let bridge = try CoreBridge(backendType: "local")
+        defer { bridge.shutdown() }
+        let target = TargetConfig(
+            name: "remote",
+            runtime: .tmux,
+            transport: .ssh(name: "ryzen"),
+            path: "/work/remote",
+            session: "default"
+        )
+        let manager = TerminalManager(
+            bridge: bridge,
+            workspaceID: "ssh/ryzen/default/tmux//work/remote",
+            runtimeID: "tmux",
+            targetConfig: target
+        )
+
+        manager.cacheBackendStatus(WorkspaceBackendStatus.error)
+        XCTAssertEqual(manager.connectionSummary.type, "ssh")
+        XCTAssertEqual(manager.connectionSummary.host, "ryzen")
+        XCTAssertEqual(manager.connectionSummary.status, "error")
+        manager.cacheBackendStatus(WorkspaceBackendStatus.exited)
+        XCTAssertEqual(manager.connectionSummary.status, "exited")
+    }
+
     func testConnectionPopoverUpdatesAndRefreshesWithoutReopening() throws {
         let bar = StatusBarView(frame: .zero)
         bar.showsTrailingButtons = true

@@ -42,6 +42,55 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 static TEST_TMUX_SOCKET_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 #[test]
+fn ffi_workspace_reconnect_targets_the_requested_workspace() {
+    let handle = muxterm_catalog_new();
+    assert!(!handle.is_null());
+    unsafe {
+        let active = WorkspaceId::new("local", None, "active", "mock", "/active");
+        let disconnected = WorkspaceId::new("ssh", Some("ryzen"), "work", "mock", "/work");
+        (*handle).pool.insert_connected(Workspace::new(
+            active.clone(),
+            "Active".into(),
+            Box::new(MockRuntime::new()),
+        ));
+        (*handle).pool.insert_connected(Workspace::new(
+            disconnected.clone(),
+            "Disconnected".into(),
+            Box::new(MockRuntime::new()),
+        ));
+        (*handle).pool_mut().activate(&active);
+
+        let id = CString::new(disconnected.as_str()).unwrap();
+        assert_eq!(muxterm_workspace_reconnect(handle, id.as_ptr()), 0);
+        assert_eq!(
+            (*handle).pool().active_id(),
+            Some(&active),
+            "reconnecting one workspace must not change the active workspace"
+        );
+        assert_eq!(
+            (*handle)
+                .pool()
+                .get(&disconnected)
+                .unwrap()
+                .runtime()
+                .runtime_status(),
+            crate::protocol::state::BackendStatus::Connected
+        );
+        assert_eq!(
+            (*handle)
+                .pool()
+                .get(&active)
+                .unwrap()
+                .runtime()
+                .runtime_status(),
+            crate::protocol::state::BackendStatus::Disconnected,
+            "the other workspace must not be connected as a side effect"
+        );
+        muxterm_free(handle);
+    }
+}
+
+#[test]
 fn ffi_async_open_preserves_pool_and_background_activation() {
     unsafe fn value(ptr: *mut c_char) -> serde_json::Value {
         assert!(!ptr.is_null());
