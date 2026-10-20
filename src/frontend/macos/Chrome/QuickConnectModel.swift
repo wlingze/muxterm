@@ -87,6 +87,8 @@ public struct TargetConfig: Equatable, Sendable {
     public var socket: String?
     /// Herdr workspace id（`wN`）；tmux/shell 为 nil。
     public var workspaceID: String?
+    /// `config.toml` 里的稳定 Project id。连接指纹不是项目 id。
+    public var persistedID: String?
 
     public init(
         name: String,
@@ -95,7 +97,8 @@ public struct TargetConfig: Equatable, Sendable {
         path: String,
         session: String? = nil,
         socket: String? = nil,
-        workspaceID: String? = nil
+        workspaceID: String? = nil,
+        persistedID: String? = nil
     ) {
         self.name = name
         self.runtime = runtime
@@ -104,6 +107,7 @@ public struct TargetConfig: Equatable, Sendable {
         self.session = session
         self.socket = socket
         self.workspaceID = workspaceID
+        self.persistedID = persistedID
     }
 
     /// 工作区面板搜索字段：展示名、runtime、传输/SSH alias、路径以及

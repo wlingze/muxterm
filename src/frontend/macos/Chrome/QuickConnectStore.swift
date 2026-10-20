@@ -152,6 +152,9 @@ public final class QuickConnectStore {
             if updated.path.isEmpty && !projects[idx].path.isEmpty {
                 updated.path = projects[idx].path
             }
+            if updated.persistedID == nil || Self.isAttachIdentity(updated.persistedID ?? "") {
+                updated.persistedID = projects[idx].persistedID
+            }
             projects[idx] = updated
             persistProjects?(projects)
             return false
@@ -191,6 +194,9 @@ public final class QuickConnectStore {
                 if merged.path.isEmpty && !deduped[idx].path.isEmpty {
                     merged.path = deduped[idx].path
                 }
+                if merged.persistedID == nil || Self.isAttachIdentity(merged.persistedID ?? "") {
+                    merged.persistedID = deduped[idx].persistedID
+                }
                 deduped[idx] = merged
             } else {
                 deduped.append(item)
@@ -212,7 +218,11 @@ public final class QuickConnectStore {
         }) else {
             return upsertProject(config)
         }
-        projects[index] = config
+        var updated = config
+        if updated.persistedID == nil || Self.isAttachIdentity(updated.persistedID ?? "") {
+            updated.persistedID = projects[index].persistedID
+        }
+        projects[index] = updated
         persistProjects?(projects)
         return true
     }
@@ -331,41 +341,98 @@ public final class QuickConnectStore {
                 path: path,
                 session: runtimeInfo["session"] as? String,
                 socket: runtimeInfo["socket"] as? String,
-                workspaceID: runtimeInfo["workspace_id"] as? String
+                workspaceID: runtimeInfo["workspace_id"] as? String,
+                persistedID: project["id"] as? String
             )
         }
     }
 
     /// TargetConfig 数组 → Core `[[projects]]` JSON（Rust `ProjectDocument` 形状）。
+    /// 与 Core `ConfigDocument::normalize_project_ids` 使用同一套 slug 规则。
     public static func projectJSON(from projects: [TargetConfig]) -> [[String: Any]] {
-        projects.map { project in
+        var used = Set<String>()
+        return projects.map { project in
             let transport: [String: Any]
             switch project.transport {
             case .local:
-                transport = ["id": "local", "target": ""]
+                transport = ["id": "local"]
             case .ssh(let name):
                 transport = ["id": "ssh", "target": name]
             }
             var runtime: [String: Any] = ["id": project.runtime.rawValue]
-            if let session = project.session {
+            if let session = project.session, !session.isEmpty {
                 runtime["session"] = session
             }
-            if let socket = project.socket {
+            if let socket = project.socket, !socket.isEmpty {
                 runtime["socket"] = socket
             }
-            if let workspaceID = project.workspaceID {
+            if let workspaceID = project.workspaceID, !workspaceID.isEmpty {
                 runtime["workspace_id"] = workspaceID
             }
             return [
-                "id": QuickConnect.uniqueID(for: project),
+                "id": stableProjectID(for: project, used: &used),
                 "name": project.name,
                 "path": project.path,
                 "runtime": runtime,
                 "transport": transport,
-                "command": [],
-                "env": [:]
             ]
         }
+    }
+
+    static func isAttachIdentity(_ id: String) -> Bool {
+        let parts = id.split(separator: "|")
+        guard parts.count >= 2 else { return false }
+        return parts.allSatisfy { part in
+            guard let colon = part.firstIndex(of: ":") else { return false }
+            let length = Int(part[..<colon])
+            let value = part[part.index(after: colon)...]
+            return length == value.utf8.count
+        }
+    }
+
+    private static func stableProjectID(for project: TargetConfig, used: inout Set<String>) -> String {
+        if let persistedID = project.persistedID,
+           !Self.isAttachIdentity(persistedID),
+           !persistedID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           used.insert(persistedID.lowercased()).inserted
+        {
+            return persistedID
+        }
+        let base = projectSlug(project.name)
+        let runtime = project.runtime.rawValue.lowercased()
+        for candidate in [base, "\(base)-\(runtime)"] where used.insert(candidate.lowercased()).inserted {
+            return candidate
+        }
+        var suffix = 2
+        while true {
+            let candidate = "\(base)-\(suffix)"
+            if used.insert(candidate.lowercased()).inserted {
+                return candidate
+            }
+            suffix += 1
+        }
+    }
+
+    private static func projectSlug(_ name: String) -> String {
+        var slug = ""
+        var dash = false
+        for scalar in name.lowercased().unicodeScalars {
+            let character = Character(scalar)
+            if character.isASCII, character.isLetter || character.isNumber {
+                slug.append(character)
+                dash = false
+            } else if !dash && !slug.isEmpty {
+                slug.append("-")
+                dash = true
+            }
+        }
+        while slug.hasSuffix("-") { slug.removeLast() }
+        if !slug.isEmpty { return slug }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty && !trimmed.contains("|") && !trimmed.contains("\n") {
+            return trimmed
+        }
+        return "project"
     }
 
     // MARK: - TOML 编码

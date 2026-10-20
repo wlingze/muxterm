@@ -66,12 +66,53 @@ impl ConfigDocument {
         validate_toml_shape(&value)?;
         let mut document: Self = toml::from_str(raw).context("配置文档反序列化失败")?;
         document.normalize_legacy_defaults(raw);
+        document.normalize_project_ids();
         document.validate()?;
         Ok(document)
     }
 
     pub fn to_toml(&self) -> Result<String> {
         toml::to_string_pretty(self).context("配置文档序列化失败")
+    }
+
+    /// 只写出与内置默认值不同的字段。空表、默认快捷键和由旧 keybindings
+    /// 复制出来的 overrides 都不进文件。
+    pub fn to_user_toml(&self) -> Result<String> {
+        let defaults = Self::default();
+        let mut sparse = self.clone();
+        sparse.normalize_project_ids();
+        if sparse.shortcuts.preset == defaults.shortcuts.preset
+            && sparse.shortcuts.primary_key == defaults.shortcuts.primary_key
+            && sparse.shortcuts.overrides == legacy_shortcut_overrides(&sparse.config.keybindings)
+        {
+            sparse.shortcuts.overrides.clear();
+        }
+        let mut value = toml::Value::try_from(&sparse).context("配置文档序列化失败")?;
+        let default_value = toml::Value::try_from(&defaults).context("默认配置序列化失败")?;
+        prune_equal_defaults(&mut value, &default_value);
+        if let toml::Value::Table(table) = &mut value {
+            table.insert(
+                "config_version".to_string(),
+                toml::Value::Integer(i64::from(sparse.config_version)),
+            );
+        }
+        toml::to_string_pretty(&value).context("配置文档序列化失败")
+    }
+
+    /// 把连接指纹形式的 Project id 改成可读 slug。已经可读的 id 保持不变。
+    pub fn normalize_project_ids(&mut self) {
+        let mut used = BTreeSet::new();
+        for project in &self.projects {
+            if is_stable_project_id(&project.id) {
+                used.insert(project.id.to_ascii_lowercase());
+            }
+        }
+        for project in &mut self.projects {
+            if is_stable_project_id(&project.id) {
+                continue;
+            }
+            project.id = allocate_project_id(&project.name, &project.runtime.id, &mut used);
+        }
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -486,9 +527,9 @@ pub struct ProjectDocument {
     /// Git worktrees registered under this Project.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub worktrees: Vec<WorktreeDocument>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub command: Vec<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
 }
 
@@ -508,7 +549,7 @@ pub struct WorktreeDocument {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq)]
 pub struct ProjectRuntime {
     pub id: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub options: BTreeMap<String, Value>,
     /// tmux/Herdr named session, when the runtime supports one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -524,9 +565,9 @@ pub struct ProjectRuntime {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq)]
 pub struct ProjectTransport {
     pub id: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub target: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub options: BTreeMap<String, Value>,
 }
 
@@ -716,6 +757,102 @@ fn check_table(
     Ok(())
 }
 
+fn legacy_shortcut_overrides(bindings: &[KeyBinding]) -> Vec<ShortcutOverride> {
+    bindings.iter().map(ShortcutOverride::from_legacy).collect()
+}
+
+/// 长度前缀的 `4:tmux|3:ssh|...` 是 attach identity，不是用户配置 id。
+fn is_attach_identity(id: &str) -> bool {
+    let parts: Vec<&str> = id.split('|').collect();
+    if parts.len() < 2 {
+        return false;
+    }
+    parts.iter().all(|part| {
+        let Some((len, value)) = part.split_once(':') else {
+            return false;
+        };
+        len.parse::<usize>().ok() == Some(value.len())
+    })
+}
+
+fn is_stable_project_id(id: &str) -> bool {
+    let id = id.trim();
+    !id.is_empty() && !is_attach_identity(id)
+}
+
+fn project_slug(name: &str) -> String {
+    let mut slug = String::new();
+    let mut dash = false;
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch.to_ascii_lowercase());
+            dash = false;
+        } else if !dash && !slug.is_empty() {
+            slug.push('-');
+            dash = true;
+        }
+    }
+    while slug.ends_with('-') {
+        slug.pop();
+    }
+    if !slug.is_empty() {
+        return slug;
+    }
+    let trimmed = name.trim();
+    if !trimmed.is_empty() && !trimmed.contains('|') && !trimmed.contains('\n') {
+        return trimmed.to_string();
+    }
+    "project".to_string()
+}
+
+fn allocate_project_id(name: &str, runtime: &str, used: &mut BTreeSet<String>) -> String {
+    let base = project_slug(name);
+    let runtime = runtime.trim().to_ascii_lowercase();
+    let mut candidates = vec![base.clone()];
+    if !runtime.is_empty() {
+        candidates.push(format!("{base}-{runtime}"));
+    }
+    for candidate in candidates {
+        if used.insert(candidate.to_ascii_lowercase()) {
+            return candidate;
+        }
+    }
+    let mut suffix = 2;
+    loop {
+        let candidate = format!("{base}-{suffix}");
+        if used.insert(candidate.to_ascii_lowercase()) {
+            return candidate;
+        }
+        suffix += 1;
+    }
+}
+
+fn prune_equal_defaults(value: &mut toml::Value, defaults: &toml::Value) {
+    let toml::Value::Table(default_table) = defaults else {
+        return;
+    };
+    let toml::Value::Table(current) = value else {
+        return;
+    };
+    let keys: Vec<String> = current.keys().cloned().collect();
+    for key in keys {
+        let Some(default_child) = default_table.get(&key).cloned() else {
+            continue;
+        };
+        if let Some(child) = current.get_mut(&key) {
+            prune_equal_defaults(child, &default_child);
+        }
+        let remove = match current.get(&key) {
+            Some(toml::Value::Table(table)) if table.is_empty() => true,
+            Some(child) => child == &default_child,
+            None => true,
+        };
+        if remove {
+            current.remove(&key);
+        }
+    }
+}
+
 fn check_keys(
     table: &toml::map::Map<String, toml::Value>,
     allowed: &[&str],
@@ -797,5 +934,92 @@ mod tests {
 
         let error = document.validate().expect_err("空 command 应被拒绝");
         assert!(error.to_string().contains("command"));
+    }
+
+    #[test]
+    fn user_toml_omits_defaults_and_empty_project_tables() {
+        let mut document = ConfigDocument::default();
+        document.config.font.family = "monaco".into();
+        document.config.font.size = 18.0;
+        document.config.statusbar.mode = "theme".into();
+        document.projects.push(ProjectDocument {
+            id: "4:tmux|3:ssh|5:ryzen|6:legion|0:".into(),
+            name: "legion".into(),
+            path: "~/Developer/work/legion".into(),
+            runtime: ProjectRuntime {
+                id: "tmux".into(),
+                options: BTreeMap::new(),
+                session: None,
+                socket: None,
+                workspace_id: None,
+            },
+            transport: ProjectTransport {
+                id: "ssh".into(),
+                target: "ryzen".into(),
+                options: BTreeMap::new(),
+            },
+            template: None,
+            worktrees: Vec::new(),
+            command: Vec::new(),
+            env: BTreeMap::new(),
+        });
+
+        let raw = document.to_user_toml().unwrap();
+        assert!(raw.contains("family = \"monaco\""));
+        assert!(raw.contains("mode = \"theme\""));
+        assert!(raw.contains("id = \"legion\""));
+        assert!(raw.contains("target = \"ryzen\""));
+        assert!(!raw.contains("[pool]"));
+        assert!(!raw.contains("[ssh]"));
+        assert!(!raw.contains("keybindings"));
+        assert!(!raw.contains("[projects.runtime.options]"));
+        assert!(!raw.contains("[projects.env]"));
+        assert!(!raw.contains("command"));
+        let restored = ConfigDocument::from_toml(&raw).unwrap();
+        assert_eq!(restored.config.font.family, "monaco");
+        assert_eq!(restored.config.font.size, 18.0);
+        assert_eq!(restored.config.pool.max_slots, 20);
+        assert_eq!(restored.projects[0].id, "legion");
+        assert!(restored.projects[0].command.is_empty());
+    }
+
+    #[test]
+    fn attach_identity_project_ids_become_stable_slugs_without_colliding() {
+        let mut document = ConfigDocument::default();
+        document.projects = vec![
+            project_named("5:herdr|3:ssh|5:ryzen|6:legion|0:", "legion", "herdr"),
+            project_named("4:tmux|3:ssh|5:ryzen|6:legion|0:", "legion", "tmux"),
+            project_named("muxterm", "Muxterm", "tmux"),
+        ];
+        document.normalize_project_ids();
+        assert_eq!(document.projects[0].id, "legion");
+        assert_eq!(document.projects[1].id, "legion-tmux");
+        assert_eq!(document.projects[2].id, "muxterm");
+        document.normalize_project_ids();
+        assert_eq!(document.projects[1].id, "legion-tmux");
+    }
+
+    fn project_named(id: &str, name: &str, runtime: &str) -> ProjectDocument {
+        ProjectDocument {
+            id: id.into(),
+            name: name.into(),
+            path: "~/work".into(),
+            runtime: ProjectRuntime {
+                id: runtime.into(),
+                options: BTreeMap::new(),
+                session: None,
+                socket: None,
+                workspace_id: None,
+            },
+            transport: ProjectTransport {
+                id: "local".into(),
+                target: String::new(),
+                options: BTreeMap::new(),
+            },
+            template: None,
+            worktrees: Vec::new(),
+            command: Vec::new(),
+            env: BTreeMap::new(),
+        }
     }
 }

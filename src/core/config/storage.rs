@@ -26,27 +26,53 @@ pub struct ConfigSnapshot {
 
 /// Update known keys in a TOML document while retaining comments, formatting
 /// and unknown extension tables from the user's original file.
-pub fn preserve_toml_metadata(original: &str, serialized: &str) -> Result<String> {
+/// 用稀疏的用户配置更新原文件。
+///
+/// 默认 schema 里有、但这次不再写出的键会被删掉；注释和 schema 之外的表保留。
+pub fn preserve_toml_metadata(original: &str, serialized: &str, defaults: &str) -> Result<String> {
     let mut original_doc: toml_edit::DocumentMut =
         original.parse().context("原配置 TOML 不是合法文档")?;
     let next_doc: toml_edit::DocumentMut =
         serialized.parse().context("生成的配置 TOML 不是合法文档")?;
-    merge_toml_table(original_doc.as_table_mut(), next_doc.as_table());
+    let default_doc: toml_edit::DocumentMut =
+        defaults.parse().context("默认配置 TOML 不是合法文档")?;
+    reconcile_toml_table(
+        original_doc.as_table_mut(),
+        next_doc.as_table(),
+        default_doc.as_table(),
+    );
     Ok(original_doc.to_string())
 }
 
-fn merge_toml_table(dst: &mut toml_edit::Table, src: &toml_edit::Table) {
-    for (key, src_item) in src.iter() {
+fn reconcile_toml_table(
+    dst: &mut toml_edit::Table,
+    user: &toml_edit::Table,
+    defaults: &toml_edit::Table,
+) {
+    let stale: Vec<String> = dst
+        .iter()
+        .map(|(key, _)| key.to_string())
+        .filter(|key| !user.contains_key(key) && defaults.contains_key(key))
+        .collect();
+    for key in stale {
+        dst.remove(&key);
+    }
+    for (key, user_item) in user.iter() {
         if let Some(dst_item) = dst.get_mut(key) {
-            if let (Some(dst_table), Some(src_table)) =
-                (dst_item.as_table_mut(), src_item.as_table())
+            if let (Some(dst_table), Some(user_table)) =
+                (dst_item.as_table_mut(), user_item.as_table())
             {
-                merge_toml_table(dst_table, src_table);
+                let empty = toml_edit::Table::new();
+                let default_table = defaults
+                    .get(key)
+                    .and_then(toml_edit::Item::as_table)
+                    .unwrap_or(&empty);
+                reconcile_toml_table(dst_table, user_table, default_table);
             } else {
-                *dst_item = src_item.clone();
+                *dst_item = user_item.clone();
             }
         } else {
-            dst.insert(key, src_item.clone());
+            dst.insert(key, user_item.clone());
         }
     }
 }
@@ -132,14 +158,16 @@ mod tests {
     }
 
     #[test]
-    fn preserve_toml_metadata_keeps_comments_and_unknown_extensions() {
-        let original =
-            "# keep me\n[font]\nfamily = \"Monospace\"\n\n[extensions.vendor]\nflag = true\n";
+    fn preserve_toml_metadata_keeps_comments_and_drops_defaults() {
+        let original = "# keep me\n[font]\nfamily = \"Monospace\"\n\n[pool]\nmax_slots = 20\n\n[vendor]\nflag = true\n";
         let serialized = "[font]\nfamily = \"JetBrains Mono\"\n";
-        let merged = preserve_toml_metadata(original, serialized).unwrap();
+        let defaults = "[font]\nfamily = \"Monospace\"\n\n[pool]\nmax_slots = 20\n";
+        let merged = preserve_toml_metadata(original, serialized, defaults).unwrap();
         assert!(merged.contains("# keep me"));
         assert!(merged.contains("JetBrains Mono"));
-        assert!(merged.contains("[extensions.vendor]"));
+        assert!(merged.contains("[vendor]"));
         assert!(merged.contains("flag = true"));
+        assert!(!merged.contains("[pool]"));
+        assert!(!merged.contains("max_slots"));
     }
 }

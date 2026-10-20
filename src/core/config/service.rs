@@ -68,13 +68,18 @@ pub struct SettingsService {
 impl SettingsService {
     pub fn open(path: impl Into<PathBuf>) -> Result<Self> {
         let path = path.into();
-        let raw = if path.exists() {
+        let loaded = if path.exists() {
             fs::read_to_string(&path)
                 .with_context(|| format!("读取配置失败: {}", path.display()))?
         } else {
-            ConfigDocument::default().to_toml()?
+            ConfigDocument::default().to_user_toml()?
         };
-        let document = ConfigDocument::from_toml(&raw)?;
+        let document = ConfigDocument::from_toml(&loaded)?;
+        let raw = if path.exists() {
+            compact_user_config(&path, &loaded, &document).unwrap_or(loaded)
+        } else {
+            loaded
+        };
         let revision = revision_for(&raw);
         Ok(Self {
             path,
@@ -221,11 +226,13 @@ impl SettingsService {
                 Err(_) => overlay_user_edits(&state.baseline, &state.draft, &disk_value),
             }
         };
-        let document: ConfigDocument =
+        let mut document: ConfigDocument =
             serde_json::from_value(candidate).context("合并后的配置无效")?;
+        document.normalize_project_ids();
         document.validate()?;
-        let serialized = document.to_toml()?;
-        let raw = preserve_toml_metadata(&self.raw, &serialized).unwrap_or(serialized);
+        let serialized = document.to_user_toml()?;
+        let defaults = ConfigDocument::default().to_toml()?;
+        let raw = preserve_toml_metadata(&disk_raw, &serialized, &defaults).unwrap_or(serialized);
         atomic_write(&self.path, &raw)?;
         self.raw = raw;
         self.document = document;
@@ -285,8 +292,12 @@ impl SettingsService {
             added += 1;
         }
         if added > 0 {
+            self.document.normalize_project_ids();
             self.document.validate()?;
-            let raw = self.document.to_toml()?;
+            let serialized = self.document.to_user_toml()?;
+            let defaults = ConfigDocument::default().to_toml()?;
+            let raw =
+                preserve_toml_metadata(&self.raw, &serialized, &defaults).unwrap_or(serialized);
             atomic_write(&self.path, &raw)?;
             self.raw = raw;
             self.revision = revision_for(&self.raw);
@@ -358,6 +369,25 @@ impl SettingsService {
         }
         self.reload()?;
         Ok(true)
+    }
+}
+
+/// 打开配置时把已经落盘的默认值和连接指纹收干净。写失败不阻止启动。
+fn compact_user_config(path: &Path, raw: &str, document: &ConfigDocument) -> Result<String> {
+    let user = document.to_user_toml()?;
+    let defaults = ConfigDocument::default().to_toml()?;
+    let compact = preserve_toml_metadata(raw, &user, &defaults)?;
+    if toml_values_equal(raw, &compact) {
+        return Ok(raw.to_string());
+    }
+    atomic_write(path, &compact)?;
+    Ok(compact)
+}
+
+fn toml_values_equal(left: &str, right: &str) -> bool {
+    match (left.parse::<toml::Value>(), right.parse::<toml::Value>()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
     }
 }
 
@@ -886,6 +916,29 @@ mod tests {
             .overrides
             .iter()
             .all(|item| item.action == "new_pane_vertical"));
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn open_compacts_defaults_and_rewrites_attach_identity_ids() {
+        let path = temp_path("compact.toml");
+        let _ = fs::remove_file(&path);
+        fs::write(
+            &path,
+            "config_version = 1\n\n[font]\nfamily = \"monaco\"\nsize = 18.0\n\n[pool]\nmax_slots = 20\n\n[[projects]]\nid = \"4:tmux|3:ssh|5:ryzen|6:legion|0:\"\nname = \"legion\"\npath = \"~/Developer/work/legion\"\ncommand = []\n\n[projects.runtime]\nid = \"tmux\"\n\n[projects.runtime.options]\n\n[projects.transport]\nid = \"ssh\"\ntarget = \"ryzen\"\n\n[projects.transport.options]\n\n[projects.env]\n",
+        )
+        .unwrap();
+        let service = SettingsService::open(&path).unwrap();
+        let raw = fs::read_to_string(&path).unwrap();
+        assert_eq!(service.document().projects[0].id, "legion");
+        assert!(raw.contains("id = \"legion\""));
+        assert!(raw.contains("family = \"monaco\""));
+        assert!(!raw.contains("[pool]"));
+        assert!(!raw.contains("[projects.env]"));
+        assert!(!raw.contains("4:tmux|"));
+        let before = fs::read_to_string(&path).unwrap();
+        let _ = SettingsService::open(&path).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), before);
         let _ = fs::remove_file(&path);
     }
 

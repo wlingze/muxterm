@@ -519,11 +519,12 @@ final class WorkspaceSidebarView: NSView, NSTableViewDataSource, NSTableViewDele
                 self?.onWorkspaceClose?(item.workspaceId)
             } : nil
         )
-        let busy = ["checking", "installing", "handoff", "reconnecting"].contains(item.runtimeUpdatePhase ?? "")
         cell.setRuntimeUpdate(
-            available: item.canUpdateRuntime, busy: busy,
-            failed: item.runtimeUpdatePhase == "failed",
-            tooltip: item.runtimeUpdateMessage ?? "Update runtime and reconnect",
+            RuntimeUpdateButtonState.resolve(
+                canUpdate: item.canUpdateRuntime,
+                phase: item.runtimeUpdatePhase,
+                message: item.runtimeUpdateMessage
+            ),
             identifier: "muxterm.sidebar.workspace.update.\(safeID(item.workspaceId))",
             action: { [weak self] in self?.onWorkspaceUpdate?(item.workspaceId) }
         )
@@ -1168,18 +1169,28 @@ private final class WorkspaceSidebarCellView: NSTableCellView {
 
     @objc private func runtimeUpdateClicked() { updateAction?() }
 
-    func setRuntimeUpdate(available: Bool, busy: Bool, failed: Bool, tooltip: String, identifier: String, action: @escaping () -> Void) {
-        updateAction = available && !busy ? action : nil
-        updateButtonWidth.constant = available ? 22 : 0
-        runtimeUpdateButton.isHidden = !available
-        runtimeUpdateButton.isEnabled = !busy
+    func setRuntimeUpdate(_ state: RuntimeUpdateButtonState, identifier: String, action: @escaping () -> Void) {
+        updateAction = state.enabled ? action : nil
+        updateButtonWidth.constant = state.visible ? 22 : 0
+        runtimeUpdateButton.isHidden = !state.visible
+        runtimeUpdateButton.isEnabled = state.enabled
         runtimeUpdateButton.title = ""
-        runtimeUpdateButton.image = busy ? nil : NSImage(systemSymbolName: failed ? "exclamationmark.arrow.circlepath" : "arrow.down.circle", accessibilityDescription: "Update runtime")
-        runtimeUpdateButton.contentTintColor = failed ? .systemOrange : .secondaryLabelColor
-        runtimeUpdateButton.toolTip = tooltip
+        runtimeUpdateButton.image = state.busy ? nil : NSImage(
+            systemSymbolName: state.symbolName,
+            accessibilityDescription: state.accessibilityLabel
+        )
+        switch state.tint {
+        case .secondary:
+            runtimeUpdateButton.contentTintColor = .secondaryLabelColor
+        case .orange:
+            runtimeUpdateButton.contentTintColor = .systemOrange
+        case .green:
+            runtimeUpdateButton.contentTintColor = .systemGreen
+        }
+        runtimeUpdateButton.toolTip = state.tooltip
         runtimeUpdateButton.setAccessibilityIdentifier(identifier)
-        runtimeUpdateButton.setAccessibilityLabel("Update runtime and reconnect")
-        if available && busy { updateSpinner.startAnimation(nil) } else { updateSpinner.stopAnimation(nil) }
+        runtimeUpdateButton.setAccessibilityLabel(state.visible ? state.accessibilityLabel : nil)
+        if state.busy { updateSpinner.startAnimation(nil) } else { updateSpinner.stopAnimation(nil) }
     }
 
     @objc private func trailingClicked() {
@@ -1202,7 +1213,11 @@ private final class WorkspaceSidebarCellView: NSTableCellView {
         trailingShowsOnHover: Bool = true,
         trailingAction: (() -> Void)? = nil
     ) {
-        setRuntimeUpdate(available: false, busy: false, failed: false, tooltip: "", identifier: "", action: {})
+        setRuntimeUpdate(
+            .resolve(canUpdate: false, phase: nil, message: nil),
+            identifier: "",
+            action: {}
+        )
         self.marker.stringValue = marker
         self.marker.textColor = markerColor
         shortcutLabel.stringValue = shortcut ?? ""

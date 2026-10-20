@@ -2926,6 +2926,7 @@ final class KeyBindingsConfigTests: XCTestCase {
         let configs = QuickConnectStore.targetConfigs(from: projects)
         XCTAssertEqual(configs.count, 2)
         XCTAssertEqual(configs[0].name, "yaklang")
+        XCTAssertEqual(configs[0].persistedID, "yaklang@tmux")
         XCTAssertEqual(configs[0].runtime, .tmux)
         if case .ssh(let alias) = configs[0].transport {
             XCTAssertEqual(alias, "ryzen")
@@ -2954,6 +2955,41 @@ final class KeyBindingsConfigTests: XCTestCase {
         XCTAssertEqual((project["runtime"] as? [String: Any])?["id"] as? String, "tmux")
         XCTAssertEqual((project["transport"] as? [String: Any])?["id"] as? String, "ssh")
         XCTAssertEqual((project["transport"] as? [String: Any])?["target"] as? String, "ryzen")
+        XCTAssertEqual(project["id"] as? String, "demo")
+        XCTAssertNil(project["command"])
+        XCTAssertNil(project["env"])
+        XCTAssertFalse((project["id"] as? String ?? "").contains("|"))
+    }
+
+    func testProjectJSONReplacesAttachIdentityAndKeepsReadableIDs() {
+        let stable = TargetConfig(
+            name: "Renamed",
+            runtime: .tmux,
+            transport: .ssh(name: "ryzen"),
+            path: "~/p",
+            persistedID: "demo"
+        )
+        let fingerprint = TargetConfig(
+            name: "legion",
+            runtime: .herdr,
+            transport: .ssh(name: "ryzen"),
+            path: "~/Developer/work/legion",
+            session: "default",
+            socket: "/tmp/herdr.sock",
+            workspaceID: "w4",
+            persistedID: "5:herdr|3:ssh|5:ryzen|7:default|15:/tmp/herdr.sock|2:w4"
+        )
+        let duplicate = TargetConfig(
+            name: "legion",
+            runtime: .tmux,
+            transport: .ssh(name: "ryzen"),
+            path: "~/Developer/work/legion"
+        )
+        let json = QuickConnectStore.projectJSON(from: [stable, fingerprint, duplicate])
+        XCTAssertEqual(json[0]["id"] as? String, "demo")
+        XCTAssertEqual(json[1]["id"] as? String, "legion")
+        XCTAssertEqual(json[2]["id"] as? String, "legion-tmux")
+        XCTAssertFalse((json[1]["id"] as? String ?? "").contains("|"))
     }
 
     func testSnapshotKeepsConfiguredAltShortcuts() {
