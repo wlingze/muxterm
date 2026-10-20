@@ -214,8 +214,15 @@ name = "Monitor"
 active = true
 ```
 
-Project 的稳定 `id` 在重命名时保持不变。`runtime` 和 `transport` 的 options 由
-Core descriptor 提供 Schema；实现 shell、tmux、Herdr、local 和 SSH。
+Project 的稳定 `id` 在重命名时保持不变，并且必须是可读 slug（例如 `muxterm`、
+`legion-tmux`）。长度前缀形式的 attach identity 只属于运行时 Workspace，不能写进
+`id`。加载或提交时会把这种指纹改写成 slug；已经可读的 id 保持不变。
+
+磁盘上的 `config.toml` 只保存和内置默认值不同的字段。空的 `command`、`env`、
+`options` 以及未改过的字体、池、快捷键默认值不会写回。`runtime.session`、
+`socket`、`workspace_id` 仍然保留，因为它们是重新连接 Herdr 所需要的目标，不是默认值。
+
+`runtime` 和 `transport` 的 options 由 Core descriptor 提供 Schema；实现 shell、tmux、Herdr、local 和 SSH。
 
 - `template` 按名字引用 `[[templates]]`。模板只在新建会话（intent 结果为 create）时应用。
 - Worktree 记录挂在 Project 下，不进 `Workspace → Tab → Pane`。

@@ -2,6 +2,39 @@ import XCTest
 @testable import MuxtermChrome
 
 final class WorkspaceSidebarModelTests: XCTestCase {
+    func testRuntimeUpdateSucceededStateIsDistinctFromTheDownloadAction() {
+        let succeeded = RuntimeUpdateButtonState.resolve(
+            canUpdate: true,
+            phase: "succeeded",
+            message: "Updated"
+        )
+        XCTAssertTrue(succeeded.visible)
+        XCTAssertFalse(succeeded.enabled)
+        XCTAssertFalse(succeeded.busy)
+        XCTAssertEqual(succeeded.symbolName, "checkmark.circle")
+        XCTAssertEqual(succeeded.tint, .green)
+        XCTAssertEqual(succeeded.accessibilityLabel, "Runtime is up to date")
+
+        let available = RuntimeUpdateButtonState.resolve(
+            canUpdate: true,
+            phase: "idle",
+            message: nil
+        )
+        XCTAssertTrue(available.enabled)
+        XCTAssertEqual(available.symbolName, "arrow.down.circle")
+        XCTAssertEqual(available.tint, .secondary)
+
+        let failed = RuntimeUpdateButtonState.resolve(
+            canUpdate: true,
+            phase: "failed",
+            message: "download failed"
+        )
+        XCTAssertTrue(failed.enabled)
+        XCTAssertEqual(failed.symbolName, "exclamationmark.arrow.circlepath")
+        XCTAssertEqual(failed.tint, .orange)
+        XCTAssertEqual(failed.tooltip, "download failed")
+    }
+
     func testAggregateWorkspaceRowsNeverEnterActivityProjections() {
         let aggregate = WorkspaceSidebarItem(
             workspaceId: AggregateWorkspaceIdentity.agents,

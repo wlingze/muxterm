@@ -189,6 +189,52 @@ public struct StructuredAgentRegistry: Sendable {
     }
 }
 
+/// 侧栏和快速面板共用的 Runtime 更新按钮。成功态不能再显示成可点击的下载箭头。
+public struct RuntimeUpdateButtonState: Equatable, Sendable {
+    public enum Tint: Equatable, Sendable {
+        case secondary
+        case orange
+        case green
+    }
+
+    public var visible: Bool
+    public var enabled: Bool
+    public var busy: Bool
+    public var symbolName: String
+    public var tint: Tint
+    public var accessibilityLabel: String
+    public var tooltip: String
+
+    public static func resolve(canUpdate: Bool, phase: String?, message: String?) -> Self {
+        let phase = phase ?? "idle"
+        let busy = ["checking", "installing", "handoff", "reconnecting"].contains(phase)
+        let failed = phase == "failed"
+        let succeeded = phase == "succeeded"
+        let symbolName = failed
+            ? "exclamationmark.arrow.circlepath"
+            : (succeeded ? "checkmark.circle" : "arrow.down.circle")
+        let tint: Tint = failed ? .orange : (succeeded ? .green : .secondary)
+        let label = succeeded ? "Runtime is up to date" : "Update runtime and reconnect"
+        let tooltip: String
+        if succeeded {
+            tooltip = "Runtime is up to date"
+        } else if let message, !message.isEmpty {
+            tooltip = message
+        } else {
+            tooltip = "Update runtime and reconnect"
+        }
+        return Self(
+            visible: canUpdate,
+            enabled: canUpdate && !busy && !succeeded,
+            busy: canUpdate && busy,
+            symbolName: symbolName,
+            tint: tint,
+            accessibilityLabel: canUpdate ? label : "",
+            tooltip: tooltip
+        )
+    }
+}
+
 /// Agents / Commands / Attention 共用机器标记，不另行推测 runtime 身份。
 public enum WorkspaceDisplayTitle {
     public static func make(name: String, transport: String) -> String {

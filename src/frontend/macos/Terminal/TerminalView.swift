@@ -236,18 +236,11 @@ final class MuxTerminalView: TerminalView {
     /// AX 屏幕文本的刷新节流：全屏逐格读取有开销，无需每个 chunk 都更新。
     private var lastAccessibilityUpdate = Date.distantPast
     private static let accessibilityUpdateInterval: TimeInterval = 1.0
-    /// 渲染诊断输出：设置 `MUXTERM_DEBUG_RENDER=1` 后，把每帧 feed 的长度、
-    /// ESC/CR/LF 计数、模型尺寸与光标前后位置追加到
-    /// `~/.config/muxterm/ui-render.log`，用于定位 agent 输入框逐行堆叠。
-    private static let renderDebugURL: URL? = {
-        guard ProcessInfo.processInfo.environment["MUXTERM_DEBUG_RENDER"] != nil else {
-            return nil
-        }
-        let dir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/muxterm", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("ui-render.log")
-    }()
+    /// 渲染诊断：设置 `MUXTERM_DEBUG_RENDER=1` 后，把每帧 feed 的长度、
+    /// ESC/CR/LF 计数、模型尺寸与光标前后位置交给 Core 日志。
+    /// 不写 `~/.config/muxterm`；文件位置跟 `[debug].log_dir` / `MUXTERM_LOG_FILE`。
+    private static let renderDebugEnabled =
+        ProcessInfo.processInfo.environment["MUXTERM_DEBUG_RENDER"] != nil
     /// 上一次按像素驱动后的模型行列，用于检测窗口 resize 这一瞬间。
     private var lastModelCols = 0
     private var lastModelRows = 0
@@ -805,7 +798,7 @@ final class MuxTerminalView: TerminalView {
             pendingOutputScrollNotification = false
             scrolled(source: self, position: scrollPosition)
         }
-        if Self.renderDebugURL != nil {
+        if Self.renderDebugEnabled {
             let after = getTerminal().getCursorLocation()
             let dims = getTerminal().getDims()
             appendRenderDebug(
@@ -960,14 +953,8 @@ final class MuxTerminalView: TerminalView {
     }
 
     private func appendRenderDebug(_ line: String) {
-        guard let url = Self.renderDebugURL else { return }
-        if !FileManager.default.fileExists(atPath: url.path) {
-            FileManager.default.createFile(atPath: url.path, contents: nil)
-        }
-        guard let handle = try? FileHandle(forWritingTo: url) else { return }
-        handle.seekToEndOfFile()
-        handle.write(Data((line + "\n").utf8))
-        try? handle.close()
+        guard Self.renderDebugEnabled else { return }
+        CoreBridge.log("ui-render \(line)", level: "debug")
     }
 
     /// 当前屏幕可见文本（测试 / AX）。立即刷新，不受 1s 节流限制。
