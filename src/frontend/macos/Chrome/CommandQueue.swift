@@ -42,6 +42,7 @@ public enum QueuedMuxOperation: Equatable, Sendable {
     case resize(QueuedMuxResize)
     case attention(QueuedMuxAttention)
     case viewport(paneID: UInt32, offset: UInt32)
+    case reconnect
     case closeWorkspace
     case updateRuntime
     case colours(QueuedMuxColours)
@@ -74,7 +75,7 @@ public enum QueuedMuxOperation: Equatable, Sendable {
             }
         case .mouseMotion(let paneID, _):
             return .mouseMotion(paneID)
-        case .task, .input, .closeWorkspace, .updateRuntime, .config, .search, .paneOutput, .imagePaste:
+        case .task, .input, .reconnect, .closeWorkspace, .updateRuntime, .config, .search, .paneOutput, .imagePaste:
             return nil
         }
     }
@@ -244,6 +245,17 @@ public struct QueuedMuxCommand: Equatable, Sendable {
         QueuedMuxCommand(
             workspaceID: workspaceID,
             operation: .viewport(paneID: paneID, offset: offset),
+            failureMessage: failureMessage
+        )
+    }
+
+    public static func reconnectWorkspace(
+        workspaceID: String,
+        failureMessage: String
+    ) -> QueuedMuxCommand {
+        QueuedMuxCommand(
+            workspaceID: workspaceID,
+            operation: .reconnect,
             failureMessage: failureMessage
         )
     }

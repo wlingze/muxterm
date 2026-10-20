@@ -671,13 +671,20 @@ impl WorkspaceSidebar {
                 .build();
             name.add_css_class("muxterm-sidebar-row-name");
 
+            let detail_text = item
+                .connection_status_label()
+                .map(|status| format!("{} @ {} · {status}", item.runtime, item.transport))
+                .unwrap_or_else(|| format!("{} @ {}", item.runtime, item.transport));
             let detail = Label::builder()
-                .label(format!("{} @ {}", item.runtime, item.transport))
+                .label(detail_text)
                 .halign(Align::Start)
                 .xalign(0.0)
                 .ellipsize(gtk4::pango::EllipsizeMode::End)
                 .build();
             detail.add_css_class("muxterm-sidebar-row-detail");
+            if item.is_connection_lost() {
+                detail.add_css_class("disconnected");
+            }
 
             labels.append(&name);
             labels.append(&detail);

@@ -54,6 +54,7 @@ final class WorkspaceScene: SceneProtocol {
 
     func cacheBackendStatus(_ status: UInt32) {
         viewStore.backendStatus = status
+        terminalManager.cacheBackendStatus(status)
     }
 
     /// EventPump 写入的最新拓扑；场景切换时直接使用，不重新读取 Core。
@@ -134,15 +135,17 @@ final class WorkspaceScene: SceneProtocol {
         now: UInt64,
         openedOrder: UInt64 = 0
     ) {
+        let resolvedTargetConfig = targetConfig ?? key.targetConfig
         self.key = key
-        self.targetConfig = targetConfig ?? key.targetConfig
+        self.targetConfig = resolvedTargetConfig
         self.bridge = bridge
         self.workspaceID = workspaceID
         self.viewStore = WorkspaceViewStore()
         self.terminalManager = terminalManager ?? TerminalManager(
             bridge: bridge,
             workspaceID: workspaceID,
-            runtimeID: (targetConfig ?? key.targetConfig).runtime.rawValue
+            runtimeID: resolvedTargetConfig.runtime.rawValue,
+            targetConfig: resolvedTargetConfig
         )
         // 首帧拓扑和 agent 状态由 MainWindow 的 EventPump 提交；构造 scene
         // 不得绕过 ViewStore 直接查询 Core。首轮 poll 会处理 needsLayoutReload。

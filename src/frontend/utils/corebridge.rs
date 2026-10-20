@@ -1791,6 +1791,19 @@ impl CoreBridge {
         }
     }
 
+    /// Reconnect one Core-owned workspace by its stable product identity.
+    pub fn reconnect_workspace(&self, id: &str) -> anyhow::Result<()> {
+        let id = cstring(id);
+        let rc = unsafe { ffi::muxterm_workspace_reconnect(self.handle.as_ptr(), id.as_ptr()) };
+        if rc == 0 {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!(
+                "Core workspace reconnect failed with code {rc}"
+            ))
+        }
+    }
+
     /// Close a Core-owned workspace by its stable product identity.
     pub fn close_workspace(&self, id: &str) -> anyhow::Result<()> {
         let id = cstring(id);

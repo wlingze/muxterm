@@ -11,6 +11,11 @@ use crate::frontend::utils::corebridge::{
 };
 use crate::protocol::WorkspaceId;
 
+fn includes_workspace_activity(status: Option<u32>) -> bool {
+    use crate::protocol::ffi::types::BACKEND_STATUS_CONNECTED;
+    matches!(status, None | Some(BACKEND_STATUS_CONNECTED))
+}
+
 /// A workspace row in the sidebar.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceSidebarItem {
@@ -19,6 +24,8 @@ pub struct WorkspaceSidebarItem {
     pub runtime: String,
     pub transport: String,
     pub active: bool,
+    /// 最近一次 Core backend 状态；断连时 workspace 仍留在 Workspaces。
+    pub backend_status: Option<u32>,
     /// Ctrl+Alt+N 快捷编号；固定顺序的前九个 workspace。0 永远是最后一个。
     pub shortcut: Option<u8>,
 }
@@ -33,17 +40,21 @@ impl WorkspaceSidebarItem {
     /// transport-level active marker.  Scene switching is local and must not
     /// rewrite the Core snapshot just to update sidebar selection.
     pub fn from_views_with_active(store: &ViewStore, active_id: Option<&str>) -> Vec<Self> {
-        let mut workspaces: Vec<&ClientWorkspace> = store
+        let mut workspaces: Vec<(&ClientWorkspace, Option<u32>)> = store
             .workspaces()
-            .filter_map(|(_, view)| view.workspace.as_ref())
+            .filter_map(|(_, view)| {
+                view.workspace
+                    .as_ref()
+                    .map(|workspace| (workspace, view.backend_status))
+            })
             // Shell 的真实 Scene 由固定 S 入口呈现，不再占用数字入口。
-            .filter(|workspace| workspace.runtime != "shell")
+            .filter(|(workspace, _)| workspace.runtime != "shell")
             .collect();
-        workspaces.sort_by(|left, right| left.id.cmp(&right.id));
+        workspaces.sort_by(|(left, _), (right, _)| left.id.cmp(&right.id));
         workspaces
             .into_iter()
             .enumerate()
-            .filter_map(|(index, workspace)| {
+            .filter_map(|(index, (workspace, backend_status))| {
                 let id = parse_workspace_id(&workspace.id)?;
                 Some(Self {
                     id,
@@ -51,14 +62,38 @@ impl WorkspaceSidebarItem {
                     runtime: workspace.runtime.clone(),
                     transport: transport_label(&workspace.id),
                     active: active_id == Some(workspace.id.as_str()),
+                    backend_status,
                     shortcut: (index < 9).then_some((index + 1) as u8),
                 })
             })
             .collect()
     }
+
+    pub fn is_connection_lost(&self) -> bool {
+        use crate::protocol::ffi::types::{
+            BACKEND_STATUS_DISCONNECTED, BACKEND_STATUS_ERROR, BACKEND_STATUS_EXITED,
+        };
+        matches!(
+            self.backend_status,
+            Some(BACKEND_STATUS_DISCONNECTED | BACKEND_STATUS_ERROR | BACKEND_STATUS_EXITED)
+        )
+    }
+
+    pub fn connection_status_label(&self) -> Option<&'static str> {
+        use crate::frontend::utils::i18n::{tr_static, Key};
+        use crate::protocol::ffi::types::*;
+        match self.backend_status {
+            Some(BACKEND_STATUS_CONNECTED) | None => None,
+            Some(BACKEND_STATUS_CONNECTING) => Some(tr_static(Key::StatusConnecting)),
+            Some(BACKEND_STATUS_DISCONNECTED) => Some(tr_static(Key::StatusDisconnected)),
+            Some(BACKEND_STATUS_ERROR) => Some(tr_static(Key::StatusError)),
+            Some(BACKEND_STATUS_EXITED) => Some(tr_static(Key::StatusExited)),
+            Some(_) => Some(tr_static(Key::StatusUnknown)),
+        }
+    }
 }
 
-/// Agent、Command 与 Attention 共用的状态点语义。
+/// Agent、Command 与 Attention 共用的状态点语义.
 /// Herdr 同款四态：working / idle / blocked / done。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActivityIndicator {
@@ -109,6 +144,9 @@ impl AgentSidebarItem {
             let Some(workspace) = view.workspace.as_ref() else {
                 continue;
             };
+            if !includes_workspace_activity(view.backend_status) {
+                continue;
+            }
             let Some(workspace_id) = parse_workspace_id(workspace_key) else {
                 continue;
             };
@@ -182,6 +220,9 @@ impl CommandSidebarItem {
             let Some(workspace) = view.workspace.as_ref() else {
                 continue;
             };
+            if !includes_workspace_activity(view.backend_status) {
+                continue;
+            }
             let Some(workspace_id) = parse_workspace_id(workspace_key) else {
                 continue;
             };

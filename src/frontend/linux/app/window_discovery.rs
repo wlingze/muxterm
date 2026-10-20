@@ -415,7 +415,7 @@ pub(super) fn drain_existing_ssh(state: &Rc<RefCell<UiState>>) {
 
 /// W17a：tmux 控制 client 掉线后自动重连。
 pub(super) fn maybe_schedule_reconnect(state: &Rc<RefCell<UiState>>) {
-    let should_retry = {
+    let workspace_id = {
         let mut s = state.borrow_mut();
         let id = s.active_ws_id();
         let status = s
@@ -423,32 +423,55 @@ pub(super) fn maybe_schedule_reconnect(state: &Rc<RefCell<UiState>>) {
             .workspace(&id.as_str())
             .and_then(|view| view.backend_status);
         use crate::protocol::ffi::types::{
-            BACKEND_STATUS_DISCONNECTED, BACKEND_STATUS_ERROR, BACKEND_STATUS_EXITED,
+            BACKEND_STATUS_CONNECTED, BACKEND_STATUS_DISCONNECTED, BACKEND_STATUS_ERROR,
+            BACKEND_STATUS_EXITED,
         };
-        if s.reconnecting
-            || !matches!(
-                status,
-                Some(BACKEND_STATUS_DISCONNECTED | BACKEND_STATUS_ERROR | BACKEND_STATUS_EXITED)
-            )
+        if status == Some(BACKEND_STATUS_CONNECTED) {
+            s.overlay.disconnect.set_visible(false);
+            s.overlay.disconnect_reconnect.set_sensitive(true);
+            s.reconnect_attempts = 0;
+            s.reconnect_retry_at = None;
+            return;
+        }
+        if !matches!(
+            status,
+            Some(BACKEND_STATUS_DISCONNECTED | BACKEND_STATUS_ERROR | BACKEND_STATUS_EXITED)
+        ) || !s.workspace_supports(&id.as_str(), ClientRuntimeCapability::SharedClientResize)
         {
+            return;
+        }
+        let label_key = match status {
+            Some(BACKEND_STATUS_DISCONNECTED) => {
+                crate::frontend::utils::i18n::Key::StatusDisconnected
+            }
+            Some(BACKEND_STATUS_ERROR) => crate::frontend::utils::i18n::Key::StatusError,
+            Some(BACKEND_STATUS_EXITED) => crate::frontend::utils::i18n::Key::StatusExited,
+            _ => crate::frontend::utils::i18n::Key::StatusUnknown,
+        };
+        s.overlay
+            .disconnect_label
+            .set_label(&crate::frontend::utils::i18n::tr(label_key));
+        s.overlay.disconnect.set_visible(true);
+        if s.reconnecting {
             return;
         }
         let now = Instant::now();
         if s.reconnect_retry_at.is_some_and(|at| now < at) {
             return;
         }
-        if !s.workspace_supports(&id.as_str(), ClientRuntimeCapability::SharedClientResize) {
-            return;
-        }
         s.reconnecting = true;
-        true
+        s.overlay.disconnect_reconnect.set_sensitive(false);
+        id
     };
-    if !should_retry {
-        return;
-    }
-    let result = state.borrow().event_pump.client().reconnect();
+    let workspace_key = workspace_id.as_str();
+    let result = state
+        .borrow()
+        .event_pump
+        .client()
+        .reconnect_workspace(&workspace_key);
     let mut s = state.borrow_mut();
     s.reconnecting = false;
+    s.overlay.disconnect_reconnect.set_sensitive(true);
     match result {
         Ok(()) => {
             s.reconnect_attempts = 0;
@@ -458,11 +481,13 @@ pub(super) fn maybe_schedule_reconnect(state: &Rc<RefCell<UiState>>) {
             handle_reconnect_success(state);
         }
         Err(error) => {
+            s.overlay.disconnect.set_visible(true);
             s.reconnect_attempts = s.reconnect_attempts.saturating_add(1);
             let delay = Duration::from_secs(1u64 << s.reconnect_attempts.min(3));
             s.reconnect_retry_at = Some(Instant::now() + delay);
             tracing::warn!(
                 target = "muxterm::linux",
+                workspace = %workspace_key,
                 "reconnect failed (attempt {}): {error}; retry in {delay:?}",
                 s.reconnect_attempts
             );

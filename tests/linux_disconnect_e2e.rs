@@ -156,8 +156,30 @@ fn linux_disconnect_keeps_vte_and_shows_watermark() {
         );
         let overlay = overlay.expect("必须出现 muxterm-disconnect-overlay 水印");
         assert!(overlay.is_visible(), "muxterm-disconnect-overlay 必须可见");
+        assert!(
+            find_by_name(&app.test_window(), "muxterm-disconnect-reconnect")
+                .is_some_and(|button| button.is_visible()),
+            "断连水印必须提供显式重新连接操作"
+        );
+        assert!(
+            find_by_name(&app.test_window(), "muxterm-disconnect-close")
+                .is_some_and(|button| button.is_visible()),
+            "断连水印必须提供显式关闭操作"
+        );
         let dialogs = count_type_name(&app.test_window(), "GtkMessageDialog")
             + count_type_name(&app.test_window(), "GtkAlertDialog");
         assert_eq!(dialogs, 0, "断线不得弹 GtkMessageDialog / GtkAlertDialog");
+
+        let close = find_by_name(&app.test_window(), "muxterm-disconnect-close")
+            .and_then(|widget| widget.downcast::<gtk4::Button>().ok())
+            .expect("disconnect close button");
+        close.emit_clicked();
+        app.test_poll_once();
+        assert!(
+            !app.test_workspace_replica_ids()
+                .iter()
+                .any(|id| id == &format!("{}@local", fx.session)),
+            "用户显式关闭后 Core pool 必须移除断连 workspace"
+        );
     });
 }

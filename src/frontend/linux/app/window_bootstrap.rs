@@ -449,6 +449,27 @@ impl AppWindow {
             );
         }
 
+        {
+            let reconnect_state = state.clone();
+            let close_state = state.clone();
+            let s = state.borrow();
+            s.overlay.connect_disconnect_actions(
+                move || {
+                    {
+                        let mut s = reconnect_state.borrow_mut();
+                        s.reconnect_attempts = 0;
+                        s.reconnect_retry_at = None;
+                    }
+                    maybe_schedule_reconnect(&reconnect_state);
+                },
+                move || {
+                    let mut s = close_state.borrow_mut();
+                    let id = s.active_ws_id();
+                    close_sidebar_workspace(&mut s, &id);
+                },
+            );
+        }
+
         // 快捷键
         {
             let st = state.clone();

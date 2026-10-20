@@ -136,6 +136,7 @@
   "status_connected": "已连接",
   "status_connecting": "连接中",
   "status_disconnected": "未连接",
+  "status_reconnect": "重新连接",
   "status_error": "错误",
   "status_exited": "已退出",
   "status_unknown": "未知",

@@ -10,10 +10,13 @@ import MuxtermChrome
 final class ImagePasteBannerView: NSView {
     /// 用户点了关闭：只对结果阶段有效，进行中的粘贴不可关。
     var onDismiss: (() -> Void)?
+    /// 测试可注入；生产默认写入系统剪贴板。
+    var onCopy: ((String) -> Void)?
 
     private let spinner = NSProgressIndicator()
     private let iconView = NSImageView()
     private let messageLabel = NSTextField(labelWithString: "")
+    private let copyButton = NSButton()
     private let dismissButton = NSButton()
     private(set) var renderedStage: ImagePasteStage = .idle
     /// 转圈是否在动。NSProgressIndicator 没有公开的 isAnimating，自己记。
@@ -46,6 +49,18 @@ final class ImagePasteBannerView: NSView {
         messageLabel.setAccessibilityIdentifier("muxterm.imagePasteBanner.message")
         addSubview(messageLabel)
 
+        copyButton.translatesAutoresizingMaskIntoConstraints = false
+        copyButton.title = MuxtermI18n.shared.tr(.menuCopy)
+        copyButton.bezelStyle = .inline
+        copyButton.isBordered = false
+        copyButton.controlSize = .small
+        copyButton.target = self
+        copyButton.action = #selector(copyClicked)
+        copyButton.setAccessibilityIdentifier("muxterm.imagePasteBanner.copy")
+        copyButton.setAccessibilityLabel(MuxtermI18n.shared.tr(.menuCopy))
+        copyButton.isHidden = true
+        addSubview(copyButton)
+
         dismissButton.translatesAutoresizingMaskIntoConstraints = false
         dismissButton.title = "✕"
         dismissButton.bezelStyle = .inline
@@ -67,10 +82,13 @@ final class ImagePasteBannerView: NSView {
             iconView.heightAnchor.constraint(equalToConstant: 14),
             messageLabel.leadingAnchor.constraint(equalTo: spinner.trailingAnchor, constant: 8),
             messageLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
-            dismissButton.leadingAnchor.constraint(
+            copyButton.leadingAnchor.constraint(
                 greaterThanOrEqualTo: messageLabel.trailingAnchor,
                 constant: 8
             ),
+            copyButton.trailingAnchor.constraint(equalTo: dismissButton.leadingAnchor, constant: -4),
+            copyButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            copyButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 38),
             dismissButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             dismissButton.centerYAnchor.constraint(equalTo: centerYAnchor),
             heightAnchor.constraint(equalToConstant: 28),
@@ -94,6 +112,9 @@ final class ImagePasteBannerView: NSView {
         isHidden = false
         messageLabel.stringValue = Self.message(for: feedback)
         toolTip = Self.toolTip(for: feedback)
+        copyButton.title = MuxtermI18n.shared.tr(.menuCopy)
+        copyButton.toolTip = MuxtermI18n.shared.tr(.menuCopy)
+        copyButton.isHidden = !Self.copyButtonVisible(for: feedback.stage)
         layer?.backgroundColor = Self.background(for: feedback.tone).cgColor
         if feedback.showsSpinner {
             iconView.isHidden = true
@@ -134,6 +155,21 @@ final class ImagePasteBannerView: NSView {
             )
         case .failed(let message):
             return i18n.tr(.imagePasteFailed) + ": " + message
+        }
+    }
+
+    static func copyText(for stage: ImagePasteStage) -> String? {
+        return switch stage {
+        case .done(let path): path
+        case .failed(let message): MuxtermI18n.shared.tr(.imagePasteFailed) + ": " + message
+        case .idle, .encoding, .uploading: nil
+        }
+    }
+
+    static func copyButtonVisible(for stage: ImagePasteStage) -> Bool {
+        return switch stage {
+        case .done, .failed: true
+        case .idle, .encoding, .uploading: false
         }
     }
 
@@ -193,6 +229,17 @@ final class ImagePasteBannerView: NSView {
         }
     }
 
+    @objc private func copyClicked() {
+        guard let text = Self.copyText(for: renderedStage) else { return }
+        if let onCopy {
+            onCopy(text)
+        } else {
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.setString(text, forType: .string)
+        }
+    }
+
     @objc private func dismissClicked() {
         onDismiss?()
     }
@@ -202,4 +249,6 @@ final class ImagePasteBannerView: NSView {
     func testMessageText() -> String { messageLabel.stringValue }
     func testSpinnerAnimating() -> Bool { isSpinning && !spinner.isHidden && !isHidden }
     func testDismissVisible() -> Bool { !dismissButton.isHidden && !isHidden }
+    func testCopyVisible() -> Bool { !copyButton.isHidden && !isHidden }
+    func testClickCopy() { copyButton.performClick(nil) }
 }

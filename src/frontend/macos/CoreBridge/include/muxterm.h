@@ -126,6 +126,7 @@ struct MuxtermHandle* muxterm_new_connect_sized(
     uint16_t cols, uint16_t rows);
 void muxterm_free(struct MuxtermHandle* h);
 int muxterm_connect(struct MuxtermHandle* h);
+int muxterm_workspace_reconnect(struct MuxtermHandle* h, const char* workspace_id);
 int muxterm_shutdown(struct MuxtermHandle* h);
 int muxterm_detach(struct MuxtermHandle* h);
 int muxterm_init_logging(const char* log_file, const char* level);

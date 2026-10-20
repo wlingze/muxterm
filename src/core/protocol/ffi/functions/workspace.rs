@@ -217,6 +217,46 @@ pub unsafe extern "C" fn muxterm_workspace_activate(
     .unwrap_or(-1)
 }
 
+/// Reconnect one Core-owned workspace by its stable product identity.
+///
+/// Unlike `muxterm_connect`, this does not depend on the pool's active slot.
+///
+/// # Safety
+/// `h` is valid and not freed; `id` is NUL-terminated.
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_workspace_reconnect(
+    h: *mut MuxtermHandle,
+    id: *const c_char,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() {
+            return -1;
+        }
+        let Some(id) = cstr_opt(id) else {
+            return -1;
+        };
+        let workspace_id = parse_workspace_id(&id);
+        let handle = &mut *h;
+        let (rt, pool) = (&handle.rt, &mut handle.pool);
+        let Some(workspace) = pool.get_mut(&workspace_id) else {
+            return -1;
+        };
+        match rt.block_on(workspace.connect()) {
+            Ok(()) => 0,
+            Err(error) => {
+                tracing::warn!(
+                    target = "muxterm::workspace",
+                    workspace = %workspace_id,
+                    %error,
+                    "workspace reconnect failed"
+                );
+                -1
+            }
+        }
+    }))
+    .unwrap_or(-1)
+}
+
 /// Close a workspace in the Core-owned pool.
 ///
 /// # Safety

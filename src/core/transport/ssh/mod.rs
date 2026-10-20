@@ -245,6 +245,12 @@ pub fn build_ssh_command(
     // -o ConnectTimeout=10: 连接超时
     args.push("-o".to_string());
     args.push("ConnectTimeout=10".to_string());
+    // SSH 默认不主动探测空闲连接；加密 keepalive 可在静默网络黑洞时转为断连状态。
+    // 15s × 3 次未响应约 45s，避免终端无限保持“已连接”但无法收发。
+    args.push("-o".to_string());
+    args.push("ServerAliveInterval=15".to_string());
+    args.push("-o".to_string());
+    args.push("ServerAliveCountMax=3".to_string());
     args.push(alias.to_string());
     if !remote_command.is_empty() {
         args.push("--".to_string());
@@ -458,6 +464,14 @@ mod tests {
         assert!(
             args.contains(&"ConnectTimeout=10".to_string()),
             "应包含 ConnectTimeout 以避免连接卡死"
+        );
+        assert!(
+            args.contains(&"ServerAliveInterval=15".to_string()),
+            "必须探测静默 SSH 连接，避免网络黑洞时终端无限挂起"
+        );
+        assert!(
+            args.contains(&"ServerAliveCountMax=3".to_string()),
+            "有限次 keepalive 无响应后应让 Core 收到 SSH 进程退出"
         );
     }
 

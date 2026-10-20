@@ -209,6 +209,7 @@ enum MuxtermTextKey: CaseIterable {
     case statusConnected
     case statusConnecting
     case statusDisconnected
+    case statusReconnect
     case statusError
     case statusExited
     case statusUnknown
@@ -483,6 +484,7 @@ enum MuxtermTextKey: CaseIterable {
         case .statusConnected: return "status_connected"
         case .statusConnecting: return "status_connecting"
         case .statusDisconnected: return "status_disconnected"
+        case .statusReconnect: return "status_reconnect"
         case .statusError: return "status_error"
         case .statusExited: return "status_exited"
         case .statusUnknown: return "status_unknown"

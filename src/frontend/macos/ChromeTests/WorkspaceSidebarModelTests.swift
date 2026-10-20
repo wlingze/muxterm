@@ -45,6 +45,49 @@ final class WorkspaceSidebarModelTests: XCTestCase {
         ).isEmpty)
     }
 
+    func testDisconnectedWorkspaceRemainsAvailableButLeavesActivityAggregates() {
+        let disconnected = WorkspaceSidebarItem(
+            workspaceId: "ssh/ryzen/default/tmux//work/remote",
+            name: "remote",
+            runtime: "tmux",
+            transport: "ryzen",
+            isActive: true,
+            backendStatus: WorkspaceBackendStatus.exited
+        )
+        let attention = AttentionSnapshot(
+            blockedCount: 0,
+            workspaces: [
+                WorkspaceAttention(
+                    workspaceId: disconnected.workspaceId,
+                    name: disconnected.name,
+                    transport: disconnected.transport,
+                    blocked: 0,
+                    done: 0,
+                    working: 1,
+                    panes: [
+                        PaneAttention(
+                            paneId: 1,
+                            status: .working,
+                            lastLine: "stale agent",
+                            seq: 1,
+                            processName: "codex",
+                            processIsAgent: true
+                        ),
+                    ]
+                ),
+            ]
+        )
+
+        XCTAssertEqual(disconnected.name, "remote", "Workspace 列表仍显示断连项")
+        XCTAssertEqual(disconnected.backendStatus, WorkspaceBackendStatus.exited)
+        XCTAssertTrue(WorkspaceSidebarProjection.agents(
+            workspaces: [disconnected], attention: attention
+        ).isEmpty)
+        XCTAssertTrue(WorkspaceSidebarProjection.commands(
+            workspaces: [disconnected], attention: attention
+        ).isEmpty)
+    }
+
     func testMachineIdentityMatchesAgentsCommandsAndSearchableAttention() {
         let machines = ["local", "ryzen"]
         let workspaces = machines.map { machine in

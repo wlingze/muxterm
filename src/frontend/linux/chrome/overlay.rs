@@ -14,7 +14,10 @@ pub struct OverlayLayer {
     pub(crate) container: gtk4::Overlay,
     pub(crate) jump_latest: gtk4::Button,
     pub(crate) jump_unseen: u32,
-    pub(crate) disconnect: gtk4::Label,
+    pub(crate) disconnect: gtk4::Box,
+    pub(crate) disconnect_label: gtk4::Label,
+    pub(crate) disconnect_reconnect: gtk4::Button,
+    pub(crate) disconnect_close: gtk4::Button,
     pub(crate) search_highlight: gtk4::Label,
     pub(crate) pane_find: gtk4::Box,
     pub(crate) pane_find_entry: gtk4::Entry,
@@ -41,11 +44,36 @@ impl OverlayLayer {
         jump_latest.set_margin_bottom(12);
         jump_latest.set_visible(false);
 
-        let disconnect = gtk4::Label::new(Some("已断开"));
+        let disconnect = gtk4::Box::builder()
+            .orientation(gtk4::Orientation::Vertical)
+            .spacing(10)
+            .halign(gtk4::Align::Center)
+            .valign(gtk4::Align::Center)
+            .build();
         disconnect.set_widget_name("muxterm-disconnect-overlay");
-        disconnect.set_halign(gtk4::Align::Center);
-        disconnect.set_valign(gtk4::Align::Center);
         disconnect.add_css_class("muxterm-disconnect-overlay");
+        let disconnect_label = gtk4::Label::new(Some(&crate::frontend::utils::i18n::tr_static(
+            crate::frontend::utils::i18n::Key::StatusDisconnected,
+        )));
+        disconnect_label.set_widget_name("muxterm-disconnect-overlay-label");
+        let disconnect_actions = gtk4::Box::builder()
+            .orientation(gtk4::Orientation::Horizontal)
+            .spacing(8)
+            .halign(gtk4::Align::Center)
+            .build();
+        let disconnect_reconnect =
+            gtk4::Button::with_label(&crate::frontend::utils::i18n::tr_static(
+                crate::frontend::utils::i18n::Key::StatusReconnect,
+            ));
+        disconnect_reconnect.set_widget_name("muxterm-disconnect-reconnect");
+        let disconnect_close = gtk4::Button::with_label(&crate::frontend::utils::i18n::tr_static(
+            crate::frontend::utils::i18n::Key::CloseWorkspace,
+        ));
+        disconnect_close.set_widget_name("muxterm-disconnect-close");
+        disconnect_actions.append(&disconnect_reconnect);
+        disconnect_actions.append(&disconnect_close);
+        disconnect.append(&disconnect_label);
+        disconnect.append(&disconnect_actions);
         disconnect.set_visible(false);
 
         let search_highlight = gtk4::Label::new(Some("▮"));
@@ -116,6 +144,9 @@ impl OverlayLayer {
             jump_latest,
             jump_unseen: 0,
             disconnect,
+            disconnect_label,
+            disconnect_reconnect,
+            disconnect_close,
             search_highlight,
             pane_find,
             pane_find_entry,
@@ -125,6 +156,16 @@ impl OverlayLayer {
             command_ok_text,
             command_fail_text,
         }
+    }
+
+    pub fn connect_disconnect_actions<R, C>(&self, on_reconnect: R, on_close: C)
+    where
+        R: Fn() + 'static,
+        C: Fn() + 'static,
+    {
+        self.disconnect_reconnect
+            .connect_clicked(move |_| on_reconnect());
+        self.disconnect_close.connect_clicked(move |_| on_close());
     }
 
     /// 连接 Overlay 的交互入口；Overlay 只转发 GTK signal，不读取 Core 状态。

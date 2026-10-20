@@ -3,8 +3,6 @@ import XCTest
 @testable import MuxtermAppLib
 
 /// W16b：隔离 tmux server 被杀后，窗口留下最后一帧 + 断线水印，不关窗、不弹模态。
-///
-/// 当前生产路径对 Exited(4) 会 `closeSessionWindow()`——本测试必须先红。
 final class DisconnectE2ETests: XCTestCase {
     func testDisconnectKeepsTerminalAndShowsWatermark() throws {
         let fx = OnePaneCat(label: "gtk-disc")
@@ -34,6 +32,14 @@ final class DisconnectE2ETests: XCTestCase {
         XCTAssertTrue(
             app.testDisconnectOverlayVisible(),
             "muxterm.disconnectOverlay 必须可见"
+        )
+        XCTAssertTrue(
+            app.testDisconnectReconnectVisible(),
+            "tmux 断连水印必须提供 Core-owned 重新连接操作"
+        )
+        XCTAssertTrue(
+            app.testDisconnectCloseVisible(),
+            "tmux 断连水印必须允许显式关闭 Workspace"
         )
         XCTAssertEqual(
             app.window?.sheets.count ?? 0,

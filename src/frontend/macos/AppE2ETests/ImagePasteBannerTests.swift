@@ -47,6 +47,7 @@ final class ImagePasteBannerTests: XCTestCase {
         XCTAssertTrue(view.isHidden)
         XCTAssertEqual(view.renderedStage, .idle)
         XCTAssertFalse(view.testDismissVisible())
+        XCTAssertFalse(view.testCopyVisible())
     }
 
     func testProgressStagesAreVisibleSpinAndCannotBeDismissed() {
@@ -61,6 +62,7 @@ final class ImagePasteBannerTests: XCTestCase {
             XCTAssertEqual(view.testMessageText(), i18n.tr(key))
             XCTAssertTrue(view.testSpinnerAnimating(), "\(stage) 必须转圈")
             XCTAssertFalse(view.testDismissVisible(), "进行中的粘贴不能被关掉")
+            XCTAssertFalse(view.testCopyVisible(), "进行中的错误还不可复制")
         }
     }
 
@@ -76,6 +78,8 @@ final class ImagePasteBannerTests: XCTestCase {
         XCTAssertEqual(view.toolTip, "/tmp/muxterm-paste-ab12cd.png")
         XCTAssertFalse(view.testSpinnerAnimating())
         XCTAssertTrue(view.testDismissVisible())
+        XCTAssertTrue(view.testCopyVisible())
+        XCTAssertEqual(ImagePasteBannerView.copyText(for: view.renderedStage), "/tmp/muxterm-paste-ab12cd.png")
     }
 
     func testFailureShowsTheReasonAndCanBeDismissed() {
@@ -88,6 +92,23 @@ final class ImagePasteBannerTests: XCTestCase {
         XCTAssertEqual(view.toolTip, "SSH image transfer timed out")
         XCTAssertFalse(view.testSpinnerAnimating())
         XCTAssertTrue(view.testDismissVisible())
+        XCTAssertTrue(view.testCopyVisible())
+    }
+
+    func testFailureCopyPreservesTheCompleteErrorText() {
+        let view = banner()
+        let reason = "Cannot paste image: 20 MiB limit exceeded; dimensions were 8000×6000"
+        view.apply(.failed(message: reason))
+        var copied: String?
+        view.onCopy = { copied = $0 }
+
+        view.testClickCopy()
+
+        XCTAssertEqual(
+            copied,
+            "\(MuxtermI18n.shared.tr(.imagePasteFailed)): \(reason)"
+        )
+        XCTAssertEqual(view.toolTip, reason)
     }
 
     func testIdleAfterAResultHidesTheBannerAgain() {
@@ -98,6 +119,7 @@ final class ImagePasteBannerTests: XCTestCase {
         XCTAssertTrue(view.isHidden)
         XCTAssertFalse(view.testSpinnerAnimating())
         XCTAssertFalse(view.testDismissVisible())
+        XCTAssertFalse(view.testCopyVisible())
     }
 
     func testReapplyingTheSameStageDoesNotRestartTheSpinner() {
