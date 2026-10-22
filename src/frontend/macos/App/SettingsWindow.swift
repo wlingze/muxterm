@@ -348,7 +348,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
             configTransaction: configTransaction
         )
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 740, height: 530),
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 500),
             styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -358,7 +358,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
         window.isMovableByWindowBackground = true
-        window.minSize = NSSize(width: 660, height: 460)
+        window.minSize = NSSize(width: 600, height: 440)
         window.appearance = NSApp.appearance
         super.init(window: window)
         window.delegate = self
@@ -2080,7 +2080,7 @@ private final class SettingsShortcutEditorView: NSView {
 }
 
 /// 快捷键表格：搜索、录制、禁用、重置，保存后才写回设置草稿。
-private final class ShortcutSettingsDialog: NSWindowController, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
+private final class ShortcutSettingsDialog: NSWindowController, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate, NSWindowDelegate {
     var onSave: (([ShortcutEditorRow]) -> Void)?
 
     private var rows: [ShortcutEditorRow]
@@ -2095,7 +2095,7 @@ private final class ShortcutSettingsDialog: NSWindowController, NSTableViewDataS
     init(rows: [ShortcutEditorRow]) {
         self.rows = rows
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 760, height: 520),
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 480),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -2103,6 +2103,7 @@ private final class ShortcutSettingsDialog: NSWindowController, NSTableViewDataS
         window.title = settingsText("settings.shortcuts.dialog.title", fallback: "Shortcuts")
         super.init(window: window)
         window.isReleasedWhenClosed = false
+        window.delegate = self
         build()
     }
 
@@ -2340,17 +2341,25 @@ private final class ShortcutSettingsDialog: NSWindowController, NSTableViewDataS
         return nil
     }
 
+    func windowDidResize(_ notification: Notification) {
+        fitColumns()
+    }
+
     private func fitColumns() {
         guard let scroll = table.enclosingScrollView else { return }
+        scroll.layoutSubtreeIfNeeded()
         scroll.contentView.clipsToBounds = true
-        let width = scroll.contentView.bounds.width
+        let scroller = scroll.verticalScroller?.isHidden == false
+            ? (scroll.verticalScroller?.frame.width ?? 0)
+            : 0
+        let width = min(scroll.bounds.width, scroll.contentView.bounds.width) - scroller
         guard width > 160 else { return }
-        let restore = min(104, max(84, width * 0.16))
-        let action = min(240, max(140, width * 0.34))
-        let binding = max(80, width - action - restore)
+        let restore: CGFloat = 88
+        let action = min(220, max(150, (width - restore) * 0.42))
+        let binding = max(120, width - action - restore)
         table.tableColumns.first { $0.identifier.rawValue == "action" }?.width = action
-        table.tableColumns.first { $0.identifier.rawValue == "restore" }?.width = restore
         table.tableColumns.first { $0.identifier.rawValue == "binding" }?.width = binding
+        table.tableColumns.first { $0.identifier.rawValue == "restore" }?.width = restore
         var frame = table.frame
         frame.size.width = action + binding + restore
         table.frame = frame
