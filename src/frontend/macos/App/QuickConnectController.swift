@@ -298,12 +298,18 @@ final class QuickActionCellView: NSTableCellView {
         case section
     }
 
+    private let symbolLabel = NSTextField(labelWithString: "")
     private let label = NSTextField(labelWithString: "")
+    private(set) var testSymbolIsEmphasized = false
 
     var title: String {
         get { label.stringValue }
         set { label.stringValue = newValue }
     }
+
+    var testSymbol: String { symbolLabel.stringValue }
+    var testSymbolFrame: CGRect { symbolLabel.frame }
+    var testTitleFrame: CGRect { label.frame }
 
     var style: Style = .action {
         didSet { applyStyle() }
@@ -312,14 +318,37 @@ final class QuickActionCellView: NSTableCellView {
     init(identifier: NSUserInterfaceItemIdentifier) {
         super.init(frame: .zero)
         self.identifier = identifier
+        symbolLabel.translatesAutoresizingMaskIntoConstraints = false
+        symbolLabel.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
+        symbolLabel.alignment = .center
+        symbolLabel.textColor = .secondaryLabelColor
+        symbolLabel.isHidden = true
         label.translatesAutoresizingMaskIntoConstraints = false
         applyStyle()
+        addSubview(symbolLabel)
         addSubview(label)
         NSLayoutConstraint.activate([
+            symbolLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: QuickRowMetrics.edge),
+            symbolLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            symbolLabel.widthAnchor.constraint(equalToConstant: QuickRowMetrics.gutter),
             label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: QuickRowMetrics.titleLeading),
             label.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -14),
             label.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
+    }
+
+    /// 把动作符号放进和 Shells / Agents / 编号相同的左侧槽，并单独着色。
+    func applyShortcutSymbol(_ symbol: String, tint: NSColor?) {
+        symbolLabel.stringValue = symbol
+        symbolLabel.isHidden = symbol.isEmpty
+        testSymbolIsEmphasized = tint != nil && !symbol.isEmpty
+        if let tint {
+            symbolLabel.textColor = tint
+            label.textColor = tint
+        } else {
+            symbolLabel.textColor = .secondaryLabelColor
+            applyStyle()
+        }
     }
 
     private func applyStyle() {
@@ -353,6 +382,8 @@ final class QuickTargetCellView: NSTableCellView {
 
     private let titleLabel = NSTextField(labelWithString: "")
     private let detailLabel = NSTextField(labelWithString: "")
+    var testIndexFrame: CGRect { workspaceIndexLabel.frame }
+    var testTitleFrame: CGRect { titleLabel.frame }
     private let badgeStack = NSStackView()
     private let workspaceIndexLabel = NSTextField(labelWithString: "")
     private let closeButton = NSButton()
