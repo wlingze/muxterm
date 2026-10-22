@@ -65,17 +65,68 @@ pub fn active_log_file() -> Option<PathBuf> {
     ACTIVE_LOG_FILE.lock().ok().and_then(|slot| slot.clone())
 }
 
-/// debug 模式的默认日志文件：`<临时目录>/muxterm-logs/muxterm.log`。
+/// debug 模式的默认日志文件：`<目录>/muxterm-YYYY-MM-DD.log`。
 ///
-/// `log_dir` 为空时用系统临时目录。应用可以只打开 debug，不必再从终端
-/// 重定向 `--log-file`。
+/// 同一天继续追加，换一天写新文件，避免后一次启动覆盖前一天的日志。
+/// `log_dir` 为空时用系统临时目录下的 `muxterm-logs`。
 pub fn default_debug_log_file(log_dir: Option<&str>) -> PathBuf {
+    let (year, month, day) = local_calendar_date();
+    debug_log_file_for_date(log_dir, year, month, day)
+}
+
+/// 指定公历日期的日志路径。测试用它保证不同日期不会落到同一个文件。
+pub fn debug_log_file_for_date(log_dir: Option<&str>, year: i32, month: u32, day: u32) -> PathBuf {
     let dir = log_dir
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| std::env::temp_dir().join("muxterm-logs"));
-    dir.join("muxterm.log")
+    dir.join(format!("muxterm-{year:04}-{month:02}-{day:02}.log"))
+}
+
+fn local_calendar_date() -> (i32, u32, u32) {
+    #[cfg(unix)]
+    {
+        unsafe {
+            let now = libc::time(std::ptr::null_mut());
+            let mut tm = std::mem::zeroed::<libc::tm>();
+            if !libc::localtime_r(&now, &mut tm).is_null() {
+                return (
+                    i32::from(tm.tm_year) + 1900,
+                    u32::try_from(tm.tm_mon).unwrap_or(0) + 1,
+                    u32::try_from(tm.tm_mday).unwrap_or(1),
+                );
+            }
+            utc_calendar_date(now)
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs() as i64)
+            .unwrap_or(0);
+        utc_calendar_date(now)
+    }
+}
+
+fn utc_calendar_date(unix_secs: i64) -> (i32, u32, u32) {
+    let days = unix_secs.div_euclid(86_400);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = mp + if mp < 10 { 3 } else { -9 };
+    let year = y + if month <= 2 { 1 } else { 0 };
+    (
+        i32::try_from(year).unwrap_or(1970),
+        u32::try_from(month).unwrap_or(1),
+        u32::try_from(day).unwrap_or(1),
+    )
 }
 
 /// 从配置原文里读 `[debug]`。配置整体无效时也不要挡住启动，视为未开启。
@@ -275,6 +326,21 @@ mod tests {
     }
 
     #[test]
+    fn dated_log_files_do_not_share_a_path() {
+        let first = debug_log_file_for_date(Some("/tmp/muxterm-logs"), 2026, 10, 22);
+        let second = debug_log_file_for_date(Some("/tmp/muxterm-logs"), 2026, 10, 23);
+        assert_ne!(first, second);
+        assert_eq!(
+            first,
+            PathBuf::from("/tmp/muxterm-logs/muxterm-2026-10-22.log")
+        );
+        assert_eq!(
+            second,
+            PathBuf::from("/tmp/muxterm-logs/muxterm-2026-10-23.log")
+        );
+    }
+
+    #[test]
     fn log_message_does_not_panic_without_subscriber() {
         log_message("debug", "workspace activation begin");
         log_message("error", "clipboard write failed");
@@ -296,7 +362,16 @@ mod tests {
         assert_eq!(cfg.level, "debug");
         assert_eq!(
             cfg.file.as_deref(),
-            Some(Path::new("/tmp/muxterm-custom/muxterm.log"))
+            Some(default_debug_log_file(Some("/tmp/muxterm-custom")).as_path())
+        );
+        let today = default_debug_log_file(Some("/tmp/muxterm-custom"));
+        let name = today
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("");
+        assert!(
+            name.starts_with("muxterm-") && name.ends_with(".log") && name != "muxterm.log",
+            "默认日志必须带日期，避免互相覆盖: {name}"
         );
 
         let cli = resolve_launch_log(true, None, Some("[debug]\nenabled = false\n"));
