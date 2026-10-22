@@ -18,9 +18,10 @@ final class QuickConnectE2ETests: XCTestCase {
         app.openQuickConnect()
         AppE2E.pump(80)
 
-        XCTAssertEqual(app.unifiedPanel.testWorkspaceTitles().first, MuxtermI18n.shared.tr(.panelOpen))
-        XCTAssertTrue(app.unifiedPanel.testWorkspaceTitles().contains("Shells"))
-        XCTAssertTrue(app.unifiedPanel.testWorkspaceTitles().contains("Agents"))
+        XCTAssertEqual(
+            Array(app.unifiedPanel.testWorkspaceTitles().prefix(3)),
+            ["Shells", "Agents", MuxtermI18n.shared.tr(.panelOpen)]
+        )
         let shells = try XCTUnwrap(app.unifiedPanel.testWorkspaceTitles().firstIndex(of: "Shells"))
         let cell = app.unifiedPanel.testWorkspaceCell(at: shells)
         XCTAssertEqual(cell?.testTitleText(), "Shells")

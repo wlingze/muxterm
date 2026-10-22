@@ -100,9 +100,10 @@ final class UnifiedPanelE2ETests: XCTestCase {
         AppE2E.pump(80)
 
         let titles = app.unifiedPanel.testWorkspaceTitles()
-        XCTAssertEqual(titles.first, MuxtermI18n.shared.tr(.panelOpen))
-        XCTAssertTrue(titles.contains("Shells"))
-        XCTAssertTrue(titles.contains("Agents"))
+        XCTAssertEqual(
+            Array(titles.prefix(3)),
+            ["Shells", "Agents", MuxtermI18n.shared.tr(.panelOpen)]
+        )
         XCTAssertTrue(titles.contains(first.session))
         XCTAssertTrue(titles.contains(second.session))
         XCTAssertEqual(app.unifiedPanel.testWorkspaceShortcutText(matching: "Shells"), "S")
@@ -177,11 +178,20 @@ final class UnifiedPanelE2ETests: XCTestCase {
         panel.present()
 
         let titles = panel.testWorkspaceTitles()
-        XCTAssertEqual(titles.first, MuxtermI18n.shared.tr(.panelOpen))
         XCTAssertEqual(
-            titles.filter { ["ryzen-home", "muxterm", "yaklang-workspace", "mac-home", "Agents"].contains($0) },
-            ["ryzen-home", "muxterm", "yaklang-workspace", "mac-home", "Agents"],
-            "使用次数高的 Workspace 排在前面：\(titles)"
+            titles.filter {
+                ["Agents", "ryzen-home", "muxterm", "yaklang-workspace", "mac-home"].contains($0)
+                    || $0 == MuxtermI18n.shared.tr(.panelOpen)
+            },
+            [
+                "Agents",
+                MuxtermI18n.shared.tr(.panelOpen),
+                "yaklang-workspace",
+                "muxterm",
+                "mac-home",
+                "ryzen-home",
+            ],
+            "已打开的按编号 1…4，不按使用次数：\(titles)"
         )
         XCTAssertEqual(
             ["yaklang-workspace", "muxterm", "mac-home", "ryzen-home"].map {

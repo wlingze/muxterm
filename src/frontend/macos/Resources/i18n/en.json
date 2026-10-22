@@ -49,6 +49,8 @@
   "panel_action_open": "Open",
   "panel_action_connect": "Connect",
   "panel_action_edit": "Edit",
+  "panel_action_save": "Save",
+  "panel_action_delete": "Delete",
   "panel_action_attach": "Attach",
   "panel_action_update": "Update runtime",
   "search_scope_all": "All",

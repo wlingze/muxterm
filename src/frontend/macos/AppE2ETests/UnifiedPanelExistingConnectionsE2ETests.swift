@@ -225,9 +225,9 @@ final class UnifiedPanelExistingConnectionsE2ETests: XCTestCase {
 
         app.openQuickConnect()
         AppE2E.pump(80)
-        XCTAssertEqual(
-            app.unifiedPanel.testWorkspaceTitles().first,
-            MuxtermI18n.shared.tr(.panelOpen)
+        XCTAssertEqual(app.unifiedPanel.testWorkspaceTitles().first, "Shells")
+        XCTAssertTrue(
+            app.unifiedPanel.testWorkspaceTitles().contains(MuxtermI18n.shared.tr(.panelOpen))
         )
 
         app.unifiedPanel.testActivateWorkspaceItem(matching: MuxtermI18n.shared.tr(.panelOpen))

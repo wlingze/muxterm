@@ -49,6 +49,8 @@
   "panel_action_open": "打开",
   "panel_action_connect": "连接",
   "panel_action_edit": "编辑",
+  "panel_action_save": "保存",
+  "panel_action_delete": "删除",
   "panel_action_attach": "接入",
   "panel_action_update": "更新 Runtime",
   "search_scope_all": "全部",
