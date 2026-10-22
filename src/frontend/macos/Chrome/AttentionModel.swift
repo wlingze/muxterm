@@ -228,6 +228,39 @@ public struct AttentionVisibilityKey: Hashable, Sendable {
 
 /// 注意力行标题：进程名 + transport + path，不用 last_line 片段。
 public enum AttentionRowLabel {
+    /// 只认第一个可执行文件的 basename。路径中间的 agent 目录不是进程身份。
+    public static func knownAgentExecutable(_ process: String?) -> String? {
+        guard let process else { return nil }
+        let value = stripTerminalSequences(process)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return nil }
+        let tokens = value.split { character in
+            character.isWhitespace || ";|&<>\"'`()".contains(character)
+        }
+        guard let token = tokens.first else { return nil }
+        let raw = String(token).trimmingCharacters(in: CharacterSet(charactersIn: "'\""))
+        guard !raw.isEmpty, !raw.hasPrefix("-") else { return nil }
+        let basename = raw.split(whereSeparator: { $0 == "/" || $0 == "\\" })
+            .last
+            .map(String.init) ?? raw
+        return knownAgentBasename(basename)
+    }
+
+    static func knownAgentBasename(_ basename: String) -> String? {
+        let lower = basename.lowercased()
+        if lower == "agent" || lower == "cursor-agent" {
+            return "cursor"
+        }
+        let known = [
+            "codex", "cursor", "claude", "gemini", "aider", "opencode",
+            "copilot", "cline", "goose", "amp", "grok", "windsurf", "kiro",
+            "pi", "hermes", "droid",
+        ]
+        return known.first {
+            lower == $0 || lower.hasPrefix($0 + "-") || lower.hasPrefix($0 + "_")
+        }
+    }
+
     /// 将 pane-cmd/旧快照里的 wrapper 名称收敛成用户真正关心的 agent 名称。
     /// 例如 `npx @openai/codex`、`/opt/cursor-agent` 都应显示为 codex/cursor，
     /// 而不是路径或 node wrapper。未知命令只保留第一个可执行词的 basename，
@@ -396,6 +429,43 @@ public enum AttentionRowLabel {
     }
 }
 
+/// Attention、Agents 和 Commands 共用的警报规则。
+///
+/// Working 一直列出；未读的 blocked/done 列出；静音、已读完成和空闲都不算警报。
+/// Agents 仍只收 agent，但同一个 pane 的显隐不再另走一套条件。
+public enum AttentionAlert {
+    public static func includes(_ pane: PaneAttention) -> Bool {
+        !pane.muted && pane.status.isListed && (pane.status == .working || !pane.acknowledged)
+    }
+
+    /// Core 标记、权威 agent 名，或可执行文件本身就是已知 agent。
+    /// 不扫描路径中间的目录，避免把普通命令吸进 Agents。
+    public static func isAgent(_ pane: PaneAttention) -> Bool {
+        if pane.processIsAgent {
+            return true
+        }
+        if let name = pane.agentName?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !name.isEmpty
+        {
+            return true
+        }
+        return AttentionRowLabel.knownAgentExecutable(pane.processName) != nil
+    }
+
+    public static func agentName(_ pane: PaneAttention) -> String? {
+        let explicit = pane.agentName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let explicit, !explicit.isEmpty {
+            return explicit
+        }
+        if let known = AttentionRowLabel.knownAgentExecutable(pane.processName) {
+            return known
+        }
+        let process = pane.processName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard pane.processIsAgent, let process, !process.isEmpty else { return nil }
+        return process
+    }
+}
+
 /// 注意力列表纯逻辑：保留 running 与未读 done/blocked；已读完成项不再出现。
 public enum AttentionList {
     public static func rows(
@@ -418,6 +488,9 @@ public enum AttentionList {
             if chrome?.isAggregate == true || chrome?.isOpening == true {
                 continue
             }
+            if let chrome, !WorkspaceBackendStatus.includesActivity(chrome.backendStatus) {
+                continue
+            }
             let transport = !ws.transport.isEmpty
                 ? ws.transport
                 : (chrome?.transport
@@ -427,9 +500,7 @@ public enum AttentionList {
                 ws.name,
                 ws.workspaceId.split(separator: "@").first.map(String.init),
             ]) ?? ws.workspaceId
-            for pane in ws.panes where !pane.muted && pane.status.isListed
-                && (pane.status == .working || !pane.acknowledged)
-            {
+            for pane in ws.panes where AttentionAlert.includes(pane) {
                 let projectedAgent = projectedByPane[
                     PaneProjectionKey(workspaceId: ws.workspaceId, paneId: pane.paneId)
                 ]

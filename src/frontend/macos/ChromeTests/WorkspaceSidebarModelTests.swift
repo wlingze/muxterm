@@ -119,6 +119,10 @@ final class WorkspaceSidebarModelTests: XCTestCase {
         XCTAssertTrue(WorkspaceSidebarProjection.commands(
             workspaces: [disconnected], attention: attention
         ).isEmpty)
+        XCTAssertTrue(
+            AttentionList.rows(from: attention, workspaces: [disconnected], query: "").isEmpty,
+            "断连工作区的警报不能只留在 Attention"
+        )
     }
 
     func testMachineIdentityMatchesAgentsCommandsAndSearchableAttention() {
@@ -600,7 +604,7 @@ final class WorkspaceSidebarModelTests: XCTestCase {
         XCTAssertEqual(items.map(\.workspaceId), [herdr.workspaceId, tmux.workspaceId])
     }
 
-    func testReadStructuredAgentStaysInAgentSidebarButLeavesAttention() {
+    func testReadStructuredAgentLeavesAgentsAndAttentionTogether() {
         let workspaceId = "local@@agents@herdr@w2"
         let workspace = WorkspaceSidebarItem(
             workspaceId: workspaceId,
@@ -646,13 +650,10 @@ final class WorkspaceSidebarModelTests: XCTestCase {
             attention: attention
         )
 
-        XCTAssertEqual(agents.count, 1)
-        XCTAssertEqual(agents[0].title, "muxterm · local")
-        XCTAssertEqual(agents[0].detail, "done · Codex · Tab 2")
-        XCTAssertEqual(agents[0].tabNumber, 2)
-        XCTAssertFalse(agents[0].detail.localizedCaseInsensitiveContains("pane"))
-        XCTAssertEqual(agents[0].indicator, .idle)
-        XCTAssertTrue(AttentionList.rows(from: attention, query: "").isEmpty)
+        XCTAssertTrue(agents.isEmpty, "已读完成的 agent 必须和 Attention 一起离开")
+        XCTAssertTrue(
+            AttentionList.rows(from: attention, workspaces: [workspace], query: "").isEmpty
+        )
     }
 
     func testCommandsSeparateRunningAndUnreadCommandsFromAgents() {
@@ -834,10 +835,10 @@ final class WorkspaceSidebarModelTests: XCTestCase {
             attention: attention
         )
 
-        // 状态成块；块内按 tab/pane 固定。
-        XCTAssertEqual(agents.map(\.indicator), [.done, .working, .working, .idle])
-        XCTAssertEqual(agents.map(\.agentName), ["droid", "codex", "cursor", "amp"])
-        XCTAssertEqual(agents.map(\.paneId), [2, 1, 4, 3])
+        // 空闲不是警报。其余状态成块；块内按 tab/pane 固定。
+        XCTAssertEqual(agents.map(\.indicator), [.done, .working, .working])
+        XCTAssertEqual(agents.map(\.agentName), ["droid", "codex", "cursor"])
+        XCTAssertEqual(agents.map(\.paneId), [2, 1, 4])
 
         // 仅状态变化：条目在块间移动，同块内相对顺序不变。
         let flipped = AttentionSnapshot(
@@ -893,9 +894,102 @@ final class WorkspaceSidebarModelTests: XCTestCase {
             workspaces: [workspace],
             attention: flipped
         )
-        XCTAssertEqual(after.map(\.indicator), [.done, .working, .idle, .idle])
-        XCTAssertEqual(after.map(\.agentName), ["droid", "cursor", "codex", "amp"])
-        XCTAssertEqual(after.map(\.paneId), [2, 4, 1, 3])
+        XCTAssertEqual(after.map(\.indicator), [.done, .working])
+        XCTAssertEqual(after.map(\.agentName), ["droid", "cursor"])
+        XCTAssertEqual(after.map(\.paneId), [2, 4])
+        XCTAssertEqual(
+            AttentionList.rows(from: flipped, workspaces: [workspace], query: "").map(\.pane.paneId),
+            [2, 4]
+        )
+    }
+
+    func testAgentAlertsMatchAttentionAndLeaveCommandsAlone() {
+        let workspace = WorkspaceSidebarItem(
+            workspaceId: "yaklang-workspace:w1@ryzen",
+            name: "yaklang-workspace",
+            runtime: "herdr",
+            transport: "ryzen",
+            isActive: true,
+            tabNumberByPane: [3: 3, 4: 4, 5: 5, 9: 9],
+            tabIdByPane: [3: 30, 4: 40, 5: 50, 9: 90]
+        )
+        let attention = AttentionSnapshot(
+            blockedCount: 0,
+            workspaces: [
+                WorkspaceAttention(
+                    workspaceId: workspace.workspaceId,
+                    name: workspace.name,
+                    transport: workspace.transport,
+                    path: "~/Developer/yaklang-workspace",
+                    blocked: 0,
+                    done: 0,
+                    working: 3,
+                    panes: [
+                        PaneAttention(
+                            paneId: 3,
+                            status: .working,
+                            lastLine: "running",
+                            seq: 3,
+                            processName: "pi",
+                            processIsAgent: false
+                        ),
+                        PaneAttention(
+                            paneId: 4,
+                            status: .working,
+                            muted: true,
+                            lastLine: "hidden",
+                            seq: 4,
+                            processName: "pi",
+                            processIsAgent: true,
+                            agentName: "pi"
+                        ),
+                        PaneAttention(
+                            paneId: 5,
+                            status: .done,
+                            acknowledged: true,
+                            lastLine: "read",
+                            seq: 5,
+                            processName: "codex",
+                            processIsAgent: true,
+                            agentName: "Codex"
+                        ),
+                        PaneAttention(
+                            paneId: 9,
+                            status: .working,
+                            lastLine: "building",
+                            seq: 9,
+                            processName: "cargo test"
+                        ),
+                    ]
+                ),
+            ]
+        )
+
+        let agents = WorkspaceSidebarProjection.agents(
+            workspaces: [workspace],
+            attention: attention
+        )
+        let rows = AttentionList.rows(from: attention, workspaces: [workspace], query: "")
+        let commands = WorkspaceSidebarProjection.commands(
+            workspaces: [workspace],
+            attention: attention
+        )
+
+        XCTAssertEqual(agents.map(\.paneId), [3])
+        XCTAssertEqual(agents.map(\.detail), ["working · pi · Tab 3"])
+        XCTAssertEqual(agents.map(\.indicator), [.working])
+        let agentRow = rows.first { $0.pane.paneId == 3 }
+        XCTAssertEqual(agentRow?.indicator, agents.first?.indicator)
+        XCTAssertEqual(agentRow?.detail, agents.first?.detail)
+        XCTAssertEqual(Set(rows.map(\.pane.paneId)), Set([3, 9]))
+        XCTAssertEqual(commands.map(\.paneId), [9])
+        XCTAssertEqual(
+            AggregateWorkspaceProjection.agentTabs(
+                agents: agents,
+                workspaceOrder: [workspace.workspaceId]
+            ).map(\.agentPaneIds),
+            [[3]]
+        )
     }
 
     func testCursorProcessIsNotLabeledCodexAndIdleShellStaysOutOfAgents() {
