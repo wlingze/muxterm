@@ -23,6 +23,13 @@ pub enum KeyEvent {
     Ctrl(char),
     /// Alt+字符（ESC 前缀）。
     Alt(char),
+    /// 多修饰键。Herdr 直接使用 `ctrl+alt+h`，不能拆成裸控制字节。
+    Chord {
+        ctrl: bool,
+        alt: bool,
+        shift: bool,
+        key: String,
+    },
     /// F1–F12（`1..=12`）。
     Function(u8),
     Arrow(ArrowDir),
@@ -86,6 +93,30 @@ pub fn encode(event: &KeyEvent) -> Vec<u8> {
             let mut buf = [0u8; 4];
             out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
             out
+        }
+        KeyEvent::Chord {
+            ctrl,
+            alt,
+            shift,
+            key,
+        } => {
+            if *ctrl && !*alt && !*shift {
+                if let Some(ch) = key.chars().next() {
+                    return encode(&KeyEvent::Ctrl(ch));
+                }
+            }
+            let mut modifier = 1;
+            if *shift {
+                modifier += 1;
+            }
+            if *alt {
+                modifier += 2;
+            }
+            if *ctrl {
+                modifier += 4;
+            }
+            let code = key.chars().next().map(u32::from).unwrap_or(0);
+            format!("\u{1b}[27;{modifier};{code}~").into_bytes()
         }
         KeyEvent::Function(n) => encode_function(*n),
         KeyEvent::Arrow(dir) => match dir {

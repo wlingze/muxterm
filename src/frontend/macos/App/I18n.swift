@@ -144,6 +144,10 @@ enum MuxtermTextKey: CaseIterable {
     case panelAttention
     case panelAttentionPlaceholder
     case panelNewProject
+    case panelOpenFolder
+    case panelConnectSSH
+    case panelNoSSHHosts
+    case disconnectDetail
     case panelNoAttention
     case panelNoResults
     case panelNoWorkspaces
@@ -419,6 +423,10 @@ enum MuxtermTextKey: CaseIterable {
         case .panelAttention: return "panel_attention"
         case .panelAttentionPlaceholder: return "panel_attention_placeholder"
         case .panelNewProject: return "panel_new_project"
+        case .panelOpenFolder: return "panel_open_folder"
+        case .panelConnectSSH: return "panel_connect_ssh"
+        case .panelNoSSHHosts: return "panel_no_ssh_hosts"
+        case .disconnectDetail: return "disconnect_detail"
         case .panelNoAttention: return "panel_no_attention"
         case .panelNoResults: return "panel_no_results"
         case .panelNoWorkspaces: return "panel_no_workspaces"

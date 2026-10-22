@@ -1412,6 +1412,69 @@ public enum WheelPassthroughPolicy {
     }
 }
 
+/// Herdr 的快捷键不经过 pane 里的程序。ryzen 上的直接键是 `ctrl+alt+…`，
+/// 默认前缀是 `ctrl+b`，下一次按键才执行。`ctrl+a` 仍留给行首，不拿来当前缀。
+public enum HerdrWorkspaceShortcut: Equatable, Sendable {
+    case newTab
+    case previousTab
+    case nextTab
+    case splitVertical
+    case splitHorizontal
+    case zoom
+    case focusLeft
+    case focusDown
+    case focusUp
+    case focusRight
+    case literalPrefix
+}
+
+public enum HerdrShortcutMap {
+    public static func direct(
+        command: Bool,
+        control: Bool,
+        option: Bool,
+        shift: Bool,
+        key: String
+    ) -> HerdrWorkspaceShortcut? {
+        guard !command, control, option else { return nil }
+        switch (key.lowercased(), shift) {
+        case ("c", false): return .newTab
+        case ("[", false): return .previousTab
+        case ("]", false): return .nextTab
+        case ("d", false): return .splitVertical
+        case ("d", true): return .splitHorizontal
+        case ("z", false): return .zoom
+        case ("h", false): return .focusLeft
+        case ("j", false): return .focusDown
+        case ("k", false): return .focusUp
+        case ("l", false): return .focusRight
+        default: return nil
+        }
+    }
+
+    /// `prefix` 已经按下后的下一个键。`b` 表示把字面 `ctrl+b` 送进 pane。
+    public static func prefixed(key: String, shift: Bool) -> HerdrWorkspaceShortcut? {
+        switch (key.lowercased(), shift) {
+        case ("c", false): return .newTab
+        case ("n", false), ("]", false): return .nextTab
+        case ("p", false), ("[", false): return .previousTab
+        case ("v", false): return .splitVertical
+        case ("-", false), ("minus", false): return .splitHorizontal
+        case ("z", false): return .zoom
+        case ("h", false): return .focusLeft
+        case ("j", false): return .focusDown
+        case ("k", false): return .focusUp
+        case ("l", false): return .focusRight
+        case ("b", false): return .literalPrefix
+        default: return nil
+        }
+    }
+
+    public static func isPrefix(command: Bool, control: Bool, option: Bool, key: String) -> Bool {
+        !command && control && !option && key.lowercased() == "b"
+    }
+}
+
 /// macOS 窗口消费已绑定的快捷键。没写进配置的 Option 单修饰
 ///（含 Option+Shift）必须进 pane，否则 Herdr/vim/emacs 的 Meta 会被吃掉。
 /// 配置里明确的 Alt 键（例如 Alt+P）要消费，不能漏进终端变成 `^P`。

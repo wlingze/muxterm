@@ -3359,6 +3359,25 @@ impl HerdrRuntime {
             KeyEvent::Escape => "esc".into(),
             KeyEvent::Ctrl(c) => format!("ctrl+{c}"),
             KeyEvent::Alt(c) => format!("alt+{c}"),
+            KeyEvent::Chord {
+                ctrl,
+                alt,
+                shift,
+                key,
+            } => {
+                let mut parts = Vec::new();
+                if *ctrl {
+                    parts.push("ctrl");
+                }
+                if *alt {
+                    parts.push("alt");
+                }
+                if *shift {
+                    parts.push("shift");
+                }
+                parts.push(key.as_str());
+                parts.join("+")
+            }
             KeyEvent::Function(n) => format!("f{n}"),
             KeyEvent::Arrow(dir) => match dir {
                 crate::protocol::terminal::input::ArrowDir::Up => "up".into(),
@@ -4616,6 +4635,17 @@ mod tests {
         WorkspaceRecord,
     };
     use crate::runtime::herdr::wire::{read_message, ClientMessage, MAX_FRAME_SIZE};
+
+    #[test]
+    fn named_ctrl_alt_chord_stays_a_herdr_key() {
+        let key = crate::protocol::terminal::input::KeyEvent::Chord {
+            ctrl: true,
+            alt: true,
+            shift: false,
+            key: "h".into(),
+        };
+        assert_eq!(HerdrRuntime::key_to_herdr(&key), "ctrl+alt+h");
+    }
 
     #[test]
     fn protocol_keys_translate_readline_controls_and_leave_pastes_raw() {

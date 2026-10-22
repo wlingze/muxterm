@@ -5073,6 +5073,9 @@ fn key_event_to_tmux_key(ev: &crate::protocol::terminal::input::KeyEvent) -> cmd
         KeyEvent::Escape => cmd::Key::escape(),
         KeyEvent::Ctrl(c) => cmd::Key::ctrl(*c),
         KeyEvent::Alt(c) => cmd::Key::Literal(format!("\x1b{}", c)),
+        KeyEvent::Chord { .. } => cmd::Key::Literal(
+            String::from_utf8_lossy(&crate::protocol::terminal::input::encode(ev)).into_owned(),
+        ),
         KeyEvent::Function(n) => match n {
             1 => cmd::Key::Special("F1"),
             2 => cmd::Key::Special("F2"),
