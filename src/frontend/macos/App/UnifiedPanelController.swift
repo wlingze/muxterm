@@ -197,6 +197,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     private var hostSessionsLoading = false
     private var hostSessionGeneration: UInt64 = 0
     private var pathController = DirectorySuggestionController(path: "~")
+    private var applyingPathPreview = false
     private var workspaceNavigation = UnifiedWorkspaceNavigation.root
     private var existingRequestGeneration: UInt64 = 0
     private var searchRequestGeneration: UInt64 = 0
@@ -443,7 +444,9 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         let rowCount = numberOfRows(in: table)
         if rowCount > 0 {
             let row = defaultSelectedRow()
+            applyingPathPreview = true
             table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            applyingPathPreview = false
             table.scrollRowToVisible(row)
         } else {
             table.deselectAll(nil)
@@ -480,6 +483,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         // 根列表只有 Open，以及按使用次数排序的 Project / Workspace。
         // 打开过的会进 Recent；已保存的是 Project。不再混入 New / Open Folder。
         var seen = Set<String>()
+        var pinned: [UnifiedWorkspaceItem] = []
         var ranks: [(UnifiedWorkspaceItem, WorkspacePickerRank)] = []
         var order = 0
         func append(_ item: UnifiedWorkspaceItem, id: String, count: Int) {
@@ -488,15 +492,29 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
             ranks.append((item, rank))
             order += 1
         }
+        var opened: [(UnifiedWorkspaceItem, Int, String)] = []
         for workspace in chromeWorkspaces {
-            append(
-                .workspace(workspace),
-                id: "workspace:\(workspace.workspaceId)",
-                count: attachCountForWorkspace?(workspace.workspaceId) ?? 0
-            )
             if let targetID = workspace.openingTargetID {
                 seen.insert(targetID)
             }
+            if workspace.isAggregate {
+                let id = "workspace:\(workspace.workspaceId)"
+                guard seen.insert(id).inserted else { continue }
+                pinned.append(.workspace(workspace))
+                continue
+            }
+            let id = "workspace:\(workspace.workspaceId)"
+            guard seen.insert(id).inserted else { continue }
+            opened.append((
+                .workspace(workspace),
+                workspace.shortcut ?? Int.max,
+                workspace.name
+            ))
+        }
+        pinned.sort { aggregateRank($0) < aggregateRank($1) }
+        opened.sort {
+            if $0.1 != $1.1 { return $0.1 < $1.1 }
+            return $0.2.localizedStandardCompare($1.2) == .orderedAscending
         }
         if !chromeWorkspaces.isEmpty {
             for config in connected {
@@ -520,13 +538,21 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         }
         let orderedIDs = WorkspacePickerOrder.sortedIDs(ranks.map(\.1))
         let byID = Dictionary(uniqueKeysWithValues: ranks.map { ($0.1.id, $0.0) })
-        allItems = [.open] + orderedIDs.compactMap { byID[$0] }
+        allItems = pinned + [.open] + opened.map(\.0) + orderedIDs.compactMap { byID[$0] }
+    }
+
+    /// Shell 固定第一，Agent 固定第二。其余聚合槽排在它们后面。
+    private func aggregateRank(_ item: UnifiedWorkspaceItem) -> Int {
+        guard case .workspace(let workspace) = item else { return 9 }
+        if workspace.workspaceId == AggregateWorkspaceIdentity.shells { return 0 }
+        if workspace.workspaceId == AggregateWorkspaceIdentity.agents { return 1 }
+        return 2
     }
 
     private func hostItems() -> [UnifiedWorkspaceItem] {
         let query = model.query.trimmingCharacters(in: .whitespacesAndNewlines)
         let suggestions = SSHHostSuggestions.rows(
-            aliases: ["local"] + sshAliases,
+            aliases: hostsByUse(),
             query: query
         )
         var items: [UnifiedWorkspaceItem] = [.back]
@@ -848,6 +874,61 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         onConnect?(WorkspaceLauncher.temporaryTarget(path: path, transport: transport))
     }
 
+    /// 机器按已记录的使用次数排序；次数相同保持 local、再按 SSH 配置顺序。
+    private func hostsByUse() -> [String] {
+        var seen = Set<String>()
+        let names = (["local"] + sshAliases).filter { name in
+            seen.insert(name.lowercased()).inserted
+        }
+        let ranks = names.enumerated().map { index, host in
+            WorkspacePickerRank(id: host, count: hostUseCount(host), order: index)
+        }
+        return WorkspacePickerOrder.sortedIDs(ranks)
+    }
+
+    private func hostUseCount(_ host: String) -> Int {
+        var seen = Set<String>()
+        var total = 0
+        for config in store.recents + store.projects {
+            let id = QuickConnect.uniqueID(for: config)
+            guard seen.insert(id).inserted else { continue }
+            guard config.transport.label.caseInsensitiveCompare(host) == .orderedSame else { continue }
+            total += store.attachCount(for: config)
+        }
+        return total
+    }
+
+    /// 高亮目录时只把完整路径写进输入框，不刷新列表。回车才进入该目录。
+    private func previewSelectedPath() {
+        guard !applyingPathPreview,
+              case .pickPath = workspaceNavigation,
+              visibleItems.indices.contains(table.selectedRow)
+        else { return }
+        let preview: String
+        switch visibleItems[table.selectedRow] {
+        case .directory(let name):
+            preview = DirectoryPathModel.applyingSelection(candidate: name, to: pathController.text)
+        case .openThisDirectory:
+            preview = pathController.text
+        default:
+            return
+        }
+        guard input.stringValue != preview else { return }
+        applyingPathPreview = true
+        input.stringValue = preview
+        applyingPathPreview = false
+    }
+
+    private func navigateIntoDirectory(_ name: String) {
+        _ = pathController.select(candidate: name)
+        applyingPathPreview = true
+        input.stringValue = pathController.text
+        model.query = pathController.text
+        applyingPathPreview = false
+        refreshPathListing()
+        reload()
+    }
+
     private func goBackInPicker() {
         switch workspaceNavigation {
         case .pickPath(let host):
@@ -905,6 +986,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
             guard isSelectableWorkspaceRow(table, row: index) else { return }
             list.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
             list.scrollRowToVisible(index)
+            previewSelectedPath()
             return
         }
         let current = list.selectedRow >= 0 ? list.selectedRow : 0
@@ -946,12 +1028,9 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                     beginPath(host: host)
                 }
             case .openThisDirectory:
-                confirmPath()
+                confirmPath(pathController.text)
             case .directory(let name):
-                confirmPath(DirectoryPathModel.applyingSelection(
-                    candidate: name,
-                    to: pathController.text
-                ))
+                navigateIntoDirectory(name)
             case .connectSSH:
                 beginOpen()
             case .sshHost(let suggestion):
@@ -1501,6 +1580,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
             return
         }
         model.query = input.stringValue
+        if applyingPathPreview { return }
         if case .pickPath = workspaceNavigation {
             _ = pathController.updateInput(input.stringValue)
             refreshPathListing()
@@ -1818,6 +1898,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     func tableViewSelectionDidChange(_ notification: Notification) {
         if (notification.object as? NSTableView) === actionTable { return }
         updatePeek()
+        previewSelectedPath()
     }
 
     @objc private func tableActivated() {
@@ -2462,6 +2543,8 @@ extension UnifiedPanelController {
             edit: i18n.tr(.panelActionEdit),
             create: i18n.tr(.panelNewProject),
             attach: i18n.tr(.panelActionAttach),
+            save: i18n.tr(.panelActionSave),
+            delete: i18n.tr(.panelActionDelete),
             jump: i18n.tr(.attentionJump),
             hide: i18n.tr(.attentionHide),
             show: i18n.tr(.attentionShow),
@@ -2549,6 +2632,18 @@ extension UnifiedPanelController {
         case QuickPanelActions.attach:
             if let choice = target.existing {
                 onAttachExistingConnection?(choice)
+            }
+        case QuickPanelActions.save:
+            if let choice = target.existing {
+                store.upsertProject(choice.config)
+                leaveQuickActions()
+                reload()
+            }
+        case QuickPanelActions.delete:
+            if let config = target.target {
+                store.removeRecord(config)
+                leaveQuickActions()
+                reload()
             }
         case QuickPanelActions.jump:
             if let row = target.attention {

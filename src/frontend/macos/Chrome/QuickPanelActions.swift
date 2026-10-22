@@ -56,6 +56,8 @@ public struct QuickPanelActionLabels: Equatable, Sendable {
     public var edit: String
     public var create: String
     public var attach: String
+    public var save: String
+    public var delete: String
     public var jump: String
     public var hide: String
     public var show: String
@@ -69,6 +71,8 @@ public struct QuickPanelActionLabels: Equatable, Sendable {
         edit: String,
         create: String,
         attach: String,
+        save: String,
+        delete: String,
         jump: String,
         hide: String,
         show: String,
@@ -81,6 +85,8 @@ public struct QuickPanelActionLabels: Equatable, Sendable {
         self.edit = edit
         self.create = create
         self.attach = attach
+        self.save = save
+        self.delete = delete
         self.jump = jump
         self.hide = hide
         self.show = show
@@ -103,6 +109,8 @@ public enum QuickPanelActions {
     public static let edit = "row.edit"
     public static let create = "row.create"
     public static let attach = "row.attach"
+    public static let save = "row.save"
+    public static let delete = "row.delete"
     public static let jump = "row.jump"
     public static let hide = "row.hide"
     public static let show = "row.show"
@@ -157,6 +165,12 @@ public enum QuickPanelActions {
                     detail: name,
                     keywords: "edit project target 编辑 项目"
                 ),
+                make(
+                    id: delete,
+                    title: labels.delete,
+                    detail: name,
+                    keywords: "delete remove list project 删除 列表"
+                ),
             ]
         case .existingConnection(let name):
             return [
@@ -165,6 +179,12 @@ public enum QuickPanelActions {
                     title: labels.attach,
                     detail: name,
                     keywords: "attach existing session 接入 已有"
+                ),
+                make(
+                    id: save,
+                    title: labels.save,
+                    detail: name,
+                    keywords: "save project 保存 项目"
                 ),
             ]
         case .newProject:

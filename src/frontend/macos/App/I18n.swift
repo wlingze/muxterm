@@ -169,6 +169,8 @@ enum MuxtermTextKey: CaseIterable {
     case panelActionConnect
     case panelActionEdit
     case panelActionAttach
+    case panelActionSave
+    case panelActionDelete
     case panelActionUpdate
     case pane
     case paneRenameAction
@@ -456,6 +458,8 @@ enum MuxtermTextKey: CaseIterable {
         case .panelActionConnect: return "panel_action_connect"
         case .panelActionEdit: return "panel_action_edit"
         case .panelActionAttach: return "panel_action_attach"
+        case .panelActionSave: return "panel_action_save"
+        case .panelActionDelete: return "panel_action_delete"
         case .panelActionUpdate: return "panel_action_update"
         case .pane: return "pane"
         case .paneRenameAction: return "pane_rename_action"

@@ -10,6 +10,8 @@ final class QuickPanelActionsTests: XCTestCase {
         edit: "Edit",
         create: "New Project",
         attach: "Attach",
+        save: "Save",
+        delete: "Delete",
         jump: "Jump",
         hide: "Hide",
         show: "Show",
@@ -66,8 +68,11 @@ final class QuickPanelActionsTests: XCTestCase {
             for: .target(name: "legion"),
             labels: labels
         )
-        XCTAssertEqual(commands.map(\.id), [QuickPanelActions.connect, QuickPanelActions.edit])
-        XCTAssertEqual(commands.map(\.detail), ["legion", "legion"])
+        XCTAssertEqual(
+            commands.map(\.id),
+            [QuickPanelActions.connect, QuickPanelActions.edit, QuickPanelActions.delete]
+        )
+        XCTAssertEqual(commands.map(\.detail), ["legion", "legion", "legion"])
     }
 
     func testHiddenAttentionOffersShowInsteadOfHide() {

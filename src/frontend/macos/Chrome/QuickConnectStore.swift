@@ -308,6 +308,18 @@ public final class QuickConnectStore {
         persistProjects?(projects)
     }
 
+    /// 从打开列表移除。Project 和 Recent 一起清掉，已经打开的 Workspace 不受影响。
+    public func removeRecord(_ config: TargetConfig) {
+        let id = QuickConnect.uniqueID(for: config)
+        let removedProject = projects.contains { QuickConnect.uniqueID(for: $0) == id }
+        projects.removeAll { QuickConnect.uniqueID(for: $0) == id }
+        recents.removeAll { QuickConnect.uniqueID(for: $0) == id }
+        if removedProject {
+            persistProjects?(projects)
+        }
+        persistRecents()
+    }
+
     /// 清空 recent（recent 不落盘；项目原样保留）。
     public func clearRecents() {
         recents.removeAll()
