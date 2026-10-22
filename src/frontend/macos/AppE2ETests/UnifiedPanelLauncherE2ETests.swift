@@ -2,75 +2,113 @@ import XCTest
 @testable import MuxtermAppLib
 import MuxtermChrome
 
-/// Open Folder 的主机选择留在 Quick Panel：输入筛选、方向键选择、Tab 补全、Enter 确认。
-/// 分组标题比工作区矮，并且不能被选中或变成孤立搜索结果。
+/// Open 先选机器，再列出这台机器上的 tmux/herdr；新路径在面板里补全。
 final class UnifiedPanelLauncherE2ETests: XCTestCase {
-    func testConnectSSHUsesPanelCompletionInsteadOfLeavingThePanel() {
+    func testOpenFiltersMachinesThenListsSessionsOnThatMachine() {
         AppE2E.ensureApp()
         let panel = makePanel()
-        var opened: TargetTransport?
-        panel.onOpenFolder = { opened = $0 }
+        var requestedHost: String?
+        let choice = ExistingConnectionChoice(
+            target: .ssh(SSHHostInfo(alias: "buildbox", hostname: "", user: nil, port: nil)),
+            session: TmuxSessionInfo(name: "agents", windowCount: 1, attached: false),
+            socket: nil
+        )
+        var attached: ExistingConnectionChoice?
         panel.onLoadSSHAliases = { completion in
             completion(.success(["ryzen", "buildbox"]))
         }
+        panel.onLoadHostSessions = { host, completion in
+            requestedHost = host
+            completion(.success([choice]))
+        }
+        panel.onAttachExistingConnection = { attached = $0 }
         panel.present(initial: .workspaces)
 
-        panel.testActivateWorkspaceItem(matching: MuxtermI18n.shared.tr(.panelConnectSSH))
-        XCTAssertTrue(panel.testIsPresented())
+        panel.testActivateWorkspaceItem(matching: MuxtermI18n.shared.tr(.panelOpen))
         XCTAssertTrue(panel.testShowsSSHHostPicker())
-        XCTAssertEqual(panel.testWorkspaceTitles().first, MuxtermI18n.shared.tr(.existingBack))
+        XCTAssertTrue(panel.testWorkspaceTitles().contains("local"))
         XCTAssertTrue(panel.testWorkspaceTitles().contains("ryzen"))
-        XCTAssertTrue(panel.testWorkspaceTitles().contains("buildbox"))
-
         panel.testSetQuery("bu")
         panel.testCompleteSSHHost()
         XCTAssertEqual(panel.testQuery(), "buildbox")
         panel.activateForTest()
 
-        guard case .ssh(let host) = opened else {
-            return XCTFail("Enter 必须打开选中的 SSH 主机")
-        }
-        XCTAssertEqual(host, "buildbox")
-        XCTAssertFalse(panel.testIsPresented())
+        XCTAssertEqual(requestedHost, "buildbox")
+        XCTAssertTrue(panel.testShowsHostSessions())
+        XCTAssertEqual(
+            panel.testWorkspaceTitles().dropFirst().first,
+            MuxtermI18n.shared.tr(.panelOpenNewPath)
+        )
+        panel.testActivateWorkspaceItem(matching: "agents")
+        XCTAssertEqual(attached, choice)
+        panel.dismiss()
     }
 
-    func testTypedSSHHostCanBeConfirmedWhenItIsNotAnAlias() {
+    func testOpenNewPathCompletesDirectoriesAndConfirms() {
         AppE2E.ensureApp()
         let panel = makePanel()
-        var opened: TargetTransport?
-        panel.onOpenFolder = { opened = $0 }
+        var opened: TargetConfig?
         panel.onLoadSSHAliases = { completion in
-            completion(.success(["ryzen"]))
+            completion(.success(["ryzen", "buildbox"]))
         }
+        panel.onListDirectories = { host, path, completion in
+            XCTAssertEqual(host, "ryzen")
+            if path == "~" || path == "~/" {
+                completion(.success(["Developer", "notes"]))
+            } else {
+                completion(.success(["muxterm"]))
+            }
+        }
+        panel.onConnect = { opened = $0 }
         panel.present(initial: .workspaces)
-        panel.testActivateWorkspaceItem(matching: MuxtermI18n.shared.tr(.panelConnectSSH))
-        panel.testSetQuery("custom.example")
+        panel.testActivateWorkspaceItem(matching: MuxtermI18n.shared.tr(.panelOpen))
+        panel.testActivateWorkspaceItem(matching: "ryzen")
+        panel.testActivateWorkspaceItem(matching: MuxtermI18n.shared.tr(.panelOpenNewPath))
 
-        let typed = MuxtermI18n.shared.tr(.panelUseSSHHost, arguments: ["host": "custom.example"])
-        XCTAssertTrue(panel.testWorkspaceTitles().contains(typed))
-        panel.testActivateWorkspaceItem(matching: typed)
+        XCTAssertTrue(panel.testShowsPathPicker())
+        XCTAssertEqual(
+            panel.testWorkspaceTitles().dropFirst().first,
+            MuxtermI18n.shared.tr(.panelOpenThisDirectory)
+        )
+        panel.testSetQuery("~/D")
+        XCTAssertTrue(panel.testWorkspaceTitles().contains("Developer"))
+        XCTAssertFalse(panel.testWorkspaceTitles().contains("notes"))
+        panel.testSelectRow(offset: 1)
+        panel.testCompleteSSHHost()
+        XCTAssertTrue(panel.testShowsPathPicker(), "Tab 补全目录后仍停留在路径选择")
+        XCTAssertEqual(panel.testQuery(), "~/Developer/")
 
-        guard case .ssh(let host) = opened else {
-            return XCTFail("手工输入的主机必须可以确认")
+        panel.testActivateWorkspaceItem(matching: MuxtermI18n.shared.tr(.panelOpenThisDirectory))
+        XCTAssertEqual(opened?.runtime, .herdr)
+        XCTAssertEqual(opened?.name, "Developer")
+        if case .ssh(let host) = opened?.transport {
+            XCTAssertEqual(host, "ryzen")
+        } else {
+            XCTFail("SSH 新路径必须记在所选机器上")
         }
-        XCTAssertEqual(host, "custom.example")
+        XCTAssertNil(opened?.persistedID)
     }
 
-    func testHostHeadersStayCompactAndOutOfSearch() {
+    func testRootListsOnlyOpenProjectsAndWorkspacesByFrequency() {
         AppE2E.ensureApp()
         let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("muxterm-launcher-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("muxterm-picker-\(UUID().uuidString)", isDirectory: true)
         let store = QuickConnectStore(
             recentsURL: directory.appendingPathComponent("workspace-recents.json")
         ) { _ in }
         defer { try? FileManager.default.removeItem(at: directory) }
-        let recent = TargetConfig(
+        let rare = TargetConfig(name: "notes", runtime: .tmux, transport: .local, path: "~/notes")
+        let frequent = TargetConfig(
             name: "muxterm",
             runtime: .herdr,
             transport: .ssh(name: "ryzen"),
-            path: "/home/wlz/Developer/self/muxterm"
+            path: "/home/wlz/muxterm"
         )
-        store.recordRecent(recent)
+        store.recordRecent(rare)
+        store.recordRecent(frequent)
+        store.recordAttach(frequent)
+        store.recordAttach(frequent)
+        store.upsertProject(frequent)
         let panel = UnifiedPanelController(
             store: store,
             ownerWindow: nil,
@@ -81,21 +119,17 @@ final class UnifiedPanelLauncherE2ETests: XCTestCase {
         panel.present(initial: .workspaces)
         defer { panel.dismiss() }
 
-        let titles = panel.testWorkspaceTitles()
-        guard let host = titles.firstIndex(of: "local"),
-              let action = titles.firstIndex(of: MuxtermI18n.shared.tr(.panelOpenFolder)),
-              let target = titles.firstIndex(of: recent.path)
-        else {
-            return XCTFail("打开列表应同时包含分组、动作和最近目录: \(titles)")
-        }
-        XCTAssertEqual(panel.testRowHeight(at: host), QuickActionCellView.sectionRowHeight)
-        XCTAssertEqual(panel.testRowHeight(at: action), QuickActionCellView.preferredRowHeight)
-        XCTAssertEqual(panel.testRowHeight(at: target), QuickTargetCellView.preferredRowHeight)
-        XCTAssertFalse(panel.testWorkspaceRowIsSelectable(matching: "local"))
-        XCTAssertLessThan(panel.testRowHeight(at: host), panel.testRowHeight(at: target))
-
-        panel.testSetQuery("local")
-        XCTAssertFalse(panel.testWorkspaceTitles().contains("local"))
+        XCTAssertEqual(
+            panel.testWorkspaceTitles(),
+            [
+                MuxtermI18n.shared.tr(.panelOpen),
+                "muxterm",
+                "notes",
+            ]
+        )
+        XCTAssertFalse(panel.testWorkspaceTitles().contains(MuxtermI18n.shared.tr(.panelNewProject)))
+        XCTAssertFalse(panel.testWorkspaceTitles().contains(MuxtermI18n.shared.tr(.panelOpenFolder)))
+        XCTAssertFalse(panel.testWorkspaceTitles().contains(MuxtermI18n.shared.tr(.panelConnectSSH)))
     }
 
     private func makePanel() -> UnifiedPanelController {

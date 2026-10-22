@@ -459,6 +459,28 @@ public enum WorkspaceLauncherRow: Equatable, Sendable {
     case openFolder(host: String)
 }
 
+/// 使用次数高的在前；次数相同则保持原来的先后。
+public struct WorkspacePickerRank: Equatable, Sendable {
+    public var id: String
+    public var count: Int
+    public var order: Int
+
+    public init(id: String, count: Int, order: Int) {
+        self.id = id
+        self.count = count
+        self.order = order
+    }
+}
+
+public enum WorkspacePickerOrder {
+    public static func sortedIDs(_ ranks: [WorkspacePickerRank]) -> [String] {
+        ranks.sorted { lhs, rhs in
+            if lhs.count != rhs.count { return lhs.count > rhs.count }
+            return lhs.order < rhs.order
+        }.map(\.id)
+    }
+}
+
 public enum WorkspaceLauncher {
     public static func rows(
         recents: [TargetConfig],

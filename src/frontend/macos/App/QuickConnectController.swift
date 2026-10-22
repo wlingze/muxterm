@@ -363,6 +363,7 @@ final class QuickTargetCellView: NSTableCellView {
     private var updateToCloseGap: NSLayoutConstraint!
     private var onCloseWorkspace: ((String) -> Void)?
     private var onUpdateWorkspace: ((String) -> Void)?
+    private var onSaveProject: (() -> Void)?
     private var closeWorkspaceID: String?
     private var aggregateAppearance: AggregateWorkspaceAppearance?
 
@@ -584,7 +585,34 @@ final class QuickTargetCellView: NSTableCellView {
         updateActionLayout()
     }
 
+    func configureSave(action: (() -> Void)?) {
+        onSaveProject = action
+        guard action != nil else {
+            if workspace?.canUpdateRuntime != true {
+                runtimeUpdateButton.isHidden = true
+                updateSpinner.isHidden = true
+                updateActionLayout()
+            }
+            return
+        }
+        runtimeUpdateButton.isHidden = false
+        runtimeUpdateButton.isEnabled = true
+        runtimeUpdateButton.image = NSImage(
+            systemSymbolName: "bookmark",
+            accessibilityDescription: "Save"
+        )
+        runtimeUpdateButton.contentTintColor = .secondaryLabelColor
+        runtimeUpdateButton.toolTip = "Save"
+        runtimeUpdateButton.setAccessibilityIdentifier("muxterm.quickConnect.save")
+        runtimeUpdateButton.setAccessibilityLabel("Save")
+        updateSpinner.isHidden = true
+        updateActionLayout()
+    }
+
     func configureWorkspaceUpdate(action: ((String) -> Void)?) {
+        if workspace != nil {
+            onSaveProject = nil
+        }
         onUpdateWorkspace = action
         let state = RuntimeUpdateButtonState.resolve(
             canUpdate: workspace?.canUpdateRuntime == true && action != nil,
@@ -634,6 +662,10 @@ final class QuickTargetCellView: NSTableCellView {
     }
 
     @objc private func updateWorkspaceClicked() {
+        if let onSaveProject {
+            onSaveProject()
+            return
+        }
         guard let workspace, workspace.canUpdateRuntime else { return }
         onUpdateWorkspace?(workspace.workspaceId)
     }

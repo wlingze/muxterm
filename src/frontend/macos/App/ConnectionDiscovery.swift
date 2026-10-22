@@ -206,6 +206,62 @@ final class ConnectionDiscovery {
         }
     }
 
+    /// 只查询一台机器上可 attach 的 tmux / herdr。当前连接的隔离 socket
+    /// 仅在目标就是这台机器时合并，避免串到别的 host。
+    func listHostSessions(
+        host: String,
+        currentSocket: String?,
+        completion: @escaping (Result<[ExistingConnectionChoice], Error>) -> Void
+    ) {
+        let generation = beginRequest()
+        let configPath = sshConfigPath
+        runAsync({
+            let transport = host == "local" ? "local" : "ssh"
+            let target = host == "local" ? "" : host
+            var choices = try CoreBridge.discoverCatalogSessions(
+                transport: transport,
+                target: target
+            )
+            .compactMap(\.targetConfig)
+            .map { ExistingConnectionChoice(config: $0) }
+            if let currentSocket {
+                let sessions = try CoreBridge.discoverTmuxSessions(
+                    backendType: transport,
+                    target: target.isEmpty ? nil : target,
+                    socket: currentSocket,
+                    configPath: configPath
+                )
+                let connectionTarget: ConnectionTarget = host == "local"
+                    ? .local
+                    : .ssh(SSHHostInfo(alias: host, hostname: "", user: nil, port: nil))
+                choices.append(contentsOf: sessions.map {
+                    ExistingConnectionChoice(
+                        target: connectionTarget,
+                        session: Self.sessionInfo($0),
+                        socket: currentSocket
+                    )
+                })
+            }
+            var seen = Set<String>()
+            return choices.filter { choice in
+                guard choice.config.runtime == .tmux || choice.config.runtime == .herdr else {
+                    return false
+                }
+                let key = [
+                    choice.config.runtime.rawValue,
+                    choice.config.session ?? "",
+                    choice.config.socket ?? "",
+                    choice.config.workspaceID ?? "",
+                    choice.config.name,
+                ].joined(separator: "|")
+                return seen.insert(key).inserted
+            }
+        }) { [weak self] result in
+            guard let self, self.isCurrent(generation) else { return }
+            completion(result)
+        }
+    }
+
     func listLocalSessions(completion: @escaping (Result<[TmuxSessionInfo], Error>) -> Void) {
         let generation = beginRequest()
         let socket = attachedLocalSocket
