@@ -27,6 +27,8 @@
   "panel_new_project": "新建项目",
   "panel_open_folder": "打开文件夹",
   "panel_connect_ssh": "连接 SSH",
+  "panel_ssh_host_placeholder": "SSH 主机",
+  "panel_use_ssh_host": "连接到 {{host}}",
   "panel_no_ssh_hosts": "没有已配置的 SSH 主机。",
   "disconnect_detail": "与 {{host}} 的连接已断开。",
   "panel_no_attention": "目前没有待处理提醒",

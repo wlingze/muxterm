@@ -27,6 +27,8 @@
   "panel_new_project": "New Project",
   "panel_open_folder": "Open Folder",
   "panel_connect_ssh": "Connect SSH Server",
+  "panel_ssh_host_placeholder": "SSH host",
+  "panel_use_ssh_host": "Connect to {{host}}",
   "panel_no_ssh_hosts": "No SSH hosts are configured.",
   "disconnect_detail": "Your connection to {{host}} has been lost.",
   "panel_no_attention": "Nothing needs attention",

@@ -2977,7 +2977,7 @@ final class KeyBindingsConfigTests: XCTestCase {
         try? FileManager.default.removeItem(at: directory)
     }
 
-    func testHerdrShortcutsUseCtrlAltAndCtrlBPrefixNotCtrlA() {
+    func testHerdrShortcutsUseCtrlAltAndDoNotStealCtrlAOrCtrlB() {
         XCTAssertEqual(
             HerdrShortcutMap.direct(
                 command: false, control: true, option: true, shift: false, key: "h"
@@ -2995,14 +2995,45 @@ final class KeyBindingsConfigTests: XCTestCase {
                 command: false, control: true, option: false, shift: false, key: "a"
             )
         )
-        XCTAssertTrue(HerdrShortcutMap.isPrefix(
-            command: false, control: true, option: false, key: "b"
-        ))
-        XCTAssertFalse(HerdrShortcutMap.isPrefix(
-            command: false, control: true, option: false, key: "a"
-        ))
-        XCTAssertEqual(HerdrShortcutMap.prefixed(key: "c", shift: false), .newTab)
-        XCTAssertEqual(HerdrShortcutMap.prefixed(key: "b", shift: false), .literalPrefix)
+        XCTAssertNil(
+            HerdrShortcutMap.direct(
+                command: false, control: true, option: false, shift: false, key: "b"
+            )
+        )
+    }
+
+    func testSSHHostSuggestionsFilterCompleteAndKeepTypedHosts() {
+        let aliases = ["ryzen", "buildbox", "remote"]
+        XCTAssertEqual(
+            SSHHostSuggestions.rows(aliases: aliases, query: ""),
+            [.known("ryzen"), .known("buildbox"), .known("remote")]
+        )
+        XCTAssertEqual(
+            SSHHostSuggestions.rows(aliases: aliases, query: "r"),
+            [.known("ryzen"), .known("remote"), .typed("r")]
+        )
+        XCTAssertEqual(
+            SSHHostSuggestions.rows(aliases: aliases, query: "ryzen"),
+            [.known("ryzen")]
+        )
+        XCTAssertEqual(
+            SSHHostSuggestions.rows(aliases: aliases, query: "custom.example"),
+            [.typed("custom.example")]
+        )
+        XCTAssertEqual(
+            SSHHostSuggestions.tabCompletion(aliases: aliases, query: "bu", selected: "buildbox"),
+            "buildbox"
+        )
+        XCTAssertEqual(
+            SSHHostSuggestions.tabCompletion(aliases: aliases, query: "ry", selected: nil),
+            "ryzen"
+        )
+        XCTAssertNil(
+            SSHHostSuggestions.tabCompletion(aliases: aliases, query: "r", selected: nil)
+        )
+        XCTAssertNil(
+            SSHHostSuggestions.tabCompletion(aliases: aliases, query: "ryzen", selected: "ryzen")
+        )
     }
 
     func testTargetConfigsSerializeToCoreProjectJSON() {

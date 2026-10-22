@@ -4,6 +4,7 @@ import MuxtermChrome
 private enum UnifiedWorkspaceNavigation: Equatable {
     case root
     case existingConnections
+    case sshHosts
 }
 
 struct UnifiedPanelSearchRequest {
@@ -23,6 +24,7 @@ private enum UnifiedWorkspaceItem {
     )
     case newProject
     case connectSSH
+    case sshHost(SSHHostSuggestion)
     case host(String)
     case openFolder(host: String)
     case back
@@ -42,6 +44,13 @@ private enum UnifiedWorkspaceItem {
             return MuxtermI18n.shared.tr(.panelNewProject)
         case .connectSSH:
             return MuxtermI18n.shared.tr(.panelConnectSSH)
+        case .sshHost(let suggestion):
+            switch suggestion {
+            case .known(let host):
+                return host
+            case .typed(let host):
+                return MuxtermI18n.shared.tr(.panelUseSSHHost, arguments: ["host": host])
+            }
         case .host(let host):
             return host
         case .openFolder:
@@ -73,8 +82,11 @@ private enum UnifiedWorkspaceItem {
             return haystack.contains(normalizedQuery) ? 1_000 : nil
         case .existingConnections, .newProject, .connectSSH, .openFolder, .loading, .empty:
             return title.lowercased().contains(normalizedQuery) ? 500 : nil
-        case .host(let host):
-            return host.lowercased().contains(normalizedQuery) ? 400 : nil
+        case .sshHost(let suggestion):
+            return suggestion.host.lowercased().contains(normalizedQuery) ? 800 : nil
+        case .host:
+            // 分组标题不能单独成为搜索结果，否则 “local” 会像一条工作区。
+            return nil
         case .target(let config, _, _, _):
             return QuickConnect.searchScore(query, config: config)
         case .back:
@@ -106,7 +118,6 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     var onEditProject: ((TargetConfig) -> Void)?
     var onNewProject: (() -> Void)?
     var onOpenFolder: ((TargetTransport) -> Void)?
-    var onConnectSSH: (() -> Void)?
     var onJump: ((String?, UInt32?, UInt32, UInt64, String) -> Void)?
     // (workspaceId, tabId, paneId, seq, query)
     var onPreview: ((String, UInt32) -> Void)? // (workspaceId, paneId)
@@ -427,6 +438,10 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
             allItems = existingItems
             return
         }
+        if workspaceNavigation == .sshHosts {
+            allItems = sshHostItems()
+            return
+        }
         let connected = connectedWorkspaces?() ?? []
         if connectedWorkspaces != nil {
             store.rememberOpenWorkspaces(connected)
@@ -513,7 +528,23 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         allItems.append(.newProject)
     }
 
+    private func sshHostItems() -> [UnifiedWorkspaceItem] {
+        let query = model.query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let suggestions = SSHHostSuggestions.rows(aliases: sshAliases, query: query)
+        var items: [UnifiedWorkspaceItem] = [.back]
+        if suggestions.isEmpty {
+            items.append(.empty)
+        } else {
+            items.append(contentsOf: suggestions.map(UnifiedWorkspaceItem.sshHost))
+        }
+        return items
+    }
+
     private func applyFilter() {
+        if workspaceNavigation == .sshHosts {
+            visibleItems = allItems
+            return
+        }
         let query = model.query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else {
             visibleItems = allItems
@@ -548,6 +579,12 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
 
     private func defaultSelectedRow() -> Int {
         guard model.tab == .workspaces else { return 0 }
+        if workspaceNavigation == .sshHosts {
+            return visibleItems.firstIndex { item in
+                if case .sshHost = item { return true }
+                return false
+            } ?? 0
+        }
         return visibleItems.firstIndex { item in
             if case .workspace(let workspace) = item {
                 return workspace.isActive
@@ -651,6 +688,9 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                                 values.append(alias)
                             }
                         }
+                    if self.workspaceNavigation == .sshHosts, self.window?.isVisible == true {
+                        self.reload()
+                    }
                 }
             }
             if Thread.isMainThread {
@@ -717,13 +757,66 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         workspaceNavigation = .root
         model.query = ""
         input.stringValue = ""
+        applyTab()
         reload()
+    }
+
+    private func beginSSHHostPicker() {
+        loadSSHAliasesIfNeeded()
+        workspaceNavigation = .sshHosts
+        model.query = ""
+        input.stringValue = ""
+        applyTab()
+        reload()
+        window?.makeFirstResponder(input)
+    }
+
+    private func completeSSHHost() {
+        guard let completed = SSHHostSuggestions.tabCompletion(
+            aliases: sshAliases,
+            query: input.stringValue,
+            selected: selectedSSHHost()
+        ), completed != input.stringValue else { return }
+        input.stringValue = completed
+        model.query = completed
+        reload()
+        if let editor = input.currentEditor() as? NSTextView {
+            let end = (completed as NSString).length
+            editor.setSelectedRange(NSRange(location: end, length: 0))
+        }
+    }
+
+    private func selectedSSHHost() -> String? {
+        guard visibleItems.indices.contains(table.selectedRow),
+              case .sshHost(let suggestion) = visibleItems[table.selectedRow]
+        else { return nil }
+        return suggestion.host
     }
 
     private func selectRow(offset: Int) {
         let list = actionSession != nil ? actionTable : table
         let count = list.numberOfRows
         guard count > 0 else { return }
+        if actionSession == nil, list === table, model.tab == .workspaces {
+            let step = offset >= 0 ? 1 : -1
+            let moves = max(abs(offset), 1)
+            var index = list.selectedRow
+            var advanced = 0
+            var scanned = 0
+            while advanced < moves, scanned < count {
+                index = index < 0
+                    ? (step > 0 ? 0 : count - 1)
+                    : (index + step + count) % count
+                scanned += 1
+                if isSelectableWorkspaceRow(table, row: index) {
+                    advanced += 1
+                }
+            }
+            guard isSelectableWorkspaceRow(table, row: index) else { return }
+            list.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+            list.scrollRowToVisible(index)
+            return
+        }
         let current = list.selectedRow >= 0 ? list.selectedRow : 0
         let next = ((current + offset) % count + count) % count
         list.selectRowIndexes(IndexSet(integer: next), byExtendingSelection: false)
@@ -757,7 +850,9 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
             case .newProject:
                 onNewProject?()
             case .connectSSH:
-                onConnectSSH?()
+                beginSSHHostPicker()
+            case .sshHost(let suggestion):
+                onOpenFolder?(.ssh(name: suggestion.host))
                 dismiss()
             case .openFolder(let host):
                 let transport: TargetTransport = host == "local" ? .local : .ssh(name: host)
@@ -1122,7 +1217,10 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
 
     private func placeholder(for tab: PanelTab) -> String {
         switch tab {
-        case .workspaces: return MuxtermI18n.shared.tr(.quickConnect)
+        case .workspaces:
+            return workspaceNavigation == .sshHosts
+                ? MuxtermI18n.shared.tr(.panelSSHHostPlaceholder)
+                : MuxtermI18n.shared.tr(.quickConnect)
         case .attention: return MuxtermI18n.shared.tr(.panelAttentionPlaceholder)
         case .search: return MuxtermI18n.shared.tr(.panelSearchPlaceholder)
         }
@@ -1203,7 +1301,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                 if self.actionSession != nil {
                     self.popQuickActions()
                 } else if self.model.tab == .workspaces,
-                   self.workspaceNavigation == .existingConnections
+                   self.workspaceNavigation != .root
                 {
                     self.returnToWorkspaceRoot()
                 } else {
@@ -1213,6 +1311,10 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
             case 48: // Tab
                 // 动作列表是临时模式，Tab 不循环三个 tab，避免查询串回去。
                 if self.actionSession != nil {
+                    return nil
+                }
+                if self.workspaceNavigation == .sshHosts {
+                    self.completeSSHHost()
                     return nil
                 }
                 if self.completeCurrentWorkspaceToken() {
@@ -1350,6 +1452,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                 let id = NSUserInterfaceItemIdentifier("ExistingConnectionsFolder")
                 let cell = tableView.makeView(withIdentifier: id, owner: self) as? QuickActionCellView
                     ?? QuickActionCellView(identifier: id)
+                cell.style = .action
                 cell.title = "› " + item.title
                 cell.setAccessibilityIdentifier("muxterm.quickConnect.existingConnections")
                 return cell
@@ -1369,26 +1472,38 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                 let id = NSUserInterfaceItemIdentifier("QuickNew")
                 let cell = tableView.makeView(withIdentifier: id, owner: self) as? QuickActionCellView
                     ?? QuickActionCellView(identifier: id)
+                cell.style = .action
                 cell.title = "＋ " + MuxtermI18n.shared.tr(.panelNewProject)
                 return cell
             case .connectSSH:
                 let id = NSUserInterfaceItemIdentifier("QuickConnectSSH")
                 let cell = tableView.makeView(withIdentifier: id, owner: self) as? QuickActionCellView
                     ?? QuickActionCellView(identifier: id)
+                cell.style = .action
                 cell.title = "＋ " + item.title
                 cell.setAccessibilityIdentifier("muxterm.quickConnect.connectSSH")
                 return cell
-            case .openFolder:
+            case .sshHost(let suggestion):
+                let id = NSUserInterfaceItemIdentifier("QuickSSHHost")
+                let cell = tableView.makeView(withIdentifier: id, owner: self) as? QuickActionCellView
+                    ?? QuickActionCellView(identifier: id)
+                cell.style = .action
+                cell.title = item.title
+                cell.setAccessibilityIdentifier("muxterm.quickConnect.sshHost.\(suggestion.host)")
+                return cell
+            case .openFolder(let host):
                 let id = NSUserInterfaceItemIdentifier("QuickOpenFolder")
                 let cell = tableView.makeView(withIdentifier: id, owner: self) as? QuickActionCellView
                     ?? QuickActionCellView(identifier: id)
+                cell.style = .action
                 cell.title = "＋ " + item.title
-                cell.setAccessibilityIdentifier("muxterm.quickConnect.openFolder")
+                cell.setAccessibilityIdentifier("muxterm.quickConnect.openFolder.\(host)")
                 return cell
             case .host(let host):
                 let id = NSUserInterfaceItemIdentifier("QuickHost")
                 let cell = tableView.makeView(withIdentifier: id, owner: self) as? QuickActionCellView
                     ?? QuickActionCellView(identifier: id)
+                cell.style = .section
                 cell.title = host
                 cell.setAccessibilityIdentifier("muxterm.quickConnect.host.\(host)")
                 return cell
@@ -1396,6 +1511,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                 let id = NSUserInterfaceItemIdentifier("ExistingConnectionsBack")
                 let cell = tableView.makeView(withIdentifier: id, owner: self) as? QuickActionCellView
                     ?? QuickActionCellView(identifier: id)
+                cell.style = .action
                 cell.title = "‹ " + item.title
                 cell.setAccessibilityIdentifier("muxterm.quickConnect.existingBack")
                 return cell
@@ -1441,7 +1557,10 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                 let id = NSUserInterfaceItemIdentifier("ExistingConnectionsStatus")
                 let cell = tableView.makeView(withIdentifier: id, owner: self) as? QuickActionCellView
                     ?? QuickActionCellView(identifier: id)
-                cell.title = item.title
+                cell.style = .action
+                cell.title = workspaceNavigation == .sshHosts
+                    ? MuxtermI18n.shared.tr(.panelNoSSHHosts)
+                    : item.title
                 return cell
             }
         case .attention:
@@ -1478,6 +1597,46 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
             cell.setAccessibilityIdentifier("muxterm.search.hit-\(row)")
             return cell
         }
+    }
+
+    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+        if tableView === actionTable {
+            return QuickActionPopoverLayout.rowHeight
+        }
+        guard model.tab == .workspaces, visibleItems.indices.contains(row) else {
+            return QuickTargetCellView.preferredRowHeight
+        }
+        switch visibleItems[row] {
+        case .host:
+            return QuickActionCellView.sectionRowHeight
+        case .workspace, .target, .existing:
+            return QuickTargetCellView.preferredRowHeight
+        default:
+            return QuickActionCellView.preferredRowHeight
+        }
+    }
+
+    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
+        isSelectableWorkspaceRow(tableView, row: row)
+    }
+
+    func tableView(
+        _ tableView: NSTableView,
+        selectionIndexesForProposedSelection proposedSelectionIndexes: IndexSet
+    ) -> IndexSet {
+        guard tableView === table, model.tab == .workspaces else { return proposedSelectionIndexes }
+        let kept = proposedSelectionIndexes.filteredIndexSet { row in
+            isSelectableWorkspaceRow(tableView, row: row)
+        }
+        return kept.isEmpty ? tableView.selectedRowIndexes : kept
+    }
+
+    private func isSelectableWorkspaceRow(_ tableView: NSTableView, row: Int) -> Bool {
+        guard tableView === table, model.tab == .workspaces, visibleItems.indices.contains(row) else {
+            return true
+        }
+        if case .host = visibleItems[row] { return false }
+        return true
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
@@ -1645,6 +1804,29 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
 
     func testWorkspaceShowsExistingConnections() -> Bool {
         workspaceNavigation == .existingConnections
+    }
+
+    func testShowsSSHHostPicker() -> Bool {
+        workspaceNavigation == .sshHosts
+    }
+
+    func testQuery() -> String {
+        input.stringValue
+    }
+
+    func testCompleteSSHHost() {
+        completeSSHHost()
+    }
+
+    func testRowHeight(at row: Int) -> CGFloat {
+        guard row >= 0, row < table.numberOfRows else { return 0 }
+        table.layoutSubtreeIfNeeded()
+        return table.rect(ofRow: row).height - table.intercellSpacing.height
+    }
+
+    func testWorkspaceRowIsSelectable(matching title: String) -> Bool {
+        guard let row = visibleItems.firstIndex(where: { $0.title == title }) else { return false }
+        return isSelectableWorkspaceRow(table, row: row)
     }
 
     func testSelectFirstRow() {
@@ -2118,7 +2300,7 @@ extension UnifiedPanelController {
                 )
             case .newProject:
                 return (.newProject, QuickActionTarget(newProject: true))
-            case .connectSSH, .host, .openFolder, .existingConnections, .back, .loading, .empty:
+            case .connectSSH, .sshHost, .host, .openFolder, .existingConnections, .back, .loading, .empty:
                 return (.none, QuickActionTarget())
             }
         case .attention:

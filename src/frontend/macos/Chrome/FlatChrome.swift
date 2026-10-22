@@ -1412,8 +1412,9 @@ public enum WheelPassthroughPolicy {
     }
 }
 
-/// Herdr 的快捷键不经过 pane 里的程序。ryzen 上的直接键是 `ctrl+alt+…`，
-/// 默认前缀是 `ctrl+b`，下一次按键才执行。`ctrl+a` 仍留给行首，不拿来当前缀。
+/// Herdr 直接键是 `ctrl+alt+…`，由服务端处理焦点等动作。
+/// `ctrl+a` / `ctrl+b` 必须原样进 pane：前者是行编辑，后者是 Herdr 自己的前缀。
+/// 前端不再把 `ctrl+b` 当成本地前缀截下来。
 public enum HerdrWorkspaceShortcut: Equatable, Sendable {
     case newTab
     case previousTab
@@ -1425,7 +1426,6 @@ public enum HerdrWorkspaceShortcut: Equatable, Sendable {
     case focusDown
     case focusUp
     case focusRight
-    case literalPrefix
 }
 
 public enum HerdrShortcutMap {
@@ -1450,28 +1450,6 @@ public enum HerdrShortcutMap {
         case ("l", false): return .focusRight
         default: return nil
         }
-    }
-
-    /// `prefix` 已经按下后的下一个键。`b` 表示把字面 `ctrl+b` 送进 pane。
-    public static func prefixed(key: String, shift: Bool) -> HerdrWorkspaceShortcut? {
-        switch (key.lowercased(), shift) {
-        case ("c", false): return .newTab
-        case ("n", false), ("]", false): return .nextTab
-        case ("p", false), ("[", false): return .previousTab
-        case ("v", false): return .splitVertical
-        case ("-", false), ("minus", false): return .splitHorizontal
-        case ("z", false): return .zoom
-        case ("h", false): return .focusLeft
-        case ("j", false): return .focusDown
-        case ("k", false): return .focusUp
-        case ("l", false): return .focusRight
-        case ("b", false): return .literalPrefix
-        default: return nil
-        }
-    }
-
-    public static func isPrefix(command: Bool, control: Bool, option: Bool, key: String) -> Bool {
-        !command && control && !option && key.lowercased() == "b"
     }
 }
 
