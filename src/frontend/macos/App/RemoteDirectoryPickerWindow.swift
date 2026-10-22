@@ -18,7 +18,7 @@ final class RemoteDirectoryPickerWindow: NSWindow, NSWindowDelegate,
     private var keyMonitor: Any?
     private var isChoosing = false
 
-    init(alias: String, owner: NSWindow?) {
+    init(alias: String, owner: NSWindow?, startsListing: Bool = true) {
         self.alias = alias
         super.init(
             contentRect: NSRect(x: 0, y: 0, width: 500, height: 360),
@@ -32,7 +32,9 @@ final class RemoteDirectoryPickerWindow: NSWindow, NSWindowDelegate,
         _ = pathController.setTransport(isSSH: true, alias: alias)
         build()
         installKeyMonitor()
-        refreshDirectories()
+        if startsListing {
+            refreshDirectories()
+        }
         if let owner {
             owner.beginSheet(self)
         } else {
@@ -86,6 +88,7 @@ final class RemoteDirectoryPickerWindow: NSWindow, NSWindowDelegate,
         pathRow.orientation = .horizontal
         pathRow.alignment = .centerY
         pathRow.spacing = 8
+        pathRow.translatesAutoresizingMaskIntoConstraints = false
         root.addArrangedSubview(pathRow)
 
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("directory"))
@@ -117,11 +120,7 @@ final class RemoteDirectoryPickerWindow: NSWindow, NSWindowDelegate,
         scroll.documentView = directoriesTable
         scroll.translatesAutoresizingMaskIntoConstraints = false
         root.addArrangedSubview(scroll)
-        scroll.heightAnchor.constraint(equalToConstant: 205).isActive = true
-        scroll.widthAnchor.constraint(equalTo: root.widthAnchor).isActive = true
         root.addArrangedSubview(emptyContainer)
-        emptyContainer.widthAnchor.constraint(equalTo: root.widthAnchor).isActive = true
-        emptyContainer.heightAnchor.constraint(equalToConstant: 18).isActive = true
 
         let cancel = NSButton(title: MuxtermI18n.shared.tr(.cancel), target: self, action: #selector(cancelTapped))
         let choose = NSButton(
@@ -137,10 +136,12 @@ final class RemoteDirectoryPickerWindow: NSWindow, NSWindowDelegate,
         buttons.orientation = .horizontal
         buttons.alignment = .centerY
         buttons.spacing = 9
-        buttons.widthAnchor.constraint(equalTo: root.widthAnchor).isActive = true
+        buttons.translatesAutoresizingMaskIntoConstraints = false
         root.addArrangedSubview(buttons)
 
         contentView.addSubview(root)
+        // 宽度约束必须等按钮行和根栈进入同一棵视图树后再激活。
+        // 提前 setActive 会抛出 “no common ancestor”，进程直接 SIGABRT。
         NSLayoutConstraint.activate([
             root.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
             root.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
@@ -148,6 +149,11 @@ final class RemoteDirectoryPickerWindow: NSWindow, NSWindowDelegate,
             root.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
             pathRow.widthAnchor.constraint(equalTo: root.widthAnchor),
             pathField.widthAnchor.constraint(greaterThanOrEqualToConstant: 350),
+            scroll.heightAnchor.constraint(equalToConstant: 205),
+            scroll.widthAnchor.constraint(equalTo: root.widthAnchor),
+            emptyContainer.widthAnchor.constraint(equalTo: root.widthAnchor),
+            emptyContainer.heightAnchor.constraint(equalToConstant: 18),
+            buttons.widthAnchor.constraint(equalTo: root.widthAnchor),
         ])
     }
 

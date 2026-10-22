@@ -503,3 +503,104 @@ public enum WorkspaceLauncher {
         )
     }
 }
+
+/// SSH 主机补全。已知 alias 与手工输入的主机都可确认；
+/// Tab 优先采用当前选中项，否则只在唯一前缀时补全。
+public enum SSHHostSuggestion: Equatable, Sendable {
+    case known(String)
+    case typed(String)
+
+    public var host: String {
+        switch self {
+        case .known(let host), .typed(let host):
+            return host
+        }
+    }
+
+    public var isTyped: Bool {
+        if case .typed = self { return true }
+        return false
+    }
+}
+
+public enum SSHHostSuggestions {
+    public static func rows(aliases: [String], query: String) -> [SSHHostSuggestion] {
+        let query = normalized(query)
+        let aliases = unique(aliases)
+        let known = aliases.filter { matches($0, query: query) }
+        var rows = known.map { SSHHostSuggestion.known($0) }
+        let exact = aliases.contains { $0.caseInsensitiveCompare(query) == .orderedSame }
+        if !query.isEmpty, !exact {
+            rows.append(.typed(query))
+        }
+        return rows
+    }
+
+    public static func tabCompletion(
+        aliases: [String],
+        query: String,
+        selected: String?
+    ) -> String? {
+        let query = normalized(query)
+        let aliases = unique(aliases)
+        let selected = normalized(selected ?? "")
+        if !selected.isEmpty,
+           selected.caseInsensitiveCompare(query) != .orderedSame,
+           let canonical = aliases.first(where: { $0.caseInsensitiveCompare(selected) == .orderedSame }),
+           query.isEmpty || matches(canonical, query: query)
+        {
+            return canonical
+        }
+        let loweredQuery = query.lowercased()
+        let prefixes = aliases.filter { alias in
+            !loweredQuery.isEmpty && alias.lowercased().starts(with: loweredQuery)
+        }
+        if prefixes.count == 1,
+           prefixes[0].caseInsensitiveCompare(query) != .orderedSame
+        {
+            return prefixes[0]
+        }
+        if prefixes.count > 1,
+           let shared = sharedPrefix(prefixes),
+           shared.count > query.count
+        {
+            return shared
+        }
+        return nil
+    }
+
+    private static func normalized(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func unique(_ aliases: [String]) -> [String] {
+        var result: [String] = []
+        for alias in aliases {
+            let alias = normalized(alias)
+            guard !alias.isEmpty else { continue }
+            if result.contains(where: { $0.caseInsensitiveCompare(alias) == .orderedSame }) {
+                continue
+            }
+            result.append(alias)
+        }
+        return result
+    }
+
+    private static func matches(_ alias: String, query: String) -> Bool {
+        query.isEmpty || alias.range(of: query, options: .caseInsensitive) != nil
+    }
+
+    private static func sharedPrefix(_ values: [String]) -> String? {
+        guard var prefix = values.first?.lowercased(), let first = values.first else {
+            return nil
+        }
+        for value in values.dropFirst() {
+            let lowered = value.lowercased()
+            while !prefix.isEmpty, !lowered.starts(with: prefix) {
+                prefix.removeLast()
+            }
+        }
+        guard !prefix.isEmpty else { return nil }
+        return String(first.prefix(prefix.count))
+    }
+}

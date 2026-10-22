@@ -288,8 +288,16 @@ enum QuickRowMetrics {
     static var titleLeading: CGFloat { edge + gutter + titleGap }
 }
 
-/// Quick Connect 的轻量动作行，标题与目标行对齐。
+/// Quick Connect 的轻量动作行。动作和分组标题比两行目标更矮。
 final class QuickActionCellView: NSTableCellView {
+    static let preferredRowHeight: CGFloat = 28
+    static let sectionRowHeight: CGFloat = 22
+
+    enum Style {
+        case action
+        case section
+    }
+
     private let label = NSTextField(labelWithString: "")
 
     var title: String {
@@ -297,17 +305,32 @@ final class QuickActionCellView: NSTableCellView {
         set { label.stringValue = newValue }
     }
 
+    var style: Style = .action {
+        didSet { applyStyle() }
+    }
+
     init(identifier: NSUserInterfaceItemIdentifier) {
         super.init(frame: .zero)
         self.identifier = identifier
         label.translatesAutoresizingMaskIntoConstraints = false
-        label.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+        applyStyle()
         addSubview(label)
         NSLayoutConstraint.activate([
             label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: QuickRowMetrics.titleLeading),
             label.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -14),
             label.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
+    }
+
+    private func applyStyle() {
+        switch style {
+        case .action:
+            label.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+            label.textColor = .labelColor
+        case .section:
+            label.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+            label.textColor = .secondaryLabelColor
+        }
     }
 
     @available(*, unavailable)

@@ -72,7 +72,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 来自 ~/.config/muxterm/config.toml 的自定义快捷键（可选）。
     private var customKeybindings: [KeyChord: KeyAction] = [:]
     /// Herdr 默认前缀 `ctrl+b` 已按下，等待下一个命令键。
-    private var herdrPrefixArmed = false
     /// overrides 覆盖过的动作不再走内置键。
     private var suppressedShortcutActions: Set<KeyAction> = []
     private var nextWorkspaceOpenedOrder: UInt64 = 1
@@ -611,9 +610,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         unifiedPanel.onOpenFolder = { [weak self] transport in
             self?.openTemporaryFolder(on: transport)
-        }
-        unifiedPanel.onConnectSSH = { [weak self] in
-            self?.promptSSHAndOpenFolder()
         }
         unifiedPanel.onEditProject = { [weak self] config in
             self?.editProject(config)
@@ -3809,10 +3805,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             focusHerdrPane("up", view: view)
         case .focusRight:
             focusHerdrPane("right", view: view)
-        case .literalPrefix:
-            if let view {
-                terminalManager.sendRawInput(to: view, byte: 0x02)
-            }
         }
         return true
     }
@@ -3853,33 +3845,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     path: path,
                     transport: .ssh(name: alias)
                 ))
-            }
-        }
-    }
-
-    private func promptSSHAndOpenFolder() {
-        loadSSHAliases { [weak self] result in
-            DispatchQueue.main.async {
-                guard let self else { return }
-                let aliases = (try? result.get()) ?? []
-                guard let first = aliases.first else {
-                    self.reportStatusError(MuxtermI18n.shared.tr(.panelNoSSHHosts))
-                    return
-                }
-                if aliases.count == 1 {
-                    self.openTemporaryFolder(on: .ssh(name: first))
-                    return
-                }
-                let alert = NSAlert()
-                alert.messageText = MuxtermI18n.shared.tr(.panelConnectSSH)
-                let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
-                popup.addItems(withTitles: aliases)
-                alert.accessoryView = popup
-                alert.addButton(withTitle: MuxtermI18n.shared.tr(.panelOpenFolder))
-                alert.addButton(withTitle: MuxtermI18n.shared.tr(.cancel))
-                guard alert.runModal() == .alertFirstButtonReturn else { return }
-                let alias = popup.titleOfSelectedItem ?? first
-                self.openTemporaryFolder(on: .ssh(name: alias))
             }
         }
     }
@@ -6900,37 +6865,21 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             // Ctrl+C/D/L 等不是 Muxterm 的窗口快捷键时，窗口级 monitor 先
             // 把它们送成真实控制字节。这样不依赖 SwiftTerm 的 NSText
             // interpretation，也不会把 tmux 的 WriteRaw 内容变成字面文本。
-            if activeRuntimeIsHerdr() {
-                if herdrPrefixArmed {
-                    herdrPrefixArmed = false
-                    if let action = HerdrShortcutMap.prefixed(key: key, shift: chord.shift) {
-                        return performHerdrShortcut(
-                            action,
-                            view: window?.firstResponder as? MuxTerminalView
-                        )
-                    }
-                } else if HerdrShortcutMap.isPrefix(
-                    command: chord.command,
-                    control: chord.control,
-                    option: chord.option,
-                    key: key
-                ) {
-                    herdrPrefixArmed = true
-                    return true
-                } else if let action = HerdrShortcutMap.direct(
-                    command: chord.command,
-                    control: chord.control,
-                    option: chord.option,
-                    shift: chord.shift,
-                    key: key
-                ) {
-                    return performHerdrShortcut(
-                        action,
-                        view: window?.firstResponder as? MuxTerminalView
-                    )
-                }
-            } else {
-                herdrPrefixArmed = false
+            // ctrl+b 是 Herdr 自己的前缀，ctrl+a/e/p/n 属于 shell 行编辑。
+            // 这里只消费 ctrl+alt 直接键，不再在前端武装前缀。
+            if activeRuntimeIsHerdr(),
+               let action = HerdrShortcutMap.direct(
+                   command: chord.command,
+                   control: chord.control,
+                   option: chord.option,
+                   shift: chord.shift,
+                   key: key
+               )
+            {
+                return performHerdrShortcut(
+                    action,
+                    view: window?.firstResponder as? MuxTerminalView
+                )
             }
             if flags.contains(.control), !flags.contains(.command), !flags.contains(.option),
                let view = window?.firstResponder as? MuxTerminalView,
