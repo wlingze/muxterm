@@ -1712,12 +1712,22 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                 cell.style = .action
                 cell.title = "＋ " + MuxtermI18n.shared.tr(.panelNewProject)
                 return cell
-            case .open, .openNewPath, .openThisDirectory:
+            case .open:
+                let id = NSUserInterfaceItemIdentifier("QuickOpen")
+                let cell = tableView.makeView(withIdentifier: id, owner: self) as? QuickActionCellView
+                    ?? QuickActionCellView(identifier: id)
+                cell.style = .action
+                cell.title = item.title
+                cell.applyShortcutSymbol("+", tint: .systemOrange)
+                cell.setAccessibilityIdentifier("muxterm.quickConnect.open")
+                return cell
+            case .openNewPath, .openThisDirectory:
                 let id = NSUserInterfaceItemIdentifier("QuickOpen")
                 let cell = tableView.makeView(withIdentifier: id, owner: self) as? QuickActionCellView
                     ?? QuickActionCellView(identifier: id)
                 cell.style = .action
                 cell.title = "＋ " + item.title
+                cell.applyShortcutSymbol("", tint: nil)
                 cell.setAccessibilityIdentifier("muxterm.quickConnect.open")
                 return cell
             case .directory(let name):
@@ -2219,6 +2229,23 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         default:
             return nil
         }
+    }
+
+    func testOpenRowSymbol() -> (symbol: String, emphasized: Bool, symbolMinX: CGFloat, titleMinX: CGFloat)? {
+        guard model.tab == .workspaces,
+              let row = visibleItems.firstIndex(where: { if case .open = $0 { return true }; return false })
+        else { return nil }
+        table.layoutSubtreeIfNeeded()
+        guard let cell = table.view(atColumn: 0, row: row, makeIfNecessary: true) as? QuickActionCellView else {
+            return nil
+        }
+        cell.layoutSubtreeIfNeeded()
+        return (
+            cell.testSymbol,
+            cell.testSymbolIsEmphasized,
+            cell.testSymbolFrame.minX,
+            cell.testTitleFrame.minX
+        )
     }
 
     func testWorkspaceShortcutText(matching title: String) -> String? {

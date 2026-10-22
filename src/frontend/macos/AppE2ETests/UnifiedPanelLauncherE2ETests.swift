@@ -130,6 +130,21 @@ final class UnifiedPanelLauncherE2ETests: XCTestCase {
         XCTAssertFalse(panel.testWorkspaceTitles().contains(MuxtermI18n.shared.tr(.panelNewProject)))
         XCTAssertFalse(panel.testWorkspaceTitles().contains(MuxtermI18n.shared.tr(.panelOpenFolder)))
         XCTAssertFalse(panel.testWorkspaceTitles().contains(MuxtermI18n.shared.tr(.panelConnectSSH)))
+        let open = panel.testOpenRowSymbol()
+        let workspace = panel.testWorkspaceCell(at: 1)
+        workspace?.layoutSubtreeIfNeeded()
+        XCTAssertEqual(open?.symbol, "+")
+        XCTAssertEqual(open?.emphasized, true)
+        XCTAssertEqual(
+            open?.symbolMinX ?? -1,
+            workspace?.testIndexFrame.minX ?? -2,
+            accuracy: 0.5
+        )
+        XCTAssertEqual(
+            open?.titleMinX ?? -1,
+            workspace?.testTitleFrame.minX ?? -2,
+            accuracy: 0.5
+        )
     }
 
     private func makePanel() -> UnifiedPanelController {
