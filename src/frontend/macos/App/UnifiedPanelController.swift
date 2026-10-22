@@ -4,7 +4,9 @@ import MuxtermChrome
 private enum UnifiedWorkspaceNavigation: Equatable {
     case root
     case existingConnections
-    case sshHosts
+    case pickHost
+    case pickSession(host: String)
+    case pickPath(host: String)
 }
 
 struct UnifiedPanelSearchRequest {
@@ -23,6 +25,10 @@ private enum UnifiedWorkspaceItem {
         workspaceIndex: Int?
     )
     case newProject
+    case open
+    case openNewPath
+    case openThisDirectory
+    case directory(String)
     case connectSSH
     case sshHost(SSHHostSuggestion)
     case host(String)
@@ -39,9 +45,17 @@ private enum UnifiedWorkspaceItem {
         case .existingConnections:
             return MuxtermI18n.shared.tr(.existingConnections)
         case .target(let config, _, _, _):
-            return config.path.isEmpty ? config.name : config.path
+            return config.name
         case .newProject:
             return MuxtermI18n.shared.tr(.panelNewProject)
+        case .open:
+            return MuxtermI18n.shared.tr(.panelOpen)
+        case .openNewPath:
+            return MuxtermI18n.shared.tr(.panelOpenNewPath)
+        case .openThisDirectory:
+            return MuxtermI18n.shared.tr(.panelOpenThisDirectory)
+        case .directory(let name):
+            return name
         case .connectSSH:
             return MuxtermI18n.shared.tr(.panelConnectSSH)
         case .sshHost(let suggestion):
@@ -80,8 +94,11 @@ private enum UnifiedWorkspaceItem {
                 .joined(separator: " ")
                 .lowercased()
             return haystack.contains(normalizedQuery) ? 1_000 : nil
-        case .existingConnections, .newProject, .connectSSH, .openFolder, .loading, .empty:
+        case .existingConnections, .newProject, .open, .openNewPath, .openThisDirectory,
+             .connectSSH, .openFolder, .loading, .empty:
             return title.lowercased().contains(normalizedQuery) ? 500 : nil
+        case .directory(let name):
+            return name.lowercased().contains(normalizedQuery) ? 700 : nil
         case .sshHost(let suggestion):
             return suggestion.host.lowercased().contains(normalizedQuery) ? 800 : nil
         case .host:
@@ -118,6 +135,8 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     var onEditProject: ((TargetConfig) -> Void)?
     var onNewProject: (() -> Void)?
     var onOpenFolder: ((TargetTransport) -> Void)?
+    var onLoadHostSessions: ((String, @escaping (Result<[ExistingConnectionChoice], Error>) -> Void) -> Void)?
+    var onListDirectories: ((String, String, @escaping (Result<[String], Error>) -> Void) -> Void)?
     var onJump: ((String?, UInt32?, UInt32, UInt64, String) -> Void)?
     // (workspaceId, tabId, paneId, seq, query)
     var onPreview: ((String, UInt32) -> Void)? // (workspaceId, paneId)
@@ -174,6 +193,10 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     private var sshAliases: [String] = []
     private var sshAliasesLoaded = false
     private var sshAliasesLoading = false
+    private var hostSessionChoices: [ExistingConnectionChoice] = []
+    private var hostSessionsLoading = false
+    private var hostSessionGeneration: UInt64 = 0
+    private var pathController = DirectorySuggestionController(path: "~")
     private var workspaceNavigation = UnifiedWorkspaceNavigation.root
     private var existingRequestGeneration: UInt64 = 0
     private var searchRequestGeneration: UInt64 = 0
@@ -339,9 +362,6 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
 
     private func reload() {
         guard actionSession == nil else { return }
-        if model.tab == .workspaces, workspaceNavigation == .root {
-            ensureRootExistingChoicesIfNeeded()
-        }
         if model.tab == .workspaces || allItems.isEmpty {
             loadWorkspaceItems()
         }
@@ -438,99 +458,77 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
             allItems = existingItems
             return
         }
-        if workspaceNavigation == .sshHosts {
-            allItems = sshHostItems()
+        switch workspaceNavigation {
+        case .pickHost:
+            allItems = hostItems()
             return
+        case .pickSession(let host):
+            allItems = sessionItems(host: host)
+            return
+        case .pickPath:
+            allItems = pathItems()
+            return
+        case .root, .existingConnections:
+            break
         }
         let connected = connectedWorkspaces?() ?? []
         if connectedWorkspaces != nil {
             store.rememberOpenWorkspaces(connected)
         }
-        let connectedIDs = Set(connected.map { QuickConnect.uniqueID(for: $0) })
         let chromeWorkspaces = sidebarWorkspaces?() ?? []
-        let presentedTargetIDs = connectedIDs.union(
-            chromeWorkspaces.compactMap(\.openingTargetID)
-        )
         let currentId = currentConfig.map { QuickConnect.uniqueID(for: $0) }
-        // 已打开项沿用侧栏投影。编号按这个顺序从 1 递增，使用次数不能把
-        // 4 排到 3 前面。最近使用只影响默认选中行和搜索排序。
-        allItems = chromeWorkspaces.isEmpty
-            ? [.existingConnections]
-            : chromeWorkspaces.map(UnifiedWorkspaceItem.workspace)
-        let queryIsNonEmpty = !model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let recentIDs = Set(store.recents.map { QuickConnect.uniqueID(for: $0) })
-        let savedProjects = store.projects.filter {
-            !recentIDs.contains(QuickConnect.uniqueID(for: $0))
+        // 根列表只有 Open，以及按使用次数排序的 Project / Workspace。
+        // 打开过的会进 Recent；已保存的是 Project。不再混入 New / Open Folder。
+        var seen = Set<String>()
+        var ranks: [(UnifiedWorkspaceItem, WorkspacePickerRank)] = []
+        var order = 0
+        func append(_ item: UnifiedWorkspaceItem, id: String, count: Int) {
+            guard seen.insert(id).inserted else { return }
+            let rank = WorkspacePickerRank(id: id, count: count, order: order)
+            ranks.append((item, rank))
+            order += 1
         }
-        let entries = QuickConnect.entries(
-            recents: [],
-            projects: savedProjects,
-            recentLimit: queryIsNonEmpty ? QuickConnectStore.maxRecent : 5
-        )
-        for row in WorkspaceLauncher.rows(recents: store.recents, excludingIDs: presentedTargetIDs) {
-            switch row {
-            case .connectSSH:
-                allItems.append(.connectSSH)
-            case .host(let host):
-                allItems.append(.host(host))
-            case .openFolder(let host):
-                allItems.append(.openFolder(host: host))
-            case .recent(let config):
-                allItems.append(.target(
-                    config,
-                    badges: [.recent],
-                    isCurrent: currentId == QuickConnect.uniqueID(for: config),
-                    workspaceIndex: workspaceIndex(config)
-                ))
-            }
-        }
-        // 已打开项直接使用侧边栏投影，保证固定槽、顺序、编号和选中态
-        // 完全一致。QuickConnect target 只补尚未打开的 Project。
-        let rankedEntries = entries.enumerated().sorted { lhs, rhs in
-            let leftCount = store.attachCount(for: lhs.element.config)
-            let rightCount = store.attachCount(for: rhs.element.config)
-            return leftCount == rightCount ? lhs.offset < rhs.offset : leftCount > rightCount
-        }.map(\.element)
-        allItems.append(contentsOf: rankedEntries.compactMap { entry in
-            guard chromeWorkspaces.isEmpty
-                || !presentedTargetIDs.contains(QuickConnect.uniqueID(for: entry.config))
-            else {
-                return nil
-            }
-            return .target(
-                entry.config,
-                badges: entry.badges,
-                isCurrent: currentId == QuickConnect.uniqueID(for: entry.config),
-                workspaceIndex: workspaceIndex(entry.config)
+        for workspace in chromeWorkspaces {
+            append(
+                .workspace(workspace),
+                id: "workspace:\(workspace.workspaceId)",
+                count: attachCountForWorkspace?(workspace.workspaceId) ?? 0
             )
-        })
+            if let targetID = workspace.openingTargetID {
+                seen.insert(targetID)
+            }
+        }
         if !chromeWorkspaces.isEmpty {
-            allItems.append(.existingConnections)
-        }
-        if queryIsNonEmpty {
-            var seen = Set(entries.map { QuickConnect.uniqueID(for: $0.config) })
-            let projectNames = Set(store.projects.map { $0.name.lowercased() })
-            for choice in rootExistingChoices {
-                guard seen.insert(QuickConnect.uniqueID(for: choice.config)).inserted else {
-                    continue
-                }
-                // 同名 Project 已经在上面。Herdr 的 provisional id 和
-                // 已连接 workspace id 不同，不能再列成第二条。
-                if projectNames.contains(choice.config.name.lowercased()) {
-                    continue
-                }
-                allItems.append(.existing(choice))
-            }
-            if rootExistingLoading, rootExistingChoices.isEmpty {
-                allItems.append(.loading)
+            for config in connected {
+                seen.insert(QuickConnect.uniqueID(for: config))
             }
         }
-        allItems.append(.newProject)
+        let projectIDs = Set(store.projects.map { QuickConnect.uniqueID(for: $0) })
+        for config in store.recents + store.projects {
+            let id = QuickConnect.uniqueID(for: config)
+            let isProject = projectIDs.contains(id)
+            append(
+                .target(
+                    config,
+                    badges: isProject ? [.project] : [.recent],
+                    isCurrent: currentId == id,
+                    workspaceIndex: workspaceIndex(config)
+                ),
+                id: id,
+                count: store.attachCount(for: config)
+            )
+        }
+        let orderedIDs = WorkspacePickerOrder.sortedIDs(ranks.map(\.1))
+        let byID = Dictionary(uniqueKeysWithValues: ranks.map { ($0.1.id, $0.0) })
+        allItems = [.open] + orderedIDs.compactMap { byID[$0] }
     }
 
-    private func sshHostItems() -> [UnifiedWorkspaceItem] {
+    private func hostItems() -> [UnifiedWorkspaceItem] {
         let query = model.query.trimmingCharacters(in: .whitespacesAndNewlines)
-        let suggestions = SSHHostSuggestions.rows(aliases: sshAliases, query: query)
+        let suggestions = SSHHostSuggestions.rows(
+            aliases: ["local"] + sshAliases,
+            query: query
+        )
         var items: [UnifiedWorkspaceItem] = [.back]
         if suggestions.isEmpty {
             items.append(.empty)
@@ -540,10 +538,40 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         return items
     }
 
+    private func sessionItems(host _: String) -> [UnifiedWorkspaceItem] {
+        let query = model.query.trimmingCharacters(in: .whitespacesAndNewlines)
+        var items: [UnifiedWorkspaceItem] = [.back, .openNewPath]
+        if hostSessionsLoading, hostSessionChoices.isEmpty {
+            items.append(.loading)
+        }
+        let choices = hostSessionChoices.filter { choice in
+            guard !query.isEmpty else { return true }
+            let haystack = [
+                choice.config.name,
+                choice.config.session ?? "",
+                choice.config.runtime.rawValue,
+                choice.config.workspaceID ?? "",
+                choice.config.path,
+            ].joined(separator: " ")
+            return haystack.localizedCaseInsensitiveContains(query)
+        }
+        items.append(contentsOf: choices.map(UnifiedWorkspaceItem.existing))
+        return items
+    }
+
+    private func pathItems() -> [UnifiedWorkspaceItem] {
+        var items: [UnifiedWorkspaceItem] = [.back, .openThisDirectory]
+        items.append(contentsOf: pathController.candidates.map(UnifiedWorkspaceItem.directory))
+        return items
+    }
+
     private func applyFilter() {
-        if workspaceNavigation == .sshHosts {
+        switch workspaceNavigation {
+        case .pickHost, .pickSession, .pickPath:
             visibleItems = allItems
             return
+        case .root, .existingConnections:
+            break
         }
         let query = model.query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else {
@@ -579,11 +607,24 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
 
     private func defaultSelectedRow() -> Int {
         guard model.tab == .workspaces else { return 0 }
-        if workspaceNavigation == .sshHosts {
+        switch workspaceNavigation {
+        case .pickHost:
             return visibleItems.firstIndex { item in
                 if case .sshHost = item { return true }
                 return false
             } ?? 0
+        case .pickSession:
+            return visibleItems.firstIndex { item in
+                if case .openNewPath = item { return true }
+                return false
+            } ?? 0
+        case .pickPath:
+            return visibleItems.firstIndex { item in
+                if case .openThisDirectory = item { return true }
+                return false
+            } ?? 0
+        case .root, .existingConnections:
+            break
         }
         return visibleItems.firstIndex { item in
             if case .workspace(let workspace) = item {
@@ -617,51 +658,6 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         }.filter { seen.insert(QuickConnect.uniqueID(for: $0.config)).inserted }
     }
 
-    /// 根目录只在真正需要搜索时启动 Existing discovery；结果回来后仍留在
-    /// 根目录时立即刷新，因而慢 SSH 不会阻塞输入，也不会漏掉新结果。
-    private func ensureRootExistingChoicesIfNeeded() {
-        let queryIsNonEmpty = !model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        guard model.tab == .workspaces,
-              workspaceNavigation == .root,
-              queryIsNonEmpty,
-              !rootExistingLoaded,
-              !rootExistingLoading
-        else { return }
-
-        rootExistingLoading = true
-        existingRequestGeneration &+= 1
-        let generation = existingRequestGeneration
-        guard let loader = onLoadExistingConnections else {
-            rootExistingLoading = false
-            rootExistingLoaded = true
-            return
-        }
-        loader { [weak self] result in
-            let apply = { [weak self] in
-                guard let self, self.existingRequestGeneration == generation else { return }
-                self.rootExistingLoading = false
-                self.rootExistingLoaded = true
-                switch result {
-                case .success(let choices):
-                    self.rootExistingChoices = self.sortedExistingChoices(choices)
-                case .failure(let error):
-                    self.rootExistingChoices = []
-                    self.onExistingConnectionsError?(error)
-                }
-                guard self.window?.isVisible == true,
-                      self.workspaceNavigation == .root,
-                      self.model.tab == .workspaces
-                else { return }
-                self.reload()
-            }
-            if Thread.isMainThread {
-                apply()
-            } else {
-                DispatchQueue.main.async(execute: apply)
-            }
-        }
-    }
-
     /// 预加载 SSH alias，确保输入单个 `@` 时也能提示“当前没有 workspace
     /// 的 host”。失败时静默保留运行时补全，不弹打扰式错误。
     private func loadSSHAliasesIfNeeded() {
@@ -688,7 +684,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                                 values.append(alias)
                             }
                         }
-                    if self.workspaceNavigation == .sshHosts, self.window?.isVisible == true {
+                    if case .pickHost = self.workspaceNavigation, self.window?.isVisible == true {
                         self.reload()
                     }
                 }
@@ -761,14 +757,108 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         reload()
     }
 
-    private func beginSSHHostPicker() {
+    private func beginOpen() {
         loadSSHAliasesIfNeeded()
-        workspaceNavigation = .sshHosts
+        workspaceNavigation = .pickHost
         model.query = ""
         input.stringValue = ""
         applyTab()
         reload()
         window?.makeFirstResponder(input)
+    }
+
+    private func beginHostSessions(_ host: String) {
+        workspaceNavigation = .pickSession(host: host)
+        model.query = ""
+        input.stringValue = ""
+        hostSessionChoices = []
+        hostSessionsLoading = true
+        hostSessionGeneration &+= 1
+        let generation = hostSessionGeneration
+        applyTab()
+        reload()
+        guard let loader = onLoadHostSessions else {
+            hostSessionsLoading = false
+            reload()
+            return
+        }
+        loader(host) { [weak self] result in
+            let apply = {
+                guard let self, self.hostSessionGeneration == generation else { return }
+                self.hostSessionsLoading = false
+                switch result {
+                case .success(let choices):
+                    self.hostSessionChoices = choices.filter {
+                        $0.config.runtime == .tmux || $0.config.runtime == .herdr
+                    }
+                case .failure(let error):
+                    self.hostSessionChoices = []
+                    self.onExistingConnectionsError?(error)
+                }
+                guard case .pickSession = self.workspaceNavigation else { return }
+                self.reload()
+            }
+            if Thread.isMainThread {
+                apply()
+            } else {
+                DispatchQueue.main.async(execute: apply)
+            }
+        }
+    }
+
+    private func beginPath(host: String) {
+        workspaceNavigation = .pickPath(host: host)
+        pathController = DirectorySuggestionController(path: "~")
+        _ = pathController.setTransport(isSSH: host != "local", alias: host == "local" ? nil : host)
+        model.query = pathController.text
+        input.stringValue = pathController.text
+        applyTab()
+        reload()
+        refreshPathListing()
+        window?.makeFirstResponder(input)
+    }
+
+    private func refreshPathListing() {
+        guard case .pickPath(let host) = workspaceNavigation else { return }
+        let request = pathController.request
+        onListDirectories?(host, request.path) { [weak self] result in
+            let names = (try? result.get()) ?? []
+            let apply = {
+                guard let self else { return }
+                guard self.pathController.apply(DirectoryListingResponse(
+                    request: request,
+                    directories: names
+                )) else { return }
+                guard case .pickPath = self.workspaceNavigation else { return }
+                self.reload()
+            }
+            if Thread.isMainThread {
+                apply()
+            } else {
+                DispatchQueue.main.async(execute: apply)
+            }
+        }
+    }
+
+    private func confirmPath(_ raw: String? = nil) {
+        guard case .pickPath(let host) = workspaceNavigation else { return }
+        let path = DirectoryPathModel.resolvedPath(for: raw ?? pathController.text)
+        guard !path.isEmpty else { return }
+        let transport: TargetTransport = host == "local" ? .local : .ssh(name: host)
+        onConnect?(WorkspaceLauncher.temporaryTarget(path: path, transport: transport))
+    }
+
+    private func goBackInPicker() {
+        switch workspaceNavigation {
+        case .pickPath(let host):
+            beginHostSessions(host)
+        case .pickSession:
+            beginOpen()
+        case .pickHost, .existingConnections:
+            returnToWorkspaceRoot()
+        case .root:
+            break
+        }
     }
 
     private func completeSSHHost() {
@@ -849,11 +939,23 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                 onConnect?(config)
             case .newProject:
                 onNewProject?()
+            case .open:
+                beginOpen()
+            case .openNewPath:
+                if case .pickSession(let host) = workspaceNavigation {
+                    beginPath(host: host)
+                }
+            case .openThisDirectory:
+                confirmPath()
+            case .directory(let name):
+                confirmPath(DirectoryPathModel.applyingSelection(
+                    candidate: name,
+                    to: pathController.text
+                ))
             case .connectSSH:
-                beginSSHHostPicker()
+                beginOpen()
             case .sshHost(let suggestion):
-                onOpenFolder?(.ssh(name: suggestion.host))
-                dismiss()
+                beginHostSessions(suggestion.host)
             case .openFolder(let host):
                 let transport: TargetTransport = host == "local" ? .local : .ssh(name: host)
                 onOpenFolder?(transport)
@@ -861,7 +963,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
             case .host:
                 break
             case .back:
-                returnToWorkspaceRoot()
+                goBackInPicker()
             case .existing(let choice):
                 onAttachExistingConnection?(choice)
             case .loading, .empty:
@@ -1218,9 +1320,16 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     private func placeholder(for tab: PanelTab) -> String {
         switch tab {
         case .workspaces:
-            return workspaceNavigation == .sshHosts
-                ? MuxtermI18n.shared.tr(.panelSSHHostPlaceholder)
-                : MuxtermI18n.shared.tr(.quickConnect)
+            switch workspaceNavigation {
+            case .pickHost:
+                return MuxtermI18n.shared.tr(.panelPickHostPlaceholder)
+            case .pickSession:
+                return MuxtermI18n.shared.tr(.panelPickSessionPlaceholder)
+            case .pickPath:
+                return MuxtermI18n.shared.tr(.panelPickPathPlaceholder)
+            case .root, .existingConnections:
+                return MuxtermI18n.shared.tr(.quickConnect)
+            }
         case .attention: return MuxtermI18n.shared.tr(.panelAttentionPlaceholder)
         case .search: return MuxtermI18n.shared.tr(.panelSearchPlaceholder)
         }
@@ -1288,6 +1397,12 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     private func installKeyMonitor() {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, self.window?.isKeyWindow == true else { return event }
+            if self.model.tab == .workspaces,
+               let offset = self.commandSelectionOffset(for: event)
+            {
+                self.moveSelection(offset: offset)
+                return nil
+            }
             if let offset = CompactPanelKeyNavigation.selectionOffset(for: event) {
                 self.moveSelection(offset: offset)
                 return nil
@@ -1303,7 +1418,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                 } else if self.model.tab == .workspaces,
                    self.workspaceNavigation != .root
                 {
-                    self.returnToWorkspaceRoot()
+                    self.goBackInPicker()
                 } else {
                     self.dismiss()
                 }
@@ -1313,8 +1428,12 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                 if self.actionSession != nil {
                     return nil
                 }
-                if self.workspaceNavigation == .sshHosts {
+                if case .pickHost = self.workspaceNavigation {
                     self.completeSSHHost()
+                    return nil
+                }
+                if case .pickPath = self.workspaceNavigation {
+                    self.completePathSelection()
                     return nil
                 }
                 if self.completeCurrentWorkspaceToken() {
@@ -1346,6 +1465,30 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         return event.keyCode == 40
     }
 
+    /// Cmd-P / Cmd-N 在 Workspaces 弹框里上下移动，不把 Cmd-P 当成关闭面板。
+    private func commandSelectionOffset(for event: NSEvent) -> Int? {
+        let flags = event.modifierFlags
+            .intersection(.deviceIndependentFlagsMask)
+            .intersection([.command, .option, .control, .shift])
+        guard flags == [.command] else { return nil }
+        switch event.charactersIgnoringModifiers?.lowercased() {
+        case "p": return -1
+        case "n": return 1
+        default: return nil
+        }
+    }
+
+    private func completePathSelection() {
+        guard visibleItems.indices.contains(table.selectedRow),
+              case .directory(let name) = visibleItems[table.selectedRow]
+        else { return }
+        _ = pathController.select(candidate: name)
+        input.stringValue = pathController.text
+        model.query = pathController.text
+        refreshPathListing()
+        reload()
+    }
+
     // MARK: - 输入
 
     func controlTextDidChange(_ obj: Notification) {
@@ -1358,6 +1501,12 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
             return
         }
         model.query = input.stringValue
+        if case .pickPath = workspaceNavigation {
+            _ = pathController.updateInput(input.stringValue)
+            refreshPathListing()
+            reload()
+            return
+        }
         loadSSHAliasesIfNeeded()
         reload()
     }
@@ -1467,6 +1616,14 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                 cell.badges = badges
                 cell.isCurrent = isCurrent
                 cell.workspaceIndex = workspaceIndex
+                if badges.contains(.project) {
+                    cell.configureSave(action: nil)
+                } else {
+                    cell.configureSave { [weak self] in
+                        self?.store.upsertProject(config)
+                        self?.reload()
+                    }
+                }
                 return cell
             case .newProject:
                 let id = NSUserInterfaceItemIdentifier("QuickNew")
@@ -1474,6 +1631,22 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                     ?? QuickActionCellView(identifier: id)
                 cell.style = .action
                 cell.title = "＋ " + MuxtermI18n.shared.tr(.panelNewProject)
+                return cell
+            case .open, .openNewPath, .openThisDirectory:
+                let id = NSUserInterfaceItemIdentifier("QuickOpen")
+                let cell = tableView.makeView(withIdentifier: id, owner: self) as? QuickActionCellView
+                    ?? QuickActionCellView(identifier: id)
+                cell.style = .action
+                cell.title = "＋ " + item.title
+                cell.setAccessibilityIdentifier("muxterm.quickConnect.open")
+                return cell
+            case .directory(let name):
+                let id = NSUserInterfaceItemIdentifier("QuickDirectory")
+                let cell = tableView.makeView(withIdentifier: id, owner: self) as? QuickActionCellView
+                    ?? QuickActionCellView(identifier: id)
+                cell.style = .action
+                cell.title = name + "/"
+                cell.setAccessibilityIdentifier("muxterm.quickConnect.directory.\(name)")
                 return cell
             case .connectSSH:
                 let id = NSUserInterfaceItemIdentifier("QuickConnectSSH")
@@ -1558,9 +1731,12 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                 let cell = tableView.makeView(withIdentifier: id, owner: self) as? QuickActionCellView
                     ?? QuickActionCellView(identifier: id)
                 cell.style = .action
-                cell.title = workspaceNavigation == .sshHosts
-                    ? MuxtermI18n.shared.tr(.panelNoSSHHosts)
-                    : item.title
+                cell.title = {
+                    if case .pickHost = workspaceNavigation {
+                        return MuxtermI18n.shared.tr(.panelNoSSHHosts)
+                    }
+                    return item.title
+                }()
                 return cell
             }
         case .attention:
@@ -1755,6 +1931,10 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     func testSetQuery(_ query: String) {
         input.stringValue = query
         model.query = query
+        if case .pickPath = workspaceNavigation {
+            _ = pathController.updateInput(query)
+            refreshPathListing()
+        }
         reload()
     }
 
@@ -1807,7 +1987,18 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     func testShowsSSHHostPicker() -> Bool {
-        workspaceNavigation == .sshHosts
+        if case .pickHost = workspaceNavigation { return true }
+        return false
+    }
+
+    func testShowsHostSessions() -> Bool {
+        if case .pickSession = workspaceNavigation { return true }
+        return false
+    }
+
+    func testShowsPathPicker() -> Bool {
+        if case .pickPath = workspaceNavigation { return true }
+        return false
     }
 
     func testQuery() -> String {
@@ -1815,6 +2006,10 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     func testCompleteSSHHost() {
+        if case .pickPath = workspaceNavigation {
+            completePathSelection()
+            return
+        }
         completeSSHHost()
     }
 
@@ -2300,7 +2495,8 @@ extension UnifiedPanelController {
                 )
             case .newProject:
                 return (.newProject, QuickActionTarget(newProject: true))
-            case .connectSSH, .sshHost, .host, .openFolder, .existingConnections, .back, .loading, .empty:
+            case .connectSSH, .sshHost, .host, .openFolder, .open, .openNewPath,
+                 .openThisDirectory, .directory, .existingConnections, .back, .loading, .empty:
                 return (.none, QuickActionTarget())
             }
         case .attention:

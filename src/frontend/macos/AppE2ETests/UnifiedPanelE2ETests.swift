@@ -99,11 +99,12 @@ final class UnifiedPanelE2ETests: XCTestCase {
         app.openQuickConnect()
         AppE2E.pump(80)
 
-        XCTAssertEqual(
-            Array(app.unifiedPanel.testWorkspaceTitles().prefix(4)),
-            ["Shells", "Agents", first.session, second.session],
-            "快速面板必须复用侧边栏的固定项和真实 Workspace 打开顺序"
-        )
+        let titles = app.unifiedPanel.testWorkspaceTitles()
+        XCTAssertEqual(titles.first, MuxtermI18n.shared.tr(.panelOpen))
+        XCTAssertTrue(titles.contains("Shells"))
+        XCTAssertTrue(titles.contains("Agents"))
+        XCTAssertTrue(titles.contains(first.session))
+        XCTAssertTrue(titles.contains(second.session))
         XCTAssertEqual(app.unifiedPanel.testWorkspaceShortcutText(matching: "Shells"), "S")
         XCTAssertEqual(app.unifiedPanel.testWorkspaceShortcutText(matching: "Agents"), "A")
         XCTAssertEqual(
@@ -137,7 +138,7 @@ final class UnifiedPanelE2ETests: XCTestCase {
         app.unifiedPanel.testCloseWorkspaceItem(matching: first.session)
         AppE2E.pump(40)
         XCTAssertTrue(app.unifiedPanel.window?.isVisible == true)
-        XCTAssertFalse(app.unifiedPanel.testWorkspaceTitles().contains(first.session))
+        XCTAssertFalse(app.unifiedPanel.testWorkspaceCloseVisible(matching: first.session))
         XCTAssertEqual(app.testActiveWorkspaceSession(), second.session)
     }
 
@@ -175,12 +176,19 @@ final class UnifiedPanelE2ETests: XCTestCase {
         defer { panel.dismiss() }
         panel.present()
 
-        let names = ["yaklang-workspace", "muxterm", "mac-home", "ryzen-home"]
         let titles = panel.testWorkspaceTitles()
-        let positions = names.compactMap { titles.firstIndex(of: $0) }
-        XCTAssertEqual(positions, positions.sorted(), "编号必须按侧栏顺序出现：\(titles)")
-        XCTAssertEqual(positions, Array(positions[0]..<positions[0] + names.count))
-        XCTAssertEqual(names.map { panel.testWorkspaceShortcutText(matching: $0) }, ["1", "2", "3", "4"])
+        XCTAssertEqual(titles.first, MuxtermI18n.shared.tr(.panelOpen))
+        XCTAssertEqual(
+            titles.filter { ["ryzen-home", "muxterm", "yaklang-workspace", "mac-home", "Agents"].contains($0) },
+            ["ryzen-home", "muxterm", "yaklang-workspace", "mac-home", "Agents"],
+            "使用次数高的 Workspace 排在前面：\(titles)"
+        )
+        XCTAssertEqual(
+            ["yaklang-workspace", "muxterm", "mac-home", "ryzen-home"].map {
+                panel.testWorkspaceShortcutText(matching: $0)
+            },
+            ["1", "2", "3", "4"]
+        )
     }
 
     func testQuickActionsStayInABottomRightPopover() throws {

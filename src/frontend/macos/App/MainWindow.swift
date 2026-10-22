@@ -611,6 +611,41 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         unifiedPanel.onOpenFolder = { [weak self] transport in
             self?.openTemporaryFolder(on: transport)
         }
+        unifiedPanel.onLoadHostSessions = { [weak self] host, completion in
+            guard let self else {
+                completion(.success([]))
+                return
+            }
+            let target: ConnectionTarget = host == "local"
+                ? .local
+                : .ssh(SSHHostInfo(alias: host, hostname: "", user: nil, port: nil))
+            let socket = ConnectionDiscoverySocketPolicy.socket(
+                for: target,
+                currentSSHHost: self.bridge.sshAlias,
+                currentSocket: self.terminalManager.usesClientResize ? self.bridge.socket : nil
+            )
+            self.discovery.listHostSessions(
+                host: host,
+                currentSocket: socket,
+                completion: completion
+            )
+        }
+        unifiedPanel.onListDirectories = { host, path, completion in
+            let backend = host == "local" ? "local" : "ssh"
+            let target = host == "local" ? nil : host
+            DispatchQueue.global(qos: .userInitiated).async {
+                let result = Result {
+                    try CoreBridge.listDir(
+                        backendType: backend,
+                        target: target,
+                        path: path
+                    ).filter(\.is_dir).map(\.name)
+                }
+                DispatchQueue.main.async {
+                    completion(result)
+                }
+            }
+        }
         unifiedPanel.onEditProject = { [weak self] config in
             self?.editProject(config)
         }

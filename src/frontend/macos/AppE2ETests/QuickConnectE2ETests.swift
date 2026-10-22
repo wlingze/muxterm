@@ -18,11 +18,11 @@ final class QuickConnectE2ETests: XCTestCase {
         app.openQuickConnect()
         AppE2E.pump(80)
 
-        XCTAssertEqual(
-            Array(app.unifiedPanel.testWorkspaceTitles().prefix(2)),
-            ["Shells", "Agents"]
-        )
-        let cell = app.unifiedPanel.testWorkspaceCell(at: 0)
+        XCTAssertEqual(app.unifiedPanel.testWorkspaceTitles().first, MuxtermI18n.shared.tr(.panelOpen))
+        XCTAssertTrue(app.unifiedPanel.testWorkspaceTitles().contains("Shells"))
+        XCTAssertTrue(app.unifiedPanel.testWorkspaceTitles().contains("Agents"))
+        let shells = try XCTUnwrap(app.unifiedPanel.testWorkspaceTitles().firstIndex(of: "Shells"))
+        let cell = app.unifiedPanel.testWorkspaceCell(at: shells)
         XCTAssertEqual(cell?.testTitleText(), "Shells")
         XCTAssertEqual(cell?.testWorkspaceShortcutText(), "S")
         XCTAssertTrue(cell?.testIsCurrent() == true, "冷启动必须选中 Shells 固定项")
@@ -139,7 +139,7 @@ final class QuickConnectE2ETests: XCTestCase {
         let expected = ["archmini-home", "pc-home", "ubuntu-home"]
         XCTAssertEqual(
             panel.testWorkspaceTitles().first,
-            MuxtermI18n.shared.tr(.existingConnections)
+            MuxtermI18n.shared.tr(.panelOpen)
         )
         for (index, name) in expected.enumerated() {
             let row = index + 1

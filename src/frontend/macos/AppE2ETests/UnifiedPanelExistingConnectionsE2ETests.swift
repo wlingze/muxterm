@@ -54,11 +54,15 @@ final class UnifiedPanelExistingConnectionsE2ETests: XCTestCase {
         var projectConnectCount = 0
         var attached: ExistingConnectionChoice?
         panel.onConnect = { _ in projectConnectCount += 1 }
-        panel.onLoadExistingConnections = { completion in completion(.success([choice])) }
+        panel.onLoadHostSessions = { host, completion in
+            XCTAssertEqual(host, "local")
+            completion(.success([choice]))
+        }
         panel.onAttachExistingConnection = { attached = $0 }
         panel.present()
 
-        panel.testActivateWorkspaceItem(matching: MuxtermI18n.shared.tr(.existingConnections))
+        panel.testActivateWorkspaceItem(matching: MuxtermI18n.shared.tr(.panelOpen))
+        panel.testActivateWorkspaceItem(matching: "local")
         panel.testActivateWorkspaceItem(matching: choice.session.name)
 
         XCTAssertEqual(attached, choice)
@@ -82,11 +86,12 @@ final class UnifiedPanelExistingConnectionsE2ETests: XCTestCase {
         var attached: ExistingConnectionChoice?
         var projectConnectCount = 0
         panel.onConnect = { _ in projectConnectCount += 1 }
-        panel.onLoadExistingConnections = { completion in completion(.success([choice])) }
+        panel.onLoadHostSessions = { _, completion in completion(.success([choice])) }
         panel.onAttachExistingConnection = { attached = $0 }
         panel.present()
 
-        panel.testActivateWorkspaceItem(matching: MuxtermI18n.shared.tr(.existingConnections))
+        panel.testActivateWorkspaceItem(matching: MuxtermI18n.shared.tr(.panelOpen))
+        panel.testActivateWorkspaceItem(matching: "local")
         panel.testSetQuery("w7")
         XCTAssertTrue(panel.testWorkspaceTitles().contains("muxterm"))
         panel.testSetQuery("")
@@ -101,9 +106,11 @@ final class UnifiedPanelExistingConnectionsE2ETests: XCTestCase {
         AppE2E.ensureApp()
         let panel = makePanel()
         var completion: ((Result<[ExistingConnectionChoice], Error>) -> Void)?
-        panel.onLoadExistingConnections = { completion = $0 }
+        panel.onLoadHostSessions = { _, done in completion = done }
         panel.present()
-        panel.testActivateWorkspaceItem(matching: MuxtermI18n.shared.tr(.existingConnections))
+        panel.testActivateWorkspaceItem(matching: MuxtermI18n.shared.tr(.panelOpen))
+        panel.testActivateWorkspaceItem(matching: "local")
+        panel.testActivateWorkspaceItem(matching: MuxtermI18n.shared.tr(.existingBack))
         panel.testActivateWorkspaceItem(matching: MuxtermI18n.shared.tr(.existingBack))
 
         completion?(.success([ExistingConnectionChoice(
@@ -113,8 +120,8 @@ final class UnifiedPanelExistingConnectionsE2ETests: XCTestCase {
         )]))
         AppE2E.pump(40)
 
-        XCTAssertFalse(panel.testWorkspaceShowsExistingConnections())
-        XCTAssertEqual(panel.testWorkspaceTitles().first, MuxtermI18n.shared.tr(.existingConnections))
+        XCTAssertFalse(panel.testShowsHostSessions())
+        XCTAssertEqual(panel.testWorkspaceTitles().first, MuxtermI18n.shared.tr(.panelOpen))
         XCTAssertFalse(panel.testWorkspaceTitles().contains("late-session"))
         panel.dismiss()
     }
@@ -219,16 +226,13 @@ final class UnifiedPanelExistingConnectionsE2ETests: XCTestCase {
         app.openQuickConnect()
         AppE2E.pump(80)
         XCTAssertEqual(
-            Array(app.unifiedPanel.testWorkspaceTitles().prefix(2)),
-            ["Shells", "Agents"],
-            "固定聚合项必须位于 Workspaces 根列表最上方"
-        )
-        XCTAssertTrue(
-            app.unifiedPanel.testWorkspaceTitles().contains(MuxtermI18n.shared.tr(.existingConnections))
+            app.unifiedPanel.testWorkspaceTitles().first,
+            MuxtermI18n.shared.tr(.panelOpen)
         )
 
-        app.unifiedPanel.testActivateWorkspaceItem(matching: MuxtermI18n.shared.tr(.existingConnections))
-        XCTAssertTrue(app.unifiedPanel.testWorkspaceShowsExistingConnections())
+        app.unifiedPanel.testActivateWorkspaceItem(matching: MuxtermI18n.shared.tr(.panelOpen))
+        app.unifiedPanel.testActivateWorkspaceItem(matching: "local")
+        XCTAssertTrue(app.unifiedPanel.testShowsHostSessions())
         XCTAssertTrue(
             AppE2E.wait(timeout: AppE2E.featureTimeout) {
                 AppE2E.pump(40)
