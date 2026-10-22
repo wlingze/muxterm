@@ -181,6 +181,7 @@ char* muxterm_config_events_json(struct MuxtermHandle* h);
 // ── 命令执行 ──
 int muxterm_execute(struct MuxtermHandle* h, const struct CTask* task);
 int muxterm_execute_workspace(struct MuxtermHandle* h, const char* workspace_id, const struct CTask* task);
+int muxterm_send_named_key(struct MuxtermHandle* h, uint32_t pane_id, const char* key);
 int muxterm_send_input(struct MuxtermHandle* h, uint32_t pane_id, const uint8_t* data, size_t len);
 int muxterm_send_input_quiet(struct MuxtermHandle* h, uint32_t pane_id, const uint8_t* data, size_t len);
 int muxterm_workspace_send_input(struct MuxtermHandle* h, const char* workspace_id, uint32_t pane_id, const uint8_t* data, size_t len);

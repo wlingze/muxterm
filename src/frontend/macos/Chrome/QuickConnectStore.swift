@@ -36,19 +36,30 @@ public final class QuickConnectStore {
         return directory.appendingPathComponent("workspace-attach-history.json")
     }
 
+    /// 打开记录，和 `config.toml` 的 Project 分开。
+    private let recentsURL: URL?
+
+    public static var defaultRecentsURL: URL {
+        defaultAttachHistoryURL
+            .deletingLastPathComponent()
+            .appendingPathComponent("workspace-recents.json")
+    }
+
     /// Core-backed store：初始 projects 来自 `configDescribeJSON` 快照，变更
-    /// 通过 `persistProjects` 写回统一配置。
+    /// 通过 `persistProjects` 写回统一配置。Recent 写在独立 JSON，不进 Project。
     public init(
         projects initial: [TargetConfig] = [],
         attachHistoryURL: URL? = nil,
+        recentsURL: URL? = nil,
         persistProjects: @escaping ([TargetConfig]) -> Void
     ) {
-        self.recents = []
+        self.recents = Self.loadRecents(from: recentsURL)
         let deduped = Self.deduplicateProjects(initial)
         self.projects = deduped
         self.persistProjects = persistProjects
         self.fileURL = nil
         self.attachHistoryURL = attachHistoryURL
+        self.recentsURL = recentsURL
         self.attachHistory = Self.loadAttachHistory(from: attachHistoryURL)
         if deduped.count != initial.count {
             persistProjects(deduped)
@@ -62,6 +73,7 @@ public final class QuickConnectStore {
         self.recents = []
         self.projects = []
         self.attachHistoryURL = nil
+        self.recentsURL = nil
         self.attachHistory = WorkspaceAttachHistory()
         if let fileURL {
             load(from: fileURL)
@@ -102,6 +114,32 @@ public final class QuickConnectStore {
         return history
     }
 
+    private static func loadRecents(from url: URL?) -> [TargetConfig] {
+        guard let url,
+              let data = try? Data(contentsOf: url),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let projects = object["recents"] as? [[String: Any]]
+        else { return [] }
+        return targetConfigs(from: projects)
+    }
+
+    private func persistRecents() {
+        guard let recentsURL else { return }
+        do {
+            try FileManager.default.createDirectory(
+                at: recentsURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            let data = try JSONSerialization.data(
+                withJSONObject: ["recents": Self.projectJSON(from: recents)],
+                options: [.prettyPrinted]
+            )
+            try data.write(to: recentsURL, options: .atomic)
+        } catch {
+            NSLog("Muxterm: failed to save workspace recents: %@", error.localizedDescription)
+        }
+    }
+
     private func persistAttachHistory() {
         guard let attachHistoryURL else { return }
         do {
@@ -116,9 +154,22 @@ public final class QuickConnectStore {
         }
     }
 
-    /// 记录一次连接：把目标放进 recents 最前，并按唯一 ID（name+transport）去重。
-    /// 仅内存态；recent 不落盘（连接池才是持久来源）。
+    /// 记录一次打开。Recent 会落盘；这不是 Project，下次可以直接再打开。
     public func recordRecent(_ config: TargetConfig) {
+        insertRecent(config)
+        persistRecents()
+    }
+
+    /// 把当前打开的 Workspace 并进 Recent，已关闭的历史记录保留。
+    public func rememberOpenWorkspaces(_ open: [TargetConfig]) {
+        guard !open.isEmpty else { return }
+        for config in open.reversed() {
+            insertRecent(config)
+        }
+        persistRecents()
+    }
+
+    private func insertRecent(_ config: TargetConfig) {
         let id = QuickConnect.uniqueID(for: config)
         recents.removeAll { QuickConnect.uniqueID(for: $0) == id }
         recents.insert(config, at: 0)

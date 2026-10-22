@@ -450,3 +450,56 @@ public enum QuickConnect {
         return result
     }
 }
+
+/// Zed 式打开列表：按主机会话分组，Recent 只是打开记录，不是 Project。
+public enum WorkspaceLauncherRow: Equatable, Sendable {
+    case connectSSH
+    case host(String)
+    case recent(TargetConfig)
+    case openFolder(host: String)
+}
+
+public enum WorkspaceLauncher {
+    public static func rows(
+        recents: [TargetConfig],
+        excludingIDs: Set<String> = []
+    ) -> [WorkspaceLauncherRow] {
+        var hosts: [String] = []
+        var grouped: [String: [TargetConfig]] = [:]
+        for config in recents {
+            let id = QuickConnect.uniqueID(for: config)
+            guard !excludingIDs.contains(id) else { continue }
+            let host = config.transport.label
+            if grouped[host] == nil {
+                hosts.append(host)
+            }
+            grouped[host, default: []].append(config)
+        }
+        if !hosts.contains("local") {
+            hosts.append("local")
+        }
+        var rows: [WorkspaceLauncherRow] = [.connectSSH]
+        for host in hosts {
+            rows.append(.host(host))
+            for config in grouped[host] ?? [] {
+                rows.append(.recent(config))
+            }
+            rows.append(.openFolder(host: host))
+        }
+        return rows
+    }
+
+    /// 临时打开一个目录。SSH 用 Herdr，本机用 tmux；两者都不写 Project。
+    public static func temporaryTarget(path: String, transport: TargetTransport) -> TargetConfig {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        let base = (trimmed as NSString).lastPathComponent
+        let name = base.isEmpty || base == "/" ? transport.label : base
+        let runtime: TargetRuntime = transport.isSSH ? .herdr : .tmux
+        return TargetConfig(
+            name: name,
+            runtime: runtime,
+            transport: transport,
+            path: trimmed.isEmpty ? "~" : trimmed
+        )
+    }
+}

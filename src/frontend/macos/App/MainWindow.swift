@@ -71,6 +71,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     var performWindowFullscreenToggle: (NSWindow) -> Void = { $0.toggleFullScreen(nil) }
     /// 来自 ~/.config/muxterm/config.toml 的自定义快捷键（可选）。
     private var customKeybindings: [KeyChord: KeyAction] = [:]
+    /// Herdr 默认前缀 `ctrl+b` 已按下，等待下一个命令键。
+    private var herdrPrefixArmed = false
     /// overrides 覆盖过的动作不再走内置键。
     private var suppressedShortcutActions: Set<KeyAction> = []
     private var nextWorkspaceOpenedOrder: UInt64 = 1
@@ -438,7 +440,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         } else {
             quickConnectStore = QuickConnectStore(
                 projects: resolved.projects,
-                attachHistoryURL: QuickConnectStore.defaultAttachHistoryURL
+                attachHistoryURL: QuickConnectStore.defaultAttachHistoryURL,
+                recentsURL: QuickConnectStore.defaultRecentsURL
             ) { [weak self] updated in
                 guard let self else { return }
                 let operations: [[String: Any]] = [[
@@ -605,6 +608,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         unifiedPanel.onNewProject = { [weak self] in
             self?.editProject(nil)
+        }
+        unifiedPanel.onOpenFolder = { [weak self] transport in
+            self?.openTemporaryFolder(on: transport)
+        }
+        unifiedPanel.onConnectSSH = { [weak self] in
+            self?.promptSSHAndOpenFolder()
         }
         unifiedPanel.onEditProject = { [weak self] config in
             self?.editProject(config)
@@ -1520,7 +1529,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         guard let unifiedPanel else { return }
         // Recent 由 SceneStack 派生；当前 scene 用于行高亮。
         unifiedPanel.currentConfig = sceneStack.currentTargetConfig
-        quickConnectStore.replaceAllRecents(sceneStack.allRecentTargetConfigs())
+        quickConnectStore.rememberOpenWorkspaces(sceneStack.allRecentTargetConfigs())
         unifiedPanel.show(tab: .workspaces)
     }
 
@@ -2929,7 +2938,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         sceneStack.close(key: slot.key)
         content.paneLayout.dropParked(except: Array(sceneStack.scenes.values.map(\.terminalManager)))
-        quickConnectStore.replaceAllRecents(sceneStack.allRecentTargetConfigs())
+        quickConnectStore.rememberOpenWorkspaces(sceneStack.allRecentTargetConfigs())
         if wasActive {
             if let fallback {
                 activate(slot: fallback)
@@ -3004,7 +3013,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 self.content.paneLayout.dropParked(
                     except: Array(self.sceneStack.scenes.values.map(\.terminalManager))
                 )
-                self.quickConnectStore.replaceAllRecents(
+                self.quickConnectStore.rememberOpenWorkspaces(
                     self.sceneStack.allRecentTargetConfigs()
                 )
                 self.refreshWorkspaceSidebar(force: true)
@@ -3768,6 +3777,113 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     /// 按 QuickConnect 目标连接：tmux 有 name → attach，无 name → 创建；
     /// shell runtime → 本地/远程 shell 在 path 启动。
+    private func activeRuntimeIsHerdr() -> Bool {
+        guard let key = sceneStack.activeKey, let scene = sceneStack.scenes[key] else {
+            return false
+        }
+        return scene.targetConfig.runtime == .herdr
+    }
+
+    private func performHerdrShortcut(
+        _ action: HerdrWorkspaceShortcut,
+        view: MuxTerminalView?
+    ) -> Bool {
+        switch action {
+        case .newTab:
+            newTab()
+        case .previousTab:
+            switchToPreviousTab()
+        case .nextTab:
+            switchToNextTab()
+        case .splitVertical:
+            splitActivePane(horizontal: false)
+        case .splitHorizontal:
+            splitActivePane(horizontal: true)
+        case .zoom:
+            toggleActivePaneFullscreen()
+        case .focusLeft:
+            focusHerdrPane("left", view: view)
+        case .focusDown:
+            focusHerdrPane("down", view: view)
+        case .focusUp:
+            focusHerdrPane("up", view: view)
+        case .focusRight:
+            focusHerdrPane("right", view: view)
+        case .literalPrefix:
+            if let view {
+                terminalManager.sendRawInput(to: view, byte: 0x02)
+            }
+        }
+        return true
+    }
+
+    /// Herdr 的方向键是服务端快捷键。`ctrl+alt+h/j/k/l` 交给 pane.send_keys，
+    /// 不写进 pane 里的程序。
+    private func focusHerdrPane(_ direction: String, view: MuxTerminalView?) {
+        guard let view else { return }
+        let key = switch direction {
+        case "left": "h"
+        case "down": "j"
+        case "up": "k"
+        default: "l"
+        }
+        bridge.sendNamedKey(paneId: view.paneId, key: "ctrl+alt+\(key)")
+    }
+
+    /// 打开目录但不写入 Project。成功后只进入 Recent。
+    private func openTemporaryFolder(on transport: TargetTransport) {
+        switch transport {
+        case .local:
+            let panel = NSOpenPanel()
+            panel.canChooseFiles = false
+            panel.canChooseDirectories = true
+            panel.canCreateDirectories = false
+            panel.prompt = MuxtermI18n.shared.tr(.panelOpenFolder)
+            panel.begin { [weak self] response in
+                guard response == .OK, let path = panel.url?.path else { return }
+                self?.connect(config: WorkspaceLauncher.temporaryTarget(
+                    path: path,
+                    transport: .local
+                ))
+            }
+        case .ssh(let alias):
+            let picker = RemoteDirectoryPickerWindow(alias: alias, owner: window)
+            picker.onChoose = { [weak self] path in
+                self?.connect(config: WorkspaceLauncher.temporaryTarget(
+                    path: path,
+                    transport: .ssh(name: alias)
+                ))
+            }
+        }
+    }
+
+    private func promptSSHAndOpenFolder() {
+        loadSSHAliases { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                let aliases = (try? result.get()) ?? []
+                guard let first = aliases.first else {
+                    self.reportStatusError(MuxtermI18n.shared.tr(.panelNoSSHHosts))
+                    return
+                }
+                if aliases.count == 1 {
+                    self.openTemporaryFolder(on: .ssh(name: first))
+                    return
+                }
+                let alert = NSAlert()
+                alert.messageText = MuxtermI18n.shared.tr(.panelConnectSSH)
+                let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+                popup.addItems(withTitles: aliases)
+                alert.accessoryView = popup
+                alert.addButton(withTitle: MuxtermI18n.shared.tr(.panelOpenFolder))
+                alert.addButton(withTitle: MuxtermI18n.shared.tr(.cancel))
+                guard alert.runModal() == .alertFirstButtonReturn else { return }
+                let alias = popup.titleOfSelectedItem ?? first
+                self.openTemporaryFolder(on: .ssh(name: alias))
+            }
+        }
+    }
+
     func connect(config: TargetConfig) {
         unifiedPanel.dismiss()
         guard beginPendingWorkspaceOpen(config: config, stage: .resolving) else { return }
@@ -3944,7 +4060,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             guard let self else { return }
             switch result {
             case .success(let connection):
-                self.quickConnectStore.upsertProject(connection.target)
+                self.quickConnectStore.recordRecent(connection.target)
                 self.finishCatalogConnect(.success(connection))
             case .failure:
                 self.connectCatalogTarget(
@@ -3954,7 +4070,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 ) { [weak self] createResult in
                     guard let self else { return }
                     if case .success(let connection) = createResult {
-                        self.quickConnectStore.upsertProject(connection.target)
+                        self.quickConnectStore.recordRecent(connection.target)
                     }
                     self.finishCatalogConnect(createResult)
                 }
@@ -3985,6 +4101,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 activate(slot: slot)
             }
             quickConnectStore.recordAttach(canonical)
+            quickConnectStore.recordRecent(canonical)
             completion(.success(CatalogConnection(bridge: slot.bridge, target: canonical)))
             return
         }
@@ -4022,6 +4139,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                             self.activate(slot: existing)
                         }
                         self.quickConnectStore.recordAttach(canonical)
+                        self.quickConnectStore.recordRecent(canonical)
                         completion(.success(CatalogConnection(
                             bridge: existing.bridge,
                             target: canonical
@@ -4038,6 +4156,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                         self.insertHidden(slot: slot)
                     }
                     self.quickConnectStore.recordAttach(resolved)
+                    self.quickConnectStore.recordRecent(resolved)
                     completion(.success(CatalogConnection(bridge: sharedBridge, target: resolved)))
                 }
             } catch {
@@ -4058,7 +4177,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         let (_, created) = sceneStack.insertHidden(key: slot.key) { _ in slot }
         guard created else { return }
-        quickConnectStore.replaceAllRecents(sceneStack.allRecentTargetConfigs())
+        quickConnectStore.rememberOpenWorkspaces(sceneStack.allRecentTargetConfigs())
         refreshWorkspaceSidebar(force: true)
         unifiedPanel.refreshData()
         presentWorkspaceCapacityWarningIfNeeded()
@@ -4189,7 +4308,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             nextWorkspaceOpenedOrder += 1
         }
         let (_, created) = sceneStack.activate(key: slot.key) { _ in slot }
-        quickConnectStore.replaceAllRecents(sceneStack.allRecentTargetConfigs())
+        quickConnectStore.rememberOpenWorkspaces(sceneStack.allRecentTargetConfigs())
         bridge = slot.bridge
         bridge.selectWorkspace(slot.workspaceID)
         applyVisibleWorkspaceIdentity(slot)
@@ -4203,7 +4322,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 status: slot.backendStatus,
                 usesClientResize: terminalManager.usesClientResize
             ),
-            status: slot.backendStatus
+            status: slot.backendStatus,
+            host: slot.targetConfig.transport.label
         )
         terminalManager.setBridgeQueriesEnabled(false)
         trafficRateSampler.reset()
@@ -5781,7 +5901,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                         status: ev.paneId,
                         usesClientResize: terminalManager.usesClientResize
                     ),
-                    status: ev.paneId
+                    status: ev.paneId,
+                    host: sceneStack.activeKey.flatMap { sceneStack.scenes[$0]?.targetConfig.transport.label }
                 )
                 backendStatusChanged = true
                 uiStateChanged = true
@@ -6077,7 +6198,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     status: slot.backendStatus,
                     usesClientResize: true
                 ),
-                status: slot.backendStatus
+                status: slot.backendStatus,
+                host: slot.targetConfig.transport.label
             )
             refreshWorkspaceSidebar(force: true)
             return
@@ -6778,6 +6900,38 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             // Ctrl+C/D/L 等不是 Muxterm 的窗口快捷键时，窗口级 monitor 先
             // 把它们送成真实控制字节。这样不依赖 SwiftTerm 的 NSText
             // interpretation，也不会把 tmux 的 WriteRaw 内容变成字面文本。
+            if activeRuntimeIsHerdr() {
+                if herdrPrefixArmed {
+                    herdrPrefixArmed = false
+                    if let action = HerdrShortcutMap.prefixed(key: key, shift: chord.shift) {
+                        return performHerdrShortcut(
+                            action,
+                            view: window?.firstResponder as? MuxTerminalView
+                        )
+                    }
+                } else if HerdrShortcutMap.isPrefix(
+                    command: chord.command,
+                    control: chord.control,
+                    option: chord.option,
+                    key: key
+                ) {
+                    herdrPrefixArmed = true
+                    return true
+                } else if let action = HerdrShortcutMap.direct(
+                    command: chord.command,
+                    control: chord.control,
+                    option: chord.option,
+                    shift: chord.shift,
+                    key: key
+                ) {
+                    return performHerdrShortcut(
+                        action,
+                        view: window?.firstResponder as? MuxTerminalView
+                    )
+                }
+            } else {
+                herdrPrefixArmed = false
+            }
             if flags.contains(.control), !flags.contains(.command), !flags.contains(.option),
                let view = window?.firstResponder as? MuxTerminalView,
                let byte = TerminalInputEncoding.controlByte(for: key)

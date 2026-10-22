@@ -2940,6 +2940,71 @@ final class KeyBindingsConfigTests: XCTestCase {
         }
     }
 
+    func testLauncherOpensFoldersWithoutTurningThemIntoProjects() {
+        let recent = TargetConfig(
+            name: "muxterm",
+            runtime: .herdr,
+            transport: .ssh(name: "ryzen"),
+            path: "/home/wlz/Developer/self/muxterm"
+        )
+        let rows = WorkspaceLauncher.rows(recents: [recent])
+        XCTAssertEqual(rows[0], .connectSSH)
+        XCTAssertEqual(rows[1], .host("ryzen"))
+        XCTAssertEqual(rows[2], .recent(recent))
+        XCTAssertEqual(rows[3], .openFolder(host: "ryzen"))
+        XCTAssertEqual(rows[4], .host("local"))
+        XCTAssertEqual(rows[5], .openFolder(host: "local"))
+
+        let opened = WorkspaceLauncher.temporaryTarget(
+            path: "/home/wlz/Developer/self/muxterm",
+            transport: .ssh(name: "ryzen")
+        )
+        XCTAssertEqual(opened.runtime, .herdr)
+        XCTAssertEqual(opened.name, "muxterm")
+        XCTAssertNil(opened.persistedID)
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("muxterm-recents-\(UUID().uuidString)", isDirectory: true)
+        let url = directory.appendingPathComponent("workspace-recents.json")
+        let store = QuickConnectStore(recentsURL: url) { _ in }
+        store.recordRecent(recent)
+        let other = TargetConfig(name: "notes", runtime: .tmux, transport: .local, path: "~/notes")
+        store.rememberOpenWorkspaces([other])
+        XCTAssertEqual(store.recents.map(\.name), ["notes", "muxterm"])
+        let restored = QuickConnectStore(recentsURL: url) { _ in }
+        XCTAssertEqual(restored.recents.map(\.path), ["~/notes", "/home/wlz/Developer/self/muxterm"])
+        XCTAssertTrue(restored.projects.isEmpty)
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    func testHerdrShortcutsUseCtrlAltAndCtrlBPrefixNotCtrlA() {
+        XCTAssertEqual(
+            HerdrShortcutMap.direct(
+                command: false, control: true, option: true, shift: false, key: "h"
+            ),
+            .focusLeft
+        )
+        XCTAssertEqual(
+            HerdrShortcutMap.direct(
+                command: false, control: true, option: true, shift: true, key: "d"
+            ),
+            .splitHorizontal
+        )
+        XCTAssertNil(
+            HerdrShortcutMap.direct(
+                command: false, control: true, option: false, shift: false, key: "a"
+            )
+        )
+        XCTAssertTrue(HerdrShortcutMap.isPrefix(
+            command: false, control: true, option: false, key: "b"
+        ))
+        XCTAssertFalse(HerdrShortcutMap.isPrefix(
+            command: false, control: true, option: false, key: "a"
+        ))
+        XCTAssertEqual(HerdrShortcutMap.prefixed(key: "c", shift: false), .newTab)
+        XCTAssertEqual(HerdrShortcutMap.prefixed(key: "b", shift: false), .literalPrefix)
+    }
+
     func testTargetConfigsSerializeToCoreProjectJSON() {
         let config = TargetConfig(
             name: "demo",

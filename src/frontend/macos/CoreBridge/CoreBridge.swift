@@ -1532,6 +1532,15 @@ final class CoreBridge {
         shutdownAndFree()
     }
 
+    /// Herdr 具名按键，例如 `ctrl+alt+h`。不走裸控制字节。
+    func sendNamedKey(paneId: UInt32, key: String) {
+        guard let handle else { return }
+        flushWorkspaceSelection()
+        _ = key.withCString { key in
+            muxterm_send_named_key(handle, paneId, key)
+        }
+    }
+
     /// 执行任务。
     @discardableResult
     func execute(task: MuxTask) -> Int32 {

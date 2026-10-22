@@ -22,6 +22,9 @@ private enum UnifiedWorkspaceItem {
         workspaceIndex: Int?
     )
     case newProject
+    case connectSSH
+    case host(String)
+    case openFolder(host: String)
     case back
     case existing(ExistingConnectionChoice)
     case loading
@@ -34,9 +37,15 @@ private enum UnifiedWorkspaceItem {
         case .existingConnections:
             return MuxtermI18n.shared.tr(.existingConnections)
         case .target(let config, _, _, _):
-            return config.name
+            return config.path.isEmpty ? config.name : config.path
         case .newProject:
             return MuxtermI18n.shared.tr(.panelNewProject)
+        case .connectSSH:
+            return MuxtermI18n.shared.tr(.panelConnectSSH)
+        case .host(let host):
+            return host
+        case .openFolder:
+            return MuxtermI18n.shared.tr(.panelOpenFolder)
         case .back:
             return MuxtermI18n.shared.tr(.existingBack)
         case .existing(let choice):
@@ -62,8 +71,10 @@ private enum UnifiedWorkspaceItem {
                 .joined(separator: " ")
                 .lowercased()
             return haystack.contains(normalizedQuery) ? 1_000 : nil
-        case .existingConnections, .newProject, .loading, .empty:
+        case .existingConnections, .newProject, .connectSSH, .openFolder, .loading, .empty:
             return title.lowercased().contains(normalizedQuery) ? 500 : nil
+        case .host(let host):
+            return host.lowercased().contains(normalizedQuery) ? 400 : nil
         case .target(let config, _, _, _):
             return QuickConnect.searchScore(query, config: config)
         case .back:
@@ -94,6 +105,8 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     var onExistingConnectionsError: ((Error) -> Void)?
     var onEditProject: ((TargetConfig) -> Void)?
     var onNewProject: (() -> Void)?
+    var onOpenFolder: ((TargetTransport) -> Void)?
+    var onConnectSSH: (() -> Void)?
     var onJump: ((String?, UInt32?, UInt32, UInt64, String) -> Void)?
     // (workspaceId, tabId, paneId, seq, query)
     var onPreview: ((String, UInt32) -> Void)? // (workspaceId, paneId)
@@ -416,7 +429,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         }
         let connected = connectedWorkspaces?() ?? []
         if connectedWorkspaces != nil {
-            store.replaceAllRecents(connected)
+            store.rememberOpenWorkspaces(connected)
         }
         let connectedIDs = Set(connected.map { QuickConnect.uniqueID(for: $0) })
         let chromeWorkspaces = sidebarWorkspaces?() ?? []
@@ -430,11 +443,32 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
             ? [.existingConnections]
             : chromeWorkspaces.map(UnifiedWorkspaceItem.workspace)
         let queryIsNonEmpty = !model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let recentIDs = Set(store.recents.map { QuickConnect.uniqueID(for: $0) })
+        let savedProjects = store.projects.filter {
+            !recentIDs.contains(QuickConnect.uniqueID(for: $0))
+        }
         let entries = QuickConnect.entries(
-            recents: store.recents,
-            projects: store.projects,
+            recents: [],
+            projects: savedProjects,
             recentLimit: queryIsNonEmpty ? QuickConnectStore.maxRecent : 5
         )
+        for row in WorkspaceLauncher.rows(recents: store.recents, excludingIDs: presentedTargetIDs) {
+            switch row {
+            case .connectSSH:
+                allItems.append(.connectSSH)
+            case .host(let host):
+                allItems.append(.host(host))
+            case .openFolder(let host):
+                allItems.append(.openFolder(host: host))
+            case .recent(let config):
+                allItems.append(.target(
+                    config,
+                    badges: [.recent],
+                    isCurrent: currentId == QuickConnect.uniqueID(for: config),
+                    workspaceIndex: workspaceIndex(config)
+                ))
+            }
+        }
         // 已打开项直接使用侧边栏投影，保证固定槽、顺序、编号和选中态
         // 完全一致。QuickConnect target 只补尚未打开的 Project。
         let rankedEntries = entries.enumerated().sorted { lhs, rhs in
@@ -722,6 +756,15 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                 onConnect?(config)
             case .newProject:
                 onNewProject?()
+            case .connectSSH:
+                onConnectSSH?()
+                dismiss()
+            case .openFolder(let host):
+                let transport: TargetTransport = host == "local" ? .local : .ssh(name: host)
+                onOpenFolder?(transport)
+                dismiss()
+            case .host:
+                break
             case .back:
                 returnToWorkspaceRoot()
             case .existing(let choice):
@@ -1327,6 +1370,27 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                 let cell = tableView.makeView(withIdentifier: id, owner: self) as? QuickActionCellView
                     ?? QuickActionCellView(identifier: id)
                 cell.title = "＋ " + MuxtermI18n.shared.tr(.panelNewProject)
+                return cell
+            case .connectSSH:
+                let id = NSUserInterfaceItemIdentifier("QuickConnectSSH")
+                let cell = tableView.makeView(withIdentifier: id, owner: self) as? QuickActionCellView
+                    ?? QuickActionCellView(identifier: id)
+                cell.title = "＋ " + item.title
+                cell.setAccessibilityIdentifier("muxterm.quickConnect.connectSSH")
+                return cell
+            case .openFolder:
+                let id = NSUserInterfaceItemIdentifier("QuickOpenFolder")
+                let cell = tableView.makeView(withIdentifier: id, owner: self) as? QuickActionCellView
+                    ?? QuickActionCellView(identifier: id)
+                cell.title = "＋ " + item.title
+                cell.setAccessibilityIdentifier("muxterm.quickConnect.openFolder")
+                return cell
+            case .host(let host):
+                let id = NSUserInterfaceItemIdentifier("QuickHost")
+                let cell = tableView.makeView(withIdentifier: id, owner: self) as? QuickActionCellView
+                    ?? QuickActionCellView(identifier: id)
+                cell.title = host
+                cell.setAccessibilityIdentifier("muxterm.quickConnect.host.\(host)")
                 return cell
             case .back:
                 let id = NSUserInterfaceItemIdentifier("ExistingConnectionsBack")
@@ -2054,7 +2118,7 @@ extension UnifiedPanelController {
                 )
             case .newProject:
                 return (.newProject, QuickActionTarget(newProject: true))
-            case .existingConnections, .back, .loading, .empty:
+            case .connectSSH, .host, .openFolder, .existingConnections, .back, .loading, .empty:
                 return (.none, QuickActionTarget())
             }
         case .attention:

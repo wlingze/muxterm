@@ -406,8 +406,40 @@ pub unsafe extern "C" fn muxterm_workspace_resize_pane_axis(
 }
 
 /// Parse key descriptions used by `muxterm_execute_json`.
+fn chord_from_name(text: &str) -> Option<crate::protocol::terminal::input::KeyEvent> {
+    use crate::protocol::terminal::input::KeyEvent;
+    let parts: Vec<&str> = text.split('+').filter(|part| !part.is_empty()).collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let key = (*parts.last()?).to_string();
+    let mut ctrl = false;
+    let mut alt = false;
+    let mut shift = false;
+    for part in &parts[..parts.len() - 1] {
+        match part.to_ascii_lowercase().as_str() {
+            "ctrl" | "control" => ctrl = true,
+            "alt" | "option" | "meta" => alt = true,
+            "shift" => shift = true,
+            _ => return None,
+        }
+    }
+    if !ctrl && !alt && !shift {
+        return None;
+    }
+    Some(KeyEvent::Chord {
+        ctrl,
+        alt,
+        shift,
+        key,
+    })
+}
+
 fn key_event_from_json(text: &str) -> Vec<crate::protocol::terminal::input::KeyEvent> {
     use crate::protocol::terminal::input::{ArrowDir, KeyEvent};
+    if let Some(chord) = chord_from_name(text) {
+        return vec![chord];
+    }
     match text {
         "enter" => vec![KeyEvent::Enter],
         "tab" => vec![KeyEvent::Tab],
@@ -626,6 +658,45 @@ pub unsafe extern "C" fn muxterm_send_input(
             target: pane,
             data: bytes,
         }))
+    }))
+    .unwrap_or(-1)
+}
+
+/// Send one named key chord, such as `ctrl+alt+h`, to the active workspace pane.
+///
+/// # Safety
+/// `h` is live. `key` is a NUL-terminated UTF-8 chord.
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_send_named_key(
+    h: *mut MuxtermHandle,
+    pane_id: u32,
+    key: *const c_char,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() || key.is_null() {
+            return -1;
+        }
+        let Some(key) = cstr_opt(key) else {
+            return -1;
+        };
+        let keys = key_event_from_json(&key);
+        if keys.is_empty() {
+            return -1;
+        }
+        let handle = &mut *h;
+        let pane = {
+            let Some(ws) = handle.active_workspace() else {
+                return -1;
+            };
+            resolve_c_io_pane(pane_id, ws)
+        };
+        let Some(pane) = pane else {
+            return -1;
+        };
+        let Some(ws) = handle.active_workspace_mut() else {
+            return -1;
+        };
+        task_result_code(ws.execute(Task::SendKeys { target: pane, keys }))
     }))
     .unwrap_or(-1)
 }

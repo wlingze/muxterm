@@ -275,13 +275,26 @@ final class ContentView: NSView {
     func setDisconnected(
         _ disconnected: Bool,
         canReconnect: Bool = false,
-        status: UInt32? = nil
+        status: UInt32? = nil,
+        host: String? = nil
     ) {
         disconnectOverlay.isHidden = !disconnected
-        disconnectOverlay.stringValue = Self.disconnectStatusLabel(status)
+        disconnectOverlay.maximumNumberOfLines = 3
+        disconnectOverlay.alignment = .center
+        disconnectOverlay.stringValue = Self.disconnectMessage(status: status, host: host)
         disconnectReconnectButton.isHidden = !disconnected || !canReconnect
         disconnectCloseButton.isHidden = !disconnected
         needsLayout = true
+    }
+
+    private static func disconnectMessage(status: UInt32?, host: String?) -> String {
+        let title = disconnectStatusLabel(status)
+        let trimmed = host?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmed.isEmpty, trimmed != "local" else { return title }
+        return title + "\n" + MuxtermI18n.shared.tr(
+            .disconnectDetail,
+            arguments: ["host": trimmed]
+        )
     }
 
     private static func disconnectStatusLabel(_ status: UInt32?) -> String {
