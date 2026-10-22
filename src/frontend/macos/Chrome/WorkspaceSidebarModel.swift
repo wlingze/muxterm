@@ -490,6 +490,7 @@ public enum WorkspaceSidebarProjection {
                 let attention = attentionByPane[
                     PaneKey(workspaceId: workspace.workspaceId, paneId: agent.paneId)
                 ]
+                guard listsStructuredAgent(agent, attention: attention) else { continue }
                 let agentName = firstNonempty([
                     agent.displayName,
                     agent.name,
@@ -519,11 +520,10 @@ public enum WorkspaceSidebarProjection {
                 .first(where: { $0.workspaceId == workspace.workspaceId })?
                 .panes ?? []
             for pane in generic where !structuredPaneIDs.contains(pane.paneId) {
-                guard pane.processIsAgent else { continue }
-                let name = firstNonempty([
-                    pane.agentName,
-                    pane.processName,
-                ]) ?? "Agent"
+                guard AttentionAlert.isAgent(pane), AttentionAlert.includes(pane) else { continue }
+                let name = AttentionAlert.agentName(pane)
+                    ?? firstNonempty([pane.processName])
+                    ?? "Agent"
                 let tabNumber = workspace.tabNumberByPane[pane.paneId]
                 let tabId = workspace.tabIdByPane[pane.paneId]
                 result.append(AgentSidebarItem(
@@ -597,7 +597,7 @@ public enum WorkspaceSidebarProjection {
         {
             for pane in attention?.workspaces.first(where: {
                 $0.workspaceId == workspace.workspaceId
-            })?.panes ?? [] where pane.processIsAgent {
+            })?.panes ?? [] where AttentionAlert.isAgent(pane) {
                 agentPaneKeys.insert(PaneKey(workspaceId: workspace.workspaceId, paneId: pane.paneId))
             }
         }
@@ -611,9 +611,10 @@ public enum WorkspaceSidebarProjection {
                 .panes
             else { continue }
             for pane in panes {
-                guard !agentPaneKeys.contains(
-                    PaneKey(workspaceId: workspace.workspaceId, paneId: pane.paneId)
-                ), let title = nonEmptyProcessName(pane.processName)
+                guard AttentionAlert.includes(pane),
+                      !agentPaneKeys.contains(
+                          PaneKey(workspaceId: workspace.workspaceId, paneId: pane.paneId)
+                      ), let title = nonEmptyProcessName(pane.processName)
                 else { continue }
                 switch pane.status {
                 case .working:
@@ -733,6 +734,22 @@ public enum WorkspaceSidebarProjection {
             values.append("Tab \(tabNumber)")
         }
         return values.joined(separator: " · ")
+    }
+
+    /// 有 attention 时跟警报规则走；还没快照的结构化身份先留着，空闲不算警报。
+    private static func listsStructuredAgent(
+        _ agent: StructuredPaneAgent,
+        attention: PaneAttention?
+    ) -> Bool {
+        if let attention {
+            return AttentionAlert.includes(attention)
+        }
+        switch agent.status {
+        case .idle:
+            return false
+        case .unknown, .working, .blocked, .done:
+            return true
+        }
     }
 
     private static func statusLabel(

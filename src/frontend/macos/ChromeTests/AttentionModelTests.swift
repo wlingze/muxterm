@@ -319,6 +319,16 @@ final class AttentionRowLabelTests: XCTestCase {
         )
     }
 
+    func testKnownAgentExecutableUsesOnlyTheProgramBasename() {
+        XCTAssertEqual(AttentionRowLabel.knownAgentExecutable("pi"), "pi")
+        XCTAssertEqual(AttentionRowLabel.knownAgentExecutable("/usr/local/bin/pi --model x"), "pi")
+        XCTAssertNil(
+            AttentionRowLabel.knownAgentExecutable("cargo test ~/Developer/pi"),
+            "参数或路径里的 pi 不是 agent"
+        )
+        XCTAssertNil(AttentionRowLabel.knownAgentExecutable("node /opt/codex-cli"))
+    }
+
     func testNormalizesKnownAgentWrapper() {
         XCTAssertEqual(
             AttentionRowLabel.normalizedProcess("node /opt/codex-cli"),
