@@ -511,7 +511,7 @@
   "composer_no_target": "Open a workspace before writing into a terminal.",
   "composer_nothing_to_copy": "Nothing to copy yet.",
   "composer_nothing_to_send": "Nothing to write yet.",
-  "composer_placeholder": "⌘K opens the page menu; ⌘↩ clears this draft.",
+  "composer_placeholder": "⌘K opens the page menu; ⌘↩ writes into the terminal and clears this draft.",
   "composer_send": "Write",
   "composer_sent": "Wrote the text into the terminal.",
   "composer_title": "Compose",

@@ -3480,7 +3480,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let composer = ComposerPanelController()
         composer.targetProvider = { [weak self] in self?.currentComposerTarget() }
         composer.onSend = { [weak self] text, target in
-            self?.deliverComposerText(text, to: target)
+            self?.deliverComposerText(text, to: target) ?? false
         }
         composer.onPastePNG = { [weak self] png, target, draftKey in
             guard let self else { return }
@@ -3518,7 +3518,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     /// 输入框 → 当前 pane。复用终端的粘贴编码（bracketed paste），
     /// 与用户直接粘贴一致：只写文本，不自动回车。
-    private func deliverComposerText(_ text: String, to target: ComposerTarget) {
+    /// 返回 false 表示这段文字没有落到任何 pane（目标已关闭），输入框会保留草稿。
+    @discardableResult
+    private func deliverComposerText(_ text: String, to target: ComposerTarget) -> Bool {
         guard let workspaceID = target.workspaceID,
               let paneID = target.paneID,
               let scene = sceneStack.scenes.values.first(where: {
@@ -3527,9 +3529,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         else {
             reportStatusError(MuxtermI18n.shared.tr(.composerNoTarget))
             composerPanel?.setStatus(MuxtermI18n.shared.tr(.composerNoTarget))
-            return
+            return false
         }
         scene.terminalManager.view(for: paneID).insertExternalText(text)
+        return true
     }
 
     /// Core 存完图片后把纯路径插回发起粘贴的草稿页；窗口已关也不丢。
