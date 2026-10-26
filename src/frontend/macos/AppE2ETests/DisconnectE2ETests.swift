@@ -41,6 +41,10 @@ final class DisconnectE2ETests: XCTestCase {
             app.testDisconnectCloseVisible(),
             "tmux 断连水印必须允许显式关闭 Workspace"
         )
+        XCTAssertFalse(
+            app.testDisconnectOverlayText().isEmpty,
+            "断线卡片必须写清楚当前状态，不能只是一张空卡片"
+        )
         XCTAssertEqual(
             app.window?.sheets.count ?? 0,
             0,

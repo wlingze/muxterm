@@ -7,10 +7,12 @@ import MuxtermChrome
 final class ContentView: NSView {
     let paneLayout: PaneLayoutView
     let statusBar = StatusBarView()
-    /// 断线水印（W16b：tmux server 死后保留最后一帧 + 覆盖提示）。
-    let disconnectOverlay = NSTextField(labelWithString: "")
-    let disconnectReconnectButton = NSButton()
-    let disconnectCloseButton = NSButton()
+    /// 断线卡片（W16b：tmux server 死后保留最后一帧 + 覆盖提示）。
+    /// 复用 Workspace opening 的居中卡片语言，不再把裸文字压在终端上。
+    let disconnectCard = WorkspaceDisconnectCardView()
+    var disconnectOverlay: NSTextField { disconnectCard.titleLabel }
+    var disconnectReconnectButton: NSButton { disconnectCard.reconnectButton }
+    var disconnectCloseButton: NSButton { disconnectCard.closeButton }
     var onDisconnectReconnect: (() -> Void)?
     var onDisconnectClose: (() -> Void)?
     /// 回底胶囊（愿景：滚离底部后显示「↓ 最新 · +N」）。
@@ -44,31 +46,13 @@ final class ContentView: NSView {
         paneLayout.translatesAutoresizingMaskIntoConstraints = false
         statusBar.translatesAutoresizingMaskIntoConstraints = false
 
-        disconnectOverlay.translatesAutoresizingMaskIntoConstraints = false
-        disconnectOverlay.font = NSFont.systemFont(ofSize: 18, weight: .semibold)
-        disconnectOverlay.textColor = .secondaryLabelColor
-        disconnectOverlay.alignment = .center
-        disconnectOverlay.isHidden = true
-        disconnectOverlay.setAccessibilityIdentifier("muxterm.disconnectOverlay")
-        disconnectOverlay.setAccessibilityElement(true)
-
-        disconnectReconnectButton.translatesAutoresizingMaskIntoConstraints = false
-        disconnectReconnectButton.title = MuxtermI18n.shared.tr(.statusReconnect)
-        disconnectReconnectButton.bezelStyle = .rounded
-        disconnectReconnectButton.controlSize = .small
-        disconnectReconnectButton.target = self
-        disconnectReconnectButton.action = #selector(disconnectReconnectClicked)
-        disconnectReconnectButton.setAccessibilityIdentifier("muxterm.disconnectOverlay.reconnect")
-        disconnectReconnectButton.isHidden = true
-
-        disconnectCloseButton.translatesAutoresizingMaskIntoConstraints = false
-        disconnectCloseButton.title = MuxtermI18n.shared.tr(.closeWorkspace)
-        disconnectCloseButton.bezelStyle = .rounded
-        disconnectCloseButton.controlSize = .small
-        disconnectCloseButton.target = self
-        disconnectCloseButton.action = #selector(disconnectCloseClicked)
-        disconnectCloseButton.setAccessibilityIdentifier("muxterm.disconnectOverlay.close")
-        disconnectCloseButton.isHidden = true
+        disconnectCard.translatesAutoresizingMaskIntoConstraints = false
+        disconnectCard.onReconnect = { [weak self] in
+            self?.onDisconnectReconnect?()
+        }
+        disconnectCard.onClose = { [weak self] in
+            self?.onDisconnectClose?()
+        }
 
         replyOverlayContainer.translatesAutoresizingMaskIntoConstraints = false
         replyOverlayContainer.wantsLayer = true
@@ -118,9 +102,7 @@ final class ContentView: NSView {
 
         addSubview(paneLayout)
         addSubview(statusBar)
-        addSubview(disconnectOverlay)
-        addSubview(disconnectReconnectButton)
-        addSubview(disconnectCloseButton)
+        addSubview(disconnectCard)
         addSubview(lastSeenButton)
         addSubview(commandMarkRail)
         addSubview(jumpLatestButton)
@@ -150,14 +132,16 @@ final class ContentView: NSView {
         notificationWidth.priority = .defaultHigh
         NSLayoutConstraint.activate([
             notificationWidth,
-            disconnectOverlay.centerXAnchor.constraint(equalTo: centerXAnchor),
-            disconnectOverlay.centerYAnchor.constraint(equalTo: centerYAnchor, constant: -18),
-            disconnectReconnectButton.centerYAnchor.constraint(equalTo: centerYAnchor, constant: 18),
-            disconnectReconnectButton.trailingAnchor.constraint(equalTo: centerXAnchor, constant: -4),
-            disconnectReconnectButton.heightAnchor.constraint(equalToConstant: 25),
-            disconnectCloseButton.leadingAnchor.constraint(equalTo: centerXAnchor, constant: 4),
-            disconnectCloseButton.centerYAnchor.constraint(equalTo: disconnectReconnectButton.centerYAnchor),
-            disconnectCloseButton.heightAnchor.constraint(equalToConstant: 25),
+            disconnectCard.centerXAnchor.constraint(equalTo: paneLayout.centerXAnchor),
+            disconnectCard.centerYAnchor.constraint(equalTo: paneLayout.centerYAnchor),
+            disconnectCard.leadingAnchor.constraint(
+                greaterThanOrEqualTo: paneLayout.leadingAnchor,
+                constant: 24
+            ),
+            disconnectCard.trailingAnchor.constraint(
+                lessThanOrEqualTo: paneLayout.trailingAnchor,
+                constant: -24
+            ),
             seenTrailing,
             lastSeenButton.topAnchor.constraint(equalTo: paneLayout.topAnchor, constant: 12),
             lastSeenButton.heightAnchor.constraint(equalToConstant: 24),
@@ -260,6 +244,7 @@ final class ContentView: NSView {
     func refreshLocalization() {
         statusBar.refreshLocalization()
         imagePasteBanner.refreshLocalization()
+        disconnectCard.refreshLocalization()
     }
 
     /// 连接进度页：stage 为 nil 时隐藏。页面只覆盖 PaneGrid，因此等待时
@@ -278,48 +263,12 @@ final class ContentView: NSView {
         status: UInt32? = nil,
         host: String? = nil
     ) {
-        disconnectOverlay.isHidden = !disconnected
-        disconnectOverlay.maximumNumberOfLines = 3
-        disconnectOverlay.alignment = .center
-        disconnectOverlay.stringValue = Self.disconnectMessage(status: status, host: host)
-        disconnectReconnectButton.isHidden = !disconnected || !canReconnect
-        disconnectCloseButton.isHidden = !disconnected
-        needsLayout = true
-    }
-
-    private static func disconnectMessage(status: UInt32?, host: String?) -> String {
-        let title = disconnectStatusLabel(status)
-        let trimmed = host?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !trimmed.isEmpty, trimmed != "local" else { return title }
-        return title + "\n" + MuxtermI18n.shared.tr(
-            .disconnectDetail,
-            arguments: ["host": trimmed]
-        )
-    }
-
-    private static func disconnectStatusLabel(_ status: UInt32?) -> String {
-        return switch status {
-        case .some(WorkspaceBackendStatus.disconnected):
-            MuxtermI18n.shared.tr(.statusDisconnected)
-        case .some(WorkspaceBackendStatus.connecting):
-            MuxtermI18n.shared.tr(.statusConnecting)
-        case .some(WorkspaceBackendStatus.error):
-            MuxtermI18n.shared.tr(.statusError)
-        case .some(WorkspaceBackendStatus.exited):
-            MuxtermI18n.shared.tr(.statusExited)
-        case .some(WorkspaceBackendStatus.connected), .none:
-            MuxtermI18n.shared.tr(.statusDisconnected)
-        case .some:
-            MuxtermI18n.shared.tr(.statusUnknown)
+        if disconnected {
+            disconnectCard.show(status: status, host: host, canReconnect: canReconnect)
+        } else {
+            disconnectCard.hide()
         }
-    }
-
-    @objc private func disconnectReconnectClicked() {
-        onDisconnectReconnect?()
-    }
-
-    @objc private func disconnectCloseClicked() {
-        onDisconnectClose?()
+        needsLayout = true
     }
 
     /// 回底胶囊：viewport 滚离底部时显示；有未读行时显示 `↓ 最新 · +N`。
@@ -365,6 +314,183 @@ final class ContentView: NSView {
         jumpLatestButton.layer?.backgroundColor = fill.cgColor
         jumpLatestButton.layer?.borderWidth = 1
         jumpLatestButton.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.7).cgColor
+    }
+}
+
+/// 断线卡片：与 Workspace opening 同一套居中卡片语言。
+///
+/// 断线时终端最后一帧继续留在下面，所以不能用整页底色盖死；
+/// 这里用一张浮起的卡片把状态、主机和下一步动作讲清楚。
+final class WorkspaceDisconnectCardView: NSView {
+    let titleLabel = NSTextField(labelWithString: "")
+    let detailLabel = NSTextField(labelWithString: "")
+    let reconnectButton = NSButton()
+    let closeButton = NSButton()
+    var onReconnect: (() -> Void)?
+    var onClose: (() -> Void)?
+
+    private let iconView = NSImageView()
+    private let buttonRow = NSStackView()
+    private var lastStatus: UInt32?
+    private var lastHost: String?
+    private var lastCanReconnect = false
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        translatesAutoresizingMaskIntoConstraints = false
+        wantsLayer = true
+        layer?.cornerRadius = 12
+        layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        layer?.borderWidth = 1
+        layer?.borderColor = NSColor.separatorColor.cgColor
+        layer?.shadowColor = NSColor.black.cgColor
+        layer?.shadowOpacity = 0.18
+        layer?.shadowRadius = 20
+        layer?.shadowOffset = CGSize(width: 0, height: -8)
+        isHidden = true
+        setAccessibilityIdentifier("muxterm.disconnectOverlay")
+        setAccessibilityElement(true)
+        setAccessibilityRole(.group)
+
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        iconView.image = NSImage(
+            systemSymbolName: "bolt.horizontal.circle",
+            accessibilityDescription: nil
+        )?.withSymbolConfiguration(
+            NSImage.SymbolConfiguration(pointSize: 22, weight: .medium)
+        )
+        iconView.contentTintColor = .systemOrange
+        iconView.imageScaling = .scaleProportionallyDown
+
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.font = NSFont.systemFont(ofSize: 15, weight: .semibold)
+        titleLabel.textColor = .labelColor
+        titleLabel.alignment = .center
+        titleLabel.maximumNumberOfLines = 2
+        titleLabel.lineBreakMode = .byWordWrapping
+        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        detailLabel.translatesAutoresizingMaskIntoConstraints = false
+        detailLabel.font = NSFont.systemFont(ofSize: 11)
+        detailLabel.textColor = .secondaryLabelColor
+        detailLabel.alignment = .center
+        detailLabel.lineBreakMode = .byTruncatingMiddle
+
+        reconnectButton.translatesAutoresizingMaskIntoConstraints = false
+        reconnectButton.bezelStyle = .rounded
+        reconnectButton.controlSize = .regular
+        reconnectButton.target = self
+        reconnectButton.action = #selector(reconnectClicked)
+        reconnectButton.setAccessibilityIdentifier("muxterm.disconnectOverlay.reconnect")
+        reconnectButton.isHidden = true
+
+        closeButton.translatesAutoresizingMaskIntoConstraints = false
+        closeButton.bezelStyle = .rounded
+        closeButton.controlSize = .regular
+        closeButton.target = self
+        closeButton.action = #selector(closeClicked)
+        closeButton.setAccessibilityIdentifier("muxterm.disconnectOverlay.close")
+        closeButton.isHidden = true
+
+        buttonRow.translatesAutoresizingMaskIntoConstraints = false
+        buttonRow.orientation = .horizontal
+        buttonRow.alignment = .centerY
+        buttonRow.spacing = 8
+        buttonRow.addArrangedSubview(reconnectButton)
+        buttonRow.addArrangedSubview(closeButton)
+
+        let content = NSStackView(views: [iconView, titleLabel, detailLabel, buttonRow])
+        content.translatesAutoresizingMaskIntoConstraints = false
+        content.orientation = .vertical
+        content.alignment = .centerX
+        content.spacing = 6
+        content.setCustomSpacing(10, after: iconView)
+        content.setCustomSpacing(14, after: detailLabel)
+        addSubview(content)
+        NSLayoutConstraint.activate([
+            content.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 22),
+            content.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -22),
+            content.topAnchor.constraint(equalTo: topAnchor, constant: 20),
+            content.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -20),
+            iconView.widthAnchor.constraint(equalToConstant: 26),
+            iconView.heightAnchor.constraint(equalToConstant: 26),
+            titleLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 380),
+            detailLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 380),
+            widthAnchor.constraint(greaterThanOrEqualToConstant: 300),
+        ])
+        refreshLocalization()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    func refreshLocalization() {
+        reconnectButton.title = MuxtermI18n.shared.tr(.statusReconnect)
+        closeButton.title = MuxtermI18n.shared.tr(.closeWorkspace)
+        reconnectButton.setAccessibilityLabel(reconnectButton.title)
+        closeButton.setAccessibilityLabel(closeButton.title)
+        render()
+    }
+
+    func show(status: UInt32?, host: String?, canReconnect: Bool) {
+        lastStatus = status
+        lastHost = host
+        lastCanReconnect = canReconnect
+        render()
+        isHidden = false
+    }
+
+    func hide() {
+        isHidden = true
+    }
+
+    private func render() {
+        let message = Self.message(status: lastStatus, host: lastHost)
+        titleLabel.stringValue = message.title
+        detailLabel.stringValue = message.detail ?? ""
+        detailLabel.isHidden = message.detail == nil
+        reconnectButton.isHidden = !lastCanReconnect
+        closeButton.isHidden = false
+        setAccessibilityValue(message.title)
+    }
+
+    private static func message(status: UInt32?, host: String?) -> (title: String, detail: String?) {
+        let statusText = statusLabel(status)
+        let machine = host?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !machine.isEmpty, machine != "local" else {
+            return (statusText, nil)
+        }
+        return (
+            MuxtermI18n.shared.tr(.disconnectDetail, arguments: ["host": machine]),
+            statusText
+        )
+    }
+
+    private static func statusLabel(_ status: UInt32?) -> String {
+        return switch status {
+        case .some(WorkspaceBackendStatus.disconnected):
+            MuxtermI18n.shared.tr(.statusDisconnected)
+        case .some(WorkspaceBackendStatus.connecting):
+            MuxtermI18n.shared.tr(.statusConnecting)
+        case .some(WorkspaceBackendStatus.error):
+            MuxtermI18n.shared.tr(.statusError)
+        case .some(WorkspaceBackendStatus.exited):
+            MuxtermI18n.shared.tr(.statusExited)
+        case .some(WorkspaceBackendStatus.connected), .none:
+            MuxtermI18n.shared.tr(.statusDisconnected)
+        case .some:
+            MuxtermI18n.shared.tr(.statusUnknown)
+        }
+    }
+
+    @objc private func reconnectClicked() {
+        onReconnect?()
+    }
+
+    @objc private func closeClicked() {
+        onClose?()
     }
 }
 

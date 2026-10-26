@@ -439,6 +439,10 @@ extension MainWindowController {
         !content.disconnectOverlay.isHidden
     }
 
+    func testDisconnectOverlayText() -> String {
+        content.disconnectOverlay.stringValue
+    }
+
     func testDisconnectReconnectVisible() -> Bool {
         !content.disconnectReconnectButton.isHidden
     }
