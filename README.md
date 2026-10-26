@@ -4,9 +4,12 @@
   <img src="assets/muxterm-logo-b-wide.svg" alt="Muxterm logo" width="180">
 </p>
 
-跨平台终端：把 tmux / Herdr / 本地 shell 收成原生 Tab / Pane UI，而不是黑框 + `Ctrl+B`。
+日常使用的跨平台原生终端，原生集成 tmux / Herdr，并可按 Project 组织本地和远程工作。
 
 产品层级是 **Workspace = Runtime(Transport) + path**。Linux（GTK4）、macOS（Swift）、TUI、CLI 都是 frontend，只经共享 Rust Core 的 C FFI。详见 [PRODUCT.md](PRODUCT.md)。目录见 [docs/PROJECT-STRUCTURE.md](docs/PROJECT-STRUCTURE.md)。
+
+后续以编辑框、输出阅读/批量复制、图片投递与呈现、远程文件打开和终端可靠性收口；ACP 使用现成客户端。
+功能计划与稳定期边界见 [当前产品方向](docs/PRODUCT-DIRECTION.md)，不代表这些计划已全部交付。
 
 ## 功能概览
 

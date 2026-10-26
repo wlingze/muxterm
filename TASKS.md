@@ -161,16 +161,25 @@ CI 跑 [`docs/TESTING.md`](docs/TESTING.md) 的结构门禁。
    `frontend/utils/{corebridge,i18n}`；Linux `app/chrome/terminal/ui`。~~
    见 [`docs/MODULE-SURFACE.md`](docs/MODULE-SURFACE.md)。
 
-重构合入后按 [`docs/PRODUCT-1.0-REMAINING.md`](docs/PRODUCT-1.0-REMAINING.md) 收口。
+后续按 [`docs/PRODUCT-DIRECTION.md`](docs/PRODUCT-DIRECTION.md)（2026-10-26）收口。
+[`docs/PRODUCT-1.0-REMAINING.md`](docs/PRODUCT-1.0-REMAINING.md) 保留旧交互拆解，不再要求四波全部进入 1.0。
+以下是后续路线，本轮只更新文档；每次实现仍按用户当轮指定的任务推进。
 
-8. 迁已落地的日用行为到新树。
-9. B 闭环 + Tab/Pane 状态 + 设置页（同一条状态管道）。
-10. ~~Shells + Cmd-K（macOS）。~~ Linux 聚合 Scene 与配置绑定待对齐。
-11. ~~Agents 槽（macOS）。~~ 地标、搜索坐标、图、端口、Cmd-W、选词仍待做。
-12. 后做：提升 muxer、两格来回、Window、Tab 视觉。
+8. 持续修复日用阻断：输入/IME/粘贴、显示/滚动、SSH 重连、目标身份与 Project 习惯兼容。
+9. 下一项：独立多行编辑框，按目标保留草稿，复用现有 local/SSH 图片投递与路径插入，明确失败语义。
+10. 随后分项交付：批量复制/输出阅读、可靠命令边界下的折叠；终端内联图片 + 图片/文件点击预览。
+    远程路径正确关联机器，外部打开不暗示副本自动回写。阅读探索见 [`docs/OUTPUT-READING.md`](docs/OUTPUT-READING.md)。
+11. 按需：端口转发、已连接工作区搜索定位、Attention 回到正确现场及导航打磨。
+12. 进入稳定维护：普通 shell 上手、外部用户试用、兼容性、性能、安装更新和已有核心行为的平台一致性。
+    Agent 按轮阅读只做有明确来源的可选探索，不阻塞通用终端发布，不为保持开发节奏扩大范围。
+
+已有记录：macOS Shells + Cmd-K、Agents 槽已落地。Linux 聚合 Scene 与配置绑定、地标/搜索坐标、
+Cmd-W/选词等旧待办按真实日用问题重新排优先级，不默认阻塞编辑框或发布。
+提升 muxer、新 Window 形态与 Tab 视觉保留为候选，不预排成必做阶段。
 
 ## 非目标
 
 不重写 tmux 控制协议；不新增 Runtime；不实现 `pause-after`；不实现 windows frontend；
 不为 dump API 保留双 VT；不对默认 tmux/Herdr 做破坏性测试。
 不把 frontend 拆成独立 Cargo crate。
+本轮方向不包含 ACP 客户端、完整 IDE/文件管理器、agent 编排、手机/云服务或新 Runtime。

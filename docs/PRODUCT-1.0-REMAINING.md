@@ -1,5 +1,13 @@
 # Muxterm 1.0 还差什么
 
+> **当前排期已更新（2026-10-26）**：以 [`PRODUCT-DIRECTION.md`](PRODUCT-DIRECTION.md) 为准。
+> 下一项是独立编辑框与现有图片投递的整合，随后做终端内联图片、点击预览及远程文件打开；
+> 批量复制与输出阅读纳入通用终端改进，按轮 agent 阅读的边界见 [`OUTPUT-READING.md`](OUTPUT-READING.md)。
+> 端口转发按需补齐，日用可靠性持续优先。ACP 使用现成客户端，完成后进入稳定维护。
+> 本文保留 2026-09 的交互拆解和当时状态；除 §6 的新核对外，下文“本轮”“必须先做”
+> “进 1.0”“永不做”等均为历史记录，不覆盖当前路线，也不证明当前实现状态。
+> 旧版“零误报”不是对未知终端程序的可兑现承诺；状态精度与未知情况以新方向文档为准。
+
 > 梳理时间：2026-09-09（Asia/Shanghai）
 > 愿景底本：`docs/PRODUCT-VISION-STRATEGIC-REVIEW.md`（A+B+C = 1.0）
 > 结论：**离目标不远。** 缺的是把已经开过的环收口，不是再开一条产品线。
@@ -27,7 +35,7 @@
 
 ---
 
-## 1. 四波收口（按这个顺序，不要并行铺开）
+## 1. 旧版四波拆解（保留交互细节，排期以当前方向为准）
 
 ### 第一波 — 阶段 B 做成闭环（必须先做）
 
@@ -154,7 +162,7 @@ ryzen · muxterm  远端 :5173 在听
 
 ---
 
-## 4. 1.0 收口顺序
+## 4. 旧版 1.0 收口顺序
 
 | 波 | 收口范围 |
 | --- | --- |
@@ -163,7 +171,7 @@ ryzen · muxterm  远端 :5173 在听
 | 3 日用 | 工作区导航、Cmd-W、选词 |
 | 4 远程 | 图片走愿景 §4.2；端口转发是本轮新加 |
 
-重构落地后：**先把已有行为迁到新树，再按本文件的四波往 1.0 收。** 不要在旧抽象上把 B 和端口转发做完再 rebase。
+以上为旧版排期。当前按 `PRODUCT-DIRECTION.md` 分阶段交付，不以四波全部完成作为发布门槛。
 
 ---
 
@@ -180,41 +188,20 @@ ryzen · muxterm  远端 :5173 在听
 
 ---
 
-## 6. 2026-09 对手位（Superlogical / Herdr）
+## 6. 2026-10 重新核对：客户端已有重叠
 
-核对时间：2026-09-09T16:33:46+08:00（Asia/Shanghai）。
+核对时间：2026-10-26T15:55:58+08:00 至 2026-10-26T16:04:32+08:00。
+完整来源与判断见 [`PRODUCT-DIRECTION.md`](PRODUCT-DIRECTION.md) §2、§8。
 
-三层不要打成一团：
-
-| 层 | 他们在做 | Muxterm |
+| 项目 | 已核实的公开说明 | 当前取舍 |
 | --- | --- | --- |
-| **Runtime**（会话活在哪） | Herdr：agent 进程的家；Superlogical：下一代 mux，想替 tmux/SSH | 已经接 Herdr，tmux 继续用 |
-| **Client**（人从哪看） | Herdr 自带 TUI；Superlogical 预告 web + macOS/iOS 原生 | **这是 Muxterm 的座位** |
-| **编排** | Herdr 插件/agent 互调；Superlogical 远期人+AI 工作平台 | 明确不做 |
+| [Rex](https://superlogical.com/updates/public-testing-beginning) | 10 月 5 日开始邀请公开测试，首批 macOS；官方承诺免费、无需账号、自托管 | 原生 GUI 与零账号不能当作独有优势；不为竞争而新造 Runtime |
+| [Ovis](https://github.com/devswha/ovis)、[Herdglass](https://github.com/buldezir/Herdglass)、[Herdr GUI](https://github.com/undivisible/herdr-gui) | 已有浏览器/手机和原生 macOS 等 Herdr 客户端，具体范围不同 | 只用 Herdr 时可直接选择专用客户端；撤销“窗口座位空着”判断 |
+| [ACP](https://agentclientprotocol.com/protocol/v1/prompt-turn) | 结构化 prompt、响应、工具调用与权限交互；[恢复对话](https://agentclientprotocol.com/protocol/v1/session-setup) 按能力提供 | 纯 agent 交互优先使用现成客户端；Muxterm 暂不接入 |
 
-**Herdr（2026-09-07/08）**
-
-- 0.9：本机 + SSH 机器进同一个 TUI（「Connecting the machines」）。
-- 次日：$6M seed（Bessemer 领投，YC / e2vc，Tobi Lütke、Dane Knecht 等）。
-- 公开叙事：runtime 仍 Apache-2.0；钱用来招人；下一步 Herdr Cloud。
-- 产品句：agent 活在后台 server 里，working/blocked/idle，关客户端工作不停。
-- 来源：herdr.dev 博客摘要、YC 公司页、GitHub `herdrdev/herdr`。X 上用户在说 0.9 多机、手机看卡住、agent 可编程控 tab。
-
-对 Muxterm：这是 **Runtime 变强**，不是来抢原生窗口。继续当一等 Runtime 用；不要去做第二个 Herdr TUI。他们做 Cloud/账号的时候，Muxterm 的「零账号客户端」才更值钱。
-
-**Superlogical（2026-09-02/08）**
-
-- Hashimoto 等，libghostty 上的 **server-side mux**：server 持 PTY，原始字节 tee 给客户端，不再 tmux 那种双重仿真。
-- 9-02：pre-alpha demo（关了再开计数还在、原生滚动、session）。
-- 9-08：远程持久 session、远端列目录；Hashimoto 称 **可以当 SSH 替代**（自己的服务器已不跑 sshd），也仍可用 Superlogical-over-SSH。
-- 官网仍是 waitlist；web + macOS/iOS、现场分享是规划，不是已交付客户端。
-- 来源：[superlogical.com](https://superlogical.com/)、[X @mitchellh 2097424868203758046](https://x.com/mitchellh/status/2097424868203758046)、YouTube pre-alpha（2026-09-02）。
-
-对 Muxterm：他们在换 **地下管道**（mux + 传输）。1.0 不要跟他们造 mux。观察点只有一个：协议开不开。开了就当 Transport/Runtime 接；不开就继续吃 SSH+tmux/Herdr。他们的 native 客户端还没上市，窗口座位现在是空的。
-
-**因此 1.0 的差异化只能写在 Client 层：**
-
-原生一扇窗 + 跨 tmux 与 Herdr 的注意力闭环 + 不搬家、零账号。管道谁强接谁。
+Muxterm 当前继续维护的理由来自实际使用：tmux / Herdr / shell 的共同终端入口，
+以及负责人认可的 Project 保存与组织方式。它不依赖竞争对手永远不做 GUI，
+也不需要把全部 agent 交互和文件操作都吸进来。上述是公开资料核对，不是竞品质量验收。
 
 ---
 
@@ -228,7 +215,8 @@ ryzen · muxterm  远端 :5173 在听
 4. Cmd-W / 选词 / 链接 / 建区这些日用刺
 5. 远程截图和远程端口不必再开一个终端
 
-对手加速 **不改变** 下一刀：还是把 B 做成闭环。Herdr 融资和 Superlogical demo 证明「谁在等我 + 持久会话」是真市场；他们占 Runtime，Muxterm 占窗。跟他们造 mux / 再做一个 agent TUI，才是走远。
+上述五项保留为旧问题记录，是否仍待实现需按当前版本核实。
+当前下一项是独立编辑框与图片投递；“他们占 Runtime，Muxterm 占窗”的排他判断已撤销，见 §6。
 
 四波都是现有 Workspace + SSH + 面板上的增量。B 做成闭环之后，对外那句才站得住：
 
