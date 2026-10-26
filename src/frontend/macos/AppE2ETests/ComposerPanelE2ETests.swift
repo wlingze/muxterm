@@ -5,6 +5,23 @@ import XCTest
 
 /// 独立输入框的装配冒烟：不需要 tmux，只验证徽章、纯文本与 Markdown 预览。
 final class ComposerPanelE2ETests: XCTestCase {
+    func testPNGOnlyPasteboardReachesTheImageHandlerViaAppKit() throws {
+        AppE2E.ensureApp()
+        let board = NSPasteboard.withUniqueName()
+        defer { board.releaseGlobally() }
+        let data = Data([137, 80, 78, 71, 13, 10, 26, 10])
+        board.setData(data, forType: .png)
+        let editor = ComposerTextView()
+        editor.isRichText = true
+        var received: Data?
+        editor.onImage = { received = $0 }
+        XCTAssertNotNil(board.availableType(from: editor.readablePasteboardTypes),
+                        "PNG-only 剪贴板必须被 AppKit 判定为可粘贴，不能在调用 paste: 前被禁用")
+        XCTAssertTrue(editor.readSelection(from: board))
+        XCTAssertEqual(received, data)
+        XCTAssertTrue(editor.string.isEmpty, "图片只能走上传通路，不能成为富文本附件")
+    }
+
     func testPanelStartsAsAnEmptyDraftWithAHint() {
         let panel = ComposerPanelController()
         XCTAssertTrue(panel.draftText.isEmpty)
