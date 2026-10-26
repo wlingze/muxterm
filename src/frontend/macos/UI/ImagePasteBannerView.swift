@@ -153,11 +153,6 @@ final class ImagePasteBannerView: NSView {
                 .imagePasteDone,
                 arguments: ["name": ImagePasteFeedback.fileName(of: path)]
             )
-        case .stored(let path):
-            return i18n.tr(
-                .composerImageStored,
-                arguments: ["name": ImagePasteFeedback.fileName(of: path)]
-            )
         case .failed(let message):
             return i18n.tr(.imagePasteFailed) + ": " + message
         }
@@ -165,7 +160,7 @@ final class ImagePasteBannerView: NSView {
 
     static func copyText(for stage: ImagePasteStage) -> String? {
         return switch stage {
-        case .done(let path), .stored(let path): path
+        case .done(let path): path
         case .failed(let message): MuxtermI18n.shared.tr(.imagePasteFailed) + ": " + message
         case .idle, .encoding, .uploading: nil
         }
@@ -173,14 +168,14 @@ final class ImagePasteBannerView: NSView {
 
     static func copyButtonVisible(for stage: ImagePasteStage) -> Bool {
         return switch stage {
-        case .done, .stored, .failed: true
+        case .done, .failed: true
         case .idle, .encoding, .uploading: false
         }
     }
 
     static func toolTip(for feedback: ImagePasteFeedback) -> String? {
         switch feedback.stage {
-        case .done(let path), .stored(let path): return path
+        case .done(let path): return path
         case .failed(let message): return message
         case .idle, .encoding, .uploading: return nil
         }
@@ -192,7 +187,6 @@ final class ImagePasteBannerView: NSView {
         case .encoding: return "encoding"
         case .uploading: return "uploading"
         case .done: return "done"
-        case .stored: return "stored"
         case .failed: return "failed"
         }
     }

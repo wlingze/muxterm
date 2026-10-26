@@ -301,6 +301,7 @@ final class ComposerPanelController: NSWindowController, NSTextViewDelegate, NSW
 
     /// 主窗口切换场景后，把当前焦点对应的 pane 带进 tab（已有草稿就切过去）。
     func updateTarget(_ target: ComposerTarget?) {
+        commitEditor()
         _ = drafts.activate(target)
         renderTabs()
         loadActivePage()
@@ -339,7 +340,8 @@ final class ComposerPanelController: NSWindowController, NSTextViewDelegate, NSW
             for: key
         )
         if drafts.activeKey == key {
-            loadActivePage()
+            // 插路径不换文档，保留用户之前的撤销历史。
+            loadActivePage(resetUndo: false)
         }
         return true
     }
@@ -377,6 +379,13 @@ final class ComposerPanelController: NSWindowController, NSTextViewDelegate, NSW
     func failImage(_ message: String) {
         setStatus(message)
         advanceImage(.failed(message: message))
+    }
+
+    /// 图片路径插到草稿后，收起进度横幅而不落到「已就绪」结果页：
+    /// 路径已经在编辑器里，再弹一条提示是重复信息。
+    func finishImageInsertion() {
+        imageTimeline.clear()
+        renderImageFeedback()
     }
 
     private func renderImageFeedback() {
@@ -495,13 +504,20 @@ final class ComposerPanelController: NSWindowController, NSTextViewDelegate, NSW
         drafts.update(text: editor.string, selection: editor.selectedRange(), for: key)
     }
 
-    private func loadActivePage() {
+    /// 把当前页灌进编辑器。
+    ///
+    /// `resetUndo` 默认清空撤销栈：切页是一次「换文档」，不清的话 ⌘Z 会把
+    /// 上一页的文本撤进这一页（实测会拼出 "twoone"）。
+    private func loadActivePage(resetUndo: Bool = true) {
         isSyncingDrafts = true
         defer { isSyncingDrafts = false }
         guard let page = drafts.activePage else {
             editor.string = ""
             editor.setSelectedRange(NSRange(location: 0, length: 0))
             target = nil
+            if resetUndo {
+                editor.undoManager?.removeAllActions()
+            }
             renderTarget()
             applyHighlight()
             return
@@ -511,27 +527,31 @@ final class ComposerPanelController: NSWindowController, NSTextViewDelegate, NSW
         let location = min(max(page.selection.location, 0), length)
         editor.setSelectedRange(NSRange(location: location, length: 0))
         target = page.target
+        if resetUndo {
+            editor.undoManager?.removeAllActions()
+        }
         renderTarget()
         applyHighlight()
     }
 
     @objc private func tabChanged() {
         let index = tabs.selectedSegment
-        guard drafts.pages.indices.contains(index) else { return }
         commitEditor()
-        _ = drafts.select(index: index)
+        guard drafts.selectVisible(index: index) else { return }
+        renderTabs()
         loadActivePage()
     }
 
+    /// 只有「当前页 + 已写内容的页」占 tab；空草稿不留位置。
     private func renderTabs() {
-        let pages = drafts.pages
+        let pages = drafts.visiblePages
         tabs.isHidden = pages.count <= 1
         tabs.segmentCount = max(pages.count, 1)
         for (index, page) in pages.enumerated() {
             tabs.setLabel(page.title, forSegment: index)
             tabs.setToolTip(page.target?.detail ?? MuxtermI18n.shared.tr(.composerNoTarget), forSegment: index)
         }
-        if let index = drafts.activeIndex {
+        if let index = drafts.activeVisibleIndex {
             tabs.selectedSegment = index
         } else {
             tabs.selectedSegment = -1
@@ -566,6 +586,7 @@ final class ComposerPanelController: NSWindowController, NSTextViewDelegate, NSW
         editor.deleteBackward(nil)
         editor.setSelectedRange(NSRange(location: 0, length: 0))
         commitEditor()
+        renderTabs()
         applyHighlight()
         setStatus(MuxtermI18n.shared.tr(.composerCleared))
     }
@@ -606,6 +627,7 @@ final class ComposerPanelController: NSWindowController, NSTextViewDelegate, NSW
     func textDidChange(_ notification: Notification) {
         guard !isHighlighting, !isSyncingDrafts, !editor.hasMarkedText() else { return }
         commitEditor()
+        renderTabs()
         applyHighlight()
     }
 
@@ -843,8 +865,9 @@ final class ComposerPanelController: NSWindowController, NSTextViewDelegate, NSW
     var detailText: String { detailLabel.stringValue }
     var statusText: String { statusLabel.stringValue }
     var editorIsFirstResponder: Bool { window?.firstResponder === editor }
-    var pageTitles: [String] { drafts.pages.map(\.title) }
-    var activePageIndex: Int? { drafts.activeIndex }
+    var pageTitles: [String] { drafts.visiblePages.map(\.title) }
+    var allPageTitles: [String] { drafts.pages.map(\.title) }
+    var activePageIndex: Int? { drafts.activeVisibleIndex }
     var actionMenuVisible: Bool { !actionMenu.isHidden }
     var actionMenuTitles: [String] { actionMenu.rows.map(\.testTitle) }
     var actionMenuSelection: Int { actionMenu.selectedIndex }
@@ -870,7 +893,8 @@ final class ComposerPanelController: NSWindowController, NSTextViewDelegate, NSW
     }
 
     func selectPageForTesting(_ index: Int) {
-        guard drafts.select(index: index) else { return }
+        commitEditor()
+        guard drafts.selectVisible(index: index) else { return }
         renderTabs()
         loadActivePage()
     }
@@ -897,6 +921,13 @@ final class ComposerPanelController: NSWindowController, NSTextViewDelegate, NSW
 
     func undoForTesting() {
         editor.undoManager?.undo()
+    }
+
+    var activeDraftKeyForTesting: ComposerDraftKey {
+        if drafts.activeKey == nil {
+            _ = drafts.activate(targetProvider?())
+        }
+        return drafts.activeKey ?? ComposerDraftKey(workspaceID: "", paneID: 0)
     }
 
     /// 走真实的 performKeyEquivalent 通路，验证 ⌘↩ / ⌘K 的绑定而不是直接调动作。

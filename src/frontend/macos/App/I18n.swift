@@ -35,7 +35,6 @@ enum MuxtermTextKey: CaseIterable {
     case composerCopy
     case composerCopyFailed
     case composerImageEncoding
-    case composerImageStored
     case composerImageUploading
     case composerNoTarget
     case composerNothingToClear
@@ -343,7 +342,6 @@ enum MuxtermTextKey: CaseIterable {
         case .composerCopy: return "composer_copy"
         case .composerCopyFailed: return "composer_copy_failed"
         case .composerImageEncoding: return "composer_image_encoding"
-        case .composerImageStored: return "composer_image_stored"
         case .composerImageUploading: return "composer_image_uploading"
         case .composerNoTarget: return "composer_no_target"
         case .composerNothingToClear: return "composer_nothing_to_clear"

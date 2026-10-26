@@ -33,6 +33,11 @@ public struct ComposerDraftPage: Equatable, Sendable, Identifiable {
 
     public var id: ComposerDraftKey { key }
 
+    /// 没有任何用户写下的内容（只有空白字符也算空）。
+    public var isBlank: Bool {
+        text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     /// tab 标题：工作区名 + pane 号，保证同一工作区的多个 pane 能区分。
     public var title: String { Self.title(for: target, key: key) }
 
@@ -77,6 +82,20 @@ public struct ComposerDraftStore: Equatable, Sendable {
         pages.first { $0.key == key }
     }
 
+    /// tab 栏里真正要画的页：当前页，加上已经写了内容的页。
+    ///
+    /// 空草稿不占位置：打开输入框只该看到自己正在写的那个 pane，而不是
+    /// 之前点过又没写东西的一串空 tab。切换到某个空页时它仍会显示，因为
+    /// 它就是当前页。
+    public var visiblePages: [ComposerDraftPage] {
+        pages.filter { $0.key == activeKey || !$0.isBlank }
+    }
+
+    /// 当前页在 `visiblePages` 里的位置；没有页时为 nil。
+    public var activeVisibleIndex: Int? {
+        visiblePages.firstIndex { $0.key == activeKey }
+    }
+
     /// 打开某个目标：已有草稿就切过去并刷新目标快照，没有才新建空页。
     @discardableResult
     public mutating func activate(_ target: ComposerTarget?) -> ComposerDraftPage {
@@ -104,6 +123,14 @@ public struct ComposerDraftStore: Equatable, Sendable {
     public mutating func select(index: Int) -> Bool {
         guard pages.indices.contains(index) else { return false }
         activeKey = pages[index].key
+        return true
+    }
+
+    /// 按 `visiblePages` 的下标切页；tab 栏只认这一套下标。
+    public mutating func selectVisible(index: Int) -> Bool {
+        let visible = visiblePages
+        guard visible.indices.contains(index) else { return false }
+        activeKey = visible[index].key
         return true
     }
 

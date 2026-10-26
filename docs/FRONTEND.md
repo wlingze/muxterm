@@ -109,12 +109,13 @@ AppWindow
   SSH HostName / DNS 由 Core 后台解析并经 FFI 返回；地址未就绪时禁用 Open。
 - 关 GUI 窗：有 `PersistDetach` 的 Runtime **detach**；shell **shutdown**。
 - 迟到输入不得改投新的 active pane。
-- `Cmd-I` 独立输入框：普通竖长窗口（不置顶），每个 pane 一个草稿 tab；关闭窗口只收起，
-  草稿一直保留到手动清空。单栏 Markdown 语法高亮（原文不变，不做左右分栏预览），常驻
-  `Local` / `SSH <host>` 徽章。`Cmd-K` 打开当前页菜单（复制 / 写入 / 清空），`Cmd-Enter`
+- `Cmd-I` 独立输入框：普通竖长窗口（不置顶），按 pane 保存草稿；tab 栏只出现
+  **当前 pane 和有内容的 pane**，空草稿不占位置，关闭窗口只收起，草稿一直保留到手动
+  清空。单栏 Markdown 语法高亮（原文不变，不做左右分栏预览），常驻 `Local` /
+  `SSH <host>` 徽章。`Cmd-K` 打开当前页菜单（复制 / 写入 / 清空），`Cmd-Enter`
   清空当前草稿（`Cmd-Z` 可撤销），写入仍走按钮或菜单，不自动回车。粘贴图片走 Core 只
-  存储通路（`imageStore`），路径插回发起粘贴的那一页草稿；右下角反馈条与终端复用同一
-  套阶段（编码 / 上传 / 已存路径 / 失败）。
+  存储通路（`imageStore`），路径插回发起粘贴的那一页草稿；右下角只提示编码 / 上传 /
+  失败，路径插入后不再弹成功提示（路径本身已可见）。
 
 ### 2.5 渲染（像素细节见 SURFACE）
 
