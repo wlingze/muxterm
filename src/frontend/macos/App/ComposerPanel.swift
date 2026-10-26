@@ -8,21 +8,29 @@ final class ComposerTextView: NSTextView {
     /// Esc 收起输入框；组合键编辑动作仍交给 AppKit。
     var onEscape: (() -> Void)?
 
-    override func paste(_ sender: Any?) {
-        if let data = Self.imageData(from: NSPasteboard.general) {
-            onImage?(data)
-            return
-        }
-        super.paste(sender)
+    /// AppKit 先检查可读取类型，再分发菜单 Cmd-V；只重写 paste: 不够。
+    /// 文本只接收原文，避免外来 RTF/HTML 附件绕过图片上传通路。
+    override var readablePasteboardTypes: [NSPasteboard.PasteboardType] {
+        [.png, .tiff, .string]
     }
 
-    /// 拖拽图片同样只插入路径，不把图片塞进文本。
-    override func readSelection(from pboard: NSPasteboard, type: NSPasteboard.PasteboardType) -> Bool {
-        if let data = Self.imageData(from: pboard) {
-            onImage?(data)
+    override func paste(_ sender: Any?) {
+        _ = readSelection(from: .general)
+    }
+
+    override func readSelection(from pasteboard: NSPasteboard) -> Bool {
+        if let data = Self.imageData(from: pasteboard) {
+            guard let onImage else { return false }
+            onImage(data)
             return true
         }
-        return super.readSelection(from: pboard, type: type)
+        guard let text = pasteboard.string(forType: .string) else { return false }
+        insertText(text, replacementRange: selectedRange())
+        return true
+    }
+
+    override func readSelection(from pboard: NSPasteboard, type: NSPasteboard.PasteboardType) -> Bool {
+        readSelection(from: pboard)
     }
 
     override func keyDown(with event: NSEvent) {
