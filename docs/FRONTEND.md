@@ -113,7 +113,10 @@ AppWindow
   **当前 pane 和有内容的 pane**，空草稿不占位置，关闭窗口只收起，草稿一直保留到手动
   清空。单栏 Markdown 语法高亮（原文不变，不做左右分栏预览），常驻 `Local` /
   `SSH <host>` 徽章。`Cmd-K` 打开当前页菜单（复制 / 写入 / 清空），`Cmd-Enter`
-  清空当前草稿（`Cmd-Z` 可撤销），写入仍走按钮或菜单，不自动回车。粘贴图片走 Core 只
+  与 Write 按钮同义：写入终端并清空这一页草稿（`Cmd-Z` 可撤销），不自动回车。
+  这两个快捷键必须在主菜单之前消费（AppKit 先问菜单的 key equivalent，主菜单里
+  `Cmd-Enter`/`Cmd-K` 分别属于 pane zoom 和 Shells），输入框用自己的 local key
+  monitor 先拿到事件。粘贴图片走 Core 只
   存储通路（`imageStore`），路径插回发起粘贴的那一页草稿；右下角只提示编码 / 上传 /
   失败，路径插入后不再弹成功提示（路径本身已可见）。
 

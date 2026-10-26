@@ -4,6 +4,11 @@ import XCTest
 @testable import MuxtermAppLib
 
 /// 独立输入框的装配冒烟：不需要 tmux，只验证徽章、纯文本与 Markdown 预览。
+private final class ComposerMenuProbe: NSObject {
+    var hits = 0
+    @objc func fire(_ sender: Any?) { hits += 1 }
+}
+
 final class ComposerPanelE2ETests: XCTestCase {
     func testPNGOnlyPasteboardReachesTheImageHandlerViaAppKit() throws {
         AppE2E.ensureApp()
@@ -70,7 +75,7 @@ final class ComposerPanelE2ETests: XCTestCase {
         )
         panel.targetProvider = { target }
         var sent: [String] = []
-        panel.onSend = { text, _ in sent.append(text) }
+        panel.onSend = { text, _ in sent.append(text); return true }
 
         panel.setDraftForTesting("   ")
         panel.sendForTesting()
@@ -81,7 +86,17 @@ final class ComposerPanelE2ETests: XCTestCase {
         panel.sendForTesting()
         XCTAssertEqual(sent, ["git status"])
         XCTAssertEqual(panel.statusText, MuxtermI18n.shared.tr(.composerSent))
-        XCTAssertEqual(panel.draftText, "git status", "写入后保留原文，不能清空")
+        XCTAssertTrue(panel.draftText.isEmpty, "Write 发完要清空这一页")
+    }
+
+    /// 目标已经关掉时不能假装成功：草稿必须留着。
+    func testWriteKeepsTheDraftWhenDeliveryFails() {
+        let panel = ComposerPanelController()
+        panel.targetProvider = { self.target(pane: 1) }
+        panel.onSend = { _, _ in false }
+        panel.setDraftForTesting("keep me")
+        panel.sendForTesting()
+        XCTAssertEqual(panel.draftText, "keep me", "没送到就不能清空")
     }
 
     func testPresentingFocusesTheEditor() {
@@ -116,19 +131,61 @@ final class ComposerPanelE2ETests: XCTestCase {
         )
     }
 
-    /// Cmd-Enter 从「写入」改成「清空」：不发送，只清当前页，且能撤销。
-    func testCmdEnterClearsTheCurrentDraftWithoutSending() {
+    /// Cmd-Enter = 写入并清空：内容进 pane，草稿被消费（⌘Z 可撤销）。
+    func testCmdEnterWritesTheDraftAndClearsIt() {
         let panel = ComposerPanelController()
         panel.targetProvider = { self.target(pane: 1) }
         var sent: [String] = []
-        panel.onSend = { text, _ in sent.append(text) }
+        panel.onSend = { text, _ in sent.append(text); return true }
         panel.setDraftForTesting("git status")
         XCTAssertTrue(panel.performKeyEquivalentForTesting("\r"))
-        XCTAssertTrue(sent.isEmpty, "⌘↩ 不能再把草稿写进终端")
+        XCTAssertEqual(sent, ["git status"])
+        XCTAssertTrue(panel.draftText.isEmpty, "写入后必须清空这一页")
+        XCTAssertEqual(panel.statusText, MuxtermI18n.shared.tr(.composerSent))
+        panel.undoForTesting()
+        XCTAssertEqual(panel.draftText, "git status", "⌘Z 能把写入后的清空恢复回来")
+    }
+
+    /// 主菜单里 `Cmd-Enter`（pane zoom）和 `Cmd-K`（Shells）是全局 key
+    /// equivalent。输入框必须在菜单之前拿到事件，否则用户按 Cmd-Enter 只会
+    /// 放大终端 pane，草稿一个字都没写进去。
+    func testComposerOwnsCmdEnterAndCmdKBeforeTheAppMenu() throws {
+        AppE2E.ensureApp()
+        let probe = ComposerMenuProbe()
+        let previousMenu = NSApp.mainMenu
+        let menu = NSMenu()
+        let root = NSMenuItem()
+        let submenu = NSMenu(title: "View")
+        root.submenu = submenu
+        menu.addItem(root)
+        for (title, key) in [("Toggle Pane Fullscreen", "\r"), ("Shells", "k")] {
+            let item = NSMenuItem(title: title, action: #selector(ComposerMenuProbe.fire(_:)), keyEquivalent: key)
+            item.keyEquivalentModifierMask = .command
+            item.target = probe
+            submenu.addItem(item)
+        }
+        NSApp.mainMenu = menu
+        defer { NSApp.mainMenu = previousMenu }
+
+        let panel = ComposerPanelController()
+        panel.targetProvider = { self.target(pane: 1) }
+        var sent: [String] = []
+        panel.onSend = { text, _ in sent.append(text); return true }
+        panel.present(from: nil)
+        defer { panel.dismiss() }
+        panel.setDraftForTesting("must reach the pane")
+
+        panel.dispatchKeyEventForTesting("\r")
+        XCTAssertEqual(sent, ["must reach the pane"], "⌘↩ 必须写进 pane，不能被菜单抢走")
         XCTAssertTrue(panel.draftText.isEmpty)
-        XCTAssertEqual(panel.statusText, MuxtermI18n.shared.tr(.composerCleared))
-        XCTAssertTrue(panel.performKeyEquivalentForTesting("\r"))
-        XCTAssertEqual(panel.statusText, MuxtermI18n.shared.tr(.composerNothingToClear))
+        XCTAssertEqual(probe.hits, 0, "主菜单的 Cmd-Enter 不能被触发")
+
+        panel.setDraftForTesting("draft")
+        panel.dispatchKeyEventForTesting("k", keyCode: 40)
+        XCTAssertTrue(panel.actionMenuVisible, "⌘K 必须打开输入框页面菜单")
+        XCTAssertEqual(probe.hits, 0, "主菜单的 Cmd-K 不能被触发")
+        panel.dispatchKeyEventForTesting("k", keyCode: 40)
+        XCTAssertFalse(panel.actionMenuVisible)
     }
 
     /// 每页一份草稿：切到新 pane 再切回来，原文和光标都还在；关窗不清空。
@@ -210,7 +267,7 @@ final class ComposerPanelE2ETests: XCTestCase {
         let panel = ComposerPanelController()
         panel.targetProvider = { self.target(pane: 1) }
         var sent: [String] = []
-        panel.onSend = { text, _ in sent.append(text) }
+        panel.onSend = { text, _ in sent.append(text); return true }
         panel.setDraftForTesting("draft")
         XCTAssertTrue(panel.performKeyEquivalentForTesting("k"))
         XCTAssertTrue(panel.actionMenuVisible)
@@ -233,6 +290,7 @@ final class ComposerPanelE2ETests: XCTestCase {
         panel.moveActionSelectionForTesting(by: -2)
         panel.activateActionForTesting()
         XCTAssertEqual(sent, ["draft"], "菜单里的写入仍走同一条发送路径")
+        XCTAssertTrue(panel.draftText.isEmpty, "菜单写入也要清空")
     }
 
     /// 输入框图片粘贴复用终端横幅：编码 → 上传 → 已存路径，全部画在右下角。

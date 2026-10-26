@@ -48,9 +48,13 @@ final class ComposerTextView: NSTextView {
     }
 }
 
-/// 面板根视图：Cmd-Enter 清空当前草稿，Cmd-K 打开右下角页面菜单。
+/// 面板根视图：Cmd-Enter 写入并清空，Cmd-K 打开右下角页面菜单。
+///
+/// 这层只是兜底：主菜单里 `Cmd-Enter`（pane zoom）和 `Cmd-K`（Shells）是全局
+/// key equivalent，AppKit 会先问菜单再问窗口。真正的入口是面板自己的 local
+/// key monitor（`handleShortcutEvent`），它比菜单更早拿到事件。
 final class ComposerRootView: NSView {
-    var onClear: (() -> Void)?
+    var onWrite: (() -> Void)?
     var onActions: (() -> Void)?
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
@@ -58,7 +62,7 @@ final class ComposerRootView: NSView {
         guard flags == .command else { return super.performKeyEquivalent(with: event) }
         switch event.charactersIgnoringModifiers?.lowercased() {
         case "\r", "\n":
-            onClear?()
+            onWrite?()
             return true
         case "k":
             onActions?()
@@ -212,8 +216,9 @@ final class ComposerActionMenuView: NSVisualEffectView {
 final class ComposerPanelController: NSWindowController, NSTextViewDelegate, NSWindowDelegate {
     /// 当前要绑定/写入的终端；nil 表示还没有打开的 workspace（仍可当草稿用）。
     var targetProvider: (() -> ComposerTarget?)?
-    /// 把文本写进目标 pane；不自动回车。
-    var onSend: ((String, ComposerTarget) -> Void)?
+    /// 把文本写进目标 pane；不自动回车。返回 false 表示没送到（目标已关闭等），
+    /// 面板保留草稿，不假装成功。
+    var onSend: ((String, ComposerTarget) -> Bool)?
     /// 把 PNG 交给 Core 存到目标机器；完成后按 `ComposerDraftKey` 插回原草稿。
     var onPastePNG: ((Data, ComposerTarget, ComposerDraftKey) -> Void)?
 
@@ -239,7 +244,8 @@ final class ComposerPanelController: NSWindowController, NSTextViewDelegate, NSW
     /// 切页/写入草稿时程序性改 string，也不再回写。
     private var isSyncingDrafts = false
     private var statusShowsHint = true
-    private var keyMonitor: Any?
+    /// 面板可见期间的 local key monitor：Cmd-Enter / Cmd-K 必须先于主菜单处理。
+    private var shortcutMonitor: Any?
     private var hasPlacedWindow = false
 
     init() {
@@ -281,6 +287,7 @@ final class ComposerPanelController: NSWindowController, NSTextViewDelegate, NSW
         refreshStrings()
         guard let window else { return }
         placeWindowIfNeeded(owner: owner, force: false)
+        installShortcutMonitor()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         window.makeFirstResponder(editor)
@@ -289,14 +296,84 @@ final class ComposerPanelController: NSWindowController, NSTextViewDelegate, NSW
     func dismiss() {
         commitEditor()
         hideActions()
+        removeShortcutMonitor()
         window?.orderOut(nil)
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         commitEditor()
         hideActions()
+        removeShortcutMonitor()
         sender.orderOut(nil)
         return false
+    }
+
+    /// 主菜单里有 `Cmd-Enter`（放大 pane）和 `Cmd-K`（Shells），AppKit 处理
+    /// key equivalent 时会先问菜单。local monitor 比菜单更早拿到事件，输入框
+    /// 必须在这里消费掉自己的两个快捷键，否则用户按 Cmd-Enter 只会把终端 pane
+    /// 放大，草稿根本没被写进去。
+    private func installShortcutMonitor() {
+        guard shortcutMonitor == nil else { return }
+        shortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            // 只认发往输入框窗口的事件。用 `event.window` 而不是 `isKeyWindow`：
+            // headless e2e 里窗口可以不是 key，但快捷键语义必须一样。
+            guard let self, let window = self.window, event.window === window else { return event }
+            return self.handleShortcutEvent(event) ? nil : event
+        }
+    }
+
+    private func removeShortcutMonitor() {
+        if let shortcutMonitor {
+            NSEvent.removeMonitor(shortcutMonitor)
+        }
+        shortcutMonitor = nil
+    }
+
+    /// 返回 true 表示已消费。
+    func handleShortcutEvent(_ event: NSEvent) -> Bool {
+        if !actionMenu.isHidden {
+            if Self.isBareCommandK(event) {
+                hideActions()
+                return true
+            }
+            switch event.keyCode {
+            case 53: // Escape
+                hideActions()
+                return true
+            case 125: // ↓
+                moveActionSelection(by: 1)
+                return true
+            case 126: // ↑
+                moveActionSelection(by: -1)
+                return true
+            case 36, 76: // Return / keypad Enter
+                activateActionSelection()
+                return true
+            default:
+                return false
+            }
+        }
+        if Self.isBareCommandK(event) {
+            toggleActions()
+            return true
+        }
+        if Self.isBareCommandReturn(event) {
+            sendCurrentText()
+            return true
+        }
+        return false
+    }
+
+    /// 只有 Cmd 的 Enter（不含 Shift/Option/Control）。
+    static func isBareCommandReturn(_ event: NSEvent) -> Bool {
+        let flags = event.modifierFlags
+            .intersection(.deviceIndependentFlagsMask)
+            .intersection([.command, .option, .control, .shift])
+        guard flags == .command else { return false }
+        if let characters = event.charactersIgnoringModifiers, ["\r", "\n"].contains(characters) {
+            return true
+        }
+        return event.keyCode == 36 || event.keyCode == 76
     }
 
     /// 主窗口切换场景后，把当前焦点对应的 pane 带进 tab（已有草稿就切过去）。
@@ -408,19 +485,20 @@ final class ComposerPanelController: NSWindowController, NSTextViewDelegate, NSW
             title: actionMenuTitle(),
             items: [
                 (MuxtermI18n.shared.tr(.composerCopy), ""),
-                (MuxtermI18n.shared.tr(.composerSend), ""),
-                (MuxtermI18n.shared.tr(.composerClear), "⌘↩"),
+                (MuxtermI18n.shared.tr(.composerSend), "⌘↩"),
+                (MuxtermI18n.shared.tr(.composerClear), ""),
             ]
         )
         actionMenu.isHidden = false
         layoutActionMenu()
         actionMenu.select(0)
-        installActionKeyMonitor()
+        // 单测/无窗口路径也可能直接打开菜单：monitor 由 present 安装，
+        // 这里补一次保证键盘选择可用（重复安装是 no-op）。
+        installShortcutMonitor()
     }
 
     private func hideActions() {
         actionMenu.isHidden = true
-        removeActionKeyMonitor()
     }
 
     private func actionMenuTitle() -> String {
@@ -430,41 +508,6 @@ final class ComposerPanelController: NSWindowController, NSTextViewDelegate, NSW
         return page.title
     }
 
-    private func installActionKeyMonitor() {
-        guard keyMonitor == nil else { return }
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, self.actionMenu.isHidden == false,
-                  self.window?.isKeyWindow == true
-            else { return event }
-            if Self.isBareCommandK(event) {
-                self.hideActions()
-                return nil
-            }
-            switch event.keyCode {
-            case 53: // Escape
-                self.hideActions()
-                return nil
-            case 125: // ↓
-                self.moveActionSelection(by: 1)
-                return nil
-            case 126: // ↑
-                self.moveActionSelection(by: -1)
-                return nil
-            case 36, 76: // Return / keypad Enter
-                self.activateActionSelection()
-                return nil
-            default:
-                return event
-            }
-        }
-    }
-
-    private func removeActionKeyMonitor() {
-        if let keyMonitor {
-            NSEvent.removeMonitor(keyMonitor)
-        }
-        keyMonitor = nil
-    }
 
     private func moveActionSelection(by offset: Int) {
         let count = actionMenu.rows.count
@@ -570,7 +613,10 @@ final class ComposerPanelController: NSWindowController, NSTextViewDelegate, NSW
             setStatus(MuxtermI18n.shared.tr(.composerNoTarget))
             return
         }
-        onSend?(text, target)
+        guard onSend?(text, target) == true else { return }
+        // 写完即消费这一页：同一段话不会因为再按一次 ⌘↩ 被写第二遍。
+        // 走编辑器的删除路径，⌘Z 仍能撤销清空。
+        clearActivePage()
         setStatus(MuxtermI18n.shared.tr(.composerSent))
     }
 
@@ -582,13 +628,18 @@ final class ComposerPanelController: NSWindowController, NSTextViewDelegate, NSW
             setStatus(MuxtermI18n.shared.tr(.composerNothingToClear))
             return
         }
+        clearActivePage()
+        setStatus(MuxtermI18n.shared.tr(.composerCleared))
+    }
+
+    /// 删除当前页全部文本，保留撤销记录。
+    private func clearActivePage() {
         editor.selectAll(nil)
         editor.deleteBackward(nil)
         editor.setSelectedRange(NSRange(location: 0, length: 0))
         commitEditor()
         renderTabs()
         applyHighlight()
-        setStatus(MuxtermI18n.shared.tr(.composerCleared))
     }
 
     private func beginImage(_ data: Data) {
@@ -635,7 +686,7 @@ final class ComposerPanelController: NSWindowController, NSTextViewDelegate, NSW
 
     private func buildView() {
         guard let window else { return }
-        root.onClear = { [weak self] in self?.clearCurrentPage() }
+        root.onWrite = { [weak self] in self?.sendCurrentText() }
         root.onActions = { [weak self] in self?.toggleActions() }
         window.contentView = root
 
@@ -888,6 +939,8 @@ final class ComposerPanelController: NSWindowController, NSTextViewDelegate, NSW
         sendCurrentText()
     }
 
+    var shortcutMonitorInstalledForTesting: Bool { shortcutMonitor != nil }
+
     func clearForTesting() {
         clearCurrentPage()
     }
@@ -931,6 +984,31 @@ final class ComposerPanelController: NSWindowController, NSTextViewDelegate, NSW
     }
 
     /// 走真实的 performKeyEquivalent 通路，验证 ⌘↩ / ⌘K 的绑定而不是直接调动作。
+    /// 走真实事件派发（含主菜单 key equivalent 竞争），验证输入框自己拿到 ⌘↩。
+    @discardableResult
+    func dispatchKeyEventForTesting(
+        _ characters: String,
+        modifiers: NSEvent.ModifierFlags = .command,
+        keyCode: UInt16 = 36
+    ) -> NSEvent? {
+        guard let window, let event = NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: modifiers,
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber,
+            context: nil,
+            characters: characters,
+            charactersIgnoringModifiers: characters,
+            isARepeat: false,
+            keyCode: keyCode
+        ) else {
+            return nil
+        }
+        NSApp.sendEvent(event)
+        return event
+    }
+
     func performKeyEquivalentForTesting(
         _ characters: String,
         modifiers: NSEvent.ModifierFlags = .command
