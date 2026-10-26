@@ -507,7 +507,6 @@
   "composer_copy": "Copy",
   "composer_copy_failed": "Could not write to the clipboard.",
   "composer_image_encoding": "Preparing clipboard image…",
-  "composer_image_stored": "Image path ready: {{name}}",
   "composer_image_uploading": "Uploading the image to the target…",
   "composer_no_target": "Open a workspace before writing into a terminal.",
   "composer_nothing_to_copy": "Nothing to copy yet.",

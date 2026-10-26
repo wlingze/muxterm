@@ -2364,7 +2364,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 advanceImagePaste(to: .done(path: path))
             } else {
                 // 输入框路径：pane 没收到任何字节，由面板把纯路径插回原草稿页。
-                advanceImagePaste(to: .stored(path: path))
+                // 路径本身已经在编辑器里可见，所以不再弹「已就绪」横幅，
+                // 只把上传进度收掉（失败仍然照常提示）。
                 if case .composer(let key) = destination {
                     insertComposerImagePath(path, for: key)
                 }
@@ -3532,13 +3533,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// Core 存完图片后把纯路径插回发起粘贴的草稿页；窗口已关也不丢。
+    ///
+    /// 不写状态行、不弹成功横幅：路径就在编辑器里，重复提示只会挡住内容。
     private func insertComposerImagePath(_ path: String, for key: ComposerDraftKey) {
         guard let composer = composerPanel else { return }
         composer.insertImagePath(path, for: key)
-        composer.setStatus(MuxtermI18n.shared.tr(
-            .composerImageStored,
-            arguments: ["name": (path as NSString).lastPathComponent]
-        ))
+        composer.finishImageInsertion()
     }
 
     /// 注意力面板 Cmd-Enter：打开/关闭独立 replica overlay（W19-E）。

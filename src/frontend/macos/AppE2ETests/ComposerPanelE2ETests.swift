@@ -169,12 +169,27 @@ final class ComposerPanelE2ETests: XCTestCase {
 
         panel.clearForTesting()
         XCTAssertEqual(panel.draftText, "")
-        panel.selectPageForTesting(0)
-        XCTAssertEqual(panel.draftText, "one", "清空第 2 页不能动第 1 页")
-
-        panel.selectPageForTesting(1)
         panel.undoForTesting()
         XCTAssertEqual(panel.draftText, "two", "⌘Z 必须能把清空恢复回来")
+        panel.selectPageForTesting(0)
+        XCTAssertEqual(panel.draftText, "one", "清空第 2 页不能动第 1 页")
+    }
+
+    /// 切页等于换文档：上一页的撤销记录不能把文本拼进这一页。
+    func testSwitchingPagesDoesNotLeakUndoAcrossDrafts() {
+        let panel = ComposerPanelController()
+        var current = target(pane: 1)
+        panel.targetProvider = { current }
+        panel.present(from: nil)
+        defer { panel.dismiss() }
+        panel.setDraftForTesting("one")
+        current = target(pane: 2)
+        panel.updateTarget(current)
+        panel.setDraftForTesting("two")
+
+        panel.selectPageForTesting(0)
+        panel.undoForTesting()
+        XCTAssertEqual(panel.draftText, "one", "撤销不能把两页文本拼在一起")
     }
 
     func testWindowIsNormalAndPortraitInsteadOfAlwaysOnTop() {
@@ -236,13 +251,42 @@ final class ComposerPanelE2ETests: XCTestCase {
         )
         panel.advanceImage(.uploading)
         XCTAssertTrue(panel.imageBannerVisible)
-        panel.advanceImage(.stored(path: "/tmp/muxterm-paste-abc.png"))
-        // 进度至少停留 0.4s，结果先挂起；tick 到点后才落下来。
-        AppE2E.pump(450)
+    }
+
+    /// 路径插进草稿后不该再弹「已就绪」：路径本身已经在编辑器里，横幅只负责进度。
+    func testSuccessfulImageInsertionHidesTheBannerWithoutASuccessToast() {
+        let panel = ComposerPanelController()
+        panel.targetProvider = { self.target(pane: 1) }
+        panel.present(from: nil)
+        defer { panel.dismiss() }
+        panel.advanceImage(.uploading)
+        XCTAssertTrue(panel.imageBannerVisible)
+
+        XCTAssertTrue(panel.insertImagePath("/tmp/muxterm-paste-abc.png", for: panel.activeDraftKeyForTesting))
+        panel.finishImageInsertion()
         panel.tickImageFeedbackForTesting()
-        XCTAssertEqual(
-            panel.imageBannerMessage,
-            MuxtermI18n.shared.tr(.composerImageStored, arguments: ["name": "muxterm-paste-abc.png"])
-        )
+        XCTAssertFalse(panel.imageBannerVisible, "路径可见后不能再留一条成功提示")
+
+        panel.advanceImage(.failed(message: "boom"))
+        XCTAssertTrue(panel.imageBannerVisible, "失败仍要画出来")
+    }
+
+    /// 空草稿不占 tab：只有当前页和有内容的页出现在 tab 栏。
+    func testBlankDraftsDoNotTakeATab() {
+        let panel = ComposerPanelController()
+        var current = self.target(pane: 1)
+        panel.targetProvider = { current }
+        panel.present(from: nil)
+        defer { panel.dismiss() }
+        panel.setDraftForTesting("written here")
+        current = self.target(pane: 2)
+        panel.updateTarget(current)
+        XCTAssertEqual(panel.pageTitles, ["api #1", "api #2"], "当前页即使空也要在")
+        current = self.target(pane: 3)
+        panel.updateTarget(current)
+        XCTAssertEqual(panel.pageTitles, ["api #1", "api #3"], "空且非当前的 pane 不占 tab")
+        panel.setDraftForTesting("third")
+        XCTAssertEqual(panel.pageTitles, ["api #1", "api #3"])
+        XCTAssertEqual(panel.allPageTitles, ["api #1", "api #2", "api #3"], "隐藏不代表删除")
     }
 }

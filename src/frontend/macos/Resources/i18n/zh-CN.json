@@ -507,7 +507,6 @@
   "composer_copy": "复制",
   "composer_copy_failed": "写入剪贴板失败。",
   "composer_image_encoding": "正在处理剪贴板图片…",
-  "composer_image_stored": "图片路径已就绪：{{name}}",
   "composer_image_uploading": "正在把图片上传到目标机器…",
   "composer_no_target": "先打开一个工作区，才能写入终端。",
   "composer_nothing_to_copy": "还没有内容可以复制。",

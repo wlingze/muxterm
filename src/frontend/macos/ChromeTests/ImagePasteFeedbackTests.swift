@@ -153,6 +153,27 @@ final class ImagePasteFeedbackTests: XCTestCase {
                        .done(path: "/tmp/a.png"))
     }
 
+    /// 输入框插完路径要能直接收掉横幅，不落到「已完成」结果页。
+    func testClearHidesProgressWithoutShowingAResult() {
+        var timeline = ImagePasteTimeline()
+        timeline.advance(to: .uploading, now: Date())
+        XCTAssertTrue(timeline.isBusy)
+        timeline.clear()
+        XCTAssertEqual(timeline.stage, .idle)
+        XCTAssertFalse(timeline.isBusy)
+    }
+
+    /// 进度刚起就清掉：挂起的结果也不能再冒出来。
+    func testClearDropsAPendingResultToo() {
+        var timeline = ImagePasteTimeline()
+        let start = Date()
+        timeline.advance(to: .encoding, now: start)
+        timeline.advance(to: .done(path: "/tmp/a.png"), now: start.addingTimeInterval(0.05))
+        timeline.clear()
+        timeline.tick(now: start.addingTimeInterval(5))
+        XCTAssertEqual(timeline.stage, .idle)
+    }
+
     func testDismissClearsAPendingResultToo() {
         var timeline = ImagePasteTimeline()
         timeline.advance(to: .uploading, now: at(0))

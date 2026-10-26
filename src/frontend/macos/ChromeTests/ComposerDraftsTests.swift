@@ -76,6 +76,28 @@ final class ComposerDraftsTests: XCTestCase {
         XCTAssertEqual(store.activePage?.text, "scratch")
     }
 
+    /// tab 栏只显示「当前页 + 有内容的页」；空白页面不占位置。
+    func testBlankPagesStayOutOfTheTabStripButKeepTheirContent() {
+        var store = ComposerDraftStore()
+        let first = store.activate(target(pane: 1)).key
+        XCTAssertEqual(store.visiblePages.map(\.key), [first])
+
+        let second = store.activate(target(pane: 2)).key
+        // 两个都还是空的：只剩当前页 visible。
+        XCTAssertEqual(store.visiblePages.map(\.key), [second])
+
+        store.update(text: "typed", selection: NSRange(location: 0, length: 0), for: second)
+        let third = store.activate(target(pane: 3)).key
+        XCTAssertEqual(store.visiblePages.map(\.key), [second, third])
+        XCTAssertEqual(store.pages.count, 3, "隐藏的页面仍然保留内容")
+
+        store.select(second)
+        XCTAssertEqual(store.activeVisibleIndex, 0)
+        store.update(text: "   ", selection: NSRange(location: 0, length: 0), for: second)
+        XCTAssertEqual(store.visiblePages.map(\.key), [second], "只剩空格等于空草稿")
+        XCTAssertEqual(store.page(for: third)?.text, "")
+    }
+
     func testWindowSizeIsPortraitAndSlightlyLessThanHalfTheScreen() {
         for (width, height) in [(1440.0, 900.0), (1920.0, 1080.0), (2560.0, 1440.0)] {
             let size = ComposerWindowLayout.size(screenWidth: width, screenHeight: height)
