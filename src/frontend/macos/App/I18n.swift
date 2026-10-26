@@ -156,6 +156,8 @@ enum MuxtermTextKey: CaseIterable {
     case panelUseSSHHost
     case panelNoSSHHosts
     case disconnectDetail
+    case badgeProject
+    case badgeRecent
     case panelNoAttention
     case panelNoResults
     case panelNoWorkspaces
@@ -445,6 +447,8 @@ enum MuxtermTextKey: CaseIterable {
         case .panelUseSSHHost: return "panel_use_ssh_host"
         case .panelNoSSHHosts: return "panel_no_ssh_hosts"
         case .disconnectDetail: return "disconnect_detail"
+        case .badgeProject: return "badge_project"
+        case .badgeRecent: return "badge_recent"
         case .panelNoAttention: return "panel_no_attention"
         case .panelNoResults: return "panel_no_results"
         case .panelNoWorkspaces: return "panel_no_workspaces"

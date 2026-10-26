@@ -147,6 +147,52 @@ final class UnifiedPanelLauncherE2ETests: XCTestCase {
         )
     }
 
+    func testSearchingOpenSelectsTheOpenAction() {
+        AppE2E.ensureApp()
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("muxterm-picker-\(UUID().uuidString)", isDirectory: true)
+        let store = QuickConnectStore(
+            recentsURL: directory.appendingPathComponent("workspace-recents.json")
+        ) { _ in }
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let target = TargetConfig(
+            name: "openapi-server",
+            runtime: .tmux,
+            transport: .local,
+            path: "~/openapi"
+        )
+        store.recordRecent(target)
+        store.upsertProject(target)
+        let panel = UnifiedPanelController(
+            store: store,
+            ownerWindow: nil,
+            snapshot: { nil },
+            sendInput: { _, _ in },
+            search: { _ in }
+        )
+        panel.present(initial: .workspaces)
+        defer { panel.dismiss() }
+
+        panel.testSetQuery("open")
+        XCTAssertEqual(
+            panel.testWorkspaceTitles().first,
+            MuxtermI18n.shared.tr(.panelOpen),
+            "输入 open 时动作行必须排在最前"
+        )
+        XCTAssertEqual(
+            panel.testSelectedWorkspaceTitle(),
+            MuxtermI18n.shared.tr(.panelOpen),
+            "搜索 open 就应该选中 Open"
+        )
+        XCTAssertTrue(
+            panel.testWorkspaceTitles().contains("openapi-server"),
+            "路径模糊命中的 Project 仍要保留在结果里"
+        )
+
+        panel.testSetQuery("openapi")
+        XCTAssertEqual(panel.testWorkspaceTitles().first, "openapi-server")
+    }
+
     private func makePanel() -> UnifiedPanelController {
         UnifiedPanelController(
             store: QuickConnectStore(),

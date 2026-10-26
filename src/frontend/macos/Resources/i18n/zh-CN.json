@@ -37,6 +37,8 @@
   "panel_use_ssh_host": "连接到 {{host}}",
   "panel_no_ssh_hosts": "没有已配置的 SSH 主机。",
   "disconnect_detail": "与 {{host}} 的连接已断开。",
+  "badge_project": "项目",
+  "badge_recent": "最近",
   "panel_no_attention": "目前没有待处理提醒",
   "panel_no_results": "没有搜索结果",
   "panel_no_workspaces": "没有匹配的工作区",

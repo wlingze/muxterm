@@ -37,6 +37,8 @@
   "panel_use_ssh_host": "Connect to {{host}}",
   "panel_no_ssh_hosts": "No SSH hosts are configured.",
   "disconnect_detail": "Your connection to {{host}} has been lost.",
+  "badge_project": "Project",
+  "badge_recent": "Recent",
   "panel_no_attention": "Nothing needs attention",
   "panel_no_results": "No results",
   "panel_no_workspaces": "No matching workspaces",
