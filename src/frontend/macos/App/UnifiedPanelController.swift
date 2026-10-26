@@ -90,13 +90,16 @@ private enum UnifiedWorkspaceItem {
         let normalizedQuery = query.lowercased()
         switch self {
         case .workspace(let item):
-            let haystack = [item.name, item.runtime, item.transport, item.shortcutText ?? ""]
+            if let rank = Self.titleScore(item.name, query: normalizedQuery) {
+                return rank
+            }
+            let haystack = [item.runtime, item.transport, item.shortcutText ?? ""]
                 .joined(separator: " ")
                 .lowercased()
             return haystack.contains(normalizedQuery) ? 1_000 : nil
         case .existingConnections, .newProject, .open, .openNewPath, .openThisDirectory,
              .connectSSH, .openFolder, .loading, .empty:
-            return title.lowercased().contains(normalizedQuery) ? 500 : nil
+            return Self.titleScore(title, query: normalizedQuery)
         case .directory(let name):
             return name.lowercased().contains(normalizedQuery) ? 700 : nil
         case .sshHost(let suggestion):
@@ -111,6 +114,20 @@ private enum UnifiedWorkspaceItem {
         case .existing(let choice):
             return QuickConnect.searchScore(query, config: choice.config)
         }
+    }
+
+    /// 标题命中分级：完全相等 > 前缀 > 词首 > 包含。
+    ///
+    /// 这些档位必须高于 Recent/Project 的模糊路径分（10_000…12_000），
+    /// 否则输入 `open` 时动作行会被路径里的 o/p/e/n 模糊命中压到列表底部。
+    static func titleScore(_ title: String, query: String) -> Int? {
+        guard !query.isEmpty else { return nil }
+        let value = title.lowercased()
+        if value == query { return 20_000 }
+        if value.hasPrefix(query) { return 18_000 }
+        let words = value.split { !$0.isLetter && !$0.isNumber }
+        if words.contains(where: { $0.hasPrefix(query) }) { return 16_000 }
+        return value.contains(query) ? 14_000 : nil
     }
 }
 
@@ -633,6 +650,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
 
     private func defaultSelectedRow() -> Int {
         guard model.tab == .workspaces else { return 0 }
+        let query = model.query.trimmingCharacters(in: .whitespacesAndNewlines)
         switch workspaceNavigation {
         case .pickHost:
             return visibleItems.firstIndex { item in
@@ -640,6 +658,16 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                 return false
             } ?? 0
         case .pickSession:
+            // 已经输入搜索词时，回车应该直接附着第一条命中的 session，
+            // 而不是仍然停在 “Open New Path”。
+            if !query.isEmpty,
+               let row = visibleItems.firstIndex(where: {
+                   if case .existing = $0 { return true }
+                   return false
+               })
+            {
+                return row
+            }
             return visibleItems.firstIndex { item in
                 if case .openNewPath = item { return true }
                 return false
@@ -650,6 +678,8 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                 return false
             } ?? 0
         case .root, .existingConnections:
+            // 有搜索词时列表已按匹配度降序，第一行就是最匹配项（例如 Open）。
+            if !query.isEmpty { return 0 }
             break
         }
         return visibleItems.firstIndex { item in
@@ -661,6 +691,27 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
             }
             return false
         } ?? 0
+    }
+
+    /// Session 行和根列表共用同一套 Project / Recent 标记。
+    private func badges(for config: TargetConfig) -> [QuickBadge] {
+        let id = QuickConnect.uniqueID(for: config)
+        if store.projects.contains(where: { project in
+            QuickConnect.uniqueID(for: project) == id || Self.sameSession(project, config)
+        }) {
+            return [.project]
+        }
+        if store.recents.contains(where: { QuickConnect.uniqueID(for: $0) == id }) {
+            return [.recent]
+        }
+        return []
+    }
+
+    /// 旧配置可能没记 socket / workspace_id；名称 + runtime + 机器相同仍算同一条 session。
+    private static func sameSession(_ lhs: TargetConfig, _ rhs: TargetConfig) -> Bool {
+        lhs.runtime == rhs.runtime
+            && lhs.transport.label == rhs.transport.label
+            && lhs.name.caseInsensitiveCompare(rhs.name) == .orderedSame
     }
 
     /// 对 Existing 结果统一排序并按 attach identity 去重。
@@ -1801,10 +1852,9 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                     }
                 }
                 cell.detail = details.joined(separator: " · ")
-                let saved = store.projects.contains {
-                    $0.name.compare(choice.config.name, options: .caseInsensitive) == .orderedSame
-                }
-                cell.setSaveVisible(!saved)
+                let badges = self.badges(for: choice.config)
+                cell.setBadges(badges)
+                cell.setSaveVisible(!badges.contains(.project))
                 cell.onSave = { [weak self] in
                     guard let self else { return }
                     self.store.upsertProject(choice.config)
@@ -2258,6 +2308,19 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         default:
             return nil
         }
+    }
+
+    /// Session 行的 Project / Recent 标记（如 “● Project”）。
+    func testSessionBadgeText(matching title: String) -> String? {
+        guard let row = visibleItems.firstIndex(where: {
+            if case .existing(let choice) = $0 { return choice.config.name == title }
+            return false
+        }) else { return nil }
+        table.layoutSubtreeIfNeeded()
+        guard let cell = table.view(atColumn: 0, row: row, makeIfNecessary: true)
+            as? ExistingConnectionCellView
+        else { return nil }
+        return cell.testBadgeText
     }
 
     func testSelectedWorkspaceTitle() -> String? {
@@ -2799,6 +2862,8 @@ private final class StatusColorBlockView: NSView {
 
 private final class ExistingConnectionCellView: NSTableCellView {
     private let titleLabel = NSTextField(labelWithString: "")
+    private let badgeLabel = NSTextField(labelWithString: "")
+    private let titleRow = NSStackView()
     private let detailLabel = NSTextField(labelWithString: "")
     private let saveButton = NSButton()
     var onSave: (() -> Void)?
@@ -2813,6 +2878,31 @@ private final class ExistingConnectionCellView: NSTableCellView {
         set { detailLabel.stringValue = newValue }
     }
 
+    /// 已经是 Project / Recent 的 session 要一眼能看出来，不能只靠保存按钮消失。
+    func setBadges(_ badges: [QuickBadge]) {
+        guard let badge = badges.first else {
+            badgeLabel.stringValue = ""
+            badgeLabel.isHidden = true
+            badgeLabel.toolTip = nil
+            return
+        }
+        let text = badge == .project
+            ? MuxtermI18n.shared.tr(.badgeProject)
+            : MuxtermI18n.shared.tr(.badgeRecent)
+        badgeLabel.attributedStringValue = NSAttributedString(
+            string: "● \(text)",
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 10, weight: .semibold),
+                .foregroundColor: badge == .project ? NSColor.systemGreen : NSColor.systemBlue,
+            ]
+        )
+        badgeLabel.toolTip = text
+        badgeLabel.setAccessibilityLabel(text)
+        badgeLabel.isHidden = false
+    }
+
+    var testBadgeText: String { badgeLabel.isHidden ? "" : badgeLabel.stringValue }
+
     func setSaveVisible(_ visible: Bool) {
         saveButton.isHidden = !visible
     }
@@ -2823,6 +2913,17 @@ private final class ExistingConnectionCellView: NSTableCellView {
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         titleLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
         titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        badgeLabel.translatesAutoresizingMaskIntoConstraints = false
+        badgeLabel.isHidden = true
+        badgeLabel.setContentHuggingPriority(.required, for: .horizontal)
+        badgeLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        titleRow.translatesAutoresizingMaskIntoConstraints = false
+        titleRow.orientation = .horizontal
+        titleRow.alignment = .centerY
+        titleRow.spacing = 6
+        titleRow.addArrangedSubview(titleLabel)
+        titleRow.addArrangedSubview(badgeLabel)
         detailLabel.translatesAutoresizingMaskIntoConstraints = false
         detailLabel.font = NSFont.systemFont(ofSize: 11)
         detailLabel.textColor = .secondaryLabelColor
@@ -2835,20 +2936,20 @@ private final class ExistingConnectionCellView: NSTableCellView {
         saveButton.target = self
         saveButton.action = #selector(saveClicked)
         saveButton.setAccessibilityIdentifier("muxterm.quickConnect.existing.save")
-        addSubview(titleLabel)
+        addSubview(titleRow)
         addSubview(detailLabel)
         addSubview(saveButton)
         textField = titleLabel
         NSLayoutConstraint.activate([
-            titleLabel.leadingAnchor.constraint(
+            titleRow.leadingAnchor.constraint(
                 equalTo: leadingAnchor,
                 constant: QuickRowMetrics.titleLeading
             ),
-            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: saveButton.leadingAnchor, constant: -8),
-            titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 5),
-            detailLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
+            titleRow.trailingAnchor.constraint(lessThanOrEqualTo: saveButton.leadingAnchor, constant: -8),
+            titleRow.topAnchor.constraint(equalTo: topAnchor, constant: 5),
+            detailLabel.leadingAnchor.constraint(equalTo: titleRow.leadingAnchor),
             detailLabel.trailingAnchor.constraint(lessThanOrEqualTo: saveButton.leadingAnchor, constant: -8),
-            detailLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 1),
+            detailLabel.topAnchor.constraint(equalTo: titleRow.bottomAnchor, constant: 1),
             saveButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
             saveButton.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])

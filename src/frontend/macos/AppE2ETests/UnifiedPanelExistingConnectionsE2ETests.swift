@@ -43,6 +43,39 @@ final class UnifiedPanelExistingConnectionsE2ETests: XCTestCase {
         ))
     }
 
+    func testSavedSessionRowShowsProjectBadge() {
+        AppE2E.ensureApp()
+        let config = TargetConfig(
+            name: "muxterm",
+            runtime: .herdr,
+            transport: .local,
+            path: "",
+            session: "agents",
+            socket: "/tmp/muxterm-test-agents/herdr.sock",
+            workspaceID: "w7"
+        )
+        let panel = UnifiedPanelController(
+            store: QuickConnectStore(projects: [config]) { _ in },
+            ownerWindow: nil,
+            snapshot: { nil },
+            sendInput: { _, _ in },
+            search: { _ in }
+        )
+        panel.onLoadHostSessions = { _, completion in
+            completion(.success([ExistingConnectionChoice(config: config)]))
+        }
+        panel.present()
+        panel.testActivateWorkspaceItem(matching: MuxtermI18n.shared.tr(.panelOpen))
+        panel.testActivateWorkspaceItem(matching: "local")
+
+        XCTAssertEqual(
+            panel.testSessionBadgeText(matching: "muxterm"),
+            "● " + MuxtermI18n.shared.tr(.badgeProject),
+            "已保存的 session 必须能看出是 Project"
+        )
+        panel.dismiss()
+    }
+
     func testExistingRowUsesAttachCallbackInsteadOfProjectConnect() {
         AppE2E.ensureApp()
         let choice = ExistingConnectionChoice(
