@@ -39,8 +39,6 @@ enum MuxtermTextKey: CaseIterable {
     case composerNothingToCopy
     case composerNothingToSend
     case composerPlaceholder
-    case composerPreview
-    case composerPreviewEmpty
     case composerSend
     case composerSent
     case composerTitle
@@ -346,8 +344,6 @@ enum MuxtermTextKey: CaseIterable {
         case .composerNothingToCopy: return "composer_nothing_to_copy"
         case .composerNothingToSend: return "composer_nothing_to_send"
         case .composerPlaceholder: return "composer_placeholder"
-        case .composerPreview: return "composer_preview"
-        case .composerPreviewEmpty: return "composer_preview_empty"
         case .composerSend: return "composer_send"
         case .composerSent: return "composer_sent"
         case .composerTitle: return "composer_title"

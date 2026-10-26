@@ -8,7 +8,6 @@ final class ComposerPanelE2ETests: XCTestCase {
     func testPanelStartsAsAnEmptyDraftWithAHint() {
         let panel = ComposerPanelController()
         XCTAssertTrue(panel.draftText.isEmpty)
-        XCTAssertTrue(panel.previewText.isEmpty)
         XCTAssertEqual(panel.statusText, MuxtermI18n.shared.tr(.composerPlaceholder))
     }
 
@@ -35,13 +34,12 @@ final class ComposerPanelE2ETests: XCTestCase {
         XCTAssertEqual(panel.detailText, "muxterm")
     }
 
-    /// 图片只插路径：编辑器是纯文本，预览能看到路径，不变成图片语法。
-    func testInsertedImagePathStaysPlainTextAndReachesThePreview() {
+    /// 图片只插路径：单栏编辑器里就是原文，不变成图片语法。
+    func testInsertedImagePathStaysPlainText() {
         let panel = ComposerPanelController()
         panel.insertImagePath("/tmp/muxterm-paste-smoke.png")
         XCTAssertEqual(panel.draftText, "/tmp/muxterm-paste-smoke.png")
-        XCTAssertTrue(panel.previewText.contains("/tmp/muxterm-paste-smoke.png"))
-        XCTAssertFalse(panel.previewText.contains("!["))
+        XCTAssertFalse(panel.draftText.contains("!["))
     }
 
     /// Cmd-Enter / 写入按钮走同一条路径：空白不发，有目标时把原文交出去。
@@ -78,7 +76,14 @@ final class ComposerPanelE2ETests: XCTestCase {
         XCTAssertTrue(panel.editorIsFirstResponder, "打开后键盘必须直接进输入框")
     }
 
-    func testMarkdownPreviewRendersUnformattedDraftWhenClosed() {
+    /// 单栏高亮只改属性，不删 Markdown 符号；发送的仍是这一串原文。
+    func testHighlightingKeepsTheMarkdownSourceInTheDraft() {
+        let panel = ComposerPanelController()
+        panel.setDraftForTesting("# Title\n\n**bold** and `code`")
+        XCTAssertEqual(panel.draftText, "# Title\n\n**bold** and `code`")
+    }
+
+    func testMissingTargetShowsTheUnboundBadge() {
         let panel = ComposerPanelController()
         panel.updateTarget(nil)
         XCTAssertEqual(panel.badgeText, "—")

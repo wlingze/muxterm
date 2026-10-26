@@ -513,8 +513,6 @@
   "composer_nothing_to_copy": "Nothing to copy yet.",
   "composer_nothing_to_send": "Nothing to write yet.",
   "composer_placeholder": "⌘↩ writes the text into the terminal without pressing Return.",
-  "composer_preview": "Preview",
-  "composer_preview_empty": "Markdown preview appears here.",
   "composer_send": "Write",
   "composer_sent": "Wrote the text into the terminal.",
   "composer_title": "Compose",
