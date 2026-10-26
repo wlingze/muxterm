@@ -512,9 +512,12 @@
   "composer_no_target": "Open a workspace before writing into a terminal.",
   "composer_nothing_to_copy": "Nothing to copy yet.",
   "composer_nothing_to_send": "Nothing to write yet.",
-  "composer_placeholder": "⌘↩ writes the text into the terminal without pressing Return.",
+  "composer_placeholder": "⌘K opens the page menu; ⌘↩ clears this draft.",
   "composer_send": "Write",
   "composer_sent": "Wrote the text into the terminal.",
   "composer_title": "Compose",
-  "menu_composer": "Compose"
+  "menu_composer": "Compose",
+  "composer_clear": "Clear",
+  "composer_cleared": "Draft cleared. ⌘Z restores it.",
+  "composer_nothing_to_clear": "The draft is already empty."
 }

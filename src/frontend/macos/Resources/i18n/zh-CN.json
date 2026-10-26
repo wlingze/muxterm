@@ -512,9 +512,12 @@
   "composer_no_target": "先打开一个工作区，才能写入终端。",
   "composer_nothing_to_copy": "还没有内容可以复制。",
   "composer_nothing_to_send": "还没有内容可以写入。",
-  "composer_placeholder": "⌘↩ 写入终端，不会自动回车。",
+  "composer_placeholder": "⌘K 打开页面菜单，⌘↩ 清空这一页草稿。",
   "composer_send": "写入",
   "composer_sent": "已写入终端。",
   "composer_title": "输入框",
-  "menu_composer": "输入框"
+  "menu_composer": "输入框",
+  "composer_clear": "清空",
+  "composer_cleared": "已清空草稿，⌘Z 可撤销。",
+  "composer_nothing_to_clear": "草稿已经是空的。"
 }

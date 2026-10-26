@@ -87,10 +87,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private var quickConnectStore: QuickConnectStore!
     private var imagePasteBridge: CoreBridge?
     /// 本次图片传输的落点：终端粘贴已写进 pane，输入框只拿路径。
+    /// 输入框按草稿页记账，迟到的结果不会插到用户后来切到的 tab。
     private var imagePasteDestination: ImagePasteDestination = .pane
-    private enum ImagePasteDestination {
+    private enum ImagePasteDestination: Equatable {
         case pane
-        case composer
+        case composer(ComposerDraftKey)
     }
     /// 独立输入框（Cmd-I）。懒创建，关闭窗口/退出时一起收起。
     private var composerPanel: ComposerPanelController?
@@ -2016,12 +2017,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                     inject: true,
                     workspaceID: command.workspaceID
                 )
-            case .imageStore(let paneID, let png):
+            case .imageStore(let paneID, let png, let draftKey):
                 result = beginImageTransfer(
                     paneID: paneID,
                     png: png,
                     inject: false,
-                    workspaceID: command.workspaceID
+                    workspaceID: command.workspaceID,
+                    draftKey: draftKey
                 )
             case .input(let paneID, let data, let quiet):
                 if let workspaceID = command.workspaceID {
@@ -2320,10 +2322,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         paneID: UInt32,
         png: Data,
         inject: Bool,
-        workspaceID: String?
+        workspaceID: String?,
+        draftKey: ComposerDraftKey? = nil
     ) -> Int32 {
         // 先记下本次意图：失败时要写到对应的位置（终端横幅或输入框状态）。
-        imagePasteDestination = inject ? .pane : .composer
+        imagePasteDestination = inject
+            ? .pane
+            : .composer(draftKey ?? ComposerDraftKey(workspaceID: "", paneID: paneID))
         do {
             guard imagePasteBridge == nil else {
                 throw CoreBridgeDiscoveryError.message(MuxtermI18n.shared.tr(.imagePasteBusy))
@@ -2352,16 +2357,19 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         do {
             let delivery = try source.pollImagePasteDelivery()
             guard let path = delivery.path else { return }
+            let destination = imagePasteDestination
             imagePasteBridge = nil
-            imagePasteDestination = .pane
             content.statusBar.setImagePasteInProgress(false)
             if delivery.injected {
                 advanceImagePaste(to: .done(path: path))
             } else {
-                // 输入框路径：pane 没收到任何字节，由面板把纯路径插到光标处。
+                // 输入框路径：pane 没收到任何字节，由面板把纯路径插回原草稿页。
                 advanceImagePaste(to: .stored(path: path))
-                insertComposerImagePath(path)
+                if case .composer(let key) = destination {
+                    insertComposerImagePath(path, for: key)
+                }
             }
+            imagePasteDestination = .pane
         } catch {
             failImagePaste(error)
             imagePasteBridge = nil
@@ -2372,16 +2380,22 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     /// 推进图片粘贴的反馈阶段并立即渲染；横幅文案和停留时间都在 `ImagePasteTimeline`。
     private func advanceImagePaste(to stage: ImagePasteStage) {
+        // 输入框发起的传输只画在输入框右下角，不抢终端的横幅。
+        if case .composer = imagePasteDestination {
+            composerPanel?.advanceImage(stage)
+            return
+        }
         imagePasteTimeline.advance(to: stage, now: Date())
         renderImagePasteFeedback()
     }
 
     private func failImagePaste(_ error: Error) {
         let message = error.localizedDescription
-        if imagePasteDestination == .composer, composerPanel?.isVisible == true {
-            composerPanel?.setStatus(message)
+        if case .composer = imagePasteDestination {
+            composerPanel?.failImage(message)
+        } else {
+            advanceImagePaste(to: .failed(message: message))
         }
-        advanceImagePaste(to: .failed(message: message))
         // 状态栏红点保留一份：横幅消失后用户仍能悬停找回原因。
         reportStatusError(MuxtermI18n.shared.tr(.imagePasteFailed) + ": " + message)
     }
@@ -2389,6 +2403,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private func tickImagePasteFeedback() {
         imagePasteTimeline.tick(now: Date())
         renderImagePasteFeedback()
+        composerPanel?.tickImageFeedback()
     }
 
     private func renderImagePasteFeedback() {
@@ -3466,20 +3481,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         composer.onSend = { [weak self] text, target in
             self?.deliverComposerText(text, to: target)
         }
-        composer.onPastePNG = { [weak self] png, target in
+        composer.onPastePNG = { [weak self] png, target, draftKey in
             guard let self else { return }
-            guard let workspaceID = target?.workspaceID, let paneID = target?.paneID else {
-                self.composerPanel?.setStatus(MuxtermI18n.shared.tr(.composerNoTarget))
+            guard let workspaceID = target.workspaceID, let paneID = target.paneID else {
+                self.composerPanel?.failImage(MuxtermI18n.shared.tr(.composerNoTarget))
                 return
             }
             _ = self.enqueueCoreCommand(QueuedMuxCommand(
                 workspaceID: workspaceID,
-                operation: .imageStore(paneID: paneID, png: png),
+                operation: .imageStore(paneID: paneID, png: png, draftKey: draftKey),
                 failureMessage: MuxtermI18n.shared.tr(.imagePasteFailed)
             ))
-        }
-        composer.onEncodingImage = { [weak self] in
-            self?.advanceImagePaste(to: .encoding)
         }
         return composer
     }
@@ -3505,23 +3517,24 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     /// 输入框 → 当前 pane。复用终端的粘贴编码（bracketed paste），
     /// 与用户直接粘贴一致：只写文本，不自动回车。
-    private func deliverComposerText(_ text: String, to target: ComposerTarget?) {
-        guard let workspaceID = target?.workspaceID,
-              let paneID = target?.paneID,
+    private func deliverComposerText(_ text: String, to target: ComposerTarget) {
+        guard let workspaceID = target.workspaceID,
+              let paneID = target.paneID,
               let scene = sceneStack.scenes.values.first(where: {
                   $0.workspaceID == workspaceID && $0.visibility != .closed
               })
         else {
             reportStatusError(MuxtermI18n.shared.tr(.composerNoTarget))
+            composerPanel?.setStatus(MuxtermI18n.shared.tr(.composerNoTarget))
             return
         }
         scene.terminalManager.view(for: paneID).insertExternalText(text)
     }
 
-    /// Core 存完图片后把纯路径插到输入框光标处；输入框已关闭就只留横幅提示。
-    private func insertComposerImagePath(_ path: String) {
-        guard let composer = composerPanel, composer.isVisible else { return }
-        composer.insertImagePath(path)
+    /// Core 存完图片后把纯路径插回发起粘贴的草稿页；窗口已关也不丢。
+    private func insertComposerImagePath(_ path: String, for key: ComposerDraftKey) {
+        guard let composer = composerPanel else { return }
+        composer.insertImagePath(path, for: key)
         composer.setStatus(MuxtermI18n.shared.tr(
             .composerImageStored,
             arguments: ["name": (path as NSString).lastPathComponent]

@@ -21,7 +21,6 @@ final class ComposerPanelE2ETests: XCTestCase {
         XCTAssertEqual(received, data)
         XCTAssertTrue(editor.string.isEmpty, "图片只能走上传通路，不能成为富文本附件")
     }
-
     func testPanelStartsAsAnEmptyDraftWithAHint() {
         let panel = ComposerPanelController()
         XCTAssertTrue(panel.draftText.isEmpty)
@@ -105,5 +104,145 @@ final class ComposerPanelE2ETests: XCTestCase {
         panel.updateTarget(nil)
         XCTAssertEqual(panel.badgeText, "—")
         XCTAssertEqual(panel.detailText, MuxtermI18n.shared.tr(.composerNoTarget))
+    }
+
+    private func target(pane: UInt32, workspace: String = "api") -> ComposerTarget {
+        ComposerTarget(
+            kind: .local,
+            host: "",
+            workspaceName: workspace,
+            workspaceID: "local:\(workspace)",
+            paneID: pane
+        )
+    }
+
+    /// Cmd-Enter 从「写入」改成「清空」：不发送，只清当前页，且能撤销。
+    func testCmdEnterClearsTheCurrentDraftWithoutSending() {
+        let panel = ComposerPanelController()
+        panel.targetProvider = { self.target(pane: 1) }
+        var sent: [String] = []
+        panel.onSend = { text, _ in sent.append(text) }
+        panel.setDraftForTesting("git status")
+        XCTAssertTrue(panel.performKeyEquivalentForTesting("\r"))
+        XCTAssertTrue(sent.isEmpty, "⌘↩ 不能再把草稿写进终端")
+        XCTAssertTrue(panel.draftText.isEmpty)
+        XCTAssertEqual(panel.statusText, MuxtermI18n.shared.tr(.composerCleared))
+        XCTAssertTrue(panel.performKeyEquivalentForTesting("\r"))
+        XCTAssertEqual(panel.statusText, MuxtermI18n.shared.tr(.composerNothingToClear))
+    }
+
+    /// 每页一份草稿：切到新 pane 再切回来，原文和光标都还在；关窗不清空。
+    func testDraftTabsFollowPanesAndSurviveReopen() {
+        let panel = ComposerPanelController()
+        var current = target(pane: 1)
+        panel.targetProvider = { current }
+        panel.present(from: nil)
+        defer { panel.dismiss() }
+        panel.setDraftForTesting("first pane")
+        XCTAssertEqual(panel.pageTitles, ["api #1"])
+
+        current = target(pane: 2)
+        panel.updateTarget(current)
+        XCTAssertEqual(panel.pageTitles, ["api #1", "api #2"], "每个 pane 一个 tab")
+        XCTAssertEqual(panel.draftText, "", "新 pane 不继承上一页的草稿")
+        panel.setDraftForTesting("second pane")
+
+        panel.selectPageForTesting(0)
+        XCTAssertEqual(panel.draftText, "first pane")
+        panel.dismiss()
+        panel.present(from: nil)
+        XCTAssertEqual(panel.draftText, "second pane", "重新打开落在当前 pane 的草稿")
+        panel.selectPageForTesting(0)
+        XCTAssertEqual(panel.draftText, "first pane", "关窗后草稿必须保留")
+    }
+
+    func testClearingOnlyWipesTheActivePageAndUndoRestoresIt() {
+        let panel = ComposerPanelController()
+        var current = target(pane: 1)
+        panel.targetProvider = { current }
+        panel.present(from: nil)
+        defer { panel.dismiss() }
+        panel.setDraftForTesting("one")
+        current = target(pane: 2)
+        panel.updateTarget(current)
+        panel.setDraftForTesting("two")
+
+        panel.clearForTesting()
+        XCTAssertEqual(panel.draftText, "")
+        panel.selectPageForTesting(0)
+        XCTAssertEqual(panel.draftText, "one", "清空第 2 页不能动第 1 页")
+
+        panel.selectPageForTesting(1)
+        panel.undoForTesting()
+        XCTAssertEqual(panel.draftText, "two", "⌘Z 必须能把清空恢复回来")
+    }
+
+    func testWindowIsNormalAndPortraitInsteadOfAlwaysOnTop() {
+        let panel = ComposerPanelController()
+        panel.present(from: nil)
+        defer { panel.dismiss() }
+        let window = panel.window
+        XCTAssertEqual(window?.level, .normal, "输入框不能总是浮在最前面")
+        XCTAssertTrue(window?.styleMask.contains(.closable) == true)
+        XCTAssertTrue(window?.styleMask.contains(.resizable) == true)
+        XCTAssertGreaterThan(window?.frame.height ?? 0, window?.frame.width ?? 0)
+        let screenWidth = window?.screen?.frame.width ?? NSScreen.main?.frame.width ?? 1440
+        XCTAssertLessThanOrEqual(window?.frame.width ?? .infinity, screenWidth / 2)
+    }
+
+    /// Cmd-K 打开当前页菜单：复制 / 写入 / 清空，键盘选择也能执行。
+    func testCmdKOpensPageMenuWithCopyWriteClear() {
+        let panel = ComposerPanelController()
+        panel.targetProvider = { self.target(pane: 1) }
+        var sent: [String] = []
+        panel.onSend = { text, _ in sent.append(text) }
+        panel.setDraftForTesting("draft")
+        XCTAssertTrue(panel.performKeyEquivalentForTesting("k"))
+        XCTAssertTrue(panel.actionMenuVisible)
+        XCTAssertEqual(panel.actionMenuTitles, [
+            MuxtermI18n.shared.tr(.composerCopy),
+            MuxtermI18n.shared.tr(.composerSend),
+            MuxtermI18n.shared.tr(.composerClear),
+        ])
+
+        panel.moveActionSelectionForTesting(by: 2)
+        XCTAssertEqual(panel.actionMenuSelection, 2)
+        panel.activateActionForTesting()
+        XCTAssertFalse(panel.actionMenuVisible)
+        XCTAssertTrue(sent.isEmpty)
+        XCTAssertTrue(panel.draftText.isEmpty)
+
+        panel.setDraftForTesting("draft")
+        panel.toggleActionsForTesting()
+        XCTAssertTrue(panel.actionMenuVisible)
+        panel.moveActionSelectionForTesting(by: -2)
+        panel.activateActionForTesting()
+        XCTAssertEqual(sent, ["draft"], "菜单里的写入仍走同一条发送路径")
+    }
+
+    /// 输入框图片粘贴复用终端横幅：编码 → 上传 → 已存路径，全部画在右下角。
+    func testComposerShowsImageProgressInItsOwnBanner() throws {
+        let panel = ComposerPanelController()
+        panel.targetProvider = { self.target(pane: 1) }
+        panel.present(from: nil)
+        defer { panel.dismiss() }
+        XCTAssertFalse(panel.imageBannerVisible)
+
+        panel.advanceImage(.encoding)
+        XCTAssertTrue(panel.imageBannerVisible)
+        XCTAssertEqual(
+            panel.imageBannerMessage,
+            ImagePasteBannerView.message(for: try XCTUnwrap(ImagePasteFeedback.make(.encoding)))
+        )
+        panel.advanceImage(.uploading)
+        XCTAssertTrue(panel.imageBannerVisible)
+        panel.advanceImage(.stored(path: "/tmp/muxterm-paste-abc.png"))
+        // 进度至少停留 0.4s，结果先挂起；tick 到点后才落下来。
+        AppE2E.pump(450)
+        panel.tickImageFeedbackForTesting()
+        XCTAssertEqual(
+            panel.imageBannerMessage,
+            MuxtermI18n.shared.tr(.composerImageStored, arguments: ["name": "muxterm-paste-abc.png"])
+        )
     }
 }
