@@ -74,19 +74,17 @@ final class ComposerPanelController: NSWindowController, NSTextViewDelegate {
     private let detailLabel = NSTextField(labelWithString: "")
     private let editor = ComposerTextView()
     private let editorScroll = NSScrollView()
-    private let preview = NSTextView()
-    private let previewScroll = NSScrollView()
-    private let previewCaption = NSTextField(labelWithString: "")
-    private let previewEmpty = NSTextField(labelWithString: "")
     private let statusLabel = NSTextField(labelWithString: "")
     private let copyButton = NSButton()
     private let sendButton = NSButton()
     private var target: ComposerTarget?
     private var isEncodingImage = false
+    /// 上色时改 textStorage 不能再进 textDidChange，也不能进 undo。
+    private var isHighlighting = false
 
     init() {
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 680, height: 480),
+            contentRect: NSRect(x: 0, y: 0, width: 560, height: 360),
             styleMask: [.titled, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -116,7 +114,7 @@ final class ComposerPanelController: NSWindowController, NSTextViewDelegate {
         target = targetProvider?()
         renderTarget()
         refreshStrings()
-        renderPreview()
+        applyHighlight()
         guard let window else { return }
         window.level = .floating
         if let owner {
@@ -170,7 +168,7 @@ final class ComposerPanelController: NSWindowController, NSTextViewDelegate {
         )
         editor.string = result.text
         editor.setSelectedRange(NSRange(location: result.caret, length: 0))
-        renderPreview()
+        applyHighlight()
     }
 
     func setStatus(_ message: String) {
@@ -180,7 +178,6 @@ final class ComposerPanelController: NSWindowController, NSTextViewDelegate {
     // MARK: - 测试读取（AppLib 内部）
 
     var draftText: String { editor.string }
-    var previewText: String { preview.string }
     var badgeText: String { badge.stringValue }
     var detailText: String { detailLabel.stringValue }
     var statusText: String { statusLabel.stringValue }
@@ -188,7 +185,7 @@ final class ComposerPanelController: NSWindowController, NSTextViewDelegate {
 
     func setDraftForTesting(_ text: String) {
         editor.string = text
-        renderPreview()
+        applyHighlight()
     }
 
     func sendForTesting() {
@@ -257,7 +254,8 @@ final class ComposerPanelController: NSWindowController, NSTextViewDelegate {
     }
 
     func textDidChange(_ notification: Notification) {
-        renderPreview()
+        guard !isHighlighting, !editor.hasMarkedText() else { return }
+        applyHighlight()
     }
 
     // MARK: - 视图
@@ -282,9 +280,14 @@ final class ComposerPanelController: NSWindowController, NSTextViewDelegate {
         detailLabel.lineBreakMode = .byTruncatingTail
 
         editor.string = ""
-        editor.isRichText = false
+        // 富文本只为了显示语法色；字符串仍是原文，发送时读 editor.string。
+        editor.isRichText = true
         editor.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
         editor.textColor = .labelColor
+        editor.typingAttributes = [
+            .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular),
+            .foregroundColor: NSColor.labelColor,
+        ]
         editor.drawsBackground = false
         editor.isAutomaticQuoteSubstitutionEnabled = false
         editor.isAutomaticDashSubstitutionEnabled = false
@@ -294,6 +297,7 @@ final class ComposerPanelController: NSWindowController, NSTextViewDelegate {
         editor.isContinuousSpellCheckingEnabled = false
         editor.isGrammarCheckingEnabled = false
         editor.allowsUndo = true
+        editor.usesFontPanel = false
         editor.delegate = self
         editor.textContainerInset = NSSize(width: 10, height: 10)
         editor.isVerticallyResizable = true
@@ -316,47 +320,6 @@ final class ComposerPanelController: NSWindowController, NSTextViewDelegate {
         editorScroll.layer?.cornerRadius = 8
         editorScroll.layer?.borderWidth = 1
         editorScroll.layer?.borderColor = NSColor.separatorColor.cgColor
-
-        previewCaption.translatesAutoresizingMaskIntoConstraints = false
-        previewCaption.stringValue = MuxtermI18n.shared.tr(.composerPreview)
-        previewCaption.font = .systemFont(ofSize: 11, weight: .medium)
-        previewCaption.textColor = .secondaryLabelColor
-
-        preview.isEditable = false
-        preview.isSelectable = true
-        preview.isRichText = true
-        preview.drawsBackground = false
-        preview.textColor = .labelColor
-        preview.textContainerInset = NSSize(width: 10, height: 10)
-        preview.isVerticallyResizable = true
-        preview.isHorizontallyResizable = false
-        preview.autoresizingMask = [.width]
-        preview.minSize = .zero
-        preview.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-        preview.textContainer?.widthTracksTextView = true
-        preview.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
-        preview.textContainer?.lineFragmentPadding = 4
-        preview.linkTextAttributes = [
-            .foregroundColor: NSColor.linkColor,
-            .underlineStyle: NSUnderlineStyle.single.rawValue,
-        ]
-
-        previewScroll.translatesAutoresizingMaskIntoConstraints = false
-        previewScroll.documentView = preview
-        previewScroll.hasVerticalScroller = true
-        previewScroll.drawsBackground = true
-        previewScroll.backgroundColor = .controlBackgroundColor
-        previewScroll.borderType = .noBorder
-        previewScroll.wantsLayer = true
-        previewScroll.layer?.cornerRadius = 8
-        previewScroll.layer?.borderWidth = 1
-        previewScroll.layer?.borderColor = NSColor.separatorColor.cgColor
-
-        previewEmpty.translatesAutoresizingMaskIntoConstraints = false
-        previewEmpty.stringValue = MuxtermI18n.shared.tr(.composerPreviewEmpty)
-        previewEmpty.font = .systemFont(ofSize: 12)
-        previewEmpty.textColor = .tertiaryLabelColor
-        previewEmpty.alignment = .center
 
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
         statusLabel.setAccessibilityIdentifier("muxterm.composer.status")
@@ -383,8 +346,8 @@ final class ComposerPanelController: NSWindowController, NSTextViewDelegate {
         sendButton.keyEquivalent = "\r"
         sendButton.keyEquivalentModifierMask = .command
 
-        [badgeContainer, detailLabel, editorScroll, previewCaption, previewScroll,
-         previewEmpty, statusLabel, copyButton, sendButton].forEach(root.addSubview)
+        [badgeContainer, detailLabel, editorScroll, statusLabel, copyButton, sendButton]
+            .forEach(root.addSubview)
 
         NSLayoutConstraint.activate([
             badgeContainer.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 16),
@@ -399,18 +362,10 @@ final class ComposerPanelController: NSWindowController, NSTextViewDelegate {
             detailLabel.centerYAnchor.constraint(equalTo: badgeContainer.centerYAnchor),
 
             editorScroll.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 16),
+            editorScroll.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -16),
             editorScroll.topAnchor.constraint(equalTo: badgeContainer.bottomAnchor, constant: 12),
-            editorScroll.trailingAnchor.constraint(equalTo: previewScroll.leadingAnchor, constant: -12),
-
-            previewCaption.leadingAnchor.constraint(equalTo: editorScroll.trailingAnchor, constant: 12),
-            previewCaption.topAnchor.constraint(equalTo: editorScroll.topAnchor, constant: 2),
-
-            previewScroll.topAnchor.constraint(equalTo: previewCaption.bottomAnchor, constant: 6),
-            previewScroll.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -16),
-            previewScroll.bottomAnchor.constraint(equalTo: editorScroll.bottomAnchor),
-
-            previewEmpty.centerXAnchor.constraint(equalTo: previewScroll.centerXAnchor),
-            previewEmpty.centerYAnchor.constraint(equalTo: previewScroll.centerYAnchor),
+            editorScroll.bottomAnchor.constraint(equalTo: statusLabel.topAnchor, constant: -12),
+            editorScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 180),
 
             statusLabel.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 16),
             statusLabel.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -14),
@@ -420,25 +375,14 @@ final class ComposerPanelController: NSWindowController, NSTextViewDelegate {
             copyButton.centerYAnchor.constraint(equalTo: statusLabel.centerYAnchor),
             sendButton.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -16),
             sendButton.centerYAnchor.constraint(equalTo: statusLabel.centerYAnchor),
-
-            editorScroll.bottomAnchor.constraint(equalTo: statusLabel.topAnchor, constant: -12),
-            editorScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 160),
         ])
 
-        // 输入框与预览等宽，各占剩余宽度的一半。
-        editorScroll.widthAnchor.constraint(
-            equalTo: previewScroll.widthAnchor,
-            multiplier: 1.1
-        ).isActive = true
-
         renderTarget()
-        renderPreview()
+        applyHighlight()
     }
 
     private func refreshStrings() {
         window?.title = MuxtermI18n.shared.tr(.composerTitle)
-        previewCaption.stringValue = MuxtermI18n.shared.tr(.composerPreview)
-        previewEmpty.stringValue = MuxtermI18n.shared.tr(.composerPreviewEmpty)
         copyButton.title = MuxtermI18n.shared.tr(.composerCopy)
         copyButton.toolTip = MuxtermI18n.shared.tr(.composerCopy)
         sendButton.title = MuxtermI18n.shared.tr(.composerSend)
@@ -472,67 +416,76 @@ final class ComposerPanelController: NSWindowController, NSTextViewDelegate {
         detailLabel.toolTip = target.detail
     }
 
-    private func renderPreview() {
-        let rendered = Self.styledPreview(ComposerMarkdown.preview(editor.string))
-        preview.textStorage?.setAttributedString(rendered)
-        previewEmpty.isHidden = !rendered.string.isEmpty
-    }
-
-    /// 把 Chrome 给出的 Markdown 样式段映射成 AppKit 字体/颜色。
-    /// 标题、行内粗斜体/代码、代码块与引用块在预览里都要能区分出来。
-    private static func styledPreview(_ preview: ComposerPreview) -> NSAttributedString {
-        let rendered = NSMutableAttributedString(string: preview.text)
-        let full = NSRange(location: 0, length: rendered.length)
-        guard full.length > 0 else { return rendered }
-        rendered.addAttribute(.foregroundColor, value: NSColor.labelColor, range: full)
-        for span in preview.spans {
-            let range = NSIntersectionRange(span.range, full)
-            guard range.length > 0 else { continue }
-            let font: NSFont
-            switch span.style {
-            case .body:
-                font = .systemFont(ofSize: 13)
-            case .bold:
-                font = .boldSystemFont(ofSize: 13)
-            case .italic:
-                font = NSFontManager.shared.convert(
-                    .systemFont(ofSize: 13),
-                    toHaveTrait: .italicFontMask
-                )
-            case .boldItalic:
-                let bold = NSFontManager.shared.convert(
-                    .systemFont(ofSize: 13),
-                    toHaveTrait: .boldFontMask
-                )
-                font = NSFontManager.shared.convert(bold, toHaveTrait: .italicFontMask)
-            case .inlineCode, .codeBlock:
-                font = .monospacedSystemFont(ofSize: 12.5, weight: .regular)
-                rendered.addAttribute(
-                    .backgroundColor,
-                    value: NSColor.quaternaryLabelColor.withAlphaComponent(0.35),
-                    range: range
-                )
-            case .header(let level):
-                font = .systemFont(ofSize: headerPointSize(level), weight: .semibold)
-            case .quote:
-                font = .systemFont(ofSize: 13)
-                rendered.addAttribute(
-                    .foregroundColor,
-                    value: NSColor.secondaryLabelColor,
-                    range: range
-                )
-            }
-            rendered.addAttribute(.font, value: font, range: range)
+    /// 给原文上色。不改字符，所以选区和要发送的字符串都保持不动。
+    private func applyHighlight() {
+        guard let storage = editor.textStorage else { return }
+        let source = editor.string as NSString
+        let full = NSRange(location: 0, length: source.length)
+        isHighlighting = true
+        editor.undoManager?.disableUndoRegistration()
+        defer {
+            editor.undoManager?.enableUndoRegistration()
+            isHighlighting = false
         }
-        return rendered
+        storage.beginEditing()
+        if full.length > 0 {
+            storage.setAttributes([
+                .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular),
+                .foregroundColor: NSColor.labelColor,
+            ], range: full)
+            for span in ComposerMarkdown.highlights(editor.string) {
+                let range = NSIntersectionRange(span.range, full)
+                guard range.length > 0 else { continue }
+                storage.addAttributes(Self.attributes(for: span.style), range: range)
+            }
+        }
+        storage.endEditing()
     }
 
-    private static func headerPointSize(_ level: Int) -> CGFloat {
-        switch level {
-        case 1: return 20
-        case 2: return 17
-        case 3: return 15
-        default: return 13.5
+    private static func attributes(for style: ComposerHighlightStyle) -> [NSAttributedString.Key: Any] {
+        let mono = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        switch style {
+        case .marker:
+            return [
+                .font: mono,
+                .foregroundColor: NSColor.tertiaryLabelColor,
+            ]
+        case .header:
+            return [
+                .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .semibold),
+                .foregroundColor: NSColor.labelColor,
+            ]
+        case .bold:
+            return [
+                .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .bold),
+                .foregroundColor: NSColor.labelColor,
+            ]
+        case .italic:
+            return [
+                .font: NSFontManager.shared.convert(mono, toHaveTrait: .italicFontMask),
+                .foregroundColor: NSColor.labelColor,
+            ]
+        case .inlineCode, .codeBlock:
+            return [
+                .font: mono,
+                .foregroundColor: NSColor.labelColor,
+                .backgroundColor: NSColor.quaternaryLabelColor.withAlphaComponent(0.35),
+            ]
+        case .quote:
+            return [
+                .font: mono,
+                .foregroundColor: NSColor.secondaryLabelColor,
+            ]
+        case .listMarker:
+            return [
+                .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .semibold),
+                .foregroundColor: NSColor.controlAccentColor,
+            ]
+        case .path:
+            return [
+                .font: mono,
+                .foregroundColor: NSColor.linkColor,
+            ]
         }
     }
 }

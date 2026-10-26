@@ -73,13 +73,70 @@ final class ComposerDraftTests: XCTestCase {
         XCTAssertEqual(result.caret, 4)
     }
 
-    /// 纯路径必须原样留在预览里：不变成图片语法、不被吞掉。
-    func testMarkdownPreviewKeepsTheInsertedPathVisible() {
+    /// 单栏语法高亮：原文不动，只标记区间。
+    func testMarkdownHighlightsDoNotRewriteTheDraft() {
         let source = "# Hello\n\n/tmp/muxterm-paste-ab12cd.png"
-        let rendered = ComposerMarkdown.preview(source).text
-        XCTAssertTrue(rendered.contains("/tmp/muxterm-paste-ab12cd.png"), "\(rendered)")
-        XCTAssertFalse(rendered.contains("# Hello"), "预览应已解析标题：\(rendered)")
-        XCTAssertTrue(rendered.contains("Hello"))
+        let spans = ComposerMarkdown.highlights(source)
+        XCTAssertTrue(
+            spans.contains { span in
+                span.style == .path
+                    && (source as NSString).substring(with: span.range)
+                        == "/tmp/muxterm-paste-ab12cd.png"
+            },
+            "路径必须作为原文的一部分被标记出来"
+        )
+        XCTAssertTrue(
+            spans.contains { span in
+                span.style == .header(1)
+                    && (source as NSString).substring(with: span.range) == "Hello"
+            }
+        )
+        XCTAssertTrue(spans.contains { $0.style == .marker })
+    }
+
+    func testMarkdownHighlightsMarkListSymbolsInsteadOfRenamingThem() {
+        let source = "- one\n1. two"
+        let spans = ComposerMarkdown.highlights(source)
+        let markers = spans.filter { $0.style == .listMarker }
+            .map { (source as NSString).substring(with: $0.range) }
+        XCTAssertEqual(markers, ["- ", "1. "])
+    }
+
+    func testMarkdownHighlightsCoverCodeFenceAndQuote() {
+        let source = "```\nlet x = 1\n```\n\n> note"
+        let spans = ComposerMarkdown.highlights(source)
+        XCTAssertTrue(spans.contains { span in
+            span.style == .codeBlock
+                && (source as NSString).substring(with: span.range) == "let x = 1"
+        })
+        XCTAssertTrue(spans.contains { span in
+            span.style == .quote
+                && (source as NSString).substring(with: span.range) == "note"
+        })
+    }
+
+    func testMarkdownHighlightsStayEmptyForAnEmptyDraft() {
+        XCTAssertTrue(ComposerMarkdown.highlights("").isEmpty)
+    }
+
+    /// 高亮范围必须落在原文的真实位置上（UTF-16）。
+    func testMarkdownHighlightsHitTheExpectedRuns() {
+        let source = "# Title\n\n**bold** and `code`"
+        func substring(_ style: ComposerHighlightStyle) -> String? {
+            guard let span = ComposerMarkdown.highlights(source).first(where: { $0.style == style }) else {
+                return nil
+            }
+            return (source as NSString).substring(with: span.range)
+        }
+        XCTAssertEqual(substring(.header(1)), "Title")
+        XCTAssertEqual(substring(.bold), "bold")
+        XCTAssertEqual(substring(.inlineCode), "code")
+        XCTAssertNil(substring(.path), "纯文本里的 / 不是路径时不要乱标")
+    }
+
+    func testUnclosedMarkersStayPlainUntilTheyAreClosed() {
+        let spans = ComposerMarkdown.highlights("**半截")
+        XCTAssertFalse(spans.contains { $0.style == .bold })
     }
 
     func testCmdIOpensTheComposerAndShiftIsNotStolen() {
@@ -90,39 +147,5 @@ final class ComposerDraftTests: XCTestCase {
         XCTAssertEqual(KeyBindingsConfig.action(from: "open_composer"), .openComposer)
         XCTAssertEqual(KeyBindingsConfig.name(for: .openComposer), "open_composer")
         XCTAssertNil(KeyBindings.action(for: KeyChord(command: true, shift: true, key: "i")))
-    }
-
-    func testMarkdownPreviewDrawsListMarkersThatAppKitWouldOtherwiseOmit() {
-        let unordered = ComposerMarkdown.preview("- one\n- two").text
-        XCTAssertEqual(unordered, "•  one\n•  two")
-        let ordered = ComposerMarkdown.preview("1. one\n2. two").text
-        XCTAssertEqual(ordered, "1. one\n2. two")
-    }
-
-    /// 预览不能把块合并成一行；代码围栏与引用块要能被 UI 分别上样式。
-    func testMarkdownPreviewKeepsBlocksOnTheirOwnLines() {
-        let preview = ComposerMarkdown.preview("# T\n\n```\nlet x = 1\n```\n\n> note")
-        XCTAssertEqual(preview.text, "T\n\nlet x = 1\n\nnote")
-        XCTAssertTrue(preview.spans.contains { $0.style == .codeBlock })
-        XCTAssertTrue(preview.spans.contains { $0.style == .quote })
-        XCTAssertTrue(preview.spans.contains { $0.style == .header(1) })
-    }
-
-    func testMarkdownPreviewOfEmptyDraftStaysEmpty() {
-        let preview = ComposerMarkdown.preview("")
-        XCTAssertTrue(preview.text.isEmpty)
-        XCTAssertTrue(preview.spans.isEmpty)
-    }
-
-    /// 预览样式段必须落在最终文本的真实位置上（UTF-16），UI 才能按 range 上色。
-    func testMarkdownPreviewSpansHitTheExpectedRuns() {
-        let preview = ComposerMarkdown.preview("# Title\n\n**bold** and `code`")
-        func substring(_ style: ComposerPreviewStyle) -> String? {
-            guard let span = preview.spans.first(where: { $0.style == style }) else { return nil }
-            return (preview.text as NSString).substring(with: span.range)
-        }
-        XCTAssertEqual(substring(.header(1)), "Title")
-        XCTAssertEqual(substring(.bold), "bold")
-        XCTAssertEqual(substring(.inlineCode), "code")
     }
 }

@@ -54,7 +54,7 @@ public struct ComposerTarget: Equatable, Sendable {
 /// 输入框的内容状态。
 ///
 /// 发送时永远只发送用户写的原文：粘贴图片插入的是**纯路径**，不加引号、
-/// 不加 Markdown 图片语法、不自动回车。Markdown 只在预览侧解释。
+/// 不加 Markdown 图片语法、不自动回车。Markdown 只给原文上色，不另开预览、不改要发送的字。
 public struct ComposerDraft: Equatable, Sendable {
     public private(set) var text: String
 
@@ -105,128 +105,156 @@ private extension NSString {
     }
 }
 
-/// 预览里的一段文本样式；AppKit 字体/颜色由 UI 层映射。
-public enum ComposerPreviewStyle: Equatable, Sendable {
-    case body
+/// 原文上的一段高亮。range 是源文本的 UTF-16 偏移，文本本身不被改写。
+public enum ComposerHighlightStyle: Equatable, Sendable {
+    /// `#`、`*`、反引号、代码围栏这些语法符号。
+    case marker
+    case header(Int)
     case bold
     case italic
-    case boldItalic
     case inlineCode
     case codeBlock
-    case header(Int)
     case quote
+    case listMarker
+    /// 绝对路径 / `~/` 路径，方便在高亮里认出粘进来的图片路径。
+    case path
 }
 
-public struct ComposerPreviewSpan: Equatable, Sendable {
-    /// 在 `ComposerPreview.text` 里的 UTF-16 范围。
+public struct ComposerHighlight: Equatable, Sendable {
     public let range: NSRange
-    public let style: ComposerPreviewStyle
+    public let style: ComposerHighlightStyle
 
-    public init(range: NSRange, style: ComposerPreviewStyle) {
+    public init(range: NSRange, style: ComposerHighlightStyle) {
         self.range = range
         self.style = style
     }
 }
 
-public struct ComposerPreview: Equatable, Sendable {
-    public let text: String
-    public let spans: [ComposerPreviewSpan]
-
-    public init(text: String, spans: [ComposerPreviewSpan]) {
-        self.text = text
-        self.spans = spans
-    }
-}
-
-/// 预览用的 Markdown 渲染；输入框里保存的始终是原始文本。
+/// 单栏编辑器的 Markdown 语法高亮。
 ///
-/// 先按行识别块级语法（标题 / 列表 / 引用 / 代码围栏），再用 Foundation 的
-/// 行内解析器拿粗体、斜体、行内代码。这样预览保留用户写的行结构：纯路径
-/// 不会被合并，列表也不会挤成一行。
+/// 不生成第二份渲染文本：`#`、`**`、列表符号都留在原文里，复制和
+/// Cmd-Enter 发出去的就是用户写的那一串。这里只标出哪些 UTF-16 区间
+/// 该上色。未闭合的标记不当高亮，避免打到一半就跳样式。
 public enum ComposerMarkdown {
-    public static func preview(_ source: String) -> ComposerPreview {
-        guard !source.isEmpty else { return ComposerPreview(text: "", spans: []) }
-        var text = ""
-        var spans: [ComposerPreviewSpan] = []
+    public static func highlights(_ source: String) -> [ComposerHighlight] {
+        guard !source.isEmpty else { return [] }
+        let ns = source as NSString
+        var spans: [ComposerHighlight] = []
         var inFence = false
-        for raw in source.split(separator: "\n", omittingEmptySubsequences: false) {
-            var line = String(raw)
-            if line.hasSuffix("\r") { line.removeLast() }
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-
-            if trimmed.hasPrefix("```") {
-                inFence.toggle()
-                continue
-            }
-            if inFence {
-                append(line, prefix: "", block: .codeBlock, to: &text, spans: &spans)
-                continue
-            }
-            if trimmed.isEmpty {
-                append("", prefix: "", block: nil, to: &text, spans: &spans)
-                continue
-            }
-            if let heading = heading(trimmed) {
-                append(
-                    heading.text,
-                    prefix: "",
-                    block: .header(heading.level),
-                    to: &text,
-                    spans: &spans
-                )
-                continue
-            }
-            if let item = listItem(line, trimmed: trimmed) {
-                append(
-                    item.text,
-                    prefix: item.prefix,
-                    block: nil,
-                    to: &text,
-                    spans: &spans
-                )
-                continue
-            }
-            if trimmed.hasPrefix(">") {
-                var content = trimmed.dropFirst()
-                if content.first == " " { content = content.dropFirst() }
-                append(String(content), prefix: "", block: .quote, to: &text, spans: &spans)
-                continue
-            }
-            if isThematicBreak(trimmed) {
-                append(String(repeating: "─", count: 24), prefix: "", block: nil, to: &text, spans: &spans)
-                continue
-            }
-            append(line, prefix: "", block: nil, to: &text, spans: &spans)
+        var index = 0
+        while index <= ns.length {
+            let rest = NSRange(location: index, length: ns.length - index)
+            let newline = ns.range(of: "\n", options: [], range: rest)
+            let end = newline.location == NSNotFound ? ns.length : newline.location
+            let line = ns.substring(with: NSRange(location: index, length: end - index)) as NSString
+            highlightLine(line, base: index, inFence: &inFence, spans: &spans)
+            if newline.location == NSNotFound { break }
+            index = end + 1
         }
-        return ComposerPreview(text: text, spans: spans)
+        return spans
     }
 
-    // MARK: - 块级识别
-
-    private static func heading(_ trimmed: String) -> (level: Int, text: String)? {
-        let hashes = trimmed.prefix { $0 == "#" }
-        guard (1...6).contains(hashes.count) else { return nil }
-        let rest = trimmed.dropFirst(hashes.count)
-        guard rest.isEmpty || rest.first == " " else { return nil }
-        var content = rest.drop(while: { $0 == " " })
-        // 闭合式 ATX 标题（`## Title ##`）：尾部井号不属于正文。
-        while content.hasSuffix("#") { content.removeLast() }
-        return (hashes.count, String(content).trimmingCharacters(in: .whitespaces))
+    private static func highlightLine(
+        _ line: NSString,
+        base: Int,
+        inFence: inout Bool,
+        spans: inout [ComposerHighlight]
+    ) {
+        let trimmed = (line as String).trimmingCharacters(in: .whitespaces)
+        if trimmed.hasPrefix("```") {
+            if line.length > 0 {
+                spans.append(mark(base, line.length, .marker))
+            }
+            inFence.toggle()
+            return
+        }
+        if inFence {
+            if line.length > 0 {
+                spans.append(mark(base, line.length, .codeBlock))
+            }
+            return
+        }
+        let indent = leadingWhitespace(line)
+        let body = line.substring(from: indent) as NSString
+        if let heading = atxHeading(body) {
+            let markerLength = indent + heading.marker
+            spans.append(mark(base, markerLength, .marker))
+            let content = line.length - markerLength
+            if content > 0 {
+                spans.append(mark(base + markerLength, content, .header(heading.level)))
+                highlightInline(
+                    line.substring(from: markerLength) as NSString,
+                    base: base + markerLength,
+                    spans: &spans
+                )
+            }
+            return
+        }
+        if let markerLength = listMarkerLength(body) {
+            spans.append(mark(base + indent, markerLength, .listMarker))
+            let contentStart = indent + markerLength
+            if contentStart < line.length {
+                highlightInline(
+                    line.substring(from: contentStart) as NSString,
+                    base: base + contentStart,
+                    spans: &spans
+                )
+            }
+            addPaths(line, base: base, spans: &spans)
+            return
+        }
+        if body.hasPrefix(">") {
+            let markerLength = body.hasPrefix("> ") ? 2 : 1
+            spans.append(mark(base + indent, markerLength, .marker))
+            let contentStart = indent + markerLength
+            if contentStart < line.length {
+                spans.append(mark(base + contentStart, line.length - contentStart, .quote))
+                highlightInline(
+                    line.substring(from: contentStart) as NSString,
+                    base: base + contentStart,
+                    spans: &spans
+                )
+            }
+            return
+        }
+        if isThematicBreak(trimmed) {
+            spans.append(mark(base, line.length, .marker))
+            return
+        }
+        highlightInline(line, base: base, spans: &spans)
+        addPaths(line, base: base, spans: &spans)
     }
 
-    private static func listItem(_ line: String, trimmed: String) -> (prefix: String, text: String)? {
-        let indent = String(line.prefix { $0 == " " || $0 == "\t" })
-        for marker in ["- ", "* ", "+ "] where trimmed.hasPrefix(marker) {
-            return (indent + "•  ", String(trimmed.dropFirst(marker.count)))
+    private static func atxHeading(_ body: NSString) -> (level: Int, marker: Int)? {
+        var hashes = 0
+        while hashes < body.length, body.character(at: hashes) == 35, hashes < 6 {
+            hashes += 1
         }
-        let digits = trimmed.prefix { $0.isNumber }
-        if !digits.isEmpty {
-            let rest = trimmed.dropFirst(digits.count)
-            if rest.hasPrefix(". ") {
-                return (indent + "\(digits). ", String(rest.dropFirst(2)))
-            }
+        guard (1...6).contains(hashes) else { return nil }
+        if hashes == body.length {
+            return (hashes, hashes)
         }
-        return nil
+        guard body.character(at: hashes) == 32 else { return nil }
+        return (hashes, hashes + 1)
+    }
+
+    /// `- ` / `* ` / `+ ` / `1. ` 的长度，含标记后的空白。
+    private static func listMarkerLength(_ body: NSString) -> Int? {
+        guard body.length >= 2 else { return nil }
+        let first = body.character(at: 0)
+        if first == 45 || first == 42 || first == 43 {
+            guard body.character(at: 1) == 32 else { return nil }
+            return 2
+        }
+        var digits = 0
+        while digits < body.length, body.character(at: digits) >= 48, body.character(at: digits) <= 57 {
+            digits += 1
+        }
+        guard digits > 0, digits + 1 < body.length,
+              body.character(at: digits) == 46,
+              body.character(at: digits + 1) == 32
+        else { return nil }
+        return digits + 2
     }
 
     private static func isThematicBreak(_ trimmed: String) -> Bool {
@@ -235,74 +263,97 @@ public enum ComposerMarkdown {
             || trimmed.allSatisfy { $0 == "_" }
     }
 
-    // MARK: - 行内解析与 span 累积
-
-    private struct InlineRun {
-        let text: String
-        let style: ComposerPreviewStyle
+    private static func leadingWhitespace(_ line: NSString) -> Int {
+        var index = 0
+        while index < line.length {
+            let ch = line.character(at: index)
+            if ch != 32, ch != 9 { break }
+            index += 1
+        }
+        return index
     }
 
-    /// `block` 非空时覆盖行内样式：标题内部统一按标题字号，代码块不解析行内语法。
-    private static func append(
-        _ content: String,
-        prefix: String,
-        block: ComposerPreviewStyle?,
-        to text: inout String,
-        spans: inout [ComposerPreviewSpan]
+    private static func highlightInline(
+        _ line: NSString,
+        base: Int,
+        spans: inout [ComposerHighlight]
     ) {
-        if !text.isEmpty { text += "\n" }
-        var offset = text.utf16.count
-        if !prefix.isEmpty {
-            let length = prefix.utf16.count
-            spans.append(ComposerPreviewSpan(
-                range: NSRange(location: offset, length: length),
-                style: block ?? .body
-            ))
-            text += prefix
-            offset += length
-        }
-        let runs = block == .codeBlock
-            ? [InlineRun(text: content, style: .codeBlock)]
-            : inlineRuns(content)
-        for run in runs {
-            let length = run.text.utf16.count
-            guard length > 0 else { continue }
-            spans.append(ComposerPreviewSpan(
-                range: NSRange(location: offset, length: length),
-                style: block ?? run.style
-            ))
-            text += run.text
-            offset += length
+        var index = 0
+        while index < line.length {
+            if line.character(at: index) == 96, let end = closing(line, from: index + 1, token: "`") {
+                spans.append(mark(base + index, 1, .marker))
+                if end > index + 1 {
+                    spans.append(mark(base + index + 1, end - index - 1, .inlineCode))
+                }
+                spans.append(mark(base + end, 1, .marker))
+                index = end + 1
+                continue
+            }
+            if starts(line, index, "**"), let end = closing(line, from: index + 2, token: "**") {
+                spans.append(mark(base + index, 2, .marker))
+                if end > index + 2 {
+                    spans.append(mark(base + index + 2, end - index - 2, .bold))
+                }
+                spans.append(mark(base + end, 2, .marker))
+                index = end + 2
+                continue
+            }
+            if line.character(at: index) == 42, canOpenStar(line, index),
+               let end = closing(line, from: index + 1, token: "*") {
+                spans.append(mark(base + index, 1, .marker))
+                if end > index + 1 {
+                    spans.append(mark(base + index + 1, end - index - 1, .italic))
+                }
+                spans.append(mark(base + end, 1, .marker))
+                index = end + 1
+                continue
+            }
+            index += 1
         }
     }
 
-    private static func inlineRuns(_ content: String) -> [InlineRun] {
-        guard !content.isEmpty else { return [] }
-        var options = AttributedString.MarkdownParsingOptions()
-        options.interpretedSyntax = .inlineOnlyPreservingWhitespace
-        options.failurePolicy = .returnPartiallyParsedIfPossible
-        guard let parsed = try? AttributedString(markdown: content, options: options) else {
-            return [InlineRun(text: content, style: .body)]
+    /// 绝对路径单独上色，但不要盖住代码、标记或已经上过的样式。
+    private static func addPaths(
+        _ line: NSString,
+        base: Int,
+        spans: inout [ComposerHighlight]
+    ) {
+        guard line.length > 0,
+              let expression = try? NSRegularExpression(pattern: "(?:^|\\s)((?:~/|/)\\S+)")
+        else { return }
+        let full = NSRange(location: 0, length: line.length)
+        for match in expression.matches(in: line as String, range: full) {
+            let group = match.range(at: 1)
+            guard group.location != NSNotFound else { continue }
+            let range = NSRange(location: base + group.location, length: group.length)
+            if spans.contains(where: { NSIntersectionRange($0.range, range).length > 0 }) {
+                continue
+            }
+            spans.append(mark(range.location, range.length, .path))
         }
-        let runs = parsed.runs.map { run in
-            InlineRun(
-                text: String(parsed[run.range].characters),
-                style: inlineStyle(run.inlinePresentationIntent)
-            )
-        }
-        return runs.isEmpty ? [InlineRun(text: content, style: .body)] : runs
     }
 
-    private static func inlineStyle(_ inline: InlinePresentationIntent?) -> ComposerPreviewStyle {
-        guard let inline else { return .body }
-        if inline.contains(.code) { return .inlineCode }
-        let bold = inline.contains(.stronglyEmphasized)
-        let italic = inline.contains(.emphasized)
-        switch (bold, italic) {
-        case (true, true): return .boldItalic
-        case (true, false): return .bold
-        case (false, true): return .italic
-        case (false, false): return .body
-        }
+    private static func canOpenStar(_ line: NSString, _ index: Int) -> Bool {
+        guard index + 1 < line.length else { return false }
+        let next = line.character(at: index + 1)
+        return next != 32 && next != 42 && next != 10
+    }
+
+    private static func starts(_ line: NSString, _ index: Int, _ token: String) -> Bool {
+        let token = token as NSString
+        guard index + token.length <= line.length else { return false }
+        return line.substring(with: NSRange(location: index, length: token.length)) == token as String
+    }
+
+    /// 返回闭合标记的起点；找不到返回 nil（半截标记保持纯文本）。
+    private static func closing(_ line: NSString, from start: Int, token: String) -> Int? {
+        guard start < line.length else { return nil }
+        let found = line.range(of: token, options: [], range: NSRange(location: start, length: line.length - start))
+        guard found.location != NSNotFound, found.location > start else { return nil }
+        return found.location
+    }
+
+    private static func mark(_ location: Int, _ length: Int, _ style: ComposerHighlightStyle) -> ComposerHighlight {
+        ComposerHighlight(range: NSRange(location: location, length: length), style: style)
     }
 }
