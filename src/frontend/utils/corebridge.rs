@@ -1210,15 +1210,40 @@ pub type FfiClient = CoreBridge;
 
 impl CoreBridge {
     pub fn start_image_paste(&self, workspace: &str, pane: u32, png: &[u8]) -> anyhow::Result<()> {
+        self.start_image_transfer(workspace, pane, png, true)
+    }
+
+    /// 只把图片存到目标机器并返回路径（不写 pane），供独立输入框插入路径。
+    pub fn start_image_store(&self, workspace: &str, pane: u32, png: &[u8]) -> anyhow::Result<()> {
+        self.start_image_transfer(workspace, pane, png, false)
+    }
+
+    fn start_image_transfer(
+        &self,
+        workspace: &str,
+        pane: u32,
+        png: &[u8],
+        inject: bool,
+    ) -> anyhow::Result<()> {
         let workspace = cstring(workspace);
         Self::discovery_json(|| unsafe {
-            ffi::muxterm_image_paste_start_json(
-                self.handle.as_ptr(),
-                workspace.as_ptr(),
-                pane,
-                png.as_ptr(),
-                png.len(),
-            )
+            if inject {
+                ffi::muxterm_image_paste_start_json(
+                    self.handle.as_ptr(),
+                    workspace.as_ptr(),
+                    pane,
+                    png.as_ptr(),
+                    png.len(),
+                )
+            } else {
+                ffi::muxterm_image_store_start_json(
+                    self.handle.as_ptr(),
+                    workspace.as_ptr(),
+                    pane,
+                    png.as_ptr(),
+                    png.len(),
+                )
+            }
         })?;
         Ok(())
     }

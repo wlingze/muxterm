@@ -648,6 +648,14 @@ final class MuxTerminalView: TerminalView {
             return
         }
         let text = pasteboard.string(forType: .string) ?? ""
+        insertExternalText(text)
+    }
+
+    /// 把 UI 产生的一段文本写进 pane（粘贴、输入框写入）。
+    ///
+    /// 与系统粘贴共用同一条编码路径：bracketed paste 优先，大段文本走
+    /// 分批进度；不追加回车，也不改目的地。
+    func insertExternalText(_ text: String) {
         guard !text.isEmpty else { return }
         let payload = pastePayload(text)
         if LargePastePlan.needsProgress(byteCount: payload.count), let onLargePaste {

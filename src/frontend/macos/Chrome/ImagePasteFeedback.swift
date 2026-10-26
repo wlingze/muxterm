@@ -14,6 +14,8 @@ public enum ImagePasteStage: Equatable, Sendable {
     case uploading
     /// 已把路径写进原 pane。`path` 是目标机器上的绝对路径。
     case done(path: String)
+    /// 图片已存到目标机器，路径交给独立输入框插入（pane 没有收到任何字节）。
+    case stored(path: String)
     /// 失败；消息直接给用户看，不再只藏在状态栏红点的 tooltip 里。
     case failed(message: String)
 
@@ -21,14 +23,14 @@ public enum ImagePasteStage: Equatable, Sendable {
     var isProgress: Bool {
         switch self {
         case .encoding, .uploading: return true
-        case .idle, .done, .failed: return false
+        case .idle, .done, .stored, .failed: return false
         }
     }
 
     /// 结果阶段：停留 `ImagePasteFeedback.hold(for:)` 后自动消失，可手动关闭。
     var isResult: Bool {
         switch self {
-        case .done, .failed: return true
+        case .done, .stored, .failed: return true
         case .idle, .encoding, .uploading: return false
         }
     }
@@ -63,7 +65,7 @@ public struct ImagePasteFeedback: Equatable, Sendable {
             return nil
         case .encoding, .uploading:
             return ImagePasteFeedback(stage: stage, tone: .progress, showsSpinner: true, detail: nil)
-        case .done(let path):
+        case .done(let path), .stored(let path):
             return ImagePasteFeedback(stage: stage, tone: .success, showsSpinner: false, detail: path)
         case .failed(let message):
             return ImagePasteFeedback(stage: stage, tone: .failure, showsSpinner: false, detail: message)
@@ -79,7 +81,7 @@ public struct ImagePasteFeedback: Equatable, Sendable {
     /// 结果阶段之后多久自动消失；进行中的阶段不自动消失。
     public static func hold(for stage: ImagePasteStage) -> TimeInterval? {
         switch stage {
-        case .done: return successHold
+        case .done, .stored: return successHold
         case .failed: return failureHold
         case .idle, .encoding, .uploading: return nil
         }

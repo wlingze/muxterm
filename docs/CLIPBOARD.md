@@ -56,10 +56,20 @@ SSH 目标来自 Core 打开的 workspace，不从终端内容、进程名或用
 - Transport `TargetConnection::store_temporary_file`：目标文件落地/传输。SSH 使用系统
   SSH 配置（包括已有跳板机设置）和二进制 stdin，明确 `-T` 禁止 PTY，图片不经过终端。
 - C ABI：`muxterm_image_paste_start_json(handle, workspace, pane, png, len)` 复制输入后返回；
-  `muxterm_image_paste_poll_json(handle)` 返回 pending 或目标 path，完成时由 Core 注入原 pane。
+  `muxterm_image_paste_poll_json(handle)` 返回 pending 或目标 path（`injected=true` 表示
+  已完成注入）。独立输入框走 `muxterm_image_store_start_json(...)`：同样的存储与校验，
+  但 `injected=false`，路径由前端插入光标处，pane 收不到任何字节。
   调用均由 frontend event owner 串行进行。Rust CoreBridge 和公共 C 头已暴露此接口，
   Linux 与 macOS 均已接入系统剪贴板；macOS 通过主窗口命令队列与轮询调用，
   编码开始时绑定原 workspace/pane，切换页面不改变上传目的地。
+
+### 独立输入框
+
+macOS `Cmd-I` 打开独立输入框，徽章常驻 `Local` 或 `SSH <host>`。输入的是纯文本，
+`Cmd-Enter` 用终端的 bracketed-paste 编码原样写入当前 pane（不自动回车），
+复制按钮把全文写进系统剪贴板。面板右侧是同一份文本的 Markdown 预览，编辑器内容
+不被 Markdown 改写。粘贴图片复用上面的上传通路，插入的是**纯路径**，不转换成
+Markdown 图片语法；下一轮「点击终端内文件快速浏览」会让这类路径可点击预览。
 
 ## 限制与生命周期
 

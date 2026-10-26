@@ -15,9 +15,18 @@ pub(crate) struct PendingImagePaste {
     workspace: WorkspaceId,
     instance: u64,
     pane: PaneId,
+    /// false 表示只落盘并返回路径（独立输入框）；true 才向原 pane 写入路径。
+    inject: bool,
     /// 开始上传的时刻与字节数：完成/失败时写日志，才能看出「过一会才出现」慢在哪。
     started: Instant,
     bytes: usize,
+}
+
+/// 一次图片传输的结果：路径 + 是否已经写进原 pane。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImagePasteReady {
+    pub path: String,
+    pub injected: bool,
 }
 
 pub fn validate_png(bytes: &[u8]) -> Result<()> {
@@ -65,6 +74,28 @@ impl Muxterm {
         pane: PaneId,
         png: Vec<u8>,
     ) -> Result<()> {
+        self.begin_image_transfer(workspace, pane, png, true)
+    }
+
+    /// 只把图片存到 workspace 所在机器并返回路径，不写 pane。
+    ///
+    /// 独立输入框用这条通路：路径由前端决定插在哪里，Core 不代替用户输入。
+    pub fn start_image_store(
+        &mut self,
+        workspace: WorkspaceId,
+        pane: PaneId,
+        png: Vec<u8>,
+    ) -> Result<()> {
+        self.begin_image_transfer(workspace, pane, png, false)
+    }
+
+    fn begin_image_transfer(
+        &mut self,
+        workspace: WorkspaceId,
+        pane: PaneId,
+        png: Vec<u8>,
+        inject: bool,
+    ) -> Result<()> {
         validate_png(&png)?;
         if self.pending_image_paste.is_some() {
             bail!("an image paste is already in progress");
@@ -91,6 +122,7 @@ impl Muxterm {
             alias = workspace.alias.as_deref().unwrap_or(""),
             pane = pane.0,
             bytes,
+            inject,
             "image paste upload started"
         );
         let (sender, receiver) = mpsc::channel();
@@ -114,14 +146,16 @@ impl Muxterm {
             workspace,
             instance,
             pane,
+            inject,
             started: Instant::now(),
             bytes,
         });
         Ok(())
     }
 
-    /// None 表示仍在上传；Some(path) 表示已向原 pane 粘贴路径。
-    pub fn poll_image_paste(&mut self) -> Result<Option<String>> {
+    /// None 表示仍在上传；Some 表示文件已落到目标机器。
+    /// `injected` 为 true 时路径已写进原 pane；为 false 时由调用方拿到路径自行处理。
+    pub fn poll_image_paste(&mut self) -> Result<Option<ImagePasteReady>> {
         let job = self
             .pending_image_paste
             .as_ref()
@@ -135,13 +169,21 @@ impl Muxterm {
         };
         let job = self.pending_image_paste.take().unwrap();
         let elapsed_ms = job.started.elapsed().as_millis() as u64;
-        let outcome = (|| -> Result<String> {
+        let outcome = (|| -> Result<ImagePasteReady> {
             let path = result?;
             let ws = self
                 .pool
                 .get_mut(&job.workspace)
                 .filter(|ws| ws.instance_id() == job.instance)
                 .with_context(|| format!("original workspace closed; image retained at {path}"))?;
+            if !job.inject {
+                // 只存储：原 pane 关掉也没关系，文件已经在目标机器上，
+                // 输入框照样能拿到路径。工作区实例被替换才拒绝。
+                return Ok(ImagePasteReady {
+                    path,
+                    injected: false,
+                });
+            }
             if ws.state().pane(&job.pane).is_none() {
                 bail!("original pane closed; image retained at {path}");
             }
@@ -150,21 +192,32 @@ impl Muxterm {
                 target: job.pane,
                 data,
             })? {
-                TaskOutcome::Done | TaskOutcome::Accepted { .. } => Ok(path),
+                TaskOutcome::Done | TaskOutcome::Accepted { .. } => Ok(ImagePasteReady {
+                    path,
+                    injected: true,
+                }),
                 TaskOutcome::Rejected { reason } => {
                     bail!("image saved at {path}, but paste failed: {reason}")
                 }
             }
         })();
         match &outcome {
-            Ok(path) => tracing::info!(
-                target = "muxterm::clipboard",
-                pane = job.pane.0,
-                bytes = job.bytes,
-                elapsed_ms,
-                path = %path,
-                "image paste finished"
-            ),
+            Ok(ImagePasteReady { path, injected }) => {
+                let event = if *injected {
+                    "image paste finished"
+                } else {
+                    "image store finished"
+                };
+                tracing::info!(
+                    target = "muxterm::clipboard",
+                    pane = job.pane.0,
+                    bytes = job.bytes,
+                    elapsed_ms,
+                    path = %path,
+                    inject = *injected,
+                    "{event}"
+                )
+            }
             Err(error) => tracing::warn!(
                 target = "muxterm::clipboard",
                 pane = job.pane.0,
@@ -238,7 +291,8 @@ mod tests {
         send: Result<String>,
         drop_sender: bool,
         replace_workspace: bool,
-    ) -> (Result<Option<String>>, String) {
+        inject: bool,
+    ) -> (Result<Option<ImagePasteReady>>, String) {
         use crate::runtime::MockRuntime;
         use crate::workspace::Workspace;
         let captured = Captured::default();
@@ -265,6 +319,7 @@ mod tests {
                 workspace: id.clone(),
                 instance,
                 pane: PaneId(1),
+                inject,
                 started: Instant::now() - std::time::Duration::from_millis(1500),
                 bytes: 4096,
             });
@@ -289,8 +344,15 @@ mod tests {
 
     #[test]
     fn finished_paste_logs_elapsed_time_size_and_path() {
-        let (result, log) = finish_paste(Ok("/tmp/muxterm-paste-log.png".into()), false, false);
-        assert_eq!(result.unwrap(), Some("/tmp/muxterm-paste-log.png".into()));
+        let (result, log) =
+            finish_paste(Ok("/tmp/muxterm-paste-log.png".into()), false, false, true);
+        assert_eq!(
+            result.unwrap(),
+            Some(ImagePasteReady {
+                path: "/tmp/muxterm-paste-log.png".into(),
+                injected: true,
+            })
+        );
         assert!(log.contains("image paste finished"), "{log}");
         assert!(log.contains("/tmp/muxterm-paste-log.png"), "{log}");
         assert!(log.contains("bytes=4096"), "{log}");
@@ -310,6 +372,7 @@ mod tests {
             Err(anyhow::anyhow!("SSH image transfer timed out")),
             false,
             false,
+            true,
         );
         assert!(result.is_err());
         assert!(log.contains("image paste failed"), "{log}");
@@ -319,13 +382,14 @@ mod tests {
 
     #[test]
     fn dead_worker_and_replaced_workspace_are_both_logged_as_failures() {
-        let (dead, log) = finish_paste(Ok(String::new()), true, false);
+        let (dead, log) = finish_paste(Ok(String::new()), true, false, true);
         assert!(dead.is_err());
         assert!(log.contains("image transfer worker stopped"), "{log}");
 
         // 上传成功但原 workspace 已被同 ID 的新实例替换：文件已落盘，路径必须出现在日志
         // 里，用户才能找回——这正是「图片传了却没出现路径」时唯一的线索。
-        let (replaced, log) = finish_paste(Ok("/tmp/muxterm-paste-kept.png".into()), false, true);
+        let (replaced, log) =
+            finish_paste(Ok("/tmp/muxterm-paste-kept.png".into()), false, true, true);
         assert!(replaced.is_err());
         assert!(log.contains("image paste failed"), "{log}");
         assert!(log.contains("/tmp/muxterm-paste-kept.png"), "{log}");
@@ -353,6 +417,7 @@ mod tests {
                 workspace: id.clone(),
                 instance,
                 pane: PaneId(1),
+                inject: true,
                 started: Instant::now(),
                 bytes: 0,
             });
@@ -379,7 +444,13 @@ mod tests {
             if replace_original {
                 assert!(result.is_err());
             } else {
-                assert_eq!(result.unwrap(), Some("/tmp/muxterm-paste-test.png".into()));
+                assert_eq!(
+                    result.unwrap(),
+                    Some(ImagePasteReady {
+                        path: "/tmp/muxterm-paste-test.png".into(),
+                        injected: true,
+                    })
+                );
             }
             let writes = log
                 .lock()
@@ -388,6 +459,70 @@ mod tests {
                 .filter(|task| matches!(task, Task::WriteRaw { .. }))
                 .count();
             assert_eq!(writes, usize::from(!replace_original));
+            unsafe {
+                crate::ffi::muxterm_free(handle);
+            }
+        }
+    }
+
+    /// 独立输入框只拿路径：文件落盘、pane 不收到任何字节。
+    /// pane 在传输期间关掉也不影响路径，因为图片已经在目标机器上。
+    #[test]
+    fn store_only_returns_the_path_without_writing_the_pane() {
+        use crate::runtime::MockRuntime;
+        use crate::workspace::Workspace;
+        use std::sync::{Arc, Mutex};
+        for close_pane in [false, true] {
+            let handle = crate::ffi::muxterm_catalog_new();
+            assert!(!handle.is_null());
+            let h = unsafe { &mut *handle };
+            let id = WorkspaceId::new("local", None, "image-store", "shell", "/tmp");
+            let log = Arc::new(Mutex::new(Vec::new()));
+            let mut backend = MockRuntime::with_single_pane();
+            backend.executed_log = Some(log.clone());
+            let ws = Workspace::new(id.clone(), "image-store".into(), Box::new(backend));
+            let instance = ws.instance_id();
+            h.pool.insert_connected(ws);
+            let (sender, receiver) = mpsc::channel();
+            h.pending_image_paste = Some(PendingImagePaste {
+                receiver,
+                workspace: id,
+                instance,
+                pane: PaneId(1),
+                inject: false,
+                started: Instant::now(),
+                bytes: 0,
+            });
+            if close_pane {
+                h.pool
+                    .get_mut(&WorkspaceId::new(
+                        "local",
+                        None,
+                        "image-store",
+                        "shell",
+                        "/tmp",
+                    ))
+                    .unwrap()
+                    .execute(Task::ClosePane { target: PaneId(1) })
+                    .unwrap();
+            }
+            sender
+                .send(Ok("/tmp/muxterm-paste-store.png".into()))
+                .unwrap();
+            assert_eq!(
+                h.poll_image_paste().unwrap(),
+                Some(ImagePasteReady {
+                    path: "/tmp/muxterm-paste-store.png".into(),
+                    injected: false,
+                })
+            );
+            let writes = log
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|task| matches!(task, Task::WriteRaw { .. }))
+                .count();
+            assert_eq!(writes, 0, "只存储不能向 pane 写路径");
             unsafe {
                 crate::ffi::muxterm_free(handle);
             }

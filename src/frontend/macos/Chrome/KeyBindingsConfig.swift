@@ -35,6 +35,7 @@ public enum KeyBindingsConfig {
         case "toggle_window_fullscreen": return .toggleWindowFullscreen
         case "toggle_window_zoom": return .toggleWindowZoom
         case "open_settings": return .openSettings
+        case "open_composer", "composer": return .openComposer
         case "cycle_layout", "next_layout": return .cycleLayout
         case "switch_tab_last": return .switchLastTab
         case "switch_tab_previous", "previous_tab": return .previousTab
@@ -93,6 +94,7 @@ public enum KeyBindingsConfig {
         case .toggleWindowFullscreen: return "toggle_window_fullscreen"
         case .toggleWindowZoom: return "toggle_window_zoom"
         case .openSettings: return "open_settings"
+        case .openComposer: return "open_composer"
         case .cycleLayout: return "cycle_layout"
         case .toggleSidebar: return "toggle_sidebar"
         case .openShells: return "open_shells"

@@ -109,6 +109,9 @@ AppWindow
   SSH HostName / DNS 由 Core 后台解析并经 FFI 返回；地址未就绪时禁用 Open。
 - 关 GUI 窗：有 `PersistDetach` 的 Runtime **detach**；shell **shutdown**。
 - 迟到输入不得改投新的 active pane。
+- `Cmd-I` 独立输入框：纯文本编辑 + Markdown 预览，常驻 `Local` / `SSH <host>` 徽章。
+  复制按钮写系统剪贴板；`Cmd-Enter` 把原文经 bracketed-paste 写入当前 pane，不自动
+  回车。粘贴图片走 Core 只存储通路（`imageStore`），插入纯路径，由用户决定是否发送。
 
 ### 2.5 渲染（像素细节见 SURFACE）
 

@@ -15,6 +15,36 @@ pub unsafe extern "C" fn muxterm_image_paste_start_json(
     png: *const u8,
     len: usize,
 ) -> *mut c_char {
+    image_transfer_start(h, workspace, pane, png, len, true)
+}
+
+/// 只把图片存到目标机器并返回路径，不向 pane 写入。
+///
+/// 独立输入框用这条：插入位置由用户决定，Core 不代替用户输入。
+///
+/// # Safety
+/// 与 `muxterm_image_paste_start_json` 相同。
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_image_store_start_json(
+    h: *mut MuxtermHandle,
+    workspace: *const c_char,
+    pane: u32,
+    png: *const u8,
+    len: usize,
+) -> *mut c_char {
+    image_transfer_start(h, workspace, pane, png, len, false)
+}
+
+/// # Safety
+/// handle 必须独占有效；`inject` 之外参数同 `muxterm_image_paste_start_json`。
+unsafe fn image_transfer_start(
+    h: *mut MuxtermHandle,
+    workspace: *const c_char,
+    pane: u32,
+    png: *const u8,
+    len: usize,
+    inject: bool,
+) -> *mut c_char {
     catch_unwind(AssertUnwindSafe(|| {
         if h.is_null()
             || workspace.is_null()
@@ -34,7 +64,13 @@ pub unsafe extern "C" fn muxterm_image_paste_start_json(
         let Some(pane) = resolve_c_io_pane(pane, ws) else {
             return json_error("pane is closed");
         };
-        match handle.start_image_paste(id, pane, std::slice::from_raw_parts(png, len).to_vec()) {
+        let bytes = std::slice::from_raw_parts(png, len).to_vec();
+        let started = if inject {
+            handle.start_image_paste(id, pane, bytes)
+        } else {
+            handle.start_image_store(id, pane, bytes)
+        };
+        match started {
             Ok(()) => json_string(serde_json::json!({"ok":true})),
             Err(error) => json_error(error),
         }
@@ -51,8 +87,14 @@ pub unsafe extern "C" fn muxterm_image_paste_poll_json(h: *mut MuxtermHandle) ->
             return json_error("handle is null");
         }
         match (&mut *h).poll_image_paste() {
-            Ok(path) => {
-                json_string(serde_json::json!({"ok":true,"pending":path.is_none(),"path":path}))
+            Ok(ready) => {
+                let pending = ready.is_none();
+                json_string(serde_json::json!({
+                    "ok": true,
+                    "pending": pending,
+                    "path": ready.as_ref().map(|ready| ready.path.as_str()),
+                    "injected": ready.as_ref().is_some_and(|ready| ready.injected),
+                }))
             }
             Err(error) => json_error(error),
         }

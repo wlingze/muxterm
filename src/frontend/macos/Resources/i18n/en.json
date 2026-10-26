@@ -502,5 +502,21 @@
   "update_retry": "Retry",
   "settings_update": "Updates",
   "settings_update_auto_check": "Check for updates on launch",
-  "settings_update_manifest_url": "Update manifest URL"
+  "settings_update_manifest_url": "Update manifest URL",
+  "composer_copied": "Copied to the clipboard.",
+  "composer_copy": "Copy",
+  "composer_copy_failed": "Could not write to the clipboard.",
+  "composer_image_encoding": "Preparing clipboard image…",
+  "composer_image_stored": "Image path ready: {{name}}",
+  "composer_image_uploading": "Uploading the image to the target…",
+  "composer_no_target": "Open a workspace before writing into a terminal.",
+  "composer_nothing_to_copy": "Nothing to copy yet.",
+  "composer_nothing_to_send": "Nothing to write yet.",
+  "composer_placeholder": "⌘↩ writes the text into the terminal without pressing Return.",
+  "composer_preview": "Preview",
+  "composer_preview_empty": "Markdown preview appears here.",
+  "composer_send": "Write",
+  "composer_sent": "Wrote the text into the terminal.",
+  "composer_title": "Compose",
+  "menu_composer": "Compose"
 }
