@@ -29,6 +29,8 @@ enum MuxtermTextKey: CaseIterable {
     case closeWindow
     case closeWindowDetail
     case closeWorkspace
+    case composerClear
+    case composerCleared
     case composerCopied
     case composerCopy
     case composerCopyFailed
@@ -36,6 +38,7 @@ enum MuxtermTextKey: CaseIterable {
     case composerImageStored
     case composerImageUploading
     case composerNoTarget
+    case composerNothingToClear
     case composerNothingToCopy
     case composerNothingToSend
     case composerPlaceholder
@@ -334,6 +337,8 @@ enum MuxtermTextKey: CaseIterable {
         case .closeWindow: return "close_window"
         case .closeWindowDetail: return "close_window_detail"
         case .closeWorkspace: return "close_workspace"
+        case .composerClear: return "composer_clear"
+        case .composerCleared: return "composer_cleared"
         case .composerCopied: return "composer_copied"
         case .composerCopy: return "composer_copy"
         case .composerCopyFailed: return "composer_copy_failed"
@@ -341,6 +346,7 @@ enum MuxtermTextKey: CaseIterable {
         case .composerImageStored: return "composer_image_stored"
         case .composerImageUploading: return "composer_image_uploading"
         case .composerNoTarget: return "composer_no_target"
+        case .composerNothingToClear: return "composer_nothing_to_clear"
         case .composerNothingToCopy: return "composer_nothing_to_copy"
         case .composerNothingToSend: return "composer_nothing_to_send"
         case .composerPlaceholder: return "composer_placeholder"

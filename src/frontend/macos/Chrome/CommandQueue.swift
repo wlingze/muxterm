@@ -51,7 +51,8 @@ public enum QueuedMuxOperation: Equatable, Sendable {
     case paneOutput(QueuedMuxPaneOutput)
     case imagePaste(paneID: UInt32, png: Data)
     /// 只存图片并拿回路径（独立输入框），不写 pane。
-    case imageStore(paneID: UInt32, png: Data)
+    /// `draftKey` 是发起粘贴的草稿页，迟到的上传结果按它插回原 tab。
+    case imageStore(paneID: UInt32, png: Data, draftKey: ComposerDraftKey)
 
     private var coalescingKey: CoalescingKey? {
         switch self {
