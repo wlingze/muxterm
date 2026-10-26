@@ -348,7 +348,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
             configTransaction: configTransaction
         )
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 640, height: 500),
+            contentRect: NSRect(x: 0, y: 0, width: 680, height: 680),
             styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -358,7 +358,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
         window.isMovableByWindowBackground = true
-        window.minSize = NSSize(width: 600, height: 440)
+        window.minSize = NSSize(width: 620, height: 520)
+        // 表单列宽有上限，窗口再宽只会多出一条空白；限制成接近正方形，
+        // 避免拖成一张横贯屏幕的窄条。
+        window.maxSize = NSSize(width: 880, height: 1200)
         window.appearance = NSApp.appearance
         super.init(window: window)
         window.delegate = self
@@ -790,11 +793,17 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         spacer.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: contentWidth).isActive = true
 
         scroll.documentView = stack
+        // 宽窗口不再把表单拉满：内容列最宽 640pt 并居中，标签和控件不会
+        // 被推到窗口两端。
+        let fillWidth = stack.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor)
+        fillWidth.priority = .defaultHigh
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: scroll.contentView.trailingAnchor),
+            stack.leadingAnchor.constraint(greaterThanOrEqualTo: scroll.contentView.leadingAnchor),
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: scroll.contentView.trailingAnchor),
+            stack.centerXAnchor.constraint(equalTo: scroll.contentView.centerXAnchor),
             stack.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
-            stack.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
+            stack.widthAnchor.constraint(lessThanOrEqualToConstant: 640),
+            fillWidth,
         ])
         return scroll
     }
