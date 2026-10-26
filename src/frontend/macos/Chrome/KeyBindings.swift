@@ -33,6 +33,8 @@ public enum KeyAction: Equatable, Hashable, Sendable {
     /// 只在当前桌面里把窗口铺满，不进入全屏 Space。
     case toggleWindowZoom
     case openSettings
+    /// 独立输入框：写一段话再复制或写进当前 pane。
+    case openComposer
     case cycleLayout
     case toggleSidebar
     /// 进入前端 Shells 聚合槽；不会向终端发送清屏字符。
@@ -143,6 +145,11 @@ public enum KeyBindings {
         if chord.command, chord.control, !chord.option, !chord.shift {
             if key == "a" { return .openAgents }
             if key == "s" { return .openShells }
+        }
+
+        // Cmd+I：独立输入框。终端正在输入时也能直接用，不抢当前输入。
+        if chord.command, !chord.shift, !chord.option, !chord.control, key == "i" {
+            return .openComposer
         }
 
         // Cmd+P：QuickConnect 面板。右侧 workspace 图标隐藏，但快捷键保留。

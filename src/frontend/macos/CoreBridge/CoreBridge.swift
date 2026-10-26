@@ -1618,15 +1618,42 @@ final class CoreBridge {
         let ok: Bool
         let pending: Bool?
         let path: String?
+        let injected: Bool?
         let error: CoreWireError?
     }
 
+    /// 一次图片传输完成的形状；`injected == false` 表示路径仍在等待前端插入。
+    struct ImagePasteDelivery: Equatable {
+        let path: String?
+        let injected: Bool
+    }
+
     func startImagePaste(workspaceID: String, paneID: UInt32, png: Data) throws {
+        try startImageTransfer(workspaceID: workspaceID, paneID: paneID, png: png, inject: true)
+    }
+
+    /// 只存到目标机器并返回路径，不向 pane 写入（独立输入框）。
+    func startImageStore(workspaceID: String, paneID: UInt32, png: Data) throws {
+        try startImageTransfer(workspaceID: workspaceID, paneID: paneID, png: png, inject: false)
+    }
+
+    private func startImageTransfer(
+        workspaceID: String,
+        paneID: UInt32,
+        png: Data,
+        inject: Bool
+    ) throws {
         guard let handle else { throw CoreBridgeDiscoveryError.message("Core handle unavailable") }
         let pointer = workspaceID.withCString { workspace in
             png.withUnsafeBytes { bytes in
-                muxterm_image_paste_start_json(
-                    handle, workspace, paneID, bytes.bindMemory(to: UInt8.self).baseAddress, png.count
+                let base = bytes.bindMemory(to: UInt8.self).baseAddress
+                if inject {
+                    return muxterm_image_paste_start_json(
+                        handle, workspace, paneID, base, png.count
+                    )
+                }
+                return muxterm_image_store_start_json(
+                    handle, workspace, paneID, base, png.count
                 )
             }
         }
@@ -1637,12 +1664,19 @@ final class CoreBridge {
     }
 
     func pollImagePaste() throws -> String? {
+        try pollImagePasteDelivery().path
+    }
+
+    func pollImagePasteDelivery() throws -> ImagePasteDelivery {
         guard let handle else { throw CoreBridgeDiscoveryError.message("Core handle unavailable") }
         let response: ImagePasteResponse = try Self.decodeDiscoveryJSON(muxterm_image_paste_poll_json(handle))
         guard response.ok else {
             throw CoreBridgeDiscoveryError.message(response.error?.message ?? "Image paste failed")
         }
-        return response.pending == true ? nil : response.path
+        guard response.pending != true else {
+            return ImagePasteDelivery(path: nil, injected: false)
+        }
+        return ImagePasteDelivery(path: response.path, injected: response.injected == true)
     }
 
     /// Open a target in this handle's WorkspacePool.  New workspaces share the

@@ -50,6 +50,8 @@ public enum QueuedMuxOperation: Equatable, Sendable {
     case search(QueuedMuxSearch)
     case paneOutput(QueuedMuxPaneOutput)
     case imagePaste(paneID: UInt32, png: Data)
+    /// 只存图片并拿回路径（独立输入框），不写 pane。
+    case imageStore(paneID: UInt32, png: Data)
 
     private var coalescingKey: CoalescingKey? {
         switch self {
@@ -75,7 +77,7 @@ public enum QueuedMuxOperation: Equatable, Sendable {
             }
         case .mouseMotion(let paneID, _):
             return .mouseMotion(paneID)
-        case .task, .input, .reconnect, .closeWorkspace, .updateRuntime, .config, .search, .paneOutput, .imagePaste:
+        case .task, .input, .reconnect, .closeWorkspace, .updateRuntime, .config, .search, .paneOutput, .imagePaste, .imageStore:
             return nil
         }
     }

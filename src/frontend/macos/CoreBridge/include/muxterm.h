@@ -148,6 +148,9 @@ char* muxterm_open_start_json(struct MuxtermHandle* h, const char* request_json)
 char* muxterm_open_poll_json(struct MuxtermHandle* h, bool activate);
 /* PNG bytes are copied before return. Poll pastes the target path into the original pane, without Enter. */
 char* muxterm_image_paste_start_json(struct MuxtermHandle* h, const char* workspace, uint32_t pane, const uint8_t* png, size_t len);
+/* Same storage, but poll only returns the path; the pane receives nothing (composer). */
+char* muxterm_image_store_start_json(struct MuxtermHandle* h, const char* workspace, uint32_t pane, const uint8_t* png, size_t len);
+/* pending=true means the transfer is still running. injected tells whether the pane already got the path. */
 char* muxterm_image_paste_poll_json(struct MuxtermHandle* h);
 char* muxterm_workspace_list(struct MuxtermHandle* h);
 int muxterm_workspace_activate(struct MuxtermHandle* h, const char* id);

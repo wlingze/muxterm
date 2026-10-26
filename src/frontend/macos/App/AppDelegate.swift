@@ -561,6 +561,16 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         commandPalette.target = windowController
         viewMenu.addItem(commandPalette)
 
+        // Cmd-I：独立输入框。写一段话后复制，或 Cmd-Enter 写进当前 pane。
+        let composer = NSMenuItem(
+            title: MuxtermI18n.shared.tr(.menuComposer),
+            action: #selector(MainWindowController.toggleComposer),
+            keyEquivalent: "i"
+        )
+        composer.keyEquivalentModifierMask = .command
+        composer.target = windowController
+        viewMenu.addItem(composer)
+
         let searchPanes = NSMenuItem(
             title: MuxtermI18n.shared.tr(.menuSearchPanes),
             action: #selector(MainWindowController.openWorkspaceSearchPanel),

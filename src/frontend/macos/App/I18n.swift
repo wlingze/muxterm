@@ -29,6 +29,21 @@ enum MuxtermTextKey: CaseIterable {
     case closeWindow
     case closeWindowDetail
     case closeWorkspace
+    case composerCopied
+    case composerCopy
+    case composerCopyFailed
+    case composerImageEncoding
+    case composerImageStored
+    case composerImageUploading
+    case composerNoTarget
+    case composerNothingToCopy
+    case composerNothingToSend
+    case composerPlaceholder
+    case composerPreview
+    case composerPreviewEmpty
+    case composerSend
+    case composerSent
+    case composerTitle
     case cmdNewPane
     case cmdNewPaneVertical
     case cmdOpenConfig
@@ -103,6 +118,7 @@ enum MuxtermTextKey: CaseIterable {
     case menuClosePane
     case menuCloseWindow
     case menuCommandPalette
+    case menuComposer
     case menuCopy
     case menuDecreaseFontSize
     case menuEdit
@@ -320,6 +336,21 @@ enum MuxtermTextKey: CaseIterable {
         case .closeWindow: return "close_window"
         case .closeWindowDetail: return "close_window_detail"
         case .closeWorkspace: return "close_workspace"
+        case .composerCopied: return "composer_copied"
+        case .composerCopy: return "composer_copy"
+        case .composerCopyFailed: return "composer_copy_failed"
+        case .composerImageEncoding: return "composer_image_encoding"
+        case .composerImageStored: return "composer_image_stored"
+        case .composerImageUploading: return "composer_image_uploading"
+        case .composerNoTarget: return "composer_no_target"
+        case .composerNothingToCopy: return "composer_nothing_to_copy"
+        case .composerNothingToSend: return "composer_nothing_to_send"
+        case .composerPlaceholder: return "composer_placeholder"
+        case .composerPreview: return "composer_preview"
+        case .composerPreviewEmpty: return "composer_preview_empty"
+        case .composerSend: return "composer_send"
+        case .composerSent: return "composer_sent"
+        case .composerTitle: return "composer_title"
         case .cmdNewPane: return "cmd_new_pane"
         case .cmdNewPaneVertical: return "cmd_new_pane_vertical"
         case .cmdOpenConfig: return "cmd_open_config"
@@ -394,6 +425,7 @@ enum MuxtermTextKey: CaseIterable {
         case .menuClosePane: return "menu_close_pane"
         case .menuCloseWindow: return "menu_close_window"
         case .menuCommandPalette: return "menu_command_palette"
+        case .menuComposer: return "menu_composer"
         case .menuCopy: return "menu_copy"
         case .menuDecreaseFontSize: return "menu_decrease_font_size"
         case .menuEdit: return "menu_edit"

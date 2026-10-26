@@ -16,7 +16,7 @@ pub use super::functions::catalog::{
     muxterm_workspace_worktree_create_json,
 };
 pub use super::functions::clipboard::{
-    muxterm_image_paste_poll_json, muxterm_image_paste_start_json,
+    muxterm_image_paste_poll_json, muxterm_image_paste_start_json, muxterm_image_store_start_json,
 };
 pub use super::functions::config::{
     muxterm_config_begin_json, muxterm_config_cancel_json, muxterm_config_commit_json,
