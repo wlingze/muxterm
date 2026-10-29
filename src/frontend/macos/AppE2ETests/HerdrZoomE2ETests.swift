@@ -7,7 +7,7 @@ import MuxtermChrome
 /// exercise Herdr's own layout and full-frame stream.
 final class HerdrZoomE2ETests: XCTestCase {
     func testCommandEnterZoomsHerdrAndKeepsPaintedPaneVisible() throws {
-        XCTAssertTrue(NamedHerdrZoomFixture.available, "herdr 0.8.0 is required")
+        XCTAssertTrue(NamedHerdrZoomFixture.available, "herdr is required")
         let fixture = try NamedHerdrZoomFixture()
         defer { fixture.stop() }
 
@@ -152,8 +152,10 @@ private final class NamedHerdrZoomFixture {
 
     static var available: Bool {
         guard let output = try? command(["--version"]),
-              let version = String(data: output, encoding: .utf8) else { return false }
-        return version.contains("0.8.0")
+              let text = String(data: output, encoding: .utf8) else { return false }
+        // CI 安装 GitHub latest 稳定版，不钉版本；只要 herdr 能跑就用。
+        let version = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return version.hasPrefix("herdr ") && version.count > "herdr ".count
     }
 
     init() throws {

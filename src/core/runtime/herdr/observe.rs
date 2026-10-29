@@ -171,10 +171,18 @@ impl ObserveStream {
         tx: Sender<PaneStreamEvent>,
     ) -> Result<Self> {
         Self::start_with_session(
-            Arc::new(HerdrSession::new(
-                "default",
-                super::session::api_socket_path_from_client_or_api(socket_path),
-            )),
+            Arc::new({
+                let session = HerdrSession::new(
+                    "default",
+                    super::session::api_socket_path_from_client_or_api(socket_path),
+                );
+                // 直连测试没有产品侧的 snapshot 步骤；先协商 Server 的 wire
+                // 协议号，否则 Hello 固定 19，新版 Server 的
+                // `check_client_version` 会直接断开（读到 EOF）。协商失败时
+                // 保留默认 19，让紧随其后的握手自己报错。
+                let _ = session.snapshot();
+                session
+            }),
             target,
             pane,
             generation,
