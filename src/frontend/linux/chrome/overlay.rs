@@ -52,7 +52,7 @@ impl OverlayLayer {
             .build();
         disconnect.set_widget_name("muxterm-disconnect-overlay");
         disconnect.add_css_class("muxterm-disconnect-overlay");
-        let disconnect_label = gtk4::Label::new(Some(&crate::frontend::utils::i18n::tr_static(
+        let disconnect_label = gtk4::Label::new(Some(crate::frontend::utils::i18n::tr_static(
             crate::frontend::utils::i18n::Key::StatusDisconnected,
         )));
         disconnect_label.set_widget_name("muxterm-disconnect-overlay-label");
@@ -62,11 +62,11 @@ impl OverlayLayer {
             .halign(gtk4::Align::Center)
             .build();
         let disconnect_reconnect =
-            gtk4::Button::with_label(&crate::frontend::utils::i18n::tr_static(
+            gtk4::Button::with_label(crate::frontend::utils::i18n::tr_static(
                 crate::frontend::utils::i18n::Key::StatusReconnect,
             ));
         disconnect_reconnect.set_widget_name("muxterm-disconnect-reconnect");
-        let disconnect_close = gtk4::Button::with_label(&crate::frontend::utils::i18n::tr_static(
+        let disconnect_close = gtk4::Button::with_label(crate::frontend::utils::i18n::tr_static(
             crate::frontend::utils::i18n::Key::CloseWorkspace,
         ));
         disconnect_close.set_widget_name("muxterm-disconnect-close");
