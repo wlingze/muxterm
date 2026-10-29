@@ -101,20 +101,23 @@ fn linux_font_zoom_and_enter_return_without_sync_persist() {
             "Enter/WriteRaw 必须立刻返回，实际 {enter_elapsed:?}"
         );
 
+        // 配置只写用户覆盖：13.0 恰好等于默认字号，序列化时会省略，
+        // 因此契约是「旧的 12.0 覆盖必须消失」，不是「文件里出现 13.0」。
         let persist_deadline = Instant::now() + Duration::from_secs(5);
         let mut persisted = false;
         while Instant::now() < persist_deadline {
             pump_main_loop(50);
             app.test_poll_once();
             let raw = std::fs::read_to_string(&config_path).unwrap();
-            if raw.contains("13.0") || raw.contains("size = 13") {
+            if !raw.contains("12.0") && !raw.contains("size = 12") {
                 persisted = true;
                 break;
             }
         }
+        let raw = std::fs::read_to_string(&config_path).unwrap();
         assert!(
             persisted,
-            "防抖之后仍必须把 font.size 写回 config.toml（linux_prefs_e2e 契约）"
+            "防抖之后必须更新 config.toml 的字号覆盖（等值默认项会省略）：{raw}"
         );
 
         let t2 = Instant::now();
