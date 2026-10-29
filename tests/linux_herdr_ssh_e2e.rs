@@ -102,11 +102,14 @@ fn linux_ssh_herdr_vte_input_executes_remote_command() {
                 break;
             }
         }
+        // 诊断：区分「Index 全空」与「Index 只有旧内容」。
         assert!(
             executed,
-            "SSH Herdr VTE 逐字输入 + Enter 必须执行远端命令。vte={:?} search={:?}",
+            "SSH Herdr VTE 逐字输入 + Enter 必须执行远端命令。vte={:?} search={:?} prompt={:?} runtimes={:?}",
             app.test_pane_vte_text(pane),
-            app.test_search_all(output_token)
+            app.test_search_all(output_token),
+            app.test_search_all("runnervm"),
+            app.test_workspace_runtimes()
         );
         let status = find_by_name(&app.window, "muxterm-status-popover-label")
             .unwrap()
