@@ -2885,10 +2885,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         let agents = WorkspaceSidebarProjection.agents(
             workspaces: runtimeSidebarItems(),
             attention: attention
-        ).filter { !hiddenAttentionKeys.contains(AttentionVisibilityKey(
-            workspaceId: $0.workspaceId,
-            paneId: $0.paneId
-        )) }
+        )
         reconcileAggregatePresentation(agents: agents)
         guard force || isWorkspaceSidebarOpen else { return }
         let workspaces = sidebarItems()
