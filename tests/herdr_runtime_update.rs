@@ -253,15 +253,21 @@ fn local_and_ssh_updates_preserve_shared_workspaces_and_input() -> Result<()> {
     sshd.apply_ssh_config_env();
     // CI 默认同一版本；显式指定官方二进制可验证 19 → 22 等跨版本热交接。
     let updated_binary = std::env::var_os("MUXTERM_TEST_HERDR_UPDATE_BINARY").map(PathBuf::from);
-    let expected_protocol = if let Some(binary) = &updated_binary {
-        let output = std::process::Command::new(binary)
+    // 无显式二进制时，热交接只在 CI 安装的那个版本内发生；协议号要问
+    // 实际二进制，不能在仓库里写死（CI 跟随 GitHub latest）。
+    let expected_protocol = {
+        let probe = updated_binary
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("herdr"));
+        let output = std::process::Command::new(&probe)
             .args(["api", "schema", "--json"])
             .output()?;
-        ensure!(output.status.success(), "cannot read test binary schema");
+        ensure!(
+            output.status.success(),
+            "cannot read herdr schema from {probe:?}"
+        );
         let schema: Value = serde_json::from_slice(&output.stdout)?;
         u32::try_from(schema["protocol"].as_u64().unwrap())?
-    } else {
-        19
     };
     for (transport, target) in [("local", ""), ("ssh", sshd.alias.as_str())] {
         let herdr = IsolatedHerdr::start("runtime-update");

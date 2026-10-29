@@ -160,8 +160,9 @@ finally:
 }
 
 #[test]
-fn v19_tab_switch_accepts_input_before_control_stream_is_ready() -> Result<()> {
-    tab_switch_accepts_immediate_input(IsolatedHerdr::start("switch-input-v19"), 19)
+fn installed_tab_switch_accepts_input_before_control_stream_is_ready() -> Result<()> {
+    // required CI 安装 GitHub latest，协议号随版本变；这里只要 Muxterm 认识。
+    tab_switch_accepts_immediate_input(IsolatedHerdr::start("switch-input-installed"), None)
 }
 
 #[test]
@@ -171,7 +172,7 @@ fn v20_tab_switch_accepts_input_before_control_stream_is_ready() -> Result<()> {
     };
     tab_switch_accepts_immediate_input(
         IsolatedHerdr::start_with_binary("switch-input-v20", &PathBuf::from(binary)),
-        20,
+        Some(20),
     )
 }
 
@@ -182,19 +183,30 @@ fn v22_tab_switch_accepts_input_before_control_stream_is_ready() -> Result<()> {
     };
     tab_switch_accepts_immediate_input(
         IsolatedHerdr::start_with_binary("switch-input-v22", &PathBuf::from(binary)),
-        22,
+        Some(22),
     )
 }
 
-fn tab_switch_accepts_immediate_input(herdr: IsolatedHerdr, expected_protocol: u64) -> Result<()> {
+fn tab_switch_accepts_immediate_input(
+    herdr: IsolatedHerdr,
+    expected_protocol: Option<u64>,
+) -> Result<()> {
     let executor = tokio::runtime::Runtime::new()?;
     let _entered = executor.enter();
     let (workspace_id, _first_tab, first_wire) = herdr.create_workspace("/tmp", "switch-input");
     let session = HerdrSession::new(herdr.name(), herdr.socket_path());
-    ensure!(
-        session.snapshot()?.protocol == expected_protocol,
-        "unexpected Herdr protocol"
-    );
+    let protocol = session.snapshot()?.protocol;
+    match expected_protocol {
+        Some(expected) => ensure!(
+            protocol == expected,
+            "unexpected Herdr protocol {protocol}, expected {expected}"
+        ),
+        // 19 / 20 / 22 是 Muxterm 现有编码器；其它协议要显式失败。
+        None => ensure!(
+            matches!(protocol, 19 | 20 | 22),
+            "unsupported Herdr protocol {protocol}"
+        ),
+    }
     let created = herdr
         .cli()
         .args([
@@ -276,6 +288,6 @@ fn tab_switch_accepts_immediate_input(herdr: IsolatedHerdr, expected_protocol: u
         std::thread::sleep(Duration::from_millis(20));
     }
     anyhow::bail!(
-        "input sent directly after protocol {expected_protocol} tab switch never reached the shell"
+        "input sent directly after protocol {protocol} tab switch never reached the shell"
     )
 }
