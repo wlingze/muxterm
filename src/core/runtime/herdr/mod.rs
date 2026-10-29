@@ -19,6 +19,9 @@ pub mod registry;
 pub mod runtime;
 pub mod session;
 pub mod wire;
+#[cfg(any(test, feature = "test-harness"))]
+pub mod wire_compat;
+#[cfg(not(any(test, feature = "test-harness")))]
 mod wire_compat;
 
 pub(super) use provider::HerdrDriver;

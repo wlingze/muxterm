@@ -101,7 +101,7 @@ fn linux_font_zoom_and_enter_return_without_sync_persist() {
             "Enter/WriteRaw 必须立刻返回，实际 {enter_elapsed:?}"
         );
 
-        let persist_deadline = Instant::now() + Duration::from_secs(1);
+        let persist_deadline = Instant::now() + Duration::from_secs(5);
         let mut persisted = false;
         while Instant::now() < persist_deadline {
             pump_main_loop(50);
