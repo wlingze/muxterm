@@ -198,8 +198,8 @@ doctor() {
         echo "WARN: 缺 tmux（CI setup 使用 runner 预编译包）" >&2
         fail=1
     fi
-    if ! herdr --version 2>/dev/null | grep -q "0.8.0"; then
-        echo "WARN: herdr 应为 0.8.0" >&2
+    if ! command -v herdr >/dev/null 2>&1; then
+        echo "WARN: 缺 herdr（CI setup 安装 GitHub latest 稳定版）" >&2
         fail=1
     fi
     if ! command -v sshd >/dev/null 2>&1; then

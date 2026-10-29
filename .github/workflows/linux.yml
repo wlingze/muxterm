@@ -47,6 +47,7 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   CARGO_TARGET_DIR: target
+  GH_TOKEN: ${{ github.token }}
 
 jobs:
   linux_checks:

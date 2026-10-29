@@ -7,8 +7,8 @@
 #
 # 职责（平台自适应）：
 #   - tmux：Linux apt / macOS brew
-#   - herdr：GitHub release 预编译二进制（herdrdev/herdr v0.8.0；crates.io
-#     无此包，`cargo install herdr` 会装到同名无关 crate）
+#   - herdr：GitHub latest 稳定版预编译二进制（不钉版本号；crates.io 无此包，
+#     `cargo install herdr` 会装到同名无关 crate）
 #   - loopback sshd：Linux 复用 setup-sshd.sh；macOS 由测试按需 skip
 #   - 其它系统依赖：build-essential / pkg-config / python3 / openssh
 #
@@ -87,23 +87,66 @@ else
   exit 1
 fi
 
-# ── herdr（GitHub release 预编译二进制，固定 0.8.0 与本地一致）──
-# 已存在但版本不匹配时必须安装固定资产或失败，不能只判断 command 存在（§13.1）。
-if command -v herdr >/dev/null 2>&1 && herdr --version 2>/dev/null | grep -q "0.8.0"; then
-  echo "herdr 0.8.0 已存在，跳过安装" >&2
-elif ! command -v herdr >/dev/null 2>&1 || ! herdr --version 2>/dev/null | grep -q "0.8.0"; then
-  ARCH="$(uname -m)"
-  case "$OS-$ARCH" in
-    Linux-x86_64)  ASSET="herdr-linux-x86_64";    SHA="b872ea7e40fa2cb17e857ac9b62b1bf26db7b403c622f5d2f3f5b35f6e9acd28" ;;
-    Linux-aarch64) ASSET="herdr-linux-aarch64";   SHA="f647ac66468d9efbc642fe534fb284468f0aea60641606fc008dfc0d82a3ca87" ;;
-    Darwin-arm64)  ASSET="herdr-macos-aarch64";   SHA="d53a9f93fccfdfcc55632927bf51002f5add0aa7990bcdf508ffbd84ac658178" ;;
-    Darwin-x86_64) ASSET="herdr-macos-x86_64";    SHA="77cb5afd6c8fcaaaf3bc28e474ec01c209331ad08094e20d7f8aa9b0bb78d649" ;;
-    *) echo "不支持的平台组合: $OS-$ARCH" >&2; exit 1 ;;
-  esac
-  echo "下载 herdr 0.8.0 ($ASSET)..." >&2
-  URL="https://github.com/herdrdev/herdr/releases/download/v0.8.0/$ASSET"
-  curl -fsSL -o /tmp/herdr "$URL"
-  verify_sha256 "$SHA" /tmp/herdr
+# ── herdr（GitHub latest 稳定版，版本号与 SHA 都不写进仓库）──
+# /releases/latest 只返回非 prerelease。摘要取该 asset 的 digest 字段，
+# 下载后校验；协议不兼容由 Muxterm 握手明确失败，不在这里猜协议号。
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "解析 herdr release 需要 python3" >&2
+  exit 1
+fi
+ARCH="$(uname -m)"
+case "$OS-$ARCH" in
+  Linux-x86_64)  ASSET="herdr-linux-x86_64" ;;
+  Linux-aarch64) ASSET="herdr-linux-aarch64" ;;
+  Darwin-arm64)  ASSET="herdr-macos-aarch64" ;;
+  Darwin-x86_64) ASSET="herdr-macos-x86_64" ;;
+  *) echo "不支持的平台组合: $OS-$ARCH" >&2; exit 1 ;;
+esac
+# runner 出口 IP 共用时，匿名 /releases/latest 很容易撞上 60 次/小时。
+# workflow 传入 GH_TOKEN 后走认证额度。
+HERDR_CURL=(curl -fsSL
+  -H "Accept: application/vnd.github+json"
+  -H "X-GitHub-Api-Version: 2022-11-28"
+  -H "User-Agent: muxterm-ci")
+if [ -n "${GH_TOKEN:-${GITHUB_TOKEN:-}}" ]; then
+  HERDR_CURL+=(-H "Authorization: Bearer ${GH_TOKEN:-${GITHUB_TOKEN}}")
+fi
+HERDR_META="$("${HERDR_CURL[@]}" https://api.github.com/repos/herdrdev/herdr/releases/latest)"
+HERDR_RESOLVED="$(printf '%s' "$HERDR_META" | python3 -c '
+import json, sys
+asset = sys.argv[1]
+rel = json.load(sys.stdin)
+if rel.get("prerelease") or rel.get("draft"):
+    raise SystemExit("refusing herdr prerelease or draft")
+tag = rel.get("tag_name") or ""
+if not tag.startswith("v") or len(tag) < 2:
+    raise SystemExit(f"unexpected herdr tag: {tag!r}")
+found = next((item for item in rel.get("assets") or [] if item.get("name") == asset), None)
+if found is None:
+    raise SystemExit(f"release {tag} has no {asset}")
+digest = found.get("digest") or ""
+prefix = "sha256:"
+if not digest.startswith(prefix) or len(digest) != len(prefix) + 64:
+    raise SystemExit(f"release {tag} asset {asset} has no sha256 digest")
+url = found.get("browser_download_url") or ""
+expected = f"https://github.com/herdrdev/herdr/releases/download/{tag}/{asset}"
+if url != expected:
+    raise SystemExit(f"unexpected herdr download url: {url}")
+print(tag)
+print(digest[len(prefix):])
+print(url)
+' "$ASSET")"
+HERDR_TAG="$(printf '%s\n' "$HERDR_RESOLVED" | sed -n '1p')"
+HERDR_SHA="$(printf '%s\n' "$HERDR_RESOLVED" | sed -n '2p')"
+HERDR_URL="$(printf '%s\n' "$HERDR_RESOLVED" | sed -n '3p')"
+HERDR_VERSION="${HERDR_TAG#v}"
+if command -v herdr >/dev/null 2>&1 \
+  && [ "$(herdr --version 2>/dev/null | head -1)" = "herdr ${HERDR_VERSION}" ]; then
+  echo "herdr ${HERDR_VERSION} 已是最新稳定版，跳过安装" >&2
+else
+  echo "下载 herdr ${HERDR_TAG} (${ASSET})..." >&2
+  curl -fsSL -o /tmp/herdr "$HERDR_URL"
+  verify_sha256 "$HERDR_SHA" /tmp/herdr
   if [ "$OS" = "Linux" ]; then
     sudo install -m 0755 /tmp/herdr /usr/local/bin/herdr
   else
@@ -111,9 +154,8 @@ elif ! command -v herdr >/dev/null 2>&1 || ! herdr --version 2>/dev/null | grep 
   fi
   rm -f /tmp/herdr
 fi
-# 精确校验：herdr 0.8.0（protocol 19）。
-if ! herdr --version 2>/dev/null | grep -q "0.8.0"; then
-  echo "herdr 版本必须为 0.8.0，实际: $(herdr --version 2>/dev/null | head -1)" >&2
+if [ "$(herdr --version 2>/dev/null | head -1)" != "herdr ${HERDR_VERSION}" ]; then
+  echo "herdr 版本必须为最新稳定版 ${HERDR_VERSION}，实际: $(herdr --version 2>/dev/null | head -1)" >&2
   exit 1
 fi
 herdr --version >&2

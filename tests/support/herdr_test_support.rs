@@ -86,17 +86,19 @@ pub fn herdr_available() -> bool {
         .unwrap_or(false)
 }
 
-/// §13.1：测试开头校验 Herdr 版本 == 0.8.0（protocol 19）。
-/// 版本不符是 **required failure**，不是 skip。
+/// CI 安装 GitHub latest 稳定版，不钉死版本号。
+/// 缺二进制是 **required failure**，不是 skip；协议不认识时握手会明确失败。
 pub fn assert_herdr_version_ok() {
     let version = Command::new("herdr")
         .arg("--version")
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
         .unwrap_or_default();
+    let version = version.trim();
+    let mut parts = version.split_whitespace();
     assert!(
-        version.contains("0.8.0"),
-        "herdr 版本必须为 0.8.0（protocol 19），实际: {version}"
+        parts.next() == Some("herdr") && parts.next().is_some_and(|part| !part.is_empty()),
+        "herdr --version 必须可用，实际: {version:?}"
     );
 }
 
@@ -221,7 +223,7 @@ impl IsolatedHerdr {
 
     /// 用预分配的精确名称启动（W7 parent 兜底清理用：名称可预测）。
     pub fn start_named(name: String) -> Self {
-        // §13.1：任何 herdr 测试开始前校验 protocol 19（版本不符 = required failure）。
+        // 缺 herdr 二进制是 required failure；具体版本跟随 CI 安装的最新稳定版。
         assert_herdr_version_ok();
         Self::start_named_with_binary(name, PathBuf::from("herdr"), &[])
     }

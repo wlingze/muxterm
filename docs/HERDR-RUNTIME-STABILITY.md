@@ -73,8 +73,8 @@ Muxterm protocol-19 wire 测试和官方 v0.8.0 release 为准；握手版本不
 
 2026-09-29 更新：上面是 protocol-19 基线。运行时现从 `session.snapshot.protocol`
 选择 protocol 19、20 或 22 的独立 client-socket 编码器；未识别版本仍明确失败，
-不会把新版消息误当 protocol 19。required CI 仍使用 0.8.0，其他版本用独立
-named-session 契约验证。Herdr 自己的直连终端握手也要求 client/server 的
+不会把新版消息误当 protocol 19。required CI 安装 GitHub latest 稳定版，不再钉
+0.8.0；0.8.2 / 0.9.1 仍由 `herdr_protocol_compat` 单独下载做协议契约。Herdr 自己的直连终端握手也要求 client/server 的
 `PROTOCOL_VERSION` 相等；未知数字不能在没有对应消息布局时直接放行。
 
 ---
