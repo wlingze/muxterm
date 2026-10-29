@@ -427,10 +427,17 @@ pub(super) fn maybe_schedule_reconnect(state: &Rc<RefCell<UiState>>) {
             BACKEND_STATUS_EXITED,
         };
         if status == Some(BACKEND_STATUS_CONNECTED) {
+            s.connected_workspaces.insert(id.as_str());
             s.overlay.disconnect.set_visible(false);
             s.overlay.disconnect_reconnect.set_sensitive(true);
             s.reconnect_attempts = 0;
             s.reconnect_retry_at = None;
+            return;
+        }
+        // Herdr 的初始状态就是 Disconnected。初次 attach 还没完成时这里
+        // 既不能亮断线卡片，也不能发 reconnect：重连会重建 Runtime 并把
+        // 正在播种的 Core Index 清掉，pane 内容之后再也搜不到。
+        if !s.connected_workspaces.contains(&id.as_str()) {
             return;
         }
         if !matches!(
