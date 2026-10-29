@@ -9,6 +9,9 @@ final class WindowFullscreenTests: XCTestCase {
         let bridge = try CoreBridge(backendType: "local")
         let app = MainWindowController(bridge: bridge)
         defer { app.testShutdown() }
+        // 先等首个 attach 落地：Safari 行在 CI 慢机器上可能还没建好树，
+        // 直接点全屏按钮会让之后的 layout 叶子数量断言变成竞态。
+        XCTAssertTrue(app.waitReady())
         let window = try XCTUnwrap(app.window)
         var toggles = 0
         app.performWindowFullscreenToggle = { target in

@@ -706,6 +706,8 @@ final class ComposerPanelController: NSWindowController, NSTextViewDelegate, NSW
 
         tabs.translatesAutoresizingMaskIntoConstraints = false
         tabs.setAccessibilityIdentifier("muxterm.composer.tabs")
+        // NSSegmentedControl 的内部段宽会成为必需宽度，同样不能参与窗口求解。
+        tabs.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         tabs.segmentStyle = .separated
         tabs.trackingMode = .selectOne
         tabs.segmentDistribution = .fillEqually
@@ -761,6 +763,9 @@ final class ComposerPanelController: NSWindowController, NSTextViewDelegate, NSW
         statusLabel.setAccessibilityIdentifier("muxterm.composer.status")
         statusLabel.stringValue = MuxtermI18n.shared.tr(.composerPlaceholder)
         statusLabel.lineBreakMode = .byTruncatingTail
+        // 提示文案只是占位说明：压缩阻力必须低于窗口保持当前宽度（500），
+        // 否则长提示会把整个输入框窗口顶宽。
+        statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         statusLabel.font = .systemFont(ofSize: 11)
         statusLabel.textColor = .secondaryLabelColor
 

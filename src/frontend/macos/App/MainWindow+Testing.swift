@@ -436,7 +436,8 @@ extension MainWindowController {
     }
 
     func testDisconnectOverlayVisible() -> Bool {
-        !content.disconnectOverlay.isHidden
+        // 水印已换成卡片；标题 label 自身从不隐藏，必须看卡片本身的可见性。
+        !content.disconnectCard.isHidden
     }
 
     func testDisconnectOverlayText() -> String {

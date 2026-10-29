@@ -11,11 +11,11 @@ final class UnifiedPanelRuntimeUpdateE2ETests: XCTestCase {
         defer { panel.dismiss() }
         panel.present()
 
-        let supportedCell = try XCTUnwrap(panel.testWorkspaceCell(at: 1))
+        let supportedCell = try XCTUnwrap(panel.testWorkspaceCell(matching: "supported"))
         let button = try XCTUnwrap(findView(supportedCell, id: "muxterm.panel.workspace.update.supported") as? NSButton)
         XCTAssertFalse(button.isHidden)
         XCTAssertTrue(button.isEnabled)
-        let unsupportedCell = try XCTUnwrap(panel.testWorkspaceCell(at: 0))
+        let unsupportedCell = try XCTUnwrap(panel.testWorkspaceCell(matching: "unsupported"))
         XCTAssertNil(findView(unsupportedCell, id: "muxterm.panel.workspace.update.unsupported"))
     }
 
@@ -32,7 +32,7 @@ final class UnifiedPanelRuntimeUpdateE2ETests: XCTestCase {
         panel.onWorkspaceClose = { closed.append($0) }
         panel.present()
 
-        let cell = try XCTUnwrap(panel.testWorkspaceCell(at: 0))
+        let cell = try XCTUnwrap(panel.testWorkspaceCell(matching: "background"))
         let button = try XCTUnwrap(findView(cell, id: "muxterm.panel.workspace.update.background") as? NSButton)
         try click(button, in: panel)
 
@@ -69,8 +69,8 @@ final class UnifiedPanelRuntimeUpdateE2ETests: XCTestCase {
             window.layoutIfNeeded()
             AppE2E.pump(40)
             let columnWidth = panel.testTableColumnWidth()
-            for (row, workspace) in workspaces.enumerated() {
-                let cell = try XCTUnwrap(panel.testWorkspaceCell(at: row))
+            for workspace in workspaces {
+                let cell = try XCTUnwrap(panel.testWorkspaceCell(matching: workspace.name))
                 cell.layoutSubtreeIfNeeded()
                 XCTAssertEqual(cell.bounds.width, columnWidth, accuracy: 2)
                 let close = try XCTUnwrap(findView(cell, id: "muxterm.panel.workspace.close.\(workspace.workspaceId)") as? NSButton)
@@ -109,7 +109,7 @@ final class UnifiedPanelRuntimeUpdateE2ETests: XCTestCase {
         panel.onWorkspaceActivate = { activated.append($0) }
         panel.present()
 
-        let supportedCell = try XCTUnwrap(panel.testWorkspaceCell(at: 0))
+        let supportedCell = try XCTUnwrap(panel.testWorkspaceCell(matching: "supported"))
         let update = try XCTUnwrap(findView(supportedCell, id: "muxterm.panel.workspace.update.supported") as? NSButton)
         try click(update, in: panel)
         XCTAssertEqual(requested, ["supported"])
@@ -117,8 +117,8 @@ final class UnifiedPanelRuntimeUpdateE2ETests: XCTestCase {
         XCTAssertTrue(activated.isEmpty)
         XCTAssertTrue(panel.window?.isVisible == true)
 
-        for (row, workspace) in workspaces.enumerated() {
-            let cell = try XCTUnwrap(panel.testWorkspaceCell(at: row))
+        for workspace in workspaces {
+            let cell = try XCTUnwrap(panel.testWorkspaceCell(matching: workspace.name))
             let close = try XCTUnwrap(findView(cell, id: "muxterm.panel.workspace.close.\(workspace.workspaceId)") as? NSButton)
             try click(close, in: panel)
         }
@@ -142,7 +142,7 @@ final class UnifiedPanelRuntimeUpdateE2ETests: XCTestCase {
         for phase in ["checking", "installing", "handoff", "reconnecting"] {
             workspace = item("progress", supported: true, phase: phase)
             panel.refreshData()
-            let cell = try XCTUnwrap(panel.testWorkspaceCell(at: 0))
+            let cell = try XCTUnwrap(panel.testWorkspaceCell(matching: "progress"))
             let button = try XCTUnwrap(findView(cell, id: "muxterm.panel.workspace.update.progress") as? NSButton)
             XCTAssertFalse(button.isEnabled, phase)
             XCTAssertEqual(button.toolTip, phase)
@@ -157,7 +157,7 @@ final class UnifiedPanelRuntimeUpdateE2ETests: XCTestCase {
 
         workspace = item("progress", supported: true, phase: "failed")
         panel.refreshData()
-        let cell = try XCTUnwrap(panel.testWorkspaceCell(at: 0))
+        let cell = try XCTUnwrap(panel.testWorkspaceCell(matching: "progress"))
         let button = try XCTUnwrap(findView(cell, id: "muxterm.panel.workspace.update.progress") as? NSButton)
         XCTAssertTrue(button.isEnabled)
         XCTAssertEqual(button.contentTintColor, .systemOrange)
@@ -171,11 +171,11 @@ final class UnifiedPanelRuntimeUpdateE2ETests: XCTestCase {
         let panel = makePanel { [workspace] }
         defer { panel.dismiss() }
         panel.present()
-        let cell = try XCTUnwrap(panel.testWorkspaceCell(at: 0))
+        let cell = try XCTUnwrap(panel.testWorkspaceCell(matching: "reused"))
         let button = try XCTUnwrap(findView(cell, id: "muxterm.panel.workspace.update.reused") as? NSButton)
         workspace = item("reused", supported: false)
         panel.refreshData()
-        let reusedCell = try XCTUnwrap(panel.testWorkspaceCell(at: 0))
+        let reusedCell = try XCTUnwrap(panel.testWorkspaceCell(matching: "reused"))
         XCTAssertNil(findView(reusedCell, id: "muxterm.panel.workspace.update.reused"))
         if cell === reusedCell {
             XCTAssertTrue(button.isHidden)
@@ -209,7 +209,7 @@ final class UnifiedPanelRuntimeUpdateE2ETests: XCTestCase {
         app.unifiedPanel = panel
         panel.present()
 
-        let cell = try XCTUnwrap(panel.testWorkspaceCell(at: 0))
+        let cell = try XCTUnwrap(panel.testWorkspaceCell(matching: sidebarWorkspace.name))
         let buttonID = "muxterm.panel.workspace.update.\(sidebarWorkspace.workspaceId)"
         let button = try XCTUnwrap(findView(cell, id: buttonID) as? NSButton)
         try click(button, in: panel, pumpAfter: false)
@@ -217,7 +217,7 @@ final class UnifiedPanelRuntimeUpdateE2ETests: XCTestCase {
         let queuedCount = app.testQueuedCommandCount()
         app.updateWorkspaceRuntime(sidebarWorkspace.workspaceId)
         XCTAssertEqual(app.testQueuedCommandCount(), queuedCount)
-        let pendingCell = try XCTUnwrap(panel.testWorkspaceCell(at: 0))
+        let pendingCell = try XCTUnwrap(panel.testWorkspaceCell(matching: sidebarWorkspace.name))
         XCTAssertFalse(try XCTUnwrap(findView(pendingCell, id: buttonID) as? NSButton).isEnabled)
 
         app.testPollOnce()
@@ -225,7 +225,7 @@ final class UnifiedPanelRuntimeUpdateE2ETests: XCTestCase {
         XCTAssertEqual(failed.runtimeUpdatePhase, "failed")
         XCTAssertTrue(failed.runtimeUpdateMessage?.contains("not supported") == true,
                       "Core must reject the existing shell, not a misrouted/missing workspace: \(failed.runtimeUpdateMessage ?? "nil")")
-        let failedCell = try XCTUnwrap(panel.testWorkspaceCell(at: 0))
+        let failedCell = try XCTUnwrap(panel.testWorkspaceCell(matching: sidebarWorkspace.name))
         let retry = try XCTUnwrap(findView(failedCell, id: buttonID) as? NSButton)
         XCTAssertTrue(retry.isEnabled)
         XCTAssertEqual(retry.contentTintColor, .systemOrange)
