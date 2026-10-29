@@ -1746,8 +1746,7 @@ fn scenario_takeover_watchdog(
         .map(|p| p.pane_id.clone())
         .unwrap_or_default();
     ensure!(!herdr_pane.is_empty(), "snapshot 找不到 herdr pane");
-    let taken =
-        raw_control_takeover(sess.client_socket_path(), &herdr_pane).context("raw takeover")?;
+    let taken = raw_control_takeover(&sess, &herdr_pane).context("raw takeover")?;
     if taken {
         wait_for(app, "后台 Control 被抢占后禁止 auto-start", |app| {
             let p = probe(app).expect("探针");
@@ -1763,35 +1762,31 @@ fn scenario_takeover_watchdog(
 }
 
 /// 真实第二个 raw client：Hello → ControlTerminal{takeover}。
-fn raw_control_takeover(socket_path: &std::path::Path, target: &str) -> Result<bool> {
-    use muxterm::test_support::core::runtime::herdr::wire::{
-        read_message, write_message, ClientKeybindings, ClientLaunchMode, ClientMessage,
-        RenderEncoding, ServerMessage, HERDR_PROTOCOL_VERSION, MAX_FRAME_SIZE,
+///
+/// Hello 必须用 Server 当前协议号：CI 安装 GitHub latest（0.9.5 / protocol 22），
+/// 写死 19 会被 `check_client_version` 断开，读 Welcome 变成 EOF。
+fn raw_control_takeover(
+    session: &muxterm::test_support::core::runtime::herdr::HerdrSession,
+    target: &str,
+) -> Result<bool> {
+    use muxterm::test_support::core::runtime::herdr::wire::ClientMessage;
+    use muxterm::test_support::core::runtime::herdr::wire_compat::{
+        read_stream_message, write_client_message, write_hello, StreamMessage, WireProtocol,
     };
     use std::os::unix::net::UnixStream;
+    let protocol = session.snapshot()?.protocol;
+    let wire = WireProtocol::from_number(u32::try_from(protocol)?)?;
+    let socket_path = session.client_socket_path();
     let mut stream = UnixStream::connect(socket_path)
         .with_context(|| format!("连接 herdr client socket {} 失败", socket_path.display()))?;
     stream
         .set_read_timeout(Some(Duration::from_secs(3)))
         .context("设置 raw client 读超时")?;
-    write_message(
+    write_hello(&mut stream, wire, 80, 24).context("raw client 写 Hello")?;
+    let _welcome = read_stream_message(&mut stream, wire).context("raw client 读 Welcome")?;
+    write_client_message(
         &mut stream,
-        &ClientMessage::Hello {
-            version: HERDR_PROTOCOL_VERSION,
-            cols: 80,
-            rows: 24,
-            cell_width_px: 0,
-            cell_height_px: 0,
-            requested_encoding: RenderEncoding::TerminalAnsi,
-            keybindings: ClientKeybindings::Server,
-            launch_mode: ClientLaunchMode::TerminalAttach,
-        },
-    )
-    .context("raw client 写 Hello")?;
-    let _welcome: ServerMessage =
-        read_message(&mut stream, MAX_FRAME_SIZE).context("raw client 读 Welcome")?;
-    write_message(
-        &mut stream,
+        wire,
         &ClientMessage::ControlTerminal {
             target: target.to_string(),
             takeover: true,
@@ -1799,9 +1794,9 @@ fn raw_control_takeover(socket_path: &std::path::Path, target: &str) -> Result<b
     )
     .context("raw client 写 ControlTerminal")?;
     loop {
-        match read_message::<_, ServerMessage>(&mut stream, MAX_FRAME_SIZE) {
-            Ok(ServerMessage::Terminal(_)) => return Ok(true),
-            Ok(ServerMessage::ServerShutdown { .. }) => return Ok(false),
+        match read_stream_message(&mut stream, wire) {
+            Ok(StreamMessage::Terminal(_)) => return Ok(true),
+            Ok(StreamMessage::Shutdown(_)) => return Ok(false),
             Ok(_) => continue,
             Err(err) => anyhow::bail!("raw client 读响应失败: {err}"),
         }

@@ -22,11 +22,11 @@ use muxterm::test_support::core::muxterm::Muxterm;
 use muxterm::test_support::core::protocol::task::{Task, TaskOutcome};
 use muxterm::test_support::core::protocol::PaneId;
 use muxterm::test_support::core::runtime::herdr::observe::StreamMode;
-use muxterm::test_support::core::runtime::herdr::wire::{
-    read_message, write_message, ClientKeybindings, ClientLaunchMode, ClientMessage,
-    RenderEncoding, ServerMessage, HERDR_PROTOCOL_VERSION, MAX_FRAME_SIZE,
+use muxterm::test_support::core::runtime::herdr::wire::ClientMessage;
+use muxterm::test_support::core::runtime::herdr::wire_compat::{
+    read_stream_message, write_client_message, write_hello, StreamMessage, WireProtocol,
 };
-use muxterm::test_support::core::runtime::herdr::HerdrRuntime;
+use muxterm::test_support::core::runtime::herdr::{HerdrRuntime, HerdrSession};
 use muxterm::test_support::core::transport::registry::ConnectionRegistry;
 use muxterm::test_support::core::workspace::Workspace;
 use muxterm::test_support::core::workspace::WorkspacePool;
@@ -111,30 +111,28 @@ fn herdr_runtime(workspace: &Workspace) -> Result<&HerdrRuntime> {
 /// `ControlTerminal{takeover}`。`Ok(true)` = 服务端接受（成为 controller）；
 /// `Ok(false)` = 被拒（该 pane 已有 controller）。忽略握手后的 Notify 等
 /// 非 Terminal/ServerShutdown 消息。
-fn raw_control_attempt(socket: &Path, target: &str, takeover: bool) -> Result<bool> {
-    let mut stream = std::os::unix::net::UnixStream::connect(socket)
-        .with_context(|| format!("连接 client socket {} 失败", socket.display()))?;
+fn raw_control_attempt(
+    client_socket: &Path,
+    api_socket: &Path,
+    target: &str,
+    takeover: bool,
+) -> Result<bool> {
+    // Hello 必须用 Server 当前协议号：CI 装的是 GitHub latest，写死 19 会被
+    // `check_client_version` 直接断开（读 Welcome 变成 EOF）。
+    let protocol = HerdrSession::new("stability-raw", api_socket)
+        .snapshot()?
+        .protocol;
+    let wire = WireProtocol::from_number(u32::try_from(protocol)?)?;
+    let mut stream = std::os::unix::net::UnixStream::connect(client_socket)
+        .with_context(|| format!("连接 client socket {} 失败", client_socket.display()))?;
     stream
         .set_read_timeout(Some(Duration::from_secs(3)))
         .context("设置 raw client 读超时失败")?;
-    write_message(
+    write_hello(&mut stream, wire, 80, 24).context("raw client 写 Hello 失败")?;
+    let _welcome = read_stream_message(&mut stream, wire).context("raw client 读 Welcome 失败")?;
+    write_client_message(
         &mut stream,
-        &ClientMessage::Hello {
-            version: HERDR_PROTOCOL_VERSION,
-            cols: 80,
-            rows: 24,
-            cell_width_px: 0,
-            cell_height_px: 0,
-            requested_encoding: RenderEncoding::TerminalAnsi,
-            keybindings: ClientKeybindings::Server,
-            launch_mode: ClientLaunchMode::TerminalAttach,
-        },
-    )
-    .context("raw client 写 Hello 失败")?;
-    let _welcome: ServerMessage =
-        read_message(&mut stream, MAX_FRAME_SIZE).context("raw client 读 Welcome 失败")?;
-    write_message(
-        &mut stream,
+        wire,
         &ClientMessage::ControlTerminal {
             target: target.to_string(),
             takeover,
@@ -142,9 +140,9 @@ fn raw_control_attempt(socket: &Path, target: &str, takeover: bool) -> Result<bo
     )
     .context("raw client 写 ControlTerminal 失败")?;
     loop {
-        match read_message::<_, ServerMessage>(&mut stream, MAX_FRAME_SIZE) {
-            Ok(ServerMessage::Terminal(_)) => return Ok(true),
-            Ok(ServerMessage::ServerShutdown { .. }) => return Ok(false),
+        match read_stream_message(&mut stream, wire) {
+            Ok(StreamMessage::Terminal(_)) => return Ok(true),
+            Ok(StreamMessage::Shutdown(_)) => return Ok(false),
             Ok(_) => continue,
             Err(err) => anyhow::bail!("raw client 读响应失败: {err}"),
         }
@@ -271,7 +269,7 @@ fn run_stability_case(
         .context("active pane 缺 wire id")?
         .to_string();
     ensure!(
-        !raw_control_attempt(&client_socket, &first_wire, false)?,
+        !raw_control_attempt(&client_socket, herdr.socket_path(), &first_wire, false)?,
         "active pane 已有 controller：raw takeover=false 必须被拒"
     );
     for pane in all_panes.iter().filter(|p| **p != first_active) {
@@ -280,7 +278,7 @@ fn run_stability_case(
             .context("pane 缺 wire id")?
             .to_string();
         ensure!(
-            raw_control_attempt(&client_socket, &wire, false)?,
+            raw_control_attempt(&client_socket, herdr.socket_path(), &wire, false)?,
             "非 active pane 只被 observe：raw takeover=false 应接受（pane {wire}）"
         );
     }
@@ -325,7 +323,7 @@ fn run_stability_case(
             .context("pane 缺 wire id")?
             .to_string();
         ensure!(
-            !raw_control_attempt(&client_socket, &wire, false)?,
+            !raw_control_attempt(&client_socket, herdr.socket_path(), &wire, false)?,
             "新 active pane 的 raw takeover=false 必须被拒"
         );
         // 同 tab 分屏保留各自 controller；隐藏 tab 的 Live Control 也保留
@@ -337,7 +335,8 @@ fn run_stability_case(
         let keeps_control =
             herdr_runtime(workspace)?.test_actual_mode(first_active) == Some(StreamMode::Control);
         ensure!(
-            raw_control_attempt(&client_socket, &old_wire, false)? != keeps_control,
+            raw_control_attempt(&client_socket, herdr.socket_path(), &old_wire, false)?
+                != keeps_control,
             "previous pane ownership must follow its live mode"
         );
     }
@@ -357,7 +356,7 @@ fn run_stability_case(
     let window_start = Instant::now();
     for round in 0..6 {
         ensure!(
-            raw_control_attempt(&client_socket, &storm_wire, true)?,
+            raw_control_attempt(&client_socket, herdr.socket_path(), &storm_wire, true)?,
             "takeover=true 必须被接受（round {round}）"
         );
         // 每次 takeover 后等 suppression 生效（旧 control 被服务端踢掉）。
@@ -615,7 +614,7 @@ fn visible_split_panes_keep_independent_pty_sizes() -> Result<()> {
     // 外部接管非焦点 pane 后，后续布局 resize 不得抢回 controller。
     let client_socket = session.client_socket_path();
     ensure!(
-        raw_control_attempt(client_socket, &upper_wire, true)?,
+        raw_control_attempt(client_socket, herdr.socket_path(), &upper_wire, true)?,
         "external takeover"
     );
     wait_until(workspace, "upper takeover suppression", |ws| {
