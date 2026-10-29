@@ -2248,6 +2248,12 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         return table.view(atColumn: 0, row: row, makeIfNecessary: true) as? QuickTargetCellView
     }
 
+    /// 行序会随 Open / 固定槽调整，测试按标题定位，不再假设固定下标。
+    func testWorkspaceCell(matching title: String) -> QuickTargetCellView? {
+        guard let row = visibleItems.firstIndex(where: { $0.title == title }) else { return nil }
+        return testWorkspaceCell(at: row)
+    }
+
     func testWorkspaceCloseVisible(matching title: String) -> Bool {
         guard let row = visibleItems.firstIndex(where: { $0.title == title }),
               let cell = testWorkspaceCell(at: row)
