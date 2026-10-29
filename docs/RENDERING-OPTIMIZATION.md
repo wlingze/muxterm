@@ -1,5 +1,10 @@
 # Linux 终端渲染优化
 
+> **2026-10-29 补充**：当前引擎取舍以 [`TERMINAL-CAPABILITIES.md`](TERMINAL-CAPABILITIES.md) 为准。
+> 公开 libghostty-vt 已提供可复用的终端状态与 render state，但不含完整 GTK/原生绘制控件，API 仍未稳定。
+> 下文保留旧 Linux 专项记录；“唯一选择”“需要自写 VT”和工期估计不作为最新选型结论或交付承诺。
+> 当前先验证现有引擎的图片链路与实际问题，不预定迁移或自建 renderer。
+
 `frontend/linux` 的 Surface 渲染。Core 不拥有字形；live API 是原始字节 feed，不是 `visible_ansi`。
 像素定律：[`SURFACE.md`](SURFACE.md)。前端 Scene：[`FRONTEND.md`](FRONTEND.md)。
 

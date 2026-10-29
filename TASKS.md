@@ -161,7 +161,7 @@ CI 跑 [`docs/TESTING.md`](docs/TESTING.md) 的结构门禁。
    `frontend/utils/{corebridge,i18n}`；Linux `app/chrome/terminal/ui`。~~
    见 [`docs/MODULE-SURFACE.md`](docs/MODULE-SURFACE.md)。
 
-后续按 [`docs/PRODUCT-DIRECTION.md`](docs/PRODUCT-DIRECTION.md)（2026-10-26）收口。
+后续按 [`docs/PRODUCT-DIRECTION.md`](docs/PRODUCT-DIRECTION.md)（2026-10-29）收口。
 [`docs/PRODUCT-1.0-REMAINING.md`](docs/PRODUCT-1.0-REMAINING.md) 保留旧交互拆解，不再要求四波全部进入 1.0。
 以下是后续路线，本轮只更新文档；每次实现仍按用户当轮指定的任务推进。
 
@@ -169,7 +169,10 @@ CI 跑 [`docs/TESTING.md`](docs/TESTING.md) 的结构门禁。
 9. 下一项：独立多行编辑框，按目标保留草稿，复用现有 local/SSH 图片投递与路径插入，明确失败语义。
 10. 随后分项交付：批量复制/输出阅读、可靠命令边界下的折叠；终端内联图片 + 图片/文件点击预览。
     远程路径正确关联机器，外部打开不暗示副本自动回写。阅读探索见 [`docs/OUTPUT-READING.md`](docs/OUTPUT-READING.md)。
-11. 按需：端口转发、已连接工作区搜索定位、Attention 回到正确现场及导航打磨。
+11. 增量完善已有端口发现/转发：点击原链接后绑定正确目标，复用转发并保留完整 URL；补齐状态反馈与地址兼容。
+    按需打磨已连接工作区搜索定位、Attention 与导航；可配置动作调用现成文件管理器/外部编辑器。
+    图片先验证现有引擎与 local/SSH × shell/tmux/Herdr 的显示和恢复，libghostty 仅条件性对照验证，
+    不预定迁移或插件平台。依据见 [`docs/TERMINAL-CAPABILITIES.md`](docs/TERMINAL-CAPABILITIES.md)。
 12. 进入稳定维护：普通 shell 上手、外部用户试用、兼容性、性能、安装更新和已有核心行为的平台一致性。
     Agent 按轮阅读只做有明确来源的可选探索，不阻塞通用终端发布，不为保持开发节奏扩大范围。
 

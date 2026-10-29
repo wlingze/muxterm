@@ -13,9 +13,10 @@ Muxterm 是日常使用的跨平台原生终端，原生集成 tmux / Herdr，�
 ## 当前发展方向（2026-10）
 
 以日用终端的可靠性为主线，完成独立编辑框、批量复制/输出阅读、图片投递与呈现、
-远程文件点击打开；端口转发按实际需要补齐，随后持续维护兼容性、发布与外部用户体验。
+远程文件点击打开；完善已有端口转发的完整链接打开，随后持续维护兼容性、发布与外部用户体验。
 ACP 优先使用现成客户端，本轮不接入；图片预览和外部文件打开不扩张成完整 IDE 或文件管理器。
 Agent 按轮折叠作为可选只读探索，不把通用终端建立在画面猜测或全 agent 适配之上。
+可选增强先通过外部工具动作提供；libghostty 暂不迁移，先验证现有图像链路与实际收益。
 
 当前取舍、验收与竞品核对见 [`docs/PRODUCT-DIRECTION.md`](docs/PRODUCT-DIRECTION.md)。
 旧战略报告和旧 1.0 清单中的方向判断若冲突，以该文为准；下述产品树与架构契约保持有效。
@@ -94,6 +95,7 @@ GUI 问 Runtime 能力只用 `support()`，禁止 `if runtime == "herdr"`。Work
 |------|------|
 | [`docs/PRODUCT-DIRECTION.md`](docs/PRODUCT-DIRECTION.md) | 当前定位、ACP 边界、日用功能收口与稳定期 |
 | [`docs/OUTPUT-READING.md`](docs/OUTPUT-READING.md) | 批量复制、命令折叠与只读 agent 阅读的可行性 |
+| [`docs/TERMINAL-CAPABILITIES.md`](docs/TERMINAL-CAPABILITIES.md) | Ghostty/libghostty 核对、图片/HTML、端口打开与扩展边界 |
 | [`docs/WORKSPACE.md`](docs/WORKSPACE.md) | 产品树、打开路径、FFI/CLI |
 | [`docs/RUNTIME.md`](docs/RUNTIME.md) | Runtime × Transport、provider、能力、适配表 |
 | [`docs/SURFACE.md`](docs/SURFACE.md) | 单面、像素定律 |
