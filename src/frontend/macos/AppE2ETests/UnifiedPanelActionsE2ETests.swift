@@ -71,14 +71,37 @@ final class UnifiedPanelActionsE2ETests: XCTestCase {
         XCTAssertNotNil(app.testView(identifier: "muxterm.attention.visibility"))
         XCTAssertNotNil(app.testView(identifier: "muxterm.attention.hidden"))
 
+        // CI 上表格行会晚于面板打开刷新；等两次采样一致再记录基线，
+        // 否则基线取到中间态会让后面的行数断言全部错位。
+        var lastCount = -1
+        XCTAssertTrue(AppE2E.wait(timeout: AppE2E.featureTimeout) {
+            app.testPollOnce()
+            app.unifiedPanel.refreshData()
+            let count = app.testAttentionRowCount()
+            let stable = count > 0 && count == lastCount
+            lastCount = count
+            return stable
+        }, "Attention 行数必须在隐藏操作前稳定")
         let visibleCount = app.testAttentionRowCount()
         app.unifiedPanel.testToggleSelectedAttentionVisibility()
-        XCTAssertEqual(app.testAttentionRowCount(), visibleCount - 1)
+        XCTAssertTrue(AppE2E.wait(timeout: AppE2E.featureTimeout) {
+            app.testPollOnce()
+            app.unifiedPanel.refreshData()
+            return app.testAttentionRowCount() == visibleCount - 1
+        }, "隐藏后 Attention 列表必须少一行")
         app.unifiedPanel.testToggleHiddenAttention()
-        XCTAssertEqual(app.testAttentionRowCount(), 1, "Hidden 视图应显示刚隐藏的条目")
+        XCTAssertTrue(AppE2E.wait(timeout: AppE2E.featureTimeout) {
+            app.testPollOnce()
+            app.unifiedPanel.refreshData()
+            return app.testAttentionRowCount() == 1
+        }, "Hidden 视图应显示刚隐藏的条目")
         app.unifiedPanel.testSelectFirstRow()
         app.unifiedPanel.testToggleSelectedAttentionVisibility()
-        XCTAssertEqual(app.testAttentionRowCount(), visibleCount)
+        XCTAssertTrue(AppE2E.wait(timeout: AppE2E.featureTimeout) {
+            app.testPollOnce()
+            app.unifiedPanel.refreshData()
+            return app.testAttentionRowCount() == visibleCount
+        }, "取消隐藏后 Attention 列表必须恢复")
         app.unifiedPanel.testSelectFirstRow()
 
         app.unifiedPanel.testOpenSelectedAttention()
