@@ -175,6 +175,7 @@ pub(super) fn close_sidebar_workspace(s: &mut UiState, id: &WorkspaceId) {
     let Some(index) = ordered.iter().position(|candidate| candidate == id) else {
         return;
     };
+    s.connected_workspaces.remove(&id.as_str());
     let was_active = s.active_ws_id() == *id;
     let fallback = if was_active {
         ordered

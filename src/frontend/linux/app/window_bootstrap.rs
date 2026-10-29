@@ -225,6 +225,7 @@ impl AppWindow {
             image_paste_pending: false,
             image_paste_indicator: None,
             reconnecting: false,
+            connected_workspaces: Default::default(),
             reconnect_retry_at: None,
             reconnect_attempts: 0,
             overlay,

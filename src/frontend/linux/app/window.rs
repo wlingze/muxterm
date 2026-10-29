@@ -225,6 +225,10 @@ struct UiState {
     image_paste_indicator: Option<gtk4::Label>,
     /// W17a 自动重连：是否已有重连线程在跑（防并发重连）。
     reconnecting: bool,
+    /// 已经连上过的 workspace。Herdr runtime 初始状态就是 Disconnected，
+    /// 初次 attach 尚未完成时不能当成断线去重连（重连会重建 Runtime，
+    /// 把正在播种的 Core Index 清空，搜索就再也找不到 pane 内容）。
+    connected_workspaces: std::collections::HashSet<String>,
     /// 重连失败退避：下一次允许发起重连的时刻。
     reconnect_retry_at: Option<Instant>,
     /// 连续失败次数（指数退避基数）。
