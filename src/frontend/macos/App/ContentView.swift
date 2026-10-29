@@ -129,7 +129,9 @@ final class ContentView: NSView {
         lastSeenTrailing = seenTrailing
 
         let notificationWidth = imagePasteBanner.widthAnchor.constraint(equalToConstant: 420)
-        notificationWidth.priority = .defaultHigh
+        // 必须低于 NSWindow 保持当前宽度的优先级（500）。否则横幅、侧栏和
+        // 分隔条的首选宽度会在布局求解时把用户调整过的主窗口重新拉宽。
+        notificationWidth.priority = NSLayoutConstraint.Priority(490)
         NSLayoutConstraint.activate([
             notificationWidth,
             disconnectCard.centerXAnchor.constraint(equalTo: paneLayout.centerXAnchor),
