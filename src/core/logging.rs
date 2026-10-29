@@ -92,7 +92,7 @@ fn local_calendar_date() -> (i32, u32, u32) {
             let mut tm = std::mem::zeroed::<libc::tm>();
             if !libc::localtime_r(&now, &mut tm).is_null() {
                 return (
-                    i32::from(tm.tm_year) + 1900,
+                    tm.tm_year + 1900,
                     u32::try_from(tm.tm_mon).unwrap_or(0) + 1,
                     u32::try_from(tm.tm_mday).unwrap_or(1),
                 );
