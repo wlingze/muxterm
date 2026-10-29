@@ -47,6 +47,8 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   CARGO_TARGET_DIR: target
+  # setup.sh 用它读 herdr latest，避免匿名 API 的 60 次/小时限额。
+  GH_TOKEN: ${{ github.token }}
 
 jobs:
   core_tests:
