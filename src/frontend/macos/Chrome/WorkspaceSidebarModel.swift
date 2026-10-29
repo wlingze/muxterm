@@ -490,7 +490,6 @@ public enum WorkspaceSidebarProjection {
                 let attention = attentionByPane[
                     PaneKey(workspaceId: workspace.workspaceId, paneId: agent.paneId)
                 ]
-                guard listsStructuredAgent(agent, attention: attention) else { continue }
                 let agentName = firstNonempty([
                     agent.displayName,
                     agent.name,
@@ -520,7 +519,7 @@ public enum WorkspaceSidebarProjection {
                 .first(where: { $0.workspaceId == workspace.workspaceId })?
                 .panes ?? []
             for pane in generic where !structuredPaneIDs.contains(pane.paneId) {
-                guard AttentionAlert.isAgent(pane), AttentionAlert.includes(pane) else { continue }
+                guard AttentionAlert.isAgent(pane) else { continue }
                 let name = AttentionAlert.agentName(pane)
                     ?? firstNonempty([pane.processName])
                     ?? "Agent"
@@ -660,15 +659,16 @@ public enum WorkspaceSidebarProjection {
             workspaceId: String,
             tabId: UInt32?,
             paneId: UInt32,
-            indicator: AgentSidebarIndicator
+            indicator: AgentSidebarIndicator,
+            respectsHidden: Bool
         ) {
-            guard indicator != .idle,
-                  let tabId,
-                  !hidden.contains(AttentionVisibilityKey(
-                    workspaceId: workspaceId,
-                    paneId: paneId
-                  ))
-            else { return }
+            guard indicator != .idle, let tabId else { return }
+            if respectsHidden, hidden.contains(AttentionVisibilityKey(
+                workspaceId: workspaceId,
+                paneId: paneId
+            )) {
+                return
+            }
             let key = WorkspaceTabActivityKey(workspaceId: workspaceId, tabId: tabId)
             if let current = result[key], activityRank(current) <= activityRank(indicator) {
                 return
@@ -677,11 +677,13 @@ public enum WorkspaceSidebarProjection {
         }
 
         for item in agents(workspaces: workspaces, attention: attention) {
+            // Agents 常驻全部身份，但 idle 不点亮 tab；隐藏只作用于 Attention。
             insert(
                 workspaceId: item.workspaceId,
                 tabId: item.tabId,
                 paneId: item.paneId,
-                indicator: item.indicator
+                indicator: item.indicator,
+                respectsHidden: false
             )
         }
         for item in commands(workspaces: workspaces, attention: attention) {
@@ -689,7 +691,8 @@ public enum WorkspaceSidebarProjection {
                 workspaceId: item.workspaceId,
                 tabId: item.tabId,
                 paneId: item.paneId,
-                indicator: item.indicator
+                indicator: item.indicator,
+                respectsHidden: true
             )
         }
         return result
@@ -734,22 +737,6 @@ public enum WorkspaceSidebarProjection {
             values.append("Tab \(tabNumber)")
         }
         return values.joined(separator: " · ")
-    }
-
-    /// 有 attention 时跟警报规则走；还没快照的结构化身份先留着，空闲不算警报。
-    private static func listsStructuredAgent(
-        _ agent: StructuredPaneAgent,
-        attention: PaneAttention?
-    ) -> Bool {
-        if let attention {
-            return AttentionAlert.includes(attention)
-        }
-        switch agent.status {
-        case .idle:
-            return false
-        case .unknown, .working, .blocked, .done:
-            return true
-        }
     }
 
     private static func statusLabel(

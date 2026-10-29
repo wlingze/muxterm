@@ -429,10 +429,10 @@ public enum AttentionRowLabel {
     }
 }
 
-/// Attention、Agents 和 Commands 共用的警报规则。
+/// Attention 和 Commands 共用的警报规则。
 ///
 /// Working 一直列出；未读的 blocked/done 列出；静音、已读完成和空闲都不算警报。
-/// Agents 仍只收 agent，但同一个 pane 的显隐不再另走一套条件。
+/// Agents 不使用这套显隐：Core 已识别的 agent 无论状态都留在 Agents。
 public enum AttentionAlert {
     public static func includes(_ pane: PaneAttention) -> Bool {
         !pane.muted && pane.status.isListed && (pane.status == .working || !pane.acknowledged)

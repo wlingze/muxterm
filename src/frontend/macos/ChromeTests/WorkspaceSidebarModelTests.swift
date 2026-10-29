@@ -650,9 +650,11 @@ final class WorkspaceSidebarModelTests: XCTestCase {
             attention: attention
         )
 
-        XCTAssertTrue(agents.isEmpty, "已读完成的 agent 必须和 Attention 一起离开")
+        XCTAssertEqual(agents.map(\.paneId), [4], "已读完成的 agent 仍必须留在 Agents")
+        XCTAssertEqual(agents.map(\.indicator), [.idle])
         XCTAssertTrue(
-            AttentionList.rows(from: attention, workspaces: [workspace], query: "").isEmpty
+            AttentionList.rows(from: attention, workspaces: [workspace], query: "").isEmpty,
+            "已读完成项离开 Attention"
         )
     }
 
@@ -835,10 +837,10 @@ final class WorkspaceSidebarModelTests: XCTestCase {
             attention: attention
         )
 
-        // 空闲不是警报。其余状态成块；块内按 tab/pane 固定。
-        XCTAssertEqual(agents.map(\.indicator), [.done, .working, .working])
-        XCTAssertEqual(agents.map(\.agentName), ["droid", "codex", "cursor"])
-        XCTAssertEqual(agents.map(\.paneId), [2, 1, 4])
+        // Agents 保留全部已识别身份，idle 放在最后；块内按 tab/pane 固定。
+        XCTAssertEqual(agents.map(\.indicator), [.done, .working, .working, .idle])
+        XCTAssertEqual(agents.map(\.agentName), ["droid", "codex", "cursor", "amp"])
+        XCTAssertEqual(agents.map(\.paneId), [2, 1, 4, 3])
 
         // 仅状态变化：条目在块间移动，同块内相对顺序不变。
         let flipped = AttentionSnapshot(
@@ -894,9 +896,9 @@ final class WorkspaceSidebarModelTests: XCTestCase {
             workspaces: [workspace],
             attention: flipped
         )
-        XCTAssertEqual(after.map(\.indicator), [.done, .working])
-        XCTAssertEqual(after.map(\.agentName), ["droid", "cursor"])
-        XCTAssertEqual(after.map(\.paneId), [2, 4])
+        XCTAssertEqual(after.map(\.indicator), [.done, .working, .idle, .idle])
+        XCTAssertEqual(after.map(\.agentName), ["droid", "cursor", "codex", "amp"])
+        XCTAssertEqual(after.map(\.paneId), [2, 4, 1, 3])
         XCTAssertEqual(
             AttentionList.rows(from: flipped, workspaces: [workspace], query: "").map(\.pane.paneId),
             [2, 4]
@@ -975,9 +977,13 @@ final class WorkspaceSidebarModelTests: XCTestCase {
             attention: attention
         )
 
-        XCTAssertEqual(agents.map(\.paneId), [3])
-        XCTAssertEqual(agents.map(\.detail), ["working · pi · Tab 3"])
-        XCTAssertEqual(agents.map(\.indicator), [.working])
+        XCTAssertEqual(agents.map(\.paneId), [3, 4, 5])
+        XCTAssertEqual(agents.map(\.detail), [
+            "working · pi · Tab 3",
+            "working · pi · Tab 4",
+            "done · Codex · Tab 5",
+        ])
+        XCTAssertEqual(agents.map(\.indicator), [.working, .working, .idle])
         let agentRow = rows.first { $0.pane.paneId == 3 }
         XCTAssertEqual(agentRow?.indicator, agents.first?.indicator)
         XCTAssertEqual(agentRow?.detail, agents.first?.detail)
@@ -988,7 +994,7 @@ final class WorkspaceSidebarModelTests: XCTestCase {
                 agents: agents,
                 workspaceOrder: [workspace.workspaceId]
             ).map(\.agentPaneIds),
-            [[3]]
+            [[3], [4], [5]]
         )
     }
 
