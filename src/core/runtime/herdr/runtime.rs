@@ -3324,6 +3324,17 @@ impl HerdrRuntime {
     /// 原样写进 PTY 时，shell 把它回显成 `^E`，行编辑不认。tmux 没有这层
     /// 协商，`send-keys -H` 的同一个字节就能用。这里只翻译纯控制字节
     /// （Ctrl-A/E/P/N、Tab、Enter、Esc、Backspace），粘贴和 CSI 保持原样。
+    /// typed 字节是否会立刻写进 control 流（而不是进 `pending_input` 等 full frame）。
+    ///
+    /// 流还没 Live、或队列里还有待 flush 的字节时，`WriteRaw` 的普通字节会排队；
+    /// 这时把 `\r` 这类字节改走 `pane.send_keys` 的 key RPC 会插队，远端先执行
+    /// Enter 再收到前面排队的文本（CI 上逐字输入偶发变成 `ech` + 命令不存在）。
+    fn typed_input_is_immediate(slot: &PaneStreamSlot) -> bool {
+        slot.pending_input.is_empty()
+            && slot.state == SlotState::Live
+            && slot.actual_mode == Some(StreamMode::Control)
+    }
+
     fn protocol_keys(data: &[u8]) -> Option<Vec<String>> {
         if data.is_empty() || data.len() > 32 {
             return None;
@@ -4029,11 +4040,19 @@ impl Runtime for HerdrRuntime {
                         reason: format!("pane {target} 不存在"),
                     });
                 };
-                if let Some(keys) = Self::protocol_keys(data) {
-                    self.session
-                        .pane_send_keys(&herdr_pane, &keys)
-                        .map_err(|e| anyhow!("pane.send_keys 失败: {e}"))?;
-                    return Ok(TaskOutcome::Done);
+                // 只有字节会立刻落到 control 流时才允许走 key RPC；否则 key 会
+                // 插到 pending_input 前面，远端先看到 Enter 再看到文本。
+                let immediate = self
+                    .stream_slots
+                    .get(target)
+                    .is_some_and(Self::typed_input_is_immediate);
+                if immediate {
+                    if let Some(keys) = Self::protocol_keys(data) {
+                        self.session
+                            .pane_send_keys(&herdr_pane, &keys)
+                            .map_err(|e| anyhow!("pane.send_keys 失败: {e}"))?;
+                        return Ok(TaskOutcome::Done);
+                    }
                 }
                 self.send_control_input(*target, data)
                     .map_err(|e| anyhow!("terminal control input 失败: {e}"))?;
@@ -4635,6 +4654,20 @@ mod tests {
         WorkspaceRecord,
     };
     use crate::runtime::herdr::wire::{read_message, ClientMessage, MAX_FRAME_SIZE};
+
+    #[test]
+    fn typed_bytes_keep_their_order_before_raw_enter() {
+        let mut slot = PaneStreamSlot::new(PaneId(1), "w1:p1", StreamMode::Control);
+        // 流还没起：typed input 会进 pending_input，Enter 不能插队。
+        assert!(!HerdrRuntime::typed_input_is_immediate(&slot));
+        slot.state = SlotState::Live;
+        slot.actual_mode = Some(StreamMode::Control);
+        slot.pending_input.push_back(b"echo".to_vec());
+        // 队列里还有未 flush 的字节：同样必须排队。
+        assert!(!HerdrRuntime::typed_input_is_immediate(&slot));
+        slot.pending_input.clear();
+        assert!(HerdrRuntime::typed_input_is_immediate(&slot));
+    }
 
     #[test]
     fn named_ctrl_alt_chord_stays_a_herdr_key() {
