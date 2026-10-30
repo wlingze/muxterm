@@ -102,6 +102,8 @@ GUI 问 Runtime 能力只用 `support()`，禁止 `if runtime == "herdr"`。Work
 | [`docs/FRONTEND.md`](docs/FRONTEND.md) | Scene / EventPump / 页面 / 各平台落地 |
 | [`docs/CATALOG.md`](docs/CATALOG.md) | 能打开什么；不是组合根 |
 | [`docs/CONFIG.md`](docs/CONFIG.md) | `config.toml` 契约 |
+| [`docs/USER-GUIDE.md`](docs/USER-GUIDE.md) | 安装、使用、配置与排障 |
+| [`website/README.md`](website/README.md) | 官网本地预览与 GitHub Pages 部署 |
 | [`docs/PROJECT-STRUCTURE.md`](docs/PROJECT-STRUCTURE.md) | 目录与 crate 分层 |
 | [`TASKS.md`](TASKS.md) | 施工顺序 |
 | [`AGENTS.md`](AGENTS.md) | coding agent 约定 |

@@ -28,4 +28,5 @@ artifacts/
 
 # Local assistant tooling
 .rtk/
+.hallmark/
 CLAUDE.md

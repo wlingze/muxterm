@@ -1,6 +1,7 @@
 # Muxterm Config Contract
 
 `config_version = 1`。字段语义和事务行为以本文为准。
+面向使用者的安装、QuickConnect、SSH/Herdr 与排障见 [`USER-GUIDE.md`](USER-GUIDE.md)。
 产品树：[`WORKSPACE.md`](WORKSPACE.md)。前端如何消费配置：[`FRONTEND.md`](FRONTEND.md) §4。
 目录：[`PROJECT-STRUCTURE.md`](PROJECT-STRUCTURE.md)。
 

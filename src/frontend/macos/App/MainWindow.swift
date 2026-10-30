@@ -3326,13 +3326,29 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             stateChangeSeq: 1,
             revision: 1
         )
-        slot.cacheStructuredAgents([agent])
-        structuredAgentTestOverrides[workspaceReplicaID(for: slot)] = [agent]
-        let tabId = slot.cachedTabIdsByPane?[paneId]
-            ?? slot.lastSnapshot.activeTab
+        let replicaID = workspaceReplicaID(for: slot)
+        var agents = structuredAgentTestOverrides[replicaID] ?? []
+        agents.removeAll { $0.paneId == paneId }
+        agents.append(agent)
+        slot.cacheStructuredAgents(agents)
+        structuredAgentTestOverrides[replicaID] = agents
+        var tabIds = slot.cachedTabIdsByPane ?? [:]
+        var tabNumbers = slot.cachedTabNumbersByPane ?? [:]
+        for (index, tab) in slot.lastSnapshot.tabs.enumerated() {
+            let tabPanes = slot.workspaceID.map {
+                slot.bridge.getPanes(workspaceID: $0, tabId: tab.id)
+            } ?? slot.bridge.getPanes(tabId: tab.id)
+            for pane in tabPanes {
+                tabIds[pane.id] = tab.id
+                tabNumbers[pane.id] = index + 1
+            }
+        }
+        let tabId = tabIds[paneId] ?? slot.lastSnapshot.activeTab
+        tabIds[paneId] = tabId
+        tabNumbers[paneId] = tabNumbers[paneId] ?? 1
         slot.cacheTabTargets(
-            tabIdsByPane: [paneId: tabId],
-            tabNumbersByPane: [paneId: 1]
+            tabIdsByPane: tabIds,
+            tabNumbersByPane: tabNumbers
         )
         refreshWorkspaceSidebar(force: true)
     }

@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Muxterm Documentation: Workbench, Runtimes, Ports and Config</title>
+  <meta name="description" content="Install and run Muxterm: tmux and Herdr workspaces, SSH port forwarding, configuration and CLI reference.">
+  <link rel="icon" href="./assets/muxterm-logo.svg" type="image/svg+xml">
+  <link rel="alternate" hreflang="en" href="./docs.html">
+  <link rel="alternate" hreflang="zh-CN" href="./zh/docs.html">
+  <script src="./assets/theme-init.js"></script>
+  <link rel="stylesheet" href="./assets/style.css">
+</head>
+<body>
+
+  <header class="site-nav">
+    <div class="container site-nav__inner">
+      <a href="./index.html" class="site-nav__brand">
+        <img src="./assets/muxterm-logo.svg" alt="" class="site-nav__logo" width="28" height="28">
+        <span class="site-nav__title">muxterm</span>
+      </a>
+
+      <ul class="site-nav__links">
+        <li><a href="./index.html#architecture" class="site-nav__link">workbench</a></li>
+        <li><a href="./index.html#runtimes" class="site-nav__link">runtimes</a></li>
+        <li><a href="./index.html#ports" class="site-nav__link">ports</a></li>
+        <li><a href="./index.html#downloads" class="site-nav__link">downloads</a></li>
+        <li><a href="./docs.html" class="site-nav__link">docs</a></li>
+      </ul>
+
+      <div class="site-nav__action">
+        <button type="button" class="nav-util" data-theme-toggle aria-pressed="false">white</button>
+        <a href="./zh/docs.html" class="nav-util lang-switch" lang="zh-CN" hreflang="zh-CN">中文</a>
+        <a href="./index.html" class="nav-util mobile-only">home</a>
+        <a href="./index.html#downloads" class="btn btn--secondary">download</a>
+      </div>
+    </div>
+  </header>
+
+  <main class="container docs-layout">
+    <aside class="docs-sidebar">
+      <div class="docs-sidebar__group">
+        <span class="docs-sidebar__title">guide</span>
+        <a href="#installation" class="docs-sidebar__link">installation</a>
+        <a href="#quickstart" class="docs-sidebar__link">quickstart</a>
+        <a href="#model" class="docs-sidebar__link">workspace model</a>
+        <a href="#ports" class="docs-sidebar__link">ports and forwarding</a>
+        <a href="#config-file" class="docs-sidebar__link">configuration</a>
+        <a href="#cli-reference" class="docs-sidebar__link">cli reference</a>
+        <a href="#build" class="docs-sidebar__link">source build</a>
+        <a href="#reference" class="docs-sidebar__link">full reference</a>
+      </div>
+    </aside>
+
+    <div class="docs-content">
+      <article id="installation" class="docs-article">
+        <h2>Installation</h2>
+        <p>Precompiled packages published on GitHub Releases:</p>
+        <div class="matrix-table-wrap">
+          <table class="matrix-table">
+            <thead>
+              <tr>
+                <th scope="col">Target</th>
+                <th scope="col">Package</th>
+                <th scope="col">Dependencies</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>macOS Apple Silicon</td>
+                <td><code>muxterm-macos-arm64.dmg</code></td>
+                <td>macOS 13+</td>
+              </tr>
+              <tr>
+                <td>Linux x86_64</td>
+                <td><code>muxterm-gtk-linux-x86_64.tar.gz</code></td>
+                <td>GTK4, vte4, OpenSSL, tmux 3.x</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </article>
+
+      <article id="quickstart" class="docs-article">
+        <h2>Quickstart</h2>
+        <p>Launch the GUI with <code>muxterm gui</code> or the terminal UI with <code>muxterm tui</code>. Press <code>Alt+P</code> on Linux or <code>Cmd+P</code> on macOS to open QuickConnect.</p>
+        <p>Existing tmux sessions, Herdr workspaces, projects and worktrees appear as workspace candidates. Switching between open workspaces carries no core lock delay.</p>
+      </article>
+
+      <article id="model" class="docs-article">
+        <h2>A workbench of workspaces</h2>
+        <p>tmux and Herdr are not wrapped in a fake terminal. Each tmux session or Herdr workspace enters the pool as a first-class workspace:</p>
+        <div class="docs-code-block">
+          <pre>Workspace = Runtime(Transport) + path
+  Runtime:   shell / tmux / herdr
+  Transport: local / ssh
+  Structure: Tab to Pane
+
+Control lane: topology and native scenes
+Render lane: raw PTY bytes to native surfaces
+Activity lane: agents, commands and attention</pre>
+        </div>
+      </article>
+
+      <article id="ports" class="docs-article">
+        <h2>Ports and forwarding</h2>
+        <p>For SSH workspaces, Muxterm scans TCP listening ports on the remote host through the existing SSH connection. The macOS status bar lists detected ports and lets you:</p>
+        <ul>
+          <li>forward a remote port to a local port;</li>
+          <li>enable explicit LAN access for a forwarded port;</li>
+          <li>open the local or remote address, ignore a port, or stop forwarding.</li>
+        </ul>
+        <p>Scanning uses <code>ss</code> or <code>lsof</code> on the target and runs away from the frontend thread. The Core APIs are exposed through FFI; the current port picker UI is in the macOS frontend.</p>
+      </article>
+
+      <article id="config-file" class="docs-article">
+        <h2>Configuration contract</h2>
+        <p>Stored at <code>~/.config/muxterm/config.toml</code> with strict schema validation:</p>
+        <div class="docs-code-block">
+          <pre>config_version = 1
+
+[font]
+family = "JetBrains Mono"
+size = 13.0
+
+[statusbar]
+mode = "tmux"
+
+[pool]
+max_slots = 20
+
+[theme]
+name = "system"
+light = "white"
+dark = "black"
+
+[shortcuts]
+preset = "qwerty"
+primary_key = "auto" # Alt on Linux, Command on macOS
+
+[[projects]]
+id = "muxterm@local"
+name = "Muxterm"
+path = "~/Developer/self/muxterm"</pre>
+        </div>
+      </article>
+
+      <article id="cli-reference" class="docs-article">
+        <h2>CLI reference</h2>
+        <p>The thin binary works without launching a GUI:</p>
+        <div class="docs-code-block">
+          <pre># List open workspaces
+muxterm list-workspaces
+
+# Isolated tmux socket
+muxterm -L muxterm-test list-workspaces
+
+# Send keys to the active pane
+muxterm send-keys "cargo test"
+
+# Inspect configuration
+muxterm config show --resolved
+muxterm config doctor</pre>
+        </div>
+      </article>
+
+      <article id="build" class="docs-article">
+        <h2>Building from source</h2>
+        <p>Build scripts output into <code>./build/&lt;os&gt;/</code>:</p>
+        <div class="docs-code-block">
+          <pre>git clone https://github.com/wlingze/muxterm.git
+cd muxterm
+./scripts/build-tui.sh --release
+./scripts/build-linux.sh --release
+./scripts/build-macos.sh --release</pre>
+        </div>
+      </article>
+
+      <section id="reference" class="docs-reference" data-docs-reference data-docs-src="./docs/" data-doc-default="WORKSPACE">
+        <div class="docs-reference__head">
+          <div class="docs-reference__intro">
+            <h2>Full reference</h2>
+            <p>Source documents from <code>docs/</code>, rendered here. The guide above is the short English path; these files are maintained in Chinese.</p>
+          </div>
+          <a class="docs-reference__github" data-docs-github href="https://github.com/wlingze/muxterm/blob/main/docs/WORKSPACE.md" target="_blank" rel="noopener">open on github</a>
+        </div>
+        <div class="docs-tabs" role="group" aria-label="Reference documents">
+          <button type="button" class="docs-tab" data-doc="USER-GUIDE" aria-pressed="false">user guide</button>
+          <button type="button" class="docs-tab" data-doc="WORKSPACE" aria-pressed="false">workspace</button>
+          <button type="button" class="docs-tab" data-doc="RUNTIME" aria-pressed="false">runtime</button>
+          <button type="button" class="docs-tab" data-doc="SURFACE" aria-pressed="false">surface</button>
+          <button type="button" class="docs-tab" data-doc="FRONTEND" aria-pressed="false">frontend</button>
+          <button type="button" class="docs-tab" data-doc="CATALOG" aria-pressed="false">catalog</button>
+          <button type="button" class="docs-tab" data-doc="CONFIG" aria-pressed="false">config</button>
+          <button type="button" class="docs-tab" data-doc="PROJECT-STRUCTURE" aria-pressed="false">project structure</button>
+          <button type="button" class="docs-tab" data-doc="PRODUCT" aria-pressed="false">product</button>
+        </div>
+        <article class="docs-reference__article" data-docs-content aria-busy="false" tabindex="-1">
+          <noscript><p>Enable JavaScript to read the reference here, or open <a href="https://github.com/wlingze/muxterm/tree/main/docs">docs/</a> on GitHub.</p></noscript>
+        </article>
+      </section>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-grid">
+      <div class="footer-col">
+        <h3 class="footer-col__title">muxterm</h3>
+        <p>Native workspaces for tmux, Herdr and local shells.</p>
+        <span class="footer-col__link">licensed under MIT</span>
+      </div>
+
+      <div class="footer-col">
+        <h3 class="footer-col__title">documentation</h3>
+        <ul class="footer-col__links">
+          <li><a href="#installation" class="footer-col__link">installation</a></li>
+          <li><a href="#config-file" class="footer-col__link">configuration</a></li>
+          <li><a href="#ports" class="footer-col__link">ports</a></li>
+          <li><a href="#cli-reference" class="footer-col__link">cli reference</a></li>
+        </ul>
+      </div>
+
+      <div class="footer-col">
+        <h3 class="footer-col__title">specifications</h3>
+        <ul class="footer-col__links">
+          <li><a href="https://github.com/wlingze/muxterm/blob/main/docs/WORKSPACE.md" class="footer-col__link" rel="noreferrer">workspace model</a></li>
+          <li><a href="https://github.com/wlingze/muxterm/blob/main/docs/SURFACE.md" class="footer-col__link" rel="noreferrer">surface laws</a></li>
+          <li><a href="https://github.com/wlingze/muxterm/blob/main/docs/RUNTIME.md" class="footer-col__link" rel="noreferrer">runtime trait</a></li>
+        </ul>
+      </div>
+
+      <div class="footer-col">
+        <h3 class="footer-col__title">community</h3>
+        <ul class="footer-col__links">
+          <li><a href="https://github.com/wlingze/muxterm" class="footer-col__link" rel="noreferrer">github repository</a></li>
+          <li><a href="https://github.com/wlingze/muxterm/releases" class="footer-col__link" rel="noreferrer">releases</a></li>
+          <li><a href="https://github.com/wlingze/muxterm/issues" class="footer-col__link" rel="noreferrer">issue tracker</a></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="container footer-bottom">
+      <span>Muxterm contributors</span>
+      <span>MIT license</span>
+    </div>
+  </footer>
+
+  <script src="./assets/vendor/marked.min.js"></script>
+  <script src="./assets/app.js"></script>
+</body>
+</html>

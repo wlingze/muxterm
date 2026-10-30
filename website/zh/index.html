@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Muxterm：把 tmux 与 Herdr 变成原生工作区</title>
+  <meta name="description" content="跨平台终端工作台：把 tmux、Herdr 与本地 shell 收成原生工作区，支持 Tab、Pane、SSH 端口转发与 Attention 通知。">
+  <link rel="icon" href="../assets/muxterm-logo.svg" type="image/svg+xml">
+  <link rel="alternate" hreflang="en" href="../index.html">
+  <link rel="alternate" hreflang="zh-CN" href="./index.html">
+  <script src="../assets/theme-init.js"></script>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <header class="site-nav">
+    <div class="container site-nav__inner">
+      <a href="./index.html" class="site-nav__brand">
+        <img src="../assets/muxterm-logo.svg" alt="" class="site-nav__logo" width="28" height="28">
+        <span class="site-nav__title">muxterm</span>
+      </a>
+
+      <ul class="site-nav__links">
+        <li><a href="#architecture" class="site-nav__link">工作台</a></li>
+        <li><a href="#runtimes" class="site-nav__link">运行时</a></li>
+        <li><a href="#ports" class="site-nav__link">端口</a></li>
+        <li><a href="#features" class="site-nav__link">功能</a></li>
+        <li><a href="./docs.html" class="site-nav__link">文档</a></li>
+      </ul>
+
+      <div class="site-nav__action">
+        <button type="button" class="nav-util" data-theme-toggle aria-pressed="false">白色</button>
+        <a href="../index.html" class="nav-util lang-switch" lang="en" hreflang="en">EN</a>
+        <a href="./docs.html" class="nav-util mobile-only">文档</a>
+        <a href="#downloads" class="btn btn--secondary">下载</a>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero-section">
+      <div class="container hero-layout">
+        <div class="hero-copy">
+          <h1 class="hero-headline">让 tmux 与 Herdr 变成工作区。</h1>
+          <p class="hero-lead">原生终端工作台：会话、Tab、Pane 与端口，一套界面。</p>
+
+          <div class="hero-actions">
+            <a href="https://github.com/wlingze/muxterm/releases/latest/download/muxterm-macos-arm64.dmg" class="btn btn--primary" rel="noreferrer">下载 macOS</a>
+            <a href="https://github.com/wlingze/muxterm/releases/latest/download/muxterm-gtk-linux-x86_64.tar.gz" class="btn btn--secondary" rel="noreferrer">下载 Linux</a>
+          </div>
+
+          <div class="hero-install-box">
+            <div class="install-tabs">
+              <button type="button" class="install-tab is-active" data-target="macos" aria-pressed="true">macos</button>
+              <button type="button" class="install-tab" data-target="linux" aria-pressed="false">linux</button>
+              <button type="button" class="install-tab" data-target="source" aria-pressed="false">源码</button>
+            </div>
+            <div class="install-command-row">
+              <code class="install-command">$ curl -L -o muxterm.dmg https://github.com/wlingze/muxterm/releases/latest/download/muxterm-macos-arm64.dmg</code>
+              <button type="button" class="install-copy-btn" aria-label="复制安装命令">复制</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="surface-stage">
+          <div class="surface-topline">
+            <span class="surface-topline__title">Muxterm 工作区</span>
+            <span class="surface-topline__status">已连接</span>
+          </div>
+
+          <div class="surface-body">
+            <aside class="surface-sidebar">
+              <span class="surface-sidebar__head">工作区</span>
+              <div class="workspace-list">
+                <button type="button" class="workspace-item is-active" data-ws="ws-local" aria-pressed="true">
+                  <span class="workspace-name">muxterm</span>
+                  <span class="workspace-meta">tmux @ 本地</span>
+                </button>
+                <button type="button" class="workspace-item" data-ws="ws-herdr" aria-pressed="false">
+                  <span class="workspace-name">yaklang</span>
+                  <span class="workspace-meta">herdr @ 远程</span>
+                </button>
+                <button type="button" class="workspace-item" data-ws="ws-ssh" aria-pressed="false">
+                  <span class="workspace-name">staging-node</span>
+                  <span class="workspace-meta">tmux @ AWS</span>
+                </button>
+              </div>
+            </aside>
+
+            <div class="surface-main">
+              <div class="surface-tab-strip">
+                <button type="button" class="surface-tab is-active" aria-pressed="true">构建</button>
+                <button type="button" class="surface-tab" aria-pressed="false">编辑</button>
+                <button type="button" class="surface-tab" aria-pressed="false">日志</button>
+              </div>
+
+              <div class="surface-panes">
+                <div class="surface-pane">
+                  <span class="pane-prompt-line">$ cargo check --features gtk</span>
+                  <pre class="pane-text" id="pane-left">Checking muxterm
+Finished dev profile
+
+$ muxterm list-workspaces
+[1] muxterm @ local (tmux)
+[2] yaklang @ remote (herdr)
+[3] staging-node @ aws (ssh+tmux)</pre>
+                </div>
+                <div class="surface-pane">
+                  <span class="pane-prompt-line">$ git status</span>
+                  <pre class="pane-text" id="pane-right">On branch main
+nothing to commit, working tree clean
+
+Runtime: tmux
+Transport: local
+Scene: resident</pre>
+                </div>
+              </div>
+
+              <div class="surface-bottom-strip">
+                <span id="status-workspace-name" role="status">muxterm · 本地 tmux</span>
+                <span id="status-pane-count">2 个 Pane</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="screenshot" class="section-block section-shot">
+      <div class="container">
+        <div class="shot-head">
+          <p class="shot-note">模拟会话</p>
+          <div class="shot-theme-switch" role="group" aria-label="截图主题">
+            <button type="button" class="shot-theme" data-set-theme="dark" aria-pressed="true">暗色</button>
+            <button type="button" class="shot-theme" data-set-theme="light" aria-pressed="false">亮色</button>
+          </div>
+        </div>
+
+        <div class="shot-gallery">
+          <figure class="app-shot app-shot--wide">
+            <figcaption class="app-shot__bar">
+              <span class="app-shot__caption">工作台</span>
+            </figcaption>
+            <img data-shot
+                 data-dark="../assets/img/app-workspace-dark.png"
+                 data-light="../assets/img/app-workspace-light.png"
+                 src="../assets/img/app-workspace-dark.png"
+                 width="1280" height="760" decoding="async"
+                 alt="Muxterm macOS 工作台，包含工作区侧栏、四个终端窗格和两个标签页。">
+          </figure>
+
+          <div class="shot-grid">
+            <figure class="app-shot">
+              <figcaption class="app-shot__bar">
+                <span class="app-shot__caption">Agents</span>
+              </figcaption>
+              <img data-shot
+                   data-dark="../assets/img/app-agents-dark.png"
+                   data-light="../assets/img/app-agents-light.png"
+                   src="../assets/img/app-agents-dark.png"
+                   width="1280" height="760" loading="lazy" decoding="async"
+                   alt="Muxterm Agents 聚合，侧栏显示两个工作中的 agent，底部有两个 agent 标签页。">
+            </figure>
+
+            <figure class="app-shot">
+              <figcaption class="app-shot__bar">
+                <span class="app-shot__caption">Shells</span>
+              </figcaption>
+              <img data-shot
+                   data-dark="../assets/img/app-shells-dark.png"
+                   data-light="../assets/img/app-shells-light.png"
+                   src="../assets/img/app-shells-dark.png"
+                   width="1280" height="760" loading="lazy" decoding="async"
+                   alt="Muxterm Shells 聚合，显示本地 shell 工作区及终端输出。">
+            </figure>
+          </div>
+        </div>
+      </div>
+    </section>
+    <script>
+      (() => {
+        const theme = document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
+        document.querySelectorAll('[data-shot]').forEach((img) => {
+          img.src = theme === 'light' ? img.dataset.light : img.dataset.dark;
+        });
+      })();
+    </script>
+
+    <section id="architecture" class="section-block">
+      <div class="container">
+        <div class="section-head">
+          <h2 class="section-title">工作台，不是终端套壳</h2>
+          <p class="section-desc">每个 tmux 会话、Herdr workspace 都是池里的一等工作区。</p>
+        </div>
+
+        <div class="diagram-frame">
+          <pre class="diagram-code">Frontend (macOS / Linux / TUI / CLI)
+  └── C FFI + ffi_client
+        └── Muxterm Root
+              ├── ConfigStore (config.toml)
+              ├── Catalog (WorkspaceSpec resolver)
+              ├── Projects (worktree provenance)
+              ├── Activity (agents, attention)
+              └── WorkspacePool
+                    └── Workspace = Runtime(Transport) + path
+                          └── Tab to Pane</pre>
+        </div>
+
+        <div class="diagram-lane-grid">
+          <div class="diagram-lane-card">
+            <h3 class="lane-card-title">控制 lane</h3>
+            <p>拓扑与原生 Tab / Pane 跟随每个 Runtime。</p>
+          </div>
+          <div class="diagram-lane-card">
+            <h3 class="lane-card-title">渲染 lane</h3>
+            <p>原始 PTY 字节直接进入原生 Surface。</p>
+          </div>
+          <div class="diagram-lane-card">
+            <h3 class="lane-card-title">Activity lane</h3>
+            <p>Agent 状态与 Attention 留在工作区里。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="runtimes" class="section-block">
+      <div class="container">
+        <div class="section-head">
+          <h2 class="section-title">tmux 与 Herdr，不用再套壳</h2>
+          <p class="section-desc">每个会话一个工作区；本地与 SSH 用同一套原生控件。</p>
+        </div>
+
+        <div class="matrix-table-wrap">
+          <table class="matrix-table">
+            <thead>
+              <tr>
+                <th scope="col">Runtime</th>
+                <th scope="col">Transport</th>
+                <th scope="col">变成</th>
+                <th scope="col">保留</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>shell</code></td>
+                <td>local / ssh</td>
+                <td>一个工作区</td>
+                <td>进程生命周期</td>
+              </tr>
+              <tr>
+                <td><code>tmux</code></td>
+                <td>local / ssh</td>
+                <td>每个会话一个工作区</td>
+                <td>attach / detach</td>
+              </tr>
+              <tr>
+                <td><code>herdr</code></td>
+                <td>local / ssh</td>
+                <td>每个 Herdr workspace 一个工作区</td>
+                <td>原生 worktree</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="diff-frame">
+          <div class="diff-header">
+            <span>终端里的用法</span>
+            <span>工作台里的用法</span>
+          </div>
+          <div class="diff-content">
+            <div class="diff-row diff-row--del">
+              <span class="diff-sign">-</span>
+              <span>Ctrl+B 在嵌套窗口之间切换</span>
+            </div>
+            <div class="diff-row diff-row--del">
+              <span class="diff-sign">-</span>
+              <span>每个 Pane 各开一条 SSH</span>
+            </div>
+            <div class="diff-row diff-row--add">
+              <span class="diff-sign">+</span>
+              <span>原生 Tab、Pane 与工作区侧栏</span>
+            </div>
+            <div class="diff-row diff-row--add">
+              <span class="diff-sign">+</span>
+              <span>一条 TargetConnection 复用给多个 Pane</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="ports" class="section-block">
+      <div class="container">
+        <div class="section-head">
+          <h2 class="section-title">端口自己找上门</h2>
+          <p class="section-desc">macOS 的 SSH 工作区会扫描监听端口；一键转发到 localhost，或显式开启 LAN 访问。</p>
+        </div>
+
+        <div class="port-panel" role="group" aria-label="端口转发演示">
+          <div class="port-panel__head">
+            <span class="port-panel__host">staging-node / ssh</span>
+            <span>扫描完成</span>
+          </div>
+          <div class="port-list">
+            <div class="port-row">
+              <span class="port-number">:3000</span>
+              <span class="port-service">
+                <span class="port-service__name">开发服务</span>
+                <span class="port-service__meta">已转发到 localhost</span>
+              </span>
+              <button type="button" class="port-action" data-port="3000" aria-pressed="false">转发</button>
+              <span class="port-local" aria-live="polite"></span>
+            </div>
+            <div class="port-row">
+              <span class="port-number">:5432</span>
+              <span class="port-service">
+                <span class="port-service__name">数据库</span>
+                <span class="port-service__meta">远端监听</span>
+              </span>
+              <button type="button" class="port-action" data-port="5432" aria-pressed="false">转发</button>
+              <span class="port-local" aria-live="polite"></span>
+            </div>
+            <div class="port-row">
+              <span class="port-number">:8080</span>
+              <span class="port-service">
+                <span class="port-service__name">预览</span>
+                <span class="port-service__meta">远端监听</span>
+              </span>
+              <button type="button" class="port-action" data-port="8080" aria-pressed="false">转发</button>
+              <span class="port-local" aria-live="polite"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="features" class="section-block">
+      <div class="container">
+        <div class="section-head">
+          <h2 class="section-title">为每天的工作台而做</h2>
+          <p class="section-desc">项目、worktree、Agent 与一份配置。</p>
+        </div>
+
+        <div class="feature-grid">
+          <div class="feature-box">
+            <h3 class="feature-box__head">QuickConnect 面板</h3>
+            <p class="feature-box__body">一个快捷键筛选项目、worktree 和 SSH 主机。</p>
+          </div>
+          <div class="feature-box">
+            <h3 class="feature-box__head">项目与 Worktree</h3>
+            <p class="feature-box__body">每个 checkout 是独立工作区，按项目归组。</p>
+          </div>
+          <div class="feature-box">
+            <h3 class="feature-box__head">Attention 通知</h3>
+            <p class="feature-box__body">Agent 阻塞、构建完成时直接看到。</p>
+          </div>
+          <div class="feature-box">
+            <h3 class="feature-box__head">一份配置</h3>
+            <p class="feature-box__body">字体、快捷键、项目和模板都在 config.toml。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="downloads" class="section-block">
+      <div class="container">
+        <div class="section-head">
+          <h2 class="section-title">下载</h2>
+          <p class="section-desc">桌面包与二进制，附校验和。</p>
+        </div>
+
+        <div class="downloads-grid">
+          <div class="download-card">
+            <div class="download-card__top">
+              <h3 class="download-card__platform">macOS ARM64</h3>
+              <p class="download-card__detail">Apple Silicon，macOS 13+。</p>
+            </div>
+            <div class="download-card__meta">
+              <span>muxterm-macos-arm64.dmg</span>
+            </div>
+            <a href="https://github.com/wlingze/muxterm/releases/latest/download/muxterm-macos-arm64.dmg" class="btn btn--primary" rel="noreferrer">下载 DMG</a>
+          </div>
+
+          <div class="download-card">
+            <div class="download-card__top">
+              <h3 class="download-card__platform">Linux x86_64 GTK4</h3>
+              <p class="download-card__detail">GTK4 + vte4 桌面包。</p>
+            </div>
+            <div class="download-card__meta">
+              <span>muxterm-gtk-linux-x86_64.tar.gz</span>
+            </div>
+            <a href="https://github.com/wlingze/muxterm/releases/latest/download/muxterm-gtk-linux-x86_64.tar.gz" class="btn btn--primary" rel="noreferrer">下载 tar.gz</a>
+          </div>
+
+          <div class="download-card">
+            <div class="download-card__top">
+              <h3 class="download-card__platform">跨平台 TUI</h3>
+              <p class="download-card__detail">纯 ratatui 终端界面。</p>
+            </div>
+            <div class="download-card__meta">
+              <span>muxterm tui</span>
+            </div>
+            <a href="./docs.html#build" class="btn btn--secondary">查看构建</a>
+          </div>
+
+          <div class="download-card">
+            <div class="download-card__top">
+              <h3 class="download-card__platform">从源码构建</h3>
+              <p class="download-card__detail">Rust 1.97.1。</p>
+            </div>
+            <div class="download-card__meta">
+              <span>github.com/wlingze/muxterm</span>
+            </div>
+            <a href="./docs.html#build" class="btn btn--secondary">构建指南</a>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-grid">
+      <div class="footer-col">
+        <h3 class="footer-col__title">muxterm</h3>
+        <p>tmux、Herdr 与本地 shell 的原生工作区。</p>
+        <span class="footer-col__link">MIT 许可证</span>
+      </div>
+
+      <div class="footer-col">
+        <h3 class="footer-col__title">文档</h3>
+        <ul class="footer-col__links">
+          <li><a href="./docs.html" class="footer-col__link">使用文档</a></li>
+          <li><a href="./docs.html#installation" class="footer-col__link">安装</a></li>
+          <li><a href="./docs.html#config-file" class="footer-col__link">配置</a></li>
+          <li><a href="./docs.html#cli-reference" class="footer-col__link">CLI</a></li>
+        </ul>
+      </div>
+
+      <div class="footer-col">
+        <h3 class="footer-col__title">规格</h3>
+        <ul class="footer-col__links">
+          <li><a href="https://github.com/wlingze/muxterm/blob/main/docs/WORKSPACE.md" class="footer-col__link" rel="noreferrer">工作区模型</a></li>
+          <li><a href="https://github.com/wlingze/muxterm/blob/main/docs/SURFACE.md" class="footer-col__link" rel="noreferrer">Surface 定律</a></li>
+          <li><a href="https://github.com/wlingze/muxterm/blob/main/docs/RUNTIME.md" class="footer-col__link" rel="noreferrer">Runtime trait</a></li>
+          <li><a href="https://github.com/wlingze/muxterm/blob/main/docs/FRONTEND.md" class="footer-col__link" rel="noreferrer">Frontend FFI</a></li>
+        </ul>
+      </div>
+
+      <div class="footer-col">
+        <h3 class="footer-col__title">社区</h3>
+        <ul class="footer-col__links">
+          <li><a href="https://github.com/wlingze/muxterm" class="footer-col__link" rel="noreferrer">GitHub 仓库</a></li>
+          <li><a href="https://github.com/wlingze/muxterm/releases" class="footer-col__link" rel="noreferrer">发布</a></li>
+          <li><a href="https://github.com/wlingze/muxterm/issues" class="footer-col__link" rel="noreferrer">问题反馈</a></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="container footer-bottom">
+      <span>Muxterm 贡献者</span>
+      <span>MIT 许可证</span>
+    </div>
+  </footer>
+
+  <script src="../assets/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Muxterm: tmux and Herdr sessions become native workspaces</title>
+  <meta name="description" content="A cross-platform terminal workbench where tmux and Herdr sessions become native workspaces with tabs, panes, SSH port forwarding and attention tracking.">
+  <link rel="icon" href="./assets/muxterm-logo.svg" type="image/svg+xml">
+  <link rel="alternate" hreflang="en" href="./index.html">
+  <link rel="alternate" hreflang="zh-CN" href="./zh/index.html">
+  <script src="./assets/theme-init.js"></script>
+  <link rel="stylesheet" href="./assets/style.css">
+</head>
+<body>
+
+  <!-- ── Navigation ──────────────────────────────────────────────── -->
+  <header class="site-nav">
+    <div class="container site-nav__inner">
+      <a href="./index.html" class="site-nav__brand">
+        <img src="./assets/muxterm-logo.svg" alt="" class="site-nav__logo" width="28" height="28">
+        <span class="site-nav__title">muxterm</span>
+      </a>
+
+      <ul class="site-nav__links">
+        <li><a href="#architecture" class="site-nav__link">workbench</a></li>
+        <li><a href="#runtimes" class="site-nav__link">runtimes</a></li>
+        <li><a href="#ports" class="site-nav__link">ports</a></li>
+        <li><a href="#features" class="site-nav__link">features</a></li>
+        <li><a href="./docs.html" class="site-nav__link">docs</a></li>
+      </ul>
+
+      <div class="site-nav__action">
+        <button type="button" class="nav-util" data-theme-toggle aria-pressed="false">white</button>
+        <a href="./zh/index.html" class="nav-util lang-switch" lang="zh-CN" hreflang="zh-CN">中文</a>
+        <a href="./docs.html" class="nav-util mobile-only">docs</a>
+        <a href="#downloads" class="btn btn--secondary">download</a>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <!-- ── Hero Section ──────────────────────────────────────────── -->
+    <section class="hero-section">
+      <div class="container hero-layout">
+        <div class="hero-copy">
+          <h1 class="hero-headline">tmux and Herdr become workspaces.</h1>
+          <p class="hero-lead">A native workbench for tmux, Herdr and local shells.</p>
+
+          <div class="hero-actions">
+            <a href="https://github.com/wlingze/muxterm/releases/latest/download/muxterm-macos-arm64.dmg" class="btn btn--primary" rel="noreferrer">download for macos</a>
+            <a href="https://github.com/wlingze/muxterm/releases/latest/download/muxterm-gtk-linux-x86_64.tar.gz" class="btn btn--secondary" rel="noreferrer">download for linux</a>
+          </div>
+
+          <div class="hero-install-box">
+            <div class="install-tabs">
+              <button type="button" class="install-tab is-active" data-target="macos" aria-pressed="true">macos</button>
+              <button type="button" class="install-tab" data-target="linux" aria-pressed="false">linux</button>
+              <button type="button" class="install-tab" data-target="source" aria-pressed="false">source</button>
+            </div>
+            <div class="install-command-row">
+              <code class="install-command">$ curl -L -o muxterm.dmg https://github.com/wlingze/muxterm/releases/latest/download/muxterm-macos-arm64.dmg</code>
+              <button type="button" class="install-copy-btn" aria-label="copy installation command">copy</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── Interactive Workspace Surface (Signature) ─────────── -->
+        <div class="surface-stage">
+          <div class="surface-topline">
+            <span class="surface-topline__title">Muxterm workspace</span>
+            <span class="surface-topline__status">connected</span>
+          </div>
+
+          <div class="surface-body">
+            <aside class="surface-sidebar">
+              <span class="surface-sidebar__head">workspaces</span>
+              <div class="workspace-list">
+                <button type="button" class="workspace-item is-active" data-ws="ws-local" aria-pressed="true">
+                  <span class="workspace-name">muxterm</span>
+                  <span class="workspace-meta">tmux @ local</span>
+                </button>
+                <button type="button" class="workspace-item" data-ws="ws-herdr" aria-pressed="false">
+                  <span class="workspace-name">yaklang</span>
+                  <span class="workspace-meta">herdr @ remote</span>
+                </button>
+                <button type="button" class="workspace-item" data-ws="ws-ssh" aria-pressed="false">
+                  <span class="workspace-name">staging-node</span>
+                  <span class="workspace-meta">tmux @ aws</span>
+                </button>
+              </div>
+            </aside>
+
+            <div class="surface-main">
+              <div class="surface-tab-strip">
+                <button type="button" class="surface-tab is-active" aria-pressed="true">build</button>
+                <button type="button" class="surface-tab" aria-pressed="false">editor</button>
+                <button type="button" class="surface-tab" aria-pressed="false">logs</button>
+              </div>
+
+              <div class="surface-panes">
+                <div class="surface-pane">
+                  <span class="pane-prompt-line">$ cargo check --features gtk</span>
+                  <pre class="pane-text" id="pane-left">Checking muxterm
+Finished dev profile
+
+$ muxterm list-workspaces
+[1] muxterm @ local (tmux)
+[2] yaklang @ remote (herdr)
+[3] staging-node @ aws (ssh+tmux)</pre>
+                </div>
+                <div class="surface-pane">
+                  <span class="pane-prompt-line">$ git status</span>
+                  <pre class="pane-text" id="pane-right">On branch main
+nothing to commit, working tree clean
+
+Runtime: tmux
+Transport: local
+Scene: resident</pre>
+                </div>
+              </div>
+
+              <div class="surface-bottom-strip">
+                <span id="status-workspace-name" role="status">muxterm @ local (tmux)</span>
+                <span id="status-pane-count">2 panes</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Product Screenshots ───────────────────────────────────── -->
+    <section id="screenshot" class="section-block section-shot">
+      <div class="container">
+        <div class="shot-head">
+          <p class="shot-note">mock sessions</p>
+          <div class="shot-theme-switch" role="group" aria-label="Screenshot theme">
+            <button type="button" class="shot-theme" data-set-theme="dark" aria-pressed="true">dark</button>
+            <button type="button" class="shot-theme" data-set-theme="light" aria-pressed="false">light</button>
+          </div>
+        </div>
+
+        <div class="shot-gallery">
+          <figure class="app-shot app-shot--wide">
+            <figcaption class="app-shot__bar">
+              <span class="app-shot__caption">workbench</span>
+            </figcaption>
+            <img data-shot
+                 data-dark="./assets/img/app-workspace-dark.png"
+                 data-light="./assets/img/app-workspace-light.png"
+                 src="./assets/img/app-workspace-dark.png"
+                 width="1280" height="760" decoding="async"
+                 alt="Muxterm macOS workbench with a workspace sidebar, four terminal panes and two tabs.">
+          </figure>
+
+          <div class="shot-grid">
+            <figure class="app-shot">
+              <figcaption class="app-shot__bar">
+                <span class="app-shot__caption">agents</span>
+              </figcaption>
+              <img data-shot
+                   data-dark="./assets/img/app-agents-dark.png"
+                   data-light="./assets/img/app-agents-light.png"
+                   src="./assets/img/app-agents-dark.png"
+                   width="1280" height="760" loading="lazy" decoding="async"
+                   alt="Muxterm Agents aggregate with two working agents in the sidebar and two agent tabs.">
+            </figure>
+
+            <figure class="app-shot">
+              <figcaption class="app-shot__bar">
+                <span class="app-shot__caption">shells</span>
+              </figcaption>
+              <img data-shot
+                   data-dark="./assets/img/app-shells-dark.png"
+                   data-light="./assets/img/app-shells-light.png"
+                   src="./assets/img/app-shells-dark.png"
+                   width="1280" height="760" loading="lazy" decoding="async"
+                   alt="Muxterm Shells aggregate with a local shell workspace and its terminal output.">
+            </figure>
+          </div>
+        </div>
+      </div>
+    </section>
+    <script>
+      (() => {
+        const theme = document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
+        document.querySelectorAll('[data-shot]').forEach((img) => {
+          img.src = theme === 'light' ? img.dataset.light : img.dataset.dark;
+        });
+      })();
+    </script>
+
+    <!-- ── Workbench Architecture ────────────────────────────────── -->
+    <section id="architecture" class="section-block">
+      <div class="container">
+        <div class="section-head">
+          <h2 class="section-title">A workbench, not a wrapper</h2>
+          <p class="section-desc">Each tmux session or Herdr workspace enters the pool as a first-class workspace.</p>
+        </div>
+
+        <div class="diagram-frame">
+          <pre class="diagram-code">Frontend (macOS / Linux / TUI / CLI)
+  └── C FFI + ffi_client
+        └── Muxterm Root
+              ├── ConfigStore (config.toml)
+              ├── Catalog (WorkspaceSpec resolver)
+              ├── Projects (worktree provenance)
+              ├── Activity (agents, attention)
+              └── WorkspacePool
+                    └── Workspace = Runtime(Transport) + path
+                          └── Tab to Pane</pre>
+        </div>
+
+        <div class="diagram-lane-grid">
+          <div class="diagram-lane-card">
+            <h3 class="lane-card-title">Control lane</h3>
+            <p>Native tabs and panes follow every runtime.</p>
+          </div>
+          <div class="diagram-lane-card">
+            <h3 class="lane-card-title">Render-data lane</h3>
+            <p>Raw PTY bytes go straight to native surfaces.</p>
+          </div>
+          <div class="diagram-lane-card">
+            <h3 class="lane-card-title">Activity lane</h3>
+            <p>Agent state and attention stay in the workspace.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Runtime Matrix ────────────────────────────────────────── -->
+    <section id="runtimes" class="section-block">
+      <div class="container">
+        <div class="section-head">
+          <h2 class="section-title">tmux and Herdr, without the wrapper</h2>
+          <p class="section-desc">One workspace per session; the same native controls over local or SSH.</p>
+        </div>
+
+        <div class="matrix-table-wrap">
+          <table class="matrix-table">
+            <thead>
+              <tr>
+                <th scope="col">Runtime</th>
+                <th scope="col">Transport</th>
+                <th scope="col">Becomes</th>
+                <th scope="col">Keeps</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>shell</code></td>
+                <td>local / ssh</td>
+                <td>a workspace</td>
+                <td>process lifetime</td>
+              </tr>
+              <tr>
+                <td><code>tmux</code></td>
+                <td>local / ssh</td>
+                <td>a workspace per session</td>
+                <td>detach and reattach</td>
+              </tr>
+              <tr>
+                <td><code>herdr</code></td>
+                <td>local / ssh</td>
+                <td>a workspace per Herdr workspace</td>
+                <td>native worktrees</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="diff-frame">
+          <div class="diff-header">
+            <span>inside a terminal</span>
+            <span>inside the workbench</span>
+          </div>
+          <div class="diff-content">
+            <div class="diff-row diff-row--del">
+              <span class="diff-sign">-</span>
+              <span>Ctrl+B between nested windows</span>
+            </div>
+            <div class="diff-row diff-row--del">
+              <span class="diff-sign">-</span>
+              <span>one SSH connection per pane</span>
+            </div>
+            <div class="diff-row diff-row--add">
+              <span class="diff-sign">+</span>
+              <span>native tabs, panes and a workspace sidebar</span>
+            </div>
+            <div class="diff-row diff-row--add">
+              <span class="diff-sign">+</span>
+              <span>one TargetConnection shared across panes</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Ports ─────────────────────────────────────────────────── -->
+    <section id="ports" class="section-block">
+      <div class="container">
+        <div class="section-head">
+          <h2 class="section-title">Ports find you</h2>
+          <p class="section-desc">macOS SSH workspaces scan listening ports. Forward one to localhost, or expose it on the LAN with an explicit toggle.</p>
+        </div>
+
+        <div class="port-panel" role="group" aria-label="Port forwarding demo">
+          <div class="port-panel__head">
+            <span class="port-panel__host">staging-node / ssh</span>
+            <span>scan complete</span>
+          </div>
+          <div class="port-list">
+            <div class="port-row">
+              <span class="port-number">:3000</span>
+              <span class="port-service">
+                <span class="port-service__name">dev server</span>
+                <span class="port-service__meta">forwarded to localhost</span>
+              </span>
+              <button type="button" class="port-action" data-port="3000" aria-pressed="false">forward</button>
+              <span class="port-local" aria-live="polite"></span>
+            </div>
+            <div class="port-row">
+              <span class="port-number">:5432</span>
+              <span class="port-service">
+                <span class="port-service__name">postgres</span>
+                <span class="port-service__meta">listening on remote</span>
+              </span>
+              <button type="button" class="port-action" data-port="5432" aria-pressed="false">forward</button>
+              <span class="port-local" aria-live="polite"></span>
+            </div>
+            <div class="port-row">
+              <span class="port-number">:8080</span>
+              <span class="port-service">
+                <span class="port-service__name">preview</span>
+                <span class="port-service__meta">listening on remote</span>
+              </span>
+              <button type="button" class="port-action" data-port="8080" aria-pressed="false">forward</button>
+              <span class="port-local" aria-live="polite"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Features ──────────────────────────────────────────────── -->
+    <section id="features" class="section-block">
+      <div class="container">
+        <div class="section-head">
+          <h2 class="section-title">Built for the daily workbench</h2>
+          <p class="section-desc">Projects, worktrees, agents and one config contract.</p>
+        </div>
+
+        <div class="feature-grid">
+          <div class="feature-box">
+            <h3 class="feature-box__head">QuickConnect palette</h3>
+            <p class="feature-box__body">Filter projects, worktrees, and SSH hosts with one key.</p>
+          </div>
+          <div class="feature-box">
+            <h3 class="feature-box__head">Projects and worktrees</h3>
+            <p class="feature-box__body">Open each checkout as its own workspace, grouped by project.</p>
+          </div>
+          <div class="feature-box">
+            <h3 class="feature-box__head">Attention lane</h3>
+            <p class="feature-box__body">See blocked agents and finished builds without hunting panes.</p>
+          </div>
+          <div class="feature-box">
+            <h3 class="feature-box__head">One config contract</h3>
+            <p class="feature-box__body">Fonts, keys, projects and templates in one config.toml.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Downloads ─────────────────────────────────────────────── -->
+    <section id="downloads" class="section-block">
+      <div class="container">
+        <div class="section-head">
+          <h2 class="section-title">Download packages</h2>
+          <p class="section-desc">Desktop bundles and binaries with checksums.</p>
+        </div>
+
+        <div class="downloads-grid">
+          <div class="download-card">
+            <div class="download-card__top">
+              <h3 class="download-card__platform">macOS ARM64</h3>
+              <p class="download-card__detail">Apple Silicon, macOS 13+.</p>
+            </div>
+            <div class="download-card__meta">
+              <span>muxterm-macos-arm64.dmg</span>
+            </div>
+            <a href="https://github.com/wlingze/muxterm/releases/latest/download/muxterm-macos-arm64.dmg" class="btn btn--primary" rel="noreferrer">download dmg</a>
+          </div>
+
+          <div class="download-card">
+            <div class="download-card__top">
+              <h3 class="download-card__platform">Linux x86_64 GTK4</h3>
+              <p class="download-card__detail">GTK4 bundle with vte4.</p>
+            </div>
+            <div class="download-card__meta">
+              <span>muxterm-gtk-linux-x86_64.tar.gz</span>
+            </div>
+            <a href="https://github.com/wlingze/muxterm/releases/latest/download/muxterm-gtk-linux-x86_64.tar.gz" class="btn btn--primary" rel="noreferrer">download tarball</a>
+          </div>
+
+          <div class="download-card">
+            <div class="download-card__top">
+              <h3 class="download-card__platform">Cross-platform TUI</h3>
+              <p class="download-card__detail">Pure ratatui interface.</p>
+            </div>
+            <div class="download-card__meta">
+              <span>muxterm tui</span>
+            </div>
+            <a href="./docs.html#build" class="btn btn--secondary">view instructions</a>
+          </div>
+
+          <div class="download-card">
+            <div class="download-card__top">
+              <h3 class="download-card__platform">Build from source</h3>
+              <p class="download-card__detail">Rust 1.97.1.</p>
+            </div>
+            <div class="download-card__meta">
+              <span>github.com/wlingze/muxterm</span>
+            </div>
+            <a href="./docs.html#build" class="btn btn--secondary">build guide</a>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ── Footer ────────────────────────────────────────────────── -->
+  <footer class="site-footer">
+    <div class="container footer-grid">
+      <div class="footer-col">
+        <h3 class="footer-col__title">muxterm</h3>
+        <p>Native workspaces for tmux, Herdr and local shells.</p>
+        <span class="footer-col__link">licensed under MIT</span>
+      </div>
+
+      <div class="footer-col">
+        <h3 class="footer-col__title">documentation</h3>
+        <ul class="footer-col__links">
+          <li><a href="./docs.html" class="footer-col__link">docs</a></li>
+          <li><a href="./docs.html#installation" class="footer-col__link">installation</a></li>
+          <li><a href="./docs.html#config-file" class="footer-col__link">configuration</a></li>
+          <li><a href="./docs.html#cli-reference" class="footer-col__link">cli reference</a></li>
+        </ul>
+      </div>
+
+      <div class="footer-col">
+        <h3 class="footer-col__title">specifications</h3>
+        <ul class="footer-col__links">
+          <li><a href="https://github.com/wlingze/muxterm/blob/main/docs/WORKSPACE.md" class="footer-col__link" rel="noreferrer">workspace model</a></li>
+          <li><a href="https://github.com/wlingze/muxterm/blob/main/docs/SURFACE.md" class="footer-col__link" rel="noreferrer">surface laws</a></li>
+          <li><a href="https://github.com/wlingze/muxterm/blob/main/docs/RUNTIME.md" class="footer-col__link" rel="noreferrer">runtime trait</a></li>
+          <li><a href="https://github.com/wlingze/muxterm/blob/main/docs/FRONTEND.md" class="footer-col__link" rel="noreferrer">frontend ffi</a></li>
+        </ul>
+      </div>
+
+      <div class="footer-col">
+        <h3 class="footer-col__title">community</h3>
+        <ul class="footer-col__links">
+          <li><a href="https://github.com/wlingze/muxterm" class="footer-col__link" rel="noreferrer">github repository</a></li>
+          <li><a href="https://github.com/wlingze/muxterm/releases" class="footer-col__link" rel="noreferrer">releases</a></li>
+          <li><a href="https://github.com/wlingze/muxterm/issues" class="footer-col__link" rel="noreferrer">issue tracker</a></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="container footer-bottom">
+      <span>Muxterm contributors</span>
+      <span>MIT license</span>
+    </div>
+  </footer>
+
+  <script src="./assets/app.js"></script>
+</body>
+</html>
