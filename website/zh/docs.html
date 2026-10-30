@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Muxterm 文档：工作区、运行时、端口与配置</title>
+  <meta name="description" content="Muxterm 安装与使用：tmux / Herdr 工作区、SSH 端口转发、配置契约与 CLI 参考。">
+  <link rel="icon" href="../assets/muxterm-logo.svg" type="image/svg+xml">
+  <link rel="alternate" hreflang="en" href="../docs.html">
+  <link rel="alternate" hreflang="zh-CN" href="./docs.html">
+  <script src="../assets/theme-init.js"></script>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <header class="site-nav">
+    <div class="container site-nav__inner">
+      <a href="./index.html" class="site-nav__brand">
+        <img src="../assets/muxterm-logo.svg" alt="" class="site-nav__logo" width="28" height="28">
+        <span class="site-nav__title">muxterm</span>
+      </a>
+
+      <ul class="site-nav__links">
+        <li><a href="./index.html#architecture" class="site-nav__link">工作台</a></li>
+        <li><a href="./index.html#runtimes" class="site-nav__link">运行时</a></li>
+        <li><a href="./index.html#ports" class="site-nav__link">端口</a></li>
+        <li><a href="./index.html#downloads" class="site-nav__link">下载</a></li>
+        <li><a href="./docs.html" class="site-nav__link">文档</a></li>
+      </ul>
+
+      <div class="site-nav__action">
+        <button type="button" class="nav-util" data-theme-toggle aria-pressed="false">白色</button>
+        <a href="../docs.html" class="nav-util lang-switch" lang="en" hreflang="en">EN</a>
+        <a href="./index.html" class="nav-util mobile-only">首页</a>
+        <a href="./index.html#downloads" class="btn btn--secondary">下载</a>
+      </div>
+    </div>
+  </header>
+
+  <main class="container docs-layout">
+    <aside class="docs-sidebar">
+      <div class="docs-sidebar__group">
+        <span class="docs-sidebar__title">指南</span>
+        <a href="#installation" class="docs-sidebar__link">安装</a>
+        <a href="#quickstart" class="docs-sidebar__link">快速开始</a>
+        <a href="#model" class="docs-sidebar__link">工作区模型</a>
+        <a href="#ports" class="docs-sidebar__link">端口与转发</a>
+        <a href="#config-file" class="docs-sidebar__link">配置</a>
+        <a href="#cli-reference" class="docs-sidebar__link">CLI</a>
+        <a href="#build" class="docs-sidebar__link">从源码构建</a>
+        <a href="#reference" class="docs-sidebar__link">完整参考</a>
+      </div>
+    </aside>
+
+    <div class="docs-content">
+      <article id="installation" class="docs-article">
+        <h2>安装</h2>
+        <p>预编译包发布在 GitHub Releases：</p>
+        <div class="matrix-table-wrap">
+          <table class="matrix-table">
+            <thead>
+              <tr>
+                <th scope="col">目标</th>
+                <th scope="col">包</th>
+                <th scope="col">依赖</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>macOS Apple Silicon</td>
+                <td><code>muxterm-macos-arm64.dmg</code></td>
+                <td>macOS 13+</td>
+              </tr>
+              <tr>
+                <td>Linux x86_64</td>
+                <td><code>muxterm-gtk-linux-x86_64.tar.gz</code></td>
+                <td>GTK4、vte4、OpenSSL、tmux 3.x</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>macOS 包使用 ad-hoc 签名，未经过 Apple 公证；首次启动若被 Gatekeeper 拦截，请在系统设置中允许。</p>
+      </article>
+
+      <article id="quickstart" class="docs-article">
+        <h2>快速开始</h2>
+        <p>用 <code>muxterm gui</code> 启动桌面 GUI，或用 <code>muxterm tui</code> 启动终端界面。Linux 按 <code>Alt+P</code>，macOS 按 <code>Cmd+P</code> 打开 QuickConnect。</p>
+        <p>已有的 tmux 会话、Herdr workspace、Project 与 worktree 都会出现在候选列表里；切换已打开的工作区没有 Core 锁等待。</p>
+      </article>
+
+      <article id="model" class="docs-article">
+        <h2>工作区工作台</h2>
+        <p>tmux 与 Herdr 不是被套进一个假终端，而是各自进入 WorkspacePool：</p>
+        <div class="docs-code-block">
+          <pre>Workspace = Runtime(Transport) + path
+  Runtime:   shell / tmux / herdr
+  Transport: local / ssh
+  结构:      Tab → Pane
+
+控制 lane: 拓扑与常驻原生场景
+渲染 lane: 原始 PTY 字节直达原生 Surface
+Activity lane: Agent、命令与 Attention</pre>
+        </div>
+      </article>
+
+      <article id="ports" class="docs-article">
+        <h2>端口感知与转发</h2>
+        <p>对于 SSH 工作区，Muxterm 通过现有 SSH 连接扫描目标机上的 TCP 监听端口。macOS 状态栏会列出发现的端口，并支持：</p>
+        <ul>
+          <li>把远端端口转发到本地端口；</li>
+          <li>显式开启转发端口的 LAN 访问；</li>
+          <li>打开本地 / 远端地址、忽略端口或停止转发。</li>
+        </ul>
+        <p>扫描使用目标机的 <code>ss</code> 或 <code>lsof</code>，且不在前端线程执行。Core/FFI 已提供接口；当前端口选择器 UI 在 macOS 前端。</p>
+      </article>
+
+      <article id="config-file" class="docs-article">
+        <h2>配置契约</h2>
+        <p>配置位于 <code>~/.config/muxterm/config.toml</code>，严格校验 schema：</p>
+        <div class="docs-code-block">
+          <pre>config_version = 1
+
+[font]
+family = "JetBrains Mono"
+size = 13.0
+
+[statusbar]
+mode = "tmux"
+
+[pool]
+max_slots = 20
+
+[theme]
+name = "system"
+light = "white"
+dark = "black"
+
+[shortcuts]
+preset = "qwerty"
+primary_key = "auto" # Linux=Alt，macOS=Command
+
+[[projects]]
+id = "muxterm@local"
+name = "Muxterm"
+path = "~/Developer/self/muxterm"</pre>
+        </div>
+      </article>
+
+      <article id="cli-reference" class="docs-article">
+        <h2>CLI 参考</h2>
+        <p>不启动 GUI 也能使用：</p>
+        <div class="docs-code-block">
+          <pre># 列出工作区
+muxterm list-workspaces
+
+# 隔离 tmux socket
+muxterm -L muxterm-test list-workspaces
+
+# 向当前 Pane 发送按键
+muxterm send-keys "cargo test"
+
+# 检查配置
+muxterm config show --resolved
+muxterm config doctor</pre>
+        </div>
+      </article>
+
+      <article id="build" class="docs-article">
+        <h2>从源码构建</h2>
+        <p>构建脚本把产物写入 <code>./build/&lt;os&gt;/</code>：</p>
+        <div class="docs-code-block">
+          <pre>git clone https://github.com/wlingze/muxterm.git
+cd muxterm
+./scripts/build-tui.sh --release
+./scripts/build-linux.sh --release
+./scripts/build-macos.sh --release</pre>
+        </div>
+      </article>
+
+      <section id="reference" class="docs-reference" data-docs-reference data-docs-src="../docs/" data-doc-default="USER-GUIDE">
+        <div class="docs-reference__head">
+          <div class="docs-reference__intro">
+            <h2>完整参考</h2>
+            <p>以下内容来自仓库 <code>docs/</code>，与源文件保持一致；上方是面向使用的快速路径。</p>
+          </div>
+          <a class="docs-reference__github" data-docs-github href="https://github.com/wlingze/muxterm/blob/main/docs/USER-GUIDE.md" target="_blank" rel="noopener">在 GitHub 打开</a>
+        </div>
+        <div class="docs-tabs" role="group" aria-label="参考文档">
+          <button type="button" class="docs-tab" data-doc="USER-GUIDE" aria-pressed="false">用户指南</button>
+          <button type="button" class="docs-tab" data-doc="WORKSPACE" aria-pressed="false">工作区</button>
+          <button type="button" class="docs-tab" data-doc="RUNTIME" aria-pressed="false">运行时</button>
+          <button type="button" class="docs-tab" data-doc="SURFACE" aria-pressed="false">界面</button>
+          <button type="button" class="docs-tab" data-doc="FRONTEND" aria-pressed="false">前端</button>
+          <button type="button" class="docs-tab" data-doc="CATALOG" aria-pressed="false">目录</button>
+          <button type="button" class="docs-tab" data-doc="CONFIG" aria-pressed="false">配置</button>
+          <button type="button" class="docs-tab" data-doc="PROJECT-STRUCTURE" aria-pressed="false">项目结构</button>
+          <button type="button" class="docs-tab" data-doc="PRODUCT" aria-pressed="false">产品</button>
+        </div>
+        <article class="docs-reference__article" data-docs-content aria-busy="false" tabindex="-1">
+          <noscript><p>启用 JavaScript 可在此阅读参考；也可以直接打开 GitHub 上的 <a href="https://github.com/wlingze/muxterm/tree/main/docs">docs/</a>。</p></noscript>
+        </article>
+      </section>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-grid">
+      <div class="footer-col">
+        <h3 class="footer-col__title">muxterm</h3>
+        <p>tmux、Herdr 与本地 shell 的原生工作区。</p>
+        <span class="footer-col__link">MIT 许可证</span>
+      </div>
+
+      <div class="footer-col">
+        <h3 class="footer-col__title">文档</h3>
+        <ul class="footer-col__links">
+          <li><a href="#installation" class="footer-col__link">安装</a></li>
+          <li><a href="#config-file" class="footer-col__link">配置</a></li>
+          <li><a href="#ports" class="footer-col__link">端口</a></li>
+          <li><a href="#cli-reference" class="footer-col__link">CLI</a></li>
+        </ul>
+      </div>
+
+      <div class="footer-col">
+        <h3 class="footer-col__title">规格</h3>
+        <ul class="footer-col__links">
+          <li><a href="https://github.com/wlingze/muxterm/blob/main/docs/WORKSPACE.md" class="footer-col__link" rel="noreferrer">工作区模型</a></li>
+          <li><a href="https://github.com/wlingze/muxterm/blob/main/docs/SURFACE.md" class="footer-col__link" rel="noreferrer">Surface 定律</a></li>
+          <li><a href="https://github.com/wlingze/muxterm/blob/main/docs/RUNTIME.md" class="footer-col__link" rel="noreferrer">Runtime trait</a></li>
+        </ul>
+      </div>
+
+      <div class="footer-col">
+        <h3 class="footer-col__title">社区</h3>
+        <ul class="footer-col__links">
+          <li><a href="https://github.com/wlingze/muxterm" class="footer-col__link" rel="noreferrer">GitHub 仓库</a></li>
+          <li><a href="https://github.com/wlingze/muxterm/releases" class="footer-col__link" rel="noreferrer">发布</a></li>
+          <li><a href="https://github.com/wlingze/muxterm/issues" class="footer-col__link" rel="noreferrer">问题反馈</a></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="container footer-bottom">
+      <span>Muxterm 贡献者</span>
+      <span>MIT 许可证</span>
+    </div>
+  </footer>
+
+  <script src="../assets/vendor/marked.min.js"></script>
+  <script src="../assets/app.js"></script>
+</body>
+</html>

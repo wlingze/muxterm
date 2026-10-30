@@ -4,7 +4,9 @@
   <img src="assets/muxterm-logo-b-wide.svg" alt="Muxterm logo" width="180">
 </p>
 
-日常使用的跨平台原生终端，原生集成 tmux / Herdr，并可按 Project 组织本地和远程工作。
+把 tmux / Herdr / 本地 shell 收成工作区的跨平台终端工作台，原生集成 tmux / Herdr，并可按 Project 组织本地和远程工作。
+
+官网：[`website/`](website/)（GitHub Pages，支持中英文与黑白主题）· 使用手册：[`docs/USER-GUIDE.md`](docs/USER-GUIDE.md)
 
 产品层级是 **Workspace = Runtime(Transport) + path**。Linux（GTK4）、macOS（Swift）、TUI、CLI 都是 frontend，只经共享 Rust Core 的 C FFI。详见 [PRODUCT.md](PRODUCT.md)。目录见 [docs/PROJECT-STRUCTURE.md](docs/PROJECT-STRUCTURE.md)。
 
@@ -14,29 +16,34 @@
 ## 功能概览
 
 - **Runtime × Transport**：shell / tmux / herdr 与 local / ssh 独立组合，不是手写 `LocalTmux` 四种 mode
+- **复用器即工作区**：每个 tmux session、Herdr workspace 进入 WorkspacePool，保留原生 Tab / Pane 拓扑
 - **Tab / Pane**：每个 Workspace 同一套拓扑；tmux window → Tab，tmux pane → Pane
 - **本地与远程**：local 或 `ssh <alias>`；同一 SSH host 复用一条 TargetConnection
+- **端口感知与转发**：SSH 工作区扫描远端监听端口，一键转发到 localhost，可选 LAN 访问（macOS 前端）
 - **Project / Worktree / 模板**：项目清单、git worktree 联动、新建会话时应用 WorkspaceTemplate
-- **命令面板**：VSCode 风格（默认 `Alt+P` / macOS Command+P）
+- **Activity / Attention**：commands / agents / attention 三条 lane；后台 agent 等待输入时侧栏可见
+- **QuickConnect / 命令面板**：默认 `Alt+P` / `Cmd+P` 打开 QuickConnect，`Alt+Shift+P` / `Cmd+Shift+P` 打开命令面板
 - **可配置**：单一 `config.toml`（字体、主题、快捷键、Projects、templates）
+- **客户端更新**：stable / beta / alpha 通道，内置下载、SHA-256 校验、原子安装
 
-## 截图
+## 官网与界面预览
 
-截图请放在 [`assets/screenshots/`](assets/screenshots/)（当前仓库占位说明见该目录）。
+官网在 [`website/`](website/)，是纯静态页面，支持中英文与黑白主题，可直接打开或用本地 HTTP 预览：
 
-建议文件名：
-
-| 文件 | 说明 |
-|------|------|
-| `overview.png` | 主界面：侧栏 + tab 栏 + pane 分割 |
-| `command-palette.png` | 命令面板 |
-| `ssh-connect.png` | SSH 远程连接流程 |
-
-添加截图后，可在本节引用，例如：
-
-```markdown
-![主界面](assets/screenshots/overview.png)
+```bash
+python3 -m http.server 8000 --bind 0.0.0.0 --directory website
+# 打开 http://127.0.0.1:8000/
 ```
+
+官网首页包含可交互的 Workspace / Tab / Pane 预览，以及真实 macOS 应用截图（工作台、
+Agents 聚合、Shells 聚合，各有亮/暗两套，使用模拟会话数据）。截图区域可在页面内切换主题，
+默认跟随整页主题。安装、Runtime、端口转发、
+快捷键和下载也在首页；文档页除快速上手外，还把仓库 `docs/` 的完整参考渲染在浏览器里。
+
+真实用户会话截图目录 [`assets/screenshots/`](assets/screenshots/) 可能包含个人内容，仍不默认提交；
+官网使用的截图由 `src/frontend/macos/AppE2ETests/WebsiteScreenshotE2ETests.swift` 与
+`WebsiteGalleryE2ETests.swift` 在隔离 tmux socket / `ZDOTDIR` 上生成，细节见
+[`website/README.md`](website/README.md)。
 
 ## 依赖环境
 
@@ -82,6 +89,15 @@ sudo apt-get install -y build-essential pkg-config \
 
 每个产物附带 `.sha256` 校验文件；Release 同时发布 `latest.json`（内置更新读取的清单）。
 资产文件名同时保留带版本号的一份（如 `muxterm-macos-arm64-v1.2.3.dmg`）。
+
+直接下载 stable（`latest`）：
+
+- macOS ARM64：[`muxterm-macos-arm64.dmg`](https://github.com/wlingze/muxterm/releases/latest/download/muxterm-macos-arm64.dmg)
+- Linux x86_64：[`muxterm-gtk-linux-x86_64.tar.gz`](https://github.com/wlingze/muxterm/releases/latest/download/muxterm-gtk-linux-x86_64.tar.gz)
+
+macOS 发布包使用 ad-hoc 签名，未经过 Apple 公证；首次启动若被 Gatekeeper 拦截，
+请在 **系统设置 → 隐私与安全性** 允许该应用。Linux 包在 ubuntu-latest 上构建；
+目标机 glibc 较旧时请从源码构建。
 
 ### 客户端更新
 
@@ -183,31 +199,39 @@ cp configs/config.example.toml ~/.config/muxterm/config.toml
 - `[update]` — 客户端更新（`auto_check`、`manifest_url`）
 
 权威字段见 [`docs/CONFIG.md`](docs/CONFIG.md)。Runtime / Transport **不直接读**配置文件；值经 WorkspaceSpec 或 provider 参数注入。
+用户视角的安装、QuickConnect、SSH/Herdr 与排障见 [`docs/USER-GUIDE.md`](docs/USER-GUIDE.md)。
 
 ## 使用方法
+
+完整安装、QuickConnect、SSH、Herdr、配置和排障见 [`docs/USER-GUIDE.md`](docs/USER-GUIDE.md)。
 
 `muxterm gui` 以当前系统 GUI 呈现已打开的 Workspace。`muxterm tui` 在终端里做同一件事。无 subcommand 时是 CLI。
 
 ### 默认快捷键
 
-| 快捷键 | 作用 |
-|--------|------|
-| `Alt+N` | 新 Tab |
-| `Alt+T` | 新本地 shell tab |
-| `Alt+D` | 水平分割 pane |
-| `Alt+Shift+D` | 垂直分割 pane |
-| `Alt+1` … `Alt+9` | 切换到第 N 个 tab |
-| `Alt+0` | 最后一个 tab |
-| `Alt+[` / `Alt+]` | 上一个 / 下一个 pane |
-| `Alt+R` | Pane 切换器（模糊搜索） |
-| `Alt+P` | 命令面板（macOS 为 Command+P） |
-| `Alt+Shift+Q` | 退出 |
+`primary_key = "auto"` 时，Linux 解析为 `Alt`，macOS 解析为 `Command`。
 
-Linux 的 `primary_key = "auto"` 解析为 Alt；macOS 解析为 Command。见 [`docs/CONFIG.md`](docs/CONFIG.md) §5。
+| 动作 | Linux | macOS |
+|------|-------|-------|
+| QuickConnect | `Alt+P` | `Cmd+P` |
+| 命令面板 | `Alt+Shift+P` | `Cmd+Shift+P` |
+| 新窗口 | `Alt+N` | `Cmd+N` |
+| 新本地 shell tab | `Alt+T` | `Cmd+T` |
+| 水平分割 pane | `Alt+S` | `Cmd+D` |
+| 垂直分割 pane | `Alt+V` | `Cmd+S` |
+| 上一个 / 下一个 pane | `Alt+[` / `Alt+]` | `Cmd+[` / `Cmd+]` |
+| 第 N 个 tab | `Alt+1` … `Alt+9` | `Cmd+1` … `Cmd+9` |
+| 最后一个 tab | `Alt+0` | `Cmd+0` |
+| 搜索 Pane | 命令面板 → Search panes | `Cmd+F` |
+| 复制 / 粘贴 | `Ctrl+Shift+C` / `Ctrl+Shift+V` | `Cmd+C` / `Cmd+V` |
+| 退出 | `Ctrl+Q` | `Cmd+Q` |
 
-### 命令面板与打开
+Linux 仍保留兼容绑定：`Alt+D` = 垂直分割，`Alt+Shift+D` = 水平分割。
+完整 Action ID 与覆盖方式见 [`docs/CONFIG.md`](docs/CONFIG.md) §5。
 
-1. 打开命令面板
+### QuickConnect 与打开
+
+1. `Alt+P` / `Cmd+P` 打开 QuickConnect
 2. 从 Candidate 列表选 Project / Worktree / Existing / Recent
 3. Core 解析成 WorkspaceSpec 并打开；frontend 不手写 spec
 4. 已在池里的 Workspace 点击即切换可见 Scene，不重连
@@ -234,7 +258,8 @@ Options:
 muxterm -L muxterm list-workspaces
 ```
 
-`-s` 是工作区名，不是 tmux `$N`。不要对用户默认 server 跑 `kill-session`。
+`-L` 是 tmux socket 名。其他子命令参数以 `muxterm <cmd> --help` 为准。
+不要对用户默认 server 跑 `kill-session` / `kill-server`。
 
 ## 项目结构
 
@@ -249,6 +274,7 @@ muxterm/
 ├── configs/
 ├── tests/
 ├── docs/
+├── website/                   # 官网（静态 HTML/CSS/JS，GitHub Pages）
 ├── PRODUCT.md
 ├── ARCHITECTURE.md
 ├── TASKS.md
@@ -261,11 +287,12 @@ muxterm/
 
 开始前建议阅读：
 
-1. [`PRODUCT.md`](PRODUCT.md) — 产品目标
-2. [`docs/WORKSPACE.md`](docs/WORKSPACE.md) — 产品树与打开路径
-3. [`docs/FRONTEND.md`](docs/FRONTEND.md) — 前端 Scene / 页面
-4. [`TASKS.md`](TASKS.md) — 施工顺序
-5. [`AGENTS.md`](AGENTS.md) — commit / 测试 / tmux 安全
+1. [`docs/USER-GUIDE.md`](docs/USER-GUIDE.md) — 安装、使用、配置与排障
+2. [`PRODUCT.md`](PRODUCT.md) — 产品目标
+3. [`docs/WORKSPACE.md`](docs/WORKSPACE.md) — 产品树与打开路径
+4. [`docs/FRONTEND.md`](docs/FRONTEND.md) — 前端 Scene / 页面
+5. [`TASKS.md`](TASKS.md) — 施工顺序
+6. [`AGENTS.md`](AGENTS.md) — commit / 测试 / tmux 安全
 
 常用命令：
 
@@ -290,6 +317,7 @@ CI 按职责和路径分流（仅 `main` push / 到 `main` 的 PR，避免 featu
 - 核心共享检查：[`ci.yml`](.github/workflows/ci.yml)
 - Linux 平台检查：[`linux.yml`](.github/workflows/linux.yml)
 - macOS 平台检查：[`macos.yml`](.github/workflows/macos.yml)
+- 官网部署：[`pages.yml`](.github/workflows/pages.yml)（push `main` 且改动 `website/`，或手动触发）
 - Release workflow [`release.yml`](.github/workflows/release.yml) 保持 tag / 手动触发，独立于 PR CI
 
 稳定 aggregate check 名称：`core / required`、`four-mode / aggregate`、`linux / required`、`macos / required`。由于 Linux/macOS workflow 使用路径触发器，主分支保护应按仓库的路径规则集/required workflow 能力配置平台检查；不要把未触发路径的 `linux / required` 或 `macos / required` 当作所有 PR 都必须出现的单一全局 status。
