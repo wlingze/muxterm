@@ -222,6 +222,8 @@ int muxterm_workspace_get_layout(struct MuxtermHandle* h, const char* workspace_
 // ── 搜索 / 注意力 / 历史（W14/W16 跨平台契约）──
 char* muxterm_search_all(struct MuxtermHandle* h, const char* query);
 char* muxterm_attention_snapshot(struct MuxtermHandle* h);
+// 注意力状态指纹：前端每帧只查这个值，没变就不拉整池快照 JSON。
+uint64_t muxterm_attention_revision(struct MuxtermHandle* h);
 char* muxterm_activity_snapshot_json(struct MuxtermHandle* h);
 char* muxterm_activity_take_events_json(struct MuxtermHandle* h);
 int muxterm_attention_configure_json(struct MuxtermHandle* h, const char* config_json);

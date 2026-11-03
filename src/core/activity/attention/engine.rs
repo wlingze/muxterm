@@ -892,6 +892,36 @@ impl<C: Clock> AttentionEngine<C> {
         let _ = self.clock.now();
     }
 
+    /// 注意力状态的廉价指纹：前端每帧只查这个值，没变就不拉整池快照。
+    ///
+    /// 只读当前字段，不做 JSON 序列化、不分配字符串。投影状态（
+    /// `listed_command_status` / `muted`）也参与哈希：它们会随 `now`
+    /// 变化，只用原始字段会让「Working 短暂显示为 Idle」这类时间投影
+    /// 永远不刷新。
+    pub fn fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+
+        let now = self.clock.now();
+        let mut acc: u64 = 0;
+        for pane in self.panes.values() {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            pane.workspace_id.hash(&mut hasher);
+            pane.pane_id.hash(&mut hasher);
+            listed_command_status(pane, now).hash(&mut hasher);
+            pane.acknowledged.hash(&mut hasher);
+            pane.mute_until.map(|until| until > now).hash(&mut hasher);
+            pane.last_line.hash(&mut hasher);
+            pane.seq.hash(&mut hasher);
+            pane.process_name.hash(&mut hasher);
+            pane.process_is_agent.hash(&mut hasher);
+            pane.agent_name.hash(&mut hasher);
+            pane.shell_name.hash(&mut hasher);
+            // 各 pane 的和与遍历顺序无关，避免 HashMap 重排造成假变化。
+            acc = acc.wrapping_add(hasher.finish());
+        }
+        acc
+    }
+
     /// 红点 N：mute 未到期且尚未查看的 blocked **工作区**数。
     pub fn blocked_workspace_count(&self) -> usize {
         let now = self.clock.now();
@@ -1091,6 +1121,70 @@ mod tests {
 
     fn clock() -> FakeClock {
         FakeClock::new(Instant::now())
+    }
+
+    #[test]
+    fn fingerprint_tracks_visible_attention_state() {
+        let mut e = AttentionEngine::new(AttentionConfig::default(), clock());
+        e.apply("ws", 1, &[], "first", 1);
+        let baseline = e.fingerprint();
+        // 没有任何变化：指纹必须稳定，否则前端会每帧重新拉整池快照。
+        assert_eq!(baseline, e.fingerprint());
+
+        // 同一内容、新 seq（重新打印最后一行）也要变。
+        e.apply("ws", 1, &[], "first", 2);
+        let seq_changed = e.fingerprint();
+        assert_ne!(baseline, seq_changed);
+
+        // 进入 Blocked：红点与侧栏必须刷新。
+        e.apply(
+            "ws",
+            1,
+            &[AttentionSignal::AttentionRequest {
+                source: AttentionSource::Bel,
+            }],
+            "need input",
+            3,
+        );
+        let blocked = e.fingerprint();
+        assert_ne!(seq_changed, blocked);
+
+        // 确认已读：状态回 Idle，指纹再变。
+        e.acknowledge("ws", 1);
+        assert_ne!(blocked, e.fingerprint());
+    }
+
+    #[test]
+    fn fingerprint_follows_projected_time_state() {
+        // mute 到期是时间投影：只哈希 mute_until 会让面板停在静音状态。
+        let c = clock();
+        let mut e = AttentionEngine::new(AttentionConfig::default(), c.clone());
+        e.apply(
+            "ws",
+            1,
+            &[AttentionSignal::AttentionRequest {
+                source: AttentionSource::Bel,
+            }],
+            "need input",
+            1,
+        );
+        e.mute_for("ws", 1, Duration::from_secs(5));
+        let muted = e.fingerprint();
+        assert_eq!(muted, e.fingerprint());
+        c.advance(Duration::from_secs(6));
+        assert_ne!(muted, e.fingerprint());
+    }
+
+    #[test]
+    fn fingerprint_ignores_hashmap_order() {
+        let mut e = AttentionEngine::new(AttentionConfig::default(), clock());
+        for pane in 1..=8u32 {
+            e.apply("ws", pane, &[], &format!("line {pane}"), 1);
+        }
+        let first = e.fingerprint();
+        // 重新插入同一 pane 不改变任何可见字段，指纹不能因此跳变。
+        e.apply("ws", 3, &[], "line 3", 1);
+        assert_eq!(first, e.fingerprint());
     }
 
     #[test]

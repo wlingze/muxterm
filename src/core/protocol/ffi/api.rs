@@ -6,10 +6,11 @@ pub use super::functions::activity::{
 };
 pub use super::functions::attention::{
     muxterm_attention_acknowledge, muxterm_attention_configure_json, muxterm_attention_mute,
-    muxterm_attention_on_became_visible, muxterm_attention_set_process_name,
-    muxterm_attention_snapshot, muxterm_attention_take_notifications,
-    muxterm_workspace_attention_acknowledge, muxterm_workspace_attention_mute,
-    muxterm_workspace_attention_on_became_visible, muxterm_workspace_attention_set_process_name,
+    muxterm_attention_on_became_visible, muxterm_attention_revision,
+    muxterm_attention_set_process_name, muxterm_attention_snapshot,
+    muxterm_attention_take_notifications, muxterm_workspace_attention_acknowledge,
+    muxterm_workspace_attention_mute, muxterm_workspace_attention_on_became_visible,
+    muxterm_workspace_attention_set_process_name,
 };
 pub use super::functions::catalog::{
     muxterm_candidates_json, muxterm_open_json, muxterm_workspace_open_target_json,

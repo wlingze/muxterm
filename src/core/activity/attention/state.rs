@@ -8,7 +8,9 @@
 //! - AttentionRequest 幂等；清早了会自愈（Idle + AttentionRequest → Blocked）
 
 /// Pane 注意力状态。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `Hash`：前端按廉价指纹判断要不要拉整池快照，状态必须可哈希。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PaneStatus {
     Unknown,
     Working,

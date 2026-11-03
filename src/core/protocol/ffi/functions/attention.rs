@@ -45,6 +45,38 @@ fn workspace_replica_id(handle: &MuxtermHandle, workspace_id: *const c_char) -> 
         .map(|_| workspace_id.replica_id())
 }
 
+/// 注意力状态的廉价指纹。
+///
+/// 前端每帧只调这个接口（返回 u64，不做 JSON 序列化）；指纹没变就不
+/// 需要拉整池快照 JSON。快照里包含 workspace 展示名/路径，所以池的
+/// 身份也参与哈希。
+///
+/// # Safety
+/// `h` 是有效且未被释放的 handle。
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_attention_revision(h: *mut MuxtermHandle) -> u64 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() {
+            return 0;
+        }
+        attention_revision(&mut *h)
+    }))
+    .unwrap_or(0)
+}
+
+fn attention_revision(handle: &mut MuxtermHandle) -> u64 {
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    handle.activity.attention.fingerprint().hash(&mut hasher);
+    for workspace in handle.pool().list() {
+        workspace.id().replica_id().hash(&mut hasher);
+        workspace.name().hash(&mut hasher);
+        workspace.id().path.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
 /// Return the current attention snapshot as JSON.
 ///
 /// # Safety
@@ -57,16 +89,17 @@ pub unsafe extern "C" fn muxterm_attention_snapshot(h: *mut MuxtermHandle) -> *m
         }
         let handle = &mut *h;
         handle.activity.attention.decay_idle_agents();
-        let workspaces: Vec<serde_json::Value> = handle
-            .activity
-            .attention
-            .snapshot()
+        let attention = handle.activity.attention.snapshot();
+        // 池查询是一次整体快照；放进 per-workspace 循环会变成 O(N²)。
+        let listed = handle.pool().list();
+        let by_id: std::collections::HashMap<String, &crate::workspace::Workspace> = listed
+            .iter()
+            .map(|workspace| (workspace.id().replica_id(), *workspace))
+            .collect();
+        let workspaces: Vec<serde_json::Value> = attention
             .into_iter()
             .map(|ws| {
-                let listed = handle.pool().list();
-                let found = listed
-                    .iter()
-                    .find(|w| w.id().replica_id() == ws.workspace_id);
+                let found = by_id.get(&ws.workspace_id).copied();
                 let path = found
                     .and_then(|w| {
                         w.resolved_target()

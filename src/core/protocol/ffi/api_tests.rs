@@ -535,6 +535,104 @@ fn process_fixture(pane: u32, name: &str) -> StateChange {
 }
 
 #[test]
+fn ffi_attention_revision_is_stable_until_attention_changes() {
+    let h = muxterm_catalog_new();
+    unsafe {
+        // 空池：指纹也必须是确定的，重复调用不能跳变。
+        assert_eq!(muxterm_attention_revision(h), muxterm_attention_revision(h));
+
+        let id = WorkspaceId::new("local", None, "revision-fixture", "tmux", "repo");
+        let before = muxterm_attention_revision(h);
+        poll_attention_fixture(h, &id, vec![process_fixture(1, "zsh")]);
+        let with_pane = muxterm_attention_revision(h);
+        assert_ne!(before, with_pane, "池变化必须改变指纹");
+        assert_eq!(with_pane, muxterm_attention_revision(h));
+
+        let snapshot = poll_attention_fixture(
+            h,
+            &id,
+            vec![StateChange::PaneAgentChanged {
+                pane: PaneId(1),
+                agent: Some(Box::new(PaneAgentInfo {
+                    terminal_id: None,
+                    name: Some("codex".into()),
+                    kind: Some("codex".into()),
+                    title: Some("Waiting for input".into()),
+                    terminal_title: None,
+                    terminal_title_stripped: None,
+                    display_name: Some("Codex".into()),
+                    status: PaneAgentStatus::Blocked,
+                    screen_detection_skipped: false,
+                    state_labels: BTreeMap::new(),
+                    tokens: BTreeMap::new(),
+                    session: None,
+                    focused: false,
+                    launch_pending: false,
+                    interactive_ready: true,
+                    state_change_seq: 3,
+                    cwd: Some("/repo".into()),
+                    foreground_cwd: None,
+                    revision: 3,
+                })),
+                initial: false,
+            }],
+        );
+        assert_eq!(snapshot["workspaces"][0]["panes"][0]["status"], "blocked");
+        let blocked = muxterm_attention_revision(h);
+        assert_ne!(with_pane, blocked, "状态变化必须改变指纹");
+
+        // 确认已读：状态回 Idle，指纹再变，前端不需要再拉快照就能刷新。
+        assert_eq!(muxterm_attention_acknowledge(h, 1), 0);
+        assert_ne!(blocked, muxterm_attention_revision(h));
+
+        muxterm_free(h);
+    }
+}
+
+#[test]
+#[ignore = "manual performance comparison"]
+fn attention_snapshot_vs_revision_cost() {
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    let h = muxterm_catalog_new();
+    unsafe {
+        let id = WorkspaceId::new("local", None, "perf", "tmux", "repo");
+        poll_attention_fixture(h, &id, vec![process_fixture(1, "zsh")]);
+        for pane in 2..=6 {
+            poll_attention_fixture(h, &id, vec![process_fixture(pane, "zsh")]);
+        }
+
+        let rounds = 20_000u32;
+        let start = Instant::now();
+        for _ in 0..rounds {
+            black_box(muxterm_attention_revision(h));
+        }
+        let revision = start.elapsed();
+
+        let snapshot_rounds = 2_000u32;
+        let start = Instant::now();
+        for _ in 0..snapshot_rounds {
+            let raw = muxterm_attention_snapshot(h);
+            muxterm_free_string(raw);
+        }
+        let snapshot = start.elapsed();
+
+        let revision_us = revision.as_secs_f64() * 1e6 / f64::from(rounds);
+        let snapshot_us = snapshot.as_secs_f64() * 1e6 / f64::from(snapshot_rounds);
+        println!(
+            "attention revision: {revision_us:.2}us/call -> {:.2}% CPU at 60Hz",
+            revision_us * 60.0 / 1e4
+        );
+        println!(
+            "attention snapshot: {snapshot_us:.2}us/call -> {:.2}% CPU at 60Hz",
+            snapshot_us * 60.0 / 1e4
+        );
+        muxterm_free(h);
+    }
+}
+
+#[test]
 fn ffi_agent_process_after_screen_classifies_without_more_output() {
     let h = muxterm_catalog_new();
     unsafe {
