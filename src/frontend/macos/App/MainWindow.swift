@@ -413,7 +413,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         window.standardWindowButton(.closeButton)?.isHidden = true
         window.standardWindowButton(.miniaturizeButton)?.isHidden = true
         window.standardWindowButton(.zoomButton)?.isHidden = true
-        window.minSize = NSSize(width: 480, height: 320)
+        window.minSize = NSSize(
+            width: MainSplitLayoutPolicy.minimumWindowWidth,
+            height: 320
+        )
         window.collectionBehavior.insert(.fullScreenPrimary)
         window.center()
         window.contentView = content
@@ -1600,15 +1603,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         sidebarController.view = workspaceSidebar
         let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebarController)
         sidebarItem.canCollapse = true
-        sidebarItem.minimumThickness = 200
-        sidebarItem.maximumThickness = 480
+        sidebarItem.minimumThickness = MainSplitLayoutPolicy.sidebarMinimumThickness
+        sidebarItem.maximumThickness = MainSplitLayoutPolicy.sidebarMaximumThickness
         sidebarItem.preferredThicknessFraction = 0.25
         sidebarItem.holdingPriority = NSLayoutConstraint.Priority(260)
 
         let contentController = NSViewController()
         contentController.view = content
         let contentItem = NSSplitViewItem(viewController: contentController)
-        contentItem.minimumThickness = 300
+        contentItem.minimumThickness = MainSplitLayoutPolicy.contentMinimumThickness
         contentItem.holdingPriority = NSLayoutConstraint.Priority(200)
 
         mainSplitController.splitView.isVertical = true

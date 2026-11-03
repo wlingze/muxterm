@@ -1040,6 +1040,26 @@ public enum ClientGridHysteresis {
     }
 }
 
+/// 主窗口里 sidebar / content 两条 split item 的几何约束。
+///
+/// 三个数字必须满足 `sidebar + divider + content == minimumWindowWidth`。
+/// 不满足时，split 的最小厚度会在布局求解里顶宽主窗口：窗口明明被用户
+/// 拉到 500pt，attach 一次就被顶成 501/549pt（dogfood）。`NSSplitViewItem`
+/// 的 thickness 约束只有 200/260 的 holdingPriority，低于 NSWindow 保持
+/// 当前宽度的 500，所以真正的上界必须由自己对齐。
+public enum MainSplitLayoutPolicy {
+    /// 主窗口允许的最小宽度（`window.minSize`）。
+    public static let minimumWindowWidth: CGFloat = 480
+    /// 侧栏分隔条。`NSSplitViewController` 用 1pt 的 divider。
+    public static let dividerThickness: CGFloat = 1
+    /// 侧栏最小厚度：再窄就放不下 Workspace 名字。
+    public static let sidebarMinimumThickness: CGFloat = 200
+    public static let sidebarMaximumThickness: CGFloat = 480
+    /// 终端区最小宽度：窗口地板减去侧栏与分隔条后的余量。
+    public static let contentMinimumThickness =
+        minimumWindowWidth - sidebarMinimumThickness - dividerThickness
+}
+
 /// pane 格子的唯一写入者。
 ///
 /// Herdr / shell 的格子由 allocation 决定。SwiftTerm 的 `processSizeChange`

@@ -2,6 +2,7 @@ import AppKit
 import XCTest
 
 @testable import MuxtermAppLib
+import MuxtermChrome
 
 /// 用户报告：用键盘切 tab / 工作区时，主窗口的尺寸和位置会莫名其妙地变。
 ///
@@ -148,6 +149,43 @@ final class WindowFrameStabilityE2ETests: XCTestCase {
       app.window?.frame,
       before,
       "Cmd-2 切 tab 不能改窗口 frame：actual=\(describe(app.window?.frame))"
+    )
+  }
+
+  /// 隐藏的断线卡片曾经用 required 的 `width >= 300` 参与 Auto Layout，
+  /// 把内容区顶到 348pt，于是 500pt 的主窗口在 attach 后被顶成 549pt。
+  /// 窗口的地板必须由 split 的三个常数共同决定，隐藏浮层不能参与。
+  func testCompactWindowIsNotWidenedByHiddenOverlays() throws {
+    XCTAssertEqual(
+      MainSplitLayoutPolicy.sidebarMinimumThickness
+        + MainSplitLayoutPolicy.dividerThickness
+        + MainSplitLayoutPolicy.contentMinimumThickness,
+      MainSplitLayoutPolicy.minimumWindowWidth,
+      "split 最小厚度之和必须等于窗口地板，否则布局求解会顶宽窗口"
+    )
+
+    let painted = PaintedWorkspace(label: "frame-hidden-overlay")
+    let app = try AppE2E.attachWindow(socket: painted.socket, session: painted.session)
+    defer { app.testShutdown() }
+    XCTAssertTrue(app.waitReady(minTabs: 2, minLeaves: 3))
+
+    let requested = AppE2E.fixedWindowFrame(width: 500, height: 320)
+    app.window?.setFrame(requested, display: true)
+    app.window?.makeKeyAndOrderFront(nil)
+    AppE2E.pump(400)
+    app.testPollOnce()
+    XCTAssertEqual(
+      app.window?.frame,
+      requested,
+      "隐藏的断线卡片不能把紧凑窗口顶宽：actual=\(describe(app.window?.frame))"
+    )
+    // 侧栏展开后终端区变窄，但窗口不能跟着变。
+    app.setWorkspaceSidebarOpenForTest(true)
+    AppE2E.pump(300)
+    XCTAssertEqual(
+      app.window?.frame,
+      requested,
+      "展开侧栏不能改窗口尺寸：actual=\(describe(app.window?.frame))"
     )
   }
 
