@@ -276,7 +276,12 @@ pub fn foreground_process_command(pid: u32) -> Option<String> {
         let argv = read_cmdline(foreground_pid)?;
         format_process_command(&argv)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        foreground_process_command_via_libproc(pid)
+            .or_else(|| foreground_process_command_via_ps(pid))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         foreground_process_command_via_ps(pid)
     }
@@ -294,6 +299,104 @@ fn foreground_process_command_via_ps(pid: u32) -> Option<String> {
         .unwrap_or(pid);
     let args = ps_column(tpgid, "args")?;
     format_process_command_line(&args)
+}
+
+/// macOS：`libproc`/`sysctl` 直接读 tpgid + argv，不再 fork 两个 `ps`。
+///
+/// 每个 pane 一个 observer 线程、每 500ms 采一次；用 `ps` 就是每秒 4 次
+/// fork/exec。采样中可见的 `__posix_spawn` 叶帧、以及 `top` 里的子进程
+/// churn 都来自这里。失败时回退到 `ps`，保持行为不变。
+#[cfg(target_os = "macos")]
+fn foreground_process_command_via_libproc(pid: u32) -> Option<String> {
+    let tpgid = process_foreground_pid(pid)
+        .filter(|value| *value != 0)
+        .unwrap_or(pid);
+    let argv = process_argv(tpgid).or_else(|| process_argv(pid))?;
+    format_process_command(&argv).or_else(|| foreground_process_command_via_ps(pid))
+}
+
+/// `PROC_PIDTBSDINFO.e_tpgid`：pane 首进程的前台进程组。
+#[cfg(target_os = "macos")]
+fn process_foreground_pid(pid: u32) -> Option<u32> {
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    let written = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            &mut info as *mut _ as *mut libc::c_void,
+            size,
+        )
+    };
+    if written < size {
+        return None;
+    }
+    Some(info.e_tpgid)
+}
+
+/// `sysctl(KERN_PROCARGS2)` → argv。不读 env（不需要且可能很大）。
+#[cfg(target_os = "macos")]
+fn process_argv(pid: u32) -> Option<Vec<String>> {
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
+    // 16 KiB 足够 agent/ TUI 的 argv；超长 argv（整个 prompt 当参数）
+    // 交给 `ps` 回退路径，不在这里反复放大缓冲。
+    let mut buffer = vec![0u8; 16 * 1024];
+    let mut size = buffer.len() as libc::size_t;
+    let ok = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            mib.len() as libc::c_uint,
+            buffer.as_mut_ptr() as *mut libc::c_void,
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if ok != 0 {
+        return None;
+    }
+    buffer.truncate(size);
+    parse_procargs2(&buffer)
+}
+
+/// 解析 `KERN_PROCARGS2` 缓冲：`i32 argc` + exec path + NUL 填充 + argc 个 argv。
+/// 纯函数，方便单测。
+#[cfg(target_os = "macos")]
+fn parse_procargs2(buffer: &[u8]) -> Option<Vec<String>> {
+    const MAX_ARGS: usize = 64;
+    if buffer.len() < 4 {
+        return None;
+    }
+    let argc = i32::from_ne_bytes(buffer[..4].try_into().ok()?);
+    if argc <= 0 {
+        return None;
+    }
+    let mut index = 4;
+    while index < buffer.len() && buffer[index] != 0 {
+        index += 1;
+    }
+    // exec path 后是任意多个 NUL 填充，argv[0] 从第一个非 NUL 开始。
+    while index < buffer.len() && buffer[index] == 0 {
+        index += 1;
+    }
+    let mut argv = Vec::new();
+    while argv.len() < (argc as usize).min(MAX_ARGS) && index < buffer.len() {
+        let start = index;
+        while index < buffer.len() && buffer[index] != 0 {
+            index += 1;
+        }
+        if index == start {
+            break;
+        }
+        argv.push(String::from_utf8_lossy(&buffer[start..index]).into_owned());
+        index += 1;
+    }
+    if argv.is_empty() {
+        None
+    } else {
+        Some(argv)
+    }
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -364,7 +467,6 @@ fn parse_foreground_process_group(stat: &str) -> Option<u32> {
     u32::try_from(foreground).ok().filter(|pid| *pid != 0)
 }
 
-#[cfg(target_os = "linux")]
 fn format_process_command(argv: &[String]) -> Option<String> {
     format_process_command_line(&argv.join(" "))
 }
@@ -469,6 +571,43 @@ mod tests {
             command.as_ref().is_some_and(|value| !value.is_empty()),
             "macOS/BSD 必须能用 ps 读到本进程前台 argv，got={command:?}"
         );
+    }
+
+    /// libproc 路径不再 fork `ps`：本进程 argv 必须能直接读出来。
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn libproc_reads_self_argv_without_spawning_ps() {
+        let pid = std::process::id();
+        let argv = process_argv(pid).expect("KERN_PROCARGS2 必须能读到本进程 argv");
+        assert!(!argv.is_empty());
+        assert!(
+            argv[0].contains("muxterm") || argv[0].contains("test"),
+            "argv0={:?}",
+            argv[0]
+        );
+        let command = foreground_process_command_via_libproc(pid);
+        assert!(
+            command.as_ref().is_some_and(|value| !value.is_empty()),
+            "libproc 路径必须能给出前台命令行，got={command:?}"
+        );
+    }
+
+    /// `KERN_PROCARGS2` 布局：argc + exec path + NUL 填充 + argv。
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn parse_procargs2_skips_exec_path_and_padding() {
+        let mut buffer = Vec::new();
+        buffer.extend_from_slice(&3i32.to_ne_bytes());
+        buffer.extend_from_slice(b"/usr/bin/node\0");
+        buffer.extend_from_slice(&[0, 0, 0]);
+        buffer.extend_from_slice(b"node\0/usr/bin/codex\0--flag\0");
+        buffer.extend_from_slice(b"HOME=/Users/test\0");
+        assert_eq!(
+            parse_procargs2(&buffer).unwrap(),
+            vec!["node", "/usr/bin/codex", "--flag"]
+        );
+        assert!(parse_procargs2(&[]).is_none());
+        assert!(parse_procargs2(&0i32.to_ne_bytes()).is_none());
     }
 
     #[test]
