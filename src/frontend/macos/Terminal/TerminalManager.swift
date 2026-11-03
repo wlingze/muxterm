@@ -1128,6 +1128,11 @@ final class TerminalManager: TerminalInputHandler {
             pinToAllocation: pinToAllocation,
             usesClientResize: usesClientResize
         )
+        // pane 的格子不可能超过窗口内容区：缓存树重新挂载时 host 可能还拿着
+        // 上一棵树的像素，直接当格子写回 Runtime 会把 pane 模型撑到 host 外
+        // （dogfood：210 列模型配 93 列 host，提示符只剩前半截）。
+        // 这里用窗口内容区而不是 container：container 本身可能就是错的。
+        let ceiling = container.flatMap { paneGridCeiling(container: $0) }
         for id in paneIds {
             guard let view = views[id] else { continue }
             view.layoutSubtreeIfNeeded()
@@ -1135,7 +1140,11 @@ final class TerminalManager: TerminalInputHandler {
                 let notify = RemainingPaneGridPolicy.shouldNotifyRuntime(
                     usesClientResize: usesClientResize
                 )
-                if view.syncToAllocatedGrid(notifyResize: notify, pinToAllocation: true) {
+                if view.syncToAllocatedGrid(
+                    notifyResize: notify,
+                    pinToAllocation: true,
+                    maxGrid: ceiling
+                ) {
                     expectedPaneSizes[id] = view.renderedGridSize
                 }
             } else {
@@ -1285,11 +1294,105 @@ final class TerminalManager: TerminalInputHandler {
             ?? 1
         let contentSize = (container as? TerminalClientContentSizing)?.terminalClientContentSize
             ?? container.bounds.size
+        // 容器可能被缓存树/侧栏动画短暂撑出窗口，也可能还挂着旧树的像素。
+        // client 格子跟着错，Runtime 就会把 pane 排到可见区域外（模型比
+        // host 宽，字被裁在右边）。可见终端区只能是窗口内容区里的一部分。
+        let windowContentSize = container.window?.contentView?.bounds.size
+        guard ClientGridFitPolicy.isPlausible(
+            container: contentSize,
+            windowContent: windowContentSize
+        ) else {
+            noteClientGridReject(container: contentSize, window: windowContentSize)
+            return nil
+        }
+        let visibleSize = ClientGridFitPolicy.fittedSize(
+            container: contentSize,
+            windowContent: windowContentSize
+        )
+        if visibleSize != contentSize {
+            // 真的夹到了：说明布局把容器撑出窗口。记一笔，否则修的是症状
+            // 而不是原因；日志去重，避免布局抖动刷屏。
+            noteClientGridClamp(container: contentSize, window: windowContentSize)
+        }
+        let grid = MuxTerminalGridMetrics.clientSize(
+            bounds: visibleSize,
+            family: fontFamily,
+            size: fontSize,
+            backingScale: scale,
+            lineSpacing: lineSpacing,
+            columnSpacing: columnSpacing
+        )
+        if Self.clientGridDebugEnabled {
+            let cell = MuxTerminalGridMetrics.cellSizeInPoints(
+                family: fontFamily,
+                size: fontSize,
+                backingScale: scale,
+                lineSpacing: lineSpacing,
+                columnSpacing: columnSpacing
+            )
+            CoreBridge.log(
+                "clientGrid container=\(type(of: container)) bounds=\(container.bounds) "
+                    + "content=\(contentSize) visible=\(visibleSize) "
+                    + "windowContent=\(String(describing: windowContentSize)) "
+                    + "window=\(String(describing: container.window?.frame)) "
+                    + "font=\(fontFamily)@\(fontSize) line=\(lineSpacing) col=\(columnSpacing) "
+                    + "cell=\(cell) scale=\(scale) grid=\(String(describing: grid))"
+            )
+        }
+        return grid
+    }
+
+    private static let clientGridDebugEnabled =
+        ProcessInfo.processInfo.environment["MUXTERM_DEBUG_CLIENT_GRID"] != nil
+
+    /// 夹取去重：同一对尺寸只记一次。
+    private func noteClientGridClamp(container: NSSize, window: NSSize?) {
+        let key = "\(Int(container.width))x\(Int(container.height))/"
+            + "\(Int(window?.width ?? -1))x\(Int(window?.height ?? -1))"
+        guard key != lastClientGridClampKey else { return }
+        lastClientGridClampKey = key
+        CoreBridge.log(
+            "client grid clamped: container=\(container) windowContent="
+                + "\(String(describing: window))",
+            level: "warn"
+        )
+    }
+
+    private var lastClientGridClampKey: String?
+
+    /// 不合理测量只记一次，避免布局抖动刷屏。
+    private func noteClientGridReject(container: NSSize, window: NSSize?) {
+        let key = "reject:\(Int(container.width))x\(Int(container.height))/"
+            + "\(Int(window?.width ?? -1))x\(Int(window?.height ?? -1))"
+        guard key != lastClientGridRejectKey else { return }
+        lastClientGridRejectKey = key
+        CoreBridge.log(
+            "client grid rejected: container=\(container) windowContent="
+                + "\(String(describing: window)) — 容器不属于当前窗口",
+            level: "warn"
+        )
+    }
+
+    private var lastClientGridRejectKey: String?
+
+    /// 测试用：直接量一次 client 格子（含窗口内容区上界夹取）。
+    func clientGridSizeForTesting(
+        container: NSView,
+        paneIds: Set<UInt32>
+    ) -> (UInt16, UInt16)? {
+        clientGridSize(container: container, paneIds: paneIds)
+    }
+
+    /// 窗口内容区能装下的格子：任何 pane 模型的上界。
+    private func paneGridCeiling(container: NSView) -> (cols: UInt16, rows: UInt16)? {
+        let contentSize = container.window?.contentView?.bounds.size ?? container.bounds.size
         return MuxTerminalGridMetrics.clientSize(
             bounds: contentSize,
             family: fontFamily,
             size: fontSize,
-            backingScale: scale,
+            backingScale: container.window?.backingScaleFactor
+                ?? NSScreen.main?.backingScaleFactor
+                ?? 1,
             lineSpacing: lineSpacing,
             columnSpacing: columnSpacing
         )

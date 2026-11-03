@@ -1223,10 +1223,15 @@ final class MuxTerminalView: TerminalView {
     ///
     /// `pinToAllocation`：换树后 host 像素就是格子（关 pane 放大、split 缩小）。
     /// 默认只放大，缩小仍交给 tmux 尺寸事件。
+    ///
+    /// `maxGrid`：可见终端区的格子。host 在换树瞬间可能还拿着上一棵树的
+    /// 像素，量出来的 allocation 会超过窗口；pane 模型一旦比 host 宽，
+    /// 字就会被裁在右边界。
     @discardableResult
     func syncToAllocatedGrid(
         notifyResize: Bool = false,
-        pinToAllocation: Bool = false
+        pinToAllocation: Bool = false,
+        maxGrid: (cols: UInt16, rows: UInt16)? = nil
     ) -> Bool {
         layoutSubtreeIfNeeded()
         let size = bounds.size
@@ -1236,7 +1241,13 @@ final class MuxTerminalView: TerminalView {
         setFrameSize(size)
         let term = getTerminal()
         guard term.cols >= 2, term.rows >= 1 else { return false }
-        let allocated = allocatedGridSize() ?? (cols: term.cols, rows: term.rows)
+        var allocated = allocatedGridSize() ?? (cols: term.cols, rows: term.rows)
+        let capped = ClientGridFitPolicy.cappedGrid(
+            cols: allocated.cols,
+            rows: allocated.rows,
+            maxGrid: maxGrid
+        )
+        allocated = (cols: capped.cols, rows: capped.rows)
         let target = pinToAllocation
             ? RemainingPaneGridPolicy.treeChangeGrid(
                 allocatedCols: allocated.cols,
