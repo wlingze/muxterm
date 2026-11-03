@@ -25,6 +25,20 @@ final class ZoomE2ETests: XCTestCase {
             return app.testActiveWorkspaceSession() == first.session
                 && Set(app.testLayoutLeafIDs()) == expected
         })
+        // 缓存树恢复后的格子同步是异步的（installCached → scheduleGeometrySync）。
+        // 只等 layout id 会在这个 debounce 之前就返回，读到上一棵树留下的
+        // VT 模型尺寸；必须等到 rendered 跟上 allocation 再断言。
+        XCTAssertTrue(AppE2E.wait(timeout: AppE2E.attachTimeout) {
+            app.testPollOnce()
+            AppE2E.pump(20)
+            return expected.allSatisfy { pane in
+                let surface = app.terminalManager.view(for: pane)
+                guard let allocated = surface.allocatedGridSize() else { return false }
+                let rendered = surface.renderedGridSize
+                return abs(rendered.cols - allocated.cols) <= 2
+                    && abs(rendered.rows - allocated.rows) <= 2
+            }
+        }, "workspace round trip 后 pane 格子没有跟上 host")
         for pane in expected {
             let surface = app.terminalManager.view(for: pane)
             let allocated = try XCTUnwrap(surface.allocatedGridSize())

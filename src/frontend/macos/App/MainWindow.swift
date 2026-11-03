@@ -238,6 +238,19 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private var surfaceCatchUpWorkItem: DispatchWorkItem?
     /// Surface 积压时降低 attention JSON/sidebar 刷新频率。
     private var lastAttentionChromeRefreshAt: TimeInterval = 0
+    /// Core 的注意力指纹。未变化就不重建快照与侧栏（60Hz 轮询的主要成本）。
+    /// 带上 bridge 身份：换 handle 后指纹不可比。
+    private var lastAttentionRevision: (bridge: ObjectIdentifier, revision: UInt64)?
+    /// 上一次发 `becameVisible` 的 pane；只在切 pane 或有新输出时再发。
+    private var lastAttentionVisiblePane: UInt32?
+    /// 更新状态轮询；banner 不需要 60Hz。
+    private var lastUpdateStatusPollAt: TimeInterval = 0
+    /// 用户点过检查/更新后的一小段时间内每拍都看结果，反馈不能等 1 秒。
+    private var updateStatusFastPollUntil: TimeInterval = 0
+    private static let updateStatusPollInterval: TimeInterval = 1.0
+    private static let updateStatusFastPollWindow: TimeInterval = 6.0
+    /// 上一次拉历史刻度的 pane；只在有新输出或切 pane 时刷。
+    private var lastHistoryChromePane: UInt32?
     /// SceneStack：已打开 Workspace 的 scene 从 open 到 close 常驻；
     /// 隐藏 scene 不参与绘制，容量/TTL/memory pressure 只在明确关闭时回收。
     private let sceneStack: SceneStack<WorkspaceScene>
@@ -1616,7 +1629,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
         mainSplitController.splitView.isVertical = true
         mainSplitController.splitView.dividerStyle = .thin
-        mainSplitController.splitView.autosaveName = "muxterm.main.sidebar"
+        // 不做 NSSplitView autosave：它会把上一次进程（甚至其它测试）的
+        // 「侧栏展开 + 宽度」套到新窗口上，让终端内容宽度在启动时就漂
+        // 240pt，client grid / pane 格子也跟着变。侧栏默认收起，由用户
+        // 本次显式打开。
         mainSplitController.splitView.setAccessibilityIdentifier("muxterm.main.split")
         mainSplitController.addSplitViewItem(sidebarItem)
         mainSplitController.addSplitViewItem(contentItem)
@@ -4492,6 +4508,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         content.setLastSeenVisible(false)
         commandTimelineCursor.removeAll()
         commandNavigationPanes.removeAll()
+        // 这些 cache 以 pane id 为 key，但 pane id 只在单个 Workspace 内唯一。
+        // 切 scene 后必须清掉节流游标，否则新 Workspace 的同名 pane 会被跳过
+        // （attention 已读、命令刻度都不会刷新）。
+        lastAttentionVisiblePane = nil
+        lastHistoryChromePane = nil
+        lastAttentionRevision = nil
         viewportOffsets.removeAll()
         paneLatestLineSeqCache.removeAll()
         paneViewportOffsetForSeqCache.removeAll()
@@ -5838,7 +5860,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     /// 更新提醒：Core 推进状态机，这里只取快照并渲染 banner。
     /// 未变化时 `apply` 直接返回，不做布局。
-    private func pollUpdateStatus() {
+    ///
+    /// 每秒查一次就够：这是一次 Core JSON 构造 + Swift JSON 解码，
+    /// 60Hz 每拍都做是没有意义的固定开销。
+    private func pollUpdateStatus(force: Bool = false) {
+        let now = ProcessInfo.processInfo.systemUptime
+        let fast = now < updateStatusFastPollUntil
+        guard force || fast || now - lastUpdateStatusPollAt >= Self.updateStatusPollInterval
+        else { return }
+        lastUpdateStatusPollAt = now
         guard let status = bridge.updateStatus() else { return }
         content.updateBanner.apply(status)
     }
@@ -5862,6 +5892,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     /// 菜单/命令面板的「检查更新」入口。
     @objc func checkForUpdates() {
+        updateStatusFastPollUntil = ProcessInfo.processInfo.systemUptime
+            + Self.updateStatusFastPollWindow
         if let status = bridge.updateCheck() {
             content.updateBanner.apply(status)
         }
@@ -6118,12 +6150,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // 让“刚切走就还没有 PaneBuf”的首轮时序也能建立基线。
         resolvePendingLastSeen()
         retryPendingPanelJump()
-        let surfaceBusy = sceneStack.activeKey
-            .flatMap({ sceneStack.scenes[$0] })?
-            .hasPendingSurfaceWork == true
-            || !surfaceCatchUpScenes.isEmpty
-        refreshAttentionChrome(force: !surfaceBusy)
-        if let activePane = activePaneID {
+        refreshAttentionChrome(force: false)
+        // 历史刻度/命令刻度只在有新输出或切 pane 时变；每帧 4 次 FFI 没必要。
+        if let activePane = activePaneID,
+           lastPaneOutputEventCount > 0 || activePane != lastHistoryChromePane
+        {
+            lastHistoryChromePane = activePane
             refreshHistoryChromeFromCore(for: activePane)
         }
         applyPendingSearchJumpIfReady()
@@ -6240,23 +6272,44 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     ) {
         guard !isClosing else { return }
         let now = ProcessInfo.processInfo.systemUptime
-        if !force,
-           now - lastAttentionChromeRefreshAt
-           < SurfaceEventBatchPolicy.attentionRefreshMinInterval
-        {
-            return
-        }
+        let bridgeIdentity = ObjectIdentifier(bridge)
+        let revision = allowBridgeQueries ? bridge.attentionRevision() : nil
+        let bridgeChanged = lastAttentionRevision?.bridge != bridgeIdentity
+        // 指纹没变 = 快照、侧栏、tab 指示都没有新内容。每帧拉整池 JSON
+        // （Core 端序列化 + Swift 端 decode）是 macOS 上最大的空转成本。
+        let attentionChanged = force
+            || revision == nil
+            || bridgeChanged
+            || revision != lastAttentionRevision?.revision
+        guard AttentionChromeRefreshPolicy.shouldRefresh(
+            force: force,
+            elapsed: now - lastAttentionChromeRefreshAt,
+            attentionChanged: attentionChanged
+        ) else { return }
         lastAttentionChromeRefreshAt = now
+        if let revision {
+            lastAttentionRevision = (bridgeIdentity, revision)
+        }
         // 前台 pane 输出视为已看见：CommandDone 清成 Idle（Linux 同款），
-        // 前台 `sleep && echo` 不弹完成通知。
+        // 前台 `sleep && echo` 不弹完成通知。每帧都发一条 Core 命令只会
+        // 让命令队列空转，所以只在切 pane 或有新输出时发。
         let activePane = lastSnapshot.panes.first(where: \.isActive)?.id
             ?? lastSnapshot.panes.first?.id
-        if allowBridgeQueries, let activePane {
+        if allowBridgeQueries, let activePane,
+           activePane != lastAttentionVisiblePane || lastPaneOutputEventCount > 0
+        {
+            lastAttentionVisiblePane = activePane
             _ = enqueueCoreAttention(
                 workspaceID: activeSceneWorkspaceID,
                 .becameVisible(paneID: activePane),
                 refreshPanel: false
             )
+        }
+        // 已排队的通知与指纹无关（可能在上一拍拿到），必须排空。
+        for slot in sceneStack.scenes.values
+            where slot.visibility != .closed
+        {
+            postAttentionNotifications(slot.takePendingAttentionNotifications())
         }
         // Core 返回的是整个 WorkspacePool 的 attention 快照；EventPump 每拍
         // 把它按 WorkspaceId 分发给各 scene 的 ViewStore，隐藏 scene 也持续更新。
@@ -6266,11 +6319,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         if allowBridgeQueries {
             drainAttentionNotifications(from: bridge)
-        }
-        for slot in sceneStack.scenes.values
-            where slot.visibility != .closed
-        {
-            postAttentionNotifications(slot.takePendingAttentionNotifications())
         }
         let visibleRows = attentionSnapshotForPanel().map {
             AttentionList.rows(from: $0, workspaces: runtimeSidebarItems(), query: "")
