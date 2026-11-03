@@ -109,6 +109,53 @@ final class ChromeE2ETests: XCTestCase {
         )
     }
 
+    /// split view autosave 会把上次运行的「侧栏展开」套到新窗口上，
+    /// 让终端内容宽度在启动时少 240pt，client grid / pane 格子也跟着漂。
+    /// 新窗口必须从收起状态开始，不受残留 autosave 影响。
+    func testFreshWindowIgnoresStaleSidebarAutosave() throws {
+        let key = "NSSplitView Subview Frames muxterm.main.sidebar"
+        let defaults = UserDefaults.standard
+        let previous = defaults.object(forKey: key)
+        defer {
+            if let previous {
+                defaults.set(previous, forKey: key)
+            } else {
+                defaults.removeObject(forKey: key)
+            }
+        }
+        // 模拟上一次进程把侧栏留在展开状态（宽度 240）。
+        defaults.set(
+            [
+                "0.000000, 0.000000, 240.000000, 640.000000, YES, NO",
+                "0.000000, 0.000000, 900.000000, 640.000000, NO, NO",
+            ],
+            forKey: key
+        )
+
+        let bridge = try CoreBridge(backendType: "local")
+        let app = MainWindowController(
+            bridge: bridge,
+            debug: false,
+            quickConnectStore: QuickConnectStore()
+        )
+        defer { app.testShutdown() }
+        guard let mainWindow = app.window else {
+            return XCTFail("主窗口必须存在")
+        }
+        app.showWindow(nil)
+        XCTAssertTrue(app.waitReady())
+        AppE2E.pump(200)
+
+        XCTAssertFalse(app.testSidebarOpen(), "新窗口不得恢复上一次的展开侧栏")
+        let rootView = try XCTUnwrap(mainWindow.contentView)
+        XCTAssertEqual(
+            app.content.frame.width,
+            rootView.bounds.width,
+            accuracy: 1,
+            "收起侧栏后终端内容区必须铺满窗口"
+        )
+    }
+
     func testStatusBarHasLeftCenterRightAndChromeButtons() {
         let bar = StatusBarView(frame: .zero)
         window.contentView = bar

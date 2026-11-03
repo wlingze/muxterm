@@ -933,8 +933,12 @@ extension MainWindowController {
     /// Core 的更新状态快照；banner 的唯一数据来源。
     func testUpdateStatus() -> CoreBridge.UpdateStatus? { bridge.updateStatus() }
 
-    /// 手动检查一次（等价于菜单里的「检查更新」）。
-    func testCheckForUpdates() -> CoreBridge.UpdateStatus? { bridge.updateCheck() }
+    /// 手动检查一次（等价于菜单里的「检查更新」，走同一条生产路径）。
+    @discardableResult
+    func testCheckForUpdates() -> CoreBridge.UpdateStatus? {
+        checkForUpdates()
+        return bridge.updateStatus()
+    }
 
     private static func findView(_ root: NSView?, identifier: String) -> NSView? {
         guard let root else { return nil }

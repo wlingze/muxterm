@@ -274,12 +274,17 @@ final class UpdateBannerLiveE2ETests: XCTestCase {
         _ = app.testCheckForUpdates()
 
         var latest: CoreBridge.UpdateStatus?
+        // 提醒条由事件泵的下一拍按 Core 状态刷新；不能只等 bridge 里的
+        // phase 变了就断言，否则读到的是上一拍还在显示的 “Checking…”。
+        let retryTitle = MuxtermI18n.shared.tr(.updateRetry)
         let failed = AppE2E.wait(timeout: AppE2E.featureTimeout) {
             app.testPollOnce()
             AppE2E.pump(30)
             guard let status = app.testUpdateStatus() else { return false }
             latest = status
             return status.phase == "failed"
+                && app.testUpdateBannerVisible()
+                && app.testUpdateBannerActionTitle() == retryTitle
         }
         let status = try XCTUnwrap(latest)
         XCTAssertTrue(

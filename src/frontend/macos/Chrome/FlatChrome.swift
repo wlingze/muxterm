@@ -777,6 +777,26 @@ public enum SurfaceEventBatchPolicy {
     }
 }
 
+/// 注意力 chrome（状态栏红点 / tab 指示 / 侧栏）刷新门控。
+///
+/// 60Hz 轮询下每帧都序列化整池 attention JSON、Swift 端 decode 再重建
+/// 侧栏，是 macOS 上最大的空转成本。因此：
+/// - `force`：用户动作/切页直接刷新；
+/// - 否则先过最小间隔节流；
+/// - 再要求 Core 的注意力指纹真的变了（`attentionChanged`）。
+public enum AttentionChromeRefreshPolicy {
+    public static func shouldRefresh(
+        force: Bool,
+        elapsed: TimeInterval,
+        attentionChanged: Bool,
+        minInterval: TimeInterval = SurfaceEventBatchPolicy.attentionRefreshMinInterval
+    ) -> Bool {
+        if force { return true }
+        guard elapsed >= max(0, minInterval) else { return false }
+        return attentionChanged
+    }
+}
+
 /// 同一 pane 连续 PaneOutput 合并策略：超限时保留最新一段，而不是整段
 /// 丢弃并请求权威 snapshot（后者在 Cursor 主屏 redraw 中途 capture 会花屏）。
 public enum SurfaceOutputCoalescePolicy {

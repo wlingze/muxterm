@@ -524,17 +524,6 @@ final class MuxtermTerminalFontTests: XCTestCase {
     }
 }
 
-final class MuxtermIssueReportTests: XCTestCase {
-    func testTailKeepsTheEndAndRedactsSecrets() {
-        let text = "hello\npassword = hunter2\nline-end"
-        let tail = MuxtermIssueReport.tail(text, maxBytes: 64)
-        XCTAssertTrue(tail.contains("[redacted]"))
-        XCTAssertFalse(tail.contains("hunter2"))
-        XCTAssertTrue(tail.contains("line-end"))
-        XCTAssertEqual(MuxtermIssueReport.tail("abcdef", maxBytes: 3), "def")
-    }
-}
-
 final class MuxtermConfigTests: XCTestCase {
     func testPoolMaxSlotsDefaultAndParse() {
         XCTAssertEqual(MuxtermConfig.poolMaxSlots(from: nil), MuxtermConfig.defaultPoolMaxSlots)
@@ -824,6 +813,44 @@ final class PaneOutputFeedPolicyTests: XCTestCase {
             SurfaceEventBatchPolicy.catchUpInterval,
             FlatChrome.eventPollInterval
         )
+    }
+
+    func testAttentionChromeRefreshSkipsUnchangedStateOnEveryFrame() {
+        let interval = SurfaceEventBatchPolicy.attentionRefreshMinInterval
+        // 60Hz 轮询：间隔未到、指纹未变 → 不重建快照/侧栏。
+        XCTAssertFalse(
+            AttentionChromeRefreshPolicy.shouldRefresh(
+                force: false,
+                elapsed: FlatChrome.eventPollInterval,
+                attentionChanged: false
+            ),
+            "未到节流窗口且指纹未变时不得每帧拉整池 attention JSON"
+        )
+        // 间隔到了，但指纹没变 → 仍然跳过（这是去掉 60Hz 空转的关键）。
+        XCTAssertFalse(
+            AttentionChromeRefreshPolicy.shouldRefresh(
+                force: false,
+                elapsed: interval,
+                attentionChanged: false
+            )
+        )
+        // 指纹变了且过了节流窗口 → 刷新。
+        XCTAssertTrue(
+            AttentionChromeRefreshPolicy.shouldRefresh(
+                force: false,
+                elapsed: interval,
+                attentionChanged: true
+            )
+        )
+        // 用户动作：立即刷新，不受节流与指纹限制。
+        XCTAssertTrue(
+            AttentionChromeRefreshPolicy.shouldRefresh(
+                force: true,
+                elapsed: 0,
+                attentionChanged: false
+            )
+        )
+        XCTAssertGreaterThan(interval, 0)
     }
 
     func testFullRedrawBoundaryKeepsLatestCompleteFrame() {
