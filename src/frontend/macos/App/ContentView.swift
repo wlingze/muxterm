@@ -418,8 +418,13 @@ final class WorkspaceDisconnectCardView: NSView {
             iconView.heightAnchor.constraint(equalToConstant: 26),
             titleLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 380),
             detailLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 380),
-            widthAnchor.constraint(greaterThanOrEqualToConstant: 300),
         ])
+        // 卡片默认隐藏，只在断线时出现。它的最小宽度不能是 required：
+        // 隐藏视图也参与 Auto Layout，300pt 的宽度会让内容区（以及主窗口）
+        // 被断线卡片顶宽（dogfood：500pt 窗口被顶成 549pt）。
+        let minimumWidth = widthAnchor.constraint(greaterThanOrEqualToConstant: 300)
+        minimumWidth.priority = NSLayoutConstraint.Priority(490)
+        minimumWidth.isActive = true
         refreshLocalization()
     }
 

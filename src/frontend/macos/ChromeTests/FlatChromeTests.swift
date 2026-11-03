@@ -949,6 +949,71 @@ final class PaneOutputFeedPolicyTests: XCTestCase {
         )
     }
 
+    func testMainSplitMinimumsFitInsideWindowFloor() {
+        // 隐藏浮层 / split item 的最小厚度一旦超过窗口地板，布局求解会在
+        // attach 或切 tab 时把窗口顶宽（dogfood：500pt 窗口 → 549pt）。
+        XCTAssertEqual(
+            MainSplitLayoutPolicy.sidebarMinimumThickness
+                + MainSplitLayoutPolicy.dividerThickness
+                + MainSplitLayoutPolicy.contentMinimumThickness,
+            MainSplitLayoutPolicy.minimumWindowWidth
+        )
+        XCTAssertEqual(MainSplitLayoutPolicy.contentMinimumThickness, 279)
+        XCTAssertLessThan(
+            MainSplitLayoutPolicy.sidebarMinimumThickness,
+            MainSplitLayoutPolicy.sidebarMaximumThickness
+        )
+    }
+
+    func testClientGridRejectsContainersFromAnotherWindow() {
+        let window = NSSize(width: 2048, height: 1103)
+        XCTAssertTrue(
+            ClientGridFitPolicy.isPlausible(
+                container: NSSize(width: 1807, height: 1103),
+                windowContent: window
+            ),
+            "侧栏展开后的终端区是正常尺寸"
+        )
+        XCTAssertTrue(
+            ClientGridFitPolicy.isPlausible(
+                container: NSSize(width: 2048, height: 1103),
+                windowContent: window
+            )
+        )
+        XCTAssertFalse(
+            ClientGridFitPolicy.isPlausible(
+                container: NSSize(width: 4642, height: 1103),
+                windowContent: window
+            ),
+            "422 列那次事故：容器不可能比窗口宽"
+        )
+        XCTAssertFalse(
+            ClientGridFitPolicy.isPlausible(
+                container: NSSize(width: 2310, height: 1103),
+                windowContent: window
+            ),
+            "210 列那次事故"
+        )
+        XCTAssertFalse(
+            ClientGridFitPolicy.isPlausible(
+                container: NSSize(width: 1023, height: 1103),
+                windowContent: window
+            ),
+            "93 列那次事故：比窗口窄出侧栏上限"
+        )
+        XCTAssertFalse(
+            ClientGridFitPolicy.isPlausible(
+                container: NSSize(width: 1807, height: 300),
+                windowContent: window
+            ),
+            "比窗口矮出一整条 chrome 的容器不属于当前窗口"
+        )
+        XCTAssertTrue(
+            ClientGridFitPolicy.isPlausible(container: NSSize(width: 1, height: 1), windowContent: nil),
+            "窗口未知（headless / attach 前）时不做判断"
+        )
+    }
+
     func testTerminalFocusStaysOnOverlayWhenShortcutOpened() {
         XCTAssertFalse(
             TerminalFocusPolicy.shouldFocusTerminal(appActive: true, overlayIsKey: true)
