@@ -2,14 +2,25 @@ import AppKit
 import Foundation
 import MuxtermChrome
 
+/// 只读诊断面板：Esc 关闭。Info 面板不应该挡住终端输入。
+private final class MuxtermInfoPanel: NSPanel {
+    override func cancelOperation(_ sender: Any?) {
+        performClose(nil)
+    }
+}
+
 /// 命令面板里的 Muxterm Info：版本、commit、调试日志和 GitHub issue。
 final class MuxtermInfoWindowController: NSWindowController {
+    /// 固定内容尺寸：反馈文本不能改变窗口大小。
+    static let panelWidth: CGFloat = 520
+    static let panelHeight: CGFloat = 300
     private let versionValue = NSTextField(labelWithString: "")
     private let commitValue = NSTextField(labelWithString: "")
     private let logValue = NSTextField(labelWithString: "")
     private let copyFeedback = NSTextField(labelWithString: " ")
     private let pasteboard: NSPasteboard
     private var logPath = ""
+    private var clearFeedbackWork: DispatchWorkItem?
 
     /// 由主窗口持有 controller。NSWindow 和按钮 target 都不会替调用方保活它。
     func show(relativeTo owner: NSWindow?) {
@@ -26,8 +37,13 @@ final class MuxtermInfoWindowController: NSWindowController {
 
     init(info: CoreBridge.BuildInfo = CoreBridge.buildInfo(), pasteboard: NSPasteboard = .general) {
         self.pasteboard = pasteboard
-        let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 520, height: 280),
+        let panel = MuxtermInfoPanel(
+            contentRect: NSRect(
+                x: 0,
+                y: 0,
+                width: Self.panelWidth,
+                height: Self.panelHeight
+            ),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -35,6 +51,10 @@ final class MuxtermInfoWindowController: NSWindowController {
         panel.title = "Muxterm Info"
         panel.identifier = NSUserInterfaceItemIdentifier("muxterm.info")
         panel.isReleasedWhenClosed = false
+        // 内容高度固定：复制反馈/长路径出现时不能把窗口撑大。
+        // 旧实现只有 top 约束，点击复制后窗口会自己变高，看起来像「点坏了」。
+        panel.contentMinSize = NSSize(width: Self.panelWidth, height: Self.panelHeight)
+        panel.contentMaxSize = NSSize(width: Self.panelWidth, height: Self.panelHeight)
         super.init(window: panel)
         logPath = info.logFile
         versionValue.stringValue = info.version.isEmpty ? "unknown" : info.version
@@ -76,6 +96,9 @@ final class MuxtermInfoWindowController: NSWindowController {
         actions.spacing = 8
         rows.addArrangedSubview(actions)
         copyFeedback.font = .systemFont(ofSize: 11)
+        copyFeedback.maximumNumberOfLines = 1
+        copyFeedback.lineBreakMode = .byTruncatingTail
+        copyFeedback.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         copyFeedback.setAccessibilityIdentifier("muxterm.info.copyFeedback")
         rows.addArrangedSubview(copyFeedback)
 
@@ -91,6 +114,10 @@ final class MuxtermInfoWindowController: NSWindowController {
             rows.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
             rows.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
             rows.topAnchor.constraint(equalTo: content.topAnchor, constant: 20),
+            // 允许余量但不能反过来撑窗口；窗口尺寸由 contentMin/MaxSize 固定。
+            rows.bottomAnchor.constraint(
+                lessThanOrEqualTo: content.bottomAnchor, constant: -20
+            ),
         ])
     }
 
@@ -125,12 +152,27 @@ final class MuxtermInfoWindowController: NSWindowController {
         guard !text.isEmpty else { return }
         pasteboard.clearContents()
         let copied = pasteboard.setString(text, forType: .string)
-        copyFeedback.stringValue = MuxtermI18n.shared.trDynamic(
-            copied ? "info.copied" : "info.copyFailed",
-            fallback: copied ? "Copied to clipboard" : "Could not copy to clipboard"
+        showFeedback(
+            MuxtermI18n.shared.trDynamic(
+                copied ? "info.copied" : "info.copyFailed",
+                fallback: copied ? "Copied to clipboard" : "Could not copy to clipboard"
+            ),
+            success: copied
         )
-        copyFeedback.textColor = copied ? .systemGreen : .systemRed
         CoreBridge.log("info clipboard copy \(copied ? "succeeded" : "failed")", level: copied ? "debug" : "warn")
+    }
+
+    /// 反馈只是一行状态：自动消失，不能变成常驻布局元素。
+    private func showFeedback(_ text: String, success: Bool) {
+        clearFeedbackWork?.cancel()
+        copyFeedback.stringValue = text
+        copyFeedback.textColor = success ? .systemGreen : .systemRed
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.copyFeedback.stringValue = " "
+        }
+        clearFeedbackWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: work)
     }
 
     @objc private func submitIssue() {
@@ -141,35 +183,52 @@ final class MuxtermInfoWindowController: NSWindowController {
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         let info = CoreBridge.buildInfo()
-        let logText = Self.readLog(info.logFile)
-        let tail = MuxtermIssueReport.tail(logText, maxBytes: 60_000)
         let title = "Muxterm debug report \(info.version) \(info.commit)"
-        let body = """
-        Muxterm \(info.version) (\(info.commit))
-        Debug log: \(info.logFile.isEmpty ? "(not enabled)" : info.logFile)
+        // 读日志 + `gh issue create` 走网络：必须在后台队列做。
+        // 旧实现用 /usr/bin/env 同步 waitUntilExit()，点一下窗口就转圈数秒，
+        // 而且把整份 debug 日志读进主线程内存（单日可以到几百 MB）。
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let logText = MuxtermIssueReport.readLogTail(
+                path: info.logFile,
+                maxBytes: 120_000
+            )
+            let tail = MuxtermIssueReport.tail(logText, maxBytes: 60_000)
+            let body = """
+            Muxterm \(info.version) (\(info.commit))
+            Debug log: \(info.logFile.isEmpty ? "(not enabled)" : info.logFile)
 
-        ```
-        \(tail.isEmpty ? "(no debug log yet)" : tail)
-        ```
-        """
-        if let url = Self.submitWithGitHubCLI(title: title, body: body) {
-            Self.note("Opened \(url)")
-            return
-        }
-        let short = """
-        Muxterm \(info.version) (\(info.commit))
-        Debug log: \(info.logFile.isEmpty ? "(not enabled)" : info.logFile)
+            ```
+            \(tail.isEmpty ? "(no debug log yet)" : tail)
+            ```
+            """
+            let url = Self.submitWithGitHubCLI(title: title, body: body)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if let url {
+                    self.showFeedback("Opened \(url.absoluteString)", success: true)
+                    NSWorkspace.shared.open(url)
+                    return
+                }
+                // gh 不可用：把正文放进剪贴板，再打开浏览器 issue 表单。
+                let short = """
+                Muxterm \(info.version) (\(info.commit))
+                Debug log: \(info.logFile.isEmpty ? "(not enabled)" : info.logFile)
 
-        gh is not available, so the log tail was copied to the clipboard instead of the URL.
-        """
-        copy(body)
-        if let url = MuxtermIssueReport.githubIssueURL(title: title, body: short) {
-            NSWorkspace.shared.open(url)
+                gh is not available, so the log tail was copied to the clipboard instead of the URL.
+                """
+                self.copy(body)
+                if let url = MuxtermIssueReport.githubIssueURL(title: title, body: short) {
+                    NSWorkspace.shared.open(url)
+                    self.showFeedback("GitHub CLI unavailable; report copied", success: true)
+                } else {
+                    self.showFeedback("GitHub CLI unavailable", success: false)
+                }
+            }
         }
-        Self.note("GitHub CLI was not available. The report was copied, and a browser issue form was opened.")
     }
 
-    private static func submitWithGitHubCLI(title: String, body: String) -> String? {
+    /// 后台队列：`gh` 的网络往返不能阻塞主线程。
+    private static func submitWithGitHubCLI(title: String, body: String) -> URL? {
         let file = FileManager.default.temporaryDirectory
             .appendingPathComponent("muxterm-issue-\(UUID().uuidString).md")
         do {
@@ -188,35 +247,26 @@ final class MuxtermInfoWindowController: NSWindowController {
         ]
         let output = Pipe()
         process.standardOutput = output
-        process.standardError = Pipe()
+        // stderr 丢弃：只解析 stdout 上的 URL。两条管道各自读很容易在
+        // 一个写满时把子进程卡死；这里只留一条需要读的管道。
+        process.standardError = FileHandle.nullDevice
         do {
             try process.run()
         } catch {
             return nil
         }
+        let data = output.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         guard process.terminationStatus == 0 else { return nil }
-        let data = output.fileHandleForReading.readDataToEndOfFile()
         let text = String(data: data, encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if let url = URL(string: text), text.hasPrefix("https://") {
-            NSWorkspace.shared.open(url)
-            return text
+            return url
         }
-        return text.isEmpty ? "https://github.com/\(MuxtermIssueReport.repository)/issues" : text
+        if !text.isEmpty, let url = URL(string: text) {
+            return url
+        }
+        return URL(string: "https://github.com/\(MuxtermIssueReport.repository)/issues")
     }
 
-    private static func readLog(_ path: String) -> String {
-        guard !path.isEmpty, let data = FileManager.default.contents(atPath: path) else {
-            return ""
-        }
-        return String(data: data, encoding: .utf8) ?? ""
-    }
-
-    private static func note(_ message: String) {
-        let alert = NSAlert()
-        alert.messageText = "Muxterm Info"
-        alert.informativeText = message
-        alert.runModal()
-    }
 }
