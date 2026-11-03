@@ -1115,6 +1115,14 @@ final class CoreBridge {
         return String(cString: p)
     }
 
+    /// 注意力状态指纹（`muxterm_attention_revision`）。
+    ///
+    /// 每帧只查这个 u64：指纹没变就不用拉整池快照 JSON，也不用重算侧栏。
+    func attentionRevision() -> UInt64? {
+        guard let handle else { return nil }
+        return muxterm_attention_revision(handle)
+    }
+
     /// 取走本轮新进入 blocked / done 的通知 JSON（`muxterm_attention_take_notifications`）。
     func attentionTakeNotificationsJSON() -> String? {
         guard let handle else { return nil }
