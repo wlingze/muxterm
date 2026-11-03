@@ -949,6 +949,63 @@ final class PaneOutputFeedPolicyTests: XCTestCase {
         )
     }
 
+    func testClientGridFitKeepsContainerInsideWindowContent() {
+        // 窗口内容区是 client 格子的硬上界：容器被缓存树/侧栏动画撑大时
+        // 不能把 Runtime 排到可见区域外。
+        let fitted = ClientGridFitPolicy.fittedSize(
+            container: NSSize(width: 4642, height: 1100),
+            windowContent: NSSize(width: 2048, height: 1100)
+        )
+        XCTAssertEqual(fitted.width, 2048)
+        XCTAssertEqual(fitted.height, 1100)
+
+        // 侧栏展开：容器比窗口窄，保持容器自己的尺寸。
+        let sidebar = ClientGridFitPolicy.fittedSize(
+            container: NSSize(width: 1807, height: 1100),
+            windowContent: NSSize(width: 2048, height: 1100)
+        )
+        XCTAssertEqual(sidebar.width, 1807)
+
+        // headless / attach 前窗口尺寸未知：保持容器原值，不能把 hint 夹成 0。
+        XCTAssertEqual(
+            ClientGridFitPolicy.fittedSize(
+                container: NSSize(width: 1200, height: 700),
+                windowContent: nil
+            ).width,
+            1200
+        )
+        XCTAssertEqual(
+            ClientGridFitPolicy.fittedSize(
+                container: NSSize(width: 1200, height: 700),
+                windowContent: .zero
+            ).width,
+            1200
+        )
+        XCTAssertEqual(
+            ClientGridFitPolicy.fittedSize(
+                container: .zero,
+                windowContent: NSSize(width: 2048, height: 1100)
+            ),
+            .zero
+        )
+
+        // pane 的格子同样不能超过可见终端区（host 拿着上一棵树的像素时）。
+        XCTAssertEqual(
+            ClientGridFitPolicy.cappedGrid(cols: 210, rows: 10, maxGrid: (186, 44)).cols,
+            186
+        )
+        XCTAssertEqual(
+            ClientGridFitPolicy.cappedGrid(cols: 93, rows: 22, maxGrid: (186, 44)).cols,
+            93,
+            "小于上界的 pane 不能被放大"
+        )
+        XCTAssertEqual(
+            ClientGridFitPolicy.cappedGrid(cols: 210, rows: 10, maxGrid: nil).cols,
+            210,
+            "容器未知时保持原值"
+        )
+    }
+
     func testMainSplitMinimumsFitInsideWindowFloor() {
         // 隐藏浮层 / split item 的最小厚度一旦超过窗口地板，布局求解会在
         // attach 或切 tab 时把窗口顶宽（dogfood：500pt 窗口 → 549pt）。

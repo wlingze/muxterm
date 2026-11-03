@@ -124,6 +124,27 @@ extension MainWindowController {
         content.paneLayout.terminalClientContentSize
     }
 
+    /// 测试用：把 paneLayout 临时撑成给定宽度，再量 client 格子。
+    ///
+    /// 只读：Auto Layout 会在下一轮布局把 frame 改回去，这个值不能留在 view 上。
+    func testClientGridForStretchedLayout(width: CGFloat) -> (cols: UInt16, rows: UInt16)? {
+        let layout = content.paneLayout
+        let original = layout.frame
+        layout.setFrameSize(NSSize(width: width, height: original.height))
+        let grid = terminalManager.clientGridSizeForTesting(
+            container: layout,
+            paneIds: Set(layout.testLeafPaneIDs())
+        )
+        layout.setFrameSize(original.size)
+        layout.needsLayout = true
+        return grid
+    }
+
+    /// 测试用：窗口内容区尺寸（client 格子的硬上界）。
+    func testWindowContentViewSize() -> NSSize {
+        window?.contentView?.bounds.size ?? .zero
+    }
+
     func testPaneTerminalText(_ paneId: UInt32) -> String {
         terminalManager.view(for: paneId).visibleScreenText()
     }

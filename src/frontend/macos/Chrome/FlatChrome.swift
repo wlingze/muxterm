@@ -1060,6 +1060,70 @@ public enum MainSplitLayoutPolicy {
         minimumWindowWidth - sidebarMinimumThickness - dividerThickness
 }
 
+/// 终端 client 区域必须落在窗口内容区之内。
+///
+/// 缓存 pane 树重新挂载、侧栏动画或显示排列切换时，容器的 bounds 可能
+/// 短暂过量。client 格子一旦跟着错，Runtime 会把 pane 排到窗口外：
+/// 每个 pane 的模型都比 host 宽，字被裁在右边界（dogfood：210 列 client
+/// 配 93 列 host，整屏提示符只剩前半截）。窗口内容区是硬边界。
+public enum ClientGridFitPolicy {
+    /// 侧栏最大宽度（`NSSplitViewItem.maximumThickness`）。可见终端区
+    /// 不可能比窗口内容区窄出这个值：更窄说明量到的不是当前窗口的终端区。
+    public static let maximumSidebarThickness: CGFloat = 480
+    /// 顶栏 + 状态栏的高度上界。终端区不可能比窗口内容区矮出这个值。
+    public static let maximumChromeHeight: CGFloat = 200
+    /// Auto Layout 取整误差。
+    public static let slack: CGFloat = 2
+
+    /// 返回容器里真正可见的尺寸。窗口尺寸未知（headless / attach 前）时
+    /// 保持容器原值。
+    public static func fittedSize(container: NSSize, windowContent: NSSize?) -> NSSize {
+        guard let windowContent,
+              windowContent.width > 0, windowContent.height > 0,
+              container.width > 0, container.height > 0
+        else {
+            return container
+        }
+        return NSSize(
+            width: min(container.width, windowContent.width),
+            height: min(container.height, windowContent.height)
+        )
+    }
+
+    /// 容器尺寸是否可能是当前窗口里的终端区。
+    ///
+    /// 挂载到旧树 / 错误窗口的 view 会给出荒谬的尺寸（dogfood 日志里的
+    /// 4642pt / 2310pt / 1023pt，分别对应 422 / 210 / 93 列）。这种测量
+    /// 不能写进 Runtime：宁可保留上一尺寸，也不能把 pane 排到窗口外。
+    public static func isPlausible(container: NSSize, windowContent: NSSize?) -> Bool {
+        guard let windowContent,
+              windowContent.width > 0, windowContent.height > 0,
+              container.width > 0, container.height > 0
+        else {
+            // 窗口未知（headless / attach 前）时不做判断。
+            return true
+        }
+        return container.width <= windowContent.width + slack
+            && container.width >= windowContent.width - maximumSidebarThickness - slack
+            && container.height <= windowContent.height + slack
+            && container.height >= windowContent.height - maximumChromeHeight - slack
+    }
+
+    /// 把 pixel allocation 算出的格子夹到可见终端区内。
+    /// 没有上界（容器未知）时原样返回。
+    public static func cappedGrid(
+        cols: Int,
+        rows: Int,
+        maxGrid: (cols: UInt16, rows: UInt16)?
+    ) -> (cols: Int, rows: Int) {
+        guard let maxGrid else { return (cols, rows) }
+        return (
+            cols: min(cols, max(2, Int(maxGrid.cols))),
+            rows: min(rows, max(1, Int(maxGrid.rows)))
+        )
+    }
+}
+
 /// pane 格子的唯一写入者。
 ///
 /// Herdr / shell 的格子由 allocation 决定。SwiftTerm 的 `processSizeChange`

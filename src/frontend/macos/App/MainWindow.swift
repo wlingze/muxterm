@@ -4146,8 +4146,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private func initialTmuxClientSizeHint() -> (UInt16, UInt16)? {
         let bounds = content.paneLayout.bounds
         let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1
+        // attach 前就用窗口内容区夹一次：容器还没布局时 paneLayout 可能是
+        // 旧的缓存树尺寸，hint 偏大会让 tmux 首帧就排到窗口外。
+        let visible = ClientGridFitPolicy.fittedSize(
+            container: bounds.size,
+            windowContent: window?.contentView?.bounds.size
+        )
         return MuxTerminalGridMetrics.clientSize(
-            bounds: bounds.size,
+            bounds: visible,
             family: terminalFontSettings.family,
             size: terminalFontSettings.size,
             backingScale: scale,
