@@ -27,6 +27,12 @@ pub const MAX_AUTO_RETRIES: u8 = 5;
 pub const LIVE_STABLE_WINDOW: Duration = Duration::from_secs(10);
 /// 首个 full frame 的 deadline（超时 → Degraded，保留旧像素）。
 pub const FULL_FRAME_DEADLINE: Duration = Duration::from_secs(5);
+/// 用户正在看的 Control pane：超时更短。
+///
+/// 这个 pane 的旧像素就是用户眼前的内容，5 秒不动就是“卡死”；
+/// 重新订阅会立即让 server 重发 full（日志实测），所以提前试一次。
+/// 仍然保留 Degraded 旧像素语义，只是跟 hidden Observe 用不同阈值。
+pub const CONTROL_FULL_FRAME_DEADLINE: Duration = Duration::from_millis(1500);
 /// full 前 diff 队列上限：事件数与总字节数任一先到 → generation 有界失败。
 pub const PRE_FULL_MAX_EVENTS: usize = 256;
 pub const PRE_FULL_MAX_BYTES: usize = 2 * 1024 * 1024;

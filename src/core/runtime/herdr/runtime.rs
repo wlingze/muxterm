@@ -35,7 +35,8 @@ use super::observe::{
 };
 use super::registry::{
     classify_stream_end, ControlRearm, FrameDecision, PaneStreamSlot, SlotAction, SlotState,
-    SurfaceBaseline, FULL_FRAME_DEADLINE, INPUT_MAX_BYTES, INPUT_MAX_WRITES,
+    SurfaceBaseline, CONTROL_FULL_FRAME_DEADLINE, FULL_FRAME_DEADLINE, INPUT_MAX_BYTES,
+    INPUT_MAX_WRITES,
 };
 use super::session::{
     AgentRecord, HerdrAgentStatus, HerdrSession, LayoutRecord, LayoutRect, LayoutSplitDirection,
@@ -90,6 +91,20 @@ pub struct HerdrRuntime {
     preferred_client_size: Option<(u16, u16)>,
     /// 每个 pane 最后收到的 UI allocation；不能随 intent/stream 切换丢掉。
     pane_client_sizes: HashMap<PaneId, (u16, u16)>,
+    /// attach 后等 UI 第一次 `ResizeClient` 的 deadline。
+    ///
+    /// 还没有窗口 viewport 就先开流，会按 80×24 拿一遍 full，preferred 到达后
+    /// 再重排重发（日志里 17 个 pane 各一次）。只宽限一次，没有 UI 的环境
+    /// （CLI/测试）到点仍然按默认尺寸开流。
+    initial_grace_deadline: Option<Instant>,
+    /// 刚切到可见 tab 的 pane：它的 `pane_client_sizes` 还是上一个 tab 布局的
+    /// 尺寸，不能直接拿来发 Control Hello。
+    ///
+    /// Hello 会改远端 PTY 尺寸：用旧格子开局会让远端 TUI 先重排一次，随后
+    /// 真实 allocation 到达再重排第二次，第一帧还会因尺寸不符被丢掉。
+    /// 日志实测这种来回要 1.4–2 秒，用户看到的就是切页卡顿。
+    /// 等到 `LAYOUT_SETTLE` 或该 pane 的新 allocation 到达后再开流。
+    layout_stale: HashMap<PaneId, Instant>,
     outputs: HashMap<PaneId, CappedBytes>,
     agents: HashMap<PaneId, PaneAgentInfo>,
     /// 最近一次接受的 agent 版本（含已释放 agent 的墓碑）。旧 snapshot
@@ -168,6 +183,15 @@ struct FocusPin {
 /// 钉住窗口：必须盖过 reader 晚到旧快照的传输延迟；
 /// 用户显式切 pane/tab 会立即清除（见 `clear_focus_pin`）。
 const FOCUS_PIN_TTL: Duration = Duration::from_secs(5);
+
+/// attach 后等窗口 viewport 的宽限。UI 正常一帧内就发出 ResizeClient。
+const INITIAL_LAYOUT_GRACE: Duration = Duration::from_millis(200);
+
+/// 切 tab 后等待 UI 重新量格子的窗口。
+///
+/// 只盖住同一事件循环里的 layout + resize 派发（日志实测 16–60ms）；
+/// 超过这个窗口就算前端不会发 ResizePane（格子没变），直接用缓存格子开流。
+const LAYOUT_SETTLE: Duration = Duration::from_millis(150);
 
 fn frame_fingerprint(bytes: &[u8], width: u16, height: u16) -> u64 {
     let mut hash = 0xcbf29ce484222325u64;
@@ -384,6 +408,8 @@ impl HerdrRuntime {
             frame_sizes: HashMap::new(),
             preferred_client_size: None,
             pane_client_sizes: HashMap::new(),
+            initial_grace_deadline: None,
+            layout_stale: HashMap::new(),
             outputs: HashMap::new(),
             agents: HashMap::new(),
             agent_versions: HashMap::new(),
@@ -1609,12 +1635,58 @@ impl HerdrRuntime {
                 let takeover = effective == StreamMode::Control
                     && self.active_pane == Some(pane.id)
                     && slot.may_takeover();
+                // 刚切进来的 tab：旧 allocation 不属于这个布局，Control Hello
+                // 必须等 UI 重新量一次（或 lease 过期）。Observe 不受影响。
+                if effective.is_control() && self.layout_settle_pending(pane.id) {
+                    return None;
+                }
                 Some((pane.id, effective, takeover))
             })
             .collect();
         for (pane, mode, takeover) in transitions {
             self.start_stream_replacing(pane, mode, takeover);
         }
+    }
+
+    /// 首次开流是否还在等 UI 的窗口尺寸。只宽限一次：过点就按默认尺寸开。
+    fn initial_grace_pending(&mut self) -> bool {
+        match self.initial_grace_deadline {
+            Some(deadline) => Instant::now() < deadline,
+            None => {
+                self.initial_grace_deadline = Some(Instant::now() + INITIAL_LAYOUT_GRACE);
+                true
+            }
+        }
+    }
+
+    /// 刚切到可见 tab 的 pane 仍处于布局稳定期：它缓存的 allocation 是
+    /// 上一个 tab 布局的格子，不能用来发 Control Hello。
+    fn layout_settle_pending(&self, pane: PaneId) -> bool {
+        self.layout_stale
+            .get(&pane)
+            .is_some_and(|at| at.elapsed() < LAYOUT_SETTLE)
+    }
+
+    /// 布局稳定期到期：清掉标记并重新评估。
+    ///
+    /// 没有新 allocation 也要能开流（pane 格子本来就没变时前端不会发
+    /// ResizePane），否则切页后会一直停在旧像素。
+    fn expire_layout_settle(&mut self, now: Instant) {
+        if self.layout_stale.is_empty() {
+            return;
+        }
+        let before = self.layout_stale.len();
+        self.layout_stale
+            .retain(|_, at| now.duration_since(*at) < LAYOUT_SETTLE);
+        if self.layout_stale.len() == before {
+            return;
+        }
+        for slot in self.stream_slots.values_mut() {
+            if slot.awaiting_allocation {
+                slot.awaiting_allocation = false;
+            }
+        }
+        self.reconcile_stream_modes();
     }
 
     fn has_ui_allocation(&self, pane: PaneId) -> bool {
@@ -1645,8 +1717,16 @@ impl HerdrRuntime {
         // ResizePane（前端只给可见格子发），但 Activity/注意仍需它的字节流，
         // 所以 Observe 必须能先用 preferred/默认 viewport 开流；hello_client_size
         // 已经把窗口 preferred 插在 80×24 之前。
+        // 还没有窗口 viewport（刚 attach）时再等一下 UI 的第一次 ResizeClient：
+        // 先按 80×24 开流会白拿一整帧，随后还要按真实尺寸重排重发。
+        if never_started && self.preferred_client_size.is_none() && self.initial_grace_pending() {
+            return;
+        }
         let needs_pane_grid = mode.is_control();
-        if never_started && needs_pane_grid && !self.has_ui_allocation(pane) {
+        // 刚切到可见 tab：缓存的格子属于旧布局，先等 UI 重新量（见
+        // `layout_stale`）。拿旧格子发 Hello 会让远端 TUI 重排两次。
+        let stale_layout = needs_pane_grid && self.layout_settle_pending(pane);
+        if needs_pane_grid && (stale_layout || (never_started && !self.has_ui_allocation(pane))) {
             if let Some(slot) = self.stream_slots.get_mut(&pane) {
                 if !slot.awaiting_allocation {
                     slot.awaiting_allocation = true;
@@ -1862,6 +1942,8 @@ impl HerdrRuntime {
     fn resize_control_stream(&mut self, pane: PaneId, cols: u16, rows: u16) -> Result<()> {
         let first_preferred = self.preferred_client_size.is_none();
         let (cols, rows) = normalize_pane_size(cols, rows, None);
+        // UI 刚给这个 pane 量了当前布局的格子：不再需要等布局稳定。
+        self.layout_stale.remove(&pane);
         let previous_size = self.pane_client_sizes.insert(pane, (cols, rows));
         // 窗口格子给还没量过的新 pane 当 Hello。分屏子 pane 更矮，不能
         // 把 preferred 盖成 12 行，否则下一个 pane 的 Observe 也锁在半截。
@@ -2469,15 +2551,25 @@ impl HerdrRuntime {
 
     /// 每 poll tick：握手后仍未收到 full 的 Live 流必须重试，不能无限白屏。
     /// worker 连握手都没完成时沿用 Degraded 语义，保留旧像素。
+    ///
+    /// 用户正在看的 Control pane（active_pane）用更短阈值：它面上的旧像素
+    /// 就是用户眼前的卡顿；hidden Observe 不值得为此多开订阅。
     fn degrade_stalled_streams(&mut self, now: Instant) {
+        let active_pane = self.active_pane;
         let stalled: Vec<PaneId> = self
             .stream_slots
             .iter()
-            .filter(|(_, s)| {
+            .filter(|(pane, s)| {
+                let deadline =
+                    if active_pane == Some(**pane) && s.actual_mode == Some(StreamMode::Control) {
+                        CONTROL_FULL_FRAME_DEADLINE
+                    } else {
+                        FULL_FRAME_DEADLINE
+                    };
                 matches!(s.state, SlotState::Starting | SlotState::Live)
                     && s.surface_baseline == SurfaceBaseline::AwaitingFull
                     && s.started_at
-                        .is_some_and(|started| now.duration_since(started) >= FULL_FRAME_DEADLINE)
+                        .is_some_and(|started| now.duration_since(started) >= deadline)
             })
             .map(|(p, _)| *p)
             .collect();
@@ -4157,10 +4249,20 @@ impl Runtime for HerdrRuntime {
                 };
                 self.queue_focus("tab.focus", herdr_tab)
                     .map_err(|e| anyhow!("tab.focus 失败: {e}"))?;
+                let previous_tab = self.active_tab;
                 for t in self.tabs.iter_mut() {
                     t.active = t.id == *target;
                 }
                 self.active_tab = Some(*target);
+                // 切到另一个 tab：目标 tab 的 pane 缓存格子属于旧布局。
+                // Control Hello 会写远端 PTY，先用旧格子会让远端 TUI 重排
+                // 两次并丢掉第一帧（实测 1.4–2s）。等 UI 重新量或 lease 到期。
+                if previous_tab != Some(*target) {
+                    let now = Instant::now();
+                    for pane in self.panes.iter().filter(|pane| pane.tab == *target) {
+                        self.layout_stale.insert(pane.id, now);
+                    }
+                }
                 // 恢复目标必须以权威快照为准（snapshot_active），不能信任
                 // layout.updated 事件流记录：事件与快照两条通道无序，晚到旧
                 // 事件会把 focused_pane_id 回退到 split 之前（agent e2e）。
@@ -4522,6 +4624,7 @@ impl Runtime for HerdrRuntime {
         let now = Instant::now();
         self.degrade_stalled_streams(now);
         self.maybe_start_pending_retries(now);
+        self.expire_layout_settle(now);
         self.reconcile_stream_modes();
         self.tick_mutations(now);
         coalesce_superseded_frames(&mut self.events);
@@ -5430,6 +5533,242 @@ mod tests {
             runtime.desired_mode_for(&runtime.panes[0]),
             StreamMode::Control,
             "preferred 写入后 active 应变 Control"
+        );
+    }
+
+    /// attach 后还没有窗口 viewport 时，先不要用 80x24 开流：UI 一帧内
+    /// 就会发 ResizeClient，先开流会白拿一整帧再按真实尺寸重排重发。
+    #[test]
+    fn first_stream_waits_briefly_for_the_window_viewport() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w1",
+        );
+        runtime.status = BackendStatus::Connected;
+        runtime.foreground = true;
+        runtime.active_tab = Some(TabId(1));
+        runtime.active_pane = Some(PaneId(1));
+        let pane = PaneId(1);
+        runtime.panes.push(PaneInfo {
+            id: pane,
+            tab: TabId(1),
+            active: true,
+            title: "pane".into(),
+            cols: 80,
+            rows: 24,
+        });
+        runtime.pane_to_herdr_pane.insert(pane, "w1:p1".into());
+        runtime.ensure_stream_channels();
+
+        runtime.reconcile_stream_modes();
+        runtime.reconcile_stream_modes();
+        assert_eq!(
+            runtime.test_stream_starts(pane),
+            0,
+            "没有窗口尺寸时先等 ResizeClient，不要按 80x24 开流"
+        );
+
+        // UI 的第一次布局：窗口 viewport + 本 pane 的格子。
+        runtime
+            .execute(&Task::ResizeClient {
+                cols: 186,
+                rows: 44,
+            })
+            .expect("resize client");
+        runtime
+            .execute(&Task::ResizePane {
+                target: pane,
+                cols: 92,
+                rows: 44,
+            })
+            .expect("resize pane");
+        runtime.reconcile_stream_modes();
+        assert_eq!(runtime.test_stream_starts(pane), 1);
+        assert_eq!(runtime.hello_client_size(pane), (92, 44));
+    }
+
+    /// 没有 UI 的环境（CLI/测试）不能永远等下去：宽限到期后按默认尺寸开流。
+    #[test]
+    fn first_stream_starts_after_the_viewport_grace_expires() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w1",
+        );
+        runtime.status = BackendStatus::Connected;
+        runtime.foreground = true;
+        runtime.active_tab = Some(TabId(1));
+        runtime.active_pane = Some(PaneId(2));
+        let pane = PaneId(2);
+        runtime.panes.push(PaneInfo {
+            id: pane,
+            tab: TabId(1),
+            active: true,
+            title: "headless".into(),
+            cols: 80,
+            rows: 24,
+        });
+        runtime.pane_to_herdr_pane.insert(pane, "w1:p2".into());
+        runtime.ensure_stream_channels();
+        runtime.initial_grace_deadline = Some(Instant::now() - Duration::from_millis(1));
+
+        runtime.reconcile_stream_modes();
+        assert_eq!(runtime.test_stream_starts(pane), 1);
+        assert_eq!(runtime.hello_client_size(pane), (80, 24));
+    }
+
+    /// 切到另一个 tab 后，目标 pane 缓存的格子属于旧布局；Control Hello
+    /// 必须等 UI 重新量一次，否则远端 TUI 会按旧格子重排、首帧被丢。
+    #[test]
+    fn tab_switch_waits_for_a_fresh_allocation_before_control_hello() {
+        use std::io::{BufRead, Write};
+        use std::os::unix::net::UnixListener;
+
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("muxterm-herdr-settle-{nonce}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("api.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = std::io::BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            reader.get_mut().write_all(b"{\"result\":{}}\n").unwrap();
+        });
+
+        let mut runtime = HerdrRuntime::new(Arc::new(HerdrSession::new("test", &socket)), "w1");
+        runtime.status = BackendStatus::Connected;
+        runtime.foreground = true;
+        runtime.tabs.push(TabInfo {
+            id: TabId(1),
+            name: "one".into(),
+            active: true,
+        });
+        runtime.tabs.push(TabInfo {
+            id: TabId(2),
+            name: "two".into(),
+            active: false,
+        });
+        runtime.tab_to_herdr_tab.insert(TabId(2), "w1:t2".into());
+        let pane = PaneId(9);
+        runtime.panes.push(PaneInfo {
+            id: pane,
+            tab: TabId(2),
+            active: false,
+            title: "split".into(),
+            cols: 92,
+            rows: 44,
+        });
+        runtime.pane_to_herdr_pane.insert(pane, "w1:p9".into());
+        // 旧 tab 布局里这个 pane 是全宽的 186x44；新 tab 里它只占半屏。
+        runtime.preferred_client_size = Some((186, 44));
+        runtime.pane_client_sizes.insert(pane, (186, 44));
+        runtime.active_tab = Some(TabId(1));
+        runtime.active_pane = Some(PaneId(1));
+        runtime.ensure_stream_channels();
+
+        assert_eq!(
+            runtime
+                .execute(&Task::SwitchTab { target: TabId(2) })
+                .unwrap(),
+            TaskOutcome::Done
+        );
+        runtime.reconcile_stream_modes();
+        let slot = runtime.stream_slots.get(&pane).expect("slot");
+        assert_eq!(
+            slot.generation, 0,
+            "刚切进 tab 不得用旧布局的 186x44 发 Control Hello"
+        );
+
+        // UI 量出新布局：立即开流，而且 Hello 用新格子。
+        runtime
+            .execute(&Task::ResizePane {
+                target: pane,
+                cols: 92,
+                rows: 44,
+            })
+            .expect("resize");
+        // 下一次 poll tick 的 reconcile 才会启动（与生产 drain_events 一致）。
+        runtime.reconcile_stream_modes();
+        let slot = runtime.stream_slots.get(&pane).expect("slot");
+        assert_eq!(slot.generation, 1, "新 allocation 到达后必须开流");
+        assert_eq!(runtime.hello_client_size(pane), (92, 44));
+        server.join().unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// 前端不会给格子没变的 pane 发 ResizePane。布局稳定期必须自己到期，
+    /// 否则切页后一直停在旧像素。
+    #[test]
+    fn layout_settle_expires_without_a_new_allocation() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w1",
+        );
+        runtime.status = BackendStatus::Connected;
+        runtime.foreground = true;
+        let pane = PaneId(4);
+        runtime.active_tab = Some(TabId(2));
+        runtime.active_pane = Some(pane);
+        runtime.panes.push(PaneInfo {
+            id: pane,
+            tab: TabId(2),
+            active: true,
+            title: "pane".into(),
+            cols: 92,
+            rows: 44,
+        });
+        runtime.pane_to_herdr_pane.insert(pane, "w1:p4".into());
+        runtime.preferred_client_size = Some((92, 44));
+        runtime.pane_client_sizes.insert(pane, (92, 44));
+        runtime.ensure_stream_channels();
+        runtime.layout_stale.insert(pane, Instant::now());
+
+        runtime.reconcile_stream_modes();
+        assert_eq!(runtime.test_stream_starts(pane), 0, "稳定期内不得开流");
+
+        let later = Instant::now() + LAYOUT_SETTLE + Duration::from_millis(10);
+        runtime.expire_layout_settle(later);
+        assert_eq!(
+            runtime.test_stream_starts(pane),
+            1,
+            "稳定期到期后必须用缓存格子开流"
+        );
+        assert_eq!(runtime.hello_client_size(pane), (92, 44));
+    }
+
+    /// Observe 只是只读画布，不会被布局稳定期拦住。
+    #[test]
+    fn layout_settle_does_not_block_observe_streams() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w1",
+        );
+        runtime.status = BackendStatus::Connected;
+        runtime.foreground = true;
+        runtime.preferred_client_size = Some((178, 50));
+        runtime.active_tab = Some(TabId(1));
+        runtime.active_pane = Some(PaneId(1));
+        let hidden = PaneId(7);
+        runtime.panes.push(PaneInfo {
+            id: hidden,
+            tab: TabId(3),
+            active: false,
+            title: "hidden".into(),
+            cols: 80,
+            rows: 24,
+        });
+        runtime.pane_to_herdr_pane.insert(hidden, "w1:p7".into());
+        runtime.ensure_stream_channels();
+        runtime.layout_stale.insert(hidden, Instant::now());
+        runtime.reconcile_stream_modes();
+        assert_eq!(
+            runtime.test_stream_starts(hidden),
+            1,
+            "Observe 不得被布局稳定期挡住"
         );
     }
 
@@ -8320,6 +8659,80 @@ mod tests {
         assert!(
             elapsed < Duration::from_millis(150),
             "event pump blocked for {elapsed:?}"
+        );
+    }
+
+    /// 用户正在看的 Control pane 不能等满 5 秒：1.5 秒无 full 就重新订阅。
+    #[test]
+    fn active_control_pane_retries_before_the_generic_full_deadline() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w1",
+        );
+        runtime.status = BackendStatus::Connected;
+        let pane = PaneId(3);
+        runtime.panes.push(PaneInfo {
+            id: pane,
+            tab: TabId(1),
+            active: true,
+            title: "pane".into(),
+            cols: 92,
+            rows: 44,
+        });
+        runtime.pane_to_herdr_pane.insert(pane, "w1:p3".into());
+        runtime.active_pane = Some(pane);
+        runtime.ensure_stream_channels();
+        let mut slot = PaneStreamSlot::new(pane, "w1:p3", StreamMode::Control);
+        slot.generation = 1;
+        slot.state = SlotState::Live;
+        slot.actual_mode = Some(StreamMode::Control);
+        slot.started_at = Some(Instant::now() - Duration::from_millis(1600));
+        runtime.stream_slots.insert(pane, slot);
+
+        runtime.degrade_stalled_streams(Instant::now());
+        assert_eq!(
+            runtime.test_slot_state(pane),
+            Some(SlotState::Backoff),
+            "看的见的 Control pane 1.5s 无 full 应重新订阅，而不是干等 5s"
+        );
+        assert!(
+            runtime.test_stream_starts(pane) == 0,
+            "重新订阅要等 retry_at 到期后的 tick，不能在超时回调里同步重开"
+        );
+    }
+
+    /// hidden Observe 不按用户可见路径加压，仍然等满 5 秒。
+    #[test]
+    fn hidden_observe_keeps_the_longer_full_deadline() {
+        let mut runtime = HerdrRuntime::new(
+            Arc::new(HerdrSession::new("test", "/tmp/muxterm-no-socket")),
+            "w1",
+        );
+        runtime.status = BackendStatus::Connected;
+        runtime.active_pane = Some(PaneId(1));
+        let hidden = PaneId(8);
+        runtime.panes.push(PaneInfo {
+            id: hidden,
+            tab: TabId(2),
+            active: false,
+            title: "hidden".into(),
+            cols: 80,
+            rows: 24,
+        });
+        runtime.pane_to_herdr_pane.insert(hidden, "w1:p8".into());
+        runtime.ensure_stream_channels();
+        let mut slot = PaneStreamSlot::new(hidden, "w1:p8", StreamMode::Observe);
+        slot.generation = 1;
+        slot.state = SlotState::Live;
+        slot.actual_mode = Some(StreamMode::Observe);
+        slot.started_at = Some(Instant::now() - Duration::from_millis(1600));
+        runtime.stream_slots.insert(hidden, slot);
+
+        runtime.degrade_stalled_streams(Instant::now());
+        assert_eq!(
+            runtime.test_slot_state(hidden),
+            Some(SlotState::Live),
+            "hidden Observe 1.5s 还不能判死"
         );
     }
 
