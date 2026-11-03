@@ -1067,10 +1067,12 @@ public enum MainSplitLayoutPolicy {
 /// 每个 pane 的模型都比 host 宽，字被裁在右边界（dogfood：210 列 client
 /// 配 93 列 host，整屏提示符只剩前半截）。窗口内容区是硬边界。
 public enum ClientGridFitPolicy {
-    /// 侧栏最大宽度（`NSSplitViewItem.maximumThickness`）。可见终端区
-    /// 不可能比窗口内容区窄出这个值：更窄说明量到的不是当前窗口的终端区。
-    public static let maximumSidebarThickness: CGFloat = 480
-    /// 顶栏 + 状态栏的高度上界。终端区不可能比窗口内容区矮出这个值。
+    /// 侧栏最大宽度。可见终端区不可能比窗口内容区窄出这个值：更窄说明
+    /// 量到的不是当前窗口的终端区。
+    public static var maximumSidebarThickness: CGFloat {
+        MainSplitLayoutPolicy.sidebarMaximumThickness
+    }
+    /// 顶栏 + 状态栏 + 标题栏的高度上界。终端区不可能比窗口内容区矮出这个值。
     public static let maximumChromeHeight: CGFloat = 200
     /// Auto Layout 取整误差。
     public static let slack: CGFloat = 2
