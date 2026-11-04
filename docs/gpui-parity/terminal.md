@@ -133,23 +133,23 @@ This is the actionable table. Each row is a capability the macOS frontend has
 today and `src/frontend/gpui/terminal/` does not. The symptom column is what a
 user would actually notice.
 
-| Gap | Symptom without it | Parity source | Size |
-| --- | --- | --- | --- |
-| IME marked text and placeholder filtering | Typing Chinese shows `<ffff>` in the shell, and a placeholder commit corrupts the command line | `TerminalView.swift:123-186` | medium |
-| Candidate window anchoring | The IME candidate window is clipped at the pane's right edge when the cursor is on the last column | `TerminalView.swift:106-120` | small |
-| Modifier arrow encoding before IME resolution | Shift+arrow and Ctrl+arrow move a selection instead of reaching the program | `TerminalView.swift:131-152` | small |
-| Query replies (OSC 10/11/12, DA1) | zsh prints `command not found: 10;rgb:...` when a program queries colours | `Chrome/TerminalQueryReply.swift` | small |
-| Bracketed paste wrapping | Pasting multi-line text executes each line instead of inserting it | `TerminalView.swift:681-694` | small |
-| Mouse reporting, SGR and X10 | vim and htop ignore the mouse; scrollbar and click-to-position do nothing | `TerminalView.swift:544-612` | medium |
-| Wheel routing policy and coalescing | One touchpad gesture floods the pane with dozens of sends, or scrolling cannot reach the program at all | `TerminalView.swift:451-543` | medium |
-| Local scrollback and viewport offsets | Cannot scroll back through output; Core history max offset is never used | `TerminalView.swift:888-928` | medium |
-| Wide and combining characters | CJK text and emoji occupy one cell instead of two, so every line after the first drifts | `TerminalView.swift:141-160` | medium |
-| Progressive word selection | Double and triple click select nothing; drag selection does not exist | `TerminalView.swift:315-450` | medium |
-| Clipboard image paste | Pasting a screenshot inserts nothing | `TerminalView.swift:8-31`, `614-657` | medium |
-| Committed paint | Resizing under a synchronized-output program briefly shows a torn frame | `TerminalView.swift:700-760` | large |
-| Per-pane colour reporting | Search results and activity badges do not know the pane background, so highlight contrast is wrong | `TerminalView.swift:1039-1069` | small |
-| Accessibility output | Screen readers report nothing for terminal content | `TerminalView.swift:969-987` | small |
-| Seed chunking and stashed output cap | A background pane with heavy output either blocks the UI or loses its baseline | `TerminalManager.swift:102-127`, `780-795` | medium |
+| Gap | Symptom without it | Parity source | Size | Status |
+| --- | --- | --- | --- | --- |
+| IME marked text and placeholder filtering | Typing Chinese shows `<ffff>` in the shell, and a placeholder commit corrupts the command line | `TerminalView.swift:123-186` | medium | done (`model/ime.rs`, `keymap.rs`, `EntityInputHandler`) |
+| Candidate window anchoring | The IME candidate window is clipped at the pane's right edge when the cursor is on the last column | `TerminalView.swift:106-120` | small | done (`ime::candidate_anchor`, `bounds_for_range`) |
+| Modifier arrow encoding before IME resolution | Shift+arrow and Ctrl+arrow move a selection instead of reaching the program | `TerminalView.swift:131-152` | small | done (wave 1a) |
+| Query replies (OSC 10/11/12, DA1) | zsh prints `command not found: 10;rgb:...` when a program queries colours | `Chrome/TerminalQueryReply.swift` | small | done (wave 1a) |
+| Bracketed paste wrapping | Pasting multi-line text executes each line instead of inserting it | `TerminalView.swift:681-694` | small | done (wave 2, `GpuiApp::handle_paste`) |
+| Mouse reporting, SGR and X10 | vim and htop ignore the mouse; scrollbar and click-to-position does nothing | `TerminalView.swift:544-612` | medium | done (wave 3, `terminal/mouse.rs`) |
+| Wheel routing policy and coalescing | One touchpad gesture floods the pane with dozens of sends, or scrolling cannot reach the program at all | `TerminalView.swift:451-543` | medium | done (wave 2 + 3) |
+| Local scrollback and viewport offsets | Cannot scroll back through output; Core history max offset is never used | `TerminalView.swift:888-928` | medium | done (wave 3, `Surface::scroll_by`) |
+| Wide and combining characters | CJK text and emoji occupy one cell instead of two, so every line after the first drifts | `TerminalView.swift:141-160` | medium | done for wide, combining marks dropped (wave 3) |
+| Progressive word selection | Double and triple click select nothing; drag selection does not exist | `TerminalView.swift:315-450` | medium | done (wave 3 model; UI wiring in wave 5) |
+| Clipboard image paste | Pasting a screenshot inserts nothing | `TerminalView.swift:8-31`, `614-657` | medium | stage banner ported (`model/image_paste.rs`); clipboard PNG read still open |
+| Committed paint | Resizing under a synchronized-output program briefly shows a torn frame | `TerminalView.swift:700-760` | large | open |
+| Per-pane colour reporting | Search results and activity badges do not know the pane background, so highlight contrast is wrong | `TerminalView.swift:1039-1069` | small | open |
+| Accessibility output | Screen readers report nothing for terminal content | `TerminalView.swift:969-987` | small | open |
+| Seed chunking and stashed output cap | A background pane with heavy output either blocks the UI or loses its baseline | `TerminalManager.swift:102-127`, `780-795` | medium | open |
 
 Two of these are structural rather than incremental. Committed paint depends on
 retaining a rendered frame, which gpui does not expose, so the honest options

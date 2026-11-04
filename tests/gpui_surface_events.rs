@@ -6,9 +6,11 @@
 #![cfg(feature = "gpui")]
 
 use gpui::{
-    div, prelude::*, px, size, Context, Modifiers, Point, Render, ScrollDelta, ScrollWheelEvent,
-    TouchPhase, Window,
+    canvas, div, prelude::*, px, size, Bounds, Context, ElementInputHandler, EntityInputHandler,
+    FocusHandle, Modifiers, Pixels, Point, Render, ScrollDelta, ScrollWheelEvent, TouchPhase,
+    UTF16Selection, Window,
 };
+use muxterm::frontend::gpui::model::ime::{self, candidate_anchor, CaretRect};
 use muxterm::frontend::gpui::model::scroll::{
     route_wheel, wheel_lines, wheel_outcome, WheelOutcome, WheelRoute,
 };
@@ -172,4 +174,160 @@ fn mouse_reports_follow_the_application_mode(_cx: &mut gpui::TestAppContext) {
         .unwrap(),
         b"\x1b[<64;1;1M\x1b[<64;1;1M".to_vec()
     );
+}
+
+/// 一个只记录 IME 提交的视图：验证平台输入处理器这条路真的通。
+struct ImeProbe {
+    focus: FocusHandle,
+    committed: Vec<u8>,
+    marked: String,
+}
+
+impl EntityInputHandler for ImeProbe {
+    fn text_for_range(
+        &mut self,
+        _range: std::ops::Range<usize>,
+        _adjusted_range: &mut Option<std::ops::Range<usize>>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<String> {
+        None
+    }
+
+    fn selected_text_range(
+        &mut self,
+        _ignore_disabled_input: bool,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<UTF16Selection> {
+        Some(UTF16Selection {
+            range: 0..0,
+            reversed: false,
+        })
+    }
+
+    fn marked_text_range(
+        &self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<std::ops::Range<usize>> {
+        if self.marked.is_empty() {
+            None
+        } else {
+            Some(0..self.marked.encode_utf16().count())
+        }
+    }
+
+    fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
+        self.marked.clear();
+    }
+
+    fn replace_text_in_range(
+        &mut self,
+        _range: Option<std::ops::Range<usize>>,
+        text: &str,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
+        self.marked.clear();
+        if let Some(bytes) = ime::commit_bytes(text) {
+            self.committed.extend_from_slice(&bytes);
+        }
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        _range: Option<std::ops::Range<usize>>,
+        new_text: &str,
+        _new_selected_range: Option<std::ops::Range<usize>>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
+        self.marked = ime::strip_placeholders(new_text);
+    }
+
+    fn bounds_for_range(
+        &mut self,
+        _range_utf16: std::ops::Range<usize>,
+        element_bounds: Bounds<Pixels>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<Bounds<Pixels>> {
+        Some(element_bounds)
+    }
+
+    fn character_index_for_point(
+        &mut self,
+        _point: Point<Pixels>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<usize> {
+        Some(0)
+    }
+}
+
+impl Render for ImeProbe {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let focus = self.focus.clone();
+        let entity = cx.entity();
+        div().id("ime-probe").size_full().child(canvas(
+            |_, _, _| (),
+            move |bounds, _, window, cx| {
+                window.handle_input(&focus, ElementInputHandler::new(bounds, entity.clone()), cx);
+            },
+        ))
+    }
+}
+
+/// IME 提交：占位符不进字节流，真字符原样穿过。
+///
+/// 对照 `CmdEnterKeyE2ETests::testImePlaceholderNeverReachesRemoteShell`。
+#[gpui::test]
+fn ime_commit_strips_placeholders_headlessly(cx: &mut gpui::TestAppContext) {
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let focus = cx.focus_handle();
+        window.focus(&focus);
+        ImeProbe {
+            focus,
+            committed: Vec::new(),
+            marked: String::new(),
+        }
+    });
+    cx.simulate_resize(size(px(400.), px(300.)));
+
+    // 平台把提交文本交给输入处理器；占位符必须被丢掉。
+    cx.update(|window, cx| {
+        view.update(cx, |probe, cx| {
+            probe.replace_text_in_range(None, "\u{ffff}", window, cx);
+            assert!(probe.committed.is_empty(), "占位符不能变成字节");
+            probe.replace_text_in_range(None, "中\u{ffff}文", window, cx);
+            assert_eq!(probe.committed, "中文".as_bytes().to_vec());
+        })
+    });
+
+    // 组合中的文本单独记录，且同样不含占位符。
+    cx.update(|window, cx| {
+        view.update(cx, |probe, cx| {
+            probe.replace_and_mark_text_in_range(None, "ni\u{ffff}", None, window, cx);
+            assert_eq!(probe.marked, "ni");
+            assert_eq!(probe.marked_text_range(window, cx), Some(0..2));
+            probe.unmark_text(window, cx);
+            assert!(probe.marked.is_empty());
+        })
+    });
+}
+
+/// 候选窗锚点：最后一列退回上一行行首（`firstRect` 的规则）。
+#[gpui::test]
+fn candidate_anchor_wraps_like_first_rect(_cx: &mut gpui::TestAppContext) {
+    let caret = CaretRect {
+        x: 640.0,
+        y: 480.0,
+        width: 8.0,
+        height: 16.0,
+    };
+    let wrapped = candidate_anchor(caret, 79, 80);
+    assert_eq!((wrapped.x, wrapped.y), (0.0, 464.0));
+    let inside = candidate_anchor(caret, 40, 80);
+    assert_eq!((inside.x, inside.y), (640.0, 480.0));
 }
