@@ -139,6 +139,23 @@ extension MainWindowController {
         content.paneLayout.terminalClientContentSize
     }
 
+    /// 测试用：侧栏当前实际宽度（point）。
+    func workspaceSidebarWidthForTest() -> CGFloat {
+        workspaceSidebar.frame.width
+    }
+
+    /// 测试用：模拟 AppKit 在展开侧栏后的下一轮布局里才把窗口撑宽。
+    /// 同步复位拿不到这种延迟变化，只有兜底守卫能治。
+    func testGrowWindowAsync(toWidth width: CGFloat, delay: TimeInterval = 0.05) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let window = self?.window else { return }
+            var frame = window.frame
+            guard frame.width < width else { return }
+            frame.size.width = width
+            window.setFrame(frame, display: true)
+        }
+    }
+
     /// 测试用：把 paneLayout 临时撑成给定宽度，再量 client 格子。
     ///
     /// 只读：Auto Layout 会在下一轮布局把 frame 改回去，这个值不能留在 view 上。

@@ -62,6 +62,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     let workspaceSidebar = WorkspaceSidebarView(frame: NSRect(x: 0, y: 0, width: 240, height: 640))
     private let mainSplitController = NSSplitViewController()
     private var sidebarSplitItem: NSSplitViewItem?
+    private var contentSplitItem: NSSplitViewItem?
+    private var sidebarFrameGuard: DispatchWorkItem?
+    /// 是自己按 frameBefore 复位窗口，不是用户/系统在改尺寸。
+    private var restoringSidebarFrame = false
+    /// 展开侧栏前的窗口 frame；只用来识别「侧栏把窗口顶宽」这一种变化。
+    private var sidebarFrameBefore: NSRect?
     private let discovery = ConnectionDiscovery()
     var commandPalette: CommandPaletteController!
     var unifiedPanel: UnifiedPanelController!
@@ -1638,6 +1644,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         mainSplitController.addSplitViewItem(contentItem)
         sidebarItem.isCollapsed = true
         sidebarSplitItem = sidebarItem
+        contentSplitItem = contentItem
         window.contentViewController = mainSplitController
     }
 
@@ -1649,25 +1656,106 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         sidebarSplitItem?.isCollapsed == false
     }
 
+    /// 展开/收起侧栏。窗口尺寸是用户给的权威值：侧栏只能压缩终端区。
+    ///
+    /// AppKit 会把「侧栏记住的厚度」（240）当请求，紧凑窗口装不下时
+    /// 选择撑宽窗口而不是收窄终端区（CI：500pt → 740pt）。因此在展开前
+    /// 先按窗口能给的厚度钉住 `maximumThickness`，让分栏在约束层面就
+    /// 不可能多要宽度；布局完成后恢复上界，用户仍可以手动拖宽。
     private func setWorkspaceSidebarOpen(_ open: Bool) {
         guard let sidebarSplitItem else { return }
+        let frameBefore = window?.frame
+        let target = open ? frameBefore.map {
+            MainSplitLayoutPolicy.expandableSidebarThickness(
+                windowContentWidth: $0.width,
+                preferred: 240
+            )
+        } : nil
+        if let target {
+            sidebarSplitItem.maximumThickness = target
+            sidebarSplitItem.minimumThickness = min(
+                MainSplitLayoutPolicy.sidebarMinimumThickness,
+                target
+            )
+        }
         sidebarSplitItem.isCollapsed = !open
         content.statusBar.sidebarOpen = open
         if open {
             refreshWorkspaceSidebar(force: true)
-            let available = window?.contentView?.bounds.width
-                ?? mainSplitController.splitView.bounds.width
-            let target = MainSplitLayoutPolicy.expandableSidebarThickness(
-                windowContentWidth: available,
-                preferred: 240
-            )
-            if workspaceSidebar.frame.width < 220 || workspaceSidebar.frame.width > target {
-                mainSplitController.splitView.setPosition(target, ofDividerAt: 0)
+        }
+        layoutMainSplit()
+        if let target {
+            mainSplitController.splitView.setPosition(target, ofDividerAt: 0)
+        }
+        // 安全网：AppKit 在展开时可能不缩终端区、直接把窗口撑宽（CI：
+        // 500 → 740）。复位本身会再触一轮布局，所以要允许重试；每轮
+        // 都用切换前的 frame 与固定 `target`，不拿撑宽后的宽度重算。
+        // 重试期间暂时放宽内容区下限，保证 侧栏+分隔条+内容区 一定装得进
+        // 用户给的宽度；结束后恢复，手动拖拽仍受原下限约束。
+        if open, let window, let frameBefore {
+            var attempt = 0
+            while window.frame.size != frameBefore.size, attempt < 3 {
+                attempt += 1
+                contentSplitItem?.minimumThickness = 1
+                if let target {
+                    sidebarSplitItem.maximumThickness = target
+                    mainSplitController.splitView.setPosition(target, ofDividerAt: 0)
+                }
+                window.setFrame(frameBefore, display: true)
+                layoutMainSplit()
             }
         }
-        // NSSplitViewController owns the divider geometry. Laying out only
-        // NSWindow.contentView can leave the toggle changed while the sidebar
-        // remains visually collapsed.
+        contentSplitItem?.minimumThickness = MainSplitLayoutPolicy.contentMinimumThickness
+        if target != nil {
+            sidebarSplitItem.minimumThickness = MainSplitLayoutPolicy.sidebarMinimumThickness
+            sidebarSplitItem.maximumThickness = MainSplitLayoutPolicy.sidebarMaximumThickness
+        }
+        if open, let frameBefore {
+            scheduleSidebarFrameGuard(frameBefore)
+        } else {
+            sidebarFrameGuard?.cancel()
+            sidebarFrameGuard = nil
+        }
+    }
+
+    /// AppKit 的侧栏展开在部分系统版本上是异步的：`isCollapsed = false`
+    /// 返回后还会再跑一轮布局，那一步可能再次把窗口撑宽（CI：500 → 740）。
+    /// 同步复位拿不到这一步，所以下一拍再确认一次。
+    ///
+    /// 只认「原点不变、高度不变、宽度涨了侧栏那么多」这一种变化；拖拽、
+    /// zoom、全屏、测试里显式 setFrame 都会自动放弃，不跟用户抢尺寸。
+    private func scheduleSidebarFrameGuard(_ frameBefore: NSRect) {
+        sidebarFrameGuard?.cancel()
+        sidebarFrameBefore = frameBefore
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, let window = self.window else { return }
+            defer { self.sidebarFrameGuard = nil }
+            guard self.sidebarSplitItem?.isCollapsed == false else { return }
+            guard self.isSidebarPushedWindowGrowth(window.frame) else { return }
+            self.restoringSidebarFrame = true
+            window.setFrame(frameBefore, display: true)
+            self.layoutMainSplit()
+            self.restoringSidebarFrame = false
+        }
+        sidebarFrameGuard = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
+    }
+
+    /// 「侧栏把窗口顶宽」的指纹：原点与高度不变，宽度只涨不多。
+    private func isSidebarPushedWindowGrowth(_ frame: NSRect) -> Bool {
+        guard let before = sidebarFrameBefore else { return false }
+        guard frame.origin == before.origin else { return false }
+        guard abs(frame.height - before.height) <= 1 else { return false }
+        let growth = frame.width - before.width
+        return growth > 1
+            && growth <= MainSplitLayoutPolicy.sidebarMaximumThickness
+                + MainSplitLayoutPolicy.dividerThickness
+    }
+
+    /// NSSplitViewController owns the divider geometry. Laying out only
+    /// NSWindow.contentView can leave the toggle changed while the sidebar
+    /// remains visually collapsed.
+    private func layoutMainSplit() {
         mainSplitController.view.needsLayout = true
         mainSplitController.view.layoutSubtreeIfNeeded()
     }
