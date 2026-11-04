@@ -6,8 +6,10 @@
 
 use crate::frontend::gpui::model::attention::{attention_rows, AttentionRow};
 use crate::frontend::gpui::model::panel::{PanelModel, PanelTab, SearchScope};
+use crate::frontend::gpui::model::quick_connect::{TargetConfig, WorkspaceQuery};
 use crate::frontend::gpui::model::search::{search_rows, SearchHit, SearchSnapshot};
 use crate::frontend::gpui::model::sidebar::SidebarItem;
+use crate::frontend::gpui::model::target::{TargetRuntime, TargetTransport};
 
 /// 面板一行。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,24 +102,47 @@ impl PanelState {
     }
 }
 
-/// Workspaces tab：标题匹配 `name` 或 `runtime @ transport`。
+/// Workspaces tab：查询语言与 `@runtime` / `@local` / `@alias` 过滤都走
+/// `WorkspaceQuery`，和 macOS UnifiedPanel 共用一套规则。
 pub fn workspace_rows(workspaces: &[SidebarItem], query: &str) -> Vec<PanelRow> {
-    let q = query.trim().to_lowercase();
-    workspaces
+    let parsed = WorkspaceQuery::new(query);
+    let mut scored: Vec<(usize, i64, &SidebarItem)> = workspaces
         .iter()
-        .filter(|workspace| {
-            q.is_empty()
-                || workspace.display_title().to_lowercase().contains(&q)
-                || workspace.runtime.to_lowercase().contains(&q)
-                || workspace.transport.to_lowercase().contains(&q)
+        .enumerate()
+        .filter_map(|(index, item)| {
+            parsed
+                .score(&config_for(item))
+                .map(|score| (index, score, item))
         })
-        .map(|workspace| PanelRow::Workspace {
+        .collect();
+    scored.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    scored
+        .into_iter()
+        .map(|(_, _, workspace)| PanelRow::Workspace {
             workspace_id: workspace.workspace_id.clone(),
             title: workspace.display_title(),
             detail: format!("{} @ {}", workspace.runtime, workspace.transport),
             active: workspace.is_active,
         })
         .collect()
+}
+
+/// 侧栏投影里没有 path/session，只能填出查询用得上的那几个字段。
+fn config_for(item: &SidebarItem) -> TargetConfig {
+    let runtime = TargetRuntime::parse(&item.runtime).unwrap_or(TargetRuntime::Shell);
+    let transport = if item.transport == "local" {
+        TargetTransport::Local
+    } else {
+        TargetTransport::Ssh {
+            name: item.transport.clone(),
+        }
+    };
+    TargetConfig {
+        name: item.name.clone(),
+        runtime,
+        transport,
+        ..TargetConfig::default()
+    }
 }
 
 /// Attention tab：行文本与侧栏对齐。
@@ -308,6 +333,35 @@ mod tests {
 
         state.model.query.clear();
         assert_eq!(state.rows(&[], None, Some(&snapshot)).len(), 2);
+    }
+
+    /// `@runtime` 过滤与子序列匹配都来自 WorkspaceQuery。
+    #[test]
+    fn workspace_query_filters_by_runtime_and_subsequence() {
+        let mut tmux = workspace("tmux", "muxterm", true);
+        tmux.runtime = "tmux".into();
+        let mut shell = workspace("shell", "notes", false);
+        shell.runtime = "shell".into();
+        shell.transport = "ryzen".into();
+        let workspaces = [tmux, shell];
+
+        assert_eq!(workspace_rows(&workspaces, "@tmux").len(), 1);
+        assert_eq!(workspace_rows(&workspaces, "@shell").len(), 1);
+        assert_eq!(
+            workspace_rows(&workspaces, "@local").len(),
+            1,
+            "只有本地目标命中 @local"
+        );
+        assert_eq!(workspace_rows(&workspaces, "@ryzen").len(), 1);
+        assert_eq!(
+            workspace_rows(&workspaces, "mxrm").len(),
+            1,
+            "子序列也能命中 muxterm"
+        );
+        assert!(
+            workspace_rows(&workspaces, "@tmux notes").is_empty(),
+            "条件必须同时满足"
+        );
     }
 
     /// 每个 tab 对应一个搜索范围。

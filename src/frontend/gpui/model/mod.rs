@@ -18,6 +18,7 @@ pub mod layout_projection;
 pub mod panel;
 pub mod query_detector;
 pub mod query_reply;
+pub mod quick_connect;
 pub mod replica_id;
 pub mod resize_math;
 pub mod scroll;

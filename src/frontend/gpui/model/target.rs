@@ -6,8 +6,9 @@
 //! 这两个枚举是全前端共享词汇，所以单独成模块，避免每个窗口各写一份。
 
 /// 连接 runtime。顺序也是单选卡的展示顺序。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum TargetRuntime {
+    #[default]
     Shell,
     Tmux,
     Herdr,
@@ -61,10 +62,13 @@ impl TargetRuntime {
 }
 
 /// 连接传输：ssh 需要别名，local 不需要。
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub enum TargetTransport {
+    #[default]
     Local,
-    Ssh { name: String },
+    Ssh {
+        name: String,
+    },
 }
 
 impl TargetTransport {
