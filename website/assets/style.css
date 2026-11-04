@@ -406,15 +406,16 @@ code, kbd, samp, pre {
 }
 
 .hero-headline {
-  font-size: clamp(2.25rem, 4vw, 4rem);
+  font-size: clamp(1.875rem, 4vw, 4rem);
   line-height: 1.08;
   color: var(--color-ink);
   margin: 0;
   hyphens: none;
+  text-wrap: balance;
 }
 
 html[lang^="zh"] .hero-headline {
-  font-size: clamp(2rem, 3.2vw, 3rem);
+  font-size: clamp(1.75rem, 3.2vw, 3rem);
 }
 
 .hero-lead {
