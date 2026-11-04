@@ -396,3 +396,10 @@ required-features = ["ffi"]
 name = "ssh_streaming_integration"
 path = "tests/ssh_streaming_integration.rs"
 required-features = ["ffi"]
+
+# GUI 开发者构建：保留 dev 的 debug 断言，但让热路径（VTE 解析 / ANSI 重编码）
+# 走优化。`build-macos.sh` 默认用它链接 .app；未优化解析实测慢 7-9 倍
+# （17 pane 的 98KB Index snapshot 洪峰：595ms vs 82ms）。
+[profile.gui]
+inherits = "dev"
+opt-level = 2

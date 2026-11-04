@@ -14,8 +14,15 @@ cd "$ROOT"
 source "$ROOT/scripts/build-common.sh"
 
 RELEASE="$(parse_release "${1:-}")"
+# Dev 构建用 `gui` profile：保留 debug 断言，但让 VTE 解析/ANSI 重编码
+# 走优化。未优化的解析实测慢 7-9 倍（17 pane 的 98KB Index 洪峰
+# 595ms vs 82ms），直接表现为切 tab 与 attach 时的主线程卡顿。
+CARGO_PROFILE="gui"
 PROFILE="debug"
-[[ -n "$RELEASE" ]] && PROFILE="release"
+if [[ -n "$RELEASE" ]]; then
+  CARGO_PROFILE="release"
+  PROFILE="release"
+fi
 # Development bundles must not share the release LaunchServices identity with
 # an older copy in /Applications (or another worktree). A commit-scoped id
 # lets the freshly built app launch while the stable release id remains usable
@@ -33,14 +40,18 @@ OUT_DIR="$(build_os_dir)"   # -> build/macos
 TARGET_DIR="$(cargo_target_dir)"
 mkdir -p "$OUT_DIR" "$TARGET_DIR"
 
-echo "==> cargo build tui+ffi $RELEASE (静态库供 Swift 链接，同时产出 CLI)"
+echo "==> cargo build tui+ffi profile=$CARGO_PROFILE (静态库供 Swift 链接，同时产出 CLI)"
 # `tui` feature 已包含 `ffi`。一次编出 libmuxterm.a 和带 tui 的 muxterm，
 # 避免先 ffi 再 tui 把同一 crate 编译两遍。
-cargo build --no-default-features --features tui $RELEASE
+if [[ "$CARGO_PROFILE" == "release" ]]; then
+  cargo build --no-default-features --features tui --release
+else
+  cargo build --no-default-features --features tui --profile "$CARGO_PROFILE"
+fi
 
 # Vendor 软链（指向实际 target dir）
 mkdir -p "$MACOS_DIR/Vendor"
-LIBMUXTERM="$TARGET_DIR/$PROFILE/libmuxterm.a"
+LIBMUXTERM="$TARGET_DIR/$CARGO_PROFILE/libmuxterm.a"
 if [[ ! -f "$LIBMUXTERM" ]]; then
   echo "ERROR: $LIBMUXTERM not found after cargo build" >&2
   exit 1
@@ -118,7 +129,7 @@ test -d "$APP/Contents/_CodeSignature"
 
 # Rust CLI 最后拷贝：换 inode + ad-hoc 签名，避免 `zsh: killed`。二进制已在开头编好。
 cd "$ROOT"
-RUST_BIN="$(cargo_bin_path "$PROFILE")"
+RUST_BIN="$(cargo_bin_path "$CARGO_PROFILE")"
 if [[ ! -f "$RUST_BIN" ]]; then
   echo "ERROR: $RUST_BIN not found after cargo build" >&2
   exit 1
