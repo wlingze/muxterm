@@ -12,6 +12,8 @@ default = ["gtk"]
 gtk = ["dep:gtk4", "dep:vte4", "ffi"]
 # TUI 前端：纯 crossterm + ratatui，经 ffi 调用核心（CI / 无头，跨平台）。
 tui = ["dep:crossterm", "dep:ratatui", "ffi"]
+# GPUI 前端：一份 Rust widget 树跑 macOS / Linux / Windows（见 docs/FRONTEND-GPUI.md）。
+gpui = ["dep:gpui", "ffi"]
 # C ABI 导出（不依赖任何 GUI）。
 ffi = []
 # Integration tests that still construct provider types. Production builds
@@ -55,6 +57,9 @@ hex = "0.4"
 # 可选：跨平台 TUI 前端
 crossterm = { version = "0.28", optional = true }
 ratatui = { version = "0.29", optional = true }
+
+# 可选：跨平台 GUI 前端（Zed 的 gpui）
+gpui = { version = "0.2.2", optional = true }
 
 # 可选：Linux bundled font registration
 [target.'cfg(target_os = "linux")'.dependencies]
