@@ -12,6 +12,8 @@ use muxterm::frontend::gpui::chrome::tab_bar_view::TabBarPosition;
 use muxterm::frontend::gpui::model::attention::{
     AttentionSnapshot, PaneAttention, PaneAttentionStatus, WorkspaceAttention,
 };
+use muxterm::frontend::gpui::model::panel::PanelTab;
+use muxterm::frontend::gpui::model::search::SearchSnapshot;
 use muxterm::frontend::gpui::model::sidebar::backend_status;
 use muxterm::frontend::gpui::model::sidebar::Indicator;
 use muxterm::frontend::gpui::state::GpuiApp;
@@ -373,4 +375,81 @@ fn tab_bar_position_defaults_to_top(cx: &mut TestAppContext) {
     let (view, cx) = mount(store_with_two_workspaces(), cx);
     let position = cx.update(|_, cx| view.update(cx, |app, _| app.tab_bar_position()));
     assert_eq!(position, TabBarPosition::Top);
+}
+
+/// Cmd-P（QuickConnect）打开统一面板并停在 Workspaces。
+#[gpui::test]
+fn cmd_p_opens_the_panel_on_workspaces(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    assert!(!cx.update(|_, cx| view.update(cx, |app, _| app.panel_open())));
+    cx.simulate_keystrokes("cmd-p");
+    assert!(cx.update(|_, cx| view.update(cx, |app, _| app.panel_open())));
+    assert_eq!(
+        cx.update(|_, cx| view.update(cx, |app, _| app.panel_tab())),
+        PanelTab::Workspaces
+    );
+    let rows = cx.update(|_, cx| view.update(cx, |app, _| app.panel_rows()));
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].title(), "dev · local");
+}
+
+/// Tab 循环三个 tab，Shift-Tab 反向；Escape 关闭。
+#[gpui::test]
+fn tab_cycles_panel_tabs_and_escape_closes(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.simulate_keystrokes("cmd-p");
+    cx.simulate_keystrokes("tab");
+    assert_eq!(
+        cx.update(|_, cx| view.update(cx, |app, _| app.panel_tab())),
+        PanelTab::Attention
+    );
+    cx.simulate_keystrokes("shift-tab");
+    assert_eq!(
+        cx.update(|_, cx| view.update(cx, |app, _| app.panel_tab())),
+        PanelTab::Workspaces
+    );
+    cx.simulate_keystrokes("escape");
+    assert!(!cx.update(|_, cx| view.update(cx, |app, _| app.panel_open())));
+}
+
+/// 面板打开时 Tab 不进终端：键先被面板吃掉。
+#[gpui::test]
+fn panel_swallows_tab_instead_of_sending_it(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    cx.simulate_keystrokes("cmd-p");
+    cx.simulate_keystrokes("tab");
+    let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    assert!(
+        !commands
+            .iter()
+            .any(|command| matches!(command, ClientCommand::Input { .. })),
+        "面板里的 Tab 不该写进 PTY：{commands:?}"
+    );
+}
+
+/// Cmd-F 直接落在 Search tab，搜索命中按 query 过滤。
+#[gpui::test]
+fn cmd_f_opens_the_search_tab(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            app.set_search_snapshot(Some(
+                SearchSnapshot::decode(
+                    br#"{"ok":true,"hits":[
+                        {"workspace_id":"local@@dev@tmux@dev","tab_id":1,"pane_id":10,"seq":4,"line":"cargo test ok"},
+                        {"workspace_id":"local@@dev@tmux@dev","tab_id":1,"pane_id":11,"seq":5,"line":"vim notes"}
+                    ]}"#,
+                )
+                .expect("snapshot"),
+            ));
+        })
+    });
+    cx.simulate_keystrokes("cmd-f");
+    assert_eq!(
+        cx.update(|_, cx| view.update(cx, |app, _| app.panel_tab())),
+        PanelTab::Search
+    );
+    let rows = cx.update(|_, cx| view.update(cx, |app, _| app.panel_rows()));
+    assert_eq!(rows.len(), 2);
 }

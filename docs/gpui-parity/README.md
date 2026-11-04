@@ -120,8 +120,9 @@
 | 1（b：投影模型） | 完成 | `c7b197b3` `e62448ed` `47b3e9f6` `4f7f5bbe` `20544279` |
 | 2（喂字节规则） | 完成 | `2e584660` |
 | 3（Grid 与事件） | 完成 | `c734f6bc` |
-| 4（IME 与粘贴） | 完成 | 本波提交 |
-| 5–8 | 未开始 | — |
+| 4（IME 与粘贴） | 完成 | `76ea1b94` |
+| 5（Chrome 组件） | 侧栏与 tab/状态栏完成，面板浮层完成 | `fccdd4e2` `66c0579b` 本波提交 |
+| 6–8 | 未开始 | — |
 
 每波落地后 `cargo test --no-default-features --features gpui --lib` 必须全绿；
 无头 harness 用例在 `tests/gpui_surface_events.rs`。

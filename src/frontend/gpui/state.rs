@@ -56,6 +56,10 @@ pub struct GpuiApp {
     status: String,
     /// IME 组合中的文本（尚未提交）。只在聚焦 pane 的光标处画。
     marked_text: String,
+    /// Cmd-P 统一面板的状态。
+    pub(crate) panel: crate::frontend::gpui::chrome::panel_view::PanelState,
+    /// 搜索命中快照（FFI 接入前保持 `None`，面板 Search tab 为空）。
+    pub(crate) search_snapshot: Option<crate::frontend::gpui::model::search::SearchSnapshot>,
     /// tab 栏位置，默认顶部。
     pub(crate) tab_bar_position: crate::frontend::gpui::chrome::tab_bar_view::TabBarPosition,
     /// 侧栏是否显示（Cmd-B 切换，与 Swift 一致）。
@@ -91,6 +95,8 @@ impl GpuiApp {
             wheel_accumulators: HashMap::new(),
             focus_handle: cx.focus_handle(),
             marked_text: String::new(),
+            panel: crate::frontend::gpui::chrome::panel_view::PanelState::default(),
+            search_snapshot: None,
             tab_bar_position: crate::frontend::gpui::chrome::tab_bar_view::TabBarPosition::default(
             ),
             sidebar_visible: true,
@@ -210,6 +216,8 @@ impl GpuiApp {
             wheel_accumulators: HashMap::new(),
             focus_handle: cx.focus_handle(),
             marked_text: String::new(),
+            panel: crate::frontend::gpui::chrome::panel_view::PanelState::default(),
+            search_snapshot: None,
             tab_bar_position: crate::frontend::gpui::chrome::tab_bar_view::TabBarPosition::default(
             ),
             sidebar_visible: true,
@@ -460,6 +468,23 @@ impl GpuiApp {
                 self.select_workspace(target, cx);
                 true
             }
+            // Cmd-P 的 QuickConnect 就是统一面板的 Workspaces tab；
+            // Cmd-Shift-P 的旧命令面板还没有窗口（见 README 波次 6）。
+            KeyAction::QuickConnect => {
+                self.show_panel(
+                    crate::frontend::gpui::model::panel::PanelTab::Workspaces,
+                    cx,
+                );
+                true
+            }
+            KeyAction::Attention => {
+                self.show_panel(crate::frontend::gpui::model::panel::PanelTab::Attention, cx);
+                true
+            }
+            KeyAction::SearchWorkspace => {
+                self.show_panel(crate::frontend::gpui::model::panel::PanelTab::Search, cx);
+                true
+            }
             KeyAction::ToggleSidebar => {
                 self.sidebar_visible = !self.sidebar_visible;
                 true
@@ -531,6 +556,60 @@ impl GpuiApp {
     /// tab 栏位置（`[ui] tab_bar_position`）。
     pub fn tab_bar_position(&self) -> crate::frontend::gpui::chrome::tab_bar_view::TabBarPosition {
         self.tab_bar_position
+    }
+
+    /// 面板是否打开（Esc 关闭后按键回到终端）。
+    pub fn panel_open(&self) -> bool {
+        self.panel.open
+    }
+
+    /// 面板当前 tab。
+    pub fn panel_tab(&self) -> crate::frontend::gpui::model::panel::PanelTab {
+        self.panel.model.tab
+    }
+
+    /// 面板当前行。
+    pub fn panel_rows(&self) -> Vec<crate::frontend::gpui::chrome::panel_view::PanelRow> {
+        let workspaces = self.sidebar_items();
+        self.panel.rows(
+            &workspaces,
+            self.attention.as_ref(),
+            self.search_snapshot.as_ref(),
+        )
+    }
+
+    /// 打开面板并切到指定 tab；已打开时只切内容，不做 toggle。
+    pub fn show_panel(
+        &mut self,
+        tab: crate::frontend::gpui::model::panel::PanelTab,
+        cx: &mut Context<Self>,
+    ) {
+        self.panel.show(tab);
+        cx.notify();
+    }
+
+    /// 关闭面板。
+    pub fn close_panel(&mut self, cx: &mut Context<Self>) {
+        if !self.panel.open {
+            return;
+        }
+        self.panel.close();
+        cx.notify();
+    }
+
+    /// Tab / Shift+Tab 循环面板 tab。
+    pub fn cycle_panel_tab(&mut self, back: bool, cx: &mut Context<Self>) {
+        self.panel.cycle(back);
+        cx.notify();
+    }
+
+    /// 无头测试 / 未来 FFI 快照：注入搜索命中。
+    #[doc(hidden)]
+    pub fn set_search_snapshot(
+        &mut self,
+        snapshot: Option<crate::frontend::gpui::model::search::SearchSnapshot>,
+    ) {
+        self.search_snapshot = snapshot;
     }
 
     /// 折叠/展开一段。
@@ -851,6 +930,23 @@ impl GpuiApp {
             }
             cx.notify();
             return;
+        }
+
+        // 面板打开时先吃掉它自己的键：Escape 关闭、Tab 循环，其余照旧下发。
+        if self.panel.open {
+            match keystroke.key.as_str() {
+                "escape" => {
+                    self.close_panel(cx);
+                    cx.notify();
+                    return;
+                }
+                "tab" => {
+                    self.cycle_panel_tab(keystroke.modifiers.shift, cx);
+                    cx.notify();
+                    return;
+                }
+                _ => {}
+            }
         }
 
         let Some(pane_id) = self.focused_pane else {
