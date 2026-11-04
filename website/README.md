@@ -92,8 +92,8 @@ workbench, the Agents aggregate, and the local Shells aggregate. They are taken
 by `src/frontend/macos/AppE2ETests/WebsiteScreenshotE2ETests.swift` and
 `WebsiteGalleryE2ETests.swift`. The tests use isolated tmux sockets
 (`muxterm-test-*`), an isolated `ZDOTDIR`, and mock terminal output; they never
-read or write the user's sessions. Windows are 1280 × 760 at 2× scale
-(2560 × 1520 PNG).
+read or write the user's sessions. Captures use the 1280 × 760 window and the
+display's backing scale; the committed PNGs are 1280 × 760.
 
 To regenerate after a UI change:
 
@@ -116,10 +116,13 @@ theme, disables the update check, and restores the process appearance in
 
 ## Documentation reference
 
-`docs.html` and `zh/docs.html` start with a curated quickstart. The **Full
-reference** section below it renders the long-form repository documents in the
-browser with [marked](https://github.com/markedjs/marked) (vendored, MIT). The
-selected file can also be opened on GitHub.
+`docs.html` and `zh/docs.html` start with a curated quickstart. The sidebar's
+**reference** group lists the long-form repository documents; selecting one
+replaces the quickstart with that document in the same reading column. The
+document is rendered in the browser with
+[marked](https://github.com/markedjs/marked) (vendored, MIT). There is no nested
+reader or tab strip: the selected document is the page. The same document can
+also be opened on GitHub.
 
 Source files are copied into `website/docs/` so the site remains static and has
 no build step. After editing `PRODUCT.md` or a file in `docs/`, sync the copies:
@@ -139,10 +142,11 @@ the sync script.
 - The hero product surface is a live reconstruction of the Muxterm
   workspace/sidebar/tab/pane layout. The workspace buttons switch runtimes so
   the three-lane model is visible without leaving the page.
-- The gallery below the hero has three real app captures: the workbench, the
-  Agents aggregate, and the Shells aggregate. Both themes are stored as separate
-  PNGs; the theme toggle swaps every image and updates `aria-pressed` on both the
-  navigation and screenshot controls.
+- The gallery below the hero is a horizontal, snap-scrolling slider with three
+  real app captures: the workbench, the Agents aggregate, and the Shells
+  aggregate. Both themes are stored as separate PNGs; the theme toggle swaps
+  every slide and updates `aria-pressed` on both the navigation and screenshot
+  controls. The arrow buttons and `1 / 3` counter expose the same scroll state.
 - No analytics, tracking pixels, cookies, or third-party requests. The font and
   Markdown renderer are self-hosted.
 - Content rules: no invented metrics, testimonials, logos, or quotes. Release

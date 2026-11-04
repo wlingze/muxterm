@@ -126,25 +126,117 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
+  // ── Screenshot carousel ────────────────────────────────────────
+  const shotTrack = document.querySelector('[data-shot-track]');
+  if (shotTrack) {
+    const shotCards = Array.from(shotTrack.querySelectorAll('[data-shot-card]'));
+    const shotPrev = document.querySelector('[data-shot-prev]');
+    const shotNext = document.querySelector('[data-shot-next]');
+    const shotCount = document.querySelector('[data-shot-count]');
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    let shotIndex = 0;
+
+    const shotOffset = (card) => (
+      shotTrack.scrollLeft
+      + card.getBoundingClientRect().left
+      - shotTrack.getBoundingClientRect().left
+    );
+
+    const nearestShot = () => {
+      let nearest = 0;
+      let distance = Infinity;
+      const trackLeft = shotTrack.getBoundingClientRect().left;
+      shotCards.forEach((card, index) => {
+        const nextDistance = Math.abs(card.getBoundingClientRect().left - trackLeft);
+        if (nextDistance < distance) {
+          distance = nextDistance;
+          nearest = index;
+        }
+      });
+      return nearest;
+    };
+
+    const updateShotNav = () => {
+      shotIndex = nearestShot();
+      const atStart = shotTrack.scrollLeft <= 12;
+      const atEnd = shotTrack.scrollLeft + shotTrack.clientWidth >= shotTrack.scrollWidth - 12;
+      if (shotPrev) shotPrev.disabled = atStart;
+      if (shotNext) shotNext.disabled = atEnd;
+      if (shotCount) {
+        shotCount.textContent = `${shotIndex + 1} / ${shotCards.length}`;
+      }
+    };
+
+    const goToShot = (index) => {
+      const card = shotCards[Math.max(0, Math.min(shotCards.length - 1, index))];
+      if (!card) return;
+      shotIndex = shotCards.indexOf(card);
+      shotTrack.scrollTo({
+        left: shotOffset(card),
+        behavior: reduceMotion ? 'auto' : 'smooth'
+      });
+      updateShotNav();
+    };
+
+    if (shotPrev) shotPrev.addEventListener('click', () => goToShot(shotIndex - 1));
+    if (shotNext) shotNext.addEventListener('click', () => goToShot(shotIndex + 1));
+    shotTrack.addEventListener('scroll', () => {
+      window.requestAnimationFrame(updateShotNav);
+    }, { passive: true });
+    shotTrack.addEventListener('keydown', (event) => {
+      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+      event.preventDefault();
+      goToShot(shotIndex + (event.key === 'ArrowRight' ? 1 : -1));
+    });
+    window.addEventListener('resize', updateShotNav);
+    updateShotNav();
+  }
+
   // ── Repository docs reference ──────────────────────────────────
   const docsReference = document.querySelector('[data-docs-reference]');
   if (docsReference) {
-    const docButtons = Array.from(docsReference.querySelectorAll('[data-doc]'));
+    const docsRoot = docsReference.closest('.docs-content');
+    const guideArticles = Array.from(docsRoot.querySelectorAll('.docs-article'));
+    const docLinks = Array.from(document.querySelectorAll('[data-doc-ref]'));
+    const guideLinks = Array.from(document.querySelectorAll('a[href^="#"]')).filter((link) => (
+      link.getAttribute('href') !== '#reference' && !link.hasAttribute('data-doc-ref')
+    ));
     const docTarget = docsReference.querySelector('[data-docs-content]');
     const docSource = docsReference.dataset.docsSrc || './docs/';
     const githubLink = docsReference.querySelector('[data-docs-github]');
-    const docNames = new Set(docButtons.map((button) => button.dataset.doc));
+    const docNames = new Set(docLinks.map((link) => link.dataset.docRef));
+    const fallbackDoc = isZh ? 'USER-GUIDE' : 'WORKSPACE';
     let activeDoc = '';
     let requestId = 0;
 
     const docPath = (name) => name === 'PRODUCT' ? 'PRODUCT.md' : `docs/${name}.md`;
     const docUrl = (name) => `https://github.com/wlingze/muxterm/blob/main/${docPath(name)}`;
 
-    const setActiveDoc = (name) => {
-      docButtons.forEach((button) => {
-        button.setAttribute('aria-pressed', button.dataset.doc === name ? 'true' : 'false');
+    const setActiveLink = (name) => {
+      docLinks.forEach((link) => {
+        const active = link.dataset.docRef === name;
+        link.classList.toggle('is-active', active);
+        if (active) {
+          link.setAttribute('aria-current', 'page');
+        } else {
+          link.removeAttribute('aria-current');
+        }
       });
-      if (githubLink) githubLink.href = docUrl(name);
+      if (name && githubLink) githubLink.href = docUrl(name);
+    };
+
+    const showGuide = () => {
+      docsRoot.classList.remove('is-reference-mode');
+      guideArticles.forEach((article) => { article.hidden = false; });
+      docsReference.hidden = true;
+      activeDoc = '';
+      setActiveLink('');
+    };
+
+    const showReference = () => {
+      docsRoot.classList.add('is-reference-mode');
+      guideArticles.forEach((article) => { article.hidden = true; });
+      docsReference.hidden = false;
     };
 
     const sanitize = (fragment) => {
@@ -209,13 +301,21 @@ document.addEventListener('DOMContentLoaded', () => {
       });
     };
 
-    const loadDoc = async (name) => {
+    const loadDoc = async (name, options = {}) => {
       if (!docNames.has(name)) return;
+      const scroll = options.scroll !== false;
       const token = ++requestId;
       activeDoc = name;
-      setActiveDoc(name);
+      showReference();
+      setActiveLink(name);
       docTarget.setAttribute('aria-busy', 'true');
       docTarget.innerHTML = `<p class="docs-reference__status">${isZh ? '加载中…' : 'loading…'}</p>`;
+      history.replaceState(null, '', `#doc-${name}`);
+      if (scroll) {
+        window.requestAnimationFrame(() => {
+          docsReference.scrollIntoView({ block: 'start', behavior: 'smooth' });
+        });
+      }
 
       try {
         if (typeof marked === 'undefined') throw new Error('markdown renderer unavailable');
@@ -246,8 +346,15 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     };
 
-    docButtons.forEach((button) => {
-      button.addEventListener('click', () => loadDoc(button.dataset.doc));
+    docLinks.forEach((link) => {
+      link.addEventListener('click', (event) => {
+        event.preventDefault();
+        loadDoc(link.dataset.docRef);
+      });
+    });
+
+    guideLinks.forEach((link) => {
+      link.addEventListener('click', () => showGuide());
     });
 
     docTarget.addEventListener('click', (event) => {
@@ -258,7 +365,12 @@ document.addEventListener('DOMContentLoaded', () => {
       if (name && name !== activeDoc) loadDoc(name);
     });
 
-    loadDoc(docsReference.dataset.docDefault || 'WORKSPACE');
+    const initialDoc = (location.hash.match(/^#doc-([A-Z0-9-]+)$/i) || [])[1];
+    if (initialDoc) {
+      loadDoc(initialDoc, { scroll: true });
+    } else if (location.hash === '#reference') {
+      loadDoc(fallbackDoc, { scroll: true });
+    }
   }
 
   // ── Interactive Workspace / Tab / Pane surface ──────────────────

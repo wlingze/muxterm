@@ -44,7 +44,7 @@
       <div class="container hero-layout">
         <div class="hero-copy">
           <h1 class="hero-headline">tmux and Herdr become workspaces.</h1>
-          <p class="hero-lead">A native workbench for tmux, Herdr and local shells.</p>
+          <p class="hero-lead">tmux, Herdr and local shells in one native workbench.</p>
 
           <div class="hero-actions">
             <a href="https://github.com/wlingze/muxterm/releases/latest/download/muxterm-macos-arm64.dmg" class="btn btn--primary" rel="noreferrer">download for macos</a>
@@ -134,50 +134,57 @@ Scene: resident</pre>
       <div class="container">
         <div class="shot-head">
           <p class="shot-note">mock sessions</p>
-          <div class="shot-theme-switch" role="group" aria-label="Screenshot theme">
-            <button type="button" class="shot-theme" data-set-theme="dark" aria-pressed="true">dark</button>
-            <button type="button" class="shot-theme" data-set-theme="light" aria-pressed="false">light</button>
+          <div class="shot-controls">
+            <div class="shot-theme-switch" role="group" aria-label="Screenshot theme">
+              <button type="button" class="shot-theme" data-set-theme="dark" aria-pressed="true">dark</button>
+              <button type="button" class="shot-theme" data-set-theme="light" aria-pressed="false">light</button>
+            </div>
+            <span class="shot-count" data-shot-count aria-live="polite">1 / 3</span>
+            <button type="button" class="shot-nav" data-shot-prev aria-label="previous screenshot">
+              <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" focusable="false"><path d="M8.5 2.5 4 7l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square"/></svg>
+            </button>
+            <button type="button" class="shot-nav" data-shot-next aria-label="next screenshot">
+              <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" focusable="false"><path d="M5.5 2.5 10 7l-4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square"/></svg>
+            </button>
           </div>
         </div>
 
-        <div class="shot-gallery">
-          <figure class="app-shot app-shot--wide">
-            <figcaption class="app-shot__bar">
-              <span class="app-shot__caption">workbench</span>
-            </figcaption>
+        <div class="shot-track" data-shot-track tabindex="0" role="region" aria-label="App screenshots">
+          <figure class="app-shot" data-shot-card>
             <img data-shot
                  data-dark="./assets/img/app-workspace-dark.png"
                  data-light="./assets/img/app-workspace-light.png"
                  src="./assets/img/app-workspace-dark.png"
                  width="1280" height="760" decoding="async"
                  alt="Muxterm macOS workbench with a workspace sidebar, four terminal panes and two tabs.">
+            <figcaption class="app-shot__label">
+              <span class="app-shot__caption">workbench</span>
+            </figcaption>
           </figure>
 
-          <div class="shot-grid">
-            <figure class="app-shot">
-              <figcaption class="app-shot__bar">
-                <span class="app-shot__caption">agents</span>
-              </figcaption>
-              <img data-shot
-                   data-dark="./assets/img/app-agents-dark.png"
-                   data-light="./assets/img/app-agents-light.png"
-                   src="./assets/img/app-agents-dark.png"
-                   width="1280" height="760" loading="lazy" decoding="async"
-                   alt="Muxterm Agents aggregate with two working agents in the sidebar and two agent tabs.">
-            </figure>
+          <figure class="app-shot" data-shot-card>
+            <img data-shot
+                 data-dark="./assets/img/app-agents-dark.png"
+                 data-light="./assets/img/app-agents-light.png"
+                 src="./assets/img/app-agents-dark.png"
+                 width="1280" height="760" decoding="async"
+                 alt="Muxterm Agents aggregate with two working agents in the sidebar and two agent tabs.">
+            <figcaption class="app-shot__label">
+              <span class="app-shot__caption">agents</span>
+            </figcaption>
+          </figure>
 
-            <figure class="app-shot">
-              <figcaption class="app-shot__bar">
-                <span class="app-shot__caption">shells</span>
-              </figcaption>
-              <img data-shot
-                   data-dark="./assets/img/app-shells-dark.png"
-                   data-light="./assets/img/app-shells-light.png"
-                   src="./assets/img/app-shells-dark.png"
-                   width="1280" height="760" loading="lazy" decoding="async"
-                   alt="Muxterm Shells aggregate with a local shell workspace and its terminal output.">
-            </figure>
-          </div>
+          <figure class="app-shot" data-shot-card>
+            <img data-shot
+                 data-dark="./assets/img/app-shells-dark.png"
+                 data-light="./assets/img/app-shells-light.png"
+                 src="./assets/img/app-shells-dark.png"
+                 width="1280" height="760" decoding="async"
+                 alt="Muxterm Shells aggregate with a local shell workspace and its terminal output.">
+            <figcaption class="app-shot__label">
+              <span class="app-shot__caption">shells</span>
+            </figcaption>
+          </figure>
         </div>
       </div>
     </section>
@@ -233,7 +240,7 @@ Scene: resident</pre>
       <div class="container">
         <div class="section-head">
           <h2 class="section-title">tmux and Herdr, without the wrapper</h2>
-          <p class="section-desc">One workspace per session; the same native controls over local or SSH.</p>
+          <p class="section-desc">One workspace per session, local or over SSH.</p>
         </div>
 
         <div class="matrix-table-wrap">
@@ -347,7 +354,7 @@ Scene: resident</pre>
       <div class="container">
         <div class="section-head">
           <h2 class="section-title">Built for the daily workbench</h2>
-          <p class="section-desc">Projects, worktrees, agents and one config contract.</p>
+          <p class="section-desc">Projects, worktrees, agents, one config.</p>
         </div>
 
         <div class="feature-grid">
