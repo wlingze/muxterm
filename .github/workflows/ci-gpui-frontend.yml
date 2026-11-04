@@ -1,0 +1,65 @@
+name: "CI: gpui frontend"
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      # GPUI 前端本体与它直接依赖的共享模块。
+      - "src/frontend/gpui/**"
+      - "src/frontend/command_queue.rs"
+      - "src/frontend/event_pump.rs"
+      - "src/frontend/view_store.rs"
+      - "src/frontend/utils/**"
+      - "src/frontend/mod.rs"
+      - "src/lib.rs"
+      - "src/main.rs"
+      - "tests/gpui*"
+      - "tests/support/**"
+      - "tests/samples/**"
+      - "Cargo.toml"
+      - ".cargo/**"
+      - "scripts/build-gpui-macos.sh"
+      - "scripts/build-common.sh"
+      - "scripts/test.sh"
+      - "scripts/ci/**"
+      - ".github/workflows/ci-gpui-frontend.yml"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  ci_gpui_frontend:
+    name: ci-gpui-frontend
+    runs-on: macos-latest
+    # headless chrome/acceptance 套件 + release profile 构建。
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          components: rustfmt, clippy
+
+      - name: Install tools (tmux / herdr)
+        run: MUXTERM_ENV_FILE="$GITHUB_ENV" bash scripts/ci/setup.sh
+        timeout-minutes: 20
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-gpui-${{ hashFiles('Cargo.toml') }}
+
+      # 单一入口：fmt / clippy（--lib）/ headless GPUI 测试 / release 构建。
+      # 原生窗口用例（settings 窗口、NSEvent 监视器）要求交互式桌面，不进 CI。
+      - name: Run GPUI frontend checks (one entry)
+        run: bash scripts/test.sh run gpui

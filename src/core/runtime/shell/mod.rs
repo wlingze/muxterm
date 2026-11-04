@@ -1566,6 +1566,7 @@ mod tests {
     #[tokio::test]
     async fn shell_agent_lifecycle_is_observed_without_osc_or_frontend() {
         use crate::activity::attention::engine::known_agent_process_name;
+        use std::os::unix::fs::PermissionsExt;
         use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
         // 用 sleep 的独立别名模拟 Agent 进程，不启动真实模型或用户会话。
@@ -1578,13 +1579,29 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir(&dir).unwrap();
+        // 指向 bash 而不是 `/bin/sleep`：GitHub 的 coreutils 会拒绝 argv[0]
+        // 与真实可执行文件不一致的调用（`codex` symlink 到 sleep 会被拒），
+        // bash 不在意 argv[0]。
         let executable = dir.join("codex");
-        std::os::unix::fs::symlink("/bin/sleep", &executable).unwrap();
+        std::os::unix::fs::symlink("/bin/bash", &executable).unwrap();
+        // 用脚本当 pane 命令：不依赖交互 shell 的启动时序与 job control，
+        // 观察线程先看到非 Agent，再看到 Agent，最后看到 Agent 退出。
+        let script = dir.join("pane.sh");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nset -m\nsleep 3\n\"{}\" -c 'sleep 6; :'\nsleep 60\n",
+                executable.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let command = format!("/bin/sh {}", script.display());
         for through_channel in [false, true] {
             let mut b = if through_channel {
-                ShellRuntime::new_with_connection(Connect::new("local", ""), "/bin/sh -i", "/tmp")
+                ShellRuntime::new_with_connection(Connect::new("local", ""), &command, "/tmp")
             } else {
-                ShellRuntime::new("/bin/sh -i", "/tmp")
+                ShellRuntime::new(&command, "/tmp")
             };
             b.connect().await.unwrap();
             let pane = b.panes[0].info.id;
@@ -1595,20 +1612,17 @@ mod tests {
                     && (known_agent_process_name(value).is_some() == agent))
             })
             };
-            let initial = wait_events(&mut b, Duration::from_secs(4), |events| {
+            let initial = wait_events(&mut b, Duration::from_secs(10), |events| {
                 is_process(events, false)
             })
             .await;
-            b.execute(&Task::WriteRaw {
-                target: pane,
-                data: format!("{} 3\n", executable.display()).into_bytes(),
-            })
-            .unwrap();
-            let running = wait_events(&mut b, Duration::from_secs(4), |events| {
+            // 6 秒 Agent 窗口给慢 runner 留足采样机会：观察线程每 500ms 才看
+            // 一次 foreground，太短的进程可能整段落在两次采样之间。
+            let running = wait_events(&mut b, Duration::from_secs(10), |events| {
                 is_process(events, true)
             })
             .await;
-            let finished = wait_events(&mut b, Duration::from_secs(5), |events| {
+            let finished = wait_events(&mut b, Duration::from_secs(10), |events| {
                 is_process(events, false)
             })
             .await;
@@ -1627,6 +1641,7 @@ mod tests {
             );
         }
         std::fs::remove_file(executable).unwrap();
+        std::fs::remove_file(script).unwrap();
         std::fs::remove_dir(dir).unwrap();
     }
 

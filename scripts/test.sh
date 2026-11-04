@@ -2,6 +2,7 @@
 # 本地测试入口：一次编译、一起跑，与 CI 各 job 的命令一一对应。
 #
 #   scripts/test.sh run core    # core/tui + ffi 全部测试（含 four-mode 矩阵）
+#   scripts/test.sh run gpui    # GPUI 前端：fmt/clippy + headless 测试 + release 构建
 #   scripts/test.sh run linux   # GTK e2e 全部测试（xvfb）
 #   scripts/test.sh run macos   # macOS ffi + Swift 测试（需 macOS）
 #
@@ -167,6 +168,32 @@ run_macos() {
     fi
 }
 
+run_gpui() {
+    run_architecture
+    cargo fmt --all -- --check
+    cargo clippy --no-default-features --features gpui --lib -- -D warnings
+
+    # headless GPUI 测试。原生窗口用例（gpui_settings_native 需
+    # MUXTERM_NATIVE_UI_TESTS=1、gpui_native_shortcuts 要 NSApplication 真事件循环）
+    # 不进 CI。
+    # 只跑 frontend 模块：core/runtime 的 tmux 用例归 ci-core，GPUI job 不装
+    # tmux 也要能跑；`--lib frontend::` 仍覆盖 gpui 与共享的 command_queue/utils。
+    cargo test --no-default-features --features gpui --lib frontend:: -- --test-threads="$THREADS"
+    cargo test --no-default-features --features gpui \
+        --test gpui_acceptance \
+        --test gpui_acceptance_herdr \
+        --test gpui_chrome \
+        --test gpui_harness_smoke \
+        --test gpui_reported_regressions \
+        --test gpui_surface_e2e \
+        --test gpui_surface_events \
+        --test gpui_workspace_picker \
+        -- --test-threads="$THREADS"
+
+    # 发布 profile 也要能编过（release-only cfg 比 debug 测试更容易漏）。
+    cargo build --release --no-default-features --features gpui
+}
+
 doctor() {
     # 只读环境/版本/fixture capability 预检（§13.1/§13.2），不安装任何工具。
     echo "== 工具版本 =="
@@ -221,6 +248,7 @@ run)
     prepare_test_shell
     case "${2:-}" in
     core) run_core ;;
+    gpui) run_gpui ;;
     linux) run_linux ;;
     macos) run_macos ;;
     *) usage ;;

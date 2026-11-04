@@ -317,15 +317,14 @@ cargo check --no-default-features --features ffi
 - 增量提交：`feat:` / `fix:` / `test:` / `refactor:` / `docs:` / `ci:` / `chore:`
 - 不要在 commit message 里加 `Co-authored-by`
 
-CI 按职责和路径分流（仅 `main` push / 到 `main` 的 PR，避免 feature branch 的 push + PR 重复运行）：
+CI 按职责和路径分流（仅到 `main` 的 PR）：
 
-- 核心共享检查：[`ci.yml`](.github/workflows/ci.yml)
-- Linux 平台检查：[`linux.yml`](.github/workflows/linux.yml)
-- macOS 平台检查：[`macos.yml`](.github/workflows/macos.yml)
+- 核心检查：[`ci-core.yml`](.github/workflows/ci-core.yml) — core/TUI/CLI + four-mode（含 loopback SSH）
+- GPUI 前端检查：[`ci-gpui-frontend.yml`](.github/workflows/ci-gpui-frontend.yml) — macOS headless 套件 + release 构建
 - 官网部署：[`pages.yml`](.github/workflows/pages.yml)（push `main` 且改动 `website/`，或手动触发）
 - Release workflow [`release.yml`](.github/workflows/release.yml) 保持 tag / 手动触发，独立于 PR CI
 
-稳定 aggregate check 名称：`core / required`、`four-mode / aggregate`、`linux / required`、`macos / required`。由于 Linux/macOS workflow 使用路径触发器，主分支保护应按仓库的路径规则集/required workflow 能力配置平台检查；不要把未触发路径的 `linux / required` 或 `macos / required` 当作所有 PR 都必须出现的单一全局 status。
+PR CI 只有两个按路径触发的 check：`ci-core` 和 `ci-gpui-frontend`。改 `src/core/**`（以及 TUI/CLI/共享 FFI）跑 `ci-core`；改 GPUI 前端（以及它直接依赖的共享模块）跑 `ci-gpui-frontend`。不再从 PR 阶段跑 Linux GTK 或 macOS Swift 测试。
 
 「four-mode」矩阵的产品含义是 **Runtime × Transport**（shell/tmux × local/ssh），不是复合 `RuntimeMode` 枚举。Herdr 专项见 [`docs/HERDR-TESTING.md`](docs/HERDR-TESTING.md)。
 

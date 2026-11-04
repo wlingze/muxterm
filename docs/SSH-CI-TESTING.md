@@ -17,16 +17,16 @@ Linux CI 中 SSH long-chain 集成测试的运行方式与 workflow 命令：
 |----------|---------|-----|
 | local | shell | `local_shell_cli` |
 | local | tmux | `local_tmux_cli` |
-| ssh | shell | `ssh_shell_cli`（`#[ignore]`，需 sshd） |
-| ssh | tmux | `ssh_tmux_cli`（`#[ignore]`，需 sshd） |
+| ssh | shell | `ssh_shell_cli`（需 loopback sshd；不可用时 skip） |
+| ssh | tmux | `ssh_tmux_cli`（需 loopback sshd；不可用时 skip） |
 
 TUI 集成测试在 `tests/tui_integration.rs`（local shell/tmux）。
 
 ## Workflow 文件
 
-- `.github/workflows/four-mode-integration.yml`
-  - `standard` job：local CLI + split/sendkeys/cli_integration/tmux_backend（不需要 sshd）
-  - `ssh-integration` job：matrix strategy 运行 2 个 SSH CLI case
+- `.github/workflows/ci-core.yml`
+  - 单一 `ci-core` job：`bash scripts/test.sh run core`（local + SSH CLI 都在这条入口里，
+    SSH 由 `scripts/ci/setup.sh` 拉起 loopback sshd 后自动启用）
 
 ## SSH 测试环境要求
 
