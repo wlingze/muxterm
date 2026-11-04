@@ -14,6 +14,7 @@ use gpui::{
 use crate::frontend::command_queue::{ClientCommand, CommandQueue};
 use crate::frontend::event_pump::EventPump;
 use crate::frontend::gpui::model::composer::{ComposerTarget, ComposerTargetKind};
+use crate::frontend::gpui::model::quick_connect::TargetConfig;
 use crate::frontend::gpui::model::scroll::{wheel_lines, wheel_outcome, WheelOutcome};
 use crate::frontend::gpui::terminal::mouse::{self, MouseEventKind};
 use crate::frontend::gpui::terminal::{encode, KeyPress, Surface};
@@ -59,6 +60,12 @@ pub struct GpuiApp {
     marked_text: String,
     /// Cmd-P 统一面板的状态。
     pub(crate) panel: crate::frontend::gpui::chrome::panel_view::PanelState,
+    /// 目标配置窗口（新建 / 编辑 Project）的草稿。
+    pub(crate) target_editor: Option<crate::frontend::gpui::model::target_editor::TargetEditor>,
+    /// 目标配置窗口最近一次校验失败的原因。
+    pub target_editor_error: Option<String>,
+    /// 目标配置窗口里正在编辑的字段。
+    pub target_editor_focus: crate::frontend::gpui::model::target_editor::TargetEditorFocus,
     /// 设置窗口是否打开。
     pub settings_open: bool,
     /// Core manifest 解析出来的分类与字段。
@@ -113,6 +120,10 @@ impl GpuiApp {
             focus_handle: cx.focus_handle(),
             marked_text: String::new(),
             panel: crate::frontend::gpui::chrome::panel_view::PanelState::default(),
+            target_editor: None,
+            target_editor_error: None,
+            target_editor_focus:
+                crate::frontend::gpui::model::target_editor::TargetEditorFocus::Path,
             settings_open: false,
             settings_manifest: crate::frontend::gpui::model::settings::SettingsManifest::default(),
             settings_draft: crate::frontend::gpui::model::settings::SettingsDraft::default(),
@@ -242,6 +253,10 @@ impl GpuiApp {
             focus_handle: cx.focus_handle(),
             marked_text: String::new(),
             panel: crate::frontend::gpui::chrome::panel_view::PanelState::default(),
+            target_editor: None,
+            target_editor_error: None,
+            target_editor_focus:
+                crate::frontend::gpui::model::target_editor::TargetEditorFocus::Path,
             settings_open: false,
             settings_manifest: crate::frontend::gpui::model::settings::SettingsManifest::default(),
             settings_draft: crate::frontend::gpui::model::settings::SettingsDraft::default(),
@@ -612,6 +627,77 @@ impl GpuiApp {
     /// tab 栏位置（`[ui] tab_bar_position`）。
     pub fn tab_bar_position(&self) -> crate::frontend::gpui::chrome::tab_bar_view::TabBarPosition {
         self.tab_bar_position
+    }
+
+    /// 打开目标配置窗口；`None` 表示新建。
+    pub fn open_target_editor(&mut self, config: Option<&TargetConfig>, cx: &mut Context<Self>) {
+        self.target_editor = Some(match config {
+            Some(config) => {
+                crate::frontend::gpui::model::target_editor::TargetEditor::editing(config)
+            }
+            None => crate::frontend::gpui::model::target_editor::TargetEditor::new_project(),
+        });
+        self.target_editor_error = None;
+        cx.notify();
+    }
+
+    pub fn close_target_editor(&mut self, cx: &mut Context<Self>) {
+        if self.target_editor.is_none() {
+            return;
+        }
+        self.target_editor = None;
+        self.target_editor_error = None;
+        cx.notify();
+    }
+
+    /// 点某个字段让它获得焦点。
+    pub fn set_target_editor_focus(
+        &mut self,
+        focus: crate::frontend::gpui::model::target_editor::TargetEditorFocus,
+        cx: &mut Context<Self>,
+    ) {
+        self.target_editor_focus = focus;
+        cx.notify();
+    }
+
+    pub fn target_editor(
+        &self,
+    ) -> Option<&crate::frontend::gpui::model::target_editor::TargetEditor> {
+        self.target_editor.as_ref()
+    }
+
+    /// 改草稿；返回值的借用在下一次 `cx.notify` 前结束。
+    pub fn update_target_editor(
+        &mut self,
+        edit: impl FnOnce(&mut crate::frontend::gpui::model::target_editor::TargetEditor),
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(editor) = self.target_editor.as_mut() {
+            edit(editor);
+            cx.notify();
+        }
+    }
+
+    /// 保存：配置通过 `ClientCommand::OpenTarget` 交给 Catalog 打开。
+    pub fn save_target_editor(&mut self, cx: &mut Context<Self>) {
+        let Some(editor) = self.target_editor.as_ref() else {
+            return;
+        };
+        let config = match editor.save() {
+            Ok(config) => config,
+            Err(error) => {
+                self.target_editor_error = Some(error.message().to_string());
+                cx.notify();
+                return;
+            }
+        };
+        self.commands.push(ClientCommand::OpenTarget {
+            target: client_target_for(&config),
+            intent: crate::frontend::utils::corebridge::ClientOpenIntent::CreateIfMissing,
+        });
+        self.target_editor = None;
+        self.target_editor_error = None;
+        cx.notify();
     }
 
     /// Cmd-,：打开设置。manifest 与当前值从 Core 快照来（无头测试直接注入）。
@@ -1257,6 +1343,47 @@ impl GpuiApp {
             control: keystroke.modifiers.control,
             key: keystroke.key.clone(),
         };
+        // 目标配置窗口打开时独占按键：Esc 取消、Tab 换字段、Enter 保存，
+        // 无修饰键的字符写进当前字段。
+        if self.target_editor.is_some() && !keystroke.modifiers.platform {
+            match keystroke.key.as_str() {
+                "escape" => {
+                    self.close_target_editor(cx);
+                    return;
+                }
+                "enter" => {
+                    self.save_target_editor(cx);
+                    return;
+                }
+                "tab" => {
+                    let ssh_visible = self
+                        .target_editor
+                        .as_ref()
+                        .is_some_and(|editor| editor.ssh_field_visible());
+                    self.target_editor_focus = if keystroke.modifiers.shift {
+                        self.target_editor_focus.previous(ssh_visible)
+                    } else {
+                        self.target_editor_focus.next(ssh_visible)
+                    };
+                    cx.notify();
+                    return;
+                }
+                "backspace" => {
+                    let focus = self.target_editor_focus;
+                    self.update_target_editor(|editor| editor.backspace(focus), cx);
+                    return;
+                }
+                _ => {}
+            }
+            if let Some(text) = keystroke.key_char.as_deref() {
+                if !text.is_empty() && text.chars().all(|ch| !ch.is_control()) {
+                    let focus = self.target_editor_focus;
+                    self.update_target_editor(|editor| editor.append(focus, text), cx);
+                    return;
+                }
+            }
+        }
+
         // 输入框打开时先吃掉自己的键：Cmd-Enter 发送、Esc 收起、Tab 切页，
         // 无修饰键的字符写进草稿。其它 Cmd 组合仍然按全局动作执行。
         if self.composer_open {
@@ -1495,4 +1622,23 @@ fn transport_label(workspace: &crate::frontend::utils::corebridge::ClientWorkspa
         .to_string();
     }
     TargetTransport::Local.label().to_string()
+}
+
+/// 把编辑器里的目标配置翻译成 Core 的 target DTO。
+fn client_target_for(config: &TargetConfig) -> crate::frontend::utils::corebridge::ClientTarget {
+    use crate::frontend::gpui::model::target::TargetTransport;
+    use crate::frontend::utils::corebridge::ClientTarget;
+    let (transport, target) = match &config.transport {
+        TargetTransport::Local => ("local".to_string(), None),
+        TargetTransport::Ssh { name } => ("ssh".to_string(), Some(name.clone())),
+    };
+    ClientTarget {
+        name: config.name.clone(),
+        runtime: config.runtime.label().to_lowercase(),
+        transport,
+        target,
+        path: config.path.clone(),
+        session: config.session.clone(),
+        socket: config.socket.clone(),
+    }
 }
