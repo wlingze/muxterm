@@ -1,6 +1,6 @@
 # Agent Chat 视图：结构化渲染、输入与侧边栏
 
-> 探索记录。核对时间：2026-11-02T15:07–17:12+08:00、2026-11-04T11:33–11:47+08:00（Asia/Shanghai）。
+> 探索记录。核对时间：2026-11-02T15:07–17:12+08:00、2026-11-04T11:33–12:18+08:00（Asia/Shanghai）。
 > 本文定义目标与边界，不是完成验收，也不授权本轮实现。
 > 相关：[`OUTPUT-READING.md`](OUTPUT-READING.md)（只读阅读的边界）、[`FRONTEND.md`](FRONTEND.md)（Scene / PaneSurface）、
 > [`SURFACE.md`](SURFACE.md)（像素定律）、[`PRODUCT-DIRECTION.md`](PRODUCT-DIRECTION.md)。
@@ -19,6 +19,8 @@
 4. **能力显式上报，缺能力就回到 Terminal。** 没有 adapter 的 pane 不显示 Chat 入口，不显示空对话。
 
 本功能同时交付 agent 聚合：侧边栏的 agent 列表用同一套渲染，点击进入该 pane 的 Chat。
+
+pi 的 `pi-durable` 只读模式已单独核查：它不能读已在跑的 CLI 会话，理由见 §4.1。
 
 ## 2. 术语
 
@@ -54,6 +56,7 @@
 | 路线 | 做法 | 对“已在跑的 TUI”有效 | 判定 |
 | --- | --- | --- | --- |
 | A. Core 解析会话文件 | Core 逐 agent 读 JSONL / SQLite | 有效 | **不采用**。维护成本随 agent 数增长，路径与版本漂移即失效 |
+| A2. 读 pi-durable 存储 | 第二个进程以 `readOnly: true` 打开 durable 存储 | 只对 durable 会话快照有效 | **不采用**。pi CLI 不写 durable 存储，且只读模式没有跨进程推送 |
 | B. agent 侧 adapter | agent 进程内的扩展暴露事件与命令 | 有效 | **采用**。协议由 Muxterm 定义，agent 侧各写一份 |
 
 路线 A 的现实成本有直接证据。Ovis 为每个 agent 维护一套 reader：Claude Code、Codex、omp、omo、gjc、pi、
@@ -69,6 +72,40 @@ Muxterm 的协议按这份设计收敛，不另造一套。
 
 - **ACP**：协议要求客户端启动 agent 子进程。`session/load` 是重放历史，不能附着已在运行的 TUI [4]。
 - **Pi Web 类宿主**：它在服务端建 `AgentSession` 再 `prompt`，是 agent 的宿主，不是观察者 [5]。
+
+### 4.1 pi-durable 能否直接读（2026-11-04 核查）
+
+`@earendil-works/pi-durable` 1.5.0（2026-11-02 发布，实验状态）表面上正合需求。
+`Harness.open(storage, { readOnly: true })` 就是给“只展示、由另一进程驱动”的进程准备的；
+`root.watch()` 返回 `entries` 窗口与 `pi.live` / `pi.inbox` / `pi.usage` / `pi.agent` / `pi.provider` 文档；
+`ConversationTranscript.merge()` 负责重连后的补洞。
+
+但它不能满足“直接读已在跑的 pi TUI”。三条阻断：
+
+1. **pi CLI 不用它。** `@earendil-works/pi-coding-agent` 1.5.0 的依赖表里没有 `pi-durable`，
+   `dist` 中也没有任何 import。会话仍由 `SessionManager` 写 v3 JSONL：
+   `appendFileSync` 追加到 `~/.pi/agent/sessions/--<cwd>--/<ts>_<uuid>.jsonl` [10][11]。
+   pane 里没有 durable 存储可开。
+2. **格式不同。** durable 的 JSONL 后端是 `main.jsonl` 加 `doc-*.jsonl` / `task-*.jsonl` 边车；
+   SQLite 后端是 commit / document 表。两者都不能指向 pi 的 v3 树形 JSONL。
+3. **只读是快照，不是订阅。** `readOnly` 关闭缓存与 tails，读直接落到 Storage；
+   但 watch 只在本进程提交时推进，另一进程的写入不会触发回调。
+   要看到新内容只能重读或轮询。存储本身也按单进程占有设计：
+   README 写明“一次只有一个进程占有存储，没有跨进程锁”。
+   SQLite 打开时还会执行迁移，只读进程同样需要可写句柄 [10]。
+
+结论：durable 是“宿主自带多端呈现”的底座，不是“观察任意 TUI”的读取器。
+宿主自己用 durable 跑会话时，`readOnly` + `watch` + `ConversationTranscript` 正是 Chat 视图需要的契约；
+但那要接管 agent 生命周期，与“附着已在跑的 TUI”相反。
+
+保留观察点：该仓库把 durable 与 pi 按同一版本号 1.5.0 发布，另有实验性的
+`pi-server` / `pi-client` 1.1.0（UDS + CBOR + 多 presentation attach）。
+如果上游把 CLI 迁到 durable，本节结论要重评。
+
+至于“直接读 pi 的 v3 JSONL”：格式公开且追加写，读取可行；
+但把文件绑定到 pane 仍需启发式。pi 每次写入 `appendFileSync` 开合文件，不持有句柄；
+没有按会话的锁文件，也没有会话索引；`/resume` 按 mtime 排序。
+读取文件省不掉绑定这一层，仍要 adapter 提供进程身份。
 
 ## 5. 绑定：进程身份
 
@@ -227,3 +264,8 @@ Claude Code 的现状：hooks 提供会话 id 与 transcript 路径，`Stop` 事
 7. pi 1.4.0 `docs/rpc-commands.md` “Discoverable commands”：`get_commands` 不含内建 TUI 命令。
 8. Claude Code hooks 文档：公共字段 `session_id`、`transcript_path`；`Stop` 带 `last_assistant_message`。
 9. Codex app-server 文档：`thread/start|resume|read|unsubscribe`、`fuzzyFileSearch`、`codex --remote` 的用法。
+10. `@earendil-works/pi-durable` 1.5.0 `README.md`（`readOnly` 段、“One process owns a storage at a time”）、
+    `dist/session/session.js`（`#readOnly` / `#cached` / `#tails` 分支）、
+    `dist/storage/sqlite/storage.js:110`（打开即迁移）。
+11. `@earendil-works/pi-coding-agent` 1.5.0 `package.json`（依赖表无 durable）、
+    `dist/core/session-manager.js:813`（`appendFileSync` 写入会话文件）。
