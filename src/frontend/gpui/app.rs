@@ -128,7 +128,8 @@ impl Render for GpuiApp {
                             .w_full()
                             .bg(theme.bg)
                             .children(panes)
-                            .children(self.render_panel(cx)),
+                            .children(self.render_panel(cx))
+                            .children(self.render_composer(cx)),
                     )
                     .child(tab_bar_bottom)
                     .child(status_bar),
