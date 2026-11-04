@@ -992,6 +992,30 @@ impl GpuiApp {
         self.composer.visible_pages().into_iter().cloned().collect()
     }
 
+    /// 指定 workspace 里聚焦 pane 的画面（无头验收用）。
+    pub fn pane_screen_of(&self, workspace_id: &str) -> Option<String> {
+        let view = self.store.workspace(workspace_id)?;
+        let pane = view
+            .active_tab_id()
+            .map(|tab| view.panes_for_tab(tab))
+            .and_then(|panes| {
+                panes
+                    .iter()
+                    .find(|pane| pane.is_active)
+                    .or_else(|| panes.first())
+            })
+            .map(|pane| pane.id)?;
+        let surface = self.surfaces.get(&(workspace_id.to_string(), pane))?;
+        Some(surface.grid().screen_lines().join("\n"))
+    }
+
+    /// 某个 pane 当前可见画面（无头验收用；不含滚动区）。
+    pub fn pane_screen(&self, pane_id: u32) -> Option<String> {
+        let workspace = self.visible.as_deref()?;
+        let surface = self.surfaces.get(&(workspace.to_string(), pane_id))?;
+        Some(surface.grid().screen_lines().join("\n"))
+    }
+
     /// 面板是否打开（Esc 关闭后按键回到终端）。
     pub fn panel_open(&self) -> bool {
         self.panel.open
