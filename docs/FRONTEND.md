@@ -4,6 +4,8 @@
 
 产品树：[`WORKSPACE.md`](WORKSPACE.md)。像素定律：[`SURFACE.md`](SURFACE.md)。
 配置：[`CONFIG.md`](CONFIG.md)。打开路径：[`CATALOG.md`](CATALOG.md)。
+Agent 对话视图：[`AGENT-CHAT-VIEW.md`](AGENT-CHAT-VIEW.md)。
+多前端成本与统一框架评估：[`FRONTEND-PLATFORM.md`](FRONTEND-PLATFORM.md)。
 施工：[`../TASKS.md`](../TASKS.md) Phase 7 / 9。
 
 **一句话：** 所有 frontend（cli / tui / linux / macos / windows）只经 C FFI + 统一
@@ -141,16 +143,23 @@ Linux Scene 容器是 `GtkStack`：一次只显示一个子 widget，子页面�
 
 | 通用组件 | linux（Rust + GTK4） | macOS（Swift） | windows | tui（ratatui） | cli |
 |---|---|---|---|---|---|
-| Scene 容器 | `GtkStack` page | NSView / SwiftUI 视图树 | 待定 | per-workspace buffer 组 | 无 Scene |
+| Scene 容器 | `GtkStack` page | NSView 视图树 | 待定 | per-workspace buffer 组 | 无 Scene |
 | PaneSurface | vte4 或自绘 | `TerminalView` | 待定 | 单元格 buffer | 无 |
 | 主线程桥 | glib MainContext | `DispatchQueue.main` / `@MainActor` | 待定 | tokio → render tick | 无 |
-| ViewStore | `Rc<RefCell<…>>` 或等价 store | `ObservableObject` + `@Published` | 待定 | owned struct 直读 | 无 |
-| Settings | `AdwPreferencesWindow`（schema-driven） | SwiftUI Settings scene | 待定 | `$EDITOR` | 无 |
+| ViewStore | `Rc<RefCell<…>>` 或等价 store | 主线程持有的 view store | 待定 | owned struct 直读 | 无 |
+| Settings | `AdwPreferencesWindow`（schema-driven） | schema-driven 设置窗口 | 待定 | `$EDITOR` | 无 |
 | 平台集成 | libnotify、xdg | NSNotification、bundle、菜单栏 | 通知 / 任务栏 | 无 | 无 |
 | 输入编码 | keymap → SendKeys 字节 | TerminalInputEncoding → SendKeys | 待定 | crossterm → 字节 | 参数直译 |
 | FFI 口 | `utils/corebridge` | Swift CoreBridge（同一 C ABI） | 待定 | `utils/corebridge` | `utils/corebridge` |
 
 cli 不受渲染契约约束：命令直译 Core 调用。windows 框架选型到实现期再定，必须实现 §2 词汇表。
+
+**macOS 不是 SwiftUI 前端。** 当前 77 个文件 `import AppKit`，0 个文件 `import SwiftUI`；终端视图基于
+SwiftTerm。新增 UI 沿用 AppKit，不引入第二套视图技术。
+
+**模型层优先共享。** 侧边栏投影、Attention 排序、目录补全、面板模型、草稿与输入编码这些纯逻辑
+应放进共享 Rust 后再给两侧适配，不再按平台各写一份。范围、成本与决策门见
+[`FRONTEND-PLATFORM.md`](FRONTEND-PLATFORM.md)。
 
 Linux 渲染调研见 [`RENDERING-OPTIMIZATION.md`](RENDERING-OPTIMIZATION.md)。
 
@@ -191,6 +200,14 @@ Scene；TUI 用 per-workspace buffer 组。按 [`../TASKS.md`](../TASKS.md) 验�
 - 连接复用上交 Core `ConnectionRegistry`。
 - 页面：Sidebar / QuickPanel / CommandPalette / Settings / TargetConfig / AttentionPanel。
   Settings 走 schema。
+- 纯模型逻辑优先搬进共享 Rust（见 [`FRONTEND-PLATFORM.md`](FRONTEND-PLATFORM.md)），Swift 只保留
+  widget 树、主线程桥与平台集成。
+
+**Agent Chat 视图（所有 GUI 前端）：**
+
+pane 可以有两种投影：Terminal（已有 `PaneSurface`）与 Chat（只读事件流 + composer）。
+Chat 不改 Surface、不改 pty 尺寸、不建第二个 VT；无 adapter 的 pane 不显示入口。
+数据来源、绑定方式、能力位与降级规则见 [`AGENT-CHAT-VIEW.md`](AGENT-CHAT-VIEW.md)。
 
 切换延迟不是 tmux 全局锁。`bridgeLock` + 串行后台队列 + pause/capture 会把激活拖到数秒。
 证据与对照见 [`SURFACE.md`](SURFACE.md) §9。

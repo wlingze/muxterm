@@ -175,6 +175,12 @@ CI 跑 [`docs/TESTING.md`](docs/TESTING.md) 的结构门禁。
     不预定迁移或插件平台。依据见 [`docs/TERMINAL-CAPABILITIES.md`](docs/TERMINAL-CAPABILITIES.md)。
 12. 进入稳定维护：普通 shell 上手、外部用户试用、兼容性、性能、安装更新和已有核心行为的平台一致性。
     Agent 按轮阅读只做有明确来源的可选探索，不阻塞通用终端发布，不为保持开发节奏扩大范围。
+13. Chat 视图与 agent 聚合：pane 内 Terminal / Chat 双投影 + composer + 侧边栏对话列表。
+    先做 S0 验证（最小 pi 扩展 + 命令行打快照/事件），在隔离 socket 的 tmux 与 herdr 上各跑一次。
+    绑定用进程身份，能力显式上报；不在 Core 解析会话文件。见 [`docs/AGENT-CHAT-VIEW.md`](docs/AGENT-CHAT-VIEW.md)。
+14. 前端模型层共享：侧边栏投影 / Attention 排序 / 目录补全等纯逻辑搬进共享 Rust；
+    统一渲染框架先过限时 spike 的硬门（原生终端子视图、中文输入法），未过不启动重写。
+    见 [`docs/FRONTEND-PLATFORM.md`](docs/FRONTEND-PLATFORM.md)。
 
 已有记录：macOS Shells + Cmd-K、Agents 槽已落地。Linux 聚合 Scene 与配置绑定、地标/搜索坐标、
 Cmd-W/选词等旧待办按真实日用问题重新排优先级，不默认阻塞编辑框或发布。
@@ -185,4 +191,6 @@ Cmd-W/选词等旧待办按真实日用问题重新排优先级，不默认阻�
 不重写 tmux 控制协议；不新增 Runtime；不实现 `pause-after`；不实现 windows frontend；
 不为 dump API 保留双 VT；不对默认 tmux/Herdr 做破坏性测试。
 不把 frontend 拆成独立 Cargo crate。
+不新增 Core transcript lane；不为 Herdr 单做侧边栏或 agent 列表；不做内嵌浏览器侧边栏。
+没有 spike 结论不做全量前端重写。
 本轮方向不包含 ACP 客户端、完整 IDE/文件管理器、agent 编排、手机/云服务或新 Runtime。

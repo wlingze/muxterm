@@ -5,6 +5,8 @@
 > （Muxterm 组合根 → WorkspacePool → Workspace = Runtime(Transport) + path → Tab → Pane；
 > Window 只是体现）。Runtime：[`docs/RUNTIME.md`](docs/RUNTIME.md)。
 > 像素：[`docs/SURFACE.md`](docs/SURFACE.md)。前端：[`docs/FRONTEND.md`](docs/FRONTEND.md)。
+> Agent 对话视图：[`docs/AGENT-CHAT-VIEW.md`](docs/AGENT-CHAT-VIEW.md)。
+> 多前端成本与统一框架：[`docs/FRONTEND-PLATFORM.md`](docs/FRONTEND-PLATFORM.md)。
 > Catalog：[`docs/CATALOG.md`](docs/CATALOG.md)。配置：[`docs/CONFIG.md`](docs/CONFIG.md)。
 > 目录：[`docs/PROJECT-STRUCTURE.md`](docs/PROJECT-STRUCTURE.md)。
 > 施工：[`TASKS.md`](TASKS.md)。

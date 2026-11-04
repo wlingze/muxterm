@@ -63,6 +63,8 @@ src/
 | [`RUNTIME.md`](RUNTIME.md) | Runtime × Transport |
 | [`SURFACE.md`](SURFACE.md) | 像素定律 |
 | [`FRONTEND.md`](FRONTEND.md) | 前端 Scene / 页面 / 各平台 |
+| [`AGENT-CHAT-VIEW.md`](AGENT-CHAT-VIEW.md) | Agent Chat 视图：绑定、协议、能力位与降级 |
+| [`FRONTEND-PLATFORM.md`](FRONTEND-PLATFORM.md) | 多前端维护成本、共享模型层与统一框架评估 |
 | [`CATALOG.md`](CATALOG.md) | 能打开什么 |
 | [`CONFIG.md`](CONFIG.md) | 配置 |
 | [`ID-SYSTEM.md`](ID-SYSTEM.md) | ID |

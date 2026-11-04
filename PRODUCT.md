@@ -16,6 +16,8 @@ Muxterm 是日常使用的跨平台原生终端，原生集成 tmux / Herdr，�
 远程文件点击打开；完善已有端口转发的完整链接打开，随后持续维护兼容性、发布与外部用户体验。
 ACP 优先使用现成客户端，本轮不接入；图片预览和外部文件打开不扩张成完整 IDE 或文件管理器。
 Agent 按轮折叠作为可选只读探索，不把通用终端建立在画面猜测或全 agent 适配之上。
+后续两项：pane 内 agent 的 Terminal / Chat 双投影（侧边栏对话列表），
+以及前端模型层共享与统一框架评估。两者都不在 Core 新增 transcript lane。
 可选增强先通过外部工具动作提供；libghostty 暂不迁移，先验证现有图像链路与实际收益。
 
 当前取舍、验收与竞品核对见 [`docs/PRODUCT-DIRECTION.md`](docs/PRODUCT-DIRECTION.md)。
