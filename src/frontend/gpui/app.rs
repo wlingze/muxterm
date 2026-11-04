@@ -69,7 +69,12 @@ impl Render for GpuiApp {
         let cell_width = theme.cell_width();
         let cell_height = theme.cell_height();
 
-        let main_width = (width - SIDEBAR_WIDTH).max(1.0);
+        let sidebar_width = if self.sidebar_visible() {
+            SIDEBAR_WIDTH
+        } else {
+            0.0
+        };
+        let main_width = (width - sidebar_width).max(1.0);
         let main_height = (height - TAB_BAR_HEIGHT - STATUS_BAR_HEIGHT).max(1.0);
         let area = Rect::new(0.0, 0.0, main_width, main_height);
 
@@ -85,7 +90,11 @@ impl Render for GpuiApp {
         }
         self.apply_sizes(&sizes);
 
-        let sidebar = self.render_sidebar(cx);
+        let sidebar = if self.sidebar_visible() {
+            self.render_sidebar(cx)
+        } else {
+            div().w(px(0.0)).into_any_element()
+        };
         let tab_bar = self.render_tab_bar(cx);
         let status_bar = self.render_status_bar();
 

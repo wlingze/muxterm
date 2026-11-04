@@ -3,5 +3,6 @@
 pub mod pane_grid;
 pub mod pane_view;
 pub mod sidebar;
+pub mod sidebar_view;
 pub mod status_bar;
 pub mod tab_bar;

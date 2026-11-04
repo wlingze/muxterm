@@ -15,6 +15,10 @@ pub struct Theme {
     pub border: Rgba,
     pub muted: Rgba,
     pub accent: Rgba,
+    /// 成功/完成态（侧栏 done 指示、图片粘贴成功横幅）。
+    pub success: Rgba,
+    /// 危险/失败态（连接丢失、失败横幅）。
+    pub danger: Rgba,
     pub font_family: &'static str,
     pub font_size: f32,
     ansi: [Rgba; 16],
@@ -31,6 +35,8 @@ impl Default for Theme {
             border: rgb(0x2f334d),
             muted: rgb(0x7f87a8),
             accent: rgb(0x7aa2f7),
+            success: rgb(0x9ece6a),
+            danger: rgb(0xf7768e),
             font_family: "Menlo",
             font_size: 13.0,
             ansi: [
