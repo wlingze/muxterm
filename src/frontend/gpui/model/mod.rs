@@ -14,4 +14,6 @@ pub mod layout_projection;
 pub mod query_reply;
 pub mod replica_id;
 pub mod resize_math;
+pub mod search;
 pub mod sidebar;
+pub mod target;
