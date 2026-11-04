@@ -1837,6 +1837,18 @@ mod tests {
             command_items.iter().map(|i| i.pane_id).collect::<Vec<_>>(),
             vec![9]
         );
+        // 每个 agent pane 各占一页聚合 Tab；pane 4 被 mute 只是不报警，
+        // 不改变它在 Agents 槽里的存在。
+        assert_eq!(
+            crate::frontend::gpui::model::aggregate::agent_tabs(
+                &agent_items,
+                &[workspace.workspace_id.clone()]
+            )
+            .iter()
+            .map(|tab| tab.agent_pane_ids.clone())
+            .collect::<Vec<_>>(),
+            vec![vec![3], vec![4], vec![5]]
+        );
     }
 
     /// 对照 `testCursorProcessIsNotLabeledCodexAndIdleShellStaysOutOfAgents`。
