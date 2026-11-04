@@ -365,12 +365,25 @@ document.addEventListener('DOMContentLoaded', () => {
       if (name && name !== activeDoc) loadDoc(name);
     });
 
-    const initialDoc = (location.hash.match(/^#doc-([A-Z0-9-]+)$/i) || [])[1];
+    const docFromHash = () => (location.hash.match(/^#doc-([A-Z0-9-]+)$/i) || [])[1];
+
+    const initialDoc = docFromHash();
     if (initialDoc) {
       loadDoc(initialDoc, { scroll: true });
     } else if (location.hash === '#reference') {
       loadDoc(fallbackDoc, { scroll: true });
     }
+
+    window.addEventListener('hashchange', () => {
+      const name = docFromHash();
+      if (name) {
+        loadDoc(name, { scroll: false });
+      } else if (location.hash === '#reference') {
+        loadDoc(fallbackDoc, { scroll: false });
+      } else {
+        showGuide();
+      }
+    });
   }
 
   // ── Interactive Workspace / Tab / Pane surface ──────────────────
