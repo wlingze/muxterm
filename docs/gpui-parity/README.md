@@ -114,17 +114,17 @@
 
 ### 4.1 进展
 
-| 波次 | 状态 | 提交 |
+| 波次 | 内容 | 提交 |
 | --- | --- | --- |
-| 1（a：编码与几何） | 完成 | `c4f483f8` |
-| 1（b：投影模型） | 完成 | `c7b197b3` `e62448ed` `47b3e9f6` `4f7f5bbe` `20544279` |
-| 2（喂字节规则） | 完成 | `2e584660` |
-| 3（Grid 与事件） | 完成 | `c734f6bc` |
-| 4（IME 与粘贴） | 完成 | `76ea1b94` |
-| 5（Chrome 组件） | 侧栏与 tab/状态栏完成，面板浮层完成 | `fccdd4e2` `66c0579b` 本波提交 |
-| 6（次级窗口） | 输入框、设置、目标目录与新建项目完成 | `c6990a3d` `89c3297f` `70c29c51` 本波提交 |
-| 7（真机验收） | 隔离 tmux + named Herdr 完成 | 本波提交 |
-| 8（收尾） | 未开始 | — |
+| 1a | 编码与几何模型（42 测试） | `c4f483f8` |
+| 1b | attention / sidebar / target / search / shortcuts / status bar / panel / aggregate | `c7b197b3` `e62448ed` `47b3e9f6` `4f7f5bbe` `20544279` |
+| 2 | 喂字节规则：query reply、bracketed paste、滚轮路由、coalesce | `2e584660` |
+| 3 | Grid 与事件：宽字符、鼠标报告、历史滚动、渐进选词 | `c734f6bc` |
+| 4 | IME marked text、占位符过滤、候选窗锚定、图片粘贴阶段 | `76ea1b94` |
+| 5 | Chrome：侧栏、tab 活动灯、状态栏徽章、Cmd-P 面板 | `fccdd4e2` `66c0579b` `7f668945` |
+| 6 | 次级窗口：Cmd-I 输入框、设置窗口、快速连接与新建项目 | `c6990a3d` `89c3297f` `70c29c51` `236f3ee3` |
+| 7 | 真机验收：隔离 tmux + named Herdr | `58789dc5` |
+| 8 | 收尾：`.app` 构建验证与文档终态 | 本波提交 |
 
 每波落地后 `cargo test --no-default-features --features gpui --lib` 必须全绿；
 无头 harness 用例在 `tests/gpui_surface_events.rs`。
