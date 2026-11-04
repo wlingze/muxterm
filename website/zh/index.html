@@ -130,50 +130,57 @@ Scene: resident</pre>
       <div class="container">
         <div class="shot-head">
           <p class="shot-note">模拟会话</p>
-          <div class="shot-theme-switch" role="group" aria-label="截图主题">
-            <button type="button" class="shot-theme" data-set-theme="dark" aria-pressed="true">暗色</button>
-            <button type="button" class="shot-theme" data-set-theme="light" aria-pressed="false">亮色</button>
+          <div class="shot-controls">
+            <div class="shot-theme-switch" role="group" aria-label="截图主题">
+              <button type="button" class="shot-theme" data-set-theme="dark" aria-pressed="true">暗色</button>
+              <button type="button" class="shot-theme" data-set-theme="light" aria-pressed="false">亮色</button>
+            </div>
+            <span class="shot-count" data-shot-count aria-live="polite">1 / 3</span>
+            <button type="button" class="shot-nav" data-shot-prev aria-label="上一张截图">
+              <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" focusable="false"><path d="M8.5 2.5 4 7l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square"/></svg>
+            </button>
+            <button type="button" class="shot-nav" data-shot-next aria-label="下一张截图">
+              <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" focusable="false"><path d="M5.5 2.5 10 7l-4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square"/></svg>
+            </button>
           </div>
         </div>
 
-        <div class="shot-gallery">
-          <figure class="app-shot app-shot--wide">
-            <figcaption class="app-shot__bar">
-              <span class="app-shot__caption">工作台</span>
-            </figcaption>
+        <div class="shot-track" data-shot-track tabindex="0" role="region" aria-label="应用截图">
+          <figure class="app-shot" data-shot-card>
             <img data-shot
                  data-dark="../assets/img/app-workspace-dark.png"
                  data-light="../assets/img/app-workspace-light.png"
                  src="../assets/img/app-workspace-dark.png"
                  width="1280" height="760" decoding="async"
                  alt="Muxterm macOS 工作台，包含工作区侧栏、四个终端窗格和两个标签页。">
+            <figcaption class="app-shot__label">
+              <span class="app-shot__caption">工作台</span>
+            </figcaption>
           </figure>
 
-          <div class="shot-grid">
-            <figure class="app-shot">
-              <figcaption class="app-shot__bar">
-                <span class="app-shot__caption">Agents</span>
-              </figcaption>
-              <img data-shot
-                   data-dark="../assets/img/app-agents-dark.png"
-                   data-light="../assets/img/app-agents-light.png"
-                   src="../assets/img/app-agents-dark.png"
-                   width="1280" height="760" loading="lazy" decoding="async"
-                   alt="Muxterm Agents 聚合，侧栏显示两个工作中的 agent，底部有两个 agent 标签页。">
-            </figure>
+          <figure class="app-shot" data-shot-card>
+            <img data-shot
+                 data-dark="../assets/img/app-agents-dark.png"
+                 data-light="../assets/img/app-agents-light.png"
+                 src="../assets/img/app-agents-dark.png"
+                 width="1280" height="760" decoding="async"
+                 alt="Muxterm Agents 聚合，侧栏显示两个工作中的 agent，底部有两个 agent 标签页。">
+            <figcaption class="app-shot__label">
+              <span class="app-shot__caption">Agents</span>
+            </figcaption>
+          </figure>
 
-            <figure class="app-shot">
-              <figcaption class="app-shot__bar">
-                <span class="app-shot__caption">Shells</span>
-              </figcaption>
-              <img data-shot
-                   data-dark="../assets/img/app-shells-dark.png"
-                   data-light="../assets/img/app-shells-light.png"
-                   src="../assets/img/app-shells-dark.png"
-                   width="1280" height="760" loading="lazy" decoding="async"
-                   alt="Muxterm Shells 聚合，显示本地 shell 工作区及终端输出。">
-            </figure>
-          </div>
+          <figure class="app-shot" data-shot-card>
+            <img data-shot
+                 data-dark="../assets/img/app-shells-dark.png"
+                 data-light="../assets/img/app-shells-light.png"
+                 src="../assets/img/app-shells-dark.png"
+                 width="1280" height="760" decoding="async"
+                 alt="Muxterm Shells 聚合，显示本地 shell 工作区及终端输出。">
+            <figcaption class="app-shot__label">
+              <span class="app-shot__caption">Shells</span>
+            </figcaption>
+          </figure>
         </div>
       </div>
     </section>

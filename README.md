@@ -36,9 +36,9 @@ python3 -m http.server 8000 --bind 0.0.0.0 --directory website
 ```
 
 官网首页包含可交互的 Workspace / Tab / Pane 预览，以及真实 macOS 应用截图（工作台、
-Agents 聚合、Shells 聚合，各有亮/暗两套，使用模拟会话数据）。截图区域可在页面内切换主题，
-默认跟随整页主题。安装、Runtime、端口转发、
-快捷键和下载也在首页；文档页除快速上手外，还把仓库 `docs/` 的完整参考渲染在浏览器里。
+Agents 聚合、Shells 聚合，各有亮/暗两套，使用模拟会话数据）。截图以横向滑动方式展示，
+可在页面内切换主题，默认跟随整页主题。安装、Runtime、端口转发、快捷键和下载也在首页；
+文档页侧栏可直接切换仓库 `docs/` 的完整参考，选中文档会替换快速上手内容。
 
 真实用户会话截图目录 [`assets/screenshots/`](assets/screenshots/) 可能包含个人内容，仍不默认提交；
 官网使用的截图由 `src/frontend/macos/AppE2ETests/WebsiteScreenshotE2ETests.swift` 与
