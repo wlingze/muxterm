@@ -10,6 +10,8 @@ use gpui::{Context, FocusHandle, KeyDownEvent, Timer};
 
 use crate::frontend::command_queue::{ClientCommand, CommandQueue};
 use crate::frontend::event_pump::EventPump;
+use crate::frontend::gpui::model::scroll::{wheel_lines, wheel_outcome, WheelOutcome};
+use crate::frontend::gpui::terminal::mouse::{self, MouseEventKind};
 use crate::frontend::gpui::terminal::{encode, KeyPress, Surface};
 use crate::frontend::gpui::theme::Theme;
 use crate::frontend::utils::corebridge::{ClientEventKind, ClientLayout, ClientTab};
@@ -21,6 +23,20 @@ const PUMP_INTERVAL: Duration = Duration::from_millis(8);
 /// 一个已打开 pane 的常驻 Surface key。
 type SurfaceKey = (String, u32);
 
+/// 一次滚轮事件的入参（屏幕坐标已经折算成格子）。
+#[derive(Debug, Clone, Copy)]
+pub struct WheelInput {
+    pub pane_id: u32,
+    /// 正数往历史上滚（与 macOS `scrollingDeltaY` 同号）。
+    pub delta_y: f32,
+    /// 触控板给的像素级 delta 需要先攒整格。
+    pub precise: bool,
+    /// Shift 绕过应用鼠标，落回本地历史。
+    pub shift: bool,
+    pub col: usize,
+    pub row: usize,
+}
+
 /// 窗口级状态。一个窗口一份。
 pub struct GpuiApp {
     pump: Option<EventPump>,
@@ -30,6 +46,8 @@ pub struct GpuiApp {
     visible: Option<String>,
     focused_pane: Option<u32>,
     last_sizes: HashMap<SurfaceKey, (u16, u16)>,
+    /// 触控板的零头：不足一格的部分留到下一次事件，见 `wheel_lines`。
+    wheel_accumulators: HashMap<SurfaceKey, f32>,
     focus_handle: FocusHandle,
     theme: Theme,
     status: String,
@@ -54,6 +72,7 @@ impl GpuiApp {
             visible,
             focused_pane: None,
             last_sizes: HashMap::new(),
+            wheel_accumulators: HashMap::new(),
             focus_handle: cx.focus_handle(),
             theme: Theme::default(),
             status: String::from("muxterm · gpui"),
@@ -258,6 +277,80 @@ impl GpuiApp {
                 cols,
                 rows,
             });
+        }
+    }
+
+    /// 滚轮：先问服务端，再看应用要不要鼠标，最后才动本地历史。
+    pub fn handle_wheel(&mut self, wheel: WheelInput, cx: &mut Context<Self>) {
+        let WheelInput {
+            pane_id,
+            delta_y,
+            precise,
+            shift,
+            col,
+            row,
+        } = wheel;
+        let Some(workspace) = self.visible.clone() else {
+            return;
+        };
+        let key = (workspace.clone(), pane_id);
+        let cell_height = self.theme.cell_height();
+        let accumulator = self.wheel_accumulators.entry(key.clone()).or_insert(0.0);
+        let lines = wheel_lines(delta_y, precise, cell_height, accumulator);
+        let Some(surface) = self.surfaces.get(&key) else {
+            return;
+        };
+        let grid = surface.grid();
+        let outcome = wheel_outcome(
+            grid.mouse_mode() != crate::frontend::gpui::terminal::MouseMode::Off,
+            shift,
+            grid.alternate_screen(),
+            // gpui 目前没有 Herdr 的服务端滚动通道。
+            false,
+            lines,
+        );
+        // 应用鼠标路径固定用 SGR：macOS 同样不跟随 1006 模式。
+        let sgr_mode = crate::frontend::gpui::terminal::MouseMode::Normal;
+        let payload = match outcome {
+            None => return,
+            Some(WheelOutcome::Server(_)) => return,
+            Some(WheelOutcome::MouseReport(count)) => mouse::encode(
+                MouseEventKind::Wheel(count > 0, count.unsigned_abs() as u8),
+                col,
+                row,
+                sgr_mode,
+                true,
+            ),
+            Some(WheelOutcome::Arrows(count)) => {
+                // alternate screen 且应用没要鼠标：滚轮 = CSI 方向键。
+                let arrow = if count > 0 {
+                    &b"\x1b[A"[..]
+                } else {
+                    &b"\x1b[B"[..]
+                };
+                let mut bytes = Vec::with_capacity(arrow.len() * count.unsigned_abs() as usize);
+                for _ in 0..count.unsigned_abs() {
+                    bytes.extend_from_slice(arrow);
+                }
+                Some(bytes)
+            }
+            Some(WheelOutcome::History(count)) => {
+                if let Some(surface) = self.surfaces.get_mut(&key) {
+                    if surface.scroll_by(count) {
+                        cx.notify();
+                    }
+                }
+                return;
+            }
+        };
+        if let Some(data) = payload {
+            self.commands.push(ClientCommand::Input {
+                workspace_id: Some(workspace),
+                pane_id,
+                data,
+                quiet: false,
+            });
+            cx.notify();
         }
     }
 

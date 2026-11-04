@@ -39,6 +39,52 @@ pub fn route_wheel(
     WheelRoute::LocalHistory
 }
 
+/// 滚轮路由的最终落点。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WheelOutcome {
+    /// 交给服务端（Herdr）滚动，前端不转发、也不动本地历史。
+    Server(i32),
+    /// 以 SGR 鼠标报告发给应用。
+    MouseReport(i32),
+    /// 发 CSI 方向键（alternate screen 且应用没要鼠标）。
+    Arrows(i32),
+    /// 移动本地 scrollback 视口。
+    History(i32),
+}
+
+/// 把一次滚轮事件收成一个动作。`lines == 0`（余数还没攒够一格）返回 `None`。
+///
+/// macOS 的两处细节照抄：应用鼠标路径**始终**用 SGR（不跟随 1006），方向键
+/// 路径用 `CSI A` / `CSI B` 而不用 application-cursor 形式。
+pub fn wheel_outcome(
+    mouse_reporting: bool,
+    shift_bypasses_mouse: bool,
+    alternate_screen: bool,
+    has_server_scroll: bool,
+    lines: i32,
+) -> Option<WheelOutcome> {
+    if lines == 0 {
+        return None;
+    }
+    let outcome = match route_wheel(
+        mouse_reporting,
+        shift_bypasses_mouse,
+        alternate_screen,
+        has_server_scroll,
+    ) {
+        // 服务端滚动不按每次事件截断：一次手势要能走完整段。
+        WheelRoute::ServerScroll => WheelOutcome::Server(lines),
+        WheelRoute::ApplicationMouse => WheelOutcome::MouseReport(capped_wheel_lines(lines)),
+        WheelRoute::ApplicationArrows => WheelOutcome::Arrows(capped_wheel_lines(lines)),
+        // 本地历史按行步进，因此也用截断后的格数。
+        WheelRoute::LocalHistory => WheelOutcome::History(capped_wheel_lines(lines)),
+    };
+    match outcome {
+        WheelOutcome::MouseReport(0) | WheelOutcome::Arrows(0) | WheelOutcome::History(0) => None,
+        other => Some(other),
+    }
+}
+
 /// 从 live TUI 手里抢触控板会把 Cursor/htop 弄死，所以恒为 false。
 pub const STEALS_LIVE_TRACKPAD: bool = false;
 
@@ -197,6 +243,56 @@ mod tests {
         assert_eq!(
             route_wheel(false, false, true, false),
             WheelRoute::ApplicationArrows
+        );
+    }
+
+    /// 滚轮落点：alternate screen 发方向键，向上是 `CSI A`。
+    #[test]
+    fn wheel_outcome_sends_arrows_in_the_alternate_screen() {
+        assert_eq!(
+            wheel_outcome(false, false, true, false, 2),
+            Some(WheelOutcome::Arrows(2))
+        );
+        assert_eq!(
+            wheel_outcome(false, false, true, false, -5),
+            Some(WheelOutcome::Arrows(-4)),
+            "单次事件最多四行"
+        );
+        assert_eq!(wheel_outcome(false, false, true, false, 0), None);
+    }
+
+    /// 应用要了鼠标：走 SGR 报告，且同样按四行截断。
+    #[test]
+    fn wheel_outcome_reports_mouse_when_the_app_asked_for_it() {
+        assert_eq!(
+            wheel_outcome(true, false, true, false, 1),
+            Some(WheelOutcome::MouseReport(1))
+        );
+        assert_eq!(
+            wheel_outcome(true, false, false, false, -40),
+            Some(WheelOutcome::MouseReport(-4))
+        );
+    }
+
+    /// 服务端滚动优先，且不截断（一次手势要走完整段）。
+    #[test]
+    fn wheel_outcome_prefers_the_server_without_capping() {
+        assert_eq!(
+            wheel_outcome(true, false, true, true, 40),
+            Some(WheelOutcome::Server(40))
+        );
+    }
+
+    /// Shift 绕过应用鼠标 → 落回本地历史。
+    #[test]
+    fn wheel_outcome_shift_falls_back_to_local_history() {
+        assert_eq!(
+            wheel_outcome(true, true, false, false, 3),
+            Some(WheelOutcome::History(3))
+        );
+        assert_eq!(
+            wheel_outcome(false, false, false, false, -3),
+            Some(WheelOutcome::History(-3))
         );
     }
 
