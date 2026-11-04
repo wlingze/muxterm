@@ -11,10 +11,12 @@
 pub mod attention;
 pub mod input_encoding;
 pub mod layout_projection;
+pub mod panel;
 pub mod query_reply;
 pub mod replica_id;
 pub mod resize_math;
 pub mod search;
 pub mod shortcuts;
 pub mod sidebar;
+pub mod status_bar;
 pub mod target;
