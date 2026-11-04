@@ -16,6 +16,7 @@ use muxterm::frontend::gpui::model::panel::PanelTab;
 use muxterm::frontend::gpui::model::search::SearchSnapshot;
 use muxterm::frontend::gpui::model::sidebar::backend_status;
 use muxterm::frontend::gpui::model::sidebar::Indicator;
+use muxterm::frontend::gpui::model::target::TargetTransport;
 use muxterm::frontend::gpui::state::GpuiApp;
 use muxterm::frontend::utils::corebridge::ClientTask;
 use muxterm::frontend::utils::corebridge::{ClientPane, ClientTab, ClientWorkspace};
@@ -722,4 +723,90 @@ fn settings_search_filters_without_losing_the_draft(cx: &mut TestAppContext) {
     assert_eq!(categories, vec!["ssh".to_string()]);
     assert_eq!(selected.as_deref(), Some("ssh"), "选中项不可见时切到第一条");
     assert_eq!(value, Some(serde_json::json!(17.0)), "草稿不因搜索丢");
+}
+
+/// 新建项目：路径自动带出 name，保存后交给 Catalog 打开。
+#[gpui::test]
+fn new_project_saves_through_the_catalog(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.update(|_, cx| view.update(cx, |app, cx| app.open_target_editor(None, cx)));
+    assert!(cx.update(|_, cx| view.update(cx, |app, _| app.target_editor().is_some())));
+
+    // 斜杠不是可打印键名，路径直接设；名字用真实按键打进当前焦点字段。
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.update_target_editor(|editor| editor.set_path("/srv"), cx)
+        })
+    });
+    // set_path 已经自动把 name 带成 srv；Tab 之后的按键只往 Name 追加。
+    cx.simulate_keystrokes("tab");
+    cx.simulate_keystrokes("x");
+    let (path, name) = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            let editor = app.target_editor().expect("editor");
+            (editor.path_text().to_string(), editor.name().to_string())
+        })
+    });
+    assert_eq!(path, "/srv", "打字不能改路径字段");
+    assert_eq!(name, "srvx", "按键写进当前焦点字段");
+
+    cx.simulate_keystrokes("enter");
+    let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    let opens: Vec<(String, String, String, Option<String>)> = commands
+        .iter()
+        .filter_map(|command| match command {
+            ClientCommand::OpenTarget { target, .. } => Some((
+                target.name.clone(),
+                target.runtime.clone(),
+                target.path.clone(),
+                target.target.clone(),
+            )),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(opens.len(), 1, "保存只发一次 OpenTarget：{commands:?}");
+    assert_eq!(opens[0].0, "srvx");
+    assert_eq!(opens[0].1, "tmux");
+    assert_eq!(opens[0].3, None, "本地传输没有 target");
+    assert_eq!(opens[0].2, "/srv", "路径原样交给 Catalog");
+    assert!(
+        cx.update(|_, cx| view.update(cx, |app, _| app.target_editor().is_none())),
+        "保存后窗口关闭"
+    );
+}
+
+/// SSH 传输没填 Host 时给出错误，不发命令。
+#[gpui::test]
+fn ssh_project_without_a_host_shows_an_error(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.open_target_editor(None, cx);
+            app.update_target_editor(
+                |editor| {
+                    editor.select_transport(TargetTransport::Ssh {
+                        name: String::new(),
+                    })
+                },
+                cx,
+            );
+            app.take_commands_for_tests();
+        })
+    });
+    cx.simulate_keystrokes("enter");
+    let (error, still_open, commands) = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            (
+                app.target_editor_error.clone(),
+                app.target_editor().is_some(),
+                app.take_commands_for_tests(),
+            )
+        })
+    });
+    assert_eq!(
+        error.as_deref(),
+        Some("Select or enter an SSH Host before saving.")
+    );
+    assert!(still_open, "校验失败不能关窗口");
+    assert!(commands.is_empty(), "校验失败不发命令：{commands:?}");
 }

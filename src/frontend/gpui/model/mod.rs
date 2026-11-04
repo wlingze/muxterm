@@ -11,6 +11,7 @@
 pub mod aggregate;
 pub mod attention;
 pub mod composer;
+pub mod directory;
 pub mod image_paste;
 pub mod ime;
 pub mod input_encoding;
@@ -29,4 +30,5 @@ pub mod sidebar;
 pub mod status_bar;
 pub mod surface_feed;
 pub mod target;
+pub mod target_editor;
 pub mod word_selection;

@@ -40,6 +40,11 @@ pub enum ClientCommand {
         path: String,
         value: serde_json::Value,
     },
+    /// 目标配置窗口保存：交给 Catalog resolver 打开 workspace。
+    OpenTarget {
+        target: crate::frontend::utils::corebridge::ClientTarget,
+        intent: crate::frontend::utils::corebridge::ClientOpenIntent,
+    },
 }
 
 #[derive(Debug, Default)]
@@ -154,6 +159,10 @@ fn dispatch(client: &FfiClient, command: ClientCommand) -> i32 {
                 Err(_) => -1,
             }
         }
+        ClientCommand::OpenTarget { target, intent } => match client.open_target(&target, intent) {
+            Ok(_) => 0,
+            Err(_) => -1,
+        },
         ClientCommand::ActivateWorkspace(workspace_id) => {
             client.activate_workspace(&workspace_id).map_or(-1, |_| 0)
         }

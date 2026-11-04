@@ -48,6 +48,27 @@ impl GpuiApp {
             })
             .collect();
 
+        let new_project: Option<AnyElement> =
+            (self.panel_tab() == PanelTab::Workspaces).then(|| {
+                div()
+                    .id("panel-new-project")
+                    .px_3()
+                    .py_1()
+                    .rounded_sm()
+                    .cursor_pointer()
+                    .text_sm()
+                    .text_color(theme.accent)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.close_panel(cx);
+                            this.open_target_editor(None, cx);
+                        }),
+                    )
+                    .child(SharedString::from("+ New project"))
+                    .into_any_element()
+            });
+
         let rows: Vec<AnyElement> = self
             .panel_rows()
             .into_iter()
@@ -106,7 +127,8 @@ impl GpuiApp {
                                 .gap_1()
                                 .flex_1()
                                 .overflow_hidden()
-                                .children(rows),
+                                .children(rows)
+                                .children(new_project),
                         ),
                 )
                 .into_any_element(),

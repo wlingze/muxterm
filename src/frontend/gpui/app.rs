@@ -130,7 +130,8 @@ impl Render for GpuiApp {
                             .children(panes)
                             .children(self.render_panel(cx))
                             .children(self.render_composer(cx))
-                            .children(self.render_settings(cx)),
+                            .children(self.render_settings(cx))
+                            .children(self.render_target_editor(cx)),
                     )
                     .child(tab_bar_bottom)
                     .child(status_bar),
