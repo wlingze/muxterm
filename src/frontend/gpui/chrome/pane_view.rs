@@ -3,7 +3,8 @@
 //! 一个 pane 一个常驻 Surface；隐藏时只跳过绘制，不销毁、不 reset。
 
 use gpui::{
-    div, prelude::*, px, AnyElement, MouseButton, ScrollDelta, ScrollWheelEvent, SharedString,
+    canvas, div, prelude::*, px, AnyElement, ElementInputHandler, MouseButton, ScrollDelta,
+    ScrollWheelEvent, SharedString,
 };
 
 use crate::frontend::gpui::chrome::pane_grid::Rect;
@@ -61,6 +62,42 @@ impl GpuiApp {
             }
         }
 
+        // IME：组合文本画在光标处，输入处理器负责候选窗锚定与提交。
+        let marked = self.marked_text().to_string();
+        if focused && !marked.is_empty() {
+            if let Some((row, col, _)) = self.cursor_cell() {
+                row_elements.push(
+                    div()
+                        .absolute()
+                        .left(px(col as f32 * cell_width))
+                        .top(px(row as f32 * cell_height))
+                        .h(px(cell_height))
+                        .text_color(theme.accent)
+                        .underline()
+                        .child(SharedString::from(marked))
+                        .into_any_element(),
+                );
+            }
+        }
+        let input_handle = self.focus_handle();
+        let entity = cx.entity();
+        let input_handler = div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .w_full()
+            .h_full()
+            .child(canvas(
+                |_, _, _| (),
+                move |bounds, _, window, cx| {
+                    window.handle_input(
+                        &input_handle,
+                        ElementInputHandler::new(bounds, entity.clone()),
+                        cx,
+                    );
+                },
+            ));
+
         let border = if focused { theme.accent } else { theme.border };
         div()
             .id(SharedString::from(format!("pane-{pane_id}")))
@@ -107,6 +144,7 @@ impl GpuiApp {
                 }),
             )
             .children(row_elements)
+            .child(input_handler)
             .into_any_element()
     }
 

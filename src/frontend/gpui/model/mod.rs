@@ -10,6 +10,8 @@
 
 pub mod aggregate;
 pub mod attention;
+pub mod image_paste;
+pub mod ime;
 pub mod input_encoding;
 pub mod layout_projection;
 pub mod panel;

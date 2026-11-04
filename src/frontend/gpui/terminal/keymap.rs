@@ -36,8 +36,15 @@ pub fn encode(press: &KeyPress, app_cursor_keys: bool) -> Option<Vec<u8>> {
     }
 
     if let Some(text) = &press.key_char {
-        if !text.is_empty() {
-            return Some(prefix_alt(text.as_bytes().to_vec(), press.alt));
+        // 输入法占位符（U+FFFF/U+FFFE）不能进 PTY：远端 zsh 会显示成 <ffff>。
+        // 对照 macOS `MuxTerminalView.keyDown` / `insertText`。
+        use crate::frontend::gpui::model::ime::{key_dispatch, strip_placeholders, KeyDispatch};
+        if key_dispatch(Some(text.as_str())) == KeyDispatch::Ignore {
+            return None;
+        }
+        let cleaned = strip_placeholders(text);
+        if !cleaned.is_empty() {
+            return Some(prefix_alt(cleaned.into_bytes(), press.alt));
         }
     }
 
@@ -150,6 +157,36 @@ mod tests {
         assert_eq!(encode(&press("a"), false), Some(b"a".to_vec()));
     }
 
+    /// 对照 `CmdEnterKeyE2ETests::testImePlaceholderNeverReachesRemoteShell`。
+    #[test]
+    fn ime_placeholders_never_become_bytes() {
+        let mut placeholder = press("a");
+        placeholder.key_char = Some("\u{ffff}".into());
+        assert_eq!(encode(&placeholder, false), None);
+        placeholder.key_char = Some("\u{fffe}\u{ffff}".into());
+        assert_eq!(encode(&placeholder, false), None);
+
+        // 混了真字符：只丢掉占位符。
+        let mut mixed = press("a");
+        mixed.key_char = Some("中\u{ffff}文".into());
+        assert_eq!(
+            encode(&mixed, false).unwrap(),
+            "中文".as_bytes().to_vec(),
+            "IME commit must retain valid Chinese text"
+        );
+
+        // 普通 IME 提交原样通过。
+        let mut chinese = press("a");
+        chinese.key_char = Some("中文".into());
+        assert_eq!(encode(&chinese, false).unwrap(), "中文".as_bytes().to_vec());
+
+        // 空字符按键退回键位名，仍能敲出普通字母。
+        let mut empty = press("a");
+        empty.key_char = Some(String::new());
+        assert_eq!(encode(&empty, false), Some(vec![b'a']));
+    }
+
+    /// 对照 `TerminalInputEncodingTests::testControlBytes`。
     #[test]
     fn control_letters_become_control_bytes() {
         let mut keys = press("c");
