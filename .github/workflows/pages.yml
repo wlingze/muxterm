@@ -49,16 +49,16 @@ jobs:
           test -f website/assets/base.css
           test -f website/assets/app.js
           test -f website/assets/fonts/martian-mono-latin.woff2
-          test -f website/assets/vendor/marked.min.js
           test -f website/.nojekyll
-
-          test -f website/docs/WORKSPACE.md
-          test -f website/docs/USER-GUIDE.md
 
           for scene in workspace agents shells; do
             for theme in dark light; do
               test -f "website/assets/img/app-${scene}-${theme}.png"
             done
+          done
+
+          for theme in dark light; do
+            test -f "website/assets/img/app-ports-${theme}.png"
           done
 
       - name: Upload Pages artifact

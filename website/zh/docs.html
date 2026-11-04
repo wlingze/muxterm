@@ -21,9 +21,9 @@
       </a>
 
       <ul class="site-nav__links">
-        <li><a href="./index.html#architecture" class="site-nav__link">工作台</a></li>
-        <li><a href="./index.html#runtimes" class="site-nav__link">运行时</a></li>
+        <li><a href="./index.html#workbench" class="site-nav__link">工作台</a></li>
         <li><a href="./index.html#ports" class="site-nav__link">端口</a></li>
+        <li><a href="./index.html#runtime" class="site-nav__link">运行时</a></li>
         <li><a href="./index.html#downloads" class="site-nav__link">下载</a></li>
         <li><a href="./docs.html" class="site-nav__link">文档</a></li>
       </ul>
@@ -49,18 +49,6 @@
         <a href="#cli-reference" class="docs-sidebar__link">CLI</a>
         <a href="#build" class="docs-sidebar__link">从源码构建</a>
       </div>
-      <div class="docs-sidebar__group">
-        <span class="docs-sidebar__title">参考</span>
-        <a href="#doc-USER-GUIDE" class="docs-sidebar__link" data-doc-ref="USER-GUIDE">用户指南</a>
-        <a href="#doc-WORKSPACE" class="docs-sidebar__link" data-doc-ref="WORKSPACE">工作区</a>
-        <a href="#doc-RUNTIME" class="docs-sidebar__link" data-doc-ref="RUNTIME">运行时</a>
-        <a href="#doc-SURFACE" class="docs-sidebar__link" data-doc-ref="SURFACE">界面</a>
-        <a href="#doc-FRONTEND" class="docs-sidebar__link" data-doc-ref="FRONTEND">前端</a>
-        <a href="#doc-CATALOG" class="docs-sidebar__link" data-doc-ref="CATALOG">目录</a>
-        <a href="#doc-CONFIG" class="docs-sidebar__link" data-doc-ref="CONFIG">配置</a>
-        <a href="#doc-PROJECT-STRUCTURE" class="docs-sidebar__link" data-doc-ref="PROJECT-STRUCTURE">项目结构</a>
-        <a href="#doc-PRODUCT" class="docs-sidebar__link" data-doc-ref="PRODUCT">产品</a>
-      </div>
     </aside>
 
     <div class="docs-content">
@@ -78,14 +66,14 @@
             </thead>
             <tbody>
               <tr>
-                <td>macOS Apple Silicon</td>
-                <td><code>muxterm-macos-arm64.dmg</code></td>
-                <td>macOS 13+</td>
+                <td data-label="目标">macOS Apple Silicon</td>
+                <td data-label="包"><code>muxterm-macos-arm64.dmg</code></td>
+                <td data-label="依赖">macOS 13+</td>
               </tr>
               <tr>
-                <td>Linux x86_64</td>
-                <td><code>muxterm-gtk-linux-x86_64.tar.gz</code></td>
-                <td>GTK4、vte4、OpenSSL、tmux 3.x</td>
+                <td data-label="目标">Linux x86_64</td>
+                <td data-label="包"><code>muxterm-gtk-linux-x86_64.tar.gz</code></td>
+                <td data-label="依赖">GTK4、vte4、OpenSSL、tmux 3.x</td>
               </tr>
             </tbody>
           </table>
@@ -188,14 +176,6 @@ cd muxterm
         </div>
       </article>
 
-      <section id="reference" class="docs-reference" data-docs-reference data-docs-src="../docs/" hidden>
-        <div class="docs-reference__bar">
-          <a class="docs-reference__github" data-docs-github href="https://github.com/wlingze/muxterm/blob/main/docs/USER-GUIDE.md" target="_blank" rel="noopener">在 GitHub 打开</a>
-        </div>
-        <article class="docs-reference__article" data-docs-content aria-busy="false" tabindex="-1">
-          <noscript><p>启用 JavaScript 可在此阅读参考；也可以直接打开 GitHub 上的 <a href="https://github.com/wlingze/muxterm/tree/main/docs">docs/</a>。</p></noscript>
-        </article>
-      </section>
     </div>
   </main>
 
@@ -242,7 +222,6 @@ cd muxterm
     </div>
   </footer>
 
-  <script src="../assets/vendor/marked.min.js"></script>
   <script src="../assets/app.js"></script>
 </body>
 </html>
