@@ -7,6 +7,8 @@ pub mod cli;
 pub mod command_queue;
 pub mod event_pump;
 pub mod format;
+#[cfg(feature = "gpui")]
+pub mod gpui;
 #[cfg(feature = "gtk")]
 pub mod linux;
 #[cfg(target_os = "macos")]
