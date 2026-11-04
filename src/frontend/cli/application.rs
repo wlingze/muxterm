@@ -221,6 +221,15 @@ enum CliSubcommand {
         #[arg(short = 's', long = "session", value_name = "NAME")]
         session: Option<String>,
     },
+    /// Launch the GPUI cross-platform frontend
+    Gpui {
+        /// tmux socket name (`-L`)
+        #[arg(short = 'L', long = "socket", value_name = "SOCKET")]
+        socket: Option<String>,
+        /// session name (`-s`)
+        #[arg(short = 's', long = "session", value_name = "NAME")]
+        session: Option<String>,
+    },
     /// Launch the GUI frontend
     Gui {
         /// tmux socket name (`-L`)
@@ -307,6 +316,9 @@ pub fn run() -> anyhow::Result<()> {
             CliSubcommand::Config { args } => dispatch("config", args),
             CliSubcommand::Tui { socket, session } => {
                 run_tui_inner(socket.clone(), session.clone())
+            }
+            CliSubcommand::Gpui { socket, session } => {
+                run_gpui_inner(socket.clone(), session.clone())
             }
             CliSubcommand::Gui {
                 socket,
@@ -397,6 +409,24 @@ fn run_tui_inner(socket: Option<String>, session: Option<String>) -> anyhow::Res
     #[cfg(not(feature = "tui"))]
     {
         anyhow::bail!("TUI 前端未编译（需要 --features tui）")
+    }
+}
+
+fn run_gpui_inner(socket: Option<String>, session: Option<String>) -> anyhow::Result<()> {
+    #[cfg(feature = "gpui")]
+    {
+        tracing::info!(target = "muxterm", "muxterm 启动（GPUI）");
+        if let Some(ref name) = session {
+            if socket.is_none() {
+                crate::frontend::cli::routing::ensure_local_daemon(name)?;
+            }
+        }
+        crate::frontend::gpui::run(socket, session)
+    }
+    #[cfg(not(feature = "gpui"))]
+    {
+        let _ = (socket, session);
+        anyhow::bail!("GPUI 前端未编译（需要 --features gpui）")
     }
 }
 
