@@ -122,7 +122,8 @@
 | 3（Grid 与事件） | 完成 | `c734f6bc` |
 | 4（IME 与粘贴） | 完成 | `76ea1b94` |
 | 5（Chrome 组件） | 侧栏与 tab/状态栏完成，面板浮层完成 | `fccdd4e2` `66c0579b` 本波提交 |
-| 6–8 | 未开始 | — |
+| 6（次级窗口） | 输入框、设置窗口完成 | `c6990a3d` 本波提交 |
+| 7–8 | 未开始 | — |
 
 每波落地后 `cargo test --no-default-features --features gpui --lib` 必须全绿；
 无头 harness 用例在 `tests/gpui_surface_events.rs`。

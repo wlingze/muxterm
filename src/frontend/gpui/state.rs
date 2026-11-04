@@ -59,6 +59,12 @@ pub struct GpuiApp {
     marked_text: String,
     /// Cmd-P 统一面板的状态。
     pub(crate) panel: crate::frontend::gpui::chrome::panel_view::PanelState,
+    /// 设置窗口是否打开。
+    pub settings_open: bool,
+    /// Core manifest 解析出来的分类与字段。
+    pub(crate) settings_manifest: crate::frontend::gpui::model::settings::SettingsManifest,
+    /// 设置草稿：值与 baseline 的差就是 Apply 要提交的 patch。
+    pub(crate) settings_draft: crate::frontend::gpui::model::settings::SettingsDraft,
     /// 独立输入框：每个 pane 一份草稿，关窗不清。
     pub(crate) composer: crate::frontend::gpui::model::composer::ComposerDraftStore,
     /// 输入框是否打开。
@@ -107,6 +113,9 @@ impl GpuiApp {
             focus_handle: cx.focus_handle(),
             marked_text: String::new(),
             panel: crate::frontend::gpui::chrome::panel_view::PanelState::default(),
+            settings_open: false,
+            settings_manifest: crate::frontend::gpui::model::settings::SettingsManifest::default(),
+            settings_draft: crate::frontend::gpui::model::settings::SettingsDraft::default(),
             composer: crate::frontend::gpui::model::composer::ComposerDraftStore::new(),
             composer_open: false,
             composer_selection: crate::frontend::gpui::model::composer::TextRange::default(),
@@ -233,6 +242,9 @@ impl GpuiApp {
             focus_handle: cx.focus_handle(),
             marked_text: String::new(),
             panel: crate::frontend::gpui::chrome::panel_view::PanelState::default(),
+            settings_open: false,
+            settings_manifest: crate::frontend::gpui::model::settings::SettingsManifest::default(),
+            settings_draft: crate::frontend::gpui::model::settings::SettingsDraft::default(),
             composer: crate::frontend::gpui::model::composer::ComposerDraftStore::new(),
             composer_open: false,
             composer_selection: crate::frontend::gpui::model::composer::TextRange::default(),
@@ -489,6 +501,25 @@ impl GpuiApp {
                 self.select_workspace(target, cx);
                 true
             }
+            KeyAction::OpenSettings => {
+                // manifest 与当前值都来自 Core 的一次 describe；拿不到就开空窗口，
+                // 不编造一份配置树。无头测试用 `open_settings` 直接注入。
+                let snapshot = self
+                    .pump
+                    .as_ref()
+                    .and_then(|pump| pump.client().config_describe().ok());
+                match snapshot {
+                    Some(snapshot) => self.open_settings(&snapshot.manifest, &snapshot.values, cx),
+                    None => {
+                        self.open_settings(
+                            &serde_json::json!({ "groups": [] }),
+                            &serde_json::json!({}),
+                            cx,
+                        );
+                    }
+                }
+                true
+            }
             KeyAction::OpenComposer => {
                 self.open_composer(cx);
                 true
@@ -581,6 +612,126 @@ impl GpuiApp {
     /// tab 栏位置（`[ui] tab_bar_position`）。
     pub fn tab_bar_position(&self) -> crate::frontend::gpui::chrome::tab_bar_view::TabBarPosition {
         self.tab_bar_position
+    }
+
+    /// Cmd-,：打开设置。manifest 与当前值从 Core 快照来（无头测试直接注入）。
+    pub fn open_settings(
+        &mut self,
+        manifest: &serde_json::Value,
+        values: &serde_json::Value,
+        cx: &mut Context<Self>,
+    ) {
+        self.settings_manifest =
+            crate::frontend::gpui::model::settings::SettingsManifest::parse(manifest);
+        self.settings_draft = crate::frontend::gpui::model::settings::SettingsDraft::new(values);
+        let first = self
+            .settings_manifest
+            .categories()
+            .first()
+            .map(|category| category.id.clone());
+        self.settings_draft.set_selected(first);
+        self.settings_open = true;
+        cx.notify();
+    }
+
+    /// 关闭设置；有未提交修改时由调用方决定是否 `settings_discard`。
+    pub fn close_settings(&mut self, cx: &mut Context<Self>) {
+        if !self.settings_open {
+            return;
+        }
+        self.settings_open = false;
+        cx.notify();
+    }
+
+    /// 侧栏可见分类（受搜索词影响）。
+    pub fn settings_categories(
+        &self,
+    ) -> Vec<crate::frontend::gpui::model::settings::SettingsCategory> {
+        self.settings_manifest
+            .visible_categories(self.settings_draft.query())
+    }
+
+    /// 选中的分类。
+    pub fn settings_selected(
+        &self,
+    ) -> Option<crate::frontend::gpui::model::settings::SettingsCategory> {
+        let selected = self.settings_draft.selected()?.to_string();
+        self.settings_categories()
+            .into_iter()
+            .find(|category| category.id == selected)
+            .or_else(|| {
+                self.settings_manifest
+                    .categories()
+                    .into_iter()
+                    .find(|category| category.id == selected)
+            })
+    }
+
+    /// 有未提交修改。
+    pub fn settings_dirty(&self) -> bool {
+        self.settings_draft.is_dirty()
+    }
+
+    /// 草稿里某个路径的当前值。
+    pub fn settings_value(&self, path: &str) -> Option<serde_json::Value> {
+        self.settings_draft.get(path).cloned()
+    }
+
+    /// 当前搜索词。
+    pub fn settings_query(&self) -> &str {
+        self.settings_draft.query()
+    }
+
+    pub fn settings_select(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.settings_draft.set_selected(Some(id.to_string()));
+        cx.notify();
+    }
+
+    pub fn settings_set_query(&mut self, query: impl Into<String>, cx: &mut Context<Self>) {
+        self.settings_draft.set_query(query);
+        // 过滤后当前分类不可见时，切到第一条可见分类；草稿内容不动。
+        let selected_visible = self
+            .settings_draft
+            .selected()
+            .map(|selected| {
+                self.settings_categories()
+                    .iter()
+                    .any(|category| category.id == selected)
+            })
+            .unwrap_or(false);
+        if !selected_visible {
+            let first = self
+                .settings_categories()
+                .first()
+                .map(|category| category.id.clone());
+            self.settings_draft.set_selected(first);
+        }
+        cx.notify();
+    }
+
+    /// 改一个字段（草稿态，不写 Core）。
+    pub fn settings_set(&mut self, path: &str, value: serde_json::Value, cx: &mut Context<Self>) {
+        self.settings_draft.set(path, value);
+        cx.notify();
+    }
+
+    /// 丢弃修改，回到打开设置时的值。
+    pub fn settings_discard(&mut self, cx: &mut Context<Self>) {
+        self.settings_draft.revert();
+        cx.notify();
+    }
+
+    /// Apply：每个改动一条 ConfigApply，再以当前值为新 baseline。
+    pub fn settings_apply(&mut self, cx: &mut Context<Self>) -> usize {
+        let patches = self.settings_draft.patches_for(&self.settings_manifest);
+        let count = patches.len();
+        for (path, value) in patches {
+            self.commands
+                .push(ClientCommand::ConfigApply { path, value });
+        }
+        self.settings_draft.rebase();
+        cx.notify();
+        count
     }
 
     /// 输入框打开时绑定的目标：当前 workspace + 聚焦 pane。
