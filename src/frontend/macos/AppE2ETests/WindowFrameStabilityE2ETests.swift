@@ -15,6 +15,26 @@ final class WindowFrameStabilityE2ETests: XCTestCase {
       "(\(Int(frame.origin.x)),\(Int(frame.origin.y)) \(Int(frame.width))x\(Int(frame.height)))"
   }
 
+  /// CI 失败时只报窗口 frame 看不出是谁在要宽度。带上 split 几何、
+  /// 两条 item 的厚度上下界和内容区的固有宽度，下次失败能直接定位。
+  private func describeSplit(_ app: MainWindowController) -> String {
+    guard
+      let split = (app.window?.contentViewController as? NSSplitViewController)?.splitView
+    else { return "split=nil" }
+    let items = split.arrangedSubviews.map { view -> String in
+      "\(Int(view.frame.width))/fit\(Int(view.fittingSize.width))"
+    }
+    let bounds = (0..<split.arrangedSubviews.count).map { index -> String in
+      let item = (app.window?.contentViewController as? NSSplitViewController)?
+        .splitViewItems[index]
+      guard let item else { return "?" }
+      let minT = item.isCollapsed ? "-" : String(Int(item.minimumThickness))
+      let maxT = item.isCollapsed ? "-" : String(Int(item.maximumThickness))
+      return "min=\(minT) max=\(maxT) collapsed=\(item.isCollapsed)"
+    }
+    return "splitW=\(Int(split.frame.width)) widths=\(items) items=\(bounds)"
+  }
+
   private func send(_ app: MainWindowController, _ event: NSEvent) {
     _ = app.testRouteMonitoredKeyEvent(event)
     NSApp.sendEvent(event)
@@ -130,6 +150,93 @@ final class WindowFrameStabilityE2ETests: XCTestCase {
     XCTAssertEqual(app.window?.frame, requested, "展开侧栏后切工作区不能改 frame")
   }
 
+  /// CI 上侧栏记着 240pt 厚度：窗口只有 500pt 时再展开，AppKit 曾经
+  /// 不缩终端区、直接把窗口撑成 740pt。窗口尺寸必须始终由用户决定。
+  func testExpandingARememberedSidebarKeepsACompactWindowWidth() throws {
+    let painted = PaintedWorkspace(label: "frame-remembered-sidebar")
+    let app = try AppE2E.attachWindow(socket: painted.socket, session: painted.session)
+    defer { app.testShutdown() }
+    XCTAssertTrue(app.waitReady(minTabs: 2, minLeaves: 3))
+
+    // 先在宽窗口展开一次，让 split 记住 240pt 的侧栏厚度。
+    let wide = AppE2E.fixedWindowFrame(width: 1200, height: 480)
+    app.window?.setFrame(wide, display: true)
+    app.window?.makeKeyAndOrderFront(nil)
+    AppE2E.pump(300)
+    app.setWorkspaceSidebarOpenForTest(true)
+    AppE2E.pump(300)
+    app.testPollOnce()
+    XCTAssertGreaterThan(
+      app.workspaceSidebarWidthForTest(),
+      200,
+      "宽窗口下侧栏应当拿到超过最小厚度的宽度"
+    )
+
+    // 收窄窗口：侧栏仍然展开，窗口尺寸不许变。
+    let requested = AppE2E.fixedWindowFrame(width: 500, height: 320)
+    app.window?.setFrame(requested, display: true)
+    AppE2E.pump(300)
+    app.testPollOnce()
+    XCTAssertEqual(
+      app.window?.frame,
+      requested,
+      "收窄窗口不能因为展开的侧栏被顶回去：actual=\(describe(app.window?.frame))"
+    )
+
+    // 收起再展开：这次侧栏记着 240pt，但窗口只有 500pt。
+    app.setWorkspaceSidebarOpenForTest(false)
+    AppE2E.pump(200)
+    app.setWorkspaceSidebarOpenForTest(true)
+    AppE2E.pump(300)
+    app.testPollOnce()
+    XCTAssertEqual(
+      app.window?.frame,
+      requested,
+      "记住厚度的侧栏不能把紧凑窗口撑宽：actual=\(describe(app.window?.frame))"
+    )
+    XCTAssertLessThanOrEqual(
+      app.workspaceSidebarWidthForTest(),
+      MainSplitLayoutPolicy.expandableSidebarThickness(
+        windowContentWidth: requested.width,
+        preferred: 240
+      ),
+      "侧栏厚度必须收敛到窗口能给的宽度"
+    )
+  }
+
+  /// AppKit 在部分系统上把「侧栏展开」推到下一轮布局才撑窗口。同步
+  /// 复位拿不到那一步，必须有兜底守卫；用户手动缩放则不能被改回去。
+  func testAsyncWindowGrowthAfterExpandingTheSidebarIsUndone() throws {
+    let painted = PaintedWorkspace(label: "frame-async-growth")
+    let app = try AppE2E.attachWindow(socket: painted.socket, session: painted.session)
+    defer { app.testShutdown() }
+    XCTAssertTrue(app.waitReady(minTabs: 2, minLeaves: 3))
+
+    let requested = AppE2E.fixedWindowFrame(width: 500, height: 320)
+    app.window?.setFrame(requested, display: true)
+    app.window?.makeKeyAndOrderFront(nil)
+    AppE2E.pump(300)
+    app.testPollOnce()
+
+    app.setWorkspaceSidebarOpenForTest(true)
+    app.testGrowWindowAsync(toWidth: 740)
+    AppE2E.pump(500)
+    app.testPollOnce()
+    XCTAssertEqual(
+      app.window?.frame,
+      requested,
+      "异步撑宽必须被复位：actual=\(describe(app.window?.frame)) \(describeSplit(app))"
+    )
+    XCTAssertLessThanOrEqual(
+      app.workspaceSidebarWidthForTest(),
+      MainSplitLayoutPolicy.expandableSidebarThickness(
+        windowContentWidth: requested.width,
+        preferred: 240
+      ),
+      "复位后侧栏厚度必须收敛到窗口能给的宽度"
+    )
+  }
+
   /// Cmd-1 / Cmd-2 在同一 workspace 的两个 tab 之间切。
   func testKeyboardTabSwitchKeepsTheMainWindowFrame() throws {
     let painted = PaintedWorkspace(label: "frame-tab")
@@ -185,7 +292,7 @@ final class WindowFrameStabilityE2ETests: XCTestCase {
     XCTAssertEqual(
       app.window?.frame,
       requested,
-      "展开侧栏不能改窗口尺寸：actual=\(describe(app.window?.frame))"
+      "展开侧栏不能改窗口尺寸：actual=\(describe(app.window?.frame)) \(describeSplit(app))"
     )
   }
 
