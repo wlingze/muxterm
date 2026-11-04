@@ -10,6 +10,7 @@
 
 pub mod aggregate;
 pub mod attention;
+pub mod composer;
 pub mod image_paste;
 pub mod ime;
 pub mod input_encoding;

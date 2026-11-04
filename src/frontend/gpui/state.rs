@@ -13,6 +13,7 @@ use gpui::{
 
 use crate::frontend::command_queue::{ClientCommand, CommandQueue};
 use crate::frontend::event_pump::EventPump;
+use crate::frontend::gpui::model::composer::{ComposerTarget, ComposerTargetKind};
 use crate::frontend::gpui::model::scroll::{wheel_lines, wheel_outcome, WheelOutcome};
 use crate::frontend::gpui::terminal::mouse::{self, MouseEventKind};
 use crate::frontend::gpui::terminal::{encode, KeyPress, Surface};
@@ -58,6 +59,16 @@ pub struct GpuiApp {
     marked_text: String,
     /// Cmd-P 统一面板的状态。
     pub(crate) panel: crate::frontend::gpui::chrome::panel_view::PanelState,
+    /// 独立输入框：每个 pane 一份草稿，关窗不清。
+    pub(crate) composer: crate::frontend::gpui::model::composer::ComposerDraftStore,
+    /// 输入框是否打开。
+    pub composer_open: bool,
+    /// 当前草稿页的 UTF-16 光标（图片路径按它插入）。
+    pub(crate) composer_selection: crate::frontend::gpui::model::composer::TextRange,
+    /// 当前草稿页身份；没有打开过时是 `None`。
+    pub(crate) composer_key: Option<crate::frontend::gpui::model::composer::ComposerDraftKey>,
+    /// 输入框底部状态行（发送成功 / 没有目标 / 没有内容）。
+    pub composer_status: Option<String>,
     /// 搜索命中快照（FFI 接入前保持 `None`，面板 Search tab 为空）。
     pub(crate) search_snapshot: Option<crate::frontend::gpui::model::search::SearchSnapshot>,
     /// tab 栏位置，默认顶部。
@@ -96,6 +107,11 @@ impl GpuiApp {
             focus_handle: cx.focus_handle(),
             marked_text: String::new(),
             panel: crate::frontend::gpui::chrome::panel_view::PanelState::default(),
+            composer: crate::frontend::gpui::model::composer::ComposerDraftStore::new(),
+            composer_open: false,
+            composer_selection: crate::frontend::gpui::model::composer::TextRange::default(),
+            composer_key: None,
+            composer_status: None,
             search_snapshot: None,
             tab_bar_position: crate::frontend::gpui::chrome::tab_bar_view::TabBarPosition::default(
             ),
@@ -217,6 +233,11 @@ impl GpuiApp {
             focus_handle: cx.focus_handle(),
             marked_text: String::new(),
             panel: crate::frontend::gpui::chrome::panel_view::PanelState::default(),
+            composer: crate::frontend::gpui::model::composer::ComposerDraftStore::new(),
+            composer_open: false,
+            composer_selection: crate::frontend::gpui::model::composer::TextRange::default(),
+            composer_key: None,
+            composer_status: None,
             search_snapshot: None,
             tab_bar_position: crate::frontend::gpui::chrome::tab_bar_view::TabBarPosition::default(
             ),
@@ -468,6 +489,10 @@ impl GpuiApp {
                 self.select_workspace(target, cx);
                 true
             }
+            KeyAction::OpenComposer => {
+                self.open_composer(cx);
+                true
+            }
             // Cmd-P 的 QuickConnect 就是统一面板的 Workspaces tab；
             // Cmd-Shift-P 的旧命令面板还没有窗口（见 README 波次 6）。
             KeyAction::QuickConnect => {
@@ -556,6 +581,178 @@ impl GpuiApp {
     /// tab 栏位置（`[ui] tab_bar_position`）。
     pub fn tab_bar_position(&self) -> crate::frontend::gpui::chrome::tab_bar_view::TabBarPosition {
         self.tab_bar_position
+    }
+
+    /// 输入框打开时绑定的目标：当前 workspace + 聚焦 pane。
+    pub fn composer_target(&self) -> Option<ComposerTarget> {
+        let workspace_id = self.visible.clone()?;
+        let pane_id = self.focused_pane?;
+        let view = self.store.workspace(&workspace_id)?;
+        let workspace = view.workspace.as_ref();
+        let canonical = workspace
+            .and_then(|workspace| workspace.resolved_target.as_ref())
+            .as_ref()
+            .and_then(|target| target.get("canonical"));
+        let transport = canonical
+            .and_then(|canonical| canonical.get("transport"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("local");
+        let (kind, host) = if transport == "ssh" {
+            let alias = canonical
+                .and_then(|canonical| canonical.get("alias"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            (ComposerTargetKind::Ssh, alias.to_string())
+        } else {
+            (ComposerTargetKind::Local, String::new())
+        };
+        Some(ComposerTarget {
+            kind,
+            host,
+            workspace_name: workspace
+                .map(|workspace| workspace.name.clone())
+                .unwrap_or_default(),
+            workspace_id: Some(workspace_id),
+            pane_id: Some(pane_id),
+        })
+    }
+
+    /// Cmd-I：打开输入框。已有草稿直接接上，不覆盖用户写了一半的内容。
+    pub fn open_composer(&mut self, cx: &mut Context<Self>) {
+        let target = self.composer_target();
+        let page = self.composer.activate(target);
+        self.composer_status = None;
+        let key = page.key.clone();
+        self.composer_selection = page.selection;
+        self.composer_key = Some(key);
+        self.composer_open = true;
+        cx.notify();
+    }
+
+    /// Esc：收起窗口，草稿留着。
+    pub fn close_composer(&mut self, cx: &mut Context<Self>) {
+        if !self.composer_open {
+            return;
+        }
+        self.composer_open = false;
+        cx.notify();
+    }
+
+    /// 当前页快照。
+    pub fn composer_page(
+        &self,
+    ) -> Option<&crate::frontend::gpui::model::composer::ComposerDraftPage> {
+        self.composer.active_page()
+    }
+
+    /// 把文本追加到当前页末尾（IME 提交与普通按键共用）。
+    pub fn composer_insert(&mut self, text: &str, cx: &mut Context<Self>) {
+        let Some(page) = self.composer.active_page().cloned() else {
+            return;
+        };
+        let mut next = page.text.clone();
+        next.push_str(text);
+        let selection = crate::frontend::gpui::model::composer::TextRange::new(
+            crate::frontend::gpui::model::composer::utf16_len(&next),
+            0,
+        );
+        self.composer.update(next, selection, &page.key);
+        self.composer_selection = selection;
+        cx.notify();
+    }
+
+    /// 退格：删掉最后一个字符（不跨越 UTF-8 边界）。
+    pub fn composer_backspace(&mut self, cx: &mut Context<Self>) {
+        let Some(page) = self.composer.active_page().cloned() else {
+            return;
+        };
+        let mut next = page.text.clone();
+        next.pop();
+        let selection = crate::frontend::gpui::model::composer::TextRange::new(
+            crate::frontend::gpui::model::composer::utf16_len(&next),
+            0,
+        );
+        self.composer.update(next, selection, &page.key);
+        self.composer_selection = selection;
+        cx.notify();
+    }
+
+    /// 在光标处插入图片路径（粘贴图片时用），返回新光标。
+    pub fn composer_insert_image_path(&mut self, path: &str, cx: &mut Context<Self>) {
+        let Some(page) = self.composer.active_page().cloned() else {
+            return;
+        };
+        let insertion = crate::frontend::gpui::model::composer::inserting_image_path(
+            path,
+            &page.text,
+            self.composer_selection,
+        );
+        let selection = crate::frontend::gpui::model::composer::TextRange::new(insertion.caret, 0);
+        self.composer.update(insertion.text, selection, &page.key);
+        self.composer_selection = selection;
+        cx.notify();
+    }
+
+    /// Cmd-Enter：把当前页原文写进目标 pane，再清空这一页。
+    ///
+    /// 空内容、没有目标都不发送，只在状态行说明原因，和 Swift 一致。
+    pub fn send_composer(&mut self, cx: &mut Context<Self>) {
+        let Some(page) = self.composer.active_page().cloned() else {
+            return;
+        };
+        if crate::frontend::gpui::model::composer::ComposerDraft::new(page.text.clone())
+            .payload()
+            .is_none()
+        {
+            self.composer_status = Some("nothing to send".to_string());
+            cx.notify();
+            return;
+        }
+        let Some(target) = page.target.clone() else {
+            self.composer_status = Some("no target".to_string());
+            cx.notify();
+            return;
+        };
+        let Some(pane_id) = target.pane_id else {
+            self.composer_status = Some("no target".to_string());
+            cx.notify();
+            return;
+        };
+        let draft = crate::frontend::gpui::model::composer::ComposerDraft::new(page.text.clone());
+        let Some(text) = draft.payload() else {
+            return;
+        };
+        // 发送就是普通输入：和手打字走同一条 `ClientCommand::Input` 通道。
+        self.commands.push(ClientCommand::Input {
+            workspace_id: target.workspace_id.clone(),
+            pane_id,
+            data: text.as_bytes().to_vec(),
+            quiet: false,
+        });
+        self.composer.clear(&page.key);
+        self.composer_selection = crate::frontend::gpui::model::composer::TextRange::default();
+        self.composer_status = Some("sent".to_string());
+        cx.notify();
+    }
+
+    /// tab 栏按 visible 下标切页。
+    pub fn composer_select_visible(&mut self, index: usize, cx: &mut Context<Self>) {
+        if !self.composer.select_visible(index) {
+            return;
+        }
+        if let Some(page) = self.composer.active_page() {
+            self.composer_selection = page.selection;
+            self.composer_key = Some(page.key.clone());
+        }
+        self.composer_status = None;
+        cx.notify();
+    }
+
+    /// 输入框 tab 栏要画的页。
+    pub fn composer_visible_pages(
+        &self,
+    ) -> Vec<crate::frontend::gpui::model::composer::ComposerDraftPage> {
+        self.composer.visible_pages().into_iter().cloned().collect()
     }
 
     /// 面板是否打开（Esc 关闭后按键回到终端）。
@@ -909,6 +1106,52 @@ impl GpuiApp {
             control: keystroke.modifiers.control,
             key: keystroke.key.clone(),
         };
+        // 输入框打开时先吃掉自己的键：Cmd-Enter 发送、Esc 收起、Tab 切页，
+        // 无修饰键的字符写进草稿。其它 Cmd 组合仍然按全局动作执行。
+        if self.composer_open {
+            let plain = !keystroke.modifiers.platform && !keystroke.modifiers.control;
+            if keystroke.modifiers.platform && keystroke.key == "enter" {
+                self.send_composer(cx);
+                return;
+            }
+            if plain {
+                match keystroke.key.as_str() {
+                    "escape" => {
+                        self.close_composer(cx);
+                        return;
+                    }
+                    "tab" => {
+                        let visible = self.composer.visible_pages().len();
+                        if visible > 1 {
+                            let current = self.composer.active_visible_index().unwrap_or(0);
+                            let next = if keystroke.modifiers.shift {
+                                (current + visible - 1) % visible
+                            } else {
+                                (current + 1) % visible
+                            };
+                            self.composer_select_visible(next, cx);
+                        }
+                        return;
+                    }
+                    "backspace" => {
+                        self.composer_backspace(cx);
+                        return;
+                    }
+                    "enter" => {
+                        self.composer_insert("\n", cx);
+                        return;
+                    }
+                    _ => {}
+                }
+                if let Some(text) = keystroke.key_char.as_deref() {
+                    if !text.is_empty() && text.chars().all(|ch| !ch.is_control()) {
+                        self.composer_insert(text, cx);
+                        return;
+                    }
+                }
+            }
+        }
+
         if let Some(action) = crate::frontend::gpui::model::shortcuts::builtin_action(&chord) {
             if self.run_action(action, cx) {
                 cx.notify();

@@ -453,3 +453,122 @@ fn cmd_f_opens_the_search_tab(cx: &mut TestAppContext) {
     let rows = cx.update(|_, cx| view.update(cx, |app, _| app.panel_rows()));
     assert_eq!(rows.len(), 2);
 }
+
+/// Cmd-I 打开输入框，徽章显示目标去向。
+#[gpui::test]
+fn cmd_i_opens_the_composer_with_its_target(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    assert!(!cx.update(|_, cx| view.update(cx, |app, _| app.composer_open)));
+    cx.simulate_keystrokes("cmd-i");
+    let (open, badge, page_title) = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            (
+                app.composer_open,
+                app.composer_page()
+                    .and_then(|page| page.target.as_ref().map(|target| target.badge())),
+                app.composer_page().map(|page| page.title()),
+            )
+        })
+    });
+    assert!(open, "Cmd-I 要打开输入框");
+    assert_eq!(badge, Some("Local"));
+    assert_eq!(page_title.as_deref(), Some("dev #10"));
+}
+
+/// 打字只写草稿，不写 PTY；Esc 收起后草稿还在。
+#[gpui::test]
+fn typing_stays_in_the_draft_and_survives_closing(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    cx.simulate_keystrokes("cmd-i");
+    cx.simulate_keystrokes("h i");
+    let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    assert!(
+        commands.is_empty(),
+        "输入框里的字不能直接进终端：{commands:?}"
+    );
+    cx.simulate_keystrokes("escape");
+    cx.simulate_keystrokes("cmd-i");
+    let text = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            app.composer_page()
+                .map(|page| page.text.clone())
+                .unwrap_or_default()
+        })
+    });
+    assert_eq!(text, "hi", "重新打开要接上原草稿");
+}
+
+/// Cmd-Enter 发送一次并清空这一页；再按一次只报「没有内容」。
+#[gpui::test]
+fn cmd_enter_sends_the_draft_once(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    cx.simulate_keystrokes("cmd-i");
+    cx.simulate_keystrokes("e c h o");
+    cx.simulate_keystrokes("cmd-enter");
+
+    let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    let inputs: Vec<&ClientCommand> = commands
+        .iter()
+        .filter(|command| matches!(command, ClientCommand::Input { .. }))
+        .collect();
+    assert_eq!(inputs.len(), 1, "一次 Cmd-Enter 只写一次：{commands:?}");
+    let ClientCommand::Input { data, pane_id, .. } = inputs[0] else {
+        unreachable!()
+    };
+    assert_eq!(data, b"echo");
+    assert_eq!(*pane_id, 10);
+
+    let (cleared, status) = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            (
+                app.composer_page().map(|page| page.text.clone()),
+                app.composer_status.clone(),
+            )
+        })
+    });
+    assert_eq!(cleared.as_deref(), Some(""), "发送后这一页要清空");
+    assert_eq!(status.as_deref(), Some("sent"));
+
+    cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    cx.simulate_keystrokes("cmd-enter");
+    let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    assert!(commands.is_empty(), "空草稿不发任何字节：{commands:?}");
+    let status = cx.update(|_, cx| view.update(cx, |app, _| app.composer_status.clone()));
+    assert_eq!(status.as_deref(), Some("nothing to send"));
+}
+
+/// 每个 pane 一份草稿：切走再回来内容还在。
+#[gpui::test]
+fn composer_drafts_are_per_pane(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.simulate_keystrokes("cmd-i");
+    cx.simulate_keystrokes("a b");
+    cx.simulate_keystrokes("escape");
+
+    // 切到另一个 workspace（pane 20），打开输入框应是空白页。
+    cx.simulate_keystrokes("cmd-ctrl-2");
+    cx.simulate_keystrokes("cmd-i");
+    let second_text = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            app.composer_page()
+                .map(|page| page.text.clone())
+                .unwrap_or_default()
+        })
+    });
+    assert_eq!(second_text, "");
+
+    cx.simulate_keystrokes("c d");
+    cx.simulate_keystrokes("escape");
+    cx.simulate_keystrokes("cmd-ctrl-1");
+    cx.simulate_keystrokes("cmd-i");
+    let first_text = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            app.composer_page()
+                .map(|page| page.text.clone())
+                .unwrap_or_default()
+        })
+    });
+    assert_eq!(first_text, "ab", "回到第一个 pane 草稿要还原");
+}
