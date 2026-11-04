@@ -36,14 +36,15 @@ python3 -m http.server 8000 --bind 0.0.0.0 --directory website
 ```
 
 官网首页包含可交互的 Workspace / Tab / Pane 预览，以及真实 macOS 应用截图（工作台、
-Agents 聚合、Shells 聚合，各有亮/暗两套，使用模拟会话数据）。截图以横向滑动方式展示，
-可在页面内切换主题，默认跟随整页主题。安装、Runtime、端口转发、快捷键和下载也在首页；
-文档页侧栏可直接切换仓库 `docs/` 的完整参考，选中文档会替换快速上手内容。
+Agents 聚合、Shells 聚合三张一组，另有端口选择器，各有亮/暗两套，使用模拟会话数据）。
+截图在页面以小尺寸三栏展示，点开看大图；一键切换整站主题，黑白两套截图随之同步。
+端口扫描与转发在首页单独成节，配真实截图与可交互演示。文档页只保留快速上手，
+仓库 `docs/` 的完整参考留在 GitHub，不在网页上渲染。
 
 真实用户会话截图目录 [`assets/screenshots/`](assets/screenshots/) 可能包含个人内容，仍不默认提交；
-官网使用的截图由 `src/frontend/macos/AppE2ETests/WebsiteScreenshotE2ETests.swift` 与
-`WebsiteGalleryE2ETests.swift` 在隔离 tmux socket / `ZDOTDIR` 上生成，细节见
-[`website/README.md`](website/README.md)。
+官网使用的截图由 `src/frontend/macos/AppE2ETests/WebsiteScreenshotE2ETests.swift`、
+`WebsiteGalleryE2ETests.swift` 与 `SSHPortPickerE2ETests` 在隔离 tmux socket / `ZDOTDIR` 上生成，
+细节见 [`website/README.md`](website/README.md)。
 
 ## 依赖环境
 

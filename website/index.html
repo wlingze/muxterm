@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Muxterm: tmux and Herdr sessions become native workspaces</title>
-  <meta name="description" content="A cross-platform terminal workbench where tmux and Herdr sessions become native workspaces with tabs, panes, SSH port forwarding and attention tracking.">
+  <title>Muxterm: a terminal workbench for tmux and Herdr</title>
+  <meta name="description" content="Muxterm turns tmux sessions, Herdr workspaces and local shells into native workspaces with tabs, panes, port forwarding and agent attention.">
   <link rel="icon" href="./assets/muxterm-logo.svg" type="image/svg+xml">
   <link rel="alternate" hreflang="en" href="./index.html">
   <link rel="alternate" hreflang="zh-CN" href="./zh/index.html">
@@ -22,10 +22,10 @@
       </a>
 
       <ul class="site-nav__links">
-        <li><a href="#architecture" class="site-nav__link">workbench</a></li>
-        <li><a href="#runtimes" class="site-nav__link">runtimes</a></li>
+        <li><a href="#workbench" class="site-nav__link">workbench</a></li>
         <li><a href="#ports" class="site-nav__link">ports</a></li>
-        <li><a href="#features" class="site-nav__link">features</a></li>
+        <li><a href="#runtime" class="site-nav__link">runtime</a></li>
+        <li><a href="#downloads" class="site-nav__link">downloads</a></li>
         <li><a href="./docs.html" class="site-nav__link">docs</a></li>
       </ul>
 
@@ -44,7 +44,7 @@
       <div class="container hero-layout">
         <div class="hero-copy">
           <h1 class="hero-headline">tmux and Herdr become workspaces.</h1>
-          <p class="hero-lead">tmux, Herdr and local shells in one native workbench.</p>
+          <p class="hero-lead">Sessions, agents and local shells in one native workbench.</p>
 
           <div class="hero-actions">
             <a href="https://github.com/wlingze/muxterm/releases/latest/download/muxterm-macos-arm64.dmg" class="btn btn--primary" rel="noreferrer">download for macos</a>
@@ -129,118 +129,154 @@ Scene: resident</pre>
       </div>
     </section>
 
-    <!-- ── Product Screenshots ───────────────────────────────────── -->
-    <section id="screenshot" class="section-block section-shot">
+    <!-- ── Screens ───────────────────────────────────────────────── -->
+    <section id="workbench" class="section-block">
       <div class="container">
-        <div class="shot-head">
-          <p class="shot-note">mock sessions</p>
-          <div class="shot-controls">
-            <div class="shot-theme-switch" role="group" aria-label="Screenshot theme">
-              <button type="button" class="shot-theme" data-set-theme="dark" aria-pressed="true">dark</button>
-              <button type="button" class="shot-theme" data-set-theme="light" aria-pressed="false">light</button>
-            </div>
-            <span class="shot-count" data-shot-count aria-live="polite">1 / 3</span>
-            <button type="button" class="shot-nav" data-shot-prev aria-label="previous screenshot">
-              <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" focusable="false"><path d="M8.5 2.5 4 7l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square"/></svg>
-            </button>
-            <button type="button" class="shot-nav" data-shot-next aria-label="next screenshot">
-              <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" focusable="false"><path d="M5.5 2.5 10 7l-4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square"/></svg>
-            </button>
+        <div class="section-head section-head--split">
+          <div>
+            <h2 class="section-title">Three scenes from one window</h2>
+            <p class="section-desc">Captured from the macOS app with mock sessions. Click a shot to open it full size.</p>
+          </div>
+          <div class="shot-theme-switch" role="group" aria-label="Screenshot theme">
+            <button type="button" class="shot-theme" data-set-theme="dark" aria-pressed="true">dark</button>
+            <button type="button" class="shot-theme" data-set-theme="light" aria-pressed="false">light</button>
           </div>
         </div>
 
-        <div class="shot-track" data-shot-track tabindex="0" role="region" aria-label="App screenshots">
-          <figure class="app-shot" data-shot-card>
-            <img data-shot
-                 data-dark="./assets/img/app-workspace-dark.png"
-                 data-light="./assets/img/app-workspace-light.png"
-                 src="./assets/img/app-workspace-dark.png"
-                 width="1280" height="760" decoding="async"
-                 alt="Muxterm macOS workbench with a workspace sidebar, four terminal panes and two tabs.">
-            <figcaption class="app-shot__label">
-              <span class="app-shot__caption">workbench</span>
+        <div class="scene-list">
+          <figure class="scene">
+            <a class="scene__open" href="./assets/img/app-workspace-dark.png" target="_blank" rel="noopener">
+              <img data-shot
+                   data-dark="./assets/img/app-workspace-dark.png"
+                   data-light="./assets/img/app-workspace-light.png"
+                   src="./assets/img/app-workspace-dark.png"
+                   width="1400" height="831" decoding="async"
+                   alt="Muxterm workbench on macOS: workspace sidebar, two tabs, four tmux panes with build and git output.">
+            </a>
+            <figcaption class="scene__copy">
+              <span class="scene__index">01 / workbench</span>
+              <h3 class="scene__title">One pool for every session</h3>
+              <p class="scene__text">A tmux session, a Herdr workspace and a project checkout share the sidebar. Each keeps native tabs and panes.</p>
             </figcaption>
           </figure>
 
-          <figure class="app-shot" data-shot-card>
-            <img data-shot
-                 data-dark="./assets/img/app-agents-dark.png"
-                 data-light="./assets/img/app-agents-light.png"
-                 src="./assets/img/app-agents-dark.png"
-                 width="1280" height="760" decoding="async"
-                 alt="Muxterm Agents aggregate with two working agents in the sidebar and two agent tabs.">
-            <figcaption class="app-shot__label">
-              <span class="app-shot__caption">agents</span>
+          <figure class="scene">
+            <a class="scene__open" href="./assets/img/app-agents-dark.png" target="_blank" rel="noopener">
+              <img data-shot
+                   data-dark="./assets/img/app-agents-dark.png"
+                   data-light="./assets/img/app-agents-light.png"
+                   src="./assets/img/app-agents-dark.png"
+                   width="1400" height="831" decoding="async"
+                   alt="Muxterm Agents view: Codex and Claude panes listed in the sidebar with working state and two agent tabs.">
+            </a>
+            <figcaption class="scene__copy">
+              <span class="scene__index">02 / agents</span>
+              <h3 class="scene__title">Agents report their state</h3>
+              <p class="scene__text">Codex and Claude panes appear under Agents as working, blocked or done, so the sidebar shows who needs input.</p>
             </figcaption>
           </figure>
 
-          <figure class="app-shot" data-shot-card>
-            <img data-shot
-                 data-dark="./assets/img/app-shells-dark.png"
-                 data-light="./assets/img/app-shells-light.png"
-                 src="./assets/img/app-shells-dark.png"
-                 width="1280" height="760" decoding="async"
-                 alt="Muxterm Shells aggregate with a local shell workspace and its terminal output.">
-            <figcaption class="app-shot__label">
-              <span class="app-shot__caption">shells</span>
+          <figure class="scene">
+            <a class="scene__open" href="./assets/img/app-shells-dark.png" target="_blank" rel="noopener">
+              <img data-shot
+                   data-dark="./assets/img/app-shells-dark.png"
+                   data-light="./assets/img/app-shells-light.png"
+                   src="./assets/img/app-shells-dark.png"
+                   width="1400" height="831" decoding="async"
+                   alt="Muxterm Shells view: a local shell workspace with muxterm CLI output in a single pane.">
+            </a>
+            <figcaption class="scene__copy">
+              <span class="scene__index">03 / shells</span>
+              <h3 class="scene__title">Plain shells stay plain</h3>
+              <p class="scene__text">A local workspace needs no multiplexer. It runs a shell over the local bridge and takes input like any other pane.</p>
             </figcaption>
           </figure>
         </div>
       </div>
     </section>
+
     <script>
       (() => {
         const theme = document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
         document.querySelectorAll('[data-shot]').forEach((img) => {
           img.src = theme === 'light' ? img.dataset.light : img.dataset.dark;
+          const link = img.closest('a.scene__open');
+          if (link) {
+            link.href = img.src;
+          }
         });
       })();
     </script>
 
-    <!-- ── Workbench Architecture ────────────────────────────────── -->
-    <section id="architecture" class="section-block">
+    <!-- ── Ports ─────────────────────────────────────────────────── -->
+    <section id="ports" class="section-block">
       <div class="container">
         <div class="section-head">
-          <h2 class="section-title">A workbench, not a wrapper</h2>
-          <p class="section-desc">Each tmux session or Herdr workspace enters the pool as a first-class workspace.</p>
+          <h2 class="section-title">Ports find you</h2>
+          <p class="section-desc">SSH workspaces scan listening ports. Forward one to localhost, or share it on the LAN with an explicit toggle.</p>
         </div>
 
-        <div class="diagram-frame">
-          <pre class="diagram-code">Frontend (macOS / Linux / TUI / CLI)
-  └── C FFI + ffi_client
-        └── Muxterm Root
-              ├── ConfigStore (config.toml)
-              ├── Catalog (WorkspaceSpec resolver)
-              ├── Projects (worktree provenance)
-              ├── Activity (agents, attention)
-              └── WorkspacePool
-                    └── Workspace = Runtime(Transport) + path
-                          └── Tab to Pane</pre>
-        </div>
+        <div class="ports-layout">
+          <figure class="ports-figure">
+            <a class="scene__open" href="./assets/img/app-ports-dark.png" target="_blank" rel="noopener">
+              <img data-shot
+                   data-dark="./assets/img/app-ports-dark.png"
+                   data-light="./assets/img/app-ports-light.png"
+                   src="./assets/img/app-ports-dark.png"
+                   width="1000" height="616" decoding="async"
+                   alt="Muxterm port picker on macOS listing eight remote ports, with forward, open, copy, LAN and ignore controls on each row.">
+            </a>
+            <figcaption class="scene__copy">
+              <span class="scene__index">macos status bar</span>
+              <p class="scene__text">Detected ports sit behind the connection dot. Forward, open, copy the LAN address, or ignore a port for the session.</p>
+            </figcaption>
+          </figure>
 
-        <div class="diagram-lane-grid">
-          <div class="diagram-lane-card">
-            <h3 class="lane-card-title">Control lane</h3>
-            <p>Native tabs and panes follow every runtime.</p>
-          </div>
-          <div class="diagram-lane-card">
-            <h3 class="lane-card-title">Render-data lane</h3>
-            <p>Raw PTY bytes go straight to native surfaces.</p>
-          </div>
-          <div class="diagram-lane-card">
-            <h3 class="lane-card-title">Activity lane</h3>
-            <p>Agent state and attention stay in the workspace.</p>
+          <div class="port-panel" role="group" aria-label="Port forwarding demo">
+            <div class="port-panel__head">
+              <span class="port-panel__host">staging-node / ssh</span>
+              <span>scan complete</span>
+            </div>
+            <div class="port-list">
+              <div class="port-row">
+                <span class="port-number">:3000</span>
+                <span class="port-service">
+                  <span class="port-service__name">dev server</span>
+                  <span class="port-service__meta">forwarded to localhost</span>
+                </span>
+                <button type="button" class="port-action" data-port="3000" aria-pressed="false">forward</button>
+                <span class="port-local" aria-live="polite"></span>
+              </div>
+              <div class="port-row">
+                <span class="port-number">:5432</span>
+                <span class="port-service">
+                  <span class="port-service__name">postgres</span>
+                  <span class="port-service__meta">listening on remote</span>
+                </span>
+                <button type="button" class="port-action" data-port="5432" aria-pressed="false">forward</button>
+                <span class="port-local" aria-live="polite"></span>
+              </div>
+              <div class="port-row">
+                <span class="port-number">:8080</span>
+                <span class="port-service">
+                  <span class="port-service__name">preview</span>
+                  <span class="port-service__meta">listening on remote</span>
+                </span>
+                <button type="button" class="port-action" data-port="8080" aria-pressed="false">forward</button>
+                <span class="port-local" aria-live="polite"></span>
+              </div>
+            </div>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- ── Runtime Matrix ────────────────────────────────────────── -->
-    <section id="runtimes" class="section-block">
+    <!-- ── Runtime ───────────────────────────────────────────────── -->
+    <section id="runtime" class="section-block">
       <div class="container">
         <div class="section-head">
-          <h2 class="section-title">tmux and Herdr, without the wrapper</h2>
-          <p class="section-desc">One workspace per session, local or over SSH.</p>
+          <h2 class="section-title">One workspace model</h2>
+          <p class="section-desc">A workspace is a runtime over a transport plus a path. Tabs and panes are native.</p>
         </div>
 
         <div class="matrix-table-wrap">
@@ -255,124 +291,39 @@ Scene: resident</pre>
             </thead>
             <tbody>
               <tr>
-                <td><code>shell</code></td>
-                <td>local / ssh</td>
-                <td>a workspace</td>
-                <td>process lifetime</td>
+                <td data-label="Runtime"><code>shell</code></td>
+                <td data-label="Transport">local / ssh</td>
+                <td data-label="Becomes">a workspace</td>
+                <td data-label="Keeps">process lifetime</td>
               </tr>
               <tr>
-                <td><code>tmux</code></td>
-                <td>local / ssh</td>
-                <td>a workspace per session</td>
-                <td>detach and reattach</td>
+                <td data-label="Runtime"><code>tmux</code></td>
+                <td data-label="Transport">local / ssh</td>
+                <td data-label="Becomes">a workspace per session</td>
+                <td data-label="Keeps">detach and reattach</td>
               </tr>
               <tr>
-                <td><code>herdr</code></td>
-                <td>local / ssh</td>
-                <td>a workspace per Herdr workspace</td>
-                <td>native worktrees</td>
+                <td data-label="Runtime"><code>herdr</code></td>
+                <td data-label="Transport">local / ssh</td>
+                <td data-label="Becomes">a workspace per Herdr workspace</td>
+                <td data-label="Keeps">native worktrees</td>
               </tr>
             </tbody>
           </table>
         </div>
 
-        <div class="diff-frame">
-          <div class="diff-header">
-            <span>inside a terminal</span>
-            <span>inside the workbench</span>
+        <div class="diagram-lane-grid">
+          <div class="diagram-lane-card">
+            <h3 class="lane-card-title">Control lane</h3>
+            <p>Native tabs and panes follow every runtime.</p>
           </div>
-          <div class="diff-content">
-            <div class="diff-row diff-row--del">
-              <span class="diff-sign">-</span>
-              <span>Ctrl+B between nested windows</span>
-            </div>
-            <div class="diff-row diff-row--del">
-              <span class="diff-sign">-</span>
-              <span>one SSH connection per pane</span>
-            </div>
-            <div class="diff-row diff-row--add">
-              <span class="diff-sign">+</span>
-              <span>native tabs, panes and a workspace sidebar</span>
-            </div>
-            <div class="diff-row diff-row--add">
-              <span class="diff-sign">+</span>
-              <span>one TargetConnection shared across panes</span>
-            </div>
+          <div class="diagram-lane-card">
+            <h3 class="lane-card-title">Render lane</h3>
+            <p>Raw PTY bytes go straight to native surfaces.</p>
           </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- ── Ports ─────────────────────────────────────────────────── -->
-    <section id="ports" class="section-block">
-      <div class="container">
-        <div class="section-head">
-          <h2 class="section-title">Ports find you</h2>
-          <p class="section-desc">macOS SSH workspaces scan listening ports. Forward one to localhost, or expose it on the LAN with an explicit toggle.</p>
-        </div>
-
-        <div class="port-panel" role="group" aria-label="Port forwarding demo">
-          <div class="port-panel__head">
-            <span class="port-panel__host">staging-node / ssh</span>
-            <span>scan complete</span>
-          </div>
-          <div class="port-list">
-            <div class="port-row">
-              <span class="port-number">:3000</span>
-              <span class="port-service">
-                <span class="port-service__name">dev server</span>
-                <span class="port-service__meta">forwarded to localhost</span>
-              </span>
-              <button type="button" class="port-action" data-port="3000" aria-pressed="false">forward</button>
-              <span class="port-local" aria-live="polite"></span>
-            </div>
-            <div class="port-row">
-              <span class="port-number">:5432</span>
-              <span class="port-service">
-                <span class="port-service__name">postgres</span>
-                <span class="port-service__meta">listening on remote</span>
-              </span>
-              <button type="button" class="port-action" data-port="5432" aria-pressed="false">forward</button>
-              <span class="port-local" aria-live="polite"></span>
-            </div>
-            <div class="port-row">
-              <span class="port-number">:8080</span>
-              <span class="port-service">
-                <span class="port-service__name">preview</span>
-                <span class="port-service__meta">listening on remote</span>
-              </span>
-              <button type="button" class="port-action" data-port="8080" aria-pressed="false">forward</button>
-              <span class="port-local" aria-live="polite"></span>
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- ── Features ──────────────────────────────────────────────── -->
-    <section id="features" class="section-block">
-      <div class="container">
-        <div class="section-head">
-          <h2 class="section-title">Built for the daily workbench</h2>
-          <p class="section-desc">Projects, worktrees, agents, one config.</p>
-        </div>
-
-        <div class="feature-grid">
-          <div class="feature-box">
-            <h3 class="feature-box__head">QuickConnect palette</h3>
-            <p class="feature-box__body">Filter projects, worktrees, and SSH hosts with one key.</p>
-          </div>
-          <div class="feature-box">
-            <h3 class="feature-box__head">Projects and worktrees</h3>
-            <p class="feature-box__body">Open each checkout as its own workspace, grouped by project.</p>
-          </div>
-          <div class="feature-box">
-            <h3 class="feature-box__head">Attention lane</h3>
-            <p class="feature-box__body">See blocked agents and finished builds without hunting panes.</p>
-          </div>
-          <div class="feature-box">
-            <h3 class="feature-box__head">One config contract</h3>
-            <p class="feature-box__body">Fonts, keys, projects and templates in one config.toml.</p>
+          <div class="diagram-lane-card">
+            <h3 class="lane-card-title">Activity lane</h3>
+            <p>Agent state stays in the workspace that owns it.</p>
           </div>
         </div>
       </div>
@@ -382,8 +333,8 @@ Scene: resident</pre>
     <section id="downloads" class="section-block">
       <div class="container">
         <div class="section-head">
-          <h2 class="section-title">Download packages</h2>
-          <p class="section-desc">Desktop bundles and binaries with checksums.</p>
+          <h2 class="section-title">Download</h2>
+          <p class="section-desc">Desktop bundles, a terminal UI, or a source build.</p>
         </div>
 
         <div class="downloads-grid">
@@ -411,19 +362,19 @@ Scene: resident</pre>
 
           <div class="download-card">
             <div class="download-card__top">
-              <h3 class="download-card__platform">Cross-platform TUI</h3>
-              <p class="download-card__detail">Pure ratatui interface.</p>
+              <h3 class="download-card__platform">Terminal UI</h3>
+              <p class="download-card__detail">Runs in any terminal.</p>
             </div>
             <div class="download-card__meta">
               <span>muxterm tui</span>
             </div>
-            <a href="./docs.html#build" class="btn btn--secondary">view instructions</a>
+            <a href="./docs.html#build" class="btn btn--secondary">build guide</a>
           </div>
 
           <div class="download-card">
             <div class="download-card__top">
-              <h3 class="download-card__platform">Build from source</h3>
-              <p class="download-card__detail">Rust 1.97.1.</p>
+              <h3 class="download-card__platform">From source</h3>
+              <p class="download-card__detail">Rust 1.97.1 or newer.</p>
             </div>
             <div class="download-card__meta">
               <span>github.com/wlingze/muxterm</span>
