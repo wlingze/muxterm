@@ -95,7 +95,14 @@ impl Render for GpuiApp {
         } else {
             div().w(px(0.0)).into_any_element()
         };
+        let tab_bar_on_top = self.tab_bar_position()
+            == crate::frontend::gpui::chrome::tab_bar_view::TabBarPosition::Top;
         let tab_bar = self.render_tab_bar(cx);
+        let (tab_bar_top, tab_bar_bottom) = if tab_bar_on_top {
+            (tab_bar, div().into_any_element())
+        } else {
+            (div().into_any_element(), tab_bar)
+        };
         let status_bar = self.render_status_bar();
 
         div()
@@ -113,7 +120,7 @@ impl Render for GpuiApp {
                     .flex_col()
                     .flex_1()
                     .h_full()
-                    .child(tab_bar)
+                    .child(tab_bar_top)
                     .child(
                         div()
                             .relative()
@@ -122,6 +129,7 @@ impl Render for GpuiApp {
                             .bg(theme.bg)
                             .children(panes),
                     )
+                    .child(tab_bar_bottom)
                     .child(status_bar),
             )
     }

@@ -56,6 +56,8 @@ pub struct GpuiApp {
     status: String,
     /// IME 组合中的文本（尚未提交）。只在聚焦 pane 的光标处画。
     marked_text: String,
+    /// tab 栏位置，默认顶部。
+    pub(crate) tab_bar_position: crate::frontend::gpui::chrome::tab_bar_view::TabBarPosition,
     /// 侧栏是否显示（Cmd-B 切换，与 Swift 一致）。
     pub(crate) sidebar_visible: bool,
     /// 注意力快照（Agents/Commands 段的数据源）。FFI 快照接入前保持 `None`。
@@ -89,6 +91,8 @@ impl GpuiApp {
             wheel_accumulators: HashMap::new(),
             focus_handle: cx.focus_handle(),
             marked_text: String::new(),
+            tab_bar_position: crate::frontend::gpui::chrome::tab_bar_view::TabBarPosition::default(
+            ),
             sidebar_visible: true,
             attention: None,
             sidebar_expansion:
@@ -206,6 +210,8 @@ impl GpuiApp {
             wheel_accumulators: HashMap::new(),
             focus_handle: cx.focus_handle(),
             marked_text: String::new(),
+            tab_bar_position: crate::frontend::gpui::chrome::tab_bar_view::TabBarPosition::default(
+            ),
             sidebar_visible: true,
             attention: None,
             sidebar_expansion:
@@ -332,6 +338,26 @@ impl GpuiApp {
                     .and_then(|view| view.backend_status)
                     .unwrap_or(crate::frontend::gpui::model::sidebar::backend_status::DISCONNECTED);
                 item.shortcut = shortcuts.get(id).copied();
+                // pane → tab 的映射来自拓扑快照：侧栏点击和 tab 指示灯都要它。
+                if let Some(view) = view {
+                    for (tab_id, panes) in &view.panes {
+                        for pane in panes {
+                            item.tab_id_by_pane.insert(pane.id, *tab_id);
+                        }
+                    }
+                    for (number, tab) in self
+                        .store
+                        .workspace(id)
+                        .map(|view| view.tabs.clone())
+                        .unwrap_or_default()
+                        .iter()
+                        .enumerate()
+                    {
+                        for pane in view.panes.get(&tab.id).map(Vec::as_slice).unwrap_or(&[]) {
+                            item.tab_number_by_pane.insert(pane.id, number as u32 + 1);
+                        }
+                    }
+                }
                 item
             })
             .collect()
@@ -447,6 +473,64 @@ impl GpuiApp {
         self.commands
             .push(ClientCommand::CloseWorkspace(workspace_id));
         cx.notify();
+    }
+
+    /// tab 栏投影：活动指示来自 attention，数量后缀来自 pane 数。
+    pub fn tab_items(&self) -> Vec<crate::frontend::gpui::chrome::tab_bar_view::TabBarItem> {
+        use crate::frontend::gpui::chrome::tab_bar_view;
+        let Some(workspace_id) = self.visible.clone() else {
+            return Vec::new();
+        };
+        let tabs = self.tabs();
+        let counts: std::collections::HashMap<u32, usize> = self.pane_counts();
+        let mut hidden = std::collections::HashSet::new();
+        // 前端隐藏身份只作用于 commands；这里的 tab 指示跟随同一份集合。
+        for key in &self.hidden_commands {
+            hidden.insert(
+                crate::frontend::gpui::model::attention::AttentionVisibilityKey {
+                    workspace_id: key.workspace_id.clone(),
+                    pane_id: key.pane_id,
+                },
+            );
+        }
+        let workspaces = self.sidebar_items();
+        tab_bar_view::build(
+            &workspace_id,
+            &tabs,
+            &counts,
+            &workspaces,
+            self.attention.as_ref(),
+            &hidden,
+        )
+    }
+
+    /// 状态栏右侧的注意力徽标：数「主导色」的条目，不是总数。
+    pub fn status_attention(&self) -> crate::frontend::gpui::model::status_bar::StatusBarAttention {
+        use crate::frontend::gpui::model::status_bar::StatusBarAttention;
+        let Some(attention) = self.attention.as_ref() else {
+            return StatusBarAttention::new(0, None);
+        };
+        let indicators: Vec<crate::frontend::gpui::model::sidebar::Indicator> = attention
+            .workspaces
+            .iter()
+            .flat_map(|workspace| workspace.panes.iter())
+            .filter(|pane| !pane.acknowledged && !pane.muted)
+            .filter_map(|pane| match pane.status {
+                crate::frontend::gpui::model::attention::PaneAttentionStatus::Blocked => {
+                    Some(crate::frontend::gpui::model::sidebar::Indicator::Blocked)
+                }
+                crate::frontend::gpui::model::attention::PaneAttentionStatus::Done => {
+                    Some(crate::frontend::gpui::model::sidebar::Indicator::Done)
+                }
+                _ => None,
+            })
+            .collect();
+        StatusBarAttention::from_indicators(&indicators)
+    }
+
+    /// tab 栏位置（`[ui] tab_bar_position`）。
+    pub fn tab_bar_position(&self) -> crate::frontend::gpui::chrome::tab_bar_view::TabBarPosition {
+        self.tab_bar_position
     }
 
     /// 折叠/展开一段。

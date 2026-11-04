@@ -19,6 +19,8 @@ pub struct Theme {
     pub success: Rgba,
     /// 危险/失败态（连接丢失、失败横幅）。
     pub danger: Rgba,
+    /// 进行中（tab 上的 working 环）。
+    pub warning: Rgba,
     pub font_family: &'static str,
     pub font_size: f32,
     ansi: [Rgba; 16],
@@ -37,6 +39,7 @@ impl Default for Theme {
             accent: rgb(0x7aa2f7),
             success: rgb(0x9ece6a),
             danger: rgb(0xf7768e),
+            warning: rgb(0xe0af68),
             font_family: "Menlo",
             font_size: 13.0,
             ansi: [

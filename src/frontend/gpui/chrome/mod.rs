@@ -6,3 +6,4 @@ pub mod sidebar;
 pub mod sidebar_view;
 pub mod status_bar;
 pub mod tab_bar;
+pub mod tab_bar_view;
