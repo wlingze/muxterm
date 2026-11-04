@@ -156,7 +156,7 @@ These selectors identify the source tests that supply a GPUI acceptance scenario
 | `A/ChromeE2ETests::*`, `A/StatusBarOverflowE2ETests::*`, `C/StatusBarTests::*`, `C/CommandMarkRailTests::*` | Tab/status controls fit, remain clickable, display the correct connection and activity state, and navigate command marks. SSH metrics must not be fabricated. |
 | `A/CmdEnterKeyE2ETests::*`, `C/CmdEnterRoutingTests::*` | Route shortcuts by focus, forward terminal key bytes exactly once, preserve IME preedit versus committed text, and distinguish pane zoom from overlay behavior. |
 | `A/CommandPaletteParityE2ETests::*`, `A/PanelE2ETests::*`, `A/NativePanelLayoutE2ETests::*`, `C/PanelModelTests::*`, `C/QuickPanelActionsTests::*` | Discover and invoke existing commands; keep panel selection, query, scope, accessible controls, and contextual actions usable. |
-| `A/UnifiedPanelE2ETests::*`, `A/UnifiedPanelActionsE2ETests::*`, `A/UnifiedPanelExistingConnectionsE2ETests::*`, `A/UnifiedPanelLauncherE2ETests::*`, `C/WorkspaceQueryTests::*` | Unified search, attention and workspace actions route to the right workspace; existing sessions attach, stale discovery cannot overwrite navigation, and machine/path selection works. |
+| `A/UnifiedPanelE2ETests::*`, `A/UnifiedPanelActionsE2ETests::*`, `A/UnifiedPanelExistingConnectionsE2ETests::*`, `A/UnifiedPanelLauncherE2ETests::*`, `A/QuickConnectE2ETests::*`, `C/WorkspaceQueryTests::*` | Unified search, attention and workspace actions route to the right workspace; existing sessions attach, stale discovery cannot overwrite navigation, and machine/path selection works. Names and badge dots remain visible as the panel resizes. |
 | `A/SearchJumpE2ETests::*`, `A/CommandTimelineE2ETests::*`, `C/SearchModelTests::*` | Search results, including tab zero and offscreen hits, select the correct tab and scroll position; command marks navigate to the selected output. |
 | `A/ComposerPanelE2ETests::*`, `C/ComposerDraftTests::*`, `C/ComposerDraftsTests::*` | Drafts remain scoped to panes, preserve source and undo, retain failed sends, clear successful sends, and send exact nonblank text to the intended target. |
 | `A/ImagePasteE2ETests::*`, `A/ImagePasteBannerTests::*`, `C/ImagePasteFeedbackTests::*` | Image data, errors, original workspace routing, progress, dismissal and accessibility work through clipboard and upload; ordinary text remains a text paste. |
@@ -277,6 +277,11 @@ summary = re.findall(r'^\| ([a-z0-9-]+) \| (\d+) \| (\d+) \|$', doc, re.M)
 assert {tier: int(n) for tier, _, n in summary} == dict(method_counts)
 assert {tier: int(n) for tier, n, _ in summary} == dict(file_counts)
 assert not set(re.findall(r'\btest[A-Z]\w+', doc)) - names
+acceptance = doc.split('## Summary 2: GPUI acceptance suite', 1)[1].split('### Coverage gaps', 1)[0]
+aliases = {'A': 'AppE2ETests', 'C': 'ChromeTests', 'U': 'MuxtermAppUITests'}
+selected = {f'{aliases[a]}/{name}.swift' for a, name in re.findall(r'\b([ACU])/([A-Z]\w+)(?=::)', acceptance)}
+assert selected <= set(files)
+assert set(files) - selected == {'AppE2ETests/Harness.swift', 'ChromeTests/GuiLogFilePolicyTests.swift'}
 assert len(files) == 90 and sum(method_counts.values()) == 852
 print(f'{len(files)} files, {sum(method_counts.values())} methods, {len(summary)} tiers: OK')
 PY
