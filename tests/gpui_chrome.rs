@@ -8,10 +8,12 @@
 use gpui::{px, size, TestAppContext};
 use muxterm::frontend::command_queue::ClientCommand;
 use muxterm::frontend::gpui::chrome::sidebar_view::{CommandKey, RowTarget, Section};
+use muxterm::frontend::gpui::chrome::tab_bar_view::TabBarPosition;
 use muxterm::frontend::gpui::model::attention::{
     AttentionSnapshot, PaneAttention, PaneAttentionStatus, WorkspaceAttention,
 };
 use muxterm::frontend::gpui::model::sidebar::backend_status;
+use muxterm::frontend::gpui::model::sidebar::Indicator;
 use muxterm::frontend::gpui::state::GpuiApp;
 use muxterm::frontend::utils::corebridge::ClientTask;
 use muxterm::frontend::utils::corebridge::{ClientPane, ClientTab, ClientWorkspace};
@@ -249,4 +251,126 @@ fn switching_a_tab_queues_the_tab_switch(cx: &mut TestAppContext) {
             ..
         })
     ));
+}
+
+/// tab 栏：活动 pane 点亮它所属的 tab，其余 tab 保持安静。
+#[gpui::test]
+fn tab_bar_lights_the_busy_tab(cx: &mut TestAppContext) {
+    let mut store = ViewStore::default();
+    store.replace_topology(
+        workspace("ws", "dev", true),
+        vec![
+            ClientTab {
+                id: 1,
+                name: "quiet".to_string(),
+                is_active: true,
+            },
+            ClientTab {
+                id: 2,
+                name: "busy".to_string(),
+                is_active: false,
+            },
+        ],
+        vec![
+            (
+                1,
+                vec![ClientPane {
+                    id: 10,
+                    cols: 80,
+                    rows: 24,
+                    is_active: true,
+                    title: "quiet".to_string(),
+                }],
+            ),
+            (
+                2,
+                vec![ClientPane {
+                    id: 20,
+                    cols: 80,
+                    rows: 24,
+                    is_active: true,
+                    title: "busy".to_string(),
+                }],
+            ),
+        ],
+    );
+    store.ensure_workspace("ws").backend_status = Some(backend_status::CONNECTED);
+
+    let (view, cx) = mount(store, cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            app.set_attention(Some(AttentionSnapshot {
+                blocked_count: 0,
+                workspaces: vec![WorkspaceAttention {
+                    workspace_id: "ws".to_string(),
+                    name: "dev".to_string(),
+                    transport: "local".to_string(),
+                    ..WorkspaceAttention::new(
+                        "ws",
+                        vec![PaneAttention {
+                            pane_id: 20,
+                            status: PaneAttentionStatus::Working,
+                            process_name: Some("cargo".to_string()),
+                            last_line: "compiling".to_string(),
+                            seq: 5,
+                            ..PaneAttention::default()
+                        }],
+                    )
+                }],
+            }));
+        })
+    });
+    let items = cx.update(|_, cx| view.update(cx, |app, _| app.tab_items()));
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0].title, "quiet");
+    assert_eq!(items[0].activity, None, "没活动的 tab 不点亮");
+    assert_eq!(items[1].title, "busy");
+    assert_eq!(items[1].activity, Some(Indicator::Working));
+    assert_eq!(items[1].label(), "busy");
+}
+
+/// 状态栏徽标只数主导色的条目，不是所有未读之和。
+#[gpui::test]
+fn status_badge_counts_the_dominant_colour(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            app.set_attention(Some(AttentionSnapshot {
+                blocked_count: 0,
+                workspaces: vec![WorkspaceAttention {
+                    workspace_id: "local@@dev@tmux@dev".to_string(),
+                    name: "dev".to_string(),
+                    transport: "local".to_string(),
+                    ..WorkspaceAttention::new(
+                        "local@@dev@tmux@dev",
+                        vec![
+                            PaneAttention {
+                                pane_id: 10,
+                                status: PaneAttentionStatus::Blocked,
+                                seq: 3,
+                                ..PaneAttention::default()
+                            },
+                            PaneAttention {
+                                pane_id: 11,
+                                status: PaneAttentionStatus::Blocked,
+                                seq: 4,
+                                ..PaneAttention::default()
+                            },
+                        ],
+                    )
+                }],
+            }));
+        })
+    });
+    let attention = cx.update(|_, cx| view.update(cx, |app, _| app.status_attention()));
+    assert_eq!(attention.count, 2, "两个 blocked 都是主导色");
+    assert_eq!(attention.indicator, Some(Indicator::Blocked));
+}
+
+/// tab 栏位置来自 `[ui] tab_bar_position`，默认顶部。
+#[gpui::test]
+fn tab_bar_position_defaults_to_top(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    let position = cx.update(|_, cx| view.update(cx, |app, _| app.tab_bar_position()));
+    assert_eq!(position, TabBarPosition::Top);
 }
