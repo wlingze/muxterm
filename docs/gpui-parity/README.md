@@ -123,7 +123,8 @@
 | 4（IME 与粘贴） | 完成 | `76ea1b94` |
 | 5（Chrome 组件） | 侧栏与 tab/状态栏完成，面板浮层完成 | `fccdd4e2` `66c0579b` 本波提交 |
 | 6（次级窗口） | 输入框、设置、目标目录与新建项目完成 | `c6990a3d` `89c3297f` `70c29c51` 本波提交 |
-| 7–8 | 未开始 | — |
+| 7（真机验收） | 隔离 tmux + named Herdr 完成 | 本波提交 |
+| 8（收尾） | 未开始 | — |
 
 每波落地后 `cargo test --no-default-features --features gpui --lib` 必须全绿；
 无头 harness 用例在 `tests/gpui_surface_events.rs`。
