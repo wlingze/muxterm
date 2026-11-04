@@ -2,11 +2,13 @@
 //!
 //! 一个 pane 一个常驻 Surface；隐藏时只跳过绘制，不销毁、不 reset。
 
-use gpui::{div, prelude::*, px, AnyElement, MouseButton, SharedString};
+use gpui::{
+    div, prelude::*, px, AnyElement, MouseButton, ScrollDelta, ScrollWheelEvent, SharedString,
+};
 
 use crate::frontend::gpui::chrome::pane_grid::Rect;
-use crate::frontend::gpui::state::GpuiApp;
-use crate::frontend::gpui::terminal::grid::{Cell, Color, Grid};
+use crate::frontend::gpui::state::{GpuiApp, WheelInput};
+use crate::frontend::gpui::terminal::grid::{Cell, Color, FILLER};
 
 impl GpuiApp {
     pub(crate) fn render_pane(
@@ -32,11 +34,15 @@ impl GpuiApp {
                 let draw_rows = rows.min(grid.rows());
                 let draw_cols = cols.min(grid.cols());
                 let cursor = grid.cursor();
-                let show_cursor = focused && grid.cursor_visible();
+                // 滚到历史里就不画光标：live 光标不属于历史行。
+                let show_cursor = focused && grid.cursor_visible() && surface.scroll_offset() == 0;
                 for row in 0..draw_rows {
+                    let Some(cells) = surface.visible_row(row) else {
+                        break;
+                    };
                     row_elements.push(Self::render_row(
-                        grid,
                         &theme,
+                        cells,
                         row,
                         draw_cols,
                         cursor,
@@ -76,25 +82,48 @@ impl GpuiApp {
                     this.focus_pane(pane_id, cx);
                 }),
             )
+            .on_scroll_wheel(
+                cx.listener(move |this, event: &ScrollWheelEvent, _window, cx| {
+                    // 像素 delta 走触控板路径（先攒整格），行 delta 直接当格数。
+                    let (delta_y, precise) = match event.delta {
+                        ScrollDelta::Pixels(delta) => (f32::from(delta.y), true),
+                        ScrollDelta::Lines(delta) => (delta.y, false),
+                    };
+                    let col =
+                        ((f32::from(event.position.x) - rect.x) / cell_width).max(0.0) as usize;
+                    let row =
+                        ((f32::from(event.position.y) - rect.y) / cell_height).max(0.0) as usize;
+                    this.handle_wheel(
+                        WheelInput {
+                            pane_id,
+                            delta_y,
+                            precise,
+                            shift: event.modifiers.shift,
+                            col,
+                            row,
+                        },
+                        cx,
+                    );
+                }),
+            )
             .children(row_elements)
             .into_any_element()
     }
 
     fn render_row(
-        grid: &Grid,
         theme: &crate::frontend::gpui::theme::Theme,
+        cells: &[Cell],
         row: usize,
         cols: usize,
         cursor: (usize, usize),
         show_cursor: bool,
     ) -> AnyElement {
         let cell_height = theme.cell_height();
-        let cells = grid.row(row);
 
         // 跳过尾部空白：既省 run，也不改变可见结果。
         let mut last = cols.min(cells.len());
         while last > 0 {
-            let cell = cells[last - 1];
+            let cell = &cells[last - 1];
             if cell.ch != ' ' || cell.bg != Color::Default || cell.attrs.reverse {
                 break;
             }
@@ -112,7 +141,10 @@ impl GpuiApp {
                 if (next_fg, next_bg) != (fg, bg) {
                     break;
                 }
-                text.push(cells[index].ch);
+                // 双宽字形的第二格是占位：字形本身已经占了两格列宽。
+                if cells[index].ch != FILLER {
+                    text.push(cells[index].ch);
+                }
                 index += 1;
             }
             runs.push(

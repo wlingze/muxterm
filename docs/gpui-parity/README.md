@@ -112,6 +112,19 @@
 
 前两波不依赖 gpui 窗口，是唯一能完整、快速验证的部分。第三波起需要无头 harness 挂载真实前端。
 
+### 4.1 进展
+
+| 波次 | 状态 | 提交 |
+| --- | --- | --- |
+| 1（a：编码与几何） | 完成 | `c4f483f8` |
+| 1（b：投影模型） | 完成 | `c7b197b3` `e62448ed` `47b3e9f6` `4f7f5bbe` `20544279` |
+| 2（喂字节规则） | 完成 | `2e584660` |
+| 3（Grid 与事件） | 完成 | 本波提交 |
+| 4–8 | 未开始 | — |
+
+每波落地后 `cargo test --no-default-features --features gpui --lib` 必须全绿；
+无头 harness 用例在 `tests/gpui_surface_events.rs`。
+
 ## 5. 测试策略
 
 gpui 自带 `TestAppContext`，已验证可用（`tests/gpui_harness_smoke.rs`）。它能建视图、送按键、模拟点击/拖动/resize、读剪贴板、抓 opened URL。

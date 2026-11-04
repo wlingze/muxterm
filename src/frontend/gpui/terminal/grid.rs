@@ -5,8 +5,29 @@
 
 use std::collections::VecDeque;
 
+use unicode_width::UnicodeWidthChar;
+
+use super::mouse::MouseMode;
+
 /// 一屏之外保留的历史行数上限。
 pub const DEFAULT_SCROLLBACK: usize = 2_000;
+
+/// 宽字符的占位格。SwiftTerm 也用 NUL 表示「这一格属于左边那个双宽字形」，
+/// 因此 `screen_lines` 与选词都把它当 filler。
+pub const FILLER: char = '\0';
+
+/// 某个字符占几格。
+///
+/// 宽（CJK / emoji 呈现）算 2 格，组合标记与零宽字符算 0 格，其余 1 格。
+/// SwiftTerm 用生成表 `UnicodeWidthData.eastAsianWide` 判宽，`unicode-width`
+/// 是同一份 Unicode 数据的实现，结果一致（歧义宽度按窄算，与 SwiftTerm 相同）。
+pub fn char_width(ch: char) -> usize {
+    match UnicodeWidthChar::width(ch) {
+        Some(0) => 0,
+        Some(width) => width,
+        None => 0,
+    }
+}
 
 /// 单元格颜色。`Default` 表示跟随主题，不是黑色。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -107,6 +128,8 @@ pub struct Grid {
     cursor_visible: bool,
     bracketed_paste: bool,
     app_cursor_keys: bool,
+    mouse_mode: MouseMode,
+    sgr_mouse: bool,
     title: String,
 }
 
@@ -137,6 +160,8 @@ impl Grid {
             cursor_visible: true,
             bracketed_paste: false,
             app_cursor_keys: false,
+            mouse_mode: MouseMode::Off,
+            sgr_mouse: false,
             title: String::new(),
         }
     }
@@ -170,6 +195,21 @@ impl Grid {
         self.app_cursor_keys
     }
 
+    /// 当前是否在 alternate screen（全屏 TUI）。
+    pub fn alternate_screen(&self) -> bool {
+        self.alt_screen.is_some()
+    }
+
+    /// 应用要求的鼠标上报模式。
+    pub fn mouse_mode(&self) -> MouseMode {
+        self.mouse_mode
+    }
+
+    /// 是否用 SGR 编码上报（DECSET 1006）。
+    pub fn sgr_mouse(&self) -> bool {
+        self.sgr_mouse
+    }
+
     pub fn title(&self) -> &str {
         &self.title
     }
@@ -187,6 +227,16 @@ impl Grid {
             return None;
         }
         self.cells.get(row * self.cols + col)
+    }
+
+    /// 可见屏幕的文本行：跳过占位格、行尾去空白、丢掉末尾空行。
+    ///
+    /// 移植自 `chrome/FlatChrome.swift` 的 `ScreenText.lines`；AX / agent
+    /// 快照读的就是这个形状，占位 NUL 不能漏出去。
+    pub fn screen_lines(&self) -> Vec<String> {
+        screen_lines(self.cols, self.rows, |col, row| {
+            self.cell(row, col).map_or(' ', |cell| cell.ch)
+        })
     }
 
     pub fn row(&self, row: usize) -> &[Cell] {
@@ -220,18 +270,35 @@ impl Grid {
     }
 
     pub(crate) fn print(&mut self, ch: char) {
+        let width = char_width(ch);
+        if width == 0 {
+            // 组合标记 / 零宽字符：`Cell` 只存一个 `char`，暂不合并进前一个
+            // 字形（SwiftTerm 存的是 Character 簇）。丢掉比写错格安全；
+            // SwiftTerm 的 grapheme 缓存测试不在移植范围（见 README §6）。
+            return;
+        }
         if self.wrap_pending {
             self.cursor_col = 0;
             self.line_feed();
             self.wrap_pending = false;
         }
+        // 双宽字符在最后一列放不下：先换行，不能把它劈成一半。
+        if width == 2 && self.cursor_col + 2 > self.cols {
+            self.cursor_col = 0;
+            self.line_feed();
+        }
         let index = self.cursor_row * self.cols + self.cursor_col;
         self.cells[index] = self.pen.cell(ch);
-        if self.cursor_col + 1 >= self.cols {
+        if width == 2 {
+            // 第二格是占位：绘制时跳过，提取文本时也跳过。
+            self.cells[index + 1] = self.pen.cell(FILLER);
+        }
+        let next = self.cursor_col + width;
+        if next >= self.cols {
             self.cursor_col = self.cols - 1;
             self.wrap_pending = true;
         } else {
-            self.cursor_col += 1;
+            self.cursor_col = next;
         }
     }
 
@@ -448,7 +515,18 @@ impl Grid {
             25 => self.cursor_visible = enabled,
             47 | 1047 | 1049 => self.set_alt_screen(mode, enabled),
             2004 => self.bracketed_paste = enabled,
-            _ => {}
+            1006 => self.sgr_mouse = enabled,
+            other => {
+                // 9 / 1000 / 1002 / 1003 共用「最近一个模式生效」的语义：
+                // 关掉当前模式才回到 Off，关别的模式不影响正在用的那个。
+                if let Some(target) = MouseMode::from_mode_number(other) {
+                    if enabled {
+                        self.mouse_mode = target;
+                    } else if self.mouse_mode == target {
+                        self.mouse_mode = MouseMode::Off;
+                    }
+                }
+            }
         }
     }
 
@@ -559,12 +637,136 @@ fn parse_extended_color(params: &[u16]) -> Option<(Color, usize)> {
     }
 }
 
+/// 按行列读取器生成屏幕行。
+///
+/// `character_at` 的参数顺序是 `(col, row)`，与 Swift 的 `characterAt` 一致。
+/// `cols`/`rows` 为 0 时返回空，不留一个空串。
+pub fn screen_lines(
+    cols: usize,
+    rows: usize,
+    character_at: impl Fn(usize, usize) -> char,
+) -> Vec<String> {
+    if cols == 0 || rows == 0 {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(rows);
+    for row in 0..rows {
+        let mut line = String::with_capacity(cols);
+        for col in 0..cols {
+            let ch = character_at(col, row);
+            if ch == FILLER {
+                continue;
+            }
+            line.push(ch);
+        }
+        out.push(line.trim_end().to_string());
+    }
+    while matches!(out.last(), Some(line) if line.is_empty()) {
+        out.pop();
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn grid(cols: usize, rows: usize) -> Grid {
         Grid::new(cols, rows)
+    }
+
+    /// 对照 `testScreenTextSkipsWideCharStubs`：占位 NUL 不能漏进可见文本。
+    #[test]
+    fn screen_lines_skip_wide_char_stubs() {
+        let cells = [['中', FILLER, '文', FILLER]];
+        let lines = screen_lines(4, 1, |col, row| cells[row][col]);
+        assert_eq!(lines, vec!["中文".to_string()]);
+    }
+
+    /// 对照 `testScreenTextTrimIsPerLine`（`A B` / 空行 / `CD`）。
+    #[test]
+    fn screen_lines_trim_per_line_and_drop_trailing_blanks() {
+        let mut cells = [
+            ['A', ' ', 'B', ' '],
+            [' ', ' ', ' ', ' '],
+            ['C', 'D', ' ', ' '],
+            [' ', ' ', ' ', ' '],
+        ];
+        let lines = screen_lines(4, 4, |col, row| cells[row][col]);
+        assert_eq!(lines, vec!["A B", "", "CD"]);
+        assert!(!lines.iter().any(|line| line == " "), "行尾空白必须去掉");
+
+        cells[0] = ['X', 'Y', 'Z', ' '];
+        let updated = screen_lines(4, 4, |col, row| cells[row][col]);
+        assert_eq!(updated, vec!["XYZ", "", "CD"]);
+        assert!(
+            !updated.iter().any(|line| line.contains("A B")),
+            "旧屏幕不得残留"
+        );
+    }
+
+    /// 对照 `testScreenTextHandlesZeroDims`。
+    #[test]
+    fn screen_lines_handle_zero_dims() {
+        assert!(screen_lines(0, 10, |_, _| ' ').is_empty());
+        assert!(screen_lines(10, 0, |_, _| ' ').is_empty());
+    }
+
+    #[test]
+    fn wide_chars_occupy_two_cells() {
+        let mut grid = grid(6, 2);
+        grid.print('中');
+        grid.print('文');
+        assert_eq!(grid.cell(0, 0).unwrap().ch, '中');
+        assert_eq!(grid.cell(0, 1).unwrap().ch, FILLER);
+        assert_eq!(grid.cell(0, 2).unwrap().ch, '文');
+        assert_eq!(grid.cell(0, 3).unwrap().ch, FILLER);
+        assert_eq!(grid.cell(0, 4).unwrap().ch, ' ');
+        assert_eq!(grid.cursor(), (0, 4));
+        assert_eq!(grid.screen_lines(), vec!["中文".to_string()]);
+    }
+
+    /// 宽字符放不进最后一列时先换行，不能劈成一半。
+    #[test]
+    fn wide_char_wraps_instead_of_splitting_at_the_last_column() {
+        let mut grid = grid(2, 2);
+        grid.print('a');
+        grid.print('中');
+        assert_eq!(grid.cell(0, 0).unwrap().ch, 'a');
+        assert_eq!(grid.cell(0, 1).unwrap().ch, ' ');
+        assert_eq!(grid.cell(1, 0).unwrap().ch, '中');
+        assert_eq!(grid.cell(1, 1).unwrap().ch, FILLER);
+        assert_eq!(grid.screen_lines(), vec!["a".to_string(), "中".to_string()]);
+    }
+
+    /// 宽字符正好填满最后两列：光标停在最后一列并延迟换行。
+    #[test]
+    fn wide_char_ending_the_row_defers_the_line_break() {
+        let mut grid = grid(2, 2);
+        grid.print('中');
+        assert_eq!(grid.cursor(), (0, 1));
+        grid.print('x');
+        assert_eq!(grid.cell(1, 0).unwrap().ch, 'x');
+    }
+
+    #[test]
+    fn char_width_matches_east_asian_rules() {
+        assert_eq!(char_width('a'), 1);
+        assert_eq!(char_width('中'), 2);
+        assert_eq!(char_width('ア'), 2);
+        assert_eq!(char_width('\u{0301}'), 0, "组合重音不占格");
+        assert_eq!(char_width('\u{200b}'), 0, "零宽空格不占格");
+    }
+
+    /// 组合标记暂时被丢弃，不能污染格子（见 `print` 的注释）。
+    #[test]
+    fn combining_marks_do_not_consume_a_cell() {
+        let mut grid = grid(4, 1);
+        grid.print('e');
+        grid.print('\u{0301}');
+        assert_eq!(grid.cell(0, 0).unwrap().ch, 'e');
+        assert_eq!(grid.cell(0, 1).unwrap().ch, ' ');
+        assert_eq!(grid.cursor(), (0, 1));
     }
 
     #[test]

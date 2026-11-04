@@ -4,7 +4,10 @@
 
 use vte::{Params, Perform};
 
+use super::grid::Cell;
+
 use super::grid::Grid;
+use crate::frontend::gpui::model::scroll;
 
 /// 一个 pane 的常驻 Surface：解析器 + 网格。
 ///
@@ -12,6 +15,11 @@ use super::grid::Grid;
 pub struct Surface {
     parser: vte::Parser,
     grid: Grid,
+    /// 视口上移的历史行数：0 表示贴着 live 屏幕。
+    ///
+    /// 只影响绘制，不改网格：抢 live 屏幕会把 Cursor/htop 的 alternate
+    /// screen 状态清掉（`model::scroll::should_replace_live_screen` 恒 false）。
+    scroll_offset: u32,
 }
 
 impl Surface {
@@ -19,7 +27,55 @@ impl Surface {
         Self {
             parser: vte::Parser::new(),
             grid: Grid::new(cols, rows),
+            scroll_offset: 0,
         }
+    }
+
+    /// 当前视口上移了多少历史行。
+    pub fn scroll_offset(&self) -> u32 {
+        self.scroll_offset
+    }
+
+    /// 能上移的上限：现有历史行数。
+    pub fn max_scroll_offset(&self) -> u32 {
+        u32::try_from(self.grid.scrollback_len()).unwrap_or(u32::MAX)
+    }
+
+    /// 按行滚动视口（正数往历史上滚）。返回是否真的移动了。
+    pub fn scroll_by(&mut self, lines: i32) -> bool {
+        let next = scroll::next_offset(self.scroll_offset, lines, self.max_scroll_offset());
+        if next == self.scroll_offset {
+            return false;
+        }
+        self.scroll_offset = next;
+        true
+    }
+
+    /// 回到 live 屏幕底部。
+    pub fn scroll_to_bottom(&mut self) -> bool {
+        if self.scroll_offset == 0 {
+            return false;
+        }
+        self.scroll_offset = 0;
+        true
+    }
+
+    /// 视口里第 `row` 行（0 基，按网格行数算）。
+    ///
+    /// 上移之后，前 `min(offset, rows)` 行来自 scrollback，其余是 live 屏幕。
+    pub fn visible_row(&self, row: usize) -> Option<&[Cell]> {
+        let rows = self.grid.rows();
+        if row >= rows {
+            return None;
+        }
+        let offset = usize::try_from(self.scroll_offset).unwrap_or(usize::MAX);
+        let covered = offset.min(rows);
+        if row < covered {
+            // scrollback 的 0 是最老的一行；贴着 live 屏幕的是 `len - 1`。
+            let index = self.grid.scrollback_len() + row - offset;
+            return self.grid.scrollback_row(index);
+        }
+        Some(self.grid.row(row - covered))
     }
 
     /// feed 原始字节。禁止用 `reset` 追帧。
@@ -147,6 +203,7 @@ impl Perform for Grid {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::frontend::gpui::terminal::mouse::MouseMode;
 
     fn surface(cols: usize, rows: usize) -> Surface {
         Surface::new(cols, rows)
@@ -205,8 +262,113 @@ mod tests {
     fn utf8_text_decodes() {
         let mut surface = surface(10, 2);
         surface.feed("你好".as_bytes());
+        // CJK 占两格：第二个格子是占位，真正的字在第三格。
         assert_eq!(surface.grid().cell(0, 0).unwrap().ch, '你');
-        assert_eq!(surface.grid().cell(0, 1).unwrap().ch, '好');
+        assert_eq!(
+            surface.grid().cell(0, 1).unwrap().ch,
+            crate::frontend::gpui::terminal::grid::FILLER
+        );
+        assert_eq!(surface.grid().cell(0, 2).unwrap().ch, '好');
+    }
+
+    /// 历史为空时滚不动，视口也不会变成负数。
+    #[test]
+    fn scrollback_viewport_starts_at_the_live_screen() {
+        let mut surface = surface(10, 3);
+        assert_eq!(surface.scroll_offset(), 0);
+        assert_eq!(surface.max_scroll_offset(), 0);
+        assert!(!surface.scroll_by(5), "没有历史就不该动");
+        assert!(!surface.scroll_to_bottom(), "already at the bottom");
+    }
+
+    /// 往历史上滚时，视口顶行来自 scrollback；回到 0 就恢复 live 屏幕。
+    #[test]
+    fn scrolling_up_shows_history_rows_above_the_live_screen() {
+        let mut surface = surface(4, 2);
+        surface.feed(b"a\r\nb\r\nc\r\nd");
+        // 2 行屏：a/b 已经被顶进历史，屏幕上是 c/d。
+        assert_eq!(surface.max_scroll_offset(), 2);
+        assert!(surface.scroll_by(1));
+        assert_eq!(surface.scroll_offset(), 1);
+        let top = surface.visible_row(0).unwrap();
+        let top: String = top.iter().map(|cell| cell.ch).collect();
+        assert_eq!(top.trim_end(), "b");
+        let bottom: String = surface
+            .visible_row(1)
+            .unwrap()
+            .iter()
+            .map(|cell| cell.ch)
+            .collect();
+        assert_eq!(bottom.trim_end(), "c");
+
+        assert!(surface.scroll_to_bottom());
+        let live: String = surface
+            .visible_row(0)
+            .unwrap()
+            .iter()
+            .map(|cell| cell.ch)
+            .collect();
+        assert_eq!(live.trim_end(), "c");
+    }
+
+    /// 偏移量超过一屏时，整个视口都落在历史里。
+    #[test]
+    fn deep_offset_fills_the_whole_viewport_from_history() {
+        let mut surface = surface(4, 2);
+        surface.feed(b"a\r\nb\r\nc\r\nd\r\ne\r\nf");
+        assert_eq!(surface.max_scroll_offset(), 4);
+        assert!(surface.scroll_by(4));
+        assert_eq!(surface.scroll_offset(), 4);
+        let rows: Vec<String> = (0..2)
+            .map(|row| {
+                surface
+                    .visible_row(row)
+                    .unwrap()
+                    .iter()
+                    .map(|cell| cell.ch)
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(rows, vec!["a".to_string(), "b".to_string()]);
+        // 超出网格行数没有内容。
+        assert!(surface.visible_row(2).is_none());
+    }
+
+    /// 偏移量被夹在历史上限，不会因为惯性滚动而越界。
+    #[test]
+    fn scroll_offset_is_clamped_to_available_history() {
+        let mut surface = surface(4, 2);
+        surface.feed(b"a\r\nb\r\nc\r\nd");
+        assert!(surface.scroll_by(99));
+        assert_eq!(surface.scroll_offset(), 2);
+        assert!(!surface.scroll_by(1), "已经到顶");
+        assert!(surface.scroll_by(-99));
+        assert_eq!(surface.scroll_offset(), 0);
+    }
+
+    /// DECSET 9/1000/1002/1003 决定上报时机，1006 只决定编码格式。
+    #[test]
+    fn mouse_modes_follow_private_mode_sequences() {
+        let mut surface = surface(10, 2);
+        assert_eq!(surface.grid().mouse_mode(), MouseMode::Off);
+        assert!(!surface.grid().sgr_mouse());
+
+        surface.feed(b"\x1b[?1000h");
+        assert_eq!(surface.grid().mouse_mode(), MouseMode::Normal);
+        surface.feed(b"\x1b[?1006h");
+        assert!(surface.grid().sgr_mouse());
+
+        surface.feed(b"\x1b[?1002h");
+        assert_eq!(surface.grid().mouse_mode(), MouseMode::Button);
+        // 关掉一个当前没在用的模式：不改变正在生效的那个。
+        surface.feed(b"\x1b[?1000l");
+        assert_eq!(surface.grid().mouse_mode(), MouseMode::Button);
+        surface.feed(b"\x1b[?1002l");
+        assert_eq!(surface.grid().mouse_mode(), MouseMode::Off);
+        surface.feed(b"\x1b[?1006l");
+        assert!(!surface.grid().sgr_mouse());
     }
 
     #[test]

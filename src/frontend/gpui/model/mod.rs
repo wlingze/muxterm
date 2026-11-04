@@ -24,3 +24,4 @@ pub mod sidebar;
 pub mod status_bar;
 pub mod surface_feed;
 pub mod target;
+pub mod word_selection;

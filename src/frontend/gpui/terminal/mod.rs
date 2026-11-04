@@ -2,8 +2,10 @@
 
 pub mod grid;
 pub mod keymap;
+pub mod mouse;
 pub mod parser;
 
 pub use grid::{Attributes, Cell, Color, Grid, Pen};
 pub use keymap::{encode, KeyPress};
+pub use mouse::{Button, MouseEventKind, MouseMode};
 pub use parser::Surface;
