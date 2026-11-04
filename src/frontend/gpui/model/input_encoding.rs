@@ -80,9 +80,58 @@ pub fn cmd_enter_action(on: Surface) -> CmdEnterAction {
     }
 }
 
+/// 括号粘贴开始标记。取自 SwiftTerm 1.15.0 的
+/// `EscapeSequences.bracketedPasteStart`（`Package.resolved` 锁定的版本）。
+pub const BRACKETED_PASTE_START: &[u8] = b"\x1b[200~";
+/// 括号粘贴结束标记，同上 `bracketedPasteEnd`。
+pub const BRACKETED_PASTE_END: &[u8] = b"\x1b[201~";
+
+/// 把一段粘贴文本编码成要写进 pane 的字节。
+///
+/// 与应用处于括号粘贴模式时，整段（包括大段粘贴的每一批）只包一层；分批
+/// 只是传输切片，不改变语义。空文本返回空，不发出空的粘贴标记。
+pub fn paste_payload(text: &str, bracketed: bool) -> Vec<u8> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    let mut payload = Vec::with_capacity(text.len() + 12);
+    if bracketed {
+        payload.extend_from_slice(BRACKETED_PASTE_START);
+    }
+    payload.extend_from_slice(text.as_bytes());
+    if bracketed {
+        payload.extend_from_slice(BRACKETED_PASTE_END);
+    }
+    payload
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 对照 `TerminalView.insertExternalText` 与 `pastePayload` 的括号行为。
+    #[test]
+    fn paste_payload_wraps_only_when_bracketed() {
+        assert_eq!(paste_payload("hi", false), b"hi".to_vec());
+        assert_eq!(paste_payload("hi", true), b"\x1b[200~hi\x1b[201~".to_vec());
+        assert!(paste_payload("", true).is_empty(), "空粘贴不发标记");
+    }
+
+    /// 多行文本不追加回车，也不改写内容。
+    #[test]
+    fn paste_payload_preserves_newlines_and_utf8() {
+        let text = "第一行\n第二行\n";
+        let payload = paste_payload(text, true);
+        assert_eq!(
+            payload,
+            [BRACKETED_PASTE_START, text.as_bytes(), BRACKETED_PASTE_END].concat()
+        );
+        assert_eq!(
+            payload.iter().filter(|b| **b == b'\n').count(),
+            2,
+            "粘贴不得偷偷补回车"
+        );
+    }
 
     /// 对照 `TerminalInputEncodingTests.testUnexpectedSingleFFIsRejected...`。
     #[test]
