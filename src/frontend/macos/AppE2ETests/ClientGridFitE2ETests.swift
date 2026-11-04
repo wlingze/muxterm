@@ -81,12 +81,19 @@ final class ClientGridFitE2ETests: XCTestCase {
       let leaves = app.testLayoutLeafIDs()
       guard leaves.count == 1, let pane = leaves.first else { return }
       let grid = app.testPaneGrid(pane)
-      let content = app.testTerminalClientContentSize()
-      let cols = Int(content.width / 11)
+      // 不硬编码字符宽度：CI 无 config.toml，字体回落到 Core 默认 12pt。
+      let client = app.testClientGrid()
+      let expectedCols = client.map { Int($0.cols) }
       XCTAssertEqual(
         grid.cols,
-        cols,
-        "\(label): 单 pane tab 的格子必须等于 client 格子（pane=\(grid.cols) client=\(cols)）"
+        expectedCols,
+        "\(label): 单 pane tab 的格子必须等于 client 格子"
+          + "（pane=\(grid.cols) client=\(String(describing: expectedCols))）"
+      )
+      XCTAssertEqual(
+        grid.rows,
+        client.map { Int($0.rows) },
+        "\(label): 行数同样必须等于 client 格子（pane=\(grid.rows)）"
       )
     }
 

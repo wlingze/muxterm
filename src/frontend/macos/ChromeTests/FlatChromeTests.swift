@@ -1049,6 +1049,38 @@ final class PaneOutputFeedPolicyTests: XCTestCase {
         )
     }
 
+    func testExpandedSidebarNeverExceedsWhatTheWindowCanGive() {
+        // 500pt 紧凑窗口：240 + 1 + 279 = 520 > 500，请求 240 会顶宽窗口。
+        XCTAssertEqual(
+            MainSplitLayoutPolicy.expandableSidebarThickness(
+                windowContentWidth: 500,
+                preferred: 240
+            ),
+            220,
+            "500pt 窗口最多只能给 500 - 1 - 279 = 220pt"
+        )
+        // 够宽时用首选值，不无谓缩小。
+        XCTAssertEqual(
+            MainSplitLayoutPolicy.expandableSidebarThickness(
+                windowContentWidth: 1200,
+                preferred: 240
+            ),
+            240
+        )
+        // 窗口地板：侧栏 + 分隔条 + 终端区恰好等于窗口宽度。
+        let floorWidth = MainSplitLayoutPolicy.minimumWindowWidth
+        let thickness = MainSplitLayoutPolicy.expandableSidebarThickness(
+            windowContentWidth: floorWidth,
+            preferred: 240
+        )
+        XCTAssertEqual(
+            thickness + MainSplitLayoutPolicy.dividerThickness
+                + MainSplitLayoutPolicy.contentMinimumThickness,
+            floorWidth
+        )
+        XCTAssertEqual(thickness, MainSplitLayoutPolicy.sidebarMinimumThickness)
+    }
+
     func testClientGridRejectsContainersFromAnotherWindow() {
         let window = NSSize(width: 2048, height: 1103)
         XCTAssertTrue(

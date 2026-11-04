@@ -1655,8 +1655,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         content.statusBar.sidebarOpen = open
         if open {
             refreshWorkspaceSidebar(force: true)
-            if workspaceSidebar.frame.width < 220 {
-                mainSplitController.splitView.setPosition(240, ofDividerAt: 0)
+            let available = window?.contentView?.bounds.width
+                ?? mainSplitController.splitView.bounds.width
+            let target = MainSplitLayoutPolicy.expandableSidebarThickness(
+                windowContentWidth: available,
+                preferred: 240
+            )
+            if workspaceSidebar.frame.width < 220 || workspaceSidebar.frame.width > target {
+                mainSplitController.splitView.setPosition(target, ofDividerAt: 0)
             }
         }
         // NSSplitViewController owns the divider geometry. Laying out only
