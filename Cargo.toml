@@ -79,6 +79,12 @@ libc = "0.2"
 [dev-dependencies]
 pretty_assertions = "1"
 
+# gpui 只在 macOS 上跑测试：它经 gpui_http_client → zed-async-tar → xattr 0.2.3
+# 带进一棵无法在 Linux 编译的依赖树（libc 没有 ENOATTR）。放到 macOS 专属
+# dev-dependency 后，Linux 的 core CI 不再被 gpui 测试依赖拖累。
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+gpui = { version = "0.2.2", features = ["test-support"] }
+
 # Linux GTK 前端集成测试（需显示器或 xvfb-run）
 [[test]]
 name = "linux_gtk_integration"
@@ -386,6 +392,11 @@ path = "tests/split_regression.rs"
 [[test]]
 name = "sendkeys_regression"
 path = "tests/sendkeys_regression.rs"
+
+[[test]]
+name = "gpui_harness_smoke"
+path = "tests/gpui_harness_smoke.rs"
+required-features = ["gpui"]
 
 [[test]]
 name = "gpui_surface_e2e"

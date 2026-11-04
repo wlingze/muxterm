@@ -443,11 +443,10 @@ Herdr 拓扑夹具还必须把 `pane.split` 的两个阶段分开：split 响应
 - 本地先调用 `scripts/test.sh doctor`，只读校验并打印版本/locale/display/sshd 能力；它
   不安装、不覆盖系统 tmux/Herdr。
 - Core workflow 调用 `scripts/test.sh run core`。
-- Linux workflow 调用 `scripts/test.sh run linux`，脚本内部唯一启动 Xvfb；workflow
-  外层不得再套 `xvfb-run`。
-- macOS workflow 调用 `scripts/test.sh run macos`，不能维护第二份 cargo/Swift 命令表。
+- GPUI 前端 workflow（macOS runner）调用 `scripts/test.sh run gpui`；原生窗口用例不进 CI。
+- PR CI 不再跑 Linux GTK / macOS Swift 测试；它们只在发布前按需手动执行。
 - 四格 matrix 的 child isolation 由 Rust test harness 完成，local 与 CI 使用同一逻辑。
-- macOS 的 claimed SSH 用例必须建立 loopback sshd；环境缺失是 gate failure，不是 skip。
+- PR CI 不跑 Swift；发布前手工跑 `scripts/test.sh run macos` 时，claimed SSH 用例必须建立 loopback sshd。
 
 Agent 本地执行命令统一加 `rtk`，并复用 worktree 本地 `./target`：
 
@@ -456,11 +455,10 @@ rtk bash scripts/test.sh doctor
 rtk cargo fmt --all -- --check
 rtk cargo clippy --all-targets --all-features -- -D warnings
 rtk bash scripts/test.sh run core
-rtk bash scripts/test.sh run linux
+rtk bash scripts/test.sh run gpui   # macOS
 ```
 
-Linux 本地绿色可预测 Core/Linux required；它不能替代 macOS runner，所以最终完成仍要求
-PR 的 macOS required 绿色。
+Linux 本地绿色可预测 Core；它不能替代 macOS runner，GPUI 前端以 `ci-gpui-frontend` 为准。
 
 ---
 

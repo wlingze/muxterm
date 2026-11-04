@@ -32,7 +32,7 @@
 ```
 
 本地和 CI 的结构门禁入口：`bash scripts/check-architecture.sh`。测试入口
-`scripts/test.sh run core|linux|macos` 会先自动执行同一检查。
+`scripts/test.sh run core|gpui|linux|macos` 会先自动执行同一检查。
 
 矩阵（隔离 socket / named Herdr session）：
 

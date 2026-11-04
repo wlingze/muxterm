@@ -5,9 +5,14 @@ on:
     branches: [main]
     paths:
       - "src/core/**"
-      - "src/frontend/**"
       - "src/lib.rs"
       - "src/main.rs"
+      # TUI / CLI / 共享 FFI 模块属于 core 测试范围。
+      # GPUI、GTK、Swift 前端各有自己的门禁，不在这里跑。
+      - "src/frontend/**"
+      - "!src/frontend/gpui/**"
+      - "!src/frontend/linux/**"
+      - "!src/frontend/macos/**"
       - "tests/cli_integration.rs"
       - "tests/four_mode_integration.rs"
       - "tests/sendkeys_regression.rs"
@@ -39,7 +44,7 @@ on:
       - "scripts/build-tui.sh"
       - "scripts/test.sh"
       - "scripts/ci/**"
-      - ".github/workflows/**"
+      - ".github/workflows/ci-core.yml"
 
 permissions:
   contents: read
@@ -51,10 +56,11 @@ env:
   GH_TOKEN: ${{ github.token }}
 
 jobs:
-  core_tests:
-    name: core / tests
+  ci_core:
+    name: ci-core
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # core 入口一次编译跑 lib/bin + 全部集成 target，含 four-mode 与 Herdr 契约。
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -75,10 +81,12 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-core-${{ hashFiles('Cargo.toml', 'Cargo.lock') }}
+          key: ${{ runner.os }}-core-${{ hashFiles('Cargo.toml') }}
 
       # 与本地 scripts/test.sh 同一入口：一次编译、一起跑全部测试。
       # fmt/clippy/全部 target 都在 test.sh 内，避免 CI 与本地两套命令 drift。
+      # four-mode 的 SSH case 在 setup.sh 配好 loopback sshd 后由同一进程跑；
+      # 没有 sshd 时测试自行 skip，不再拆单独的 matrix job。
       - name: Run all core tests (one compile)
         run: bash scripts/test.sh run core
 
@@ -100,6 +108,15 @@ jobs:
             cargo test --no-default-features --features tui,test-harness \
               --test herdr_protocol_compat -- --test-threads=1
 
+      - name: Upload sshd logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-sshd-logs
+          path: ${{ env.MUXTERM_SSHD_TMP_DIR }}
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Cleanup sshd
         if: always()
         run: |
@@ -107,105 +124,3 @@ jobs:
             kill "$(cat "$MUXTERM_SSHD_TMP_DIR/sshd.pid")" 2>/dev/null || true
             rm -rf "$MUXTERM_SSHD_TMP_DIR"
           fi
-
-  four_mode:
-    name: four-mode / ${{ matrix.case }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - case: local-shell
-            filter: local_shell_cli
-            ssh: false
-          - case: local-tmux
-            filter: local_tmux_cli
-            ssh: false
-          - case: ssh-shell
-            filter: ssh_shell_cli
-            ssh: true
-          - case: ssh-tmux
-            filter: ssh_tmux_cli
-            ssh: true
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential \
-            pkg-config \
-            libfontconfig1-dev \
-            tmux \
-            openssh-server \
-            openssh-client
-
-      - name: Setup shared loopback sshd
-        if: matrix.ssh == true
-        run: |
-          set -euo pipefail
-          MUXTERM_ENV_FILE="$RUNNER_TEMP/muxterm-sshd.env" bash scripts/ci/setup-sshd.sh
-          cat "$RUNNER_TEMP/muxterm-sshd.env" >> "$GITHUB_ENV"
-        timeout-minutes: 5
-
-      - uses: dtolnay/rust-toolchain@1.97.1
-
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-four-mode-${{ matrix.case }}-${{ hashFiles('Cargo.toml', 'Cargo.lock') }}
-
-      - name: Build FFI binary
-        run: cargo build --no-default-features --features ffi
-
-      - name: Run local Four-Mode case
-        if: matrix.ssh == false
-        run: timeout 120 cargo test --no-default-features --features ffi,test-harness --test four_mode_integration -- ${{ matrix.filter }} --nocapture
-
-      - name: Run SSH Four-Mode case
-        if: matrix.ssh == true
-        run: timeout 120 cargo test --no-default-features --features ffi,test-harness --test four_mode_integration -- ${{ matrix.filter }} --nocapture --ignored
-        env:
-          RUST_BACKTRACE: 1
-
-      - name: Upload sshd logs on failure
-        if: failure() && matrix.ssh == true
-        uses: actions/upload-artifact@v4
-        with:
-          name: sshd-logs-${{ matrix.case }}
-          path: ${{ env.MUXTERM_SSHD_TMP_DIR }}
-          retention-days: 7
-
-      - name: Cleanup sshd
-        if: always() && matrix.ssh == true
-        run: |
-          if [ -n "${MUXTERM_SSHD_TMP_DIR:-}" ] && [ -f "$MUXTERM_SSHD_TMP_DIR/sshd.pid" ]; then
-            kill "$(cat "$MUXTERM_SSHD_TMP_DIR/sshd.pid")" 2>/dev/null || true
-            rm -rf "$MUXTERM_SSHD_TMP_DIR"
-          fi
-
-  four_mode_aggregate:
-    name: four-mode / aggregate
-    if: always()
-    needs: [four_mode]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Require all Four-Mode cases
-        run: test "${{ needs.four_mode.result }}" = success
-
-  core_required:
-    name: core / required
-    if: always()
-    needs: [core_tests, four_mode_aggregate]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Require core and Four-Mode aggregates
-        run: |
-          test "${{ needs.core_tests.result }}" = success
-          test "${{ needs.four_mode_aggregate.result }}" = success
