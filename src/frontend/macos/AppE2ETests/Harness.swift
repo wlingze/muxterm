@@ -91,6 +91,32 @@ enum AppE2E {
         XCTAssertTrue(Tmux.available, "需要本机 tmux（禁止 skip 冒充绿）")
     }
 
+    /// 以固定比例把 view 画进位图。Retina 抓图依赖窗口所在屏幕的
+    /// backingScaleFactor，测试进程里并不稳定；官网截图要稳定的分辨率，
+    /// 所以这里显式指定像素宽度，按 scale 绘制（不是事后缩放）。
+    static func snapshotPNG(of view: NSView, maxWidth: CGFloat) -> Data? {
+        let size = view.bounds.size
+        guard size.width > 0, size.height > 0 else { return nil }
+        let scale = min(2, max(1, maxWidth / size.width))
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: Int((size.width * scale).rounded()),
+            pixelsHigh: Int((size.height * scale).rounded()),
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ) else { return nil }
+        rep.size = size
+        view.layoutSubtreeIfNeeded()
+        view.displayIfNeeded()
+        view.cacheDisplay(in: view.bounds, to: rep)
+        return rep.representation(using: .png, properties: [:])
+    }
+
     /// macOS 26 会把压到 visibleFrame 之外的窗口上移。测试关心的是
     /// “attach 后不再改 frame”，不是绝对 (40, 40)，因此先选一个屏幕内
     /// 的固定 frame，再全程断言它不变。

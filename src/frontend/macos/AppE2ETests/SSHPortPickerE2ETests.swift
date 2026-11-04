@@ -217,4 +217,36 @@ final class SSHPortPickerE2ETests: XCTestCase {
             try png.write(to: URL(fileURLWithPath: "/tmp/muxterm-ssh-ports-\(name).png"))
         }
     }
+
+    /// 官网用图：状态栏端口菜单的真实渲染（隔离数据，非截图拼接）。
+    func testWebsitePortPickerSnapshot() throws {
+        guard let directory = ProcessInfo.processInfo.environment["MUXTERM_UI_SNAPSHOT_DIR"],
+              !directory.isEmpty
+        else {
+            return
+        }
+        // 8 个端口刚好填满 230pt 的滚动区；4 个会留下半屏空白，像坏图。
+        let ports = [port(3000, discovered: true), port(5173), port(5432, local: 45001),
+                     port(6379), port(8080), port(9000), port(9229), port(11434)]
+        let originalAppearance = NSApplication.shared.appearance
+        defer { NSApplication.shared.appearance = originalAppearance }
+        for (name, appearanceName) in [("dark", NSAppearance.Name.darkAqua), ("light", .aqua)] {
+            // 先切 app 外观再建视图：动态颜色（secondaryLabelColor 等）在
+            // 控件创建时就已解析，事后设置 view.appearance 会留下不可见的字。
+            NSApplication.shared.appearance = NSAppearance(named: appearanceName)
+            let picker = try openPicker(ports, remoteHost: "staging-node")
+            picker.layoutSubtreeIfNeeded()
+            picker.displayIfNeeded()
+            guard let png = AppE2E.snapshotPNG(of: picker, maxWidth: 1000) else {
+                return XCTFail("port picker must render to a PNG")
+            }
+            let root = URL(fileURLWithPath: directory, isDirectory: true)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            try png.write(
+                to: root.appendingPathComponent("app-ports-\(name).png"),
+                options: .atomic
+            )
+            bar.testCloseConnectionPopovers()
+        }
+    }
 }

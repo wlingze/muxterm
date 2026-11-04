@@ -257,9 +257,9 @@ final class WebsiteGalleryE2ETests: XCTestCase {
         let view = try XCTUnwrap(controller.window?.contentView)
         view.layoutSubtreeIfNeeded()
         view.displayIfNeeded()
-        let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
-        view.cacheDisplay(in: view.bounds, to: bitmap)
-        let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+        // 官网图只用 1400px 宽：页面上按 1/3 栏宽展示，
+        // 2x Retina 抓图只会让仓库多背几 MB。
+        let png = try XCTUnwrap(AppE2E.snapshotPNG(of: view, maxWidth: 1400))
         try png.write(
             to: root.appendingPathComponent("app-\(scene)-\(appearance).png"),
             options: .atomic
