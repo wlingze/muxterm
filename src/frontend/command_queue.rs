@@ -35,6 +35,11 @@ pub enum ClientCommand {
     },
     ActivateWorkspace(String),
     CloseWorkspace(String),
+    /// 设置窗口 Apply：一条 manifest 路径一个 patch，走 Core 的配置事务。
+    ConfigApply {
+        path: String,
+        value: serde_json::Value,
+    },
 }
 
 #[derive(Debug, Default)]
@@ -143,6 +148,12 @@ fn dispatch(client: &FfiClient, command: ClientCommand) -> i32 {
             (None, Some(pane_id)) => client.resize_pane(pane_id, cols, rows),
             (None, None) => client.resize_client(cols, rows),
         },
+        ClientCommand::ConfigApply { path, value } => {
+            match client.config_apply_path(&path, value) {
+                Ok(_) => 0,
+                Err(_) => -1,
+            }
+        }
         ClientCommand::ActivateWorkspace(workspace_id) => {
             client.activate_workspace(&workspace_id).map_or(-1, |_| 0)
         }

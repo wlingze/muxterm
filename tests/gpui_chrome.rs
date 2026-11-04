@@ -572,3 +572,154 @@ fn composer_drafts_are_per_pane(cx: &mut TestAppContext) {
     });
     assert_eq!(first_text, "ab", "回到第一个 pane 草稿要还原");
 }
+
+fn settings_manifest() -> serde_json::Value {
+    muxterm::config::ConfigDocument::manifest_json()
+}
+
+/// Cmd-, 打开设置；注入 Core 快照后侧栏由 manifest 驱动。
+#[gpui::test]
+fn cmd_comma_opens_settings_and_the_manifest_drives_the_sidebar(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.simulate_keystrokes("cmd-,");
+    assert!(cx.update(|_, cx| view.update(cx, |app, _| app.settings_open)));
+
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.open_settings(
+                &settings_manifest(),
+                &serde_json::json!({ "font": { "size": 13.0 } }),
+                cx,
+            )
+        })
+    });
+    let (categories, selected) = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            (
+                app.settings_categories()
+                    .into_iter()
+                    .map(|category| category.id)
+                    .collect::<Vec<_>>(),
+                app.settings_selected().map(|category| category.id),
+            )
+        })
+    });
+    assert!(categories.contains(&"appearance".to_string()));
+    assert!(categories.contains(&"ui".to_string()));
+    assert_eq!(selected.as_deref(), Some("appearance"), "默认选中第一条");
+}
+
+/// Apply 只提交改过的路径；再按一次没有 patch。
+#[gpui::test]
+fn settings_apply_queues_only_changed_paths(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.open_settings(
+                &settings_manifest(),
+                &serde_json::json!({
+                    "font": { "size": 13.0 },
+                    "ui": { "tab_bar_position": "top" }
+                }),
+                cx,
+            )
+        })
+    });
+    assert!(!cx.update(|_, cx| view.update(cx, |app, _| app.settings_dirty())));
+
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.settings_set("/ui/tab_bar_position", serde_json::json!("bottom"), cx);
+            app.settings_set("/font/size", serde_json::json!(15.0), cx);
+        })
+    });
+    assert!(cx.update(|_, cx| view.update(cx, |app, _| app.settings_dirty())));
+
+    let applied = cx.update(|_, cx| view.update(cx, |app, cx| app.settings_apply(cx)));
+    assert_eq!(applied, 2);
+    let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    let patches: Vec<(String, serde_json::Value)> = commands
+        .iter()
+        .filter_map(|command| match command {
+            ClientCommand::ConfigApply { path, value } => Some((path.clone(), value.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        patches,
+        vec![
+            ("/font/size".to_string(), serde_json::json!(15.0)),
+            (
+                "/ui/tab_bar_position".to_string(),
+                serde_json::json!("bottom")
+            ),
+        ],
+        "顺序跟随 manifest，只报改动过的路径"
+    );
+
+    let second = cx.update(|_, cx| view.update(cx, |app, cx| app.settings_apply(cx)));
+    assert_eq!(second, 0, "Apply 之后 baseline 已更新");
+    assert!(!cx.update(|_, cx| view.update(cx, |app, _| app.settings_dirty())));
+}
+
+/// 丢弃修改回到打开时的值，选择与搜索词保留。
+#[gpui::test]
+fn settings_discard_reverts_but_keeps_the_selection(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.open_settings(
+                &settings_manifest(),
+                &serde_json::json!({ "ui": { "tab_bar_position": "top" } }),
+                cx,
+            );
+            app.settings_select("ui", cx);
+            app.settings_set("/ui/tab_bar_position", serde_json::json!("bottom"), cx);
+        })
+    });
+    assert!(cx.update(|_, cx| view.update(cx, |app, _| app.settings_dirty())));
+    cx.update(|_, cx| view.update(cx, |app, cx| app.settings_discard(cx)));
+    assert!(!cx.update(|_, cx| view.update(cx, |app, _| app.settings_dirty())));
+    assert_eq!(
+        cx.update(|_, cx| view.update(cx, |app, _| app.settings_value("/ui/tab_bar_position"))),
+        Some(serde_json::json!("top"))
+    );
+    assert_eq!(
+        cx.update(|_, cx| view.update(cx, |app, _| app
+            .settings_selected()
+            .map(|category| category.id))),
+        Some("ui".to_string())
+    );
+}
+
+/// 搜索过滤侧栏但不丢草稿；选中项被过滤掉时切到第一条可见分类。
+#[gpui::test]
+fn settings_search_filters_without_losing_the_draft(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.open_settings(
+                &settings_manifest(),
+                &serde_json::json!({ "font": { "size": 13.0 } }),
+                cx,
+            );
+            app.settings_set("/font/size", serde_json::json!(17.0), cx);
+            app.settings_set_query("ssh", cx);
+        })
+    });
+    let (categories, selected, value) = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            (
+                app.settings_categories()
+                    .into_iter()
+                    .map(|category| category.id)
+                    .collect::<Vec<_>>(),
+                app.settings_selected().map(|category| category.id),
+                app.settings_value("/font/size"),
+            )
+        })
+    });
+    assert_eq!(categories, vec!["ssh".to_string()]);
+    assert_eq!(selected.as_deref(), Some("ssh"), "选中项不可见时切到第一条");
+    assert_eq!(value, Some(serde_json::json!(17.0)), "草稿不因搜索丢");
+}
