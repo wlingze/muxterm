@@ -35,9 +35,54 @@ const INDEX_FEED_CHUNK_BYTES: usize = 16 * 1024;
 const INDEX_FEED_BUDGET_BYTES: usize = 64 * 1024;
 const INDEX_PANE_BACKLOG_LIMIT: usize = 2 * 1024 * 1024;
 
+/// Index 队列里的一块工作。
+///
+/// 整帧/快照/历史都必须走同一队列，否则一次 attach 洪峰会在单次 poll 里
+/// 同步解析几 MB，把共享泵（常在主线程）阻塞上百毫秒。
+#[derive(Debug)]
+enum IndexFeed {
+    /// live 输出：追加到现有解析器。可被预算切分。
+    Append(Vec<u8>),
+    /// 权威快照/整帧：先重置解析器，再喂字节。可被预算切分。
+    Replace { kind: ReplaceKind, data: Vec<u8> },
+    /// attach 前的历史行（换行分隔纯文本，非 VT 流）：整块插入 scrollback 前部。
+    /// Runtime 每批最多 `HISTORY_BACKFILL_CHUNK_LINES` 行，不切分。
+    History(Vec<u8>),
+}
+
+impl IndexFeed {
+    fn len(&self) -> usize {
+        match self {
+            Self::Append(data) | Self::History(data) => data.len(),
+            Self::Replace { data, .. } => data.len(),
+        }
+    }
+}
+
+/// 权威替换的三种来源；重置后喂字节的语义一致。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReplaceKind {
+    /// Runtime capture 的权威快照（`PaneSnapshot`）。
+    Snapshot,
+    /// Runtime 完整画面帧（`PaneFrame`）。
+    Frame,
+    /// 只进 Index 的 attach 种子（`PaneIndexSnapshot`）。
+    IndexSnapshot,
+}
+
+/// `pop` 的一块可喂数据。
+struct IndexChunk {
+    pane: PaneId,
+    data: Vec<u8>,
+    /// 必须先重置解析器（只有替换的第一片为 true）。
+    reset: Option<ReplaceKind>,
+    /// 换行分隔的历史行，不是 VT 流。
+    history: bool,
+}
+
 #[derive(Default)]
 struct PaneIndexBacklog {
-    panes: HashMap<PaneId, VecDeque<Vec<u8>>>,
+    panes: HashMap<PaneId, VecDeque<IndexFeed>>,
     bytes: HashMap<PaneId, usize>,
     order: VecDeque<PaneId>,
     suspended: HashSet<PaneId>,
@@ -61,43 +106,112 @@ impl PaneIndexBacklog {
             );
             return true;
         }
-        let queue = self.panes.entry(pane).or_default();
-        if queue.is_empty() {
-            self.order.push_back(pane);
-        }
-        queue.push_back(data.to_vec());
-        self.bytes.insert(pane, pending + data.len());
+        self.push_back(pane, IndexFeed::Append(data.to_vec()));
         false
     }
 
-    fn pop(&mut self, max_bytes: usize) -> Option<(PaneId, Vec<u8>)> {
+    /// 权威替换：丢弃更早的待喂 live 输出（已被快照覆盖），保留待插入的历史。
+    fn push_replace(&mut self, pane: PaneId, kind: ReplaceKind, data: Vec<u8>) {
+        self.suspended.remove(&pane);
+        let queue = self.panes.entry(pane).or_default();
+        // 历史行不被快照覆盖，但必须排在替换之后，所以保留并让它落在后面。
+        let mut kept: VecDeque<IndexFeed> = queue
+            .drain(..)
+            .filter(|feed| matches!(feed, IndexFeed::History(_)))
+            .collect();
+        let mut next = VecDeque::new();
+        if !data.is_empty() {
+            next.push_back(IndexFeed::Replace { kind, data });
+        }
+        next.append(&mut kept);
+        let bytes: usize = next.iter().map(IndexFeed::len).sum();
+        *queue = next;
+        if bytes == 0 {
+            self.panes.remove(&pane);
+            self.bytes.remove(&pane);
+            self.order.retain(|queued| *queued != pane);
+            return;
+        }
+        self.bytes.insert(pane, bytes);
+        if !self.order.contains(&pane) {
+            self.order.push_back(pane);
+        }
+    }
+
+    /// attach 历史：不被快照覆盖，排在已有替换之后。
+    fn push_history(&mut self, pane: PaneId, data: Vec<u8>) {
+        if data.is_empty() {
+            return;
+        }
+        let len = data.len();
+        let queue = self.panes.entry(pane).or_default();
+        if queue.is_empty() && !self.order.contains(&pane) {
+            self.order.push_back(pane);
+        }
+        queue.push_back(IndexFeed::History(data));
+        *self.bytes.entry(pane).or_default() += len;
+    }
+
+    fn push_back(&mut self, pane: PaneId, feed: IndexFeed) {
+        let len = feed.len();
+        let queue = self.panes.entry(pane).or_default();
+        if queue.is_empty() && !self.order.contains(&pane) {
+            self.order.push_back(pane);
+        }
+        queue.push_back(feed);
+        *self.bytes.entry(pane).or_default() += len;
+    }
+
+    fn pop(&mut self, max_bytes: usize) -> Option<IndexChunk> {
+        let limit = max_bytes.max(1);
         let pane = self.order.pop_front()?;
         let queue = self.panes.get_mut(&pane)?;
-        let mut data = queue.pop_front()?;
-        let limit = max_bytes.max(1);
-        let chunk = if data.len() > limit {
-            let tail = data.split_off(limit);
-            queue.push_front(tail);
-            data
-        } else {
-            data
+        let feed = queue.pop_front()?;
+        let chunk = match feed {
+            IndexFeed::History(data) => IndexChunk {
+                pane,
+                data,
+                reset: None,
+                history: true,
+            },
+            IndexFeed::Append(mut data) => {
+                if data.len() > limit {
+                    queue.push_front(IndexFeed::Append(data.split_off(limit)));
+                }
+                IndexChunk {
+                    pane,
+                    data,
+                    reset: None,
+                    history: false,
+                }
+            }
+            IndexFeed::Replace { kind, mut data } => {
+                // 第一片负责重置；余下按追加继续，避免重复 reset。
+                if data.len() > limit {
+                    queue.push_front(IndexFeed::Append(data.split_off(limit)));
+                }
+                IndexChunk {
+                    pane,
+                    data,
+                    reset: Some(kind),
+                    history: false,
+                }
+            }
         };
-        let remaining = self
-            .bytes
-            .get(&pane)
-            .copied()
-            .unwrap_or(0)
-            .saturating_sub(chunk.len());
-        if queue.is_empty() {
+        let pending = self.bytes.get(&pane).copied().unwrap_or(0);
+        self.bytes
+            .insert(pane, pending.saturating_sub(chunk.data.len()));
+        // 还有剩余就让位给别的 pane（round-robin），空队列才从 order 移除。
+        if self.panes.get(&pane).is_some_and(VecDeque::is_empty) {
             self.panes.remove(&pane);
             self.bytes.remove(&pane);
         } else {
-            self.bytes.insert(pane, remaining);
             self.order.push_back(pane);
         }
-        Some((pane, chunk))
+        Some(chunk)
     }
 
+    /// 取走该 pane 全部待喂工作，保留排队顺序（取消挂起）。
     fn reset(&mut self, pane: PaneId) {
         self.remove(pane);
         self.suspended.remove(&pane);
@@ -745,40 +859,42 @@ impl Workspace {
             }
         }
 
-        // Surface 先回填历史再接首帧；Index 的 replace_snapshot 会清空历史，
-        // 所以仅在 Index 消费时先替换快照，再插入历史。发布顺序保持原样。
-        for event in batch
-            .render
-            .iter()
-            .filter(|event| !matches!(event, RenderEvent::PaneHistory { .. }))
-            .chain(
-                batch
-                    .render
-                    .iter()
-                    .filter(|event| matches!(event, RenderEvent::PaneHistory { .. })),
+        // 所有 render 事件都走 Index 队列：整帧/快照/历史与 live 输出共享同一
+        // 64KB 预算，一次 attach 洪峰不会把共享泵（常在主线程）单次阻塞上百毫秒。
+        //
+        // 入队顺序与旧实现一致：先替换（快照/整帧），再历史，最后 live 输出。
+        // 替换必须建立基线（`replace_snapshot` 会清空 scrollback），历史靠后
+        // 才插得进去；同一批里的增量输出排在基线之后。
+        let mut snapshot_requests = Vec::new();
+        for event in batch.render.iter().filter(|event| {
+            matches!(
+                event,
+                RenderEvent::PaneSnapshot { .. }
+                    | RenderEvent::PaneFrame { .. }
+                    | RenderEvent::PaneIndexSnapshot { .. }
             )
-        {
-            if !matches!(event, RenderEvent::PaneOutput { .. }) {
-                match event {
-                    RenderEvent::PaneSnapshot { pane, .. }
-                    | RenderEvent::PaneFrame { pane, .. }
-                    | RenderEvent::PaneIndexSnapshot { pane, .. } => {
-                        self.pending_index_output.reset(*pane);
-                    }
-                    RenderEvent::PaneHistory { .. } | RenderEvent::PaneOutput { .. } => {}
+        }) {
+            match event {
+                RenderEvent::PaneSnapshot { pane, data } => self.pending_index_output.push_replace(
+                    *pane,
+                    ReplaceKind::Snapshot,
+                    data.clone(),
+                ),
+                RenderEvent::PaneFrame { pane, data } => {
+                    self.pending_index_output
+                        .push_replace(*pane, ReplaceKind::Frame, data.clone())
                 }
-                self.feed_render_event(event, &closed_panes);
-                let pane = match event {
-                    RenderEvent::PaneSnapshot { pane, .. }
-                    | RenderEvent::PaneFrame { pane, .. }
-                    | RenderEvent::PaneIndexSnapshot { pane, .. }
-                    | RenderEvent::PaneHistory { pane, .. }
-                    | RenderEvent::PaneOutput { pane, .. } => *pane,
-                };
-                self.indexed_panes.insert(pane);
+                RenderEvent::PaneIndexSnapshot { pane, data } => self
+                    .pending_index_output
+                    .push_replace(*pane, ReplaceKind::IndexSnapshot, data.clone()),
+                _ => {}
             }
         }
-        let mut snapshot_requests = Vec::new();
+        for event in &batch.render {
+            if let RenderEvent::PaneHistory { pane, data } = event {
+                self.pending_index_output.push_history(*pane, data.clone());
+            }
+        }
         for event in &batch.render {
             if let RenderEvent::PaneOutput { pane, data } = event {
                 if !closed_panes.contains(pane) && self.pending_index_output.append(*pane, data) {
@@ -825,15 +941,39 @@ impl Workspace {
         let closed = HashSet::new();
         while consumed < INDEX_FEED_BUDGET_BYTES {
             let remaining = INDEX_FEED_BUDGET_BYTES - consumed;
-            let Some((pane, data)) = self
+            let Some(chunk) = self
                 .pending_index_output
                 .pop(remaining.min(INDEX_FEED_CHUNK_BYTES))
             else {
                 break;
             };
-            consumed = consumed.saturating_add(data.len());
-            self.feed_render_event(&RenderEvent::PaneOutput { pane, data }, &closed);
-            self.indexed_panes.insert(pane);
+            consumed = consumed.saturating_add(chunk.data.len());
+            // 替换的第一片沿用原有替换路径（重置解析器 + 喂这一片）；
+            // 后续分片按普通追加继续，避免重复重置丢掉中间状态。
+            let event = match (chunk.reset, chunk.history) {
+                (Some(ReplaceKind::Snapshot), _) => RenderEvent::PaneSnapshot {
+                    pane: chunk.pane,
+                    data: chunk.data,
+                },
+                (Some(ReplaceKind::Frame), _) => RenderEvent::PaneFrame {
+                    pane: chunk.pane,
+                    data: chunk.data,
+                },
+                (Some(ReplaceKind::IndexSnapshot), _) => RenderEvent::PaneIndexSnapshot {
+                    pane: chunk.pane,
+                    data: chunk.data,
+                },
+                (None, true) => RenderEvent::PaneHistory {
+                    pane: chunk.pane,
+                    data: chunk.data,
+                },
+                (None, false) => RenderEvent::PaneOutput {
+                    pane: chunk.pane,
+                    data: chunk.data,
+                },
+            };
+            self.feed_render_event(&event, &closed);
+            self.indexed_panes.insert(chunk.pane);
         }
     }
 
@@ -1190,20 +1330,117 @@ mod tests {
         );
     }
 
+    /// attach 洪峰：17 个 pane 各一份 98KB 快照必须分多拍消化，
+    /// 不能在单次 refresh 里同步解析完（那会阻塞共享泵）。
+    #[test]
+    fn index_snapshot_burst_is_spread_over_several_refreshes() {
+        let mut w = workspace("burst");
+        let snapshot: Vec<u8> = (0..2000)
+            .flat_map(|row| {
+                format!("hist-{row:05}-abcdefghijklmnopqrstuvwxyz0123456789\r\n").into_bytes()
+            })
+            .collect();
+        let mut batch = RuntimeBatch::default();
+        for pane in 1..=17u32 {
+            batch.render.push(RenderEvent::PaneIndexSnapshot {
+                pane: PaneId(pane),
+                data: snapshot.clone(),
+            });
+        }
+
+        w.feed_batch(&batch);
+        let first_refresh = w.pane_raw_bytes(PaneId(17));
+        assert!(
+            first_refresh.len() < snapshot.len(),
+            "最后排队的 pane 不应在同一拍就完成: {}",
+            first_refresh.len()
+        );
+
+        // 后续 refresh（没有新事件）也要能继续消化积压。
+        for _ in 0..64 {
+            w.feed_batch(&RuntimeBatch::default());
+        }
+        for pane in 1..=17u32 {
+            assert_eq!(
+                w.pane_raw_bytes(PaneId(pane)),
+                snapshot,
+                "pane {pane} 必须在后续 refresh 里补齐"
+            );
+        }
+    }
+
+    /// 替换的第一片负责重置解析器；后续分片只能追加，不能反复重置。
+    #[test]
+    fn chunked_snapshot_resets_once_then_appends() {
+        let mut w = workspace("chunked-reset");
+        w.feed_events(&[StateChange::PaneOutput {
+            pane: PaneId(1),
+            data: b"STALE_LINE\r\n".to_vec(),
+        }]);
+
+        let mut snapshot = vec![b'A'; 40 * 1024];
+        snapshot.extend_from_slice(b"\r\nTAIL_TOKEN\r\n");
+        w.feed_events(&[StateChange::PaneIndexSnapshot {
+            pane: PaneId(1),
+            data: snapshot.clone(),
+        }]);
+        for _ in 0..8 {
+            w.feed_batch(&RuntimeBatch::default());
+        }
+
+        let text = w.pane_text(PaneId(1));
+        assert!(!text.contains("STALE_LINE"), "快照必须清掉旧内容: {text}");
+        assert!(text.contains("TAIL_TOKEN"), "分片后续必须接上: {text}");
+        assert_eq!(
+            w.pane_raw_bytes(PaneId(1)).len(),
+            snapshot.len(),
+            "分片合并后字节数必须等于快照"
+        );
+    }
+
+    /// 历史行在快照之后插入（replace_snapshot 会清空 scrollback）。
+    #[test]
+    fn chunked_history_survives_a_snapshot_replace() {
+        let mut w = workspace("chunked-history");
+        let mut snapshot = vec![b'B'; 40 * 1024];
+        snapshot.extend_from_slice(b"\r\nVISIBLE_TAIL\r\n");
+        w.feed_events(&[
+            StateChange::PaneHistory {
+                pane: PaneId(1),
+                data: b"HIST_OFFSCREEN\npud-01".to_vec(),
+            },
+            StateChange::PaneIndexSnapshot {
+                pane: PaneId(1),
+                data: snapshot,
+            },
+        ]);
+        for _ in 0..8 {
+            w.feed_batch(&RuntimeBatch::default());
+        }
+
+        let text = w.pane_text(PaneId(1));
+        assert!(
+            text.contains("HIST_OFFSCREEN"),
+            "历史不能被快照清掉: {text}"
+        );
+        assert!(text.contains("VISIBLE_TAIL"), "快照内容必须存在: {text}");
+    }
+
     #[test]
     fn overflowing_one_index_backlog_suspends_only_that_pane() {
         let mut backlog = PaneIndexBacklog::default();
         assert!(backlog.append(PaneId(1), &vec![0; INDEX_PANE_BACKLOG_LIMIT + 1]));
         assert!(!backlog.append(PaneId(2), b"ok"));
 
-        let (pane, data) = backlog.pop(16).expect("quiet pane must remain queued");
-        assert_eq!(pane, PaneId(2));
-        assert_eq!(data, b"ok");
+        let chunk = backlog.pop(16).expect("quiet pane must remain queued");
+        assert_eq!(chunk.pane, PaneId(2));
+        assert_eq!(chunk.data, b"ok");
+        assert!(!chunk.history);
         assert!(backlog.suspended.contains(&PaneId(1)));
 
         backlog.reset(PaneId(1));
         assert!(!backlog.append(PaneId(1), b"snapshot-tail"));
-        assert_eq!(backlog.pop(32).unwrap().0, PaneId(1));
+        assert_eq!(backlog.pop(32).unwrap().pane, PaneId(1));
     }
 
     #[test]
