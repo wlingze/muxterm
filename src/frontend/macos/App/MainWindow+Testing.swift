@@ -120,6 +120,21 @@ extension MainWindowController {
         content.paneLayout.testPaneTerminalHeight(paneId)
     }
 
+    /// 生产路径算出的 client 格子（就是发给 Runtime 的那一份）。
+    /// 测试用它比 pane 格子，不自己猜字符宽度。
+    func testClientGrid() -> (cols: UInt16, rows: UInt16)? {
+        terminalManager.clientGridSizeForTesting(
+            container: content.paneLayout,
+            paneIds: Set(content.paneLayout.testLeafPaneIDs())
+        )
+    }
+
+    /// 当前字体的字符格宽度（point）。E2E 用它算 client 列数，
+    /// 不硬编码字号：CI 无 config.toml，Core 默认字号不是 18。
+    func testCellWidthInPoints() -> CGFloat? {
+        terminalManager.sharedCellSizeInPoints()?.width
+    }
+
     func testTerminalClientContentSize() -> NSSize {
         content.paneLayout.terminalClientContentSize
     }

@@ -1078,6 +1078,20 @@ public enum MainSplitLayoutPolicy {
     /// 终端区最小宽度：窗口地板减去侧栏与分隔条后的余量。
     public static let contentMinimumThickness =
         minimumWindowWidth - sidebarMinimumThickness - dividerThickness
+
+    /// 展开侧栏时能请求的最大厚度。
+    ///
+    /// 侧栏 + 分隔条 + 终端区最小宽度是硬上界。请求超过窗口内容区能给的
+    /// 余量时，split 求解会去撑宽窗口本身：500pt 的紧凑窗口展开侧栏后被
+    /// 顶成 740pt（CI 实测）。窗口宽度只能由用户决定。
+    public static func expandableSidebarThickness(
+        windowContentWidth: CGFloat,
+        preferred: CGFloat
+    ) -> CGFloat {
+        let available = windowContentWidth - dividerThickness - contentMinimumThickness
+        let maximum = min(max(available, sidebarMinimumThickness), sidebarMaximumThickness)
+        return min(max(preferred, sidebarMinimumThickness), maximum)
+    }
 }
 
 /// 终端 client 区域必须落在窗口内容区之内。
