@@ -16,7 +16,7 @@ use crate::frontend::gpui::theme::Theme;
 /// 与 Swift `table.rowHeight` 一致。
 const ROW_HEIGHT: f32 = 36.0;
 /// 侧栏宽度：与 macOS `mainSplitController.setPosition(240)` 一致。
-pub(crate) const SIDEBAR_WIDTH: f32 = 240.0;
+pub const SIDEBAR_WIDTH: f32 = 240.0;
 /// 段头高度：Swift 的 `NSButton` 段头 + 上下留白。
 const SECTION_HEIGHT: f32 = 22.0;
 /// 段头左右内边距。
@@ -37,6 +37,7 @@ impl GpuiApp {
             .flex()
             .flex_col()
             .w(px(SIDEBAR_WIDTH))
+            .debug_selector(|| "sidebar".to_string())
             .h_full()
             .overflow_hidden()
             .py(px(4.0))

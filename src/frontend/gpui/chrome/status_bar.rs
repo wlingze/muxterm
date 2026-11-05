@@ -10,7 +10,7 @@ use crate::frontend::gpui::state::GpuiApp;
 use crate::frontend::gpui::theme::{Theme, STATUS_BAR_FONT_SIZE};
 
 /// `FlatChrome.statusBarHeight`。
-pub(crate) const STATUS_BAR_HEIGHT: f32 = 18.0;
+pub const STATUS_BAR_HEIGHT: f32 = 18.0;
 /// `FlatChrome.statusHorizontalInset`。
 const STATUS_BAR_INSET: f32 = 6.0;
 
@@ -52,6 +52,7 @@ impl GpuiApp {
             .flex_row()
             .items_center()
             .justify_between()
+            .debug_selector(|| "status-bar".to_string())
             .h(px(STATUS_BAR_HEIGHT))
             .px(px(STATUS_BAR_INSET))
             .bg(theme.chrome_bg)
