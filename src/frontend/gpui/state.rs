@@ -1041,7 +1041,7 @@ impl GpuiApp {
             Some(config) => {
                 crate::frontend::gpui::model::target_editor::TargetEditor::editing(config)
             }
-            None => crate::frontend::gpui::model::target_editor::TargetEditor::new_project(),
+            None => crate::frontend::gpui::model::target_editor::TargetEditor::open(),
         });
         self.target_editor_error = None;
         cx.notify();
