@@ -50,6 +50,8 @@ pub enum KeyAction {
     OpenSettings,
     /// 独立输入框：写一段话再复制或写进当前 pane。
     OpenComposer,
+    /// Cmd-V：读系统剪贴板写进当前 pane（菜单 Edit → Paste 也用它）。
+    Paste,
     CycleLayout,
     ToggleSidebar,
     /// 进入前端 Shells 聚合槽；不会向终端发送清屏字符。
@@ -180,6 +182,11 @@ pub fn builtin_action(chord: &KeyChord) -> Option<KeyAction> {
         if key == "down" {
             return Some(KeyAction::NextCommand);
         }
+    }
+
+    // Cmd+K：进入 Shells 聚合槽（菜单 `View → Shells`，与 Swift 一致）。
+    if chord.command && !chord.shift && !chord.option && !chord.control && key == "k" {
+        return Some(KeyAction::OpenShells);
     }
 
     // Cmd+Ctrl+A/S：进入 Agents / Shells 前端聚合槽。
@@ -371,6 +378,7 @@ pub fn action_from_name(name: &str) -> Option<KeyAction> {
         "toggle_window_zoom" => KeyAction::ToggleWindowZoom,
         "open_settings" => KeyAction::OpenSettings,
         "open_composer" | "composer" => KeyAction::OpenComposer,
+        "paste" => KeyAction::Paste,
         "cycle_layout" | "next_layout" => KeyAction::CycleLayout,
         "switch_tab_last" => KeyAction::SwitchLastTab,
         "switch_tab_previous" | "previous_tab" => KeyAction::PreviousTab,
@@ -430,6 +438,7 @@ pub fn action_name(action: KeyAction) -> Option<String> {
         KeyAction::ToggleWindowZoom => "toggle_window_zoom",
         KeyAction::OpenSettings => "open_settings",
         KeyAction::OpenComposer => "open_composer",
+        KeyAction::Paste => "paste",
         KeyAction::CycleLayout => "cycle_layout",
         KeyAction::ToggleSidebar => "toggle_sidebar",
         KeyAction::OpenShells => "open_shells",

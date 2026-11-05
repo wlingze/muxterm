@@ -5,6 +5,7 @@
 pub mod app;
 pub mod chrome;
 pub mod model;
+pub mod platform;
 pub mod state;
 pub mod terminal;
 pub mod theme;

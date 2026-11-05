@@ -5,6 +5,7 @@
 //! 这里只有投影与状态，渲染在 `chrome/panel.rs`。
 
 use crate::frontend::gpui::model::attention::{attention_rows, AttentionRow};
+use crate::frontend::gpui::model::existing::ExistingRuntime;
 use crate::frontend::gpui::model::panel::{PanelModel, PanelTab, SearchScope};
 use crate::frontend::gpui::model::quick_connect::{TargetConfig, WorkspaceQuery};
 use crate::frontend::gpui::model::search::{search_rows, SearchHit, SearchSnapshot};
@@ -27,6 +28,12 @@ pub enum PanelRow {
         detail: String,
     },
     Search(SearchHit),
+    /// 现有 runtime：选中后走 Catalog 的 attach。
+    Existing {
+        index: usize,
+        title: String,
+        detail: String,
+    },
 }
 
 impl PanelRow {
@@ -42,6 +49,7 @@ impl PanelRow {
                     hit.line.clone()
                 }
             }
+            PanelRow::Existing { title, .. } => title.clone(),
         }
     }
 
@@ -51,6 +59,7 @@ impl PanelRow {
             PanelRow::Workspace { detail, .. } => Some(detail.clone()),
             PanelRow::Attention { detail, .. } => Some(detail.clone()),
             PanelRow::Search(_) => None,
+            PanelRow::Existing { detail, .. } => Some(detail.clone()),
         }
     }
 }
@@ -60,6 +69,8 @@ impl PanelRow {
 pub struct PanelState {
     pub open: bool,
     pub model: PanelModel,
+    /// 键盘选中的行（`rows` 的下标）。
+    pub selected: usize,
 }
 
 impl PanelState {
@@ -67,10 +78,33 @@ impl PanelState {
     pub fn show(&mut self, tab: PanelTab) {
         self.open = true;
         self.model.tab = tab;
+        self.selected = 0;
     }
 
     pub fn close(&mut self) {
         self.open = false;
+        self.selected = 0;
+    }
+
+    /// 上下移动选中行，越界夹住（不环绕：macOS uniﬁed panel 同样不环绕）。
+    pub fn move_selection(&mut self, delta: i32, len: usize) {
+        if len == 0 {
+            self.selected = 0;
+            return;
+        }
+        let next = self.selected as i32 + delta;
+        self.selected = next.clamp(0, len as i32 - 1) as usize;
+    }
+
+    /// 查询串编辑：可打印字符进 query，任何编辑都把选中打回第一行。
+    pub fn push_query(&mut self, text: &str) {
+        self.model.query.push_str(text);
+        self.selected = 0;
+    }
+
+    pub fn backspace_query(&mut self) {
+        self.model.query.pop();
+        self.selected = 0;
     }
 
     /// Tab / Shift+Tab 循环；query 跨 tab 保留。
@@ -84,9 +118,14 @@ impl PanelState {
         workspaces: &[SidebarItem],
         attention: Option<&crate::frontend::gpui::model::attention::AttentionSnapshot>,
         search: Option<&SearchSnapshot>,
+        existing: &[ExistingRuntime],
     ) -> Vec<PanelRow> {
         match self.model.tab {
-            PanelTab::Workspaces => workspace_rows(workspaces, &self.model.query),
+            PanelTab::Workspaces => {
+                let mut rows = workspace_rows(workspaces, &self.model.query);
+                rows.extend(existing_rows(existing, &self.model.query));
+                rows
+            }
             PanelTab::Attention => match attention {
                 Some(snapshot) => attention_panel_rows(snapshot, workspaces, &self.model.query),
                 None => Vec::new(),
@@ -123,6 +162,26 @@ pub fn workspace_rows(workspaces: &[SidebarItem], query: &str) -> Vec<PanelRow> 
             title: workspace.display_title(),
             detail: format!("{} @ {}", workspace.runtime, workspace.transport),
             active: workspace.is_active,
+        })
+        .collect()
+}
+
+/// Existing 分区：查询串按名字/session/transport 做无关大小写包含。
+pub fn existing_rows(existing: &[ExistingRuntime], query: &str) -> Vec<PanelRow> {
+    let needle = query.trim().to_lowercase();
+    existing
+        .iter()
+        .enumerate()
+        .filter(|(_, runtime)| {
+            needle.is_empty()
+                || runtime.name.to_lowercase().contains(&needle)
+                || runtime.session.to_lowercase().contains(&needle)
+                || runtime.transport.to_lowercase().contains(&needle)
+        })
+        .map(|(index, runtime)| PanelRow::Existing {
+            index,
+            title: runtime.name.clone(),
+            detail: runtime.detail(),
         })
         .collect()
 }
@@ -233,8 +292,9 @@ mod tests {
                 query: "ryzen".into(),
                 ..PanelModel::default()
             },
+            selected: 0,
         };
-        let rows = state.rows(&workspaces, None, None);
+        let rows = state.rows(&workspaces, None, None, &[]);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].title(), "work · ryzen");
         assert_eq!(rows[0].detail().as_deref(), Some("tmux @ ryzen"));
@@ -285,8 +345,9 @@ mod tests {
                 tab: PanelTab::Attention,
                 ..PanelModel::default()
             },
+            selected: 0,
         };
-        let rows = state.rows(&workspaces, Some(&snapshot), None);
+        let rows = state.rows(&workspaces, Some(&snapshot), None, &[]);
         assert_eq!(rows.len(), 2);
         // blocked 排在 working 前。
         assert!(rows[0].title().contains("dev"));
@@ -304,8 +365,9 @@ mod tests {
                 tab: PanelTab::Attention,
                 ..PanelModel::default()
             },
+            selected: 0,
         };
-        assert!(state.rows(&[], None, None).is_empty());
+        assert!(state.rows(&[], None, None, &[]).is_empty());
     }
 
     /// Search tab：命中行来自 `search_rows`，query 过滤生效。
@@ -325,14 +387,15 @@ mod tests {
                 query: "failed".into(),
                 ..PanelModel::default()
             },
+            selected: 0,
         };
-        let rows = state.rows(&[], None, Some(&snapshot));
+        let rows = state.rows(&[], None, Some(&snapshot), &[]);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].title(), "cargo test failed");
         assert_eq!(rows[0].detail(), None);
 
         state.model.query.clear();
-        assert_eq!(state.rows(&[], None, Some(&snapshot)).len(), 2);
+        assert_eq!(state.rows(&[], None, Some(&snapshot), &[]).len(), 2);
     }
 
     /// `@runtime` 过滤与子序列匹配都来自 WorkspaceQuery。

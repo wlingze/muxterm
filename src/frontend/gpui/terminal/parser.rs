@@ -4,7 +4,7 @@
 
 use vte::{Params, Perform};
 
-use super::grid::Cell;
+use super::grid::{char_width, Cell, FILLER};
 
 use super::grid::Grid;
 use crate::frontend::gpui::model::scroll;
@@ -49,6 +49,63 @@ impl Surface {
         }
         self.scroll_offset = next;
         true
+    }
+
+    /// 追加 Core 回填的历史行（`PaneHistory`，纯文本、SGR 已剥离）。
+    ///
+    /// 历史行比现有所有 scrollback 都老，所以插在头部；视口偏移不用改，
+    /// `visible_row` 的内容保持不动（偏移是相对 live 屏幕的）。
+    /// 返回真正推入的行数。
+    pub fn feed_history(&mut self, data: &[u8]) -> usize {
+        if data.is_empty() {
+            return 0;
+        }
+        let cols = self.grid.cols();
+        let text = String::from_utf8_lossy(data);
+        let mut rows = Vec::new();
+        for line in text.split('\n') {
+            // `capture-pane` 的行不带 `\r`，历史也可能从 CRLF 文本来。
+            let line = line.strip_suffix('\r').unwrap_or(line);
+            let mut row = vec![
+                Cell {
+                    ch: ' ',
+                    ..Cell::default()
+                };
+                cols
+            ];
+            let mut col = 0;
+            for ch in line.chars() {
+                let width = char_width(ch);
+                // 组合标记/零宽字符没有独立格子：历史行按纯文本处理，直接跳过。
+                if width == 0 {
+                    continue;
+                }
+                if col + width > cols {
+                    break;
+                }
+                row[col] = Cell {
+                    ch,
+                    ..Cell::default()
+                };
+                if width == 2 {
+                    row[col + 1] = Cell {
+                        ch: FILLER,
+                        ..Cell::default()
+                    };
+                }
+                col += width;
+            }
+            rows.push(row);
+        }
+        let added = rows.len();
+        let dropped = self.grid.prepend_history(rows);
+        if dropped > 0 {
+            // 上限裁掉了最老的行：视口跟着往上补，内容不动。
+            self.scroll_offset = self
+                .scroll_offset
+                .saturating_add(u32::try_from(dropped).unwrap_or(u32::MAX));
+        }
+        added
     }
 
     /// 回到 live 屏幕底部。
@@ -213,6 +270,17 @@ mod tests {
         grid.row(row).iter().map(|cell| cell.ch).collect()
     }
 
+    /// 视口一行去掉尾部空白（宽字符的 FILLER 也一并去掉）。
+    fn line(cells: Option<&[Cell]>) -> String {
+        cells
+            .unwrap_or(&[])
+            .iter()
+            .map(|cell| if cell.ch == FILLER { ' ' } else { cell.ch })
+            .collect::<String>()
+            .trim_end()
+            .to_string()
+    }
+
     #[test]
     fn plain_text_and_crlf() {
         let mut surface = surface(10, 3);
@@ -337,6 +405,51 @@ mod tests {
     }
 
     /// 偏移量被夹在历史上限，不会因为惯性滚动而越界。
+    #[test]
+    fn fed_history_lands_above_the_live_screen() {
+        let mut surface = Surface::new(10, 2);
+        surface.feed(b"live\r\nonly");
+        assert_eq!(surface.feed_history(b"older-1\nolder-2"), 2);
+        assert_eq!(surface.grid().scrollback_len(), 2);
+        // 视口还在 live 屏幕：历史不抢焦点。
+        assert_eq!(surface.scroll_offset(), 0);
+        assert_eq!(line(surface.visible_row(0)), "live");
+        // 上滚两行看到历史。
+        assert!(surface.scroll_by(2));
+        assert_eq!(line(surface.visible_row(0)), "older-1");
+        assert_eq!(line(surface.visible_row(1)), "older-2");
+    }
+
+    #[test]
+    fn fed_history_pads_to_the_grid_width_and_marks_wide_cells() {
+        let mut surface = Surface::new(6, 1);
+        surface.feed_history("宽字".as_bytes());
+        let row = surface.grid().scrollback_row(0).expect("历史行");
+        assert_eq!(row.len(), 6);
+        assert_eq!(row[0].ch, '宽');
+        assert_eq!(row[1].ch, FILLER);
+        assert_eq!(row[2].ch, '字');
+        assert_eq!(row[3].ch, FILLER);
+        // 尾部补齐空格，render_row 的尾空白裁剪才有意义。
+        assert_eq!(row[4].ch, ' ');
+        assert_eq!(row[5].ch, ' ');
+    }
+
+    #[test]
+    fn history_feed_keeps_the_viewport_on_the_same_row() {
+        let mut surface = Surface::new(8, 2);
+        surface.feed(b"a\r\nb\r\nc\r\nd");
+        // 把视口顶到最老的历史行。
+        assert!(surface.scroll_by(10));
+        let scrolled_top = line(surface.visible_row(0));
+        // 又回填一批更老的历史：视口内容必须不动。
+        surface.feed_history(b"z-1\nz-2");
+        assert_eq!(line(surface.visible_row(0)), scrolled_top);
+        // 回到 live 仍然贴着最新输出。
+        assert!(surface.scroll_to_bottom());
+        assert_eq!(line(surface.visible_row(1)), "d");
+    }
+
     #[test]
     fn scroll_offset_is_clamped_to_available_history() {
         let mut surface = surface(4, 2);

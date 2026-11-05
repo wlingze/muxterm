@@ -69,11 +69,20 @@ impl GpuiApp {
                     .into_any_element()
             });
 
+        let query = self.panel_query();
+        let query_line = if query.is_empty() {
+            "搜索 workspace 或 attach 现有 runtime…".to_string()
+        } else {
+            query.clone()
+        };
+        let selected = self.panel_selected();
         let rows: Vec<AnyElement> = self
             .panel_rows()
             .into_iter()
+            .enumerate()
+            .skip(selected.saturating_sub(MAX_VISIBLE_ROWS - 1))
             .take(MAX_VISIBLE_ROWS)
-            .map(|row| panel_row(row, &theme))
+            .map(|(index, row)| panel_row(row, &theme, index == selected))
             .collect();
 
         let empty_hint = if rows.is_empty() {
@@ -119,6 +128,22 @@ impl GpuiApp {
                         // 浮层内部点击不关闭面板。
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .child(div().flex().flex_row().gap_2().children(tabs))
+                        .child(
+                            div()
+                                .flex_none()
+                                .px_3()
+                                .py_1()
+                                .rounded_sm()
+                                .border_1()
+                                .border_color(theme.border)
+                                .text_sm()
+                                .text_color(if query.is_empty() {
+                                    theme.muted
+                                } else {
+                                    theme.fg
+                                })
+                                .child(SharedString::from(query_line)),
+                        )
                         .child(empty_hint)
                         .child(
                             div()
@@ -136,9 +161,16 @@ impl GpuiApp {
     }
 }
 
-fn panel_row(row: PanelRow, theme: &Theme) -> AnyElement {
+fn panel_row(row: PanelRow, theme: &Theme, selected: bool) -> AnyElement {
     let title = row.title();
     let detail = row.detail();
+    // 现有 runtime 用 + 前缀区分「要 attach 的东西」和「已经打开的 workspace」。
+    let is_existing = matches!(row, PanelRow::Existing { .. });
+    let title = if is_existing {
+        format!("+ {title}")
+    } else {
+        title
+    };
     let active = matches!(row, PanelRow::Workspace { active: true, .. });
     div()
         .id(SharedString::from(format!("panel-row-{title}")))
@@ -148,15 +180,20 @@ fn panel_row(row: PanelRow, theme: &Theme) -> AnyElement {
         .px_3()
         .py_1()
         .rounded_sm()
-        .bg(if active {
+        .bg(if selected {
+            theme.active_bg
+        } else if active {
             theme.active_bg
         } else {
             theme.chrome_bg
         })
+        .when(selected, |element| {
+            element.border_l_2().border_color(theme.accent)
+        })
         .child(
             div()
                 .text_sm()
-                .text_color(theme.fg)
+                .text_color(if selected { theme.fg } else { theme.label() })
                 .overflow_hidden()
                 .child(SharedString::from(title)),
         )

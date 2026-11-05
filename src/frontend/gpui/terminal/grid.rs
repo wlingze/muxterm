@@ -376,6 +376,23 @@ impl Grid {
         }
     }
 
+    /// 回填一批比现有 scrollback 更老的历史行（Core 的 `PaneHistory`）。
+    ///
+    /// 顺序按传入顺序（最老在前）；超出上限时丢最老的行，返回丢掉的条数，
+    /// 调用方据此修正视口偏移。
+    pub(crate) fn prepend_history(&mut self, rows: Vec<Vec<Cell>>) -> usize {
+        if self.scrollback_limit == 0 || rows.is_empty() {
+            return rows.len();
+        }
+        let mut all = rows;
+        all.extend(self.scrollback.drain(..));
+        let dropped = all.len().saturating_sub(self.scrollback_limit);
+        all.drain(..dropped);
+        self.scrollback = all.into();
+        dropped
+    }
+
+    /// 追加一行历史（实时滚出屏幕的行）。只由 VT 路径调用。
     fn push_scrollback(&mut self, row: Vec<Cell>) {
         if self.scrollback_limit == 0 {
             return;

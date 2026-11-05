@@ -77,7 +77,7 @@ fn app_with_isolated_tmux<'a>(
     pump.sync_view_store(&mut store).expect("初始快照必须可用");
 
     let (view, cx) = cx.add_window_view(|_, cx| {
-        let mut app = GpuiApp::new(pump, store, CommandQueue::default(), cx);
+        let mut app = GpuiApp::new(pump, store, CommandQueue::default(), None, cx);
         app.pump_once(cx);
         app
     });
