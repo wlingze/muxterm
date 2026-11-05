@@ -697,6 +697,12 @@ impl SshUnixSocketForward {
             "ExitOnForwardFailure=yes",
             "-o",
             "ConnectTimeout=2",
+            // Unix socket 转发是长连接；不要复用用户的 control master，
+            // 避免 master 切换 / 失效时第一次 ping 直接失败。
+            "-o",
+            "ControlMaster=no",
+            "-o",
+            "ControlPath=none",
         ]);
         if let Some(config) = std::env::var_os("MUXTERM_SSH_CONFIG_PATH") {
             command.arg("-F").arg(config);

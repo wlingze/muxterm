@@ -257,6 +257,8 @@ headless `herdr --session <name> server`，等待 socket 就绪后再发现或�
 指定 namespace 且远端没有任何 Herdr session 时使用 default。不要使用 `herdr --remote`，
 它负责远端安装/更新流程，不属于 Muxterm 的 SSH attach 路径。命令细节见
 [Herdr CLI reference](https://herdr.dev/docs/cli-reference/)（核对时间：2026-09-24 10:49:09 +08:00）。
+SSH Unix socket 转发使用独立的 SSH 连接（`ControlMaster=no`），创建 workspace 前
+的 `ping` 会短重试，覆盖转发刚建立或 Herdr socket handoff 的瞬时窗口。
 
 Herdr workspace id 不再复用项目 `path`。生成五段 `WorkspaceId` 时第五段优先 `workspace_id`。
 
