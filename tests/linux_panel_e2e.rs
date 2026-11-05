@@ -49,6 +49,7 @@ fn attention(
         process_is_agent: false,
         agent_name: None,
         shell_name: Some("zsh".into()),
+        program_status: None,
     }
 }
 
