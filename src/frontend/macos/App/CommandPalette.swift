@@ -104,6 +104,7 @@ enum PaletteCommand: Equatable {
     case closePane
     case closeTab
     case closeWindow
+    case minimizeWindow
     case detach
     case language
     case theme
@@ -181,6 +182,7 @@ extension PaletteCommand {
         case .closePane: return "palette.closePane"
         case .closeTab: return "palette.closeTab"
         case .closeWindow: return "palette.closeWindow"
+        case .minimizeWindow: return "palette.minimizeWindow"
         case .detach: return "palette.detach"
         case .language: return "palette.language"
         case .theme: return "palette.theme"
@@ -231,6 +233,7 @@ extension PaletteCommand {
         case "palette.closePane": return .closePane
         case "palette.closeTab": return .closeTab
         case "palette.closeWindow": return .closeWindow
+        case "palette.minimizeWindow": return .minimizeWindow
         case "palette.detach": return .detach
         case "palette.language": return .language
         case "palette.theme": return .theme

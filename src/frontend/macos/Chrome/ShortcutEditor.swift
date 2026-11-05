@@ -203,6 +203,7 @@ public enum ShortcutCatalog {
         KeyChord(command: true, shift: true, key: "d"),
         KeyChord(command: true, key: "w"),
         KeyChord(command: true, shift: true, key: "w"),
+        KeyChord(command: true, key: "m"),
         KeyChord(command: true, key: "1"),
         KeyChord(command: true, key: "2"),
         KeyChord(command: true, key: "3"),

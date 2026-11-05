@@ -231,6 +231,9 @@ cp configs/config.example.toml ~/.config/muxterm/config.toml
 Linux 仍保留兼容绑定：`Alt+D` = 垂直分割，`Alt+Shift+D` = 水平分割。
 完整 Action ID 与覆盖方式见 [`docs/CONFIG.md`](docs/CONFIG.md) §5。
 
+macOS 窗口隐藏了红黄绿交通灯，窗口操作保留在 **View** 菜单、命令面板和快捷键设置中。默认：
+`⌘M` 最小化窗口、`⇧⌘T` 占满当前桌面（再按还原）、`⇧⌘F` 原生全屏、`⇧⌘W` 关闭窗口。
+
 ### QuickConnect 与打开
 
 1. `Alt+P` / `Cmd+P` 打开 QuickConnect

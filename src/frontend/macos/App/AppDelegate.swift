@@ -278,7 +278,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - 菜单
 
-    private func buildMenu(windowController: MainWindowController?) {
+    /// 内部可见，便于菜单回归测试；生产入口仍是 applicationDidFinishLaunching。
+    func buildMenu(windowController: MainWindowController?) {
         let mainMenu = NSMenu()
 
         let appMenuItem = NSMenuItem()
@@ -596,6 +597,54 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         attention.keyEquivalentModifierMask = .command
         attention.target = windowController
         viewMenu.addItem(attention)
+
+        // 顶部状态栏占用窗口 chrome，红黄绿 traffic lights 被隐藏。
+        // 关闭 / 最小化 / 占满桌面 / 全屏都在这里给出可发现入口；
+        // 动态标题由 MainWindowController.validateMenuItem 刷新。
+        viewMenu.addItem(NSMenuItem.separator())
+
+        let minimizeWindow = NSMenuItem(
+            title: MuxtermI18n.shared.tr(.minimizeWindow),
+            action: #selector(MainWindowController.minimizeWindow),
+            keyEquivalent: "m"
+        )
+        // 始终最小化主窗口，避免命令面板等 NSPanel 成为 key window 时收错窗口。
+        minimizeWindow.target = windowController
+        viewMenu.addItem(minimizeWindow)
+
+        let zoomWindow = NSMenuItem(
+            title: MuxtermI18n.shared.trDynamic(
+                "window.zoom.enter",
+                fallback: "Fill the Desktop"
+            ),
+            action: #selector(MainWindowController.toggleWindowZoom),
+            keyEquivalent: "t"
+        )
+        zoomWindow.keyEquivalentModifierMask = [.command, .shift]
+        zoomWindow.target = windowController
+        viewMenu.addItem(zoomWindow)
+
+        let windowFullscreen = NSMenuItem(
+            title: MuxtermI18n.shared.trDynamic(
+                "window.fullscreen.enter",
+                fallback: "Enter Window Full Screen"
+            ),
+            action: #selector(MainWindowController.toggleWindowFullscreen),
+            keyEquivalent: "f"
+        )
+        windowFullscreen.keyEquivalentModifierMask = [.command, .shift]
+        windowFullscreen.target = windowController
+        viewMenu.addItem(windowFullscreen)
+
+        // ⇧⌘W 已在 File 菜单注册；AppKit 会清掉主菜单里重复的 key equivalent，
+        // 所以这里保留无快捷键的入口，让鼠标用户也能在 View 找到关闭窗口。
+        let viewCloseWindow = NSMenuItem(
+            title: MuxtermI18n.shared.tr(.menuCloseWindow),
+            action: #selector(MainWindowController.closeActiveWindow),
+            keyEquivalent: ""
+        )
+        viewCloseWindow.target = windowController
+        viewMenu.addItem(viewCloseWindow)
 
         viewMenu.addItem(NSMenuItem.separator())
 

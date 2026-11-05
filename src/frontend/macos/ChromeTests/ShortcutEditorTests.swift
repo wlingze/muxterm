@@ -117,6 +117,34 @@ final class ShortcutEditorTests: XCTestCase {
         ))
     }
 
+    /// 红黄绿 traffic lights 隐藏后，窗口控制仍必须有键盘入口。
+    func testWindowControlShortcutsCoverHiddenTrafficLights() throws {
+        XCTAssertEqual(KeyBindings.action(for: .init(command: true, key: "m")), .minimizeWindow)
+        XCTAssertEqual(
+            KeyBindings.action(for: .init(command: true, shift: true, key: "t")),
+            .toggleWindowZoom
+        )
+        XCTAssertEqual(
+            KeyBindings.action(for: .init(command: true, shift: true, key: "f")),
+            .toggleWindowFullscreen
+        )
+        XCTAssertEqual(
+            KeyBindings.action(for: .init(command: true, shift: true, key: "w")),
+            .closeWindow
+        )
+        XCTAssertEqual(KeyBindingsConfig.action(from: "minimize_window"), .minimizeWindow)
+        XCTAssertEqual(KeyBindingsConfig.name(for: .minimizeWindow), "minimize_window")
+
+        let rows = ShortcutCatalog.defaults()
+        let minimize = try XCTUnwrap(rows.first { $0.action == "minimize_window" })
+        XCTAssertEqual(minimize.chords, [ShortcutChord(key: "m", modifiers: ["command"])])
+        let fullscreen = try XCTUnwrap(rows.first { $0.action == "toggle_window_fullscreen" })
+        XCTAssertTrue(fullscreen.chords.contains(ShortcutChord(key: "\r", modifiers: ["command", "shift"])))
+        XCTAssertTrue(fullscreen.chords.contains(ShortcutChord(key: "f", modifiers: ["command", "shift"])))
+        let zoom = try XCTUnwrap(rows.first { $0.action == "toggle_window_zoom" })
+        XCTAssertEqual(zoom.chords, [ShortcutChord(key: "t", modifiers: ["command", "shift"])])
+    }
+
     func testCatalogUsesQwertyPositionForColemakFullscreen() throws {
         let rows = ShortcutCatalog.defaults()
         let fullscreen = try XCTUnwrap(rows.first { $0.action == "toggle_window_fullscreen" })

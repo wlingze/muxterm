@@ -7,6 +7,8 @@ public enum KeyAction: Equatable, Hashable, Sendable {
     case splitVertical
     case splitAuto
     case closeWindow
+    /// 标题栏红黄绿按钮已隐藏：⌘M 把当前窗口收进 Dock。
+    case minimizeWindow
     case closePane
     case switchTab(Int) // 1-based
     case switchLastTab
@@ -105,6 +107,10 @@ public enum KeyBindings {
         // Cmd+W 只关当前层；整个窗口显式使用 Cmd+Shift+W。
         if chord.command, !chord.option, !chord.control, key == "w" {
             return chord.shift ? .closeWindow : .closePane
+        }
+        // 没有 traffic lights 后，最小化只剩快捷键/菜单入口。
+        if chord.command, !chord.shift, !chord.option, !chord.control, key == "m" {
+            return .minimizeWindow
         }
         // Cmd+1..9 切 tab；Cmd+Ctrl+N 留给 Workspace 切换。
         if chord.command, !chord.option, !chord.shift, !chord.control,

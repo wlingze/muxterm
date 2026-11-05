@@ -24,6 +24,7 @@ public enum KeyBindingsConfig {
         case "next_command", "command_next": return .nextCommand
         case "close_pane": return .closePane
         case "close_window": return .closeWindow
+        case "minimize_window": return .minimizeWindow
         case "command_palette": return .commandPalette
         case "quick_connect": return .quickConnect
         case "search": return .searchWorkspace
@@ -72,6 +73,7 @@ public enum KeyBindingsConfig {
         case .splitVertical: return "new_pane_vertical"
         case .splitAuto: return "split_auto"
         case .closeWindow: return "close_window"
+        case .minimizeWindow: return "minimize_window"
         case .closePane: return "close_pane"
         case .switchTab(let n): return "switch_tab_\(n)"
         case .switchLastTab: return "switch_tab_last"

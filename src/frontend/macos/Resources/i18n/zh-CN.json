@@ -100,6 +100,8 @@
   "close_tab_detail": "关闭当前 tab",
   "close_window": "关闭窗口",
   "close_window_detail": "关闭当前窗口",
+  "minimize_window": "最小化窗口",
+  "minimize_window_detail": "把当前窗口收进 Dock（⌘M）",
   "close_workspace": "关闭工作区",
   "rename": "重命名",
   "rename_tab": "重命名标签页…",
