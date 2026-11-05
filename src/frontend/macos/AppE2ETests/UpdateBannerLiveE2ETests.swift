@@ -22,6 +22,11 @@ import XCTest
 /// 未设置 `MUXTERM_UPDATE_TEST_FEED` 时整组跳过：默认 CI 不依赖网络、
 /// 本地端口与已发布的 release。
 final class UpdateBannerLiveE2ETests: XCTestCase {
+    override func setUp() {
+        super.setUp()
+        UserDefaults.standard.removeObject(forKey: UpdateBannerView.suppressRemindersKey)
+    }
+
     /// feed 根地址（不含 `/latest.json`）。
     private static var feedBase: String? {
         guard let raw = ProcessInfo.processInfo.environment["MUXTERM_UPDATE_TEST_FEED"],
@@ -236,7 +241,7 @@ final class UpdateBannerLiveE2ETests: XCTestCase {
         )
         try writeSnapshot(app.window?.contentView, name: "update-banner-installed")
 
-        // 4) 安装完成的 HUD 必须能手动收起，不能永久占住终端顶部。
+        // 4) 安装完成的 HUD 必须能手动收起，不能永久占住终端。
         XCTAssertTrue(
             app.testUpdateBannerDismissVisible(),
             "安装完成后必须显示关闭键"

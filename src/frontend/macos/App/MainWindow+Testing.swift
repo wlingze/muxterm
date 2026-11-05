@@ -934,6 +934,9 @@ extension MainWindowController {
     /// 提醒条当前文案（版本号来自 Core 的发布清单）。
     func testUpdateBannerMessage() -> String { content.updateBanner.testMessageText() }
 
+    /// 提醒条标题（「有新版本」/「更新失败」等由 Core 阶段决定）。
+    func testUpdateBannerTitle() -> String { content.updateBanner.testTitleText() }
+
     /// 提醒条主按钮标题（「一键更新」/「重试」由 Core 阶段决定）。
     func testUpdateBannerActionTitle() -> String { content.updateBanner.testActionTitle() }
 
@@ -957,6 +960,36 @@ extension MainWindowController {
             return false
         }
         return !button.isHidden
+    }
+
+    /// 「不再提醒」按钮是否可见。
+    func testUpdateBannerNeverRemindVisible() -> Bool {
+        guard let button = Self.findView(
+            content.updateBanner,
+            identifier: "muxterm.updateNeverRemind"
+        ) as? NSButton else {
+            return false
+        }
+        return !button.isHidden
+    }
+
+    /// 点真实「不再提醒」按钮，走生产回调链并持久化偏好。
+    @discardableResult
+    func testClickUpdateNeverRemind() -> Bool {
+        guard let button = Self.findView(
+            content.updateBanner,
+            identifier: "muxterm.updateNeverRemind"
+        ) as? NSButton, !button.isHidden else {
+            return false
+        }
+        button.performClick(nil)
+        return true
+    }
+
+    /// 显式检查更新前清掉测试写入的「不再提醒」偏好。
+    func testResetUpdateReminderSuppression() {
+        UserDefaults.standard.removeObject(forKey: UpdateBannerView.suppressRemindersKey)
+        content.updateBanner.allowFutureReminders()
     }
 
     /// 点真实关闭键，走生产回调链：按钮 → onDismiss → 隐藏提醒。

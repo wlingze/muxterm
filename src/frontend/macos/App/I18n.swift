@@ -164,8 +164,11 @@ enum MuxtermTextKey: CaseIterable {
     case panelNewProject
     case panelOpen
     case panelOpenFolder
+    case panelOpenNamed
     case panelOpenNewPath
     case panelOpenThisDirectory
+    case panelPickNamePlaceholder
+    case panelPickRuntimePlaceholder
     case panelPickHostPlaceholder
     case panelPickSessionPlaceholder
     case panelPickPathPlaceholder
@@ -301,11 +304,15 @@ enum MuxtermTextKey: CaseIterable {
     case updateAvailableMessage
     case updateCheckNow
     case updateChecking
+    case updateClose
     case updateDismiss
     case updateFailed
     case updateInstallNow
+    case updateFailedTitle
     case updateInstalledRestart
+    case updateInstalledTitle
     case updateInstalling
+    case updateNeverRemind
     case updateRetry
     case updateUpToDate
     case windowCloseHint
@@ -474,8 +481,11 @@ enum MuxtermTextKey: CaseIterable {
         case .panelNewProject: return "panel_new_project"
         case .panelOpen: return "panel_open"
         case .panelOpenFolder: return "panel_open_folder"
+        case .panelOpenNamed: return "panel_open_named"
         case .panelOpenNewPath: return "panel_open_new_path"
         case .panelOpenThisDirectory: return "panel_open_this_directory"
+        case .panelPickNamePlaceholder: return "panel_pick_name_placeholder"
+        case .panelPickRuntimePlaceholder: return "panel_pick_runtime_placeholder"
         case .panelPickHostPlaceholder: return "panel_pick_host_placeholder"
         case .panelPickSessionPlaceholder: return "panel_pick_session_placeholder"
         case .panelPickPathPlaceholder: return "panel_pick_path_placeholder"
@@ -611,10 +621,14 @@ enum MuxtermTextKey: CaseIterable {
         case .updateAvailableMessage: return "update_available_message"
         case .updateCheckNow: return "update_check_now"
         case .updateChecking: return "update_checking"
+        case .updateClose: return "update_close"
         case .updateDismiss: return "update_dismiss"
         case .updateFailed: return "update_failed"
         case .updateInstallNow: return "update_install_now"
+        case .updateNeverRemind: return "update_never_remind"
+        case .updateFailedTitle: return "update_failed_title"
         case .updateInstalledRestart: return "update_installed_restart"
+        case .updateInstalledTitle: return "update_installed_title"
         case .updateInstalling: return "update_installing"
         case .updateRetry: return "update_retry"
         case .updateUpToDate: return "update_up_to_date"

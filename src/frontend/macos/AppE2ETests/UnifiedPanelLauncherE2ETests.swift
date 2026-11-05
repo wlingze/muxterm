@@ -79,14 +79,99 @@ final class UnifiedPanelLauncherE2ETests: XCTestCase {
         XCTAssertEqual(panel.testQuery(), "~/Developer/")
 
         panel.testActivateWorkspaceItem(matching: MuxtermI18n.shared.tr(.panelOpenThisDirectory))
+        XCTAssertTrue(panel.testShowsRuntimePicker(), "确认路径后必须先选 runtime")
+        XCTAssertEqual(panel.testSelectedWorkspaceTitle(), TargetRuntime.herdr.label)
+        XCTAssertTrue(panel.testWorkspaceTitles().contains(TargetRuntime.tmux.label))
+
+        panel.testActivateWorkspaceItem(matching: TargetRuntime.herdr.label)
+        XCTAssertTrue(panel.testShowsNamePicker(), "选完 runtime 后必须可以修改名字")
+        XCTAssertEqual(panel.testQuery(), "Developer", "名字默认取路径最后一段")
+
+        panel.testSetQuery("my-developer")
+        let openNamed = MuxtermI18n.shared.tr(
+            .panelOpenNamed,
+            arguments: ["name": "my-developer"]
+        )
+        XCTAssertTrue(panel.testWorkspaceTitles().contains(openNamed))
+        panel.testActivateWorkspaceItem(matching: openNamed)
+
         XCTAssertEqual(opened?.runtime, .herdr)
-        XCTAssertEqual(opened?.name, "Developer")
+        XCTAssertEqual(opened?.name, "my-developer")
         if case .ssh(let host) = opened?.transport {
             XCTAssertEqual(host, "ryzen")
         } else {
             XCTFail("SSH 新路径必须记在所选机器上")
         }
         XCTAssertNil(opened?.persistedID)
+    }
+
+    func testNativeFolderPickerReturnsToRuntimeAndNameStages() {
+        AppE2E.ensureApp()
+        let panel = makePanel()
+        var opened: TargetConfig?
+        panel.onConnect = { opened = $0 }
+        panel.presentOpenPathOptions(host: "ryzen", path: "/home/wlz/Developer/feature-x")
+
+        XCTAssertTrue(panel.testShowsRuntimePicker(), "原生目录选择后也要先选 runtime")
+        panel.testActivateWorkspaceItem(matching: TargetRuntime.herdr.label)
+        XCTAssertTrue(panel.testShowsNamePicker())
+        XCTAssertEqual(panel.testQuery(), "feature-x", "默认名字取路径最后一段")
+        let openNamed = MuxtermI18n.shared.tr(
+            .panelOpenNamed,
+            arguments: ["name": "feature-x"]
+        )
+        panel.testActivateWorkspaceItem(matching: openNamed)
+        XCTAssertEqual(opened?.runtime, .herdr)
+        XCTAssertEqual(opened?.name, "feature-x")
+        if case .ssh(let host) = opened?.transport {
+            XCTAssertEqual(host, "ryzen")
+        } else {
+            XCTFail("必须保留原生选择器的远端 host")
+        }
+        panel.dismiss()
+    }
+
+    func testOpenLocalPathCanChooseTmuxAndEditName() {
+        AppE2E.ensureApp()
+        let panel = makePanel()
+        var opened: TargetConfig?
+        panel.onLoadSSHAliases = { completion in
+            completion(.success([]))
+        }
+        panel.onListDirectories = { host, _, completion in
+            XCTAssertEqual(host, "local")
+            completion(.success([]))
+        }
+        panel.onConnect = { opened = $0 }
+        panel.present(initial: .workspaces)
+        defer { panel.dismiss() }
+        panel.testActivateWorkspaceItem(matching: MuxtermI18n.shared.tr(.panelOpen))
+        panel.testActivateWorkspaceItem(matching: "local")
+        panel.testActivateWorkspaceItem(matching: MuxtermI18n.shared.tr(.panelOpenNewPath))
+        panel.testSetQuery("~/notes/")
+        panel.testActivateWorkspaceItem(matching: MuxtermI18n.shared.tr(.panelOpenThisDirectory))
+
+        XCTAssertTrue(panel.testShowsRuntimePicker())
+        XCTAssertEqual(
+            panel.testSelectedWorkspaceTitle(),
+            TargetRuntime.tmux.label,
+            "local 路径默认选中 tmux"
+        )
+        panel.testActivateWorkspaceItem(matching: TargetRuntime.tmux.label)
+        XCTAssertTrue(panel.testShowsNamePicker())
+        XCTAssertEqual(panel.testQuery(), "notes")
+
+        panel.testSetQuery("notes-local")
+        let openNamed = MuxtermI18n.shared.tr(
+            .panelOpenNamed,
+            arguments: ["name": "notes-local"]
+        )
+        panel.testActivateWorkspaceItem(matching: openNamed)
+
+        XCTAssertEqual(opened?.runtime, .tmux)
+        XCTAssertEqual(opened?.name, "notes-local")
+        XCTAssertEqual(opened?.transport, .local)
+        XCTAssertEqual(opened?.path, "~/notes")
     }
 
     func testRootListsOnlyOpenProjectsAndWorkspacesByFrequency() {

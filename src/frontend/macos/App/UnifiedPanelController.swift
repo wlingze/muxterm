@@ -7,6 +7,8 @@ private enum UnifiedWorkspaceNavigation: Equatable {
     case pickHost
     case pickSession(host: String)
     case pickPath(host: String)
+    case pickRuntime(host: String, path: String)
+    case pickName(host: String, path: String, runtime: TargetRuntime)
 }
 
 struct UnifiedPanelSearchRequest {
@@ -28,6 +30,8 @@ private enum UnifiedWorkspaceItem {
     case open
     case openNewPath
     case openThisDirectory
+    case runtime(TargetRuntime)
+    case openNamed(String)
     case directory(String)
     case connectSSH
     case sshHost(SSHHostSuggestion)
@@ -54,6 +58,10 @@ private enum UnifiedWorkspaceItem {
             return MuxtermI18n.shared.tr(.panelOpenNewPath)
         case .openThisDirectory:
             return MuxtermI18n.shared.tr(.panelOpenThisDirectory)
+        case .runtime(let runtime):
+            return runtime.label
+        case .openNamed(let name):
+            return MuxtermI18n.shared.tr(.panelOpenNamed, arguments: ["name": name])
         case .directory(let name):
             return name
         case .connectSSH:
@@ -98,7 +106,7 @@ private enum UnifiedWorkspaceItem {
                 .lowercased()
             return haystack.contains(normalizedQuery) ? 1_000 : nil
         case .existingConnections, .newProject, .open, .openNewPath, .openThisDirectory,
-             .connectSSH, .openFolder, .loading, .empty:
+             .runtime, .openNamed, .connectSSH, .openFolder, .loading, .empty:
             return Self.titleScore(title, query: normalizedQuery)
         case .directory(let name):
             return name.lowercased().contains(normalizedQuery) ? 700 : nil
@@ -331,6 +339,13 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         window.makeFirstResponder(input)
     }
 
+    /// 原生路径选择器（NSOpenPanel / RemoteDirectoryPicker）确认后，回到面板
+    /// 继续选 runtime 和名字。路径已确定，不重新走 host/session 阶段。
+    func presentOpenPathOptions(host: String, path: String) {
+        present(initial: .workspaces)
+        beginRuntime(host: host, path: path)
+    }
+
     /// 显示指定 tab。面板已打开时只切换内容，不把 Cmd-P/R/F 解释成 toggle。
     /// 这样连续按快捷键始终是可预测的导航动作；query 在 tab 之间保留。
     func show(tab: PanelTab, scope: SearchScope? = nil) {
@@ -488,6 +503,12 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         case .pickPath:
             allItems = pathItems()
             return
+        case .pickRuntime:
+            allItems = runtimeItems()
+            return
+        case .pickName(let host, let path, let runtime):
+            allItems = nameItems(host: host, path: path, runtime: runtime)
+            return
         case .root, .existingConnections:
             break
         }
@@ -608,9 +629,26 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         return items
     }
 
+    private func runtimeItems() -> [UnifiedWorkspaceItem] {
+        [.back, .runtime(.herdr), .runtime(.tmux)]
+    }
+
+    private func nameItems(
+        host: String,
+        path: String,
+        runtime _: TargetRuntime
+    ) -> [UnifiedWorkspaceItem] {
+        let fallback = WorkspaceLauncher.temporaryTarget(
+            path: path,
+            transport: transport(for: host)
+        ).name
+        let trimmed = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        return [.back, .openNamed(trimmed.isEmpty ? fallback : trimmed)]
+    }
+
     private func applyFilter() {
         switch workspaceNavigation {
-        case .pickHost, .pickSession, .pickPath:
+        case .pickHost, .pickSession, .pickPath, .pickRuntime, .pickName:
             visibleItems = allItems
             return
         case .root, .existingConnections:
@@ -675,6 +713,17 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         case .pickPath:
             return visibleItems.firstIndex { item in
                 if case .openThisDirectory = item { return true }
+                return false
+            } ?? 0
+        case .pickRuntime(let host, _):
+            let preferred: TargetRuntime = host == "local" ? .tmux : .herdr
+            return visibleItems.firstIndex { item in
+                if case .runtime(let runtime) = item { return runtime == preferred }
+                return false
+            } ?? 0
+        case .pickName:
+            return visibleItems.firstIndex { item in
+                if case .openNamed = item { return true }
                 return false
             } ?? 0
         case .root, .existingConnections:
@@ -884,8 +933,12 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     private func beginPath(host: String) {
+        beginPath(host: host, path: "~")
+    }
+
+    private func beginPath(host: String, path: String) {
         workspaceNavigation = .pickPath(host: host)
-        pathController = DirectorySuggestionController(path: "~")
+        pathController = DirectorySuggestionController(path: path)
         _ = pathController.setTransport(isSSH: host != "local", alias: host == "local" ? nil : host)
         model.query = pathController.text
         input.stringValue = pathController.text
@@ -893,6 +946,57 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         reload()
         refreshPathListing()
         window?.makeFirstResponder(input)
+    }
+
+    private func beginRuntime(host: String, path: String) {
+        workspaceNavigation = .pickRuntime(host: host, path: path)
+        model.query = ""
+        input.stringValue = ""
+        applyTab()
+        reload()
+        window?.makeFirstResponder(input)
+    }
+
+    private func selectRuntime(_ runtime: TargetRuntime) {
+        guard case .pickRuntime(let host, let path) = workspaceNavigation else { return }
+        workspaceNavigation = .pickName(host: host, path: path, runtime: runtime)
+        let name = WorkspaceLauncher.temporaryTarget(
+            path: path,
+            transport: transport(for: host)
+        ).name
+        model.query = name
+        input.stringValue = name
+        applyTab()
+        reload()
+        window?.makeFirstResponder(input)
+        DispatchQueue.main.async { [weak self] in
+            guard let self,
+                  let editor = self.input.currentEditor() as? NSTextView
+            else { return }
+            editor.setSelectedRange(NSRange(location: 0, length: (name as NSString).length))
+        }
+    }
+
+    private func confirmName() {
+        guard case .pickName(let host, let path, let runtime) = workspaceNavigation else {
+            return
+        }
+        let fallback = WorkspaceLauncher.temporaryTarget(
+            path: path,
+            transport: transport(for: host)
+        ).name
+        let trimmed = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        var target = WorkspaceLauncher.temporaryTarget(
+            path: path,
+            transport: transport(for: host)
+        )
+        target.runtime = runtime
+        target.name = trimmed.isEmpty ? fallback : trimmed
+        onConnect?(target)
+    }
+
+    private func transport(for host: String) -> TargetTransport {
+        host == "local" ? .local : .ssh(name: host)
     }
 
     private func refreshPathListing() {
@@ -921,8 +1025,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         guard case .pickPath(let host) = workspaceNavigation else { return }
         let path = DirectoryPathModel.resolvedPath(for: raw ?? pathController.text)
         guard !path.isEmpty else { return }
-        let transport: TargetTransport = host == "local" ? .local : .ssh(name: host)
-        onConnect?(WorkspaceLauncher.temporaryTarget(path: path, transport: transport))
+        beginRuntime(host: host, path: path)
     }
 
     /// 机器按已记录的使用次数排序；次数相同保持 local、再按 SSH 配置顺序。
@@ -982,6 +1085,10 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
 
     private func goBackInPicker() {
         switch workspaceNavigation {
+        case .pickName(let host, let path, _):
+            beginRuntime(host: host, path: path)
+        case .pickRuntime(let host, let path):
+            beginPath(host: host, path: path)
         case .pickPath(let host):
             beginHostSessions(host)
         case .pickSession:
@@ -1080,6 +1187,10 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                 }
             case .openThisDirectory:
                 confirmPath(pathController.text)
+            case .runtime(let runtime):
+                selectRuntime(runtime)
+            case .openNamed:
+                confirmName()
             case .directory(let name):
                 navigateIntoDirectory(name)
             case .connectSSH:
@@ -1457,6 +1568,10 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                 return MuxtermI18n.shared.tr(.panelPickSessionPlaceholder)
             case .pickPath:
                 return MuxtermI18n.shared.tr(.panelPickPathPlaceholder)
+            case .pickRuntime:
+                return MuxtermI18n.shared.tr(.panelPickRuntimePlaceholder)
+            case .pickName:
+                return MuxtermI18n.shared.tr(.panelPickNamePlaceholder)
             case .root, .existingConnections:
                 return MuxtermI18n.shared.tr(.quickConnect)
             }
@@ -1566,6 +1681,12 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                     self.completePathSelection()
                     return nil
                 }
+                if case .pickRuntime = self.workspaceNavigation {
+                    return nil
+                }
+                if case .pickName = self.workspaceNavigation {
+                    return nil
+                }
                 if self.completeCurrentWorkspaceToken() {
                     return nil
                 }
@@ -1635,6 +1756,14 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
         if case .pickPath = workspaceNavigation {
             _ = pathController.updateInput(input.stringValue)
             refreshPathListing()
+            reload()
+            return
+        }
+        if case .pickName = workspaceNavigation {
+            reload()
+            return
+        }
+        if case .pickRuntime = workspaceNavigation {
             reload()
             return
         }
@@ -1772,7 +1901,7 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                 cell.applyShortcutSymbol("+", tint: .systemOrange)
                 cell.setAccessibilityIdentifier("muxterm.quickConnect.open")
                 return cell
-            case .openNewPath, .openThisDirectory:
+            case .openNewPath, .openThisDirectory, .openNamed:
                 let id = NSUserInterfaceItemIdentifier("QuickOpen")
                 let cell = tableView.makeView(withIdentifier: id, owner: self) as? QuickActionCellView
                     ?? QuickActionCellView(identifier: id)
@@ -1780,6 +1909,15 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
                 cell.title = "＋ " + item.title
                 cell.applyShortcutSymbol("", tint: nil)
                 cell.setAccessibilityIdentifier("muxterm.quickConnect.open")
+                return cell
+            case .runtime(let runtime):
+                let id = NSUserInterfaceItemIdentifier("QuickRuntime")
+                let cell = tableView.makeView(withIdentifier: id, owner: self) as? QuickActionCellView
+                    ?? QuickActionCellView(identifier: id)
+                cell.style = .action
+                cell.title = runtime.label
+                cell.applyShortcutSymbol("", tint: nil)
+                cell.setAccessibilityIdentifier("muxterm.quickConnect.runtime.\(runtime.rawValue)")
                 return cell
             case .directory(let name):
                 let id = NSUserInterfaceItemIdentifier("QuickDirectory")
@@ -2139,6 +2277,16 @@ final class UnifiedPanelController: NSWindowController, NSSearchFieldDelegate,
 
     func testShowsPathPicker() -> Bool {
         if case .pickPath = workspaceNavigation { return true }
+        return false
+    }
+
+    func testShowsRuntimePicker() -> Bool {
+        if case .pickRuntime = workspaceNavigation { return true }
+        return false
+    }
+
+    func testShowsNamePicker() -> Bool {
+        if case .pickName = workspaceNavigation { return true }
         return false
     }
 
@@ -2675,7 +2823,8 @@ extension UnifiedPanelController {
             case .newProject:
                 return (.newProject, QuickActionTarget(newProject: true))
             case .connectSSH, .sshHost, .host, .openFolder, .open, .openNewPath,
-                 .openThisDirectory, .directory, .existingConnections, .back, .loading, .empty:
+                 .openThisDirectory, .runtime, .openNamed, .directory, .existingConnections,
+                 .back, .loading, .empty:
                 return (.none, QuickActionTarget())
             }
         case .attention:
