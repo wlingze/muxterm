@@ -557,12 +557,26 @@ pub fn filter_attention_panel_rows(
             .map(|row| {
                 let attention = row.attention;
                 let title = attention
-                    .process_name
-                    .as_deref()
+                    .program_status
+                    .as_ref()
+                    .and_then(|program| program.title.as_deref())
                     .filter(|name| !name.trim().is_empty())
+                    .or_else(|| {
+                        attention
+                            .process_name
+                            .as_deref()
+                            .filter(|name| !name.trim().is_empty())
+                    })
                     .unwrap_or("Command")
                     .to_string();
-                let detail = if attention.last_line.trim().is_empty() {
+                let program_line = attention
+                    .program_status
+                    .as_ref()
+                    .and_then(|program| program.status.as_deref())
+                    .filter(|line| !line.trim().is_empty());
+                let detail = if let Some(line) = program_line {
+                    format!("{} · {}", attention.workspace_id, line)
+                } else if attention.last_line.trim().is_empty() {
                     attention.workspace_id.clone()
                 } else {
                     format!("{} · {}", attention.workspace_id, attention.last_line)
@@ -634,6 +648,7 @@ mod tests {
             process_is_agent: false,
             agent_name: None,
             shell_name: Some("zsh".into()),
+            program_status: None,
         }
     }
 

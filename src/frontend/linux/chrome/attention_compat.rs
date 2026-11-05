@@ -86,6 +86,7 @@ impl CompatibilityActivity {
                     process_is_agent: false,
                     agent_name: None,
                     shell_name: None,
+                    program_status: None,
                 },
                 authoritative: false,
                 foreground_process: None,

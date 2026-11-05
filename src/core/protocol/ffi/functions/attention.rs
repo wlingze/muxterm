@@ -67,6 +67,8 @@ pub unsafe extern "C" fn muxterm_attention_revision(h: *mut MuxtermHandle) -> u6
 fn attention_revision(handle: &mut MuxtermHandle) -> u64 {
     use std::hash::{Hash, Hasher};
 
+    handle.activity.attention.decay_idle_agents();
+    handle.activity.attention.decay_program_status();
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     handle.activity.attention.fingerprint().hash(&mut hasher);
     for workspace in handle.pool().list() {
@@ -89,6 +91,7 @@ pub unsafe extern "C" fn muxterm_attention_snapshot(h: *mut MuxtermHandle) -> *m
         }
         let handle = &mut *h;
         handle.activity.attention.decay_idle_agents();
+        handle.activity.attention.decay_program_status();
         let attention = handle.activity.attention.snapshot();
         // 池查询是一次整体快照；放进 per-workspace 循环会变成 O(N²)。
         let listed = handle.pool().list();
@@ -142,6 +145,14 @@ pub unsafe extern "C" fn muxterm_attention_snapshot(h: *mut MuxtermHandle) -> *m
                             "process_is_agent": p.process_is_agent,
                             "agent_name": p.agent_name,
                             "shell_name": p.shell_name,
+                            "program_status": p.program_status_display.as_ref().map(|entry| {
+                                serde_json::json!({
+                                    "state": entry.state.as_str(),
+                                    "title": entry.title,
+                                    "status": entry.status,
+                                    "sticky": entry.sticky,
+                                })
+                            }),
                         })
                     }).collect::<Vec<_>>(),
                 })

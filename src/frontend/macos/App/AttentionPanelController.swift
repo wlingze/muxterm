@@ -266,8 +266,10 @@ final class AttentionPanelController: NSWindowController, NSSearchFieldDelegate,
             return l
         }()
         let status = row.pane.status == .blocked ? "●" : "✓"
-        let process = row.pane.processName ?? "?"
-        label.stringValue = "\(status) \(row.workspaceId)  pane @\(row.pane.paneId)  \(process)\n\(row.pane.lastLine)"
+        let process = row.pane.programStatus?.title ?? row.pane.processName ?? "?"
+        let detail = row.pane.programStatus?.status ?? row.pane.lastLine
+        label.stringValue =
+            "\(status) \(row.workspaceId)  pane @\(row.pane.paneId)  \(process)\n\(detail)"
         label.font = NSFont.systemFont(ofSize: 12)
         label.maximumNumberOfLines = 2
         cell.setAccessibilityIdentifier("muxterm.attention.hit-\(row)")

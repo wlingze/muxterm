@@ -156,12 +156,16 @@ impl AgentSidebarItem {
                     let Some(attention) = by_pane.get(&(activity_key.as_str(), pane.id)) else {
                         continue;
                     };
-                    if !attention.process_is_agent {
+                    let program_title = attention
+                        .program_status
+                        .as_ref()
+                        .and_then(|program| program.title.as_deref())
+                        .filter(|title| !title.trim().is_empty());
+                    if !attention.process_is_agent && program_title.is_none() {
                         continue;
                     }
-                    let Some(agent_name) = attention
-                        .agent_name
-                        .as_deref()
+                    let Some(agent_name) = program_title
+                        .or(attention.agent_name.as_deref())
                         .or(attention.process_name.as_deref())
                     else {
                         continue;
@@ -235,13 +239,25 @@ impl CommandSidebarItem {
                     let active = matches!(attention.status.as_str(), "working")
                         || (matches!(attention.status.as_str(), "blocked" | "done")
                             && !attention.acknowledged);
-                    if !active || attention.process_is_agent {
+                    let program_title = attention
+                        .program_status
+                        .as_ref()
+                        .and_then(|program| program.title.as_deref())
+                        .filter(|value| !value.trim().is_empty());
+                    if !active || attention.process_is_agent || program_title.is_some() {
                         continue;
                     }
                     let Some(title) = attention
-                        .process_name
-                        .as_deref()
+                        .program_status
+                        .as_ref()
+                        .and_then(|program| program.title.as_deref())
                         .filter(|value| !value.trim().is_empty())
+                        .or_else(|| {
+                            attention
+                                .process_name
+                                .as_deref()
+                                .filter(|value| !value.trim().is_empty())
+                        })
                     else {
                         continue;
                     };
@@ -308,6 +324,13 @@ fn activity_by_pane(
 
 fn client_status_label(attention: &ClientAttentionPane) -> &'static str {
     use crate::frontend::utils::i18n::{tr_static, Key};
+    if attention
+        .program_status
+        .as_ref()
+        .is_some_and(|program| program.state == "error")
+    {
+        return tr_static(Key::ActivityFailed);
+    }
     tr_static(match attention.status.as_str() {
         "working" => Key::ActivityWorking,
         "blocked" => Key::ActivityBlocked,
@@ -344,6 +367,15 @@ fn client_activity_detail(workspace: &ClientWorkspace, attention: &ClientAttenti
         .then(|| parse_workspace_id(&workspace.id).map(|id| id.path))
         .flatten()
         .filter(|path| !path.trim().is_empty());
-    path.map(|path| format!("{identity} · {path}"))
+    let identity = path
+        .map(|path| format!("{identity} · {path}"))
+        .unwrap_or(identity);
+    attention
+        .program_status
+        .as_ref()
+        .and_then(|program| program.status.as_deref())
+        .map(str::trim)
+        .filter(|note| !note.is_empty())
+        .map(|note| format!("{identity} · {note}"))
         .unwrap_or(identity)
 }

@@ -16,6 +16,7 @@ use std::collections::{HashSet, VecDeque};
 use crate::activity::attention::signal::{
     is_transient_shell_command, AttentionSignal, AttentionSource,
 };
+use crate::protocol::terminal::program_status::{ProgramStatusSnapshot, ProgramStatusStore};
 use vte::ansi::{
     Attr, CharsetIndex, ClearMode, Color, CursorShape, Handler, KeyboardModes,
     KeyboardModesApplyBehavior, LineClearMode, ModifyOtherKeys, NamedColor, NamedPrivateMode,
@@ -198,6 +199,8 @@ pub struct TerminalState {
     signals: Vec<AttentionSignal>,
     /// 最近一次 feed 的原始字节（Index 自用；Surface 小终端按同一字节流播种）。
     last_raw_bytes: Vec<u8>,
+    /// OSC 7501 program status（按 id 合并）。
+    program_status: ProgramStatusStore,
     /// OSC 注意力收集器：是否刚看到 ESC（等待 `]` 或普通字符）。
     osc_esc_seen: bool,
     /// OSC 注意力收集器：尚未终止的 OSC 原始字节（含 ESC ] 前缀）。
@@ -349,6 +352,7 @@ impl TerminalState {
             next_line_id: rows as u64 + 1,
             signals: Vec::new(),
             last_raw_bytes: Vec::new(),
+            program_status: ProgramStatusStore::default(),
             osc_esc_seen: false,
             osc_pending: None,
             command_marks: Vec::new(),
@@ -484,6 +488,21 @@ impl TerminalState {
     /// 取出本次 feed 累计的注意力信号，并清空队列。
     pub fn take_attention_signals(&mut self) -> Vec<AttentionSignal> {
         std::mem::take(&mut self.signals)
+    }
+
+    /// 取走自上次导出以来变化的 OSC 7501 快照；无变化返回 `None`。
+    pub fn program_status_snapshot(&self) -> Option<ProgramStatusSnapshot> {
+        self.program_status.snapshot()
+    }
+
+    /// 当前 7501 快照（测试/诊断；不影响导出水位）。
+    pub fn current_program_status(&self) -> ProgramStatusSnapshot {
+        self.program_status.current_snapshot()
+    }
+
+    /// 整屏替换时让下一次导出携带空 7501 快照。
+    pub fn invalidate_program_status(&mut self) {
+        self.program_status.invalidate();
     }
 
     /// 运行时 resize：保留屏幕内容 / 光标 / 滚动区域，只调整行列。
@@ -654,6 +673,10 @@ impl TerminalState {
             if self.osc_esc_seen {
                 if b == b'\\' {
                     terminated = true;
+                    // ST 的 ESC 已被收进帧体；解析器不能把它当 payload。
+                    if buf.last() == Some(&0x1b) {
+                        buf.pop();
+                    }
                 } else {
                     buf.push(b);
                 }
@@ -759,6 +782,9 @@ impl TerminalState {
                     Some(b'A' | b'P') => {}
                     _ => {}
                 }
+            }
+            b"7501" => {
+                self.program_status.apply_params(&params[1..]);
             }
             b"9" => {
                 // OSC 9;4;<state> 是进度协议（Grok/Claude/pi）。
@@ -3382,6 +3408,83 @@ mod attention_signal_tests {
         t.feed(b"\x1b]0;my-title\x07");
         assert!(t.take_attention_signals().is_empty());
         assert_eq!(t.title.as_deref(), Some("my-title"));
+    }
+
+    #[test]
+    fn osc7501_accepts_st_and_bel_terminators() {
+        use crate::protocol::terminal::program_status::{ProgramState, ProgramStatusSnapshot};
+        let mut t = TerminalState::new(80, 24);
+        t.feed(b"\x1b]7501;state=working;title=claude;status=thinking\x1b\\");
+        assert_eq!(
+            t.current_program_status()
+                .dominant(None)
+                .map(|entry| entry.state),
+            Some(ProgramState::Working)
+        );
+        t.feed(b"\x1b]7501;state=blocked;status=approve?\x07");
+        let snapshot: ProgramStatusSnapshot = t.current_program_status();
+        let entry = snapshot.dominant(None).unwrap();
+        assert_eq!(entry.state, ProgramState::Blocked);
+        assert_eq!(entry.status.as_deref(), Some("approve?"));
+        assert!(
+            t.take_attention_signals().is_empty(),
+            "7501 不走 BEL/OSC 通知通道"
+        );
+    }
+
+    #[test]
+    fn osc7501_tmux_dcs_passthrough_is_still_seen() {
+        use crate::protocol::terminal::program_status::ProgramState;
+        let mut t = TerminalState::new(80, 24);
+        // tmux allow-passthrough 包裹：ESC Ptmux; ESC ESC ]7501… ST ESC \\
+        t.feed(b"\x1bPtmux;\x1b\x1b]7501;state=blocked;title=demo;status=approve?\x1b\\\x1b\\");
+        let snapshot = t.current_program_status();
+        let entry = snapshot
+            .dominant(None)
+            .expect("passthrough 里的 7501 必须被识别");
+        assert_eq!(entry.state, ProgramState::Blocked);
+        assert_eq!(entry.title.as_deref(), Some("demo"));
+        assert_eq!(entry.status.as_deref(), Some("approve?"));
+    }
+
+    #[test]
+    fn osc7501_frame_can_span_feeds() {
+        use crate::protocol::terminal::program_status::ProgramState;
+        let mut t = TerminalState::new(80, 24);
+        t.feed(b"\x1b]7501;state=work");
+        assert!(t.current_program_status().entries.is_empty());
+        t.feed(b"ing;title=demo\x07");
+        let snapshot = t.current_program_status();
+        let entry = snapshot.dominant(None).unwrap();
+        assert_eq!(entry.state, ProgramState::Working);
+        assert_eq!(entry.title.as_deref(), Some("demo"));
+    }
+
+    #[test]
+    fn osc7501_invalid_frame_keeps_previous_state() {
+        use crate::protocol::terminal::program_status::ProgramState;
+        let mut t = TerminalState::new(80, 24);
+        t.feed(b"\x1b]7501;state=working;title=demo\x07");
+        t.feed(b"\x1b]7501;state=bogus\x07");
+        let snapshot = t.current_program_status();
+        let entry = snapshot.dominant(None).unwrap();
+        assert_eq!(entry.state, ProgramState::Working);
+        assert_eq!(entry.title.as_deref(), Some("demo"));
+    }
+
+    #[test]
+    fn osc7501_clear_keeps_state_and_does_not_emit_attention() {
+        use crate::protocol::terminal::program_status::ProgramState;
+        let mut t = TerminalState::new(80, 24);
+        t.feed(b"\x1b]7501;state=done;title=demo;status=ok;sticky=1\x07");
+        t.feed(b"\x1b]7501;clear=1\x07");
+        let snapshot = t.current_program_status();
+        let entry = snapshot.dominant(None).unwrap();
+        assert_eq!(entry.state, ProgramState::Done);
+        assert!(entry.title.is_none());
+        assert!(entry.status.is_none());
+        assert!(entry.sticky);
+        assert!(t.take_attention_signals().is_empty());
     }
 }
 

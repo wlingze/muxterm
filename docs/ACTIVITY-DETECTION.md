@@ -1,5 +1,20 @@
 # Activity 识别与回归验证
 
+## 来源优先级
+
+Pane 状态的权威顺序（从高到低）：
+
+1. Runtime 结构化 agent 状态（Herdr `PaneAgentChanged`）；
+2. OSC 7501 program status（程序自己报告 `working` / `blocked` / `done` / `error` / `idle`）；
+3. tmux/已知 agent 屏幕规则；
+4. OSC 133 / BEL / 通知类 OSC 启发式。
+
+7501 的高级状态优先于屏幕刮取，但 **不覆盖** Runtime 结构化状态；它的
+`title` / `status` 文本仍会保存并显示在 Agents / Commands / Attention。`error`
+不改 `PaneStatus` 枚举（避免前端把未知值当 Idle），而是保留在
+`program_status.state` 里，并把已有 Activity command/agent 记录标成 `Failed`。
+`ttl` 到期按 `idle` 处理；重复 7501 帧会刷新 TTL。
+
 ## 数据流
 
 Runtime 的前台进程事实 → Muxterm 按 WorkspaceId + PaneId 合并 → Core Index

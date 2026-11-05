@@ -11,6 +11,7 @@
 use crate::activity::attention::signal::AttentionSignal;
 use crate::buffer_cap::{CappedBytes, MAX_PANE_OUTPUT_BYTES};
 use crate::protocol::terminal::emulate::TerminalState;
+use crate::protocol::terminal::program_status::ProgramStatusSnapshot;
 
 /// 一个 pane 的缓冲（scrollback + byte ring + viewport）。
 pub struct PaneBuf {
@@ -68,6 +69,7 @@ impl PaneBuf {
             usize::from(rows.max(1)),
             scrollback.max(1),
         );
+        self.terminal.invalidate_program_status();
         self.byte_ring.clear();
         self.viewport = 0;
         let _ = self.feed(bytes, cols, rows);
@@ -84,6 +86,7 @@ impl PaneBuf {
             usize::from(rows.max(1)),
             self.scrollback_max,
         );
+        self.terminal.invalidate_program_status();
         self.byte_ring.clear();
         self.viewport = 0;
         self.feed(bytes, cols, rows)
@@ -99,6 +102,11 @@ impl PaneBuf {
         let mut signals = std::mem::take(&mut self.pending_attention);
         signals.extend(self.terminal.take_attention_signals());
         signals
+    }
+
+    /// 自上次导出以来变化的 OSC 7501 程序状态；无变化为 None。
+    pub fn program_status_snapshot(&self) -> Option<ProgramStatusSnapshot> {
+        self.terminal.program_status_snapshot()
     }
 
     /// 可见屏 + OSC 标题/进度，给 agent 屏幕规则用。
@@ -294,6 +302,20 @@ mod tests {
             !live.contains("HIST_TOKEN"),
             "底部直播不得含离屏 token。got={live}"
         );
+    }
+
+    #[test]
+    fn replace_snapshot_invalidates_old_program_status() {
+        let mut buf = PaneBuf::new(80, 24, 1000);
+        buf.feed(b"\x1b]7501;state=blocked;title=demo\x07", 80, 24);
+        let before = buf.program_status_snapshot().expect("首次必须导出");
+        assert_eq!(before.entries[0].state.as_str(), "blocked");
+
+        buf.replace_snapshot(b"fresh screen", 80, 24);
+        let after = buf
+            .program_status_snapshot()
+            .expect("整屏替换必须导出空快照");
+        assert!(after.entries.is_empty(), "旧 7501 状态必须被清掉");
     }
 
     #[test]

@@ -42,6 +42,34 @@ final class AttentionSnapshotDecodeTests: XCTestCase {
         XCTAssertTrue(snapshot.workspaces[1].panes[0].acknowledged)
     }
 
+    func testDecodesOsc7501ProgramStatus() throws {
+        let json = """
+        {
+          "ok": true,
+          "blocked_count": 0,
+          "workspaces": [
+            {
+              "workspace_id": "ws@local",
+              "blocked": 0,
+              "done": 1,
+              "working": 0,
+              "panes": [
+                {"pane_id": 1, "status": "done", "acknowledged": false, "last_line": "", "seq": 3, "process_name": "node", "program_status": {"state": "error", "title": "claude", "status": "compile failed", "sticky": true}}
+              ]
+            }
+          ]
+        }
+        """
+        let snapshot = try XCTUnwrap(AttentionSnapshot.decode(Data(json.utf8)))
+        let pane = snapshot.workspaces[0].panes[0]
+        XCTAssertEqual(pane.programStatus?.state, "error")
+        XCTAssertEqual(pane.programStatus?.title, "claude")
+        XCTAssertEqual(pane.programStatus?.status, "compile failed")
+        XCTAssertTrue(pane.programStatus?.sticky == true)
+        XCTAssertTrue(AttentionAlert.isAgent(pane))
+        XCTAssertEqual(AttentionAlert.agentName(pane), "claude")
+    }
+
     func testDecodeFailureReturnsNil() {
         XCTAssertNil(AttentionSnapshot.decode(Data("not json".utf8)))
         XCTAssertNil(AttentionSnapshot.decode(Data(#"{"ok": false}"#.utf8)))

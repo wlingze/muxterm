@@ -506,7 +506,8 @@ public enum WorkspaceSidebarProjection {
                     detail: agentDetail(
                         status: statusLabel(status: agent.status, attention: attention),
                         agentName: agentName,
-                        tabNumber: tabNumber
+                        tabNumber: tabNumber,
+                        note: attention?.programStatus?.status
                     ),
                     indicator: indicator(status: agent.status, attention: attention),
                     agentName: agentName,
@@ -531,9 +532,13 @@ public enum WorkspaceSidebarProjection {
                     paneId: pane.paneId,
                     title: workspace.displayTitle,
                     detail: agentDetail(
-                        status: statusLabel(status: pane.status),
+                        status: programStatusLabel(
+                            status: pane.status,
+                            programStatus: pane.programStatus
+                        ),
                         agentName: name,
-                        tabNumber: tabNumber
+                        tabNumber: tabNumber,
+                        note: pane.programStatus?.status
                     ),
                     indicator: indicator(attention: pane),
                     agentName: name,
@@ -613,7 +618,8 @@ public enum WorkspaceSidebarProjection {
                 guard AttentionAlert.includes(pane),
                       !agentPaneKeys.contains(
                           PaneKey(workspaceId: workspace.workspaceId, paneId: pane.paneId)
-                      ), let title = nonEmptyProcessName(pane.processName)
+                      ), let title = nonEmptyProcessName(pane.programStatus?.title)
+                          ?? nonEmptyProcessName(pane.processName)
                 else { continue }
                 switch pane.status {
                 case .working:
@@ -622,8 +628,15 @@ public enum WorkspaceSidebarProjection {
                         tabId: workspace.tabIdByPane[pane.paneId],
                         paneId: pane.paneId,
                         title: workspace.displayTitle,
-                        detail: agentDetail(status: statusLabel(status: pane.status),
-                            agentName: title, tabNumber: workspace.tabNumberByPane[pane.paneId]),
+                        detail: agentDetail(
+                            status: programStatusLabel(
+                                status: pane.status,
+                                programStatus: pane.programStatus
+                            ),
+                            agentName: title,
+                            tabNumber: workspace.tabNumberByPane[pane.paneId],
+                            note: pane.programStatus?.status
+                        ),
                         indicator: .working
                     ))
                 case .blocked, .done:
@@ -633,8 +646,15 @@ public enum WorkspaceSidebarProjection {
                         tabId: workspace.tabIdByPane[pane.paneId],
                         paneId: pane.paneId,
                         title: workspace.displayTitle,
-                        detail: agentDetail(status: statusLabel(status: pane.status),
-                            agentName: title, tabNumber: workspace.tabNumberByPane[pane.paneId]),
+                        detail: agentDetail(
+                            status: programStatusLabel(
+                                status: pane.status,
+                                programStatus: pane.programStatus
+                            ),
+                            agentName: title,
+                            tabNumber: workspace.tabNumberByPane[pane.paneId],
+                            note: pane.programStatus?.status
+                        ),
                         indicator: pane.status == .blocked ? .blocked : .done
                     ))
                 case .unknown, .idle:
@@ -730,9 +750,13 @@ public enum WorkspaceSidebarProjection {
     private static func agentDetail(
         status: String,
         agentName: String,
-        tabNumber: Int?
+        tabNumber: Int?,
+        note: String? = nil
     ) -> String {
         var values = [status, agentName]
+        if let note = note?.trimmingCharacters(in: .whitespacesAndNewlines), !note.isEmpty {
+            values.append(note)
+        }
         if let tabNumber, tabNumber > 0 {
             values.append("Tab \(tabNumber)")
         }
@@ -744,7 +768,10 @@ public enum WorkspaceSidebarProjection {
         attention: PaneAttention?
     ) -> String {
         if let attention {
-            return statusLabel(status: attention.status)
+            return programStatusLabel(
+                status: attention.status,
+                programStatus: attention.programStatus
+            )
         }
         switch status {
         case .idle: return "idle"
@@ -755,7 +782,13 @@ public enum WorkspaceSidebarProjection {
         }
     }
 
-    private static func statusLabel(status: PaneAttentionStatus) -> String {
+    private static func programStatusLabel(
+        status: PaneAttentionStatus,
+        programStatus: PaneProgramStatus?
+    ) -> String {
+        if programStatus?.isError == true {
+            return "error"
+        }
         switch status {
         case .idle: return "idle"
         case .working: return "working"

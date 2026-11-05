@@ -11,6 +11,7 @@ use crate::activity::attention::state::PaneStatus;
 use crate::protocol::state::{PaneAgentInfo, PaneAgentStatus, State, StateChange};
 use crate::protocol::task::{Task, TaskOutcome};
 use crate::protocol::terminal::emulate::DEFAULT_SCROLLBACK_LINES;
+use crate::protocol::terminal::program_status::ProgramStatusSnapshot;
 use crate::protocol::WorkspaceId;
 use crate::protocol::{PaneId, TabId};
 use crate::runtime::{ControlEvent, RenderEvent, Runtime, RuntimeBatch, RuntimeSignal};
@@ -729,6 +730,13 @@ impl Workspace {
     }
 
     /// 某 pane 的可见屏快照（tmux agent 屏幕规则）。
+    /// OSC 7501 程序状态（自上次导出以来变化；无变化为 None）。
+    pub fn pane_program_status_snapshot(&self, pane: PaneId) -> Option<ProgramStatusSnapshot> {
+        self.panes
+            .get(&pane)
+            .and_then(|buf| buf.program_status_snapshot())
+    }
+
     pub fn pane_screen_snapshot(
         &self,
         pane: PaneId,

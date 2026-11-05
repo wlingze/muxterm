@@ -841,6 +841,18 @@ pub struct ClientSearchHit {
     pub line: String,
 }
 
+/// OSC 7501 program status exported by Core.
+#[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
+pub struct ClientProgramStatus {
+    pub state: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub sticky: bool,
+}
+
 /// Owned attention/activity state for one pane.
 #[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
 pub struct ClientAttentionPane {
@@ -864,6 +876,8 @@ pub struct ClientAttentionPane {
     pub agent_name: Option<String>,
     #[serde(default)]
     pub shell_name: Option<String>,
+    #[serde(default)]
+    pub program_status: Option<ClientProgramStatus>,
 }
 
 /// Frontend view of the Core attention state machine.

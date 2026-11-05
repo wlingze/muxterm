@@ -15,6 +15,23 @@ public enum PaneAttentionStatus: String, Sendable, Equatable {
 }
 
 /// 单个 pane 的注意力条目。
+/// OSC 7501 program status，原样保留程序自报的终态与原因。
+public struct PaneProgramStatus: Equatable, Sendable {
+    public let state: String
+    public let title: String?
+    public let status: String?
+    public let sticky: Bool
+
+    public init(state: String, title: String?, status: String?, sticky: Bool) {
+        self.state = state
+        self.title = title
+        self.status = status
+        self.sticky = sticky
+    }
+
+    public var isError: Bool { state == "error" }
+}
+
 public struct PaneAttention: Equatable, Sendable {
     public let paneId: UInt32
     public let status: PaneAttentionStatus
@@ -27,6 +44,7 @@ public struct PaneAttention: Equatable, Sendable {
     /// tmux but still be an agent when the resolved foreground argv is Codex.
     public let processIsAgent: Bool
     public let agentName: String?
+    public let programStatus: PaneProgramStatus?
 
     public init(
         paneId: UInt32,
@@ -37,7 +55,8 @@ public struct PaneAttention: Equatable, Sendable {
         seq: UInt64,
         processName: String?,
         processIsAgent: Bool = false,
-        agentName: String? = nil
+        agentName: String? = nil,
+        programStatus: PaneProgramStatus? = nil
     ) {
         self.paneId = paneId
         self.status = status
@@ -48,6 +67,7 @@ public struct PaneAttention: Equatable, Sendable {
         self.processName = processName
         self.processIsAgent = processIsAgent
         self.agentName = agentName
+        self.programStatus = programStatus
     }
 }
 
@@ -121,7 +141,8 @@ public struct AttentionSnapshot: Equatable, Sendable {
                             seq: (p["seq"] as? UInt64) ?? (p["seq"] as? NSNumber)?.uint64Value ?? 0,
                             processName: p["process_name"] as? String,
                             processIsAgent: (p["process_is_agent"] as? Bool) ?? false,
-                            agentName: p["agent_name"] as? String
+                            agentName: p["agent_name"] as? String,
+                            programStatus: decodeProgramStatus(p["program_status"])
                         )
                     } ?? []
                 return WorkspaceAttention(
@@ -189,7 +210,8 @@ public struct AttentionRow: Equatable, Sendable {
             agentName: agentName.isEmpty
                 ? (AttentionRowLabel.normalizedProcess(pane.processName) ?? pane.processName ?? "")
                 : agentName,
-            tabNumber: tabNumber
+            tabNumber: tabNumber,
+            note: pane.programStatus?.status
         )
     }
 
@@ -398,7 +420,8 @@ public enum AttentionRowLabel {
     public static func detail(
         status: PaneAttentionStatus,
         agentName: String,
-        tabNumber: Int?
+        tabNumber: Int?,
+        note: String? = nil
     ) -> String {
         let statusText: String
         switch status {
@@ -412,6 +435,9 @@ public enum AttentionRowLabel {
         if !agentName.isEmpty {
             values.append(agentName)
         }
+        if let note = note?.trimmingCharacters(in: .whitespacesAndNewlines), !note.isEmpty {
+            values.append(note)
+        }
         if let tabNumber, tabNumber > 0 {
             values.append("Tab \(tabNumber)")
         }
@@ -422,11 +448,27 @@ public enum AttentionRowLabel {
         workspaceName: String,
         status: PaneAttentionStatus,
         agentName: String,
-        tabNumber: Int?
+        tabNumber: Int?,
+        note: String? = nil
     ) -> String {
-        let parts = [workspaceName, detail(status: status, agentName: agentName, tabNumber: tabNumber)]
+        let parts = [
+            workspaceName,
+            detail(status: status, agentName: agentName, tabNumber: tabNumber, note: note),
+        ]
         return parts.filter { !$0.isEmpty }.joined(separator: " · ")
     }
+}
+
+private func decodeProgramStatus(_ raw: Any?) -> PaneProgramStatus? {
+    guard let object = raw as? [String: Any],
+          let state = object["state"] as? String
+    else { return nil }
+    return PaneProgramStatus(
+        state: state,
+        title: object["title"] as? String,
+        status: object["status"] as? String,
+        sticky: (object["sticky"] as? Bool) ?? false
+    )
 }
 
 /// Attention 和 Commands 共用的警报规则。
@@ -441,6 +483,11 @@ public enum AttentionAlert {
     /// Core 标记、权威 agent 名，或可执行文件本身就是已知 agent。
     /// 不扫描路径中间的目录，避免把普通命令吸进 Agents。
     public static func isAgent(_ pane: PaneAttention) -> Bool {
+        if let title = pane.programStatus?.title?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !title.isEmpty
+        {
+            return true
+        }
         if pane.processIsAgent {
             return true
         }
@@ -453,6 +500,10 @@ public enum AttentionAlert {
     }
 
     public static func agentName(_ pane: PaneAttention) -> String? {
+        let program = pane.programStatus?.title?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let program, !program.isEmpty {
+            return program
+        }
         let explicit = pane.agentName?.trimmingCharacters(in: .whitespacesAndNewlines)
         if let explicit, !explicit.isEmpty {
             return explicit
@@ -508,6 +559,7 @@ public enum AttentionList {
                     chrome?.structuredAgents.first(where: { $0.paneId == pane.paneId }).flatMap {
                         firstNonempty([$0.displayName, $0.name, $0.kind, $0.title])
                     },
+                    pane.programStatus?.title,
                     pane.agentName,
                     AttentionRowLabel.normalizedProcess(pane.processName),
                     pane.processName,
@@ -517,6 +569,8 @@ public enum AttentionList {
                     || workspaceName.lowercased().contains(q)
                     || agentName.lowercased().contains(q)
                     || (pane.processName ?? "").lowercased().contains(q)
+                    || (pane.programStatus?.title ?? "").lowercased().contains(q)
+                    || (pane.programStatus?.status ?? "").lowercased().contains(q)
                     || pane.lastLine.lowercased().contains(q)
                     || transport.lowercased().contains(q)
                 else {

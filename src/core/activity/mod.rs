@@ -151,6 +151,35 @@ impl ActivityState {
         })
     }
 
+    /// OSC 7501 `error` 到达时，把该 pane 正在跑的 command/agent 记录标成
+    /// Failed。没有记录时保持只有 Attention，不凭空造第二条记录。
+    pub(crate) fn fail_program_records(
+        &mut self,
+        workspace: &WorkspaceId,
+        pane: PaneId,
+    ) -> Vec<ActivityEvent> {
+        let mut events = Vec::new();
+        for id in [
+            command_activity_id(workspace, pane),
+            agent_activity_id(workspace, pane),
+        ] {
+            let Some(record) = self.records.get(&id).cloned() else {
+                continue;
+            };
+            if !matches!(
+                record.status,
+                ActivityStatus::Running | ActivityStatus::Waiting
+            ) {
+                continue;
+            }
+            let mut failed = record;
+            failed.status = ActivityStatus::Failed;
+            failed.updated_at = unix_timestamp();
+            events.push(self.records.upsert(failed));
+        }
+        events
+    }
+
     pub(crate) fn agent_record(
         &self,
         workspace: &WorkspaceId,
@@ -310,5 +339,54 @@ mod tests {
         assert_eq!(done.status, ActivityStatus::Done { exit_code: Some(0) });
         assert_eq!(done.revision, started.revision + 1);
         assert_eq!(done.started_at, started.started_at);
+    }
+
+    #[test]
+    fn program_error_marks_running_command_and_agent_failed() {
+        let mut state = ActivityState::new(AttentionConfig::default());
+        let ctx = context();
+        state.apply_command_start(ctx.clone(), Some("cargo test".into()));
+        state.apply_agent_signal(ctx.clone(), Some(&agent(PaneAgentStatus::Working)));
+        let events = state.fail_program_records(&ctx.workspace, ctx.pane);
+        assert_eq!(events.len(), 2);
+        let statuses = events
+            .iter()
+            .filter_map(|event| match event {
+                ActivityEvent::Upsert(record) => Some((record.kind, record.status.clone())),
+                ActivityEvent::Remove { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(statuses.iter().any(|(kind, status)| {
+            *kind == ActivityKind::Command && *status == ActivityStatus::Failed
+        }));
+        assert!(statuses.iter().any(|(kind, status)| {
+            *kind == ActivityKind::Agent && *status == ActivityStatus::Failed
+        }));
+    }
+
+    #[test]
+    fn program_error_without_records_does_not_create_one() {
+        let mut state = ActivityState::new(AttentionConfig::default());
+        let ctx = context();
+        assert!(state
+            .fail_program_records(&ctx.workspace, ctx.pane)
+            .is_empty());
+        assert_eq!(state.records.records().count(), 0);
+    }
+
+    #[test]
+    fn program_error_does_not_rewrite_terminal_records() {
+        let mut state = ActivityState::new(AttentionConfig::default());
+        let ctx = context();
+        state.apply_command_done(ctx.clone(), Some("cargo test".into()), Some(0));
+        assert!(state
+            .fail_program_records(&ctx.workspace, ctx.pane)
+            .is_empty());
+        let record = state
+            .records
+            .records()
+            .next()
+            .expect("done record must remain");
+        assert_eq!(record.status, ActivityStatus::Done { exit_code: Some(0) });
     }
 }

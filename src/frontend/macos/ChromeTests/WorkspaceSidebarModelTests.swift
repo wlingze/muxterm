@@ -1221,4 +1221,104 @@ final class WorkspaceSidebarModelTests: XCTestCase {
             "隐藏的 pane 不再影响 Tab 标记"
         )
     }
+
+    func testOsc7501TitleEntersAgentsAndErrorDetail() {
+        let workspace = WorkspaceSidebarItem(
+            workspaceId: "local@@dev@tmux@dev",
+            name: "dev",
+            runtime: "tmux",
+            transport: "local",
+            isActive: true,
+            tabNumberByPane: [1: 1]
+        )
+        let attention = AttentionSnapshot(
+            blockedCount: 0,
+            workspaces: [
+                WorkspaceAttention(
+                    workspaceId: workspace.workspaceId,
+                    blocked: 0,
+                    done: 1,
+                    working: 0,
+                    panes: [
+                        PaneAttention(
+                            paneId: 1,
+                            status: .done,
+                            acknowledged: false,
+                            lastLine: "screen",
+                            seq: 1,
+                            processName: "node",
+                            programStatus: PaneProgramStatus(
+                                state: "error",
+                                title: "claude",
+                                status: "compile failed",
+                                sticky: true
+                            )
+                        ),
+                    ]
+                ),
+            ]
+        )
+
+        let agents = WorkspaceSidebarProjection.agents(
+            workspaces: [workspace],
+            attention: attention
+        )
+        XCTAssertEqual(agents.count, 1)
+        XCTAssertEqual(agents[0].agentName, "claude")
+        XCTAssertEqual(agents[0].detail, "error · claude · compile failed · Tab 1")
+        XCTAssertTrue(WorkspaceSidebarProjection.commands(
+            workspaces: [workspace],
+            attention: attention
+        ).isEmpty, "已命名程序归 Agents，不再重复进 Commands")
+    }
+
+    func testOsc7501WithoutTitleEntersCommandsWithReason() {
+        let workspace = WorkspaceSidebarItem(
+            workspaceId: "local@@dev@tmux@dev",
+            name: "dev",
+            runtime: "tmux",
+            transport: "local",
+            isActive: true,
+            tabNumberByPane: [2: 1]
+        )
+        let attention = AttentionSnapshot(
+            blockedCount: 0,
+            workspaces: [
+                WorkspaceAttention(
+                    workspaceId: workspace.workspaceId,
+                    blocked: 0,
+                    done: 0,
+                    working: 1,
+                    panes: [
+                        PaneAttention(
+                            paneId: 2,
+                            status: .working,
+                            acknowledged: true,
+                            lastLine: "screen",
+                            seq: 1,
+                            processName: "make",
+                            programStatus: PaneProgramStatus(
+                                state: "working",
+                                title: nil,
+                                status: "building",
+                                sticky: false
+                            )
+                        ),
+                    ]
+                ),
+            ]
+        )
+
+        let agents = WorkspaceSidebarProjection.agents(
+            workspaces: [workspace],
+            attention: attention
+        )
+        XCTAssertTrue(agents.isEmpty)
+        let commands = WorkspaceSidebarProjection.commands(
+            workspaces: [workspace],
+            attention: attention
+        )
+        XCTAssertEqual(commands.count, 1)
+        XCTAssertEqual(commands[0].detail, "working · make · building · Tab 1")
+    }
 }
