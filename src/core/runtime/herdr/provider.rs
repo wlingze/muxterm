@@ -17,6 +17,31 @@ use crate::transport::{ChannelKind, ChannelRequest, Connect, TargetConnection};
 
 const HERDR_STARTUP_TIMEOUT: Duration = Duration::from_secs(8);
 const HERDR_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(1);
+/// SSH 转发刚建立时，本地 socket 可能先出现、远端通道还没就绪。
+/// 一次 ping 失败不代表 server 挂了；给 control-master 切换 / Herdr
+/// socket handoff 留一个约 800ms 的窗口。
+const HERDR_PING_ATTEMPTS: usize = 5;
+const HERDR_PING_RETRY_DELAY: Duration = Duration::from_millis(200);
+
+fn retry_ping<F>(attempts: usize, delay: Duration, mut ping: F) -> anyhow::Result<()>
+where
+    F: FnMut() -> anyhow::Result<()>,
+{
+    let attempts = attempts.max(1);
+    let mut last_error = None;
+    for attempt in 0..attempts {
+        match ping() {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                last_error = Some(error);
+                if attempt + 1 < attempts {
+                    thread::sleep(delay);
+                }
+            }
+        }
+    }
+    Err(last_error.expect("attempts.max(1) 保证至少执行一次"))
+}
 
 /// herdr 插件（local / ssh）。
 pub struct HerdrDriver;
@@ -423,9 +448,11 @@ impl RuntimeProvider for HerdrDriver {
         };
         let connection = Connect::new(connection.transport_id(), connection.target());
         let herdr = HerdrSession::with_connection(connection, session_name, &socket);
-        if herdr.ping().is_err() {
+        // 本地 server 不需要等 SSH 转发就绪，失败就立即报错。
+        let ping_attempts = if is_ssh { HERDR_PING_ATTEMPTS } else { 1 };
+        if let Err(error) = retry_ping(ping_attempts, HERDR_PING_RETRY_DELAY, || herdr.ping()) {
             return Err(RuntimeError::message(format!(
-                "Herdr session `{session_name}` 无法通过 socket `{socket}` 响应；请检查远端 Herdr 启动状态"
+                "Herdr session `{session_name}` 无法通过 socket `{socket}` 响应（{error:#}）；请检查远端 Herdr 启动状态和 SSH Unix socket 转发"
             )));
         }
         let cwd =
@@ -486,6 +513,42 @@ mod tests {
         fn probe(&self) -> crate::transport::TransportResult<()> {
             Ok(())
         }
+    }
+
+    #[test]
+    fn retry_ping_recovers_from_transient_forward_failures() {
+        use std::cell::Cell;
+
+        let calls = Cell::new(0usize);
+        let result = retry_ping(3, Duration::ZERO, || {
+            let attempt = calls.get() + 1;
+            calls.set(attempt);
+            if attempt < 3 {
+                Err(anyhow!("forward not ready ({attempt})"))
+            } else {
+                Ok(())
+            }
+        });
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(calls.get(), 3);
+    }
+
+    #[test]
+    fn retry_ping_returns_the_last_error_after_exhausting_attempts() {
+        use std::cell::Cell;
+
+        let calls = Cell::new(0usize);
+        let result = retry_ping(2, Duration::ZERO, || {
+            let attempt = calls.get() + 1;
+            calls.set(attempt);
+            Err(anyhow!("forward failed ({attempt})"))
+        });
+        let error = result.expect_err("所有尝试都失败时必须返回错误");
+        assert_eq!(calls.get(), 2);
+        assert!(
+            error.to_string().contains("forward failed (2)"),
+            "{error:#}"
+        );
     }
 
     #[test]
