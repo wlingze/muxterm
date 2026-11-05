@@ -49,6 +49,9 @@ session 里，`TerminalAttach` 和 `AppDirectGraphics` 都没有收到 `Graphics
 
 ## 2. OSC 7501 Program Status Protocol
 
+> 状态：已实现（2026-11-05）。解析在 VT，快照经 Attention / Activity 到两个前端；
+> 实现记录见 [`PLAN-OSC-7501.md`](PLAN-OSC-7501.md)。本节继续作为规范核对记录。
+
 程序用一条 OSC 告诉终端自己在干什么：空闲、工作、等用户、完成或失败，外加一行原因。
 协议只共享状态，不规定铃、角标或焦点。它从 Superlogical（Rex）和 Ghostty 的工作里长出来，
 规范本身不带产品名。

@@ -10,6 +10,7 @@
   "activity_working": "运行中",
   "activity_blocked": "待处理",
   "activity_done": "已完成",
+  "activity_failed": "失败",
   "activity_idle": "空闲",
   "close_workspace": "关闭工作区",
   "settings_new_window": "新建窗口",

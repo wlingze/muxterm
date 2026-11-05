@@ -209,6 +209,7 @@ mod tests {
                     process_is_agent,
                     agent_name: agent_name.map(str::to_owned),
                     shell_name: Some("zsh".into()),
+                    program_status: None,
                 }],
             }],
         }
@@ -383,6 +384,7 @@ mod tests {
                         process_is_agent: true,
                         agent_name: Some("codex".into()),
                         shell_name: Some("zsh".into()),
+                        program_status: None,
                     },
                     ClientAttentionPane {
                         workspace_id: id.replica_id(),
@@ -396,6 +398,7 @@ mod tests {
                         process_is_agent: true,
                         agent_name: Some("cursor".into()),
                         shell_name: Some("zsh".into()),
+                        program_status: None,
                     },
                     ClientAttentionPane {
                         workspace_id: id.replica_id(),
@@ -409,6 +412,7 @@ mod tests {
                         process_is_agent: true,
                         agent_name: Some("amp".into()),
                         shell_name: Some("zsh".into()),
+                        program_status: None,
                     },
                 ],
             }],

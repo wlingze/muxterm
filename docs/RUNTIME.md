@@ -4,7 +4,9 @@
 tmux 适配：[`LAYER-MAPPING.md`](LAYER-MAPPING.md)。
 像素：[`SURFACE.md`](SURFACE.md)。Herdr 流/身份：[`HERDR-RUNTIME-STABILITY.md`](HERDR-RUNTIME-STABILITY.md)。
 专项门禁：[`HERDR-TESTING.md`](HERDR-TESTING.md)。
-待接的 Herdr 侧信道和 OSC 7501：[`PROTOCOL-BACKLOG.md`](PROTOCOL-BACKLOG.md)。
+待接的 Herdr 侧信道：[`PROTOCOL-BACKLOG.md`](PROTOCOL-BACKLOG.md)。
+OSC 7501 program status 已在 VT 内实现，来源优先级见
+[`ACTIVITY-DETECTION.md`](ACTIVITY-DETECTION.md)。
 
 Herdr adapter 以官方 [Concepts](https://herdr.dev/docs/concepts/)、
 [Socket API](https://herdr.dev/docs/socket-api/)、[CLI](https://herdr.dev/docs/cli-reference/)

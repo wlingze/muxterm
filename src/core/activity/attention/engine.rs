@@ -14,6 +14,9 @@ use super::screen::{classify_agent_screen, ScreenSnapshot};
 use super::signal::{is_transient_shell_command, AttentionSignal};
 use super::state::{transition, PaneEvent, PaneStatus};
 use crate::config::AttentionConfig;
+use crate::protocol::terminal::program_status::{
+    ProgramState, ProgramStatusEntry, ProgramStatusSnapshot,
+};
 
 /// 普通命令要跑过这么久才进 Commands。
 ///
@@ -23,6 +26,10 @@ use crate::config::AttentionConfig;
 const COMMAND_VISIBLE_AFTER: Duration = Duration::from_millis(400);
 
 fn listed_command_status(pane: &PaneAttention, now: Instant) -> PaneStatus {
+    if pane.program_status_display.is_some() {
+        // 程序自报的 working 立即显示；不要被 400ms 的短命令抑制吃掉。
+        return pane.status;
+    }
     if pane.process_is_agent || pane.status != PaneStatus::Working {
         return pane.status;
     }
@@ -32,6 +39,14 @@ fn listed_command_status(pane: &PaneAttention, now: Instant) -> PaneStatus {
         }
         _ => pane.status,
     }
+}
+
+fn notification_last_line(pane: &PaneAttention) -> String {
+    pane.program_status_display
+        .as_ref()
+        .and_then(|entry| entry.status.clone())
+        .filter(|text| !text.trim().is_empty())
+        .unwrap_or_else(|| pane.last_line.clone())
 }
 
 const KNOWN_AGENTS: &[&str] = &[
@@ -176,6 +191,14 @@ pub struct PaneAttention {
     pub last_activity: Instant,
     /// 普通命令进入 Working 的时刻；短于 COMMAND_VISIBLE_AFTER 不进 Commands。
     pub command_started_at: Option<Instant>,
+    /// OSC 7501 全量快照（含多个 id）；超时后清空。
+    pub program_status: Option<ProgramStatusSnapshot>,
+    /// 合并后的最高优先级 7501 条目；FFI/前端只显示这一条。
+    pub program_status_display: Option<ProgramStatusEntry>,
+    /// 本份 7501 快照到达时刻；`ttl` 由 engine 判定，不进入 TerminalState。
+    pub program_status_seen_at: Instant,
+    /// 已应用到 Attention 的 7501 revision，避免重复事件。
+    pub program_status_revision_applied: u64,
 }
 
 /// 工作区聚合视图。
@@ -274,6 +297,10 @@ impl<C: Clock> AttentionEngine<C> {
                 last_regex_eval: now.checked_sub(Duration::from_secs(3600)).unwrap_or(now),
                 last_activity: now,
                 command_started_at: None,
+                program_status: None,
+                program_status_display: None,
+                program_status_seen_at: now,
+                program_status_revision_applied: 0,
             })
     }
 
@@ -476,6 +503,130 @@ impl<C: Clock> AttentionEngine<C> {
             self.maybe_eval_regex(ws, pane, now);
         }
         self.sync_notified(ws, pane, now);
+    }
+
+    /// 应用一份 OSC 7501 快照。
+    ///
+    /// - 7501 优先于屏幕规则和 133/BEL，但不覆盖 Runtime 权威状态（D4）。
+    /// - 返回合并后的状态是否为 `error`；调用方据此把已有 Activity 标 Failed。
+    pub fn apply_program_status(
+        &mut self,
+        ws: &str,
+        pane: u32,
+        snapshot: &ProgramStatusSnapshot,
+        now: Instant,
+    ) -> bool {
+        let key = (ws.to_string(), pane);
+        let authoritative = self.authoritative_panes.contains(&key);
+        let display_state = {
+            let entry = self.entry_mut(ws, pane);
+            // PaneBuf replace 会从 revision 0 重建终端，不能只看 revision。
+            if entry.program_status_revision_applied == snapshot.revision
+                && entry.program_status.as_ref() == Some(snapshot)
+            {
+                return false;
+            }
+            entry.program_status_revision_applied = snapshot.revision;
+            entry.program_status_seen_at = now;
+            let previous = entry
+                .program_status_display
+                .as_ref()
+                .map(|entry| entry.state);
+            let display = snapshot.dominant(previous).cloned();
+            entry.program_status = if snapshot.entries.is_empty() {
+                None
+            } else {
+                Some(snapshot.clone())
+            };
+            entry.program_status_display = display.clone();
+            entry.last_activity = now;
+            display.map(|entry| entry.state)
+        };
+
+        let error = display_state == Some(ProgramState::Error);
+        if authoritative {
+            return error;
+        }
+
+        let event = match display_state {
+            Some(ProgramState::Idle) | None => PaneEvent::ProgramIdle,
+            Some(ProgramState::Working) => PaneEvent::CommandStart,
+            Some(ProgramState::Blocked) => PaneEvent::AttentionRequest,
+            Some(ProgramState::Done | ProgramState::Error) => {
+                PaneEvent::CommandDone { exit_code: None }
+            }
+        };
+        {
+            let entry = self.entry_mut(ws, pane);
+            let previous = entry.status;
+            entry.status = transition(entry.status, event);
+            let next = entry.status;
+            if next != previous {
+                entry.acknowledged = !matches!(next, PaneStatus::Blocked | PaneStatus::Done);
+                entry.last_activity = now;
+            }
+            if next == PaneStatus::Working && previous != PaneStatus::Working {
+                entry.command_started_at = Some(now);
+            } else if next != PaneStatus::Working {
+                entry.command_started_at = None;
+            }
+        }
+        self.sync_notified(ws, pane, now);
+        error
+    }
+
+    /// 7501 的 `ttl` 到期后按 idle 处理，并清掉状态文本。
+    ///
+    /// 在 FFI 每次 snapshot / revision 查询前调用，调用点与
+    /// `decay_idle_agents()` 相同。
+    pub fn decay_program_status(&mut self) {
+        let now = self.clock.now();
+        let keys = self
+            .panes
+            .iter()
+            .filter(|(_, pane)| pane.program_status_display.is_some())
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
+        for key in keys {
+            let (ws, pane) = key;
+            let expired = {
+                let Some(entry) = self.panes.get(&(ws.clone(), pane)) else {
+                    continue;
+                };
+                let Some(display) = &entry.program_status_display else {
+                    continue;
+                };
+                let Some(ttl) = display.ttl_secs else {
+                    continue;
+                };
+                if ttl == 0 {
+                    continue;
+                }
+                let Some(deadline) = entry
+                    .program_status_seen_at
+                    .checked_add(Duration::from_secs(u64::from(ttl)))
+                else {
+                    continue;
+                };
+                now >= deadline
+            };
+            if !expired {
+                continue;
+            }
+            let authoritative = self.authoritative_panes.contains(&(ws.clone(), pane));
+            {
+                let entry = self.entry_mut(&ws, pane);
+                entry.program_status = None;
+                entry.program_status_display = None;
+                entry.last_activity = now;
+                if !authoritative {
+                    entry.status = transition(entry.status, PaneEvent::ProgramIdle);
+                    entry.acknowledged = true;
+                    entry.command_started_at = None;
+                }
+            }
+            self.sync_notified(&ws, pane, now);
+        }
     }
 
     /// 用户输入：Blocked → Idle（输入才算处理）。
@@ -916,6 +1067,7 @@ impl<C: Clock> AttentionEngine<C> {
             pane.process_is_agent.hash(&mut hasher);
             pane.agent_name.hash(&mut hasher);
             pane.shell_name.hash(&mut hasher);
+            pane.program_status_display.hash(&mut hasher);
             // 各 pane 的和与遍历顺序无关，避免 HashMap 重排造成假变化。
             acc = acc.wrapping_add(hasher.finish());
         }
@@ -995,7 +1147,7 @@ impl<C: Clock> AttentionEngine<C> {
                         pane_id: pane.pane_id,
                         kind: AttentionNotificationKind::Blocked,
                         process_name: pane.process_name.clone(),
-                        last_line: pane.last_line.clone(),
+                        last_line: notification_last_line(pane),
                         seq: pane.seq,
                     });
                 }
@@ -1008,7 +1160,7 @@ impl<C: Clock> AttentionEngine<C> {
                         pane_id: pane.pane_id,
                         kind: AttentionNotificationKind::Done,
                         process_name: pane.process_name.clone(),
-                        last_line: pane.last_line.clone(),
+                        last_line: notification_last_line(pane),
                         seq: pane.seq,
                     });
                 }
@@ -2463,5 +2615,389 @@ mod tests {
         let pane = &e.snapshot()[0].panes[0];
         assert_eq!(pane.status, PaneStatus::Done);
         assert!(!pane.acknowledged);
+    }
+
+    // MARK: - OSC 7501
+
+    fn program_entry(
+        id: &str,
+        state: ProgramState,
+        title: Option<&str>,
+        status: Option<&str>,
+        sticky: bool,
+        ttl_secs: Option<u32>,
+    ) -> ProgramStatusEntry {
+        ProgramStatusEntry {
+            id: id.to_string(),
+            state,
+            title: title.map(str::to_string),
+            status: status.map(str::to_string),
+            sticky,
+            ttl_secs,
+        }
+    }
+
+    fn program_snapshot(revision: u64, entries: Vec<ProgramStatusEntry>) -> ProgramStatusSnapshot {
+        ProgramStatusSnapshot { revision, entries }
+    }
+
+    fn pane_of(engine: &AttentionEngine<FakeClock>, ws: &str, pane: u32) -> PaneAttention {
+        engine
+            .snapshot()
+            .into_iter()
+            .find(|workspace| workspace.workspace_id == ws)
+            .and_then(|workspace| {
+                workspace
+                    .panes
+                    .into_iter()
+                    .find(|item| item.pane_id == pane)
+            })
+            .expect("pane must exist")
+    }
+
+    #[test]
+    fn program_status_working_blocked_done_idle_drive_attention() {
+        let c = clock();
+        let mut e = AttentionEngine::new(AttentionConfig::default(), c.clone());
+        let now = c.now();
+
+        let working = program_snapshot(
+            1,
+            vec![program_entry(
+                "",
+                ProgramState::Working,
+                Some("claude"),
+                Some("thinking"),
+                false,
+                None,
+            )],
+        );
+        assert!(!e.apply_program_status("ws", 1, &working, now));
+        let pane = pane_of(&e, "ws", 1);
+        assert_eq!(pane.status, PaneStatus::Working);
+        assert_eq!(
+            pane.program_status_display
+                .as_ref()
+                .and_then(|entry| entry.title.as_deref()),
+            Some("claude")
+        );
+
+        let blocked = program_snapshot(
+            2,
+            vec![program_entry(
+                "",
+                ProgramState::Blocked,
+                Some("claude"),
+                Some("approve?"),
+                false,
+                None,
+            )],
+        );
+        assert!(!e.apply_program_status("ws", 1, &blocked, now));
+        let pane = pane_of(&e, "ws", 1);
+        assert_eq!(pane.status, PaneStatus::Blocked);
+        assert!(!pane.acknowledged);
+        assert_eq!(e.blocked_workspace_count(), 1);
+
+        let done = program_snapshot(
+            3,
+            vec![program_entry(
+                "",
+                ProgramState::Done,
+                Some("claude"),
+                Some("ok"),
+                false,
+                None,
+            )],
+        );
+        e.apply_program_status("ws", 1, &done, now);
+        assert_eq!(pane_of(&e, "ws", 1).status, PaneStatus::Done);
+
+        let idle = program_snapshot(
+            4,
+            vec![program_entry(
+                "",
+                ProgramState::Idle,
+                None,
+                None,
+                false,
+                None,
+            )],
+        );
+        e.apply_program_status("ws", 1, &idle, now);
+        let pane = pane_of(&e, "ws", 1);
+        assert_eq!(pane.status, PaneStatus::Idle);
+        assert!(pane.program_status.is_some());
+    }
+
+    #[test]
+    fn program_status_error_is_done_but_reports_failure() {
+        let c = clock();
+        let mut e = AttentionEngine::new(AttentionConfig::default(), c.clone());
+        let error = program_snapshot(
+            1,
+            vec![program_entry(
+                "",
+                ProgramState::Error,
+                Some("claude"),
+                Some("boom"),
+                false,
+                None,
+            )],
+        );
+        assert!(e.apply_program_status("ws", 2, &error, c.now()));
+        let pane = pane_of(&e, "ws", 2);
+        assert_eq!(pane.status, PaneStatus::Done);
+        assert!(!pane.acknowledged);
+        assert_eq!(
+            pane.program_status_display
+                .as_ref()
+                .and_then(|entry| entry.status.as_deref()),
+            Some("boom")
+        );
+    }
+
+    #[test]
+    fn sticky_done_survives_time_and_ack_clears_it() {
+        let c = clock();
+        let mut e = AttentionEngine::new(AttentionConfig::default(), c.clone());
+        let done = program_snapshot(
+            1,
+            vec![program_entry(
+                "",
+                ProgramState::Done,
+                Some("claude"),
+                None,
+                true,
+                None,
+            )],
+        );
+        e.apply_program_status("ws", 3, &done, c.now());
+        c.advance(Duration::from_secs(600));
+        e.decay_program_status();
+        assert_eq!(pane_of(&e, "ws", 3).status, PaneStatus::Done);
+        e.acknowledge("ws", 3);
+        assert_eq!(pane_of(&e, "ws", 3).status, PaneStatus::Idle);
+    }
+
+    #[test]
+    fn program_status_ttl_expires_to_idle() {
+        let c = clock();
+        let mut e = AttentionEngine::new(AttentionConfig::default(), c.clone());
+        let blocked = program_snapshot(
+            1,
+            vec![program_entry(
+                "",
+                ProgramState::Blocked,
+                Some("demo"),
+                Some("wait"),
+                true,
+                Some(1),
+            )],
+        );
+        e.apply_program_status("ws", 4, &blocked, c.now());
+        assert_eq!(pane_of(&e, "ws", 4).status, PaneStatus::Blocked);
+        c.advance(Duration::from_secs(2));
+        e.decay_program_status();
+        let pane = pane_of(&e, "ws", 4);
+        assert_eq!(pane.status, PaneStatus::Idle);
+        assert!(pane.program_status.is_none());
+        assert!(pane.program_status_display.is_none());
+    }
+
+    #[test]
+    fn repeated_identical_program_status_refreshes_ttl() {
+        let c = clock();
+        let mut e = AttentionEngine::new(AttentionConfig::default(), c.clone());
+        let blocked = program_snapshot(
+            1,
+            vec![program_entry(
+                "",
+                ProgramState::Blocked,
+                Some("demo"),
+                None,
+                true,
+                Some(1),
+            )],
+        );
+        e.apply_program_status("ws", 10, &blocked, c.now());
+        c.advance(Duration::from_millis(600));
+        let heartbeat = program_snapshot(
+            2,
+            vec![program_entry(
+                "",
+                ProgramState::Blocked,
+                Some("demo"),
+                None,
+                true,
+                Some(1),
+            )],
+        );
+        e.apply_program_status("ws", 10, &heartbeat, c.now());
+        c.advance(Duration::from_millis(600));
+        e.decay_program_status();
+        assert_eq!(
+            pane_of(&e, "ws", 10).status,
+            PaneStatus::Blocked,
+            "重复帧必须重新计时 TTL"
+        );
+        c.advance(Duration::from_millis(500));
+        e.decay_program_status();
+        assert_eq!(pane_of(&e, "ws", 10).status, PaneStatus::Idle);
+    }
+
+    #[test]
+    fn program_status_does_not_override_runtime_authority() {
+        let c = clock();
+        let mut e = AttentionEngine::new(AttentionConfig::default(), c.clone());
+        e.apply(
+            "ws",
+            5,
+            &[AttentionSignal::AuthoritativeStatus {
+                status: PaneStatus::Working,
+                initial: false,
+            }],
+            "running",
+            1,
+        );
+        let blocked = program_snapshot(
+            1,
+            vec![program_entry(
+                "",
+                ProgramState::Blocked,
+                Some("hermes"),
+                Some("approve?"),
+                false,
+                None,
+            )],
+        );
+        assert!(!e.apply_program_status("ws", 5, &blocked, c.now()));
+        let pane = pane_of(&e, "ws", 5);
+        assert_eq!(
+            pane.status,
+            PaneStatus::Working,
+            "runtime 权威不能被 7501 覆盖"
+        );
+        assert_eq!(
+            pane.program_status_display
+                .as_ref()
+                .and_then(|entry| entry.title.as_deref()),
+            Some("hermes"),
+            "文本仍然保留"
+        );
+    }
+
+    #[test]
+    fn program_status_multiple_ids_choose_highest_priority() {
+        let c = clock();
+        let mut e = AttentionEngine::new(AttentionConfig::default(), c.clone());
+        let snap = program_snapshot(
+            1,
+            vec![
+                program_entry("a", ProgramState::Working, Some("build"), None, false, None),
+                program_entry(
+                    "b",
+                    ProgramState::Blocked,
+                    Some("approve"),
+                    Some("edit?"),
+                    false,
+                    None,
+                ),
+            ],
+        );
+        e.apply_program_status("ws", 6, &snap, c.now());
+        let pane = pane_of(&e, "ws", 6);
+        assert_eq!(pane.status, PaneStatus::Blocked);
+        assert_eq!(
+            pane.program_status_display
+                .as_ref()
+                .map(|entry| entry.id.as_str()),
+            Some("b")
+        );
+    }
+
+    #[test]
+    fn program_status_revision_dedupe_and_fingerprint_change() {
+        let c = clock();
+        let mut e = AttentionEngine::new(AttentionConfig::default(), c.clone());
+        let snap = program_snapshot(
+            7,
+            vec![program_entry(
+                "",
+                ProgramState::Working,
+                Some("claude"),
+                Some("thinking"),
+                false,
+                None,
+            )],
+        );
+        e.apply_program_status("ws", 7, &snap, c.now());
+        let fingerprint = e.fingerprint();
+        assert!(
+            !e.apply_program_status("ws", 7, &snap, c.now()),
+            "同一 revision 不重复应用"
+        );
+        assert_eq!(fingerprint, e.fingerprint());
+
+        let text_changed = program_snapshot(
+            8,
+            vec![program_entry(
+                "",
+                ProgramState::Working,
+                Some("claude"),
+                Some("writing"),
+                false,
+                None,
+            )],
+        );
+        e.apply_program_status("ws", 7, &text_changed, c.now());
+        assert_ne!(fingerprint, e.fingerprint(), "原因文本变化必须刷新前端");
+    }
+
+    #[test]
+    fn program_status_working_is_not_hidden_as_short_command() {
+        let c = clock();
+        let mut e = AttentionEngine::new(AttentionConfig::default(), c.clone());
+        let snap = program_snapshot(
+            1,
+            vec![program_entry(
+                "",
+                ProgramState::Working,
+                Some("demo"),
+                None,
+                false,
+                None,
+            )],
+        );
+        e.apply_program_status("ws", 8, &snap, c.now());
+        let pane = pane_of(&e, "ws", 8);
+        assert_eq!(
+            pane.status,
+            PaneStatus::Working,
+            "7501 working 必须立即可见"
+        );
+        assert_eq!(pane.program_status_seen_at, c.now());
+    }
+
+    #[test]
+    fn program_status_notification_uses_status_text() {
+        let c = clock();
+        let mut e = AttentionEngine::new(AttentionConfig::default(), c.clone());
+        e.apply("ws", 9, &[], "screen line", 1);
+        let snap = program_snapshot(
+            1,
+            vec![program_entry(
+                "",
+                ProgramState::Blocked,
+                Some("claude"),
+                Some("Approve edit?"),
+                false,
+                None,
+            )],
+        );
+        e.apply_program_status("ws", 9, &snap, c.now());
+        let notifications = e.take_notifications();
+        assert_eq!(notifications.len(), 1);
+        assert_eq!(notifications[0].last_line, "Approve edit?");
     }
 }

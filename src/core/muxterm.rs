@@ -841,6 +841,7 @@ impl Muxterm {
         let mut pending: Vec<PendingAttentionUpdate> = Vec::new();
         let mut pending_agents: Vec<(u32, Option<PaneAgentInfo>)> = Vec::new();
         let mut pending_commands: Vec<PendingCommandActivity> = Vec::new();
+        let mut pending_program_status = Vec::new();
         let mut removed_panes = Vec::new();
         let mut attention_panes = Vec::new();
         let ws_name = ws_id.replica_id();
@@ -942,6 +943,9 @@ impl Muxterm {
                     continue;
                 }
                 let signals = ws.take_attention_signals(pane);
+                if let Some(program) = ws.pane_program_status_snapshot(pane) {
+                    pending_program_status.push((pane.0, program));
+                }
                 let (last_line, seq) = ws.pane_last_line_seq(pane);
                 // 屏幕快照只给已跟踪的 agent：给每个 PaneOutput 都跑
                 // visible_snapshot 会在 Cursor 洪峰时把 EventPump（常在主线程）
@@ -1015,6 +1019,21 @@ impl Muxterm {
                 seq,
                 screen.as_ref(),
             );
+        }
+        let now = std::time::Instant::now();
+        for (pane, program) in pending_program_status {
+            let error = self
+                .activity
+                .attention
+                .apply_program_status(&ws_name, pane, &program, now);
+            if error {
+                let events = self
+                    .activity
+                    .fail_program_records(ws_id, crate::protocol::PaneId(pane));
+                for event in events {
+                    self.push_activity_event(ws_id.clone(), event);
+                }
+            }
         }
         for pane in removed_panes {
             self.activity.attention.remove_pane(&ws_name, pane);

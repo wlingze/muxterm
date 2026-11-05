@@ -10,6 +10,7 @@
   "activity_working": "working",
   "activity_blocked": "blocked",
   "activity_done": "done",
+  "activity_failed": "failed",
   "activity_idle": "idle",
   "close_workspace": "Close workspace",
   "settings_new_window": "New window",

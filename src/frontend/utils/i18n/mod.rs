@@ -44,6 +44,7 @@ define_text_keys! {
     ActivityWorking => "activity_working",
     ActivityBlocked => "activity_blocked",
     ActivityDone => "activity_done",
+    ActivityFailed => "activity_failed",
     ActivityIdle => "activity_idle",
     CloseWorkspace => "close_workspace",
     SettingsNewWindow => "settings_new_window",

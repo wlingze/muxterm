@@ -23,13 +23,17 @@ pub enum PaneStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaneEvent {
     CommandStart,
-    CommandDone { exit_code: Option<u8> },
+    CommandDone {
+        exit_code: Option<u8>,
+    },
     AttentionRequest,
     UserInput,
     BecameVisible,
     RegexMatch,
     RegexClear,
     OutputActivity,
+    /// OSC 7501 / TTL 明确表示程序已空闲。
+    ProgramIdle,
 }
 
 /// 完整转移表：`transition(state, event)`。
@@ -64,6 +68,7 @@ pub fn transition(state: PaneStatus, event: PaneEvent) -> PaneStatus {
         (Blocked, UserInput) => Idle,
         (Blocked, RegexMatch) => Blocked,
         (Blocked, RegexClear) => Idle,
+        (_, ProgramIdle) => Idle,
         _ => state,
     }
 }
@@ -87,6 +92,7 @@ mod tests {
             RegexMatch,
             RegexClear,
             OutputActivity,
+            ProgramIdle,
         ];
         for state in [Unknown, Idle, Working, Done, Blocked] {
             for event in events {
@@ -117,6 +123,7 @@ mod tests {
                     (Blocked, UserInput) => Idle,
                     (Blocked, RegexMatch) => Blocked,
                     (Blocked, RegexClear) => Idle,
+                    (_, ProgramIdle) => Idle,
                     _ => state,
                 };
                 assert_eq!(got, want, "state={state:?} event={event:?}");
@@ -155,6 +162,23 @@ mod tests {
             PaneStatus::Blocked,
             "TUI 重绘不能把等待确认的 agent 改成 Working"
         );
+    }
+
+    #[test]
+    fn program_idle_clears_every_state() {
+        for state in [
+            PaneStatus::Unknown,
+            PaneStatus::Idle,
+            PaneStatus::Working,
+            PaneStatus::Done,
+            PaneStatus::Blocked,
+        ] {
+            assert_eq!(
+                transition(state, PaneEvent::ProgramIdle),
+                PaneStatus::Idle,
+                "state={state:?}"
+            );
+        }
     }
 
     #[test]

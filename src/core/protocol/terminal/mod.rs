@@ -5,6 +5,7 @@
 //! - [`input`]：键盘事件 → pty 字节流
 
 pub mod emulate;
+pub mod program_status;
 pub use crate::protocol::input;
 pub mod process;
 pub mod scrollback;

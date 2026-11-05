@@ -678,6 +678,90 @@ fn ffi_agent_process_and_screen_in_one_batch_use_screen_rules() {
 }
 
 #[test]
+fn ffi_osc7501_program_status_is_exported_and_drives_attention() {
+    let h = muxterm_catalog_new();
+    unsafe {
+        let id = WorkspaceId::new("local", None, "osc7501-fixture", "tmux", "repo");
+        let value = poll_attention_fixture(
+            h,
+            &id,
+            vec![StateChange::PaneOutput {
+                pane: PaneId(1),
+                data: b"\x1b]7501;state=working;title=claude;status=thinking\x07".to_vec(),
+            }],
+        );
+        let pane = &value["workspaces"][0]["panes"][0];
+        assert_eq!(pane["status"], "working", "{value}");
+        assert_eq!(pane["program_status"]["state"], "working", "{value}");
+        assert_eq!(pane["program_status"]["title"], "claude", "{value}");
+        assert_eq!(pane["program_status"]["status"], "thinking", "{value}");
+        assert_eq!(pane["program_status"]["sticky"], false, "{value}");
+
+        let value = poll_attention_fixture(
+            h,
+            &id,
+            vec![StateChange::PaneOutput {
+                pane: PaneId(1),
+                data: b"\x1b]7501;state=blocked;status=approve?\x1b\\".to_vec(),
+            }],
+        );
+        let pane = &value["workspaces"][0]["panes"][0];
+        assert_eq!(pane["status"], "blocked", "{value}");
+        assert_eq!(pane["program_status"]["state"], "blocked", "{value}");
+        assert_eq!(pane["program_status"]["status"], "approve?", "{value}");
+        assert_eq!(pane["program_status"]["title"], "claude", "{value}");
+        muxterm_free(h);
+    }
+}
+
+#[test]
+fn ffi_osc7501_error_marks_existing_command_activity_failed() {
+    let h = muxterm_new(c"local".as_ptr(), ptr::null(), ptr::null());
+    assert!(!h.is_null());
+    unsafe {
+        let id = WorkspaceId::new("local", None, "osc7501-error", "shell", "repo");
+        poll_attention_fixture(
+            h,
+            &id,
+            vec![StateChange::PaneOutput {
+                pane: PaneId(1),
+                data: b"\x1b]133;B\x07cargo build\r\n\x1b]133;C\x07".to_vec(),
+            }],
+        );
+        let raw = muxterm_activity_snapshot_json(h);
+        let text = CStr::from_ptr(raw).to_string_lossy().into_owned();
+        muxterm_free_string(raw);
+        let activity: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            activity["records"][0]["status"]["state"], "running",
+            "{text}"
+        );
+
+        let value = poll_attention_fixture(
+            h,
+            &id,
+            vec![StateChange::PaneOutput {
+                pane: PaneId(1),
+                data: b"\x1b]7501;state=error;title=cargo;status=compile failed\x07".to_vec(),
+            }],
+        );
+        let pane = &value["workspaces"][0]["panes"][0];
+        assert_eq!(pane["status"], "done", "{value}");
+        assert_eq!(pane["program_status"]["state"], "error", "{value}");
+
+        let raw = muxterm_activity_snapshot_json(h);
+        let text = CStr::from_ptr(raw).to_string_lossy().into_owned();
+        muxterm_free_string(raw);
+        let activity: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            activity["records"][0]["status"]["state"], "failed",
+            "7501 error 必须把已有 command 标成 failed：{text}"
+        );
+        muxterm_free(h);
+    }
+}
+
+#[test]
 fn ffi_foreground_observation_wins_over_completed_agent_command_marks() {
     let h = muxterm_catalog_new();
     unsafe {
