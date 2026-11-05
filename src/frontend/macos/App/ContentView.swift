@@ -35,7 +35,6 @@ final class ContentView: NSView {
 
     private var topConstraints: [NSLayoutConstraint] = []
     private var bottomConstraints: [NSLayoutConstraint] = []
-    private var updateBannerConstraints: [NSLayoutConstraint] = []
     private var position: TabBarPosition = .bottom
 
     init(terminalManager: TerminalManager) {
@@ -110,7 +109,9 @@ final class ContentView: NSView {
         addSubview(connectProgressOverlay)
         addSubview(replyOverlayContainer)
         addSubview(updateBanner)
-        updateBanner.translatesAutoresizingMaskIntoConstraints = false
+        // HUD 是覆盖层，手动布局；不挂 Auto Layout，避免它的内容宽度
+        // 参与主窗口的最小宽度计算。
+        updateBanner.translatesAutoresizingMaskIntoConstraints = true
         addSubview(imagePasteBanner)
         imagePasteBanner.translatesAutoresizingMaskIntoConstraints = false
 
@@ -167,20 +168,10 @@ final class ContentView: NSView {
             imagePasteBanner.trailingAnchor.constraint(equalTo: paneLayout.trailingAnchor, constant: -12),
         ])
 
-        updateBannerConstraints = [
-            updateBanner.leadingAnchor.constraint(
-                greaterThanOrEqualTo: paneLayout.leadingAnchor,
-                constant: 16
-            ),
-            updateBanner.trailingAnchor.constraint(equalTo: paneLayout.trailingAnchor, constant: -16),
-            updateBanner.bottomAnchor.constraint(equalTo: imagePasteBanner.topAnchor, constant: -8),
-        ]
-        // 隐藏的 HUD 不能参与窗口最小尺寸计算；否则侧栏 + 360pt 卡片会把
-        // 用户主动收窄的窗口重新撑宽。
-        updateBanner.onVisibilityChanged = { [weak self] visible in
-            self?.setUpdateBannerVisible(visible)
+        updateBanner.onVisibilityChanged = { [weak self] _ in
+            self?.needsLayout = true
+            self?.layoutSubtreeIfNeeded()
         }
-        setUpdateBannerVisible(false)
 
         // 顶部：status | pane
         topConstraints = [
@@ -230,11 +221,26 @@ final class ContentView: NSView {
         needsLayout = true
     }
 
-    private func setUpdateBannerVisible(_ visible: Bool) {
-        for constraint in updateBannerConstraints {
-            constraint.isActive = visible
+    override func layout() {
+        super.layout()
+        layoutUpdateBanner()
+    }
+
+    private func layoutUpdateBanner() {
+        guard !updateBanner.isHidden, bounds.width > 0 else { return }
+        let margin: CGFloat = 16
+        let width = min(360, max(0, bounds.width - margin * 2))
+        guard width > 0 else { return }
+        updateBanner.layoutSubtreeIfNeeded()
+        let height = max(updateBanner.fittingSize.height, 60)
+        let x = bounds.maxX - width - margin
+        let y: CGFloat
+        if !imagePasteBanner.isHidden, imagePasteBanner.frame.height > 0 {
+            y = imagePasteBanner.frame.maxY + 8
+        } else {
+            y = paneLayout.frame.minY + 12
         }
-        needsLayout = true
+        updateBanner.frame = NSRect(x: x, y: y, width: width, height: height)
     }
 
     func applyStatusBar(_ snapshot: StatusBarSnapshot?) {

@@ -125,10 +125,7 @@ final class UpdateBannerView: NSView {
         contentStack.addArrangedSubview(buttonStack)
         addSubview(contentStack)
 
-        let minWidth = widthAnchor.constraint(greaterThanOrEqualToConstant: 300)
-        minWidth.priority = .defaultLow
         NSLayoutConstraint.activate([
-            minWidth,
             widthAnchor.constraint(lessThanOrEqualToConstant: 360),
             contentStack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
             contentStack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
