@@ -11,10 +11,12 @@ use crate::frontend::gpui::model::sidebar::{self, Indicator, SidebarItem};
 use crate::frontend::utils::corebridge::ClientTab;
 
 /// tab 栏位置：来自 `[ui] tab_bar_position`。
+///
+/// 缺省在底部 —— 与 macOS `ContentView.position = .bottom` 一致。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TabBarPosition {
-    #[default]
     Top,
+    #[default]
     Bottom,
 }
 
@@ -73,6 +75,8 @@ impl TabBarStyle {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TabBarItem {
     pub tab_id: u32,
+    /// 1-based 位置，tab 标题的前缀（macOS `StatusBarTabTitle.display`）。
+    pub index: u32,
     pub title: String,
     pub active: bool,
     /// 多 pane 时标题后缀 `(n)`。
@@ -82,12 +86,16 @@ pub struct TabBarItem {
 }
 
 impl TabBarItem {
-    /// 标题文本：活动 tab 与多 pane 布局都要一眼看出。
+    /// tab 标题：`1  zsh`。
+    ///
+    /// 对照 macOS `StatusBarTabTitle.display(index:name:)`：编号 + 两个空格 +
+    /// 名字；名字为空时只显示编号。pane 数不进标题（Swift 也不放）。
     pub fn label(&self) -> String {
-        if self.pane_count > 1 {
-            format!("{} ({})", self.title, self.pane_count)
+        let name = self.title.trim();
+        if name.is_empty() {
+            self.index.to_string()
         } else {
-            self.title.clone()
+            format!("{}  {}", self.index, name)
         }
     }
 }
@@ -106,8 +114,10 @@ pub fn build(
 ) -> Vec<TabBarItem> {
     let activities = sidebar::tab_activities(workspaces, attention, hidden);
     tabs.iter()
-        .map(|tab| TabBarItem {
+        .enumerate()
+        .map(|(position, tab)| TabBarItem {
             tab_id: tab.id,
+            index: position as u32 + 1,
             title: tab.name.clone(),
             active: tab.is_active,
             pane_count: pane_counts.get(&tab.id).copied().unwrap_or(0),
@@ -194,7 +204,8 @@ mod tests {
     /// 对照 `TabBarPosition`。
     #[test]
     fn tab_bar_position_round_trips() {
-        assert_eq!(TabBarPosition::default(), TabBarPosition::Top);
+        // 对照 macOS `ContentView.position = .bottom`：缺省底部。
+        assert_eq!(TabBarPosition::default(), TabBarPosition::Bottom);
         assert_eq!(
             TabBarPosition::from_raw("bottom"),
             Some(TabBarPosition::Bottom)
@@ -203,22 +214,34 @@ mod tests {
         assert_eq!(TabBarPosition::from_raw(""), None);
     }
 
-    /// 多 pane 加数量后缀，单 pane 不加。
+    /// tab 标题 = 编号 + 两个空格 + 名字。
+    ///
+    /// 对照 `StatusBarTests.testDisplayFormatsIndexAndName`：
+    /// `StatusBarTabTitle.display(index: 1, name: "zsh") == "1  zsh"`，
+    /// 名字为空时只剩编号。
     #[test]
-    fn labels_only_add_the_count_for_split_tabs() {
+    fn tab_titles_follow_macos_numbering() {
         let item = TabBarItem {
             tab_id: 1,
-            title: "work".into(),
+            index: 1,
+            title: "zsh".into(),
             active: true,
             pane_count: 1,
             activity: None,
         };
-        assert_eq!(item.label(), "work");
+        assert_eq!(item.label(), "1  zsh");
+        let blank = TabBarItem {
+            index: 2,
+            title: "   ".into(),
+            ..item
+        };
+        assert_eq!(blank.label(), "2");
+        // pane 数不进标题。
         let split = TabBarItem {
             pane_count: 3,
             ..item
         };
-        assert_eq!(split.label(), "work (3)");
+        assert_eq!(split.label(), "1  zsh");
     }
 
     /// working 的 tab 亮灯，idle 的 tab 不亮。
@@ -251,7 +274,7 @@ mod tests {
         );
         assert_eq!(items[0].activity, None);
         assert_eq!(items[1].activity, None);
-        assert_eq!(items[1].label(), "busy (2)");
+        assert_eq!(items[1].label(), "2  busy");
     }
 
     /// 指示灯视觉身份：working 空心环，其余实心。

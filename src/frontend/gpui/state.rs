@@ -55,6 +55,14 @@ pub struct GpuiApp {
     wheel_accumulators: HashMap<SurfaceKey, f32>,
     focus_handle: FocusHandle,
     theme: Theme,
+    /// 渲染期量出来的格子像素尺寸；Core 上报与鼠标命中共用。
+    cell: (f32, f32),
+    /// 窗口级字符网格（`refresh-client -C`）上一次上报的值。
+    last_client_size: Option<(String, u16, u16)>,
+    /// `[font] size` 的配置值：Cmd-0 恢复到这个字号。
+    configured_font_size: f32,
+    /// Cmd-Shift-P 命令面板。
+    pub(crate) palette: crate::frontend::gpui::chrome::palette_view::PaletteState,
     status: String,
     /// IME 组合中的文本（尚未提交）。只在聚焦 pane 的光标处画。
     marked_text: String,
@@ -108,6 +116,22 @@ impl GpuiApp {
             .active_workspace_id()
             .map(str::to_string)
             .or_else(|| store.workspace_ids().next().map(str::to_string));
+        // theme / font 一律来自 Core 快照；拿不到就退回浅色默认，不自己解析配置名。
+        let theme = pump
+            .client()
+            .config_describe()
+            .ok()
+            .map(|snapshot| theme_from_snapshot(&snapshot))
+            .unwrap_or_default();
+        let cell = (theme.cell_width(), theme.cell_height());
+        let configured_font_size = theme.font_size;
+        // `[ui] tab_bar_position`：Swift 默认底部；gpui 之前默认顶部，这里对齐。
+        let tab_bar_position = pump
+            .client()
+            .config_describe()
+            .ok()
+            .map(|snapshot| tab_bar_position_from_snapshot(&snapshot))
+            .unwrap_or_default();
         let mut app = Self {
             pump: Some(pump),
             store,
@@ -133,19 +157,63 @@ impl GpuiApp {
             composer_key: None,
             composer_status: None,
             search_snapshot: None,
-            tab_bar_position: crate::frontend::gpui::chrome::tab_bar_view::TabBarPosition::default(
-            ),
+            tab_bar_position,
             sidebar_visible: true,
             attention: None,
             sidebar_expansion:
                 crate::frontend::gpui::chrome::sidebar_view::SectionExpansion::default(),
             hidden_commands: std::collections::HashSet::new(),
-            theme: Theme::default(),
+            palette: crate::frontend::gpui::chrome::palette_view::PaletteState::default(),
+            theme,
+            cell,
+            last_client_size: None,
+            configured_font_size,
             status: String::from("muxterm · gpui"),
         };
         app.focus_default_pane();
         app.start_pump(cx);
         app
+    }
+
+    /// 重新读一次 Core 配置并刷新主题/字体（设置 Apply 之后调用）。
+    pub fn reload_appearance(&mut self, cx: &mut Context<Self>) {
+        let Some(snapshot) = self
+            .pump
+            .as_ref()
+            .and_then(|pump| pump.client().config_describe().ok())
+        else {
+            return;
+        };
+        self.apply_appearance_snapshot(&snapshot, cx);
+    }
+
+    /// 用一份配置快照重建主题与字体。终端调色板与 chrome 明暗都只由它决定。
+    pub fn apply_appearance_snapshot(
+        &mut self,
+        snapshot: &crate::frontend::utils::corebridge::ClientConfigSnapshot,
+        cx: &mut Context<Self>,
+    ) {
+        let theme = theme_from_snapshot(snapshot);
+        self.cell = (theme.cell_width(), theme.cell_height());
+        self.configured_font_size = theme.font_size;
+        self.theme = theme;
+        cx.notify();
+    }
+
+    /// 渲染期从 `TextSystem` 量出真实字形尺寸。
+    ///
+    /// 前端上报给 Core 的 cols/rows 与鼠标命中都用这个值，所以不能长期停在
+    /// 0.6em 的估算上（字体一换就会错列）。
+    pub fn measure_cell(&mut self, window: &mut Window) {
+        let (width, height) = measure_cell_size(&self.theme, window.text_system());
+        if (width - self.cell.0).abs() > 0.01 || (height - self.cell.1).abs() > 0.01 {
+            self.cell = (width, height);
+        }
+    }
+
+    /// 当前格子的像素尺寸（宽, 高）。
+    pub fn cell(&self) -> (f32, f32) {
+        self.cell
     }
 
     fn start_pump(&mut self, cx: &mut Context<Self>) {
@@ -273,7 +341,14 @@ impl GpuiApp {
             sidebar_expansion:
                 crate::frontend::gpui::chrome::sidebar_view::SectionExpansion::default(),
             hidden_commands: std::collections::HashSet::new(),
+            palette: crate::frontend::gpui::chrome::palette_view::PaletteState::default(),
             theme: Theme::default(),
+            cell: (
+                Theme::default().cell_width(),
+                Theme::default().cell_height(),
+            ),
+            last_client_size: None,
+            configured_font_size: crate::frontend::gpui::theme::DEFAULT_FONT_SIZE,
             status: String::from("muxterm · gpui"),
         };
         app.focus_default_pane();
@@ -439,6 +514,7 @@ impl GpuiApp {
     pub fn run_action(
         &mut self,
         action: crate::frontend::gpui::model::shortcuts::KeyAction,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
         use crate::frontend::gpui::model::shortcuts::KeyAction;
@@ -448,6 +524,24 @@ impl GpuiApp {
                 cx.quit();
                 true
             }
+            KeyAction::CloseWindow => {
+                window.remove_window();
+                true
+            }
+            KeyAction::ToggleWindowFullscreen => {
+                window.toggle_fullscreen();
+                true
+            }
+            KeyAction::ToggleWindowZoom => {
+                window.zoom_window();
+                true
+            }
+            KeyAction::IncreaseFontSize
+            | KeyAction::DecreaseFontSize
+            | KeyAction::ResetFontSize => {
+                self.zoom_font(action, cx);
+                true
+            }
             KeyAction::NewTab => {
                 self.commands.push(ClientCommand::Task {
                     workspace_id: self.visible.clone(),
@@ -455,17 +549,83 @@ impl GpuiApp {
                 });
                 true
             }
-            KeyAction::SplitHorizontal | KeyAction::SplitVertical => {
+            KeyAction::SplitHorizontal | KeyAction::SplitVertical | KeyAction::SplitAuto => {
                 let Some(pane_id) = self.focused_pane else {
                     return false;
                 };
                 // Swift：Cmd-D 左右、Cmd-Shift-D 上下。水平布局 = 并排。
-                let horizontal = action == KeyAction::SplitHorizontal;
+                // `split_auto` 按像素长宽比选方向（`AutoSplitPolicy`）。
+                let horizontal = match action {
+                    KeyAction::SplitHorizontal => true,
+                    KeyAction::SplitVertical => false,
+                    _ => {
+                        let (cols, rows) = self.focused_pane_grid_size().unwrap_or((80, 24));
+                        let (cell_width, cell_height) = self.cell;
+                        crate::frontend::gpui::model::layout_projection::auto_split_horizontal(
+                            i32::from(cols),
+                            i32::from(rows),
+                            f64::from(cell_width),
+                            f64::from(cell_height),
+                        )
+                    }
+                };
                 self.commands.push(ClientCommand::Task {
                     workspace_id: self.visible.clone(),
                     task: ClientTask::SplitPane {
                         pane_id,
                         horizontal,
+                    },
+                });
+                true
+            }
+            KeyAction::ClosePane => {
+                let Some(pane_id) = self.focused_pane else {
+                    return false;
+                };
+                self.commands.push(ClientCommand::Task {
+                    workspace_id: self.visible.clone(),
+                    task: ClientTask::ClosePane { pane_id },
+                });
+                true
+            }
+            KeyAction::CloseTab => {
+                let Some(tab_id) = self.active_tab_id() else {
+                    return false;
+                };
+                self.commands.push(ClientCommand::Task {
+                    workspace_id: self.visible.clone(),
+                    task: ClientTask::CloseTab { tab_id },
+                });
+                true
+            }
+            KeyAction::TogglePaneFullscreen => {
+                let Some(pane_id) = self.focused_pane else {
+                    return false;
+                };
+                self.commands.push(ClientCommand::Task {
+                    workspace_id: self.visible.clone(),
+                    task: ClientTask::TogglePaneFullscreen { pane_id },
+                });
+                true
+            }
+            KeyAction::CycleLayout => {
+                let Some(tab_id) = self.active_tab_id() else {
+                    return false;
+                };
+                self.commands.push(ClientCommand::Task {
+                    workspace_id: self.visible.clone(),
+                    task: ClientTask::CycleLayout { tab_id },
+                });
+                true
+            }
+            KeyAction::NextPane | KeyAction::PrevPane => {
+                let next = action == KeyAction::NextPane;
+                self.commands.push(ClientCommand::Task {
+                    workspace_id: self.visible.clone(),
+                    task: if next {
+                        ClientTask::NextPane
+                    } else {
+                        ClientTask::PreviousPane
                     },
                 });
                 true
@@ -548,6 +708,11 @@ impl GpuiApp {
                 );
                 true
             }
+            // Cmd-Shift-P：与 Swift 的 CommandPalette 同一条目录。
+            KeyAction::CommandPalette => {
+                self.open_palette(cx);
+                true
+            }
             KeyAction::Attention => {
                 self.show_panel(crate::frontend::gpui::model::panel::PanelTab::Attention, cx);
                 true
@@ -569,6 +734,156 @@ impl GpuiApp {
         self.commands
             .push(ClientCommand::CloseWorkspace(workspace_id));
         cx.notify();
+    }
+
+    // ------------------------------------------------------------------
+    // Cmd-Shift-P 命令面板
+    // ------------------------------------------------------------------
+
+    /// 面板里的命令目录。tab 名字来自当前 workspace，顺序与 macOS 一致。
+    pub fn palette_items(&self) -> Vec<crate::frontend::gpui::chrome::palette_view::PaletteItem> {
+        let tabs: Vec<String> = self.tabs().into_iter().map(|tab| tab.name).collect();
+        crate::frontend::gpui::chrome::palette_view::root_items(&tabs)
+    }
+
+    /// 过滤后的可见命令。
+    pub fn palette_visible(&self) -> Vec<crate::frontend::gpui::chrome::palette_view::PaletteItem> {
+        crate::frontend::gpui::chrome::palette_view::filter(
+            &self.palette_items(),
+            &self.palette.query,
+        )
+        .into_iter()
+        .cloned()
+        .collect()
+    }
+
+    /// 命令面板是否打开。
+    pub fn palette_open(&self) -> bool {
+        self.palette.open
+    }
+
+    /// 命令面板当前选中下标（过滤后列表内）。
+    pub fn palette_selected(&self) -> usize {
+        self.palette.selected
+    }
+
+    pub fn open_palette(&mut self, cx: &mut Context<Self>) {
+        self.palette.show();
+        cx.notify();
+    }
+
+    pub fn close_palette(&mut self, cx: &mut Context<Self>) {
+        self.palette.dismiss();
+        cx.notify();
+    }
+
+    pub fn palette_push(&mut self, text: &str, cx: &mut Context<Self>) {
+        let visible = self.palette_visible().len();
+        for ch in text.chars() {
+            self.palette.push_char(ch, visible);
+        }
+        // 过滤结果变少时选中项也要跟着夹回来。
+        let visible = self.palette_visible().len();
+        self.palette.move_selection(0, visible);
+        cx.notify();
+    }
+
+    pub fn palette_backspace(&mut self, cx: &mut Context<Self>) {
+        let visible = self.palette_visible().len();
+        self.palette.backspace(visible);
+        cx.notify();
+    }
+
+    pub fn move_palette_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let visible = self.palette_visible().len();
+        self.palette.move_selection(delta, visible);
+        cx.notify();
+    }
+
+    /// 执行选中命令。不可执行项只关面板，不编造副作用。
+    pub fn run_selected_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(item) = self.palette_visible().get(self.palette.selected).cloned() else {
+            self.close_palette(cx);
+            return;
+        };
+        self.run_palette_action(item.action, window, cx);
+    }
+
+    /// 面板行点击与回车共用一条执行路径。
+    pub fn run_palette_action(
+        &mut self,
+        action: crate::frontend::gpui::chrome::palette_view::PaletteAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::frontend::gpui::chrome::palette_view::PaletteAction;
+        self.close_palette(cx);
+        match action {
+            PaletteAction::KeyAction(action) => {
+                self.run_action(action, window, cx);
+            }
+            PaletteAction::TabBarTop => self.set_tab_bar_position(
+                crate::frontend::gpui::chrome::tab_bar_view::TabBarPosition::Top,
+                cx,
+            ),
+            PaletteAction::TabBarBottom => self.set_tab_bar_position(
+                crate::frontend::gpui::chrome::tab_bar_view::TabBarPosition::Bottom,
+                cx,
+            ),
+            PaletteAction::Unavailable => {}
+        }
+    }
+
+    /// tab 栏位置：改状态并写回 Core 配置（`[ui] tab_bar_position`）。
+    pub fn set_tab_bar_position(
+        &mut self,
+        position: crate::frontend::gpui::chrome::tab_bar_view::TabBarPosition,
+        cx: &mut Context<Self>,
+    ) {
+        self.tab_bar_position = position;
+        self.commands.push(ClientCommand::ConfigApply {
+            path: "ui.tab_bar_position".to_string(),
+            value: serde_json::Value::String(
+                match position {
+                    crate::frontend::gpui::chrome::tab_bar_view::TabBarPosition::Top => "top",
+                    crate::frontend::gpui::chrome::tab_bar_view::TabBarPosition::Bottom => "bottom",
+                }
+                .to_string(),
+            ),
+        });
+        cx.notify();
+    }
+
+    /// Cmd +/-/0：字号缩放只改前端主题，不写配置文件（Swift 同样只改内存）。
+    pub fn zoom_font(
+        &mut self,
+        action: crate::frontend::gpui::model::shortcuts::KeyAction,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::frontend::gpui::model::shortcuts::KeyAction;
+        self.theme = match action {
+            KeyAction::IncreaseFontSize => self.theme.zoomed(1),
+            KeyAction::DecreaseFontSize => self.theme.zoomed(-1),
+            _ => {
+                let mut theme = self.theme.clone();
+                theme.font_size = self.configured_font_size;
+                theme
+            }
+        };
+        self.cell = (self.theme.cell_width(), self.theme.cell_height());
+        cx.notify();
+    }
+
+    /// 聚焦 pane 的 cols/rows（`split_auto` 判断方向用）。
+    pub fn focused_pane_grid_size(&self) -> Option<(u16, u16)> {
+        let workspace = self.visible.as_deref()?;
+        let pane_id = self.focused_pane?;
+        let view = self.store.workspace(workspace)?;
+        view.panes
+            .values()
+            .flatten()
+            .find(|pane| pane.id == pane_id)
+            .map(|pane| (pane.cols, pane.rows))
     }
 
     /// tab 栏投影：活动指示来自 attention，数量后缀来自 pane 数。
@@ -1200,8 +1515,7 @@ impl GpuiApp {
     /// 候选窗锚点走 `ime::candidate_anchor`：最后一列退回上一行行首。
     pub fn caret_rect(&self) -> Option<(f32, f32, f32, f32)> {
         let (row, col, cols) = self.focused_cursor()?;
-        let cell_width = self.theme.cell_width();
-        let cell_height = self.theme.cell_height();
+        let (cell_width, cell_height) = self.cell;
         let caret = crate::frontend::gpui::model::ime::CaretRect {
             x: col as f32 * cell_width,
             y: row as f32 * cell_height,
@@ -1250,6 +1564,29 @@ impl GpuiApp {
         }
     }
 
+    /// 窗口级字符网格上报（tmux `refresh-client -C`）。
+    ///
+    /// 只报 pane 尺寸不够：控制 runtime 会一直等 `ResizeClient` 才发出
+    /// attach 首屏，于是窗口里有 pane 却永远空白（Core 会跳过 80x24 的
+    /// 占位尺寸）。
+    pub fn apply_client_size(&mut self, cols: u16, rows: u16) {
+        let Some(workspace) = self.visible.clone() else {
+            return;
+        };
+        let cols = cols.max(2);
+        let rows = rows.max(1);
+        if self.last_client_size.as_ref() == Some(&(workspace.clone(), cols, rows)) {
+            return;
+        }
+        self.last_client_size = Some((workspace.clone(), cols, rows));
+        self.commands.push(ClientCommand::Resize {
+            workspace_id: Some(workspace),
+            pane_id: None,
+            cols,
+            rows,
+        });
+    }
+
     /// 滚轮：先问服务端，再看应用要不要鼠标，最后才动本地历史。
     pub fn handle_wheel(&mut self, wheel: WheelInput, cx: &mut Context<Self>) {
         let WheelInput {
@@ -1264,7 +1601,7 @@ impl GpuiApp {
             return;
         };
         let key = (workspace.clone(), pane_id);
-        let cell_height = self.theme.cell_height();
+        let (_, cell_height) = self.cell;
         let accumulator = self.wheel_accumulators.entry(key.clone()).or_insert(0.0);
         let lines = wheel_lines(delta_y, precise, cell_height, accumulator);
         let Some(surface) = self.surfaces.get(&key) else {
@@ -1345,6 +1682,15 @@ impl GpuiApp {
         cx.notify();
     }
 
+    /// 关当前 workspace 的某个 tab（tab 栏 ✕ 与命令面板共用）。
+    pub fn close_tab(&mut self, tab_id: u32, cx: &mut Context<Self>) {
+        self.commands.push(ClientCommand::Task {
+            workspace_id: self.visible.clone(),
+            task: crate::frontend::utils::corebridge::ClientTask::CloseTab { tab_id },
+        });
+        cx.notify();
+    }
+
     pub fn focus_pane(&mut self, pane_id: u32, cx: &mut Context<Self>) {
         if self.focused_pane == Some(pane_id) {
             return;
@@ -1358,7 +1704,12 @@ impl GpuiApp {
     }
 
     /// 键 → 终端字节。Cmd 组合留给 chrome。
-    pub fn handle_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+    pub fn handle_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let keystroke = &event.keystroke;
         let chord = crate::frontend::gpui::model::shortcuts::KeyChord {
             command: keystroke.modifiers.platform,
@@ -1405,6 +1756,55 @@ impl GpuiApp {
                     self.update_target_editor(|editor| editor.append(focus, text), cx);
                     return;
                 }
+            }
+        }
+
+        // 命令面板打开时独占按键：Esc 关闭、上下键移动、回车执行，
+        // 其余可打印字符进查询串（与 macOS `NSSearchField` 行为一致）。
+        if self.palette.open {
+            let plain = !keystroke.modifiers.platform && !keystroke.modifiers.control;
+            let control_only = keystroke.modifiers.control
+                && !keystroke.modifiers.platform
+                && !keystroke.modifiers.alt;
+            match keystroke.key.as_str() {
+                "escape" => {
+                    self.close_palette(cx);
+                    return;
+                }
+                "enter" => {
+                    self.run_selected_palette(window, cx);
+                    return;
+                }
+                "up" => {
+                    self.move_palette_selection(-1, cx);
+                    return;
+                }
+                "down" => {
+                    self.move_palette_selection(1, cx);
+                    return;
+                }
+                "backspace" => {
+                    self.palette_backspace(cx);
+                    return;
+                }
+                "p" | "n" if control_only => {
+                    // Emacs 风格：Ctrl-P / Ctrl-N 与上下键同一条选择路径。
+                    self.move_palette_selection(if keystroke.key == "n" { 1 } else { -1 }, cx);
+                    return;
+                }
+                _ => {}
+            }
+            if plain {
+                if let Some(text) = keystroke.key_char.as_deref() {
+                    if !text.is_empty() && text.chars().all(|ch| !ch.is_control()) {
+                        self.palette_push(text, cx);
+                        return;
+                    }
+                }
+            }
+            // 面板打开时 Cmd 组合继续走全局动作，其余键不再漏进终端。
+            if !keystroke.modifiers.platform {
+                return;
             }
         }
 
@@ -1455,7 +1855,7 @@ impl GpuiApp {
         }
 
         if let Some(action) = crate::frontend::gpui::model::shortcuts::builtin_action(&chord) {
-            if self.run_action(action, cx) {
+            if self.run_action(action, window, cx) {
                 cx.notify();
                 return;
             }
@@ -1665,4 +2065,69 @@ fn client_target_for(config: &TargetConfig) -> crate::frontend::utils::corebridg
         session: config.session.clone(),
         socket: config.socket.clone(),
     }
+}
+
+/// Core 配置快照 → 主题。
+///
+/// `values` 解出 `[font] family/size`；`resolved_theme` 是 Core 解析好的终端
+/// 调色板（含 `theme.name = "system"` 的明暗解析）。两者缺一就退回浅色默认。
+pub(crate) fn theme_from_snapshot(
+    snapshot: &crate::frontend::utils::corebridge::ClientConfigSnapshot,
+) -> Theme {
+    let font = serde_json::from_value::<crate::frontend::utils::corebridge::ClientConfig>(
+        snapshot.values.clone(),
+    )
+    .map(|config| config.font)
+    .unwrap_or_else(|_| crate::frontend::utils::corebridge::ClientFontConfig {
+        family: crate::frontend::gpui::theme::DEFAULT_FONT_FAMILY.to_string(),
+        size: crate::frontend::gpui::theme::DEFAULT_FONT_SIZE,
+        fallback: Vec::new(),
+    });
+    Theme::from_config(snapshot.resolved_theme.as_ref(), &font)
+}
+
+/// 从 `TextSystem` 量出真实的等宽格子尺寸。
+///
+/// 宽 = 字符 advance × 字距；高 = (ascent + descent) × 行距。字体不存在时
+/// gpui 会退回 fallback 字体栈，量出来的仍然是它实际绘制的那一份。
+fn measure_cell_size(theme: &Theme, text_system: &gpui::WindowTextSystem) -> (f32, f32) {
+    use gpui::px;
+    let font = gpui::font(theme.font_family.clone());
+    let font_id = text_system.resolve_font(&font);
+    let size = px(theme.font_size);
+    let width = text_system
+        .advance(font_id, size, 'M')
+        .map(|advance| f32::from(advance.width))
+        .unwrap_or_else(|_| theme.cell_width() / theme.column_spacing)
+        * theme.column_spacing;
+    let height = {
+        let ascent = f32::from(text_system.ascent(font_id, size));
+        let descent = f32::from(text_system.descent(font_id, size));
+        // gpui 的 descent 是「基线到字形底部」的带符号值（通常为负），
+        // 直接相加会把行高压成 0.7 倍，整行字被裁掉一半。
+        let line = ascent + descent.abs();
+        if line > 0.0 {
+            line
+        } else {
+            theme.cell_height() / theme.line_spacing
+        }
+    } * theme.line_spacing;
+    (width.max(1.0), height.max(1.0))
+}
+
+/// `[ui] tab_bar_position` → tab 栏位置。缺省跟随 macOS：底部。
+pub(crate) fn tab_bar_position_from_snapshot(
+    snapshot: &crate::frontend::utils::corebridge::ClientConfigSnapshot,
+) -> crate::frontend::gpui::chrome::tab_bar_view::TabBarPosition {
+    use crate::frontend::gpui::chrome::tab_bar_view::TabBarPosition;
+    snapshot
+        .values
+        .get("ui")
+        .and_then(|ui| ui.get("tab_bar_position"))
+        .and_then(serde_json::Value::as_str)
+        .map(|value| match value.trim().to_ascii_lowercase().as_str() {
+            "top" => TabBarPosition::Top,
+            _ => TabBarPosition::Bottom,
+        })
+        .unwrap_or(TabBarPosition::Bottom)
 }

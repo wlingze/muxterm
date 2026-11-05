@@ -233,6 +233,10 @@ fn closing_a_workspace_queues_the_close_command(cx: &mut TestAppContext) {
         })
     });
     let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    let commands: Vec<ClientCommand> = commands
+        .into_iter()
+        .filter(|command| !matches!(command, ClientCommand::Resize { .. }))
+        .collect();
     assert_eq!(
         commands,
         vec![ClientCommand::CloseWorkspace(
@@ -247,6 +251,10 @@ fn switching_a_tab_queues_the_tab_switch(cx: &mut TestAppContext) {
     let (view, cx) = mount(store_with_two_workspaces(), cx);
     cx.update(|_, cx| view.update(cx, |app, cx| app.select_tab(7, cx)));
     let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    let commands: Vec<ClientCommand> = commands
+        .into_iter()
+        .filter(|command| !matches!(command, ClientCommand::Resize { .. }))
+        .collect();
     assert!(matches!(
         commands.first(),
         Some(ClientCommand::Task {
@@ -329,7 +337,8 @@ fn tab_bar_lights_the_busy_tab(cx: &mut TestAppContext) {
     assert_eq!(items[0].activity, None, "没活动的 tab 不点亮");
     assert_eq!(items[1].title, "busy");
     assert_eq!(items[1].activity, Some(Indicator::Working));
-    assert_eq!(items[1].label(), "busy");
+    // tab 标题是「编号 + 两个空格 + 名字」：对照 `StatusBarTabTitle.display`。
+    assert_eq!(items[1].label(), "2  busy");
 }
 
 /// 状态栏徽标只数主导色的条目，不是所有未读之和。
@@ -372,10 +381,11 @@ fn status_badge_counts_the_dominant_colour(cx: &mut TestAppContext) {
 
 /// tab 栏位置来自 `[ui] tab_bar_position`，默认顶部。
 #[gpui::test]
-fn tab_bar_position_defaults_to_top(cx: &mut TestAppContext) {
+fn tab_bar_position_defaults_to_bottom(cx: &mut TestAppContext) {
+    // 对照 macOS `ContentView.position = .bottom`。
     let (view, cx) = mount(store_with_two_workspaces(), cx);
     let position = cx.update(|_, cx| view.update(cx, |app, _| app.tab_bar_position()));
-    assert_eq!(position, TabBarPosition::Top);
+    assert_eq!(position, TabBarPosition::Bottom);
 }
 
 /// Cmd-P（QuickConnect）打开统一面板并停在 Workspaces。
@@ -809,4 +819,157 @@ fn ssh_project_without_a_host_shows_an_error(cx: &mut TestAppContext) {
     );
     assert!(still_open, "校验失败不能关窗口");
     assert!(commands.is_empty(), "校验失败不发命令：{commands:?}");
+}
+
+// ---------------------------------------------------------------------------
+// Cmd-Shift-P 命令面板
+// ---------------------------------------------------------------------------
+
+/// Cmd-Shift-P 打开命令面板；再按一次 Esc 收起。
+///
+/// 对照 macOS `AppE2ETests`：`openCommandPalette` → `commandPalette.testIsPresented()`，
+/// 取消走 `dismiss()`。
+#[gpui::test]
+fn cmd_shift_p_opens_the_command_palette(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.simulate_keystrokes("cmd-shift-p");
+    assert!(
+        cx.update(|_, cx| view.update(cx, |app, _| app.palette_open())),
+        "Cmd-Shift-P 必须打开命令面板"
+    );
+    cx.simulate_keystrokes("escape");
+    assert!(
+        !cx.update(|_, cx| view.update(cx, |app, _| app.palette_open())),
+        "Esc 必须收起命令面板"
+    );
+}
+
+/// 面板目录带 tab 切换项，过滤是整串包含。
+#[gpui::test]
+fn palette_lists_tabs_and_filters_by_query(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.update(|_, cx| view.update(cx, |app, cx| app.open_palette(cx)));
+    let titles: Vec<String> = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            app.palette_items()
+                .into_iter()
+                .map(|item| item.title)
+                .collect()
+        })
+    });
+    assert!(titles.iter().any(|title| title == "Switch to Tab 1"));
+    assert!(titles.iter().any(|title| title == "New Tab"));
+
+    cx.update(|_, cx| view.update(cx, |app, cx| app.palette_push("new tab", cx)));
+    let visible: Vec<String> = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            app.palette_visible()
+                .into_iter()
+                .map(|item| item.title)
+                .collect()
+        })
+    });
+    assert_eq!(visible, vec!["New Tab".to_string()]);
+}
+
+/// 回车执行选中项：New Tab 走 `ClientTask::NewTab`，面板同时收起。
+#[gpui::test]
+fn palette_enter_runs_the_selected_command(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.simulate_keystrokes("cmd-shift-p");
+    // 用查询把目标收窄到唯一一条；空格的按键模拟不通用，直接写查询串。
+    cx.update(|_, cx| view.update(cx, |app, cx| app.palette_push("new tab", cx)));
+    let visible = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            app.palette_visible()
+                .into_iter()
+                .map(|item| item.title)
+                .collect::<Vec<_>>()
+        })
+    });
+    assert_eq!(visible, vec!["New Tab".to_string()]);
+    cx.simulate_keystrokes("enter");
+    let (open, commands) = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            (app.palette_open(), app.take_commands_for_tests())
+        })
+    });
+    assert!(!open, "执行后面板必须收起");
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            ClientCommand::Task {
+                task: ClientTask::NewTab,
+                ..
+            }
+        )),
+        "New Tab 必须排进命令队列，实际: {commands:?}"
+    );
+}
+
+/// 没有命中时回车只关面板，不执行任何命令。
+#[gpui::test]
+fn palette_enter_without_matches_only_dismisses(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.simulate_keystrokes("cmd-shift-p");
+    cx.update(|_, cx| view.update(cx, |app, cx| app.palette_push("zzzz", cx)));
+    cx.simulate_keystrokes("enter");
+    let (open, commands) = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            (app.palette_open(), app.take_commands_for_tests())
+        })
+    });
+    let commands: Vec<ClientCommand> = commands
+        .into_iter()
+        .filter(|command| !matches!(command, ClientCommand::Resize { .. }))
+        .collect();
+    assert!(!open);
+    assert!(commands.is_empty(), "没有命中时不得执行命令: {commands:?}");
+}
+
+/// 面板打开时上下键移动选中项，不会漏进终端。
+#[gpui::test]
+fn palette_arrow_keys_move_selection(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.simulate_keystrokes("cmd-shift-p");
+    cx.simulate_keystrokes("down");
+    cx.simulate_keystrokes("down");
+    let selected = cx.update(|_, cx| view.update(cx, |app, _| app.palette_selected()));
+    assert_eq!(selected, 2);
+    cx.simulate_keystrokes("up");
+    let selected = cx.update(|_, cx| view.update(cx, |app, _| app.palette_selected()));
+    assert_eq!(selected, 1);
+}
+
+/// 无头默认主题是浅色、Menlo 18 —— 与 macOS `MuxtermTerminalColors/MuxtermTerminalFont` 一致。
+#[gpui::test]
+fn headless_theme_defaults_to_light_menlo_18(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    let (dark, family, size, bg) = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            let theme = app.theme();
+            (
+                theme.is_dark,
+                theme.font_family.to_string(),
+                theme.font_size,
+                theme.bg,
+            )
+        })
+    });
+    assert!(!dark, "默认必须是浅色主题");
+    assert_eq!(family, "Menlo");
+    assert_eq!(size, 18.0);
+    assert_eq!(bg, gpui::rgb(0xffffff));
+}
+
+/// 无头布局用渲染期量出来的格子尺寸：宽高都必须为正，且高 > 宽。
+#[gpui::test]
+fn measured_cell_is_tall_enough_for_the_font(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    let (width, height) = cx.update(|_, cx| view.update(cx, |app, _| app.cell()));
+    assert!(width > 1.0 && height > 1.0);
+    assert!(
+        height > width,
+        "等宽字体的行高必须大于字宽，实际 ({width}, {height})"
+    );
 }

@@ -15,7 +15,14 @@ use crate::frontend::gpui::theme::Theme;
 
 /// 与 Swift `table.rowHeight` 一致。
 const ROW_HEIGHT: f32 = 36.0;
-const SIDEBAR_WIDTH: f32 = 200.0;
+/// 侧栏宽度：与 macOS `mainSplitController.setPosition(240)` 一致。
+pub(crate) const SIDEBAR_WIDTH: f32 = 240.0;
+/// 段头高度：Swift 的 `NSButton` 段头 + 上下留白。
+const SECTION_HEIGHT: f32 = 22.0;
+/// 段头左右内边距。
+const SECTION_INSET: f32 = 12.0;
+/// 行左右内边距（Swift cell 的 leading/trailing）。
+const ROW_INSET: f32 = 8.0;
 
 impl GpuiApp {
     pub(crate) fn render_sidebar(&self, cx: &mut gpui::Context<Self>) -> AnyElement {
@@ -32,7 +39,7 @@ impl GpuiApp {
             .w(px(SIDEBAR_WIDTH))
             .h_full()
             .overflow_hidden()
-            .py_1()
+            .py(px(4.0))
             .bg(theme.sidebar_bg)
             .border_r_1()
             .border_color(theme.border)
@@ -47,6 +54,7 @@ impl GpuiApp {
         cx: &mut gpui::Context<Self>,
     ) -> AnyElement {
         let kind = section.section;
+        let header_title = section_header_title(&section);
         // 空段只留段头：Swift 的表格段没有行时不占高度，但段头仍然可点。
         let mut children: Vec<AnyElement> = Vec::new();
         if section.expanded {
@@ -61,7 +69,6 @@ impl GpuiApp {
         div()
             .flex()
             .flex_col()
-            .gap_0p5()
             .child(
                 div()
                     .id(SharedString::from(format!("section-{:?}", kind)))
@@ -69,16 +76,18 @@ impl GpuiApp {
                     .flex_row()
                     .items_center()
                     .justify_between()
-                    .h(px(22.0))
-                    .px_3()
+                    .h(px(SECTION_HEIGHT))
+                    .px(px(SECTION_INSET))
                     .cursor_pointer()
-                    .text_xs()
+                    .text_size(px(crate::frontend::gpui::theme::SIDEBAR_SECTION_FONT_SIZE))
+                    .line_height(px(13.0))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(theme.muted)
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _, _, cx| this.toggle_sidebar_section(kind, cx)),
                     )
-                    .child(SharedString::from(section.title))
+                    .child(SharedString::from(header_title))
                     .child(SharedString::from(if section.expanded {
                         "▾"
                     } else {
@@ -143,9 +152,9 @@ impl GpuiApp {
                         section, row.title, symbol
                     )))
                     .flex_none()
-                    .px_1()
+                    .px(px(4.0))
                     .cursor_pointer()
-                    .text_xs()
+                    .text_size(px(crate::frontend::gpui::theme::SIDEBAR_DETAIL_FONT_SIZE))
                     .text_color(theme.muted)
                     .on_mouse_down(
                         MouseButton::Left,
@@ -172,10 +181,10 @@ impl GpuiApp {
             .flex()
             .flex_row()
             .items_center()
-            .gap_2()
+            .gap(px(6.0))
             .h(px(ROW_HEIGHT))
-            .px_3()
-            .rounded_sm()
+            .px(px(ROW_INSET))
+            .rounded(px(4.0))
             .cursor_pointer()
             .bg(if row.active {
                 theme.active_bg
@@ -190,9 +199,11 @@ impl GpuiApp {
                 }),
             )
             .child(
+                // 标记列固定宽度，行与行之间才对得齐（Swift 用 9.5pt 居中标签）。
                 div()
                     .flex_none()
-                    .text_xs()
+                    .w(px(12.0))
+                    .text_size(px(crate::frontend::gpui::theme::SIDEBAR_SHORTCUT_FONT_SIZE))
                     .text_color(marker_color)
                     .child(SharedString::from(row.marker)),
             )
@@ -204,17 +215,19 @@ impl GpuiApp {
                     .overflow_hidden()
                     .child(
                         div()
-                            .text_sm()
+                            .text_size(px(crate::frontend::gpui::theme::SIDEBAR_TITLE_FONT_SIZE))
+                            .line_height(px(15.0))
                             .when(row.emphasized, |element| {
-                                element.font_weight(gpui::FontWeight::BOLD)
+                                element.font_weight(gpui::FontWeight::SEMIBOLD)
                             })
-                            .text_color(theme.fg)
+                            .text_color(theme.label())
                             .overflow_hidden()
                             .child(SharedString::from(row.title)),
                     )
                     .child(
                         div()
-                            .text_xs()
+                            .text_size(px(crate::frontend::gpui::theme::SIDEBAR_DETAIL_FONT_SIZE))
+                            .line_height(px(12.0))
                             .text_color(detail_color)
                             .overflow_hidden()
                             .child(SharedString::from(row.detail)),
@@ -224,13 +237,25 @@ impl GpuiApp {
                 element.child(
                     div()
                         .flex_none()
-                        .text_xs()
+                        .text_size(px(crate::frontend::gpui::theme::SIDEBAR_SHORTCUT_FONT_SIZE))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(theme.muted)
                         .child(SharedString::from(shortcut)),
                 )
             })
             .children(trailing_buttons)
             .into_any_element()
+    }
+}
+
+/// 段头文案：`WORKSPACES 6`。
+///
+/// 对照 macOS `WorkspaceSidebar` 的段头：有行时才带计数，空段只留标题。
+fn section_header_title(section: &SidebarSectionModel) -> String {
+    if section.rows.is_empty() {
+        section.title.clone()
+    } else {
+        format!("{}  {}", section.title, section.rows.len())
     }
 }
 

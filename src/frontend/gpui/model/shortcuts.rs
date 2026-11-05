@@ -20,6 +20,8 @@ pub enum KeyAction {
     SplitAuto,
     CloseWindow,
     ClosePane,
+    /// 关闭当前 tab（Swift 命令面板里的 Close Tab；配置里可写 `close_tab`）。
+    CloseTab,
     /// 1-based。
     SwitchTab(usize),
     SwitchLastTab,
@@ -350,6 +352,7 @@ pub fn action_from_name(name: &str) -> Option<KeyAction> {
         "previous_command" | "command_prev" => KeyAction::PreviousCommand,
         "next_command" | "command_next" => KeyAction::NextCommand,
         "close_pane" => KeyAction::ClosePane,
+        "close_tab" => KeyAction::CloseTab,
         "close_window" => KeyAction::CloseWindow,
         "command_palette" => KeyAction::CommandPalette,
         "quick_connect" => KeyAction::QuickConnect,
@@ -405,6 +408,7 @@ pub fn action_name(action: KeyAction) -> Option<String> {
         KeyAction::SplitAuto => "split_auto",
         KeyAction::CloseWindow => "close_window",
         KeyAction::ClosePane => "close_pane",
+        KeyAction::CloseTab => "close_tab",
         KeyAction::SwitchLastTab => "switch_tab_last",
         KeyAction::PreviousTab => "previous_tab",
         KeyAction::NextTab => "next_tab",

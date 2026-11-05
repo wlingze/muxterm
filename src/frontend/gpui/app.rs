@@ -14,9 +14,11 @@ use crate::frontend::gpui::state::GpuiApp;
 use crate::frontend::utils::corebridge::FfiClient;
 use crate::frontend::view_store::ViewStore;
 
-const SIDEBAR_WIDTH: f32 = 200.0;
-const TAB_BAR_HEIGHT: f32 = 30.0;
-const STATUS_BAR_HEIGHT: f32 = 22.0;
+/// 侧栏宽度：与 macOS `mainSplitController.setPosition(240)` 一致。
+const SIDEBAR_WIDTH: f32 = 240.0;
+/// tab 栏 / 状态栏高度统一从 chrome 常量取，避免两处漂移。
+use crate::frontend::gpui::chrome::status_bar::STATUS_BAR_HEIGHT;
+use crate::frontend::gpui::chrome::tab_bar::TAB_BAR_HEIGHT;
 
 /// 进入 gpui 前端。
 pub fn run(socket: Option<String>, session: Option<String>) -> anyhow::Result<()> {
@@ -65,9 +67,9 @@ impl Render for GpuiApp {
         let viewport = window.viewport_size();
         let width = f32::from(viewport.width);
         let height = f32::from(viewport.height);
+        self.measure_cell(window);
         let theme = self.theme().clone();
-        let cell_width = theme.cell_width();
-        let cell_height = theme.cell_height();
+        let (cell_width, cell_height) = self.cell();
 
         let sidebar_width = if self.sidebar_visible() {
             SIDEBAR_WIDTH
@@ -89,6 +91,11 @@ impl Render for GpuiApp {
             }
         }
         self.apply_sizes(&sizes);
+        // 窗口级网格：tmux 控制 client 的首屏 seed 要等这一条。
+        self.apply_client_size(
+            (main_width / cell_width).floor().max(2.0) as u16,
+            (main_height / cell_height).floor().max(1.0) as u16,
+        );
 
         let sidebar = if self.sidebar_visible() {
             self.render_sidebar(cx)
@@ -112,7 +119,7 @@ impl Render for GpuiApp {
             .bg(theme.bg)
             .text_color(theme.fg)
             .track_focus(&self.focus_handle())
-            .on_key_down(cx.listener(|this, event, _, cx| this.handle_key(event, cx)))
+            .on_key_down(cx.listener(|this, event, window, cx| this.handle_key(event, window, cx)))
             .child(sidebar)
             .child(
                 div()
@@ -131,7 +138,8 @@ impl Render for GpuiApp {
                             .children(self.render_panel(cx))
                             .children(self.render_composer(cx))
                             .children(self.render_settings(cx))
-                            .children(self.render_target_editor(cx)),
+                            .children(self.render_target_editor(cx))
+                            .children(self.render_palette(cx)),
                     )
                     .child(tab_bar_bottom)
                     .child(status_bar),

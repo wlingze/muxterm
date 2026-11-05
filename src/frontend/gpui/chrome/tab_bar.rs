@@ -1,17 +1,28 @@
 //! tab 栏渲染：活动 tab、数量后缀、活动指示灯、点击切换。
 //!
-//! 行内容来自 `tab_bar_view::build`（纯投影）。视觉规则对照
-//! `UI/StatusBarView.swift` 的 `TabActivityIndicatorView`：working 空心环、
-//! blocked/done 实心点、idle 不点亮。
+//! 行内容来自 `tab_bar_view::build`（纯投影）。视觉对照 macOS
+//! `UI/StatusBarView.swift`：
+//! - 栏高 24pt（`FlatChrome.tabBarHeight`），左右内边距 6pt；
+//! - 一个 tab 是圆角 4、左右内边距 8 的小块，活动 tab 用强调色 14% 底 +
+//!   2pt 下划线，非活动 tab 无底色；
+//! - 标题是 `1  zsh`（`StatusBarTabTitle.display`），活动 tab 用 semibold；
+//! - working 空心环 / blocked·done 实心点（`TabActivityIndicatorView`）。
 
-use gpui::{div, prelude::*, px, AnyElement, MouseButton, SharedString};
+use gpui::{div, prelude::*, px, AnyElement, MouseButton, Rgba, SharedString};
 
 use crate::frontend::gpui::chrome::tab_bar_view::{ActivityMark, TabBarItem};
 use crate::frontend::gpui::model::sidebar::Indicator;
 use crate::frontend::gpui::state::GpuiApp;
-use crate::frontend::gpui::theme::Theme;
+use crate::frontend::gpui::theme::{Theme, TAB_BAR_FONT_SIZE};
 
-const TAB_BAR_HEIGHT: f32 = 30.0;
+/// `FlatChrome.tabBarHeight`。
+pub(crate) const TAB_BAR_HEIGHT: f32 = 24.0;
+/// `FlatChrome.statusHorizontalInset`。
+const TAB_BAR_INSET: f32 = 6.0;
+/// `FlatChrome.tabCellHorizontalInset`。
+const TAB_CELL_INSET: f32 = 8.0;
+/// `FlatChrome.activeTabUnderlineHeight`。
+const ACTIVE_UNDERLINE: f32 = 2.0;
 
 impl GpuiApp {
     pub(crate) fn render_tab_bar(&self, cx: &mut gpui::Context<Self>) -> AnyElement {
@@ -26,9 +37,9 @@ impl GpuiApp {
             .flex()
             .flex_row()
             .items_center()
-            .gap_1()
+            .gap(px(2.0))
             .h(px(TAB_BAR_HEIGHT))
-            .px_2()
+            .px(px(TAB_BAR_INSET))
             .overflow_hidden()
             .bg(theme.chrome_bg)
             .border_color(theme.border)
@@ -49,6 +60,7 @@ impl GpuiApp {
 
 fn render_tab(item: TabBarItem, theme: &Theme, cx: &mut gpui::Context<GpuiApp>) -> AnyElement {
     let tab_id = item.tab_id;
+    let active = item.active;
     let mark = item.activity.and_then(Indicator::activity_mark);
     let activity_color = match item.activity {
         Some(Indicator::Working) => theme.warning,
@@ -57,13 +69,26 @@ fn render_tab(item: TabBarItem, theme: &Theme, cx: &mut gpui::Context<GpuiApp>) 
         _ => theme.muted,
     };
 
+    // 活动 tab：强调色 14% 底 + 2pt 下划线；非活动：透明底。
+    let background = if active {
+        Rgba {
+            a: 0.14,
+            ..theme.accent
+        }
+    } else {
+        Rgba {
+            a: 0.0,
+            ..theme.accent
+        }
+    };
+    let label_color = if active { theme.label() } else { theme.muted };
+
     let mut children: Vec<AnyElement> = Vec::new();
     if let Some(mark) = mark {
-        // working 空心环、blocked/done 实心点：与 `TabActivityIndicatorView` 一致。
         children.push(
             div()
                 .flex_none()
-                .text_xs()
+                .text_size(px(TAB_BAR_FONT_SIZE))
                 .text_color(activity_color)
                 .child(SharedString::from(match mark {
                     ActivityMark::Ring => "◌",
@@ -75,38 +100,65 @@ fn render_tab(item: TabBarItem, theme: &Theme, cx: &mut gpui::Context<GpuiApp>) 
     children.push(
         div()
             .overflow_hidden()
+            .text_size(px(TAB_BAR_FONT_SIZE))
+            .line_height(px(14.0))
+            .text_color(label_color)
+            .when(active, |element| {
+                element.font_weight(gpui::FontWeight::SEMIBOLD)
+            })
             .child(SharedString::from(item.label()))
             .into_any_element(),
     );
 
+    let close_button = active.then(|| {
+        div()
+            .id(SharedString::from(format!("tab-close-{tab_id}")))
+            .flex_none()
+            .px(px(2.0))
+            .text_size(px(TAB_BAR_FONT_SIZE - 1.0))
+            .text_color(theme.muted)
+            .cursor_pointer()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, _, cx| {
+                    // 关 tab 不触发切换，先吃掉这次点击。
+                    cx.stop_propagation();
+                    this.close_tab(tab_id, cx);
+                }),
+            )
+            .child(SharedString::from("✕"))
+            .into_any_element()
+    });
+
     div()
         .id(SharedString::from(format!("tab-{tab_id}")))
+        .relative()
         .flex()
         .flex_row()
         .items_center()
-        .gap_1()
-        .px_3()
-        .h_full()
-        .max_w(px(240.0))
+        .gap(px(4.0))
+        .h(px(TAB_BAR_HEIGHT - 6.0))
+        .px(px(TAB_CELL_INSET))
+        .overflow_hidden()
+        .rounded(px(4.0))
+        .bg(background)
         .cursor_pointer()
-        .rounded_sm()
-        .text_sm()
-        .bg(if item.active {
-            theme.bg
-        } else {
-            theme.chrome_bg
-        })
-        .text_color(if item.active { theme.fg } else { theme.muted })
-        .border_1()
-        .border_color(if item.active {
-            theme.accent
-        } else {
-            theme.chrome_bg
-        })
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(move |this, _, _, cx| this.select_tab(tab_id, cx)),
         )
         .children(children)
+        .when_some(close_button, |element, button| element.child(button))
+        .when(active, |element| {
+            element.child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .bottom_0()
+                    .h(px(ACTIVE_UNDERLINE))
+                    .bg(theme.accent),
+            )
+        })
         .into_any_element()
 }
