@@ -18,7 +18,6 @@ use crate::frontend::view_store::ViewStore;
 const SIDEBAR_WIDTH: f32 = 240.0;
 /// tab 栏 / 状态栏高度统一从 chrome 常量取，避免两处漂移。
 use crate::frontend::gpui::chrome::status_bar::STATUS_BAR_HEIGHT;
-use crate::frontend::gpui::chrome::tab_bar::TAB_BAR_HEIGHT;
 
 /// 进入 gpui 前端。
 pub fn run(socket: Option<String>, session: Option<String>) -> anyhow::Result<()> {
@@ -33,9 +32,11 @@ pub fn run(socket: Option<String>, session: Option<String>) -> anyhow::Result<()
         let bounds = Bounds::centered(None, size(px(1_280.0), px(800.0)), cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
+            // macOS 侧 `titleVisibility` 是隐藏的：这里同样不画标题，只留 traffic lights。
             titlebar: Some(TitlebarOptions {
-                title: Some("Muxterm".into()),
-                ..Default::default()
+                title: Some(" ".into()),
+                appears_transparent: false,
+                traffic_light_position: None,
             }),
             ..Default::default()
         };
@@ -77,7 +78,8 @@ impl Render for GpuiApp {
             0.0
         };
         let main_width = (width - sidebar_width).max(1.0);
-        let main_height = (height - TAB_BAR_HEIGHT - STATUS_BAR_HEIGHT).max(1.0);
+        // 只有一条 bar（tab + 状态），高度统一取 STATUS_BAR_HEIGHT。
+        let main_height = (height - STATUS_BAR_HEIGHT).max(1.0);
         let area = Rect::new(0.0, 0.0, main_width, main_height);
 
         let mut sizes: Vec<(u32, u16, u16)> = Vec::new();
@@ -102,15 +104,14 @@ impl Render for GpuiApp {
         } else {
             div().w(px(0.0)).into_any_element()
         };
-        let tab_bar_on_top = self.tab_bar_position()
+        let bar_on_top = self.tab_bar_position()
             == crate::frontend::gpui::chrome::tab_bar_view::TabBarPosition::Top;
-        let tab_bar = self.render_tab_bar(cx);
-        let (tab_bar_top, tab_bar_bottom) = if tab_bar_on_top {
-            (tab_bar, div().into_any_element())
+        let bar = self.render_status_bar(cx);
+        let (bar_top, bar_bottom) = if bar_on_top {
+            (bar, div().into_any_element())
         } else {
-            (div().into_any_element(), tab_bar)
+            (div().into_any_element(), bar)
         };
-        let status_bar = self.render_status_bar();
 
         div()
             .flex()
@@ -127,7 +128,7 @@ impl Render for GpuiApp {
                     .flex_col()
                     .flex_1()
                     .h_full()
-                    .child(tab_bar_top)
+                    .child(bar_top)
                     .child(
                         div()
                             .relative()
@@ -141,8 +142,7 @@ impl Render for GpuiApp {
                             .children(self.render_target_editor(cx))
                             .children(self.render_palette(cx)),
                     )
-                    .child(tab_bar_bottom)
-                    .child(status_bar),
+                    .child(bar_bottom),
             )
     }
 }

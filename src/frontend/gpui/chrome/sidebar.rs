@@ -89,11 +89,37 @@ impl GpuiApp {
                         cx.listener(move |this, _, _, cx| this.toggle_sidebar_section(kind, cx)),
                     )
                     .child(SharedString::from(header_title))
-                    .child(SharedString::from(if section.expanded {
-                        "▾"
-                    } else {
-                        "▸"
-                    })),
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(6.0))
+                            .when(kind == Section::Workspaces, |element| {
+                                // 对照 `WorkspaceSidebar` 的 `addWorkspaceButton`：新建 project。
+                                element.child(
+                                    div()
+                                        .id("sidebar-add-workspace")
+                                        .px(px(4.0))
+                                        .cursor_pointer()
+                                        .text_color(theme.muted)
+                                        .hover(|style| style.text_color(theme.label()))
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(|this, _, _, cx| {
+                                                cx.stop_propagation();
+                                                this.open_target_editor(None, cx);
+                                            }),
+                                        )
+                                        .child(SharedString::from("+")),
+                                )
+                            })
+                            .child(SharedString::from(if section.expanded {
+                                "▾"
+                            } else {
+                                "▸"
+                            })),
+                    ),
             )
             .children(children)
             .into_any_element()
@@ -192,6 +218,7 @@ impl GpuiApp {
             } else {
                 theme.sidebar_bg
             })
+            .hover(|style| style.bg(theme.active_bg))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, window, cx| {
