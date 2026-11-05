@@ -23,6 +23,8 @@ pub struct ExistingRuntime {
     pub socket: Option<String>,
     pub windows: u32,
     pub attached: bool,
+    pub workspace_id: Option<String>,
+    pub path: String,
 }
 
 impl ExistingRuntime {
@@ -56,6 +58,8 @@ impl ExistingRuntime {
             socket: candidate.socket.clone().filter(|socket| !socket.is_empty()),
             windows: candidate.windows,
             attached: candidate.attached,
+            workspace_id: candidate.workspace_id.clone(),
+            path: String::new(),
         })
     }
 
@@ -74,6 +78,8 @@ impl ExistingRuntime {
             socket: socket.map(str::to_string),
             windows: entry.windows,
             attached: entry.attached,
+            workspace_id: None,
+            path: String::new(),
         }
     }
 
@@ -97,17 +103,28 @@ impl ExistingRuntime {
             name: self.name.clone(),
             runtime: TargetRuntime::parse(&self.runtime).unwrap_or(TargetRuntime::Tmux),
             transport,
-            path: String::new(),
+            path: self.path.clone(),
             session: Some(self.session.clone()),
             socket: self.socket.clone(),
-            workspace_id: None,
+            workspace_id: self.workspace_id.clone(),
             persisted_id: None,
         }
     }
 
     /// 面板次行：`tmux @ local · 3 windows · attached`。
     pub fn detail(&self) -> String {
-        let mut parts = vec![format!("{} @ {}", self.runtime, self.transport)];
+        let host = if self.transport == "ssh" {
+            &self.target
+        } else {
+            &self.transport
+        };
+        let mut parts = vec![format!("{} @ {}", self.runtime, host)];
+        if !self.path.is_empty() {
+            parts.push(self.path.clone());
+        }
+        if let Some(workspace) = &self.workspace_id {
+            parts.push(format!("{} · {workspace}", self.session));
+        }
         if self.windows > 0 {
             parts.push(format!("{} windows", self.windows));
         }
@@ -185,7 +202,7 @@ mod tests {
             config.transport,
             TargetTransport::Ssh { ref name } if name == "box"
         ));
-        assert_eq!(row.detail(), "tmux @ ssh · 2 windows · attached");
+        assert_eq!(row.detail(), "tmux @ box · 2 windows · attached");
     }
 
     /// 对照 `ConnectionDiscovery.listExistingConnections` 的 `currentSocket` 分支：

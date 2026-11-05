@@ -42,6 +42,9 @@ pub struct WheelInput {
     pub row: usize,
 }
 
+#[path = "state/picker.rs"]
+mod picker;
+
 /// 窗口级状态。一个窗口一份。
 pub struct GpuiApp {
     pump: Option<EventPump>,
@@ -106,6 +109,10 @@ pub struct GpuiApp {
     existing_loading: bool,
     /// 连接时用的 tmux socket（`-L`）；隔离 server 的 session 只在它上面可见。
     socket: Option<String>,
+    panel_scroll: gpui::ScrollHandle,
+    open_pending: bool,
+    projects_pending: bool,
+    aggregate: Option<crate::frontend::gpui::chrome::panel_view::AggregateKind>,
     /// 侧栏四段的展开状态。
     pub(crate) sidebar_expansion: crate::frontend::gpui::chrome::sidebar_view::SectionExpansion,
     /// 用户手动隐藏的命令行（只在前端生效）。
@@ -173,6 +180,10 @@ impl GpuiApp {
             existing_loaded: false,
             existing_loading: false,
             socket: socket.clone(),
+            panel_scroll: gpui::ScrollHandle::new(),
+            open_pending: false,
+            projects_pending: false,
+            aggregate: None,
             sidebar_expansion:
                 crate::frontend::gpui::chrome::sidebar_view::SectionExpansion::default(),
             hidden_commands: std::collections::HashSet::new(),
@@ -184,6 +195,12 @@ impl GpuiApp {
             status: String::from("muxterm · gpui"),
         };
         app.focus_default_pane();
+        if let Ok(snapshot) = app.pump.as_ref().unwrap().client().config_describe() {
+            app.panel.picker.projects =
+                crate::frontend::gpui::model::workspace_picker::ProjectList::new(
+                    &snapshot.values["projects"],
+                );
+        }
         app.start_pump(cx);
         app
     }
@@ -298,9 +315,18 @@ impl GpuiApp {
             let events = pump.poll_into_with_events(&mut self.store);
             let dirty = events.iter().any(|event| event.event.is_topology());
             // `commands` 与 `pump` 是不同字段，借用互不冲突。
-            self.commands.flush(pump.client());
+            let outcomes = self.commands.flush(pump.client());
+            if outcomes.iter().any(|code| *code != 0)
+                && (self.open_pending || self.projects_pending)
+            {
+                self.panel.picker.error =
+                    Some("Core rejected the operation; no changes were applied".into());
+                self.open_pending = false;
+                self.projects_pending = false;
+            }
             dirty
         };
+        dirty |= self.poll_panel_operations(cx);
         dirty |= self.drain_render_events();
         let active = self.store.active_workspace_id().map(str::to_string);
         if self.visible.is_none() {
@@ -416,6 +442,10 @@ impl GpuiApp {
             existing_loaded: false,
             existing_loading: false,
             socket: None,
+            panel_scroll: gpui::ScrollHandle::new(),
+            open_pending: false,
+            projects_pending: false,
+            aggregate: None,
             sidebar_expansion:
                 crate::frontend::gpui::chrome::sidebar_view::SectionExpansion::default(),
             hidden_commands: std::collections::HashSet::new(),
@@ -512,6 +542,9 @@ impl GpuiApp {
     }
 
     pub fn layout(&self) -> Option<ClientLayout> {
+        if self.aggregate.is_some() && self.aggregate_pages().is_empty() {
+            return None;
+        }
         let view = self.store.workspace(self.visible.as_deref()?)?;
         let tab = view.active_tab_id()?;
         view.layouts.get(&tab).cloned()
@@ -754,6 +787,22 @@ impl GpuiApp {
                 self.select_tab(tab_id, cx);
                 true
             }
+            KeyAction::OpenShells | KeyAction::OpenAgents => {
+                use crate::frontend::gpui::chrome::panel_view::AggregateKind;
+                if self.panel.open && action == KeyAction::OpenShells {
+                    self.toggle_panel_actions(cx);
+                } else {
+                    self.select_aggregate(
+                        if action == KeyAction::OpenShells {
+                            AggregateKind::Shells
+                        } else {
+                            AggregateKind::Agents
+                        },
+                        cx,
+                    );
+                }
+                true
+            }
             KeyAction::SwitchWorkspace(index) => {
                 let ids = self.workspace_ids();
                 let target = if index == 0 {
@@ -979,6 +1028,9 @@ impl GpuiApp {
 
     /// tab 栏投影：活动指示来自 attention，数量后缀来自 pane 数。
     pub fn tab_items(&self) -> Vec<crate::frontend::gpui::chrome::tab_bar_view::TabBarItem> {
+        if let Some(row) = self.aggregate_tab_items() {
+            return row;
+        }
         use crate::frontend::gpui::chrome::tab_bar_view;
         let Some(workspace_id) = self.visible.clone() else {
             return Vec::new();
@@ -1097,6 +1149,7 @@ impl GpuiApp {
                 return;
             }
         };
+        self.open_pending = true;
         self.commands.push(ClientCommand::OpenTarget {
             target: client_target_for(&config),
             intent: crate::frontend::utils::corebridge::ClientOpenIntent::CreateIfMissing,
@@ -1434,18 +1487,16 @@ impl GpuiApp {
 
     /// 面板当前行。
     pub fn panel_rows(&self) -> Vec<crate::frontend::gpui::chrome::panel_view::PanelRow> {
-        let workspaces = self.sidebar_items();
-        self.panel.rows(
-            &workspaces,
-            self.attention.as_ref(),
-            self.search_snapshot.as_ref(),
-            &self.existing,
-        )
+        self.projected_panel_rows()
     }
 
     /// 面板查询串。
     pub fn panel_query(&self) -> String {
-        self.panel.model.query.clone()
+        self.panel
+            .actions
+            .as_ref()
+            .map(|menu| menu.query.clone())
+            .unwrap_or_else(|| self.panel.model.query.clone())
     }
 
     /// 面板当前选中的行（渲染高亮用）。
@@ -1455,52 +1506,35 @@ impl GpuiApp {
 
     /// 上下移动选中行。
     pub fn move_panel_selection(&mut self, delta: i32, cx: &mut Context<Self>) {
-        let len = self.panel_rows().len();
-        self.panel.move_selection(delta, len);
+        if let Some(menu) = self.panel.actions.as_mut() {
+            let len = menu.rows().len();
+            menu.selected =
+                (menu.selected as i32 + delta).clamp(0, len.saturating_sub(1) as i32) as usize;
+        } else {
+            let len = self.panel_rows().len();
+            self.panel.move_selection(delta, len);
+            self.panel_scroll.scroll_to_item(self.panel.selected);
+        }
         cx.notify();
     }
 
     /// 面板查询串编辑。
     pub fn panel_push_query(&mut self, text: &str, cx: &mut Context<Self>) {
-        self.panel.push_query(text);
-        cx.notify();
+        self.edit_panel_query(Some(text), cx);
     }
 
     pub fn panel_backspace(&mut self, cx: &mut Context<Self>) {
-        self.panel.backspace_query();
-        cx.notify();
+        self.edit_panel_query(None, cx);
     }
 
     /// Enter：已打开的 workspace 直接切过去；现有 runtime 交给 Catalog attach。
     pub fn activate_panel_row(&mut self, cx: &mut Context<Self>) {
-        use crate::frontend::gpui::chrome::panel_view::PanelRow;
-        let rows = self.panel_rows();
-        let Some(row) = rows.get(self.panel.selected) else {
+        if self.panel.actions.is_some() {
+            self.run_panel_action(cx);
             return;
-        };
-        match row {
-            PanelRow::Workspace { workspace_id, .. } | PanelRow::Attention { workspace_id, .. } => {
-                let workspace = workspace_id.clone();
-                self.close_panel(cx);
-                self.select_workspace(workspace, cx);
-            }
-            PanelRow::Search(hit) => {
-                let (workspace, pane) = (hit.workspace_id.clone(), hit.pane_id);
-                self.close_panel(cx);
-                self.select_workspace(workspace, cx);
-                self.focus_pane(pane, cx);
-            }
-            PanelRow::Existing { index, .. } => {
-                let Some(existing) = self.existing.get(*index) else {
-                    return;
-                };
-                // 与 macOS 一致：Existing 行只 attach，不新建 session。
-                self.commands.push(ClientCommand::OpenTarget {
-                    target: client_target_for(&existing.config()),
-                    intent: crate::frontend::utils::corebridge::ClientOpenIntent::AttachOnly,
-                });
-                self.close_panel(cx);
-            }
+        }
+        if let Some(row) = self.panel_rows().get(self.panel.selected).cloned() {
+            self.activate_workspace_row(row, cx);
         }
     }
 
@@ -1508,35 +1542,7 @@ impl GpuiApp {
     ///
     /// 面板打开时按需跑：这是跨进程查询，不能放在渲染路径上。
     pub fn refresh_existing(&mut self, cx: &mut Context<Self>) {
-        if self.existing_loading || self.pump.is_none() {
-            return;
-        }
-        self.existing_loading = true;
-        let socket = self.socket.clone();
-        cx.spawn(async move |this, cx| {
-            let found = cx
-                .background_executor()
-                .spawn(async move { discover_existing_rows(socket.as_deref()) })
-                .await;
-            this.update(cx, |app, cx| {
-                app.existing_loading = false;
-                app.existing_loaded = true;
-                match found {
-                    Ok(rows) => {
-                        tracing::debug!(count = rows.len(), "existing runtimes");
-                        app.existing = rows
-                    }
-                    Err(error) => {
-                        // 发现失败不影响已打开的 workspace；面板不列 Existing。
-                        tracing::debug!(error = %error, "discover_existing failed");
-                        app.existing.clear();
-                    }
-                }
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
+        self.discover_picker_root(cx);
     }
 
     /// 无头测试注入 discovery 结果。
@@ -1560,11 +1566,19 @@ impl GpuiApp {
         tab: crate::frontend::gpui::model::panel::PanelTab,
         cx: &mut Context<Self>,
     ) {
+        let opening = !self.panel.open;
         self.panel.show(tab);
-        // Workspaces tab 是唯一会展示现有 runtime 的地方。
+        if opening {
+            self.panel
+                .picker
+                .navigate(crate::frontend::gpui::model::workspace_picker::PickerStage::Root);
+            self.panel.model.query.clear();
+            self.panel.actions = None;
+        }
         if tab == crate::frontend::gpui::model::panel::PanelTab::Workspaces {
             self.refresh_existing(cx);
         }
+        self.reset_panel_selection();
         cx.notify();
     }
 
@@ -1574,6 +1588,10 @@ impl GpuiApp {
             return;
         }
         self.panel.close();
+        self.panel.actions = None;
+        self.panel
+            .picker
+            .navigate(crate::frontend::gpui::model::workspace_picker::PickerStage::Root);
         cx.notify();
     }
 
@@ -1663,6 +1681,10 @@ impl GpuiApp {
     ///
     /// 对照 macOS `MuxTerminalView.insertText`。
     pub fn commit_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        if self.panel.open {
+            self.panel_push_query(text, cx);
+            return;
+        }
         let Some(bytes) = crate::frontend::gpui::model::ime::commit_bytes(text) else {
             return;
         };
@@ -1869,6 +1891,7 @@ impl GpuiApp {
     }
 
     pub fn select_workspace(&mut self, workspace: String, cx: &mut Context<Self>) {
+        self.aggregate = None;
         if self.visible.as_deref() == Some(workspace.as_str()) {
             return;
         }
@@ -1882,6 +1905,9 @@ impl GpuiApp {
     }
 
     pub fn select_tab(&mut self, tab_id: u32, cx: &mut Context<Self>) {
+        if self.select_aggregate_tab(tab_id, cx) {
+            return;
+        }
         self.commands.push(ClientCommand::Task {
             workspace_id: self.visible.clone(),
             task: crate::frontend::utils::corebridge::ClientTask::SwitchTab { tab_id },
@@ -2013,6 +2039,12 @@ impl GpuiApp {
             if !keystroke.modifiers.platform {
                 return;
             }
+        }
+
+        if self.panel.open {
+            self.route_panel_key(keystroke, cx);
+            cx.stop_propagation();
+            return;
         }
 
         // 输入框打开时先吃掉自己的键：Cmd-Enter 发送、Esc 收起、Tab 切页，
@@ -2306,6 +2338,7 @@ fn client_target_for(config: &TargetConfig) -> crate::frontend::utils::corebridg
         path: config.path.clone(),
         session: config.session.clone(),
         socket: config.socket.clone(),
+        workspace_id: config.workspace_id.clone(),
     }
 }
 

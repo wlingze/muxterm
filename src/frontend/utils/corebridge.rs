@@ -117,6 +117,8 @@ pub struct ClientTarget {
     pub path: String,
     pub session: Option<String>,
     pub socket: Option<String>,
+    /// Herdr workspace identity。与用户目录 path 独立，不能互相代填。
+    pub workspace_id: Option<String>,
 }
 
 /// Resolver intent for [`FfiClient::open_target`].
@@ -2805,8 +2807,7 @@ fn client_target_json(target: &ClientTarget) -> serde_json::Value {
         "path": target.path,
         "session": target.session,
         "socket": target.socket,
-        "workspace_id": (target.runtime == "herdr" && !target.path.is_empty())
-            .then_some(target.path.as_str()),
+        "workspace_id": target.workspace_id,
     })
 }
 
@@ -3467,6 +3468,7 @@ mod tests {
             path: "/workspace/project".into(),
             session: Some("agent".into()),
             socket: Some("/tmp/herdr.sock".into()),
+            workspace_id: Some("w2".into()),
         };
 
         let value = client_target_json(&target);
@@ -3475,7 +3477,14 @@ mod tests {
         assert_eq!(value["target"], "devbox");
         assert_eq!(value["session"], "agent");
         assert_eq!(value["socket"], "/tmp/herdr.sock");
-        assert_eq!(value["workspace_id"], "/workspace/project");
+        assert_eq!(value["workspace_id"], "w2");
+        assert_eq!(value["path"], "/workspace/project");
+        let mut create = target;
+        create.workspace_id = None;
+        assert!(
+            client_target_json(&create)["workspace_id"].is_null(),
+            "新建 Herdr 时不能把目录当成 wN"
+        );
     }
 
     #[test]

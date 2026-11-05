@@ -3,7 +3,10 @@
 //! 目前只有 macOS 原生菜单栏；Linux / Windows 的自绘菜单条还没做，见
 //! `docs/FRONTEND-GPUI.md` §8.1 的 TODO。
 
+// objc 的 `msg_send!` / `class!` 宏内部会引用 `cargo-clippy` 等 cfg，
+// 在 2021 edition 下触发 `unexpected_cfgs`。这是依赖宏的噪音，与本 crate 无关。
 #[cfg(target_os = "macos")]
+#[allow(unexpected_cfgs)]
 pub mod macos_menu;
 
 #[cfg(target_os = "macos")]
