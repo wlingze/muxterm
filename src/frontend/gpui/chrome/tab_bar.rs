@@ -18,48 +18,28 @@ use crate::frontend::gpui::theme::{Theme, TAB_BAR_FONT_SIZE};
 /// `FlatChrome.tabBarHeight`。
 pub const TAB_BAR_HEIGHT: f32 = 24.0;
 /// `FlatChrome.statusHorizontalInset`。
-const TAB_BAR_INSET: f32 = 6.0;
+pub(crate) const TAB_BAR_INSET: f32 = 6.0;
 /// `FlatChrome.tabCellHorizontalInset`。
 const TAB_CELL_INSET: f32 = 8.0;
 /// `FlatChrome.activeTabUnderlineHeight`。
 const ACTIVE_UNDERLINE: f32 = 2.0;
 
 impl GpuiApp {
-    pub(crate) fn render_tab_bar(&self, cx: &mut gpui::Context<Self>) -> AnyElement {
+    /// 当前 workspace 的 tab 单元。tab 栏本身由状态栏组合（Swift 只有一条 bar）。
+    pub(crate) fn render_tabs(&self, cx: &mut gpui::Context<Self>) -> Vec<AnyElement> {
         let theme = self.theme().clone();
-        let tabs: Vec<AnyElement> = self
-            .tab_items()
+        self.tab_items()
             .into_iter()
             .map(|item| render_tab(item, &theme, cx))
-            .collect();
-
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(2.0))
-            .debug_selector(|| "tab-bar".to_string())
-            .h(px(TAB_BAR_HEIGHT))
-            .px(px(TAB_BAR_INSET))
-            .overflow_hidden()
-            .bg(theme.chrome_bg)
-            .border_color(theme.border)
-            .when(
-                self.tab_bar_position()
-                    == crate::frontend::gpui::chrome::tab_bar_view::TabBarPosition::Top,
-                |element| element.border_b_1(),
-            )
-            .when(
-                self.tab_bar_position()
-                    == crate::frontend::gpui::chrome::tab_bar_view::TabBarPosition::Bottom,
-                |element| element.border_t_1(),
-            )
-            .children(tabs)
-            .into_any_element()
+            .collect()
     }
 }
 
-fn render_tab(item: TabBarItem, theme: &Theme, cx: &mut gpui::Context<GpuiApp>) -> AnyElement {
+pub(crate) fn render_tab(
+    item: TabBarItem,
+    theme: &Theme,
+    cx: &mut gpui::Context<GpuiApp>,
+) -> AnyElement {
     let tab_id = item.tab_id;
     let active = item.active;
     let mark = item.activity.and_then(Indicator::activity_mark);
