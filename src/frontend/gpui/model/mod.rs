@@ -34,3 +34,4 @@ pub mod surface_feed;
 pub mod target;
 pub mod target_editor;
 pub mod word_selection;
+pub mod workspace_picker;
