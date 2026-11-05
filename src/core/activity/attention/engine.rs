@@ -544,17 +544,20 @@ impl<C: Clock> AttentionEngine<C> {
         };
 
         let error = display_state == Some(ProgramState::Error);
+        let Some(display_state) = display_state else {
+            // 空快照来自 PaneBuf 整屏替换：只清 7501 文本，不能把 BEL / 屏幕
+            // 规则刚点亮的 Blocked 覆盖成 Idle。
+            return false;
+        };
         if authoritative {
             return error;
         }
 
         let event = match display_state {
-            Some(ProgramState::Idle) | None => PaneEvent::ProgramIdle,
-            Some(ProgramState::Working) => PaneEvent::CommandStart,
-            Some(ProgramState::Blocked) => PaneEvent::AttentionRequest,
-            Some(ProgramState::Done | ProgramState::Error) => {
-                PaneEvent::CommandDone { exit_code: None }
-            }
+            ProgramState::Idle => PaneEvent::ProgramIdle,
+            ProgramState::Working => PaneEvent::CommandStart,
+            ProgramState::Blocked => PaneEvent::AttentionRequest,
+            ProgramState::Done | ProgramState::Error => PaneEvent::CommandDone { exit_code: None },
         };
         {
             let entry = self.entry_mut(ws, pane);
@@ -2728,6 +2731,31 @@ mod tests {
         let pane = pane_of(&e, "ws", 1);
         assert_eq!(pane.status, PaneStatus::Idle);
         assert!(pane.program_status.is_some());
+    }
+
+    #[test]
+    fn empty_program_status_snapshot_does_not_clear_bel_blocked() {
+        let c = clock();
+        let mut e = AttentionEngine::new(AttentionConfig::default(), c.clone());
+        e.apply(
+            "ws",
+            1,
+            &[AttentionSignal::AttentionRequest {
+                source: AttentionSource::Bel,
+            }],
+            "approve?",
+            1,
+        );
+        assert_eq!(pane_of(&e, "ws", 1).status, PaneStatus::Blocked);
+
+        e.apply_program_status("ws", 1, &program_snapshot(1, Vec::new()), c.now());
+        let pane = pane_of(&e, "ws", 1);
+        assert_eq!(
+            pane.status,
+            PaneStatus::Blocked,
+            "整屏替换的空快照不能清掉 BEL 的 Blocked"
+        );
+        assert!(pane.program_status_display.is_none());
     }
 
     #[test]
