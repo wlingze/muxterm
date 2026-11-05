@@ -178,7 +178,26 @@ cargo build --no-default-features --features gpui --release
 浅色/深色主题（默认白底黑字 + Menlo 18）、按真实字形度量格子、窗口级
 `refresh-client -C` 上报、attach 历史回填（Core `PaneHistory` → 本地 scrollback）、
 Cmd-P 面板列出现有 runtime（discovery 驱动，点开即 attach）、macOS 原生菜单栏
-（NSMenu，结构照抄 Swift `buildMenu`）。
+（NSMenu，结构照抄 Swift `buildMenu`）、快速面板按 Swift `loadWorkspaceItems` 的
+根列表分段（Shells / Agents / Open / 编号 workspace / Project / discovery）、
+未保存项的 Save 与 Cmd-K 行内动作菜单、`Open` 分步导航 + 末端「运行时 + 名字」确认。
+
+### 8.2 快速面板与 Swift 的差异
+
+`src/frontend/gpui/model/workspace_picker.rs` 是纯状态机（阶段、草案、Project 文档）；
+`state/picker.rs` 接 FFI；`chrome/panel.rs` / `panel_view.rs` 负责像素与动作集。
+对照 `UnifiedPanelController.swift` 的已知差异，都是缺 Core 能力，不是设计选择：
+
+| 差异 | Swift | gpui 现状 |
+| --- | --- | --- |
+| Project 排序 | `store.recents + store.projects` 按 attach 次数（`WorkspacePickerOrder`） | 按配置顺序（还没有使用频次存储） |
+| 行内 `Update runtime` | workspace 行在 `canUpdateRuntime` 时给 Update | 没有，Core 侧 handoff 还没接进 gpui |
+| 提醒行的 `Show` | 已隐藏时给 `Show` | 只给 `Hide`；侧栏 Hidden commands 段可反向切回 |
+| `Open preview` | 提醒行可开预览 | 没有预览窗口 |
+| `Cmd-K` 选中项 | 全局命令（Action Catalog）在独立面板 | 同一份行内动作，但不带全局命令 |
+| 本地化 | i18n 全量 | 字符串硬编码英文（与其它 gpui chrome 一致） |
+| 现有 runtime 去重键 | `transport\|runtime\|session\|socket\|workspace_id\|name` | `(transport, target, runtime, session, socket, workspace_id)`：与 Swift 同语义，不按 name 去重（同 session 多个 Herdr workspace 是不同身份） |
+
 
 ## 8.1 跨平台 TODO（2026-11-05 实测记录）
 
@@ -198,11 +217,15 @@ Cmd-P 面板列出现有 runtime（discovery 驱动，点开即 attach）、macO
 ## 9. 验收
 
 - `cargo check --no-default-features --features gpui` 通过。
-- `cargo test --no-default-features --features gpui --lib` 通过（2026-11-05 实测 **1880 passed**）。
+- `cargo test --no-default-features --features gpui --lib` 通过（2026-11-05 实测 **1885 passed**）。
 - 集成测试（每个都实测通过）：
   - `--test gpui_chrome`（43）：侧栏 / tab / 状态栏 / Cmd-P 面板（含 discovery 到的现有 runtime）/
     Cmd-Shift-P 命令面板 / 输入框 / 设置 / Open 入口 / 历史回填 / 菜单动作，并断言真实布局
     （侧栏 240pt、24pt 单条栏、命令面板 600×360），全部走真实 `GpuiApp`。
+  - `--test gpui_workspace_picker`（13）：根列表四段顺序与编号、Open 三层导航、目录完成后
+    的「运行时 + 名字」确认（默认 Herdr + 路径末段）、空名字拒绝、Esc 逐层退回、
+    Cmd-K 行内动作集与浮层位置、Save 点击只写 projects（保留 template 等未知字段）、
+    已保存/未保存两套动作、Herdr attach 带 `workspace_id`、面板吞键不落 PTY。
   - `--test gpui_surface_events`（6）：滚轮、宽字符、鼠标报告、IME 提交、候选窗锚定。
   - `--test gpui_surface_e2e`（1）：隔离 tmux 里真实 shell 输出落到格子上。
   - `--test gpui_acceptance`（4）：启动 workspace、按键进 shell、Cmd-T 加 tab、第二个 workspace 经 Catalog 打开并可切换。

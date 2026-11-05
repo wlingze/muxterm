@@ -86,12 +86,28 @@ AppWindow
   按 `provenance.project` 归组，worktree 缩进。tmux / shell / herdr 同一套 UI 数据。
 - **快速面板**：fuzzy 候选 = Catalog `Candidate`（Project / Worktree / Existing / Recent）
   + 已开 workspace + activity record 跳转。选择产出 `OpenRequest`。
+  Workspaces tab 的根列表固定四段顺序，不要按字母或时间重排：
+  1. 前端合成的聚合行 `Shells`、`Agents`（不可关闭、不写回 Core）；
+  2. `Open`（进入打开流程，见下）；
+  3. 已打开的 workspace，按 `Cmd-Ctrl-N` 顺序编号，`Shells`/`Agents` 不占号；
+  4. 配置里的 Project，末段是 discovery 到、尚未保存的现有 runtime。
+  已保存项带 `Project` 徽章；未保存的现有 runtime 行内给 `Save`，点击只写
+  `[[projects]]`，不 attach，也不做乐观置位（成功提交后从 Core 重新读配置）。
+
+  打开流程（`Open`）：选机器（local / SSH alias）→ 该机器上的现有 session 或
+  `Open New Path` → 目录 → 确认页。确认页是唯一新增的一步：运行时默认
+  `herdr`，可切 `tmux`；名字默认取路径末段，可编辑。确认后一次 `OpenTarget`
+  （`create_if_missing`）；现有 session 走 attach-only，永不新建 session。
+  中途 `Esc` 逐层退回，退到根列表还按一次才关面板；任何一层都不产生打开请求。
 - **命令面板**：Action Catalog，不按 GTK/AppKit 类型存盘。
 - **快速面板里的 Cmd-K**：面板是 key window 时，`Cmd-K` 只换成当前选中行的动作
   （工作区打开 / 关闭 / 更新，连接 attach，提醒跳转 / 隐藏等）。不带命令面板的全局命令。
   输入继续过滤这份短列表。`Esc` 先退出这一层，再恢复进入前的查询和原来的 tab，
   不关掉面板，也不增加第四个 tab。`Cmd-Shift-P` 仍打开独立命令面板。Shells 仍是
   `Cmd-Ctrl-S`。
+  动作集按行型固定：聚合行只有 Open；workspace 是 Open / Close workspace；
+  Project 与已保存的现有 runtime 是 Connect / Edit / Delete；未保存的现有 runtime
+  是 Attach / Save；提醒是 Jump / Hide；`Open` 这类导航行没有行内动作。
 - **设置页**：schema-driven，见 §4。
 
 ### 2.4 交互
