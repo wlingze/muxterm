@@ -22,8 +22,7 @@ impl GpuiApp {
         let Some(workspace) = self.visible_workspace().map(str::to_string) else {
             return div().into_any_element();
         };
-        let cell_width = theme.cell_width();
-        let cell_height = theme.cell_height();
+        let (cell_width, cell_height) = self.cell();
         let cols = (rect.max_width() / cell_width).floor().max(1.0) as usize;
         let rows = (rect.max_height() / cell_height).floor().max(1.0) as usize;
         let focused = self.focused_pane() == Some(pane_id);
@@ -46,6 +45,7 @@ impl GpuiApp {
                         cells,
                         row,
                         draw_cols,
+                        cell_height,
                         cursor,
                         show_cursor,
                     ));
@@ -106,12 +106,17 @@ impl GpuiApp {
             .top(px(rect.y))
             .w(px(rect.max_width()))
             .h(px(rect.max_height()))
+            // gpui 默认 flex 方向是 row：不显式声明列，30 行会并排放并被压缩成 0 宽，
+            // 于是整块终端看起来是空白。
+            .flex()
+            .flex_col()
             .overflow_hidden()
             .bg(theme.bg)
             .border_1()
             .border_color(border)
             .font_family(theme.font_family)
             .text_size(px(theme.font_size))
+            .line_height(px(cell_height))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, window, cx| {
@@ -153,11 +158,10 @@ impl GpuiApp {
         cells: &[Cell],
         row: usize,
         cols: usize,
+        cell_height: f32,
         cursor: (usize, usize),
         show_cursor: bool,
     ) -> AnyElement {
-        let cell_height = theme.cell_height();
-
         // 跳过尾部空白：既省 run，也不改变可见结果。
         let mut last = cols.min(cells.len());
         while last > 0 {
@@ -188,6 +192,9 @@ impl GpuiApp {
             runs.push(
                 div()
                     .h(px(cell_height))
+                    // 文本行高必须等于格子高度：gpui 默认行高是 1.618em，
+                    // 18pt 字会排成 29px 的行，在 20px 的格子里被裁掉下半截。
+                    .line_height(px(cell_height))
                     .bg(bg)
                     .text_color(fg)
                     .child(SharedString::from(text))
@@ -198,7 +205,9 @@ impl GpuiApp {
         div()
             .flex()
             .flex_row()
+            .flex_none()
             .h(px(cell_height))
+            .w_full()
             .children(runs)
             .into_any_element()
     }

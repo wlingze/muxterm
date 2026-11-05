@@ -7,9 +7,12 @@ use gpui::{div, prelude::*, px, AnyElement, SharedString};
 
 use crate::frontend::gpui::model::sidebar::Indicator;
 use crate::frontend::gpui::state::GpuiApp;
-use crate::frontend::gpui::theme::Theme;
+use crate::frontend::gpui::theme::{Theme, STATUS_BAR_FONT_SIZE};
 
-const STATUS_BAR_HEIGHT: f32 = 22.0;
+/// `FlatChrome.statusBarHeight`。
+pub(crate) const STATUS_BAR_HEIGHT: f32 = 18.0;
+/// `FlatChrome.statusHorizontalInset`。
+const STATUS_BAR_INSET: f32 = 6.0;
 
 impl GpuiApp {
     pub(crate) fn render_status_bar(&self) -> AnyElement {
@@ -37,7 +40,7 @@ impl GpuiApp {
             right.push(
                 div()
                     .flex_none()
-                    .text_xs()
+                    .text_size(px(STATUS_BAR_FONT_SIZE))
                     .text_color(color)
                     .child(SharedString::from(format!("◔ {}", attention.count)))
                     .into_any_element(),
@@ -50,11 +53,12 @@ impl GpuiApp {
             .items_center()
             .justify_between()
             .h(px(STATUS_BAR_HEIGHT))
-            .px_3()
+            .px(px(STATUS_BAR_INSET))
             .bg(theme.chrome_bg)
             .border_t_1()
             .border_color(theme.border)
-            .text_xs()
+            .text_size(px(STATUS_BAR_FONT_SIZE))
+            .line_height(px(14.0))
             .text_color(theme.muted)
             .child(
                 div()
