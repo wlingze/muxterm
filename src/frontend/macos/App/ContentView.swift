@@ -35,7 +35,6 @@ final class ContentView: NSView {
 
     private var topConstraints: [NSLayoutConstraint] = []
     private var bottomConstraints: [NSLayoutConstraint] = []
-    private var updateBannerTopConstraint: NSLayoutConstraint?
     private var position: TabBarPosition = .bottom
 
     init(terminalManager: TerminalManager) {
@@ -117,11 +116,6 @@ final class ContentView: NSView {
         let railWidth = commandMarkRail.widthAnchor.constraint(
             equalToConstant: CommandMarkRailLayout.collapsedWidth
         )
-        // HUD 不铺满整行：宽度跟随内容，长文案截断，左侧始终像一条通知而不是第二层 chrome。
-        updateBannerTopConstraint = updateBanner.topAnchor.constraint(
-            equalTo: topAnchor,
-            constant: 6
-        )
         let jumpTrailing = jumpLatestButton.trailingAnchor.constraint(
             equalTo: paneLayout.trailingAnchor,
             constant: -12
@@ -165,10 +159,12 @@ final class ContentView: NSView {
             connectProgressOverlay.trailingAnchor.constraint(equalTo: paneLayout.trailingAnchor),
             connectProgressOverlay.topAnchor.constraint(equalTo: paneLayout.topAnchor),
             connectProgressOverlay.bottomAnchor.constraint(equalTo: paneLayout.bottomAnchor),
-            updateBanner.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
-            updateBanner.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -10),
-            updateBanner.widthAnchor.constraint(lessThanOrEqualToConstant: 620),
-            updateBannerTopConstraint!,
+            updateBanner.leadingAnchor.constraint(
+                greaterThanOrEqualTo: paneLayout.leadingAnchor,
+                constant: 16
+            ),
+            updateBanner.trailingAnchor.constraint(equalTo: paneLayout.trailingAnchor, constant: -16),
+            updateBanner.bottomAnchor.constraint(equalTo: imagePasteBanner.topAnchor, constant: -8),
             imagePasteBanner.bottomAnchor.constraint(equalTo: paneLayout.bottomAnchor, constant: -12),
             imagePasteBanner.widthAnchor.constraint(greaterThanOrEqualToConstant: 220),
             imagePasteBanner.widthAnchor.constraint(lessThanOrEqualToConstant: 420),
@@ -221,12 +217,6 @@ final class ContentView: NSView {
             statusBar.setEdgeLineAtBottom(false)
             statusBar.setIntegratedTitlebar(false)
         }
-        // 顶部 tab/status bar 是窗口 chrome；提醒条要落在它下面，不能盖住 tab。
-        updateBannerTopConstraint?.isActive = false
-        updateBannerTopConstraint = position == .top
-            ? updateBanner.topAnchor.constraint(equalTo: statusBar.bottomAnchor, constant: 6)
-            : updateBanner.topAnchor.constraint(equalTo: topAnchor, constant: 6)
-        updateBannerTopConstraint?.isActive = true
         needsLayout = true
     }
 

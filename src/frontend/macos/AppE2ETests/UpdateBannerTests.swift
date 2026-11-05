@@ -2,7 +2,7 @@ import AppKit
 import XCTest
 @testable import MuxtermAppLib
 
-/// 更新提醒条：Core 给什么状态，前端就渲染什么。
+/// 更新提醒卡片：Core 给什么状态，前端就渲染什么。
 /// 这些用例只校验「状态 → 文案/按钮」的映射，不触发下载与安装。
 final class UpdateBannerPresentationTests: XCTestCase {
     private func status(
@@ -25,29 +25,32 @@ final class UpdateBannerPresentationTests: XCTestCase {
     func testIdleAndUpToDateStayHidden() {
         for phase in ["idle", "up_to_date"] {
             let presentation = UpdateBannerPresentation.make(status: status(phase: phase))
-            XCTAssertFalse(presentation.visible, "\(phase) 不应显示提醒条")
+            XCTAssertFalse(presentation.visible, "\(phase) 不应显示提醒卡")
             XCTAssertFalse(presentation.actionEnabled, "\(phase) 不应给出按钮")
         }
     }
 
-    func testAvailableOffersOneClickInstall() {
+    func testAvailableOffersOneClickInstallAndBothDismissals() {
         let presentation = UpdateBannerPresentation.make(
             status: status(phase: "available", version: "0.2.0")
         )
         XCTAssertTrue(presentation.visible)
         XCTAssertTrue(presentation.actionEnabled, "有更新时必须可以一键更新")
         let i18n = MuxtermI18n.shared
+        XCTAssertEqual(presentation.title, i18n.tr(.updateAvailable))
         XCTAssertEqual(
             presentation.message,
             i18n.tr(.updateAvailableMessage, arguments: ["version": "0.2.0"])
         )
         XCTAssertEqual(presentation.actionTitle, i18n.tr(.updateInstallNow))
+        XCTAssertTrue(presentation.showsDismiss)
+        XCTAssertTrue(presentation.showsNeverRemind)
     }
 
     func testBusyAndInstalledStatesHideTheAction() {
         for phase in ["checking", "installing", "installed"] {
             let presentation = UpdateBannerPresentation.make(status: status(phase: phase))
-            XCTAssertTrue(presentation.visible, "\(phase) 应保持提醒条可见以便反馈进度")
+            XCTAssertTrue(presentation.visible, "\(phase) 应保持提醒卡可见以便反馈进度")
             XCTAssertFalse(
                 presentation.actionEnabled,
                 "\(phase) 期间不得允许重复点击更新"
@@ -62,7 +65,7 @@ final class UpdateBannerPresentationTests: XCTestCase {
                 UpdateBannerPresentation.make(
                     status: status(phase: phase, version: "0.2.0")
                 ).showsDismiss,
-                "\(phase) 应允许关闭提醒条"
+                "\(phase) 应允许关闭提醒卡"
             )
         }
         for phase in ["checking", "installing"] {
@@ -70,13 +73,34 @@ final class UpdateBannerPresentationTests: XCTestCase {
                 UpdateBannerPresentation.make(
                     status: status(phase: phase, version: "0.2.0")
                 ).showsDismiss,
-                "\(phase) 进行中不应能关闭提醒条"
+                "\(phase) 进行中不应能关闭提醒卡"
+            )
+        }
+    }
+
+    /// 「不再提醒」只对还没安装的更新有意义；安装完成后只剩重启提示。
+    func testNeverRemindIsOfferedOnlyForActionableStates() {
+        for phase in ["available", "failed"] {
+            XCTAssertTrue(
+                UpdateBannerPresentation.make(
+                    status: status(phase: phase, version: "0.2.0")
+                ).showsNeverRemind,
+                "\(phase) 应允许不再提醒"
+            )
+        }
+        for phase in ["checking", "installing", "installed"] {
+            XCTAssertFalse(
+                UpdateBannerPresentation.make(
+                    status: status(phase: phase, version: "0.2.0")
+                ).showsNeverRemind,
+                "\(phase) 不应提供不再提醒"
             )
         }
     }
 
     func testInstalledTellsUserToRestart() {
         let presentation = UpdateBannerPresentation.make(status: status(phase: "installed"))
+        XCTAssertEqual(presentation.title, MuxtermI18n.shared.tr(.updateInstalledTitle))
         XCTAssertEqual(
             presentation.message,
             MuxtermI18n.shared.tr(.updateInstalledRestart)
@@ -97,8 +121,27 @@ final class UpdateBannerPresentationTests: XCTestCase {
     }
 }
 
-/// 渲染层行为：按状态显隐、同版本关闭后不再打扰、按钮接通 Core 回调。
+/// 渲染层行为：按状态显隐、本次关闭不重复、永久不再提醒会跨视图保存。
 final class UpdateBannerViewTests: XCTestCase {
+    private var suiteName = ""
+    private var defaults = UserDefaults.standard
+
+    override func setUp() {
+        super.setUp()
+        suiteName = "muxterm.update-banner.\(UUID().uuidString)"
+        defaults = UserDefaults(suiteName: suiteName) ?? .standard
+        defaults.removePersistentDomain(forName: suiteName)
+    }
+
+    override func tearDown() {
+        defaults.removePersistentDomain(forName: suiteName)
+        super.tearDown()
+    }
+
+    private func makeView() -> UpdateBannerView {
+        UpdateBannerView(defaults: defaults)
+    }
+
     private func status(phase: String, version: String?) -> CoreBridge.UpdateStatus {
         CoreBridge.UpdateStatus(
             phase: phase,
@@ -118,7 +161,7 @@ final class UpdateBannerViewTests: XCTestCase {
     }
 
     func testBannerStartsHiddenUntilAnUpdateExists() {
-        let view = UpdateBannerView()
+        let view = makeView()
         XCTAssertTrue(view.isHidden, "启动时不应显示更新提醒")
         view.apply(status(phase: "idle", version: nil))
         XCTAssertTrue(view.isHidden)
@@ -127,15 +170,18 @@ final class UpdateBannerViewTests: XCTestCase {
     }
 
     func testBannerAppearsForAvailableUpdate() {
-        let view = UpdateBannerView()
+        let view = makeView()
         view.apply(status(phase: "available", version: "0.2.0"))
         XCTAssertFalse(view.isHidden)
+        XCTAssertEqual(view.testTitleText(), MuxtermI18n.shared.tr(.updateAvailable))
         XCTAssertEqual(view.testActionTitle(), MuxtermI18n.shared.tr(.updateInstallNow))
         XCTAssertFalse(view.testMessageText().isEmpty, "必须渲染出「有新版本」的文案")
+        XCTAssertTrue(view.testDismissVisible())
+        XCTAssertTrue(view.testNeverRemindVisible())
     }
 
     func testDismissedVersionIsNotShownAgain() {
-        let view = UpdateBannerView()
+        let view = makeView()
         view.apply(status(phase: "available", version: "0.2.0"))
         view.dismiss()
         XCTAssertTrue(view.isHidden)
@@ -144,7 +190,7 @@ final class UpdateBannerViewTests: XCTestCase {
     }
 
     func testNewVersionAfterDismissIsShownAgain() {
-        let view = UpdateBannerView()
+        let view = makeView()
         view.apply(status(phase: "available", version: "0.2.0"))
         view.dismiss()
         view.apply(status(phase: "available", version: "0.3.0"))
@@ -152,7 +198,7 @@ final class UpdateBannerViewTests: XCTestCase {
     }
 
     func testPrimaryButtonClickReachesCoreCallback() throws {
-        let view = UpdateBannerView()
+        let view = makeView()
         var fired = 0
         view.onPrimaryAction = { fired += 1 }
         view.apply(status(phase: "available", version: "0.2.0"))
@@ -160,7 +206,7 @@ final class UpdateBannerViewTests: XCTestCase {
 
         let button = try XCTUnwrap(
             find(view, "muxterm.updateAction") as? NSButton,
-            "提醒条必须暴露一键更新按钮"
+            "提醒卡必须暴露一键更新按钮"
         )
         XCTAssertFalse(button.isHidden)
         XCTAssertTrue(button.isEnabled)
@@ -168,41 +214,79 @@ final class UpdateBannerViewTests: XCTestCase {
         XCTAssertEqual(fired, 1, "点击一键更新必须回调 Core")
     }
 
-    func testDismissButtonHidesBannerAndNotifies() throws {
-        let view = UpdateBannerView()
+    func testCloseButtonHidesBannerAndNotifies() throws {
+        let view = makeView()
         var dismissed = 0
         view.onDismiss = { dismissed += 1 }
         view.apply(status(phase: "available", version: "0.2.0"))
 
         let button = try XCTUnwrap(find(view, "muxterm.updateDismiss") as? NSButton)
+        XCTAssertEqual(button.title, MuxtermI18n.shared.tr(.updateClose))
         button.performClick(nil)
         XCTAssertEqual(dismissed, 1)
         XCTAssertTrue(view.isHidden)
     }
 
+    /// 「关闭」只影响当前视图/本次运行；重新创建视图后同一版本仍会出现。
+    func testCloseDoesNotPersistAcrossViews() {
+        let first = makeView()
+        first.apply(status(phase: "available", version: "0.2.0"))
+        first.dismiss()
+
+        let second = makeView()
+        second.apply(status(phase: "available", version: "0.2.0"))
+        XCTAssertFalse(second.isHidden, "关闭不是永久偏好，新窗口仍应提醒")
+    }
+
+    func testNeverRemindPersistsAcrossViewsAndCanBeReenabled() throws {
+        let first = makeView()
+        var fired = 0
+        first.onNeverRemind = { fired += 1 }
+        first.apply(status(phase: "available", version: "0.2.0"))
+        let button = try XCTUnwrap(
+            find(first, "muxterm.updateNeverRemind") as? NSButton
+        )
+        XCTAssertEqual(button.title, MuxtermI18n.shared.tr(.updateNeverRemind))
+        button.performClick(nil)
+        XCTAssertEqual(fired, 1)
+        XCTAssertTrue(first.isHidden)
+        XCTAssertTrue(defaults.bool(forKey: UpdateBannerView.suppressRemindersKey))
+
+        let second = makeView()
+        second.apply(status(phase: "available", version: "0.3.0"))
+        XCTAssertTrue(second.isHidden, "不再提醒必须跨视图生效")
+
+        second.allowFutureReminders()
+        XCTAssertFalse(defaults.bool(forKey: UpdateBannerView.suppressRemindersKey))
+        second.apply(status(phase: "available", version: "0.3.0"))
+        XCTAssertFalse(second.isHidden, "显式检查更新后应恢复提醒")
+    }
+
     func testInstallingDisablesTheActionButton() throws {
-        let view = UpdateBannerView()
+        let view = makeView()
         view.apply(status(phase: "available", version: "0.2.0"))
         view.apply(status(phase: "installing", version: "0.2.0"))
         let button = try XCTUnwrap(find(view, "muxterm.updateAction") as? NSButton)
         XCTAssertFalse(button.isEnabled, "安装期间不得重复触发更新")
         XCTAssertFalse(view.isHidden, "安装进度必须仍然可见")
-        XCTAssertFalse(view.testDismissVisible(), "安装进行中不应能关闭提醒条")
+        XCTAssertFalse(view.testDismissVisible(), "安装进行中不应能关闭提醒卡")
+        XCTAssertFalse(view.testNeverRemindVisible())
     }
 
     /// 安装完成后没有主按钮，但必须保留一个可见的关闭键。
-    func testInstalledBannerOffersDismiss() throws {
-        let view = UpdateBannerView()
+    func testInstalledBannerOffersCloseButNotNeverRemind() throws {
+        let view = makeView()
         view.apply(status(phase: "installed", version: "0.2.0"))
         XCTAssertFalse(view.isHidden)
         XCTAssertTrue(view.testDismissVisible())
+        XCTAssertFalse(view.testNeverRemindVisible())
         let button = try XCTUnwrap(find(view, "muxterm.updateDismiss") as? NSButton)
         XCTAssertFalse(button.isHidden)
-        XCTAssertEqual(button.toolTip, MuxtermI18n.shared.tr(.updateDismiss))
+        XCTAssertEqual(button.title, MuxtermI18n.shared.tr(.updateClose))
     }
 
-    func testDismissInstalledBannerHidesItAndNotifies() throws {
-        let view = UpdateBannerView()
+    func testCloseInstalledBannerHidesItAndNotifies() throws {
+        let view = makeView()
         var dismissed = 0
         view.onDismiss = { dismissed += 1 }
         view.apply(status(phase: "installed", version: "0.2.0"))
@@ -212,9 +296,20 @@ final class UpdateBannerViewTests: XCTestCase {
         XCTAssertTrue(view.isHidden)
     }
 
-    /// 真实 ContentView 里：HUD 贴着内容宽度，且不会压住顶部 tab/status bar。
-    func testHUDStaysBelowTopChromeAndHugsContent() throws {
+    /// 真实 ContentView 里：HUD 在右下角，有可读宽度，且不会压住状态栏。
+    func testHUDStaysInBottomRightAndClearsChrome() throws {
         AppE2E.ensureApp()
+        let suppressionKey = UpdateBannerView.suppressRemindersKey
+        let previous = UserDefaults.standard.object(forKey: suppressionKey)
+        UserDefaults.standard.removeObject(forKey: suppressionKey)
+        defer {
+            if let previous {
+                UserDefaults.standard.set(previous, forKey: suppressionKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: suppressionKey)
+            }
+        }
+
         let bridge = try CoreBridge(backendType: "local")
         defer { bridge.shutdown() }
         let content = ContentView(terminalManager: TerminalManager(bridge: bridge))
@@ -234,8 +329,18 @@ final class UpdateBannerViewTests: XCTestCase {
             content.updateBanner.apply(installed)
             content.layoutSubtreeIfNeeded()
             let banner = content.updateBanner.frame
-            XCTAssertGreaterThan(banner.width, 150)
-            XCTAssertLessThanOrEqual(banner.width, 620)
+            XCTAssertGreaterThan(banner.width, 300)
+            XCTAssertLessThanOrEqual(banner.width, 360)
+            XCTAssertGreaterThan(
+                banner.minX,
+                content.bounds.midX,
+                "HUD 必须靠右，实际 frame=\(banner)"
+            )
+            XCTAssertLessThan(
+                banner.maxY,
+                content.bounds.midY,
+                "HUD 必须靠下，实际 frame=\(banner)"
+            )
             XCTAssertFalse(
                 banner.intersects(content.statusBar.frame),
                 "HUD 不能压住 \(position) 状态栏"
@@ -243,24 +348,22 @@ final class UpdateBannerViewTests: XCTestCase {
         }
     }
 
-    /// HUD 只占内容宽度，短文案不能变成一条横贯窗口的色带。
-    func testBannerHugsContentInsteadOfFillingTheWindow() {
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 1000, height: 200))
-        let view = UpdateBannerView()
+    /// 卡片固定右下角，不再是一条横贯窗口的色带。
+    func testBannerUsesBottomRightCardWidth() {
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 1000, height: 400))
+        let view = makeView()
         view.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(view)
         NSLayoutConstraint.activate([
-            view.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 10),
-            view.topAnchor.constraint(equalTo: container.topAnchor, constant: 6),
-            view.trailingAnchor.constraint(
-                lessThanOrEqualTo: container.trailingAnchor,
-                constant: -10
-            ),
-            view.widthAnchor.constraint(lessThanOrEqualToConstant: 620),
+            view.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -16),
+            view.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -16),
         ])
-        view.apply(status(phase: "installed", version: "0.2.0"))
+        view.apply(status(phase: "available", version: "0.2.0"))
         container.layoutSubtreeIfNeeded()
-        XCTAssertGreaterThan(view.frame.width, 200, "提醒条必须有内容宽度")
-        XCTAssertLessThan(view.frame.width, 620, "短文案应贴合内容，不能铺满窗口")
+        XCTAssertEqual(view.frame.maxX, container.frame.maxX - 16, accuracy: 1)
+        XCTAssertEqual(view.frame.minY, container.frame.minY + 16, accuracy: 1)
+        XCTAssertGreaterThan(view.frame.width, 300)
+        XCTAssertLessThanOrEqual(view.frame.width, 360)
+        XCTAssertLessThan(view.frame.height, 180, "卡片不应铺满窗口")
     }
 }

@@ -1,99 +1,180 @@
 import AppKit
 import Foundation
 
-/// 更新提醒条（AppKit）：有新版本时显示「一键更新」按钮。
+/// 更新提醒卡片（AppKit）：右下角常驻 HUD，提供更新 / 关闭 / 不再提醒。
 ///
 /// 纯渲染层：状态来自 Core（CoreBridge.updateStatus），按钮只调 Core 的
-/// check/install。前端不做版本比较、不下载、不落盘。
+/// check/install。前端不做版本比较、不下载、不落盘；只有「不再提醒」这一
+/// 用户偏好保存在 UserDefaults。
 final class UpdateBannerView: NSView {
+    static let suppressRemindersKey = "muxterm.update.suppressReminders"
+
     var onPrimaryAction: (() -> Void)?
     var onDismiss: (() -> Void)?
+    var onNeverRemind: (() -> Void)?
 
+    private let defaults: UserDefaults
+    private var suppressReminders: Bool
+    private let titleLabel = NSTextField(labelWithString: "")
     private let messageLabel = NSTextField(labelWithString: "")
     private let actionButton = NSButton()
-    private let dismissButton = NSButton()
+    private let closeButton = NSButton()
+    private let neverButton = NSButton()
+    private let textStack = NSStackView()
+    private let buttonStack = NSStackView()
     private let contentStack = NSStackView()
-    /// 用户关掉的版本；同一版本不再重复提醒。
+    /// 用户本次关闭的版本；同一版本不再重复提醒。
     private var dismissedVersion: String?
     /// 最近渲染的状态；未变化时不重排。
     private var lastRendered: CoreBridge.UpdateStatus?
 
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        self.suppressReminders = defaults.bool(forKey: Self.suppressRemindersKey)
+        super.init(frame: .zero)
+        configure()
+    }
+
     override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        wantsLayer = true
-        layer?.cornerRadius = 6
-        layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.12).cgColor
-        setAccessibilityIdentifier("muxterm.updateBanner")
-        isHidden = true
-
-        messageLabel.translatesAutoresizingMaskIntoConstraints = false
-        messageLabel.font = NSFont.systemFont(ofSize: 12, weight: .medium)
-        messageLabel.textColor = .labelColor
-        messageLabel.lineBreakMode = .byTruncatingTail
-        messageLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        messageLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-
-        actionButton.translatesAutoresizingMaskIntoConstraints = false
-        actionButton.title = MuxtermI18n.shared.tr(.updateInstallNow)
-        actionButton.bezelStyle = .rounded
-        actionButton.controlSize = .small
-        actionButton.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
-        actionButton.setContentHuggingPriority(.required, for: .horizontal)
-        actionButton.setContentCompressionResistancePriority(.required, for: .horizontal)
-        actionButton.target = self
-        actionButton.action = #selector(primaryClicked)
-        actionButton.setAccessibilityIdentifier("muxterm.updateAction")
-
-        // 更新提示是 HUD：任何可停留的阶段都要能手动收起。
-        // 下载/安装中是瞬态，隐藏关闭键，避免用户错过「重启生效」提示。
-        let dismissText = MuxtermI18n.shared.tr(.updateDismiss)
-        dismissButton.translatesAutoresizingMaskIntoConstraints = false
-        dismissButton.title = ""
-        dismissButton.image = NSImage(
-            systemSymbolName: "xmark",
-            accessibilityDescription: dismissText
+        self.defaults = .standard
+        self.suppressReminders = UserDefaults.standard.bool(
+            forKey: Self.suppressRemindersKey
         )
-        dismissButton.imagePosition = .imageOnly
-        dismissButton.imageScaling = .scaleProportionallyDown
-        dismissButton.bezelStyle = .inline
-        dismissButton.isBordered = false
-        dismissButton.controlSize = .small
-        dismissButton.contentTintColor = .secondaryLabelColor
-        dismissButton.setContentHuggingPriority(.required, for: .horizontal)
-        dismissButton.setContentCompressionResistancePriority(.required, for: .horizontal)
-        dismissButton.target = self
-        dismissButton.action = #selector(dismissClicked)
-        dismissButton.setAccessibilityIdentifier("muxterm.updateDismiss")
-        dismissButton.setAccessibilityLabel(dismissText)
-        dismissButton.toolTip = dismissText
-        dismissButton.isHidden = true
-
-        contentStack.translatesAutoresizingMaskIntoConstraints = false
-        contentStack.orientation = .horizontal
-        contentStack.alignment = .centerY
-        contentStack.distribution = .fill
-        contentStack.spacing = 8
-        contentStack.edgeInsets = NSEdgeInsets(top: 0, left: 10, bottom: 0, right: 8)
-        contentStack.detachesHiddenViews = true
-        contentStack.addArrangedSubview(messageLabel)
-        contentStack.addArrangedSubview(actionButton)
-        contentStack.addArrangedSubview(dismissButton)
-        addSubview(contentStack)
-
-        NSLayoutConstraint.activate([
-            contentStack.leadingAnchor.constraint(equalTo: leadingAnchor),
-            contentStack.trailingAnchor.constraint(equalTo: trailingAnchor),
-            contentStack.topAnchor.constraint(equalTo: topAnchor),
-            contentStack.bottomAnchor.constraint(equalTo: bottomAnchor),
-            heightAnchor.constraint(equalToConstant: 28),
-            dismissButton.widthAnchor.constraint(equalToConstant: 18),
-            dismissButton.heightAnchor.constraint(equalToConstant: 18),
-        ])
+        super.init(frame: frameRect)
+        configure()
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    private func configure() {
+        wantsLayer = true
+        layer?.masksToBounds = false
+        setAccessibilityIdentifier("muxterm.updateBanner")
+        isHidden = true
+        refreshAppearance()
+
+        titleLabel.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
+        titleLabel.textColor = .labelColor
+        titleLabel.lineBreakMode = .byTruncatingTail
+
+        messageLabel.font = NSFont.systemFont(ofSize: 12)
+        messageLabel.textColor = .secondaryLabelColor
+        messageLabel.lineBreakMode = .byWordWrapping
+        messageLabel.maximumNumberOfLines = 3
+        messageLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        messageLabel.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+
+        textStack.translatesAutoresizingMaskIntoConstraints = false
+        textStack.orientation = .vertical
+        textStack.alignment = .leading
+        textStack.spacing = 3
+        textStack.detachesHiddenViews = true
+        textStack.addArrangedSubview(titleLabel)
+        textStack.addArrangedSubview(messageLabel)
+
+        configureButton(
+            actionButton,
+            title: MuxtermI18n.shared.tr(.updateInstallNow),
+            identifier: "muxterm.updateAction",
+            action: #selector(primaryClicked),
+            emphasized: true
+        )
+        configureButton(
+            closeButton,
+            title: MuxtermI18n.shared.tr(.updateClose),
+            identifier: "muxterm.updateDismiss",
+            action: #selector(closeClicked),
+            emphasized: false
+        )
+        configureButton(
+            neverButton,
+            title: MuxtermI18n.shared.tr(.updateNeverRemind),
+            identifier: "muxterm.updateNeverRemind",
+            action: #selector(neverClicked),
+            emphasized: false
+        )
+        closeButton.toolTip = MuxtermI18n.shared.tr(.updateClose)
+        neverButton.toolTip = MuxtermI18n.shared.tr(.updateNeverRemind)
+
+        // 按钮靠右；leading spacer 吸收剩余宽度。
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        spacer.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        buttonStack.translatesAutoresizingMaskIntoConstraints = false
+        buttonStack.orientation = .horizontal
+        buttonStack.alignment = .centerY
+        buttonStack.spacing = 8
+        buttonStack.detachesHiddenViews = true
+        buttonStack.addArrangedSubview(spacer)
+        buttonStack.addArrangedSubview(neverButton)
+        buttonStack.addArrangedSubview(closeButton)
+        buttonStack.addArrangedSubview(actionButton)
+
+        contentStack.translatesAutoresizingMaskIntoConstraints = false
+        contentStack.orientation = .vertical
+        contentStack.alignment = .leading
+        contentStack.spacing = 10
+        contentStack.detachesHiddenViews = true
+        contentStack.addArrangedSubview(textStack)
+        contentStack.addArrangedSubview(buttonStack)
+        addSubview(contentStack)
+
+        let width = widthAnchor.constraint(equalToConstant: 360)
+        width.priority = .defaultHigh
+        NSLayoutConstraint.activate([
+            width,
+            contentStack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            contentStack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+            contentStack.topAnchor.constraint(equalTo: topAnchor, constant: 12),
+            contentStack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12),
+            textStack.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
+            buttonStack.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
+        ])
+    }
+
+    private func configureButton(
+        _ button: NSButton,
+        title: String,
+        identifier: String,
+        action: Selector,
+        emphasized: Bool
+    ) {
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.title = title
+        button.bezelStyle = .rounded
+        button.controlSize = .small
+        button.font = NSFont.systemFont(
+            ofSize: 12,
+            weight: emphasized ? .semibold : .regular
+        )
+        button.target = self
+        button.action = action
+        button.setContentHuggingPriority(.required, for: .horizontal)
+        button.setContentCompressionResistancePriority(.required, for: .horizontal)
+        button.setAccessibilityIdentifier(identifier)
+        if emphasized {
+            button.bezelColor = .controlAccentColor
+            button.contentTintColor = .white
+        }
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        refreshAppearance()
+    }
+
+    private func refreshAppearance() {
+        layer?.cornerRadius = 10
+        layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.98).cgColor
+        layer?.borderWidth = 1
+        layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.8).cgColor
+        layer?.shadowColor = NSColor.black.cgColor
+        layer?.shadowOpacity = 0.18
+        layer?.shadowRadius = 14
+        layer?.shadowOffset = CGSize(width: 0, height: -4)
     }
 
     /// 按 Core 状态渲染；状态未变化时不动 widget。
@@ -102,6 +183,10 @@ final class UpdateBannerView: NSView {
         lastRendered = status
 
         let version = status.version ?? ""
+        if suppressReminders {
+            isHidden = true
+            return
+        }
         if !version.isEmpty, dismissedVersion == version {
             isHidden = true
             return
@@ -113,62 +198,88 @@ final class UpdateBannerView: NSView {
         let presentation = UpdateBannerPresentation.make(status: status)
         isHidden = !presentation.visible
         guard presentation.visible else { return }
+        titleLabel.stringValue = presentation.title
         messageLabel.stringValue = presentation.message
+        messageLabel.isHidden = presentation.message.isEmpty
         actionButton.title = presentation.actionTitle
         actionButton.isEnabled = presentation.actionEnabled
         actionButton.isHidden = !presentation.actionEnabled
-        dismissButton.isHidden = !presentation.showsDismiss
+        closeButton.isHidden = !presentation.showsDismiss
+        neverButton.isHidden = !presentation.showsNeverRemind
         needsLayout = true
     }
 
-    /// 用户点关闭：记住这个版本，不再提醒。
+    /// 用户点「关闭」：只收起当前版本；下次启动仍会提醒。
     func dismiss() {
         dismissedVersion = lastRendered?.version
         isHidden = true
+    }
+
+    /// 用户点「不再提醒」：持久化偏好，后续版本也不再自动弹出。
+    func neverRemind() {
+        suppressReminders = true
+        defaults.set(true, forKey: Self.suppressRemindersKey)
+        dismissedVersion = lastRendered?.version
+        isHidden = true
+    }
+
+    /// 用户从菜单显式点「检查更新」时重新允许提醒。
+    func allowFutureReminders() {
+        if suppressReminders {
+            suppressReminders = false
+            defaults.set(false, forKey: Self.suppressRemindersKey)
+        }
+        dismissedVersion = nil
+        lastRendered = nil
     }
 
     func refreshLocalization() {
         guard let status = lastRendered else { return }
         let i18n = MuxtermI18n.shared
         let presentation = UpdateBannerPresentation.make(status: status)
-        actionButton.title = presentation.actionTitle
+        titleLabel.stringValue = presentation.title
         messageLabel.stringValue = presentation.message
-        let dismissText = i18n.tr(.updateDismiss)
-        dismissButton.image = NSImage(
-            systemSymbolName: "xmark",
-            accessibilityDescription: dismissText
-        )
-        dismissButton.setAccessibilityLabel(dismissText)
-        dismissButton.toolTip = dismissText
+        actionButton.title = presentation.actionTitle
+        closeButton.title = i18n.tr(.updateClose)
+        closeButton.toolTip = i18n.tr(.updateClose)
+        neverButton.title = i18n.tr(.updateNeverRemind)
+        neverButton.toolTip = i18n.tr(.updateNeverRemind)
     }
 
-    /// 测试钩子：当前渲染的文案。
+    // MARK: - 测试钩子
+
+    func testTitleText() -> String { titleLabel.stringValue }
     func testMessageText() -> String { messageLabel.stringValue }
-
-    /// 测试钩子：主按钮标题。
     func testActionTitle() -> String { actionButton.title }
-
-    /// 测试钩子：关闭键是否可见。
-    func testDismissVisible() -> Bool { !dismissButton.isHidden }
+    func testDismissVisible() -> Bool { !closeButton.isHidden }
+    func testNeverRemindVisible() -> Bool { !neverButton.isHidden }
 
     @objc private func primaryClicked() {
         onPrimaryAction?()
     }
 
-    @objc private func dismissClicked() {
+    @objc private func closeClicked() {
         dismiss()
         onDismiss?()
     }
+
+    @objc private func neverClicked() {
+        neverRemind()
+        onNeverRemind?()
+    }
 }
 
-/// 纯逻辑：把 Core 状态映射为 banner 文案与按钮可用性（便于单测）。
+/// 纯逻辑：把 Core 状态映射为卡片文案与按钮可用性（便于单测）。
 struct UpdateBannerPresentation: Equatable {
     let visible: Bool
+    let title: String
     let message: String
     let actionTitle: String
     let actionEnabled: Bool
-    /// 是否显示关闭键。瞬态（检查/安装中）不可关，避免把重启提示一起藏掉。
+    /// 是否显示「关闭」。瞬态（检查/安装中）不可关，避免把重启提示一起藏掉。
     let showsDismiss: Bool
+    /// 是否显示「不再提醒」。安装完成后的重启提示不需要再关闭自动提醒。
+    let showsNeverRemind: Bool
 
     static func make(status: CoreBridge.UpdateStatus) -> UpdateBannerPresentation {
         let i18n = MuxtermI18n.shared
@@ -176,56 +287,66 @@ struct UpdateBannerPresentation: Equatable {
         case "available":
             return UpdateBannerPresentation(
                 visible: true,
+                title: i18n.tr(.updateAvailable),
                 message: i18n.tr(
                     .updateAvailableMessage,
                     arguments: ["version": status.version ?? ""]
                 ),
                 actionTitle: i18n.tr(.updateInstallNow),
                 actionEnabled: true,
-                showsDismiss: true
+                showsDismiss: true,
+                showsNeverRemind: true
             )
         case "installing":
             return UpdateBannerPresentation(
                 visible: true,
+                title: i18n.tr(.updateAvailable),
                 message: i18n.tr(.updateInstalling),
                 actionTitle: i18n.tr(.updateInstalling),
                 actionEnabled: false,
-                showsDismiss: false
+                showsDismiss: false,
+                showsNeverRemind: false
             )
         case "installed":
             return UpdateBannerPresentation(
                 visible: true,
+                title: i18n.tr(.updateInstalledTitle),
                 message: i18n.tr(.updateInstalledRestart),
                 actionTitle: i18n.tr(.updateInstalledRestart),
                 actionEnabled: false,
-                showsDismiss: true
+                showsDismiss: true,
+                showsNeverRemind: false
             )
         case "checking":
             return UpdateBannerPresentation(
                 visible: true,
+                title: i18n.tr(.updateAvailable),
                 message: i18n.tr(.updateChecking),
                 actionTitle: i18n.tr(.updateChecking),
                 actionEnabled: false,
-                showsDismiss: false
+                showsDismiss: false,
+                showsNeverRemind: false
             )
         case "failed":
+            let detail = status.message?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             return UpdateBannerPresentation(
                 visible: true,
-                message: i18n.tr(
-                    .updateFailed,
-                    arguments: ["message": status.message ?? ""]
-                ),
+                title: i18n.tr(.updateFailedTitle),
+                message: detail.isEmpty ? i18n.tr(.updateFailedTitle) : detail,
                 actionTitle: i18n.tr(.updateRetry),
                 actionEnabled: true,
-                showsDismiss: true
+                showsDismiss: true,
+                showsNeverRemind: true
             )
         default:
             return UpdateBannerPresentation(
                 visible: false,
+                title: "",
                 message: "",
                 actionTitle: "",
                 actionEnabled: false,
-                showsDismiss: false
+                showsDismiss: false,
+                showsNeverRemind: false
             )
         }
     }

@@ -4156,18 +4156,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
             panel.prompt = MuxtermI18n.shared.tr(.panelOpenFolder)
             panel.begin { [weak self] response in
                 guard response == .OK, let path = panel.url?.path else { return }
-                self?.connect(config: WorkspaceLauncher.temporaryTarget(
-                    path: path,
-                    transport: .local
-                ))
+                self?.unifiedPanel.presentOpenPathOptions(host: "local", path: path)
             }
         case .ssh(let alias):
             let picker = RemoteDirectoryPickerWindow(alias: alias, owner: window)
             picker.onChoose = { [weak self] path in
-                self?.connect(config: WorkspaceLauncher.temporaryTarget(
-                    path: path,
-                    transport: .ssh(name: alias)
-                ))
+                self?.unifiedPanel.presentOpenPathOptions(host: alias, path: path)
             }
         }
     }
@@ -6024,6 +6018,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
 
     /// 菜单/命令面板的「检查更新」入口。
     @objc func checkForUpdates() {
+        // 菜单里的显式检查更新等价于用户主动要求恢复提醒。
+        content.updateBanner.allowFutureReminders()
         updateStatusFastPollUntil = ProcessInfo.processInfo.systemUptime
             + Self.updateStatusFastPollWindow
         if let status = bridge.updateCheck() {
