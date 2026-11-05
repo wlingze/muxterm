@@ -55,6 +55,26 @@ final class UpdateBannerPresentationTests: XCTestCase {
         }
     }
 
+    /// 下载/安装是瞬态，不能关；安装完成后的重启提示必须能手动收起。
+    func testDismissIsOfferedOnlyForSettledStates() {
+        for phase in ["available", "installed", "failed"] {
+            XCTAssertTrue(
+                UpdateBannerPresentation.make(
+                    status: status(phase: phase, version: "0.2.0")
+                ).showsDismiss,
+                "\(phase) 应允许关闭提醒条"
+            )
+        }
+        for phase in ["checking", "installing"] {
+            XCTAssertFalse(
+                UpdateBannerPresentation.make(
+                    status: status(phase: phase, version: "0.2.0")
+                ).showsDismiss,
+                "\(phase) 进行中不应能关闭提醒条"
+            )
+        }
+    }
+
     func testInstalledTellsUserToRestart() {
         let presentation = UpdateBannerPresentation.make(status: status(phase: "installed"))
         XCTAssertEqual(
@@ -167,5 +187,80 @@ final class UpdateBannerViewTests: XCTestCase {
         let button = try XCTUnwrap(find(view, "muxterm.updateAction") as? NSButton)
         XCTAssertFalse(button.isEnabled, "安装期间不得重复触发更新")
         XCTAssertFalse(view.isHidden, "安装进度必须仍然可见")
+        XCTAssertFalse(view.testDismissVisible(), "安装进行中不应能关闭提醒条")
+    }
+
+    /// 安装完成后没有主按钮，但必须保留一个可见的关闭键。
+    func testInstalledBannerOffersDismiss() throws {
+        let view = UpdateBannerView()
+        view.apply(status(phase: "installed", version: "0.2.0"))
+        XCTAssertFalse(view.isHidden)
+        XCTAssertTrue(view.testDismissVisible())
+        let button = try XCTUnwrap(find(view, "muxterm.updateDismiss") as? NSButton)
+        XCTAssertFalse(button.isHidden)
+        XCTAssertEqual(button.toolTip, MuxtermI18n.shared.tr(.updateDismiss))
+    }
+
+    func testDismissInstalledBannerHidesItAndNotifies() throws {
+        let view = UpdateBannerView()
+        var dismissed = 0
+        view.onDismiss = { dismissed += 1 }
+        view.apply(status(phase: "installed", version: "0.2.0"))
+        let button = try XCTUnwrap(find(view, "muxterm.updateDismiss") as? NSButton)
+        button.performClick(nil)
+        XCTAssertEqual(dismissed, 1)
+        XCTAssertTrue(view.isHidden)
+    }
+
+    /// 真实 ContentView 里：HUD 贴着内容宽度，且不会压住顶部 tab/status bar。
+    func testHUDStaysBelowTopChromeAndHugsContent() throws {
+        AppE2E.ensureApp()
+        let bridge = try CoreBridge(backendType: "local")
+        defer { bridge.shutdown() }
+        let content = ContentView(terminalManager: TerminalManager(bridge: bridge))
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = content
+        window.orderFront(nil)
+        defer { window.orderOut(nil) }
+
+        let installed = status(phase: "installed", version: "0.2.0")
+        for position in [TabBarPosition.top, .bottom] {
+            content.applyTabBarPosition(position)
+            content.updateBanner.apply(installed)
+            content.layoutSubtreeIfNeeded()
+            let banner = content.updateBanner.frame
+            XCTAssertGreaterThan(banner.width, 150)
+            XCTAssertLessThanOrEqual(banner.width, 620)
+            XCTAssertFalse(
+                banner.intersects(content.statusBar.frame),
+                "HUD 不能压住 \(position) 状态栏"
+            )
+        }
+    }
+
+    /// HUD 只占内容宽度，短文案不能变成一条横贯窗口的色带。
+    func testBannerHugsContentInsteadOfFillingTheWindow() {
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 1000, height: 200))
+        let view = UpdateBannerView()
+        view.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(view)
+        NSLayoutConstraint.activate([
+            view.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 10),
+            view.topAnchor.constraint(equalTo: container.topAnchor, constant: 6),
+            view.trailingAnchor.constraint(
+                lessThanOrEqualTo: container.trailingAnchor,
+                constant: -10
+            ),
+            view.widthAnchor.constraint(lessThanOrEqualToConstant: 620),
+        ])
+        view.apply(status(phase: "installed", version: "0.2.0"))
+        container.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(view.frame.width, 200, "提醒条必须有内容宽度")
+        XCTAssertLessThan(view.frame.width, 620, "短文案应贴合内容，不能铺满窗口")
     }
 }

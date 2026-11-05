@@ -948,6 +948,30 @@ extension MainWindowController {
         return !button.isHidden && button.isEnabled
     }
 
+    /// 关闭键是否可见：可停留的更新阶段必须能收起提醒。
+    func testUpdateBannerDismissVisible() -> Bool {
+        guard let button = Self.findView(
+            content.updateBanner,
+            identifier: "muxterm.updateDismiss"
+        ) as? NSButton else {
+            return false
+        }
+        return !button.isHidden
+    }
+
+    /// 点真实关闭键，走生产回调链：按钮 → onDismiss → 隐藏提醒。
+    @discardableResult
+    func testClickUpdateDismiss() -> Bool {
+        guard let button = Self.findView(
+            content.updateBanner,
+            identifier: "muxterm.updateDismiss"
+        ) as? NSButton, !button.isHidden else {
+            return false
+        }
+        button.performClick(nil)
+        return true
+    }
+
     /// 点真实按钮，走生产回调链：按钮 → onPrimaryAction
     /// → performUpdateAction。
     @discardableResult

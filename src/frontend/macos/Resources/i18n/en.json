@@ -502,6 +502,7 @@
   "update_failed": "Update failed: {{message}}",
   "update_check_now": "Check for updates",
   "update_retry": "Retry",
+  "update_dismiss": "Dismiss update notice",
   "settings_update": "Updates",
   "settings_update_auto_check": "Check for updates on launch",
   "settings_update_manifest_url": "Update manifest URL",
