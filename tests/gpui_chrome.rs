@@ -973,3 +973,57 @@ fn measured_cell_is_tall_enough_for_the_font(cx: &mut TestAppContext) {
         "等宽字体的行高必须大于字宽，实际 ({width}, {height})"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 布局：tab 栏 / 状态栏 / 侧栏的真实像素高度
+// ---------------------------------------------------------------------------
+
+/// tab 栏 24pt、状态栏 18pt、侧栏 240pt —— 与 macOS `FlatChrome` / split 一致。
+#[gpui::test]
+fn chrome_metrics_match_the_swift_layout(cx: &mut TestAppContext) {
+    use muxterm::frontend::gpui::chrome::sidebar::SIDEBAR_WIDTH;
+    use muxterm::frontend::gpui::chrome::status_bar::STATUS_BAR_HEIGHT;
+    use muxterm::frontend::gpui::chrome::tab_bar::TAB_BAR_HEIGHT;
+    // 对照 `FlatChrome.tabBarHeight` / `statusBarHeight`。
+    assert_eq!(TAB_BAR_HEIGHT, 24.0);
+    assert_eq!(STATUS_BAR_HEIGHT, 18.0);
+    // 对照 `MainWindow` 里 `splitView.setPosition(240, ofDividerAt: 0)`。
+    assert_eq!(SIDEBAR_WIDTH, 240.0);
+}
+
+/// 真实布局：侧栏 240pt、tab 栏 24pt、状态栏 18pt。
+#[gpui::test]
+fn chrome_bounds_match_the_swift_metrics(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    let sidebar = cx.debug_bounds("sidebar").expect("侧栏必须渲染");
+    let tab_bar = cx.debug_bounds("tab-bar").expect("tab 栏必须渲染");
+    let status_bar = cx.debug_bounds("status-bar").expect("状态栏必须渲染");
+    assert_eq!(f32::from(sidebar.size.width), 240.0);
+    assert_eq!(f32::from(tab_bar.size.height), 24.0);
+    assert_eq!(f32::from(status_bar.size.height), 18.0);
+    // tab 栏与状态栏都贴着窗口底边（默认底部）。
+    let window_height = cx.update(|window, _| f32::from(window.viewport_size().height));
+    assert!((f32::from(tab_bar.origin.y) + 24.0 + 18.0 - window_height).abs() < 1.0);
+    let _ = view;
+}
+
+/// 命令面板浮层：600×360，居中偏上，盖住 pane 区域。
+#[gpui::test]
+fn palette_renders_a_600x360_overlay(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.update(|_, cx| view.update(cx, |app, cx| app.open_palette(cx)));
+    cx.run_until_parked();
+    let overlay = cx.debug_bounds("palette-overlay").expect("浮层必须渲染");
+    let panel = cx.debug_bounds("palette-panel").expect("面板必须渲染");
+    assert_eq!(f32::from(panel.size.width), 600.0);
+    assert_eq!(f32::from(panel.size.height), 360.0);
+    let window_width = cx.update(|window, _| f32::from(window.viewport_size().width));
+    // 浮层只盖 pane 区域（不含侧栏），在 pane 区域内水平居中。
+    let main_width = window_width - 240.0;
+    let left = f32::from(panel.origin.x) - 240.0;
+    assert!(
+        (left - (main_width - 600.0) / 2.0).abs() <= 1.0,
+        "panel left={left} main_width={main_width}"
+    );
+    assert!((f32::from(overlay.size.width) - main_width).abs() <= 1.0);
+}

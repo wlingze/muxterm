@@ -16,7 +16,7 @@ use crate::frontend::gpui::state::GpuiApp;
 use crate::frontend::gpui::theme::{Theme, TAB_BAR_FONT_SIZE};
 
 /// `FlatChrome.tabBarHeight`。
-pub(crate) const TAB_BAR_HEIGHT: f32 = 24.0;
+pub const TAB_BAR_HEIGHT: f32 = 24.0;
 /// `FlatChrome.statusHorizontalInset`。
 const TAB_BAR_INSET: f32 = 6.0;
 /// `FlatChrome.tabCellHorizontalInset`。
@@ -38,6 +38,7 @@ impl GpuiApp {
             .flex_row()
             .items_center()
             .gap(px(2.0))
+            .debug_selector(|| "tab-bar".to_string())
             .h(px(TAB_BAR_HEIGHT))
             .px(px(TAB_BAR_INSET))
             .overflow_hidden()
