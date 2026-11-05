@@ -176,7 +176,9 @@ cargo build --no-default-features --features gpui --release
 已完成（v1 缺口表里曾经列过的）：输入法 marked text 与候选窗定位、滚轮历史滚动、
 设置页、快速面板、鼠标事件上报、宽字符宽度、Cmd-Shift-P 命令面板、Core 驱动的
 浅色/深色主题（默认白底黑字 + Menlo 18）、按真实字形度量格子、窗口级
-`refresh-client -C` 上报。
+`refresh-client -C` 上报、attach 历史回填（Core `PaneHistory` → 本地 scrollback）、
+Cmd-P 面板列出现有 runtime（discovery 驱动，点开即 attach）、macOS 原生菜单栏
+（NSMenu，结构照抄 Swift `buildMenu`）。
 
 ## 8.1 跨平台 TODO（2026-11-05 实测记录）
 
@@ -189,16 +191,18 @@ cargo build --no-default-features --features gpui --release
 | Linux 构建 | **依赖链编不过**：`gpui 0.2.2 → gpui_http_client → zed-async-tar → xattr 0.2.3`，`xattr` 在 `cfg(target_os = "linux")` 分支里用 `libc::ENOATTR`，而 Linux 只有 `ENODATA`。`cargo check --target x86_64-unknown-linux-gnu --features gpui` 停在这里，还没轮到本项目代码。 | 加 `[patch.crates-io] xattr`（或 vendor 一份把 Linux 的 `ENOATTR` 映射到 `ENODATA`）。打完这个补丁后本库可以完整编过 Linux target（实测 2m02s 出 `libmuxterm-*.rmeta`）。 |
 | 字体 fallback | 默认 `[font] family` 读 Core 配置（缺省 Menlo 18）。仓库里的 `assets/fonts/JetBrainsMono-Regular.ttf` 没有通过 `TextSystem::add_fonts` 注册；配置的字体不存在时 gpui 会落到它的 fallback 栈（含比例字体），格子对齐开始漂。 | 启动时 `cx.text_system().add_fonts(...)` 注册内置字体，并把 Core 的 `[font] fallback` 接进 `Font.fallbacks`。 |
 | 快捷键 | `handle_key` 用 `keystroke.modifiers.platform`：macOS=Command，Linux=Super，Windows=Win。`[shortcuts] primary_key` 与 `effective_keybindings` 还没被 gpui 消费。 | 接 `primary_key` / `effective_keybindings`（Linux 上 GTK 前端用 Alt），或明确「gpui 前端只支持 macOS 语义」。 |
+| 菜单栏 | macOS 走原生 NSMenu（`platform/macos_menu.rs`，结构 = `model/menu.rs`）。Linux / Windows 还没有菜单条（`platform::install_menu()` 返回 `None`）。 | 自绘菜单条：同一份 `model::menu` 数据，用 gpui 元素画在窗口顶部。 |
 | CI | `.github/workflows/*.yml` 里 `gpui` 出现 0 次。 | 加一个 `ubuntu-latest` 的 `cargo check --no-default-features --features gpui`。 |
 | 打包 | 只有 `scripts/build-gpui-macos.sh`，没有 Linux `.desktop` / Windows 打包。 | 与各平台 frontend 一起补。 |
 
 ## 9. 验收
 
 - `cargo check --no-default-features --features gpui` 通过。
-- `cargo test --no-default-features --features gpui --lib` 通过（2026-11-05 实测 **1863 passed**）。
+- `cargo test --no-default-features --features gpui --lib` 通过（2026-11-05 实测 **1879 passed**）。
 - 集成测试（每个都实测通过）：
-  - `--test gpui_chrome`（36）：侧栏 / tab / 状态栏 / Cmd-P 面板 / Cmd-Shift-P 命令面板 / 输入框 / 设置 / 新建项目，
-    并断言真实布局（侧栏 240pt、tab 栏 24pt、状态栏 18pt、命令面板 600×360），全部走真实 `GpuiApp`。
+  - `--test gpui_chrome`（42）：侧栏 / tab / 状态栏 / Cmd-P 面板（含 discovery 到的现有 runtime）/
+    Cmd-Shift-P 命令面板 / 输入框 / 设置 / 新建项目 / 历史回填 / 菜单动作，并断言真实布局
+    （侧栏 240pt、24pt 单条栏、命令面板 600×360），全部走真实 `GpuiApp`。
   - `--test gpui_surface_events`（6）：滚轮、宽字符、鼠标报告、IME 提交、候选窗锚定。
   - `--test gpui_surface_e2e`（1）：隔离 tmux 里真实 shell 输出落到格子上。
   - `--test gpui_acceptance`（4）：启动 workspace、按键进 shell、Cmd-T 加 tab、第二个 workspace 经 Catalog 打开并可切换。

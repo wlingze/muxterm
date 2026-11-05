@@ -1025,3 +1025,222 @@ fn palette_renders_a_600x360_overlay(cx: &mut TestAppContext) {
     );
     assert!((f32::from(overlay.size.width) - main_width).abs() <= 1.0);
 }
+
+/// Core 的 `PaneHistory` 回填要进 Surface 的历史，滚轮才滚得出 attach 前的输出。
+#[gpui::test]
+fn pane_history_events_land_in_the_scrollback(cx: &mut TestAppContext) {
+    let mut store = store_with_two_workspaces();
+    store.push_render_event(
+        "local@@dev@tmux@dev",
+        muxterm::frontend::utils::corebridge::ClientEvent {
+            type_: muxterm::protocol::ffi::types::STATE_PANE_HISTORY,
+            pane_id: 10,
+            tab_id: 1,
+            window_id: 0,
+            data: b"older-one\nolder-two".to_vec(),
+            name: String::new(),
+        },
+    );
+    let (view, cx) = mount(store, cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            assert!(app.drain_render_events(), "历史事件必须让视图变脏");
+        })
+    });
+    let depth = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            app.history_depth_for_tests("local@@dev@tmux@dev", 10)
+        })
+    });
+    assert_eq!(depth, 2);
+}
+
+/// 滚轮入口要往上翻历史，并且只在有历史时动。
+///
+/// 命中测试由 `gpui_surface_events.rs` 的 PaneProbe 覆盖；这里验证
+/// `GpuiApp` 的状态与视口接线（pane 元素只在真实布局投影存在时才渲染）。
+#[gpui::test]
+fn wheel_over_a_pane_scrolls_its_history(cx: &mut TestAppContext) {
+    use muxterm::frontend::gpui::state::WheelInput;
+    let mut store = store_with_two_workspaces();
+    store.push_render_event(
+        "local@@dev@tmux@dev",
+        muxterm::frontend::utils::corebridge::ClientEvent {
+            type_: muxterm::protocol::ffi::types::STATE_PANE_HISTORY,
+            pane_id: 10,
+            tab_id: 1,
+            window_id: 0,
+            data: b"h1\nh2\nh3".to_vec(),
+            name: String::new(),
+        },
+    );
+    let (view, cx) = mount(store, cx);
+    let offset = cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            assert!(app.drain_render_events(), "历史事件必须让视图变脏");
+            assert_eq!(app.history_offset_for_tests("local@@dev@tmux@dev", 10), 0);
+            app.handle_wheel(
+                WheelInput {
+                    pane_id: 10,
+                    delta_y: 2.0,
+                    precise: false,
+                    shift: false,
+                    col: 0,
+                    row: 0,
+                },
+                cx,
+            );
+            app.history_offset_for_tests("local@@dev@tmux@dev", 10)
+        })
+    });
+    assert_eq!(offset, 2, "上滚两格要进入历史");
+}
+
+// ---------------------------------------------------------------------------
+// Cmd-P：现有 runtime（Core discovery）只在这里出现，激活走 Catalog attach
+// ---------------------------------------------------------------------------
+
+fn existing_runtime(
+    name: &str,
+    windows: u32,
+) -> muxterm::frontend::gpui::model::existing::ExistingRuntime {
+    use muxterm::frontend::gpui::model::existing::ExistingRuntime;
+    ExistingRuntime {
+        name: name.to_string(),
+        runtime: "tmux".to_string(),
+        transport: "local".to_string(),
+        target: String::new(),
+        session: name.to_string(),
+        socket: None,
+        windows,
+        attached: false,
+    }
+}
+
+/// 面板的 Workspaces tab 同时列已打开的 workspace 和 discovery 到的现有 runtime。
+#[gpui::test]
+fn panel_lists_existing_runtimes_after_the_workspaces(cx: &mut TestAppContext) {
+    use muxterm::frontend::gpui::chrome::panel_view::PanelRow;
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.set_existing_for_tests(vec![
+                existing_runtime("alpha", 2),
+                existing_runtime("beta", 1),
+            ]);
+            app.show_panel(
+                muxterm::frontend::gpui::model::panel::PanelTab::Workspaces,
+                cx,
+            );
+        })
+    });
+    let rows = cx.update(|_, cx| view.update(cx, |app, _| app.panel_rows()));
+    let workspaces = rows
+        .iter()
+        .filter(|row| matches!(row, PanelRow::Workspace { .. }))
+        .count();
+    let existing: Vec<String> = rows
+        .iter()
+        .filter_map(|row| match row {
+            PanelRow::Existing { title, detail, .. } => Some(format!("{title}|{detail}")),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(workspaces, 2, "已打开的 workspace 仍在前");
+    assert_eq!(
+        existing,
+        vec![
+            "alpha|tmux @ local · 2 windows".to_string(),
+            "beta|tmux @ local · 1 windows".to_string(),
+        ]
+    );
+}
+
+/// Enter 在现有 runtime 行上只发 attach（AttachOnly），不新建 session。
+#[gpui::test]
+fn panel_enter_on_existing_attaches_through_the_catalog(cx: &mut TestAppContext) {
+    use muxterm::frontend::command_queue::ClientCommand;
+    use muxterm::frontend::utils::corebridge::ClientOpenIntent;
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    let command = cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.set_existing_for_tests(vec![existing_runtime("alpha", 2)]);
+            app.show_panel(
+                muxterm::frontend::gpui::model::panel::PanelTab::Workspaces,
+                cx,
+            );
+            // 现有 runtime 排在所有 workspace 之后。
+            let last = app.panel_rows().len() - 1;
+            app.move_panel_selection(last as i32, cx);
+            assert_eq!(app.panel_selected(), last);
+            app.activate_panel_row(cx);
+            app.panel_open()
+        })
+    });
+    assert!(!command, "激活后要关面板");
+    let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    let attach = commands.iter().find_map(|command| match command {
+        ClientCommand::OpenTarget { target, intent } => Some((target.clone(), *intent)),
+        _ => None,
+    });
+    let (target, intent) = attach.expect("必须发 OpenTarget");
+    assert_eq!(intent, ClientOpenIntent::AttachOnly);
+    assert_eq!(target.session.as_deref(), Some("alpha"));
+    assert_eq!(target.runtime, "tmux");
+}
+
+/// 查询串收窄现有 runtime 行，并且不把按键漏进终端。
+#[gpui::test]
+fn panel_query_filters_existing_and_swallows_typing(cx: &mut TestAppContext) {
+    use muxterm::frontend::gpui::chrome::panel_view::PanelRow;
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.set_existing_for_tests(vec![
+                existing_runtime("alpha", 1),
+                existing_runtime("beta", 1),
+            ]);
+            app.show_panel(
+                muxterm::frontend::gpui::model::panel::PanelTab::Workspaces,
+                cx,
+            );
+            app.panel_push_query("bet", cx);
+        })
+    });
+    let rows = cx.update(|_, cx| view.update(cx, |app, _| app.panel_rows()));
+    let names: Vec<String> = rows
+        .iter()
+        .filter_map(|row| match row {
+            PanelRow::Existing { title, .. } => Some(title.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(names, vec!["beta".to_string()], "查询只留下匹配行");
+}
+
+/// 原生菜单栏的点击 → `KeyAction` → `run_action` 这条链路。
+///
+/// 平台层只负责把 NSMenuItem 翻成 `KeyAction`；这里验证收到动作后
+/// gpui 真的执行了（新 tab 会发 Core task）。
+#[gpui::test]
+fn menu_actions_run_through_the_action_table(cx: &mut TestAppContext) {
+    use muxterm::frontend::command_queue::ClientCommand;
+    use muxterm::frontend::gpui::model::shortcuts::KeyAction;
+    use muxterm::frontend::utils::corebridge::ClientTask;
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    let (tx, rx) = futures::channel::mpsc::unbounded();
+    cx.update(|_, cx| view.update(cx, |app, cx| app.watch_menu(rx, cx)));
+    tx.unbounded_send(KeyAction::NewTab).expect("菜单动作");
+    cx.run_until_parked();
+    let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            ClientCommand::Task {
+                task: ClientTask::NewTab,
+                ..
+            }
+        )),
+        "菜单里的 New Tab 必须发出 ClientTask::NewTab"
+    );
+}

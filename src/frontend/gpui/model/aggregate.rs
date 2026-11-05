@@ -424,10 +424,11 @@ mod tests {
         let agents = KeyChord::new(true, false, false, true, "a");
         assert_eq!(builtin_action(&shells), Some(KeyAction::OpenShells));
         assert_eq!(builtin_action(&agents), Some(KeyAction::OpenAgents));
+        // 对照 `AppDelegate.buildMenu` 的 `shellsItem`（keyEquivalent "k"）：
+        // Swift 的 Cmd-K 就是 Shells，不是空闲键。
         assert_eq!(
             builtin_action(&KeyChord::command("k")),
-            None,
-            "Cmd-K 不得占用"
+            Some(KeyAction::OpenShells)
         );
         assert_eq!(action_from_name("open_shells"), Some(KeyAction::OpenShells));
         assert_eq!(action_from_name("open_agents"), Some(KeyAction::OpenAgents));

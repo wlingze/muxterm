@@ -98,6 +98,14 @@ pub struct GpuiApp {
     pub(crate) sidebar_visible: bool,
     /// 注意力快照（Agents/Commands 段的数据源）。FFI 快照接入前保持 `None`。
     pub(crate) attention: Option<crate::frontend::gpui::model::attention::AttentionSnapshot>,
+    /// Cmd-P 面板的「现有 runtime」：来自 Core discovery，不手工拼。
+    pub(crate) existing: Vec<crate::frontend::gpui::model::existing::ExistingRuntime>,
+    /// discovery 是否已经跑过一次（面板打开时只跑一次，失败可重试）。
+    existing_loaded: bool,
+    /// discovery 是否正在跑，避免连续按键重复发查询。
+    existing_loading: bool,
+    /// 连接时用的 tmux socket（`-L`）；隔离 server 的 session 只在它上面可见。
+    socket: Option<String>,
     /// 侧栏四段的展开状态。
     pub(crate) sidebar_expansion: crate::frontend::gpui::chrome::sidebar_view::SectionExpansion,
     /// 用户手动隐藏的命令行（只在前端生效）。
@@ -110,6 +118,7 @@ impl GpuiApp {
         pump: EventPump,
         store: ViewStore,
         commands: CommandQueue,
+        socket: Option<String>,
         cx: &mut Context<Self>,
     ) -> Self {
         let visible = store
@@ -160,6 +169,10 @@ impl GpuiApp {
             tab_bar_position,
             sidebar_visible: true,
             attention: None,
+            existing: Vec::new(),
+            existing_loaded: false,
+            existing_loading: false,
+            socket: socket.clone(),
             sidebar_expansion:
                 crate::frontend::gpui::chrome::sidebar_view::SectionExpansion::default(),
             hidden_commands: std::collections::HashSet::new(),
@@ -216,6 +229,35 @@ impl GpuiApp {
         self.cell
     }
 
+    /// 把原生菜单栏的点击接回来：菜单只发 `KeyAction`，执行仍走 `run_action`。
+    pub fn watch_menu(
+        &mut self,
+        mut receiver: futures::channel::mpsc::UnboundedReceiver<
+            crate::frontend::gpui::model::shortcuts::KeyAction,
+        >,
+        cx: &mut Context<Self>,
+    ) {
+        use futures::StreamExt;
+        cx.spawn(async move |_this, cx| {
+            while let Some(action) = receiver.next().await {
+                let Ok(windows) = cx.update(|cx| cx.windows()) else {
+                    break;
+                };
+                for handle in windows {
+                    let _ = handle.update(cx, |view, window, cx| {
+                        if let Ok(entity) = view.downcast::<crate::frontend::gpui::state::GpuiApp>()
+                        {
+                            entity.update(cx, |app, cx| {
+                                app.run_action(action, window, cx);
+                            });
+                        }
+                    });
+                }
+            }
+        })
+        .detach();
+    }
+
     fn start_pump(&mut self, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| loop {
             Timer::after(PUMP_INTERVAL).await;
@@ -232,13 +274,48 @@ impl GpuiApp {
     }
 
     /// 收一批事件、喂 Surface、冲刷命令。返回是否有可见变化。
-    pub fn pump_once(&mut self, cx: &mut Context<Self>) -> bool {
-        let Some(pump) = self.pump.as_ref() else {
-            return false;
-        };
-        let events = pump.poll_into_with_events(&mut self.store);
-        let mut dirty = events.iter().any(|event| event.event.is_topology());
+    /// 某个 pane 现有多少行历史（测试用来确认 `PaneHistory` 真的落地了）。
+    pub fn history_depth_for_tests(&self, workspace: &str, pane_id: u32) -> usize {
+        self.surfaces
+            .get(&(workspace.to_string(), pane_id))
+            .map(|surface| surface.max_scroll_offset() as usize)
+            .unwrap_or(0)
+    }
 
+    /// 某个 pane 当前的视口偏移（0 = 贴着 live 屏幕）。
+    pub fn history_offset_for_tests(&self, workspace: &str, pane_id: u32) -> u32 {
+        self.surfaces
+            .get(&(workspace.to_string(), pane_id))
+            .map(|surface| surface.scroll_offset())
+            .unwrap_or(0)
+    }
+
+    pub fn pump_once(&mut self, cx: &mut Context<Self>) -> bool {
+        let mut dirty = {
+            let Some(pump) = self.pump.as_ref() else {
+                return false;
+            };
+            let events = pump.poll_into_with_events(&mut self.store);
+            let dirty = events.iter().any(|event| event.event.is_topology());
+            // `commands` 与 `pump` 是不同字段，借用互不冲突。
+            self.commands.flush(pump.client());
+            dirty
+        };
+        dirty |= self.drain_render_events();
+        let active = self.store.active_workspace_id().map(str::to_string);
+        if self.visible.is_none() {
+            self.visible = active;
+        }
+        let _ = cx;
+        dirty
+    }
+
+    /// 把 store 里排队的渲染事件喂给各自的 Surface。
+    ///
+    /// 从 `pump_once` 拆出来，无头测试才能在没有 FFI pump 的情况下验证
+    /// `PaneHistory` 这类事件真的落了地。
+    pub fn drain_render_events(&mut self) -> bool {
+        let mut dirty = false;
         let workspaces: Vec<String> = self.store.workspace_ids().map(str::to_string).collect();
         for workspace in workspaces {
             let pane_ids: Vec<(u32, u16, u16)> = self
@@ -267,8 +344,12 @@ impl GpuiApp {
                             surface.feed_full(&event.data)
                         }
                         ClientEventKind::PaneOutput => surface.feed(&event.data),
-                        ClientEventKind::PaneHistory
-                        | ClientEventKind::PaneClosed
+                        // Core 的 attach 历史回填：纯文本行，直接进 scrollback。
+                        ClientEventKind::PaneHistory => {
+                            let added = surface.feed_history(&event.data);
+                            tracing::debug!(pane_id, added, "pane history");
+                        }
+                        ClientEventKind::PaneClosed
                         | ClientEventKind::PaneResized
                         | ClientEventKind::Other(_) => {}
                     }
@@ -276,13 +357,6 @@ impl GpuiApp {
                 dirty = true;
             }
         }
-
-        let client = self.store.active_workspace_id().map(str::to_string);
-        if self.visible.is_none() {
-            self.visible = client;
-        }
-        self.commands.flush(pump.client());
-        let _ = cx;
         dirty
     }
 
@@ -338,6 +412,10 @@ impl GpuiApp {
             ),
             sidebar_visible: true,
             attention: None,
+            existing: Vec::new(),
+            existing_loaded: false,
+            existing_loading: false,
+            socket: None,
             sidebar_expansion:
                 crate::frontend::gpui::chrome::sidebar_view::SectionExpansion::default(),
             hidden_commands: std::collections::HashSet::new(),
@@ -534,6 +612,19 @@ impl GpuiApp {
             }
             KeyAction::ToggleWindowZoom => {
                 window.zoom_window();
+                true
+            }
+            KeyAction::Paste => {
+                // 菜单 Edit → Paste：与 Cmd-V 走同一条粘贴路径。
+                let text = cx.read_from_clipboard().and_then(|item| {
+                    item.entries().iter().find_map(|entry| match entry {
+                        gpui::ClipboardEntry::String(text) => Some(text.text().to_string()),
+                        gpui::ClipboardEntry::Image(_) => None,
+                    })
+                });
+                if let Some(text) = text {
+                    self.handle_paste(&text, cx);
+                }
                 true
             }
             KeyAction::IncreaseFontSize
@@ -1348,7 +1439,119 @@ impl GpuiApp {
             &workspaces,
             self.attention.as_ref(),
             self.search_snapshot.as_ref(),
+            &self.existing,
         )
+    }
+
+    /// 面板查询串。
+    pub fn panel_query(&self) -> String {
+        self.panel.model.query.clone()
+    }
+
+    /// 面板当前选中的行（渲染高亮用）。
+    pub fn panel_selected(&self) -> usize {
+        self.panel.selected
+    }
+
+    /// 上下移动选中行。
+    pub fn move_panel_selection(&mut self, delta: i32, cx: &mut Context<Self>) {
+        let len = self.panel_rows().len();
+        self.panel.move_selection(delta, len);
+        cx.notify();
+    }
+
+    /// 面板查询串编辑。
+    pub fn panel_push_query(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.panel.push_query(text);
+        cx.notify();
+    }
+
+    pub fn panel_backspace(&mut self, cx: &mut Context<Self>) {
+        self.panel.backspace_query();
+        cx.notify();
+    }
+
+    /// Enter：已打开的 workspace 直接切过去；现有 runtime 交给 Catalog attach。
+    pub fn activate_panel_row(&mut self, cx: &mut Context<Self>) {
+        use crate::frontend::gpui::chrome::panel_view::PanelRow;
+        let rows = self.panel_rows();
+        let Some(row) = rows.get(self.panel.selected) else {
+            return;
+        };
+        match row {
+            PanelRow::Workspace { workspace_id, .. } | PanelRow::Attention { workspace_id, .. } => {
+                let workspace = workspace_id.clone();
+                self.close_panel(cx);
+                self.select_workspace(workspace, cx);
+            }
+            PanelRow::Search(hit) => {
+                let (workspace, pane) = (hit.workspace_id.clone(), hit.pane_id);
+                self.close_panel(cx);
+                self.select_workspace(workspace, cx);
+                self.focus_pane(pane, cx);
+            }
+            PanelRow::Existing { index, .. } => {
+                let Some(existing) = self.existing.get(*index) else {
+                    return;
+                };
+                // 与 macOS 一致：Existing 行只 attach，不新建 session。
+                self.commands.push(ClientCommand::OpenTarget {
+                    target: client_target_for(&existing.config()),
+                    intent: crate::frontend::utils::corebridge::ClientOpenIntent::AttachOnly,
+                });
+                self.close_panel(cx);
+            }
+        }
+    }
+
+    /// 拉一次现有 runtime（Core discovery）。
+    ///
+    /// 面板打开时按需跑：这是跨进程查询，不能放在渲染路径上。
+    pub fn refresh_existing(&mut self, cx: &mut Context<Self>) {
+        if self.existing_loading || self.pump.is_none() {
+            return;
+        }
+        self.existing_loading = true;
+        let socket = self.socket.clone();
+        cx.spawn(async move |this, cx| {
+            let found = cx
+                .background_executor()
+                .spawn(async move { discover_existing_rows(socket.as_deref()) })
+                .await;
+            this.update(cx, |app, cx| {
+                app.existing_loading = false;
+                app.existing_loaded = true;
+                match found {
+                    Ok(rows) => {
+                        tracing::debug!(count = rows.len(), "existing runtimes");
+                        app.existing = rows
+                    }
+                    Err(error) => {
+                        // 发现失败不影响已打开的 workspace；面板不列 Existing。
+                        tracing::debug!(error = %error, "discover_existing failed");
+                        app.existing.clear();
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// 无头测试注入 discovery 结果。
+    #[doc(hidden)]
+    pub fn set_existing_for_tests(
+        &mut self,
+        existing: Vec<crate::frontend::gpui::model::existing::ExistingRuntime>,
+    ) {
+        self.existing = existing;
+        self.existing_loaded = true;
+    }
+
+    /// discovery 是否已经跑完（面板显示空态用）。
+    pub fn existing_loaded(&self) -> bool {
+        self.existing_loaded
     }
 
     /// 打开面板并切到指定 tab；已打开时只切内容，不做 toggle。
@@ -1358,6 +1561,10 @@ impl GpuiApp {
         cx: &mut Context<Self>,
     ) {
         self.panel.show(tab);
+        // Workspaces tab 是唯一会展示现有 runtime 的地方。
+        if tab == crate::frontend::gpui::model::panel::PanelTab::Workspaces {
+            self.refresh_existing(cx);
+        }
         cx.notify();
     }
 
@@ -1877,7 +2084,7 @@ impl GpuiApp {
             return;
         }
 
-        // 面板打开时先吃掉它自己的键：Escape 关闭、Tab 循环，其余照旧下发。
+        // 面板打开时独占按键：面板有查询串与选中行，任何键都不该漏进终端。
         if self.panel.open {
             match keystroke.key.as_str() {
                 "escape" => {
@@ -1890,8 +2097,43 @@ impl GpuiApp {
                     cx.notify();
                     return;
                 }
+                "enter" => {
+                    self.activate_panel_row(cx);
+                    cx.notify();
+                    return;
+                }
+                "up" => {
+                    self.move_panel_selection(-1, cx);
+                    return;
+                }
+                "down" => {
+                    self.move_panel_selection(1, cx);
+                    return;
+                }
+                "backspace" => {
+                    self.panel_backspace(cx);
+                    return;
+                }
                 _ => {}
             }
+            // 可打印字符进查询串（Ctrl/Alt 组合留给快捷键，不进文本）。
+            if !keystroke.modifiers.control && !keystroke.modifiers.alt {
+                let text = keystroke
+                    .key_char
+                    .clone()
+                    .filter(|text| !text.is_empty())
+                    .or_else(|| {
+                        (keystroke.key.chars().count() == 1
+                            && !keystroke.modifiers.platform
+                            && keystroke.key != "space")
+                            .then(|| keystroke.key.clone())
+                    });
+                if let Some(text) = text {
+                    self.panel_push_query(&text, cx);
+                }
+            }
+            cx.stop_propagation();
+            return;
         }
 
         let Some(pane_id) = self.focused_pane else {
@@ -2130,4 +2372,36 @@ pub(crate) fn tab_bar_position_from_snapshot(
             _ => TabBarPosition::Bottom,
         })
         .unwrap_or(TabBarPosition::Bottom)
+}
+
+/// 现有 runtime：默认 server + 当前隔离 socket，按 session/socket 去重。
+///
+/// 对照 `ConnectionDiscovery.listExistingConnections`：先取 catalog 的
+/// attachable session，再把 `-L` 那个 server 上的 session 合进来。
+fn discover_existing_rows(
+    socket: Option<&str>,
+) -> anyhow::Result<Vec<crate::frontend::gpui::model::existing::ExistingRuntime>> {
+    use crate::frontend::gpui::model::existing::ExistingRuntime;
+    let mut rows = ExistingRuntime::collect(
+        &crate::frontend::utils::corebridge::CoreBridge::discover_existing("tmux", None, None)?,
+    );
+    if let Some(socket) = socket {
+        let sessions = crate::frontend::utils::corebridge::CoreBridge::discover_tmux_sessions(
+            "local",
+            None,
+            Some(socket),
+        )?;
+        for session in sessions {
+            rows.push(ExistingRuntime::from_tmux_session(&session, Some(socket)));
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    rows.retain(|row| {
+        seen.insert((
+            row.runtime.clone(),
+            row.session.clone(),
+            row.socket.clone().unwrap_or_default(),
+        ))
+    });
+    Ok(rows)
 }

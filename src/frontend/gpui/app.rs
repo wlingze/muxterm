@@ -21,6 +21,7 @@ use crate::frontend::gpui::chrome::status_bar::STATUS_BAR_HEIGHT;
 
 /// 进入 gpui 前端。
 pub fn run(socket: Option<String>, session: Option<String>) -> anyhow::Result<()> {
+    let connect_socket = socket.clone();
     let client = connect(socket, session)?;
     let pump = EventPump::new(client);
     let mut store = ViewStore::default();
@@ -40,15 +41,17 @@ pub fn run(socket: Option<String>, session: Option<String>) -> anyhow::Result<()
             }),
             ..Default::default()
         };
-        let view = cx
-            .open_window(options, |window, cx| {
-                let view = cx.new(|cx| GpuiApp::new(pump, store, commands, cx));
-                let handle = view.read(cx).focus_handle();
-                window.focus(&handle);
-                view
-            })
-            .expect("gpui 窗口必须能创建");
-        let _ = view;
+        cx.open_window(options, |window, cx| {
+            let view = cx.new(|cx| GpuiApp::new(pump, store, commands, connect_socket.clone(), cx));
+            let handle = view.read(cx).focus_handle();
+            window.focus(&handle);
+            // macOS 原生菜单栏：结构与 Swift 的 `buildMenu` 一致。
+            if let Some(receiver) = crate::frontend::gpui::platform::install_menu() {
+                view.update(cx, |app, cx| app.watch_menu(receiver, cx));
+            }
+            view
+        })
+        .expect("gpui 窗口必须能创建");
         cx.activate(true);
     });
     Ok(())
