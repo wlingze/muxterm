@@ -3,7 +3,7 @@ import CMuxterm
 import MuxtermChrome
 
 /// 主窗口：持有 CoreBridge + Timer 轮询 `muxterm_poll_events`，分发到 UI。
-final class MainWindowController: NSWindowController, NSWindowDelegate {
+final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuItemValidation {
     private static let tabNumberTopologyEvents: Set<UInt32> = [
         STATE_TAB_ADDED,
         STATE_TAB_CLOSED,
@@ -1359,6 +1359,19 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         )
         frameBeforeDesktopZoom = next.saved
         window.setFrame(next.frame, display: true, animate: false)
+    }
+
+    /// 测试可替换，避免把测试窗口真的收进 Dock。
+    var performWindowMiniaturize: ((NSWindow) -> Void)?
+
+    /// 标题栏红黄绿按钮已隐藏；⌘M 与 View 菜单都走这一条。
+    @objc func minimizeWindow() {
+        guard let window else { return }
+        if let performWindowMiniaturize {
+            performWindowMiniaturize(window)
+            return
+        }
+        window.performMiniaturize(nil)
     }
 
     @objc func increaseTerminalFontSize(_ sender: Any?) {
@@ -5178,6 +5191,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
                 kind: .command(.closeWindow)
             ),
             PaletteItem(
+                title: i18n.tr(.minimizeWindow),
+                detail: i18n.tr(.minimizeWindowDetail),
+                keywords: "minimize window dock 最小化 收起",
+                kind: .command(.minimizeWindow)
+            ),
+            PaletteItem(
                 title: i18n.tr(.language),
                 detail: i18n.tr(.languageDetail),
                 keywords: "language locale 语言",
@@ -5458,6 +5477,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         case .command(.closeWindow):
             commandPalette.dismiss()
             closeActiveWindow()
+        case .command(.minimizeWindow):
+            commandPalette.dismiss()
+            minimizeWindow()
         case .command(.detach):
             commandPalette.dismiss()
             detachCurrentWorkspace()
@@ -7258,6 +7280,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             splitActivePaneAuto()
         case .closeWindow:
             closeActiveWindow()
+        case .minimizeWindow:
+            minimizeWindow()
         case .closePane:
             closeFocusedSurface()
         case .switchTab(let n):
@@ -7360,6 +7384,27 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     func windowDidExitFullScreen(_ notification: Notification) {
         content.statusBar.setWindowFullscreen(false)
+    }
+
+    /// 菜单每次打开时刷新窗口控制标题；红黄绿隐藏后这是发现窗口状态的主要入口。
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        switch menuItem.action {
+        case #selector(MainWindowController.toggleWindowFullscreen):
+            let fullscreen = window?.styleMask.contains(.fullScreen) == true
+            menuItem.title = MuxtermI18n.shared.trDynamic(
+                fullscreen ? "window.fullscreen.exit" : "window.fullscreen.enter",
+                fallback: fullscreen ? "Exit Window Full Screen" : "Enter Window Full Screen"
+            )
+        case #selector(MainWindowController.toggleWindowZoom):
+            let zoomed = frameBeforeDesktopZoom != nil
+            menuItem.title = MuxtermI18n.shared.trDynamic(
+                zoomed ? "window.zoom.exit" : "window.zoom.enter",
+                fallback: zoomed ? "Restore Window Size" : "Fill the Desktop"
+            )
+        default:
+            break
+        }
+        return true
     }
 
     func windowDidBecomeKey(_ notification: Notification) {

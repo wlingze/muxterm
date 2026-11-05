@@ -56,6 +56,85 @@ final class WindowFullscreenTests: XCTestCase {
         XCTAssertEqual(toggles, 4, "桌面最大化不能顺手触发全屏")
     }
 
+    /// 红黄绿隐藏后，View 菜单仍必须能发现关闭 / 最小化 / 桌面最大化 / 全屏。
+    func testViewMenuExposesWindowControls() throws {
+        AppE2E.ensureApp()
+        let previousMenu = NSApp.mainMenu
+        defer { NSApp.mainMenu = previousMenu }
+        AppDelegate().buildMenu(windowController: nil)
+
+        let items = try XCTUnwrap(NSApp.mainMenu).items
+            .compactMap(\.submenu)
+            .flatMap(\.items)
+
+        let minimize = try XCTUnwrap(items.first {
+            $0.action == #selector(MainWindowController.minimizeWindow)
+        })
+        XCTAssertEqual(minimize.title, MuxtermI18n.shared.tr(.minimizeWindow))
+        XCTAssertEqual(minimize.keyEquivalent, "m")
+        XCTAssertEqual(minimize.keyEquivalentModifierMask, .command)
+
+        let zoom = try XCTUnwrap(items.first {
+            $0.action == #selector(MainWindowController.toggleWindowZoom)
+        })
+        XCTAssertEqual(zoom.keyEquivalent, "t")
+        XCTAssertEqual(zoom.keyEquivalentModifierMask, [.command, .shift])
+
+        let fullscreen = try XCTUnwrap(items.first {
+            $0.action == #selector(MainWindowController.toggleWindowFullscreen)
+        })
+        XCTAssertEqual(fullscreen.keyEquivalent, "f")
+        XCTAssertEqual(fullscreen.keyEquivalentModifierMask, [.command, .shift])
+
+        let close = try XCTUnwrap(items.first {
+            $0.action == #selector(MainWindowController.closeActiveWindow)
+        })
+        XCTAssertEqual(close.title, MuxtermI18n.shared.tr(.menuCloseWindow))
+        // File 菜单持有 ⇧⌘W；View 里不重复注册，避免 AppKit 清掉重复的 key equivalent。
+        XCTAssertEqual(close.keyEquivalent, "")
+    }
+
+    /// ⌘M 必须走生产 handleKey，而不是只出现在菜单里。
+    func testCmdMMinimizesTheWindowThroughProductionKeyRoute() throws {
+        AppE2E.ensureApp()
+        let bridge = try CoreBridge(backendType: "local")
+        let app = MainWindowController(bridge: bridge)
+        defer { app.testShutdown() }
+        XCTAssertTrue(app.waitReady())
+        let window = try XCTUnwrap(app.window)
+        var minimized: [NSWindow] = []
+        app.performWindowMiniaturize = { minimized.append($0) }
+
+        let event = try XCTUnwrap(app.testMakeKeyEvent(key: "m", keyCode: 46, command: true))
+        XCTAssertTrue(app.testDispatchKeyEvent(event))
+        XCTAssertEqual(minimized.count, 1)
+        XCTAssertTrue(minimized.first === window)
+
+        let zoomItem = NSMenuItem(
+            title: "",
+            action: #selector(MainWindowController.toggleWindowZoom),
+            keyEquivalent: ""
+        )
+        XCTAssertTrue(app.validateMenuItem(zoomItem))
+        XCTAssertEqual(
+            zoomItem.title,
+            MuxtermI18n.shared.trDynamic("window.zoom.enter", fallback: "Fill the Desktop")
+        )
+        let fullscreenItem = NSMenuItem(
+            title: "",
+            action: #selector(MainWindowController.toggleWindowFullscreen),
+            keyEquivalent: ""
+        )
+        XCTAssertTrue(app.validateMenuItem(fullscreenItem))
+        XCTAssertEqual(
+            fullscreenItem.title,
+            MuxtermI18n.shared.trDynamic(
+                "window.fullscreen.enter",
+                fallback: "Enter Window Full Screen"
+            )
+        )
+    }
+
     func testDesktopZoomFillsTheVisibleFrameWithoutFullscreen() {
         let small = NSRect(x: 40, y: 40, width: 800, height: 500)
         let visible = NSRect(x: 0, y: 40, width: 1440, height: 860)

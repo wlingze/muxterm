@@ -28,6 +28,8 @@ enum MuxtermTextKey: CaseIterable {
     case closeTabDetail
     case closeWindow
     case closeWindowDetail
+    case minimizeWindow
+    case minimizeWindowDetail
     case closeWorkspace
     case composerClear
     case composerCleared
@@ -335,6 +337,8 @@ enum MuxtermTextKey: CaseIterable {
         case .closeTabDetail: return "close_tab_detail"
         case .closeWindow: return "close_window"
         case .closeWindowDetail: return "close_window_detail"
+        case .minimizeWindow: return "minimize_window"
+        case .minimizeWindowDetail: return "minimize_window_detail"
         case .closeWorkspace: return "close_workspace"
         case .composerClear: return "composer_clear"
         case .composerCleared: return "composer_cleared"
