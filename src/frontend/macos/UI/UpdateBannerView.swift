@@ -12,6 +12,9 @@ final class UpdateBannerView: NSView {
     var onPrimaryAction: (() -> Void)?
     var onDismiss: (() -> Void)?
     var onNeverRemind: (() -> Void)?
+    /// 卡片显示/隐藏时通知宿主；ContentView 只在可见时挂布局约束，
+    /// 避免隐藏的 HUD 把紧凑窗口撑宽。
+    var onVisibilityChanged: ((Bool) -> Void)?
 
     private let defaults: UserDefaults
     private var suppressReminders: Bool
@@ -122,10 +125,11 @@ final class UpdateBannerView: NSView {
         contentStack.addArrangedSubview(buttonStack)
         addSubview(contentStack)
 
-        let width = widthAnchor.constraint(equalToConstant: 360)
-        width.priority = .defaultHigh
+        let minWidth = widthAnchor.constraint(greaterThanOrEqualToConstant: 300)
+        minWidth.priority = .defaultLow
         NSLayoutConstraint.activate([
-            width,
+            minWidth,
+            widthAnchor.constraint(lessThanOrEqualToConstant: 360),
             contentStack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
             contentStack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
             contentStack.topAnchor.constraint(equalTo: topAnchor, constant: 12),
@@ -184,11 +188,11 @@ final class UpdateBannerView: NSView {
 
         let version = status.version ?? ""
         if suppressReminders {
-            isHidden = true
+            setBannerHidden(true)
             return
         }
         if !version.isEmpty, dismissedVersion == version {
-            isHidden = true
+            setBannerHidden(true)
             return
         }
         if version.isEmpty {
@@ -196,7 +200,7 @@ final class UpdateBannerView: NSView {
         }
 
         let presentation = UpdateBannerPresentation.make(status: status)
-        isHidden = !presentation.visible
+        setBannerHidden(!presentation.visible)
         guard presentation.visible else { return }
         titleLabel.stringValue = presentation.title
         messageLabel.stringValue = presentation.message
@@ -212,7 +216,7 @@ final class UpdateBannerView: NSView {
     /// 用户点「关闭」：只收起当前版本；下次启动仍会提醒。
     func dismiss() {
         dismissedVersion = lastRendered?.version
-        isHidden = true
+        setBannerHidden(true)
     }
 
     /// 用户点「不再提醒」：持久化偏好，后续版本也不再自动弹出。
@@ -220,7 +224,7 @@ final class UpdateBannerView: NSView {
         suppressReminders = true
         defaults.set(true, forKey: Self.suppressRemindersKey)
         dismissedVersion = lastRendered?.version
-        isHidden = true
+        setBannerHidden(true)
     }
 
     /// 用户从菜单显式点「检查更新」时重新允许提醒。
@@ -231,6 +235,7 @@ final class UpdateBannerView: NSView {
         }
         dismissedVersion = nil
         lastRendered = nil
+        setBannerHidden(true)
     }
 
     func refreshLocalization() {
@@ -244,6 +249,12 @@ final class UpdateBannerView: NSView {
         closeButton.toolTip = i18n.tr(.updateClose)
         neverButton.title = i18n.tr(.updateNeverRemind)
         neverButton.toolTip = i18n.tr(.updateNeverRemind)
+    }
+
+    private func setBannerHidden(_ hidden: Bool) {
+        guard isHidden != hidden else { return }
+        isHidden = hidden
+        onVisibilityChanged?(!hidden)
     }
 
     // MARK: - 测试钩子

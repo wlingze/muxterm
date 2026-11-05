@@ -329,7 +329,7 @@ final class UpdateBannerViewTests: XCTestCase {
             content.updateBanner.apply(installed)
             content.layoutSubtreeIfNeeded()
             let banner = content.updateBanner.frame
-            XCTAssertGreaterThan(banner.width, 300)
+            XCTAssertGreaterThanOrEqual(banner.width, 300)
             XCTAssertLessThanOrEqual(banner.width, 360)
             XCTAssertGreaterThan(
                 banner.minX,
@@ -346,6 +346,47 @@ final class UpdateBannerViewTests: XCTestCase {
                 "HUD 不能压住 \(position) 状态栏"
             )
         }
+    }
+
+    /// 显示 HUD 也不能把用户收窄的窗口重新撑宽。
+    func testVisibleHUDDoesNotWidenCompactWindow() throws {
+        AppE2E.ensureApp()
+        let suppressionKey = UpdateBannerView.suppressRemindersKey
+        let previous = UserDefaults.standard.object(forKey: suppressionKey)
+        UserDefaults.standard.removeObject(forKey: suppressionKey)
+        defer {
+            if let previous {
+                UserDefaults.standard.set(previous, forKey: suppressionKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: suppressionKey)
+            }
+        }
+
+        let bridge = try CoreBridge(backendType: "local")
+        defer { bridge.shutdown() }
+        let content = ContentView(terminalManager: TerminalManager(bridge: bridge))
+        let window = NSWindow(
+            contentRect: NSRect(x: 40, y: 40, width: 500, height: 320),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = content
+        window.orderFront(nil)
+        defer { window.orderOut(nil) }
+        content.layoutSubtreeIfNeeded()
+
+        content.updateBanner.apply(status(phase: "available", version: "0.2.0"))
+        content.layoutSubtreeIfNeeded()
+        XCTAssertEqual(window.frame.width, 500, accuracy: 1, "HUD 不能撑宽紧凑窗口")
+        if content.updateBanner.isHidden {
+            XCTFail("有更新时 HUD 必须可见")
+        }
+        XCTAssertGreaterThan(
+            content.updateBanner.frame.width,
+            200,
+            "紧凑窗口里 HUD 仍需保留可读宽度"
+        )
     }
 
     /// 卡片固定右下角，不再是一条横贯窗口的色带。

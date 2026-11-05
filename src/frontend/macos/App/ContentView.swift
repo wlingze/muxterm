@@ -35,6 +35,7 @@ final class ContentView: NSView {
 
     private var topConstraints: [NSLayoutConstraint] = []
     private var bottomConstraints: [NSLayoutConstraint] = []
+    private var updateBannerConstraints: [NSLayoutConstraint] = []
     private var position: TabBarPosition = .bottom
 
     init(terminalManager: TerminalManager) {
@@ -159,18 +160,27 @@ final class ContentView: NSView {
             connectProgressOverlay.trailingAnchor.constraint(equalTo: paneLayout.trailingAnchor),
             connectProgressOverlay.topAnchor.constraint(equalTo: paneLayout.topAnchor),
             connectProgressOverlay.bottomAnchor.constraint(equalTo: paneLayout.bottomAnchor),
-            updateBanner.leadingAnchor.constraint(
-                greaterThanOrEqualTo: paneLayout.leadingAnchor,
-                constant: 16
-            ),
-            updateBanner.trailingAnchor.constraint(equalTo: paneLayout.trailingAnchor, constant: -16),
-            updateBanner.bottomAnchor.constraint(equalTo: imagePasteBanner.topAnchor, constant: -8),
             imagePasteBanner.bottomAnchor.constraint(equalTo: paneLayout.bottomAnchor, constant: -12),
             imagePasteBanner.widthAnchor.constraint(greaterThanOrEqualToConstant: 220),
             imagePasteBanner.widthAnchor.constraint(lessThanOrEqualToConstant: 420),
             imagePasteBanner.leadingAnchor.constraint(greaterThanOrEqualTo: paneLayout.leadingAnchor, constant: 12),
             imagePasteBanner.trailingAnchor.constraint(equalTo: paneLayout.trailingAnchor, constant: -12),
         ])
+
+        updateBannerConstraints = [
+            updateBanner.leadingAnchor.constraint(
+                greaterThanOrEqualTo: paneLayout.leadingAnchor,
+                constant: 16
+            ),
+            updateBanner.trailingAnchor.constraint(equalTo: paneLayout.trailingAnchor, constant: -16),
+            updateBanner.bottomAnchor.constraint(equalTo: imagePasteBanner.topAnchor, constant: -8),
+        ]
+        // 隐藏的 HUD 不能参与窗口最小尺寸计算；否则侧栏 + 360pt 卡片会把
+        // 用户主动收窄的窗口重新撑宽。
+        updateBanner.onVisibilityChanged = { [weak self] visible in
+            self?.setUpdateBannerVisible(visible)
+        }
+        setUpdateBannerVisible(false)
 
         // 顶部：status | pane
         topConstraints = [
@@ -216,6 +226,13 @@ final class ContentView: NSView {
             NSLayoutConstraint.activate(bottomConstraints)
             statusBar.setEdgeLineAtBottom(false)
             statusBar.setIntegratedTitlebar(false)
+        }
+        needsLayout = true
+    }
+
+    private func setUpdateBannerVisible(_ visible: Bool) {
+        for constraint in updateBannerConstraints {
+            constraint.isActive = visible
         }
         needsLayout = true
     }
