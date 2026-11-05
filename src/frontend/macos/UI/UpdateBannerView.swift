@@ -12,6 +12,7 @@ final class UpdateBannerView: NSView {
     private let messageLabel = NSTextField(labelWithString: "")
     private let actionButton = NSButton()
     private let dismissButton = NSButton()
+    private let contentStack = NSStackView()
     /// 用户关掉的版本；同一版本不再重复提醒。
     private var dismissedVersion: String?
     /// 最近渲染的状态；未变化时不重排。
@@ -29,44 +30,64 @@ final class UpdateBannerView: NSView {
         messageLabel.font = NSFont.systemFont(ofSize: 12, weight: .medium)
         messageLabel.textColor = .labelColor
         messageLabel.lineBreakMode = .byTruncatingTail
+        messageLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
         messageLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        addSubview(messageLabel)
 
         actionButton.translatesAutoresizingMaskIntoConstraints = false
         actionButton.title = MuxtermI18n.shared.tr(.updateInstallNow)
         actionButton.bezelStyle = .rounded
         actionButton.controlSize = .small
         actionButton.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        actionButton.setContentHuggingPriority(.required, for: .horizontal)
+        actionButton.setContentCompressionResistancePriority(.required, for: .horizontal)
         actionButton.target = self
         actionButton.action = #selector(primaryClicked)
         actionButton.setAccessibilityIdentifier("muxterm.updateAction")
-        addSubview(actionButton)
 
+        // 更新提示是 HUD：任何可停留的阶段都要能手动收起。
+        // 下载/安装中是瞬态，隐藏关闭键，避免用户错过「重启生效」提示。
+        let dismissText = MuxtermI18n.shared.tr(.updateDismiss)
         dismissButton.translatesAutoresizingMaskIntoConstraints = false
-        dismissButton.title = "✕"
+        dismissButton.title = ""
+        dismissButton.image = NSImage(
+            systemSymbolName: "xmark",
+            accessibilityDescription: dismissText
+        )
+        dismissButton.imagePosition = .imageOnly
+        dismissButton.imageScaling = .scaleProportionallyDown
         dismissButton.bezelStyle = .inline
         dismissButton.isBordered = false
         dismissButton.controlSize = .small
+        dismissButton.contentTintColor = .secondaryLabelColor
+        dismissButton.setContentHuggingPriority(.required, for: .horizontal)
+        dismissButton.setContentCompressionResistancePriority(.required, for: .horizontal)
         dismissButton.target = self
         dismissButton.action = #selector(dismissClicked)
         dismissButton.setAccessibilityIdentifier("muxterm.updateDismiss")
-        addSubview(dismissButton)
+        dismissButton.setAccessibilityLabel(dismissText)
+        dismissButton.toolTip = dismissText
+        dismissButton.isHidden = true
+
+        contentStack.translatesAutoresizingMaskIntoConstraints = false
+        contentStack.orientation = .horizontal
+        contentStack.alignment = .centerY
+        contentStack.distribution = .fill
+        contentStack.spacing = 8
+        contentStack.edgeInsets = NSEdgeInsets(top: 0, left: 10, bottom: 0, right: 8)
+        contentStack.detachesHiddenViews = true
+        contentStack.addArrangedSubview(messageLabel)
+        contentStack.addArrangedSubview(actionButton)
+        contentStack.addArrangedSubview(dismissButton)
+        addSubview(contentStack)
 
         NSLayoutConstraint.activate([
-            messageLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
-            messageLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
-            actionButton.leadingAnchor.constraint(
-                greaterThanOrEqualTo: messageLabel.trailingAnchor,
-                constant: 8
-            ),
-            actionButton.centerYAnchor.constraint(equalTo: centerYAnchor),
-            dismissButton.leadingAnchor.constraint(
-                equalTo: actionButton.trailingAnchor,
-                constant: 6
-            ),
-            dismissButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            dismissButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            contentStack.leadingAnchor.constraint(equalTo: leadingAnchor),
+            contentStack.trailingAnchor.constraint(equalTo: trailingAnchor),
+            contentStack.topAnchor.constraint(equalTo: topAnchor),
+            contentStack.bottomAnchor.constraint(equalTo: bottomAnchor),
             heightAnchor.constraint(equalToConstant: 28),
+            dismissButton.widthAnchor.constraint(equalToConstant: 18),
+            dismissButton.heightAnchor.constraint(equalToConstant: 18),
         ])
     }
 
@@ -96,7 +117,7 @@ final class UpdateBannerView: NSView {
         actionButton.title = presentation.actionTitle
         actionButton.isEnabled = presentation.actionEnabled
         actionButton.isHidden = !presentation.actionEnabled
-        dismissButton.isHidden = !presentation.actionEnabled
+        dismissButton.isHidden = !presentation.showsDismiss
         needsLayout = true
     }
 
@@ -108,9 +129,17 @@ final class UpdateBannerView: NSView {
 
     func refreshLocalization() {
         guard let status = lastRendered else { return }
+        let i18n = MuxtermI18n.shared
         let presentation = UpdateBannerPresentation.make(status: status)
         actionButton.title = presentation.actionTitle
         messageLabel.stringValue = presentation.message
+        let dismissText = i18n.tr(.updateDismiss)
+        dismissButton.image = NSImage(
+            systemSymbolName: "xmark",
+            accessibilityDescription: dismissText
+        )
+        dismissButton.setAccessibilityLabel(dismissText)
+        dismissButton.toolTip = dismissText
     }
 
     /// 测试钩子：当前渲染的文案。
@@ -118,6 +147,9 @@ final class UpdateBannerView: NSView {
 
     /// 测试钩子：主按钮标题。
     func testActionTitle() -> String { actionButton.title }
+
+    /// 测试钩子：关闭键是否可见。
+    func testDismissVisible() -> Bool { !dismissButton.isHidden }
 
     @objc private func primaryClicked() {
         onPrimaryAction?()
@@ -135,6 +167,8 @@ struct UpdateBannerPresentation: Equatable {
     let message: String
     let actionTitle: String
     let actionEnabled: Bool
+    /// 是否显示关闭键。瞬态（检查/安装中）不可关，避免把重启提示一起藏掉。
+    let showsDismiss: Bool
 
     static func make(status: CoreBridge.UpdateStatus) -> UpdateBannerPresentation {
         let i18n = MuxtermI18n.shared
@@ -147,28 +181,32 @@ struct UpdateBannerPresentation: Equatable {
                     arguments: ["version": status.version ?? ""]
                 ),
                 actionTitle: i18n.tr(.updateInstallNow),
-                actionEnabled: true
+                actionEnabled: true,
+                showsDismiss: true
             )
         case "installing":
             return UpdateBannerPresentation(
                 visible: true,
                 message: i18n.tr(.updateInstalling),
                 actionTitle: i18n.tr(.updateInstalling),
-                actionEnabled: false
+                actionEnabled: false,
+                showsDismiss: false
             )
         case "installed":
             return UpdateBannerPresentation(
                 visible: true,
                 message: i18n.tr(.updateInstalledRestart),
                 actionTitle: i18n.tr(.updateInstalledRestart),
-                actionEnabled: false
+                actionEnabled: false,
+                showsDismiss: true
             )
         case "checking":
             return UpdateBannerPresentation(
                 visible: true,
                 message: i18n.tr(.updateChecking),
                 actionTitle: i18n.tr(.updateChecking),
-                actionEnabled: false
+                actionEnabled: false,
+                showsDismiss: false
             )
         case "failed":
             return UpdateBannerPresentation(
@@ -178,14 +216,16 @@ struct UpdateBannerPresentation: Equatable {
                     arguments: ["message": status.message ?? ""]
                 ),
                 actionTitle: i18n.tr(.updateRetry),
-                actionEnabled: true
+                actionEnabled: true,
+                showsDismiss: true
             )
         default:
             return UpdateBannerPresentation(
                 visible: false,
                 message: "",
                 actionTitle: "",
-                actionEnabled: false
+                actionEnabled: false,
+                showsDismiss: false
             )
         }
     }

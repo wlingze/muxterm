@@ -502,6 +502,7 @@
   "update_failed": "更新失败：{{message}}",
   "update_check_now": "检查更新",
   "update_retry": "重试",
+  "update_dismiss": "关闭更新提示",
   "settings_update": "更新",
   "settings_update_auto_check": "启动时检查更新",
   "settings_update_manifest_url": "更新清单地址",

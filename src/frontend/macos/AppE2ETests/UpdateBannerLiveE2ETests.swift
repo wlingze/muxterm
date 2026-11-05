@@ -235,6 +235,14 @@ final class UpdateBannerLiveE2ETests: XCTestCase {
             "替换 .app 前必须保留旧 bundle 备份"
         )
         try writeSnapshot(app.window?.contentView, name: "update-banner-installed")
+
+        // 4) 安装完成的 HUD 必须能手动收起，不能永久占住终端顶部。
+        XCTAssertTrue(
+            app.testUpdateBannerDismissVisible(),
+            "安装完成后必须显示关闭键"
+        )
+        XCTAssertTrue(app.testClickUpdateDismiss(), "关闭键必须可点")
+        XCTAssertFalse(app.testUpdateBannerVisible(), "关闭后提醒条必须收起")
     }
 
     /// 手动检查失败时必须把原因透出给用户；自动检查失败保持静默。

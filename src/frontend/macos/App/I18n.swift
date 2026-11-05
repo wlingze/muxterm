@@ -301,6 +301,7 @@ enum MuxtermTextKey: CaseIterable {
     case updateAvailableMessage
     case updateCheckNow
     case updateChecking
+    case updateDismiss
     case updateFailed
     case updateInstallNow
     case updateInstalledRestart
@@ -610,6 +611,7 @@ enum MuxtermTextKey: CaseIterable {
         case .updateAvailableMessage: return "update_available_message"
         case .updateCheckNow: return "update_check_now"
         case .updateChecking: return "update_checking"
+        case .updateDismiss: return "update_dismiss"
         case .updateFailed: return "update_failed"
         case .updateInstallNow: return "update_install_now"
         case .updateInstalledRestart: return "update_installed_restart"
