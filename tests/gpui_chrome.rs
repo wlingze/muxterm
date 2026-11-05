@@ -400,8 +400,12 @@ fn cmd_p_opens_the_panel_on_workspaces(cx: &mut TestAppContext) {
         PanelTab::Workspaces
     );
     let rows = cx.update(|_, cx| view.update(cx, |app, _| app.panel_rows()));
-    assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0].title(), "dev · local");
+    // 对照截图：固定聚合（Shells/Agents）+ Open 在前，然后是已打开的 workspace。
+    let titles: Vec<String> = rows.iter().map(|row| row.title()).collect();
+    assert_eq!(
+        titles,
+        vec!["Shells", "Agents", "Open", "dev · local", "ops · local"]
+    );
 }
 
 /// Tab 循环三个 tab，Shift-Tab 反向；Escape 关闭。
@@ -980,7 +984,7 @@ fn measured_cell_is_tall_enough_for_the_font(cx: &mut TestAppContext) {
 
 /// tab 栏 24pt、状态栏 18pt、侧栏 240pt —— 与 macOS `FlatChrome` / split 一致。
 #[gpui::test]
-fn chrome_metrics_match_the_swift_layout(cx: &mut TestAppContext) {
+fn chrome_metrics_match_the_swift_layout(_cx: &mut TestAppContext) {
     use muxterm::frontend::gpui::chrome::sidebar::SIDEBAR_WIDTH;
     use muxterm::frontend::gpui::chrome::status_bar::STATUS_BAR_HEIGHT;
     use muxterm::frontend::gpui::chrome::tab_bar::TAB_BAR_HEIGHT;
@@ -1114,6 +1118,8 @@ fn existing_runtime(
         socket: None,
         windows,
         attached: false,
+        workspace_id: None,
+        path: String::new(),
     }
 }
 
@@ -1177,16 +1183,23 @@ fn panel_enter_on_existing_attaches_through_the_catalog(cx: &mut TestAppContext)
             app.panel_open()
         })
     });
-    assert!(!command, "激活后要关面板");
+    assert!(command, "异步 attach 完成前保留面板，失败时显示错误");
     let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
-    let attach = commands.iter().find_map(|command| match command {
-        ClientCommand::OpenTarget { target, intent } => Some((target.clone(), *intent)),
-        _ => None,
-    });
-    let (target, intent) = attach.expect("必须发 OpenTarget");
-    assert_eq!(intent, ClientOpenIntent::AttachOnly);
-    assert_eq!(target.session.as_deref(), Some("alpha"));
-    assert_eq!(target.runtime, "tmux");
+    let request = commands
+        .iter()
+        .find_map(|command| match command {
+            ClientCommand::OpenCandidate { request } => Some(request),
+            _ => None,
+        })
+        .expect("必须发完整 Candidate 身份");
+    assert_eq!(request.intent, ClientOpenIntent::AttachOnly);
+    let muxterm::frontend::utils::corebridge::ClientCandidateRef::Existing { identity } =
+        &request.candidate
+    else {
+        panic!("Existing ref");
+    };
+    assert_eq!(identity.session.as_deref(), Some("alpha"));
+    assert_eq!(identity.runtime_id, "tmux");
 }
 
 /// 查询串收窄现有 runtime 行，并且不把按键漏进终端。
@@ -1252,20 +1265,16 @@ fn panel_primary_action_is_open(cx: &mut TestAppContext) {
     assert_eq!(PANEL_OPEN_LABEL, "+ Open");
     assert!(!PANEL_OPEN_LABEL.contains("New project"));
 
-    // 点它打开的是 Open 编辑器（非编辑态），保存走 Catalog。
+    // 回归上一轮错误：Open 必须进入机器选择，不得再打开 TargetEditor 表单。
     let (view, cx) = mount(store_with_two_workspaces(), cx);
-    let editing = cx.update(|_, cx| {
+    cx.update(|_, cx| {
         view.update(cx, |app, cx| {
-            app.show_panel(
-                muxterm::frontend::gpui::model::panel::PanelTab::Workspaces,
-                cx,
-            );
-            app.close_panel(cx);
-            app.open_target_editor(None, cx);
-            app.target_editor()
-                .as_ref()
-                .map(|editor| editor.is_editing())
+            app.begin_panel_open(cx);
+            assert!(matches!(
+                app.panel_stage(),
+                muxterm::frontend::gpui::model::workspace_picker::PickerStage::Hosts
+            ));
+            assert!(app.target_editor().is_none());
         })
     });
-    assert_eq!(editing, Some(false), "未编辑时是 Open 态");
 }

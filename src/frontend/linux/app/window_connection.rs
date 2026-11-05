@@ -305,6 +305,7 @@ fn client_target_from_config(config: &TargetConfigDraft) -> ClientTarget {
         path: config.path.clone(),
         session: config.session.clone(),
         socket: config.socket.clone(),
+        workspace_id: config.workspace_id.clone(),
     }
 }
 

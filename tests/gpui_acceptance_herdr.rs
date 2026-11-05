@@ -95,6 +95,7 @@ fn app_with_herdr<'a>(
         path: std::env::temp_dir().to_string_lossy().to_string(),
         session: Some(fixture.name.clone()),
         socket: Some(fixture.socket.to_string_lossy().to_string()),
+        workspace_id: None,
     };
     let opened = client
         .open_target(&target, ClientOpenIntent::CreateIfMissing)

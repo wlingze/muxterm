@@ -1,221 +1,451 @@
-//! 统一面板的渲染：tab 条 + query + 行列表。
-//!
-//! 行内容来自 `panel_view::PanelState::rows`（纯投影）。视觉上是一个居中的浮层，
-//! 打开时盖住 pane 区域但不改布局；Esc 关闭由 `state.rs` 处理。
-
-use gpui::{div, prelude::*, px, AnyElement, MouseButton, SharedString};
-
-use crate::frontend::gpui::chrome::panel_view::PanelRow;
+//! Swift UnifiedPanel 的 640×420 快速面板：真实列表滚动 + Open 分步导航 + 右下角 Cmd-K。
+use crate::frontend::gpui::chrome::panel_view::{AggregateKind, PanelRow, PickerAction};
 use crate::frontend::gpui::model::panel::PanelTab;
+use crate::frontend::gpui::model::target::TargetRuntime;
+use crate::frontend::gpui::model::workspace_picker::PickerStage;
 use crate::frontend::gpui::state::GpuiApp;
 use crate::frontend::gpui::theme::Theme;
+use gpui::{div, prelude::*, px, AnyElement, MouseButton, SharedString};
 
-const PANEL_WIDTH: f32 = 640.0;
-const PANEL_HEIGHT: f32 = 420.0;
-const MAX_VISIBLE_ROWS: usize = 9;
+pub const PANEL_OPEN_LABEL: &str = "+ Open";
+pub const PANEL_WIDTH: f32 = 640.0;
+pub const PANEL_HEIGHT: f32 = 420.0;
 
 impl GpuiApp {
-    /// 面板浮层；面板没打开时返回空元素。
     pub(crate) fn render_panel(&self, cx: &mut gpui::Context<Self>) -> Option<AnyElement> {
         if !self.panel_open() {
             return None;
         }
         let theme = self.theme().clone();
-        let tabs: Vec<AnyElement> = PanelTab::ALL
+        let query = if let Some(menu) = self.panel_actions() {
+            menu.query.clone()
+        } else {
+            self.panel_query()
+        };
+        let tabs = PanelTab::ALL
             .iter()
             .map(|tab| {
                 let tab = *tab;
-                let active = self.panel_tab() == tab;
+                let selected = tab == self.panel_tab();
                 div()
-                    .id(SharedString::from(format!("panel-tab-{:?}", tab)))
-                    .px_3()
-                    .py_1()
-                    .rounded_sm()
+                    .id(SharedString::from(format!("panel-tab-{tab:?}")))
+                    .px(px(6.))
+                    .py(px(2.))
+                    .rounded(px(4.))
                     .cursor_pointer()
-                    .text_sm()
-                    .bg(if active {
+                    .bg(if selected {
                         theme.active_bg
                     } else {
                         theme.chrome_bg
                     })
-                    .text_color(if active { theme.fg } else { theme.muted })
+                    .text_color(if selected { theme.label() } else { theme.muted })
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(move |this, _, _, cx| this.show_panel(tab, cx)),
+                        cx.listener(move |app, _, _, cx| app.show_panel(tab, cx)),
                     )
-                    .child(SharedString::from(panel_tab_title(tab)))
+                    .child(panel_tab_title(tab))
                     .into_any_element()
             })
-            .collect();
-
-        let new_project: Option<AnyElement> =
-            (self.panel_tab() == PanelTab::Workspaces).then(|| {
-                div()
-                    .id("panel-new-project")
-                    .px_3()
-                    .py_1()
-                    .rounded_sm()
-                    .cursor_pointer()
-                    .text_sm()
-                    .text_color(theme.accent)
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _, _, cx| {
-                            this.close_panel(cx);
-                            this.open_target_editor(None, cx);
-                        }),
-                    )
-                    .child(SharedString::from(PANEL_OPEN_LABEL))
-                    .into_any_element()
-            });
-
-        let query = self.panel_query();
-        let query_line = if query.is_empty() {
-            "搜索 workspace 或 attach 现有 runtime…".to_string()
-        } else {
-            query.clone()
-        };
-        let selected = self.panel_selected();
-        let rows: Vec<AnyElement> = self
+            .collect::<Vec<_>>();
+        let mut rows = self
             .panel_rows()
             .into_iter()
             .enumerate()
-            .skip(selected.saturating_sub(MAX_VISIBLE_ROWS - 1))
-            .take(MAX_VISIBLE_ROWS)
-            .map(|(index, row)| panel_row(row, &theme, index == selected))
-            .collect();
-
-        let empty_hint = if rows.is_empty() {
-            div()
-                .px_3()
-                .py_2()
-                .text_xs()
-                .text_color(theme.muted)
-                .child(SharedString::from("no results"))
-                .into_any_element()
-        } else {
-            div().into_any_element()
+            .map(|(index, row)| render_row(row, index, index == self.panel_selected(), &theme, cx))
+            .collect::<Vec<_>>();
+        if rows.is_empty() {
+            rows.push(
+                div()
+                    .p_3()
+                    .text_color(theme.muted)
+                    .child("No results")
+                    .into_any_element(),
+            );
+        }
+        let draft = match self.panel_stage() {
+            PickerStage::Confirm(draft) => Some(draft),
+            _ => None,
         };
-
+        let runtime_controls = draft.map(|draft| {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .px(px(14.))
+                .py(px(8.))
+                .child(
+                    div()
+                        .text_color(theme.muted)
+                        .child(SharedString::from(format!(
+                            "{} · {}",
+                            draft.transport.label(),
+                            draft.path
+                        ))),
+                )
+                .child(
+                    div().flex().gap(px(8.)).children(
+                        [TargetRuntime::Herdr, TargetRuntime::Tmux]
+                            .into_iter()
+                            .map(|runtime| {
+                                div()
+                                    .id(SharedString::from(format!("panel-runtime-{runtime:?}")))
+                                    .debug_selector(|| format!("panel-runtime-{runtime:?}"))
+                                    .px(px(12.))
+                                    .py(px(4.))
+                                    .rounded(px(4.))
+                                    .cursor_pointer()
+                                    .bg(if runtime == draft.runtime {
+                                        theme.accent
+                                    } else {
+                                        theme.active_bg
+                                    })
+                                    .text_color(if runtime == draft.runtime {
+                                        gpui::rgb(0xffffff)
+                                    } else {
+                                        theme.label()
+                                    })
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(move |app, _, _, cx| {
+                                            app.choose_panel_runtime(runtime, cx)
+                                        }),
+                                    )
+                                    .child(runtime.label())
+                                    .into_any_element()
+                            }),
+                    ),
+                )
+                .into_any_element()
+        });
+        let main_query = self.panel.model.query.clone();
+        let search = div()
+            .id("panel-query")
+            .debug_selector(|| "panel-query".into())
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .flex_none()
+            .h(px(28.))
+            .mx(px(14.))
+            .px(px(8.))
+            .rounded(px(6.))
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.active_bg)
+            .child(div().text_color(theme.muted).child("⌕"))
+            .child(
+                div()
+                    .overflow_hidden()
+                    .text_color(if main_query.is_empty() {
+                        theme.muted
+                    } else {
+                        theme.label()
+                    })
+                    .child(SharedString::from(if main_query.is_empty() {
+                        self.panel_placeholder().to_string()
+                    } else {
+                        main_query
+                    })),
+            );
+        let action_menu = self.panel_actions().map(|menu| {
+            div()
+                .id("panel-actions")
+                .debug_selector(|| "panel-actions".into())
+                .absolute()
+                .right(px(8.))
+                .bottom(px(8.))
+                .w(px(260.))
+                .max_h(px(280.))
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .p(px(8.))
+                .rounded(px(6.))
+                .shadow_lg()
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.chrome_bg)
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(theme.muted)
+                        .child(SharedString::from(menu.target.title())),
+                )
+                .child(
+                    div()
+                        .py(px(5.))
+                        .text_color(if query.is_empty() {
+                            theme.muted
+                        } else {
+                            theme.label()
+                        })
+                        .child(SharedString::from(if query.is_empty() {
+                            self.panel_placeholder().into()
+                        } else {
+                            query
+                        })),
+                )
+                .children(menu.rows().into_iter().enumerate().map(|(index, action)| {
+                    div()
+                        .id(SharedString::from(format!("panel-action-{index}")))
+                        .debug_selector(|| format!("panel-action-{index}"))
+                        .px(px(8.))
+                        .py(px(6.))
+                        .rounded(px(4.))
+                        .cursor_pointer()
+                        .bg(if index == menu.selected {
+                            theme.active_bg
+                        } else {
+                            theme.chrome_bg
+                        })
+                        .hover(|style| style.bg(theme.active_bg))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |app, _, _, cx| app.select_panel_action(index, cx)),
+                        )
+                        .child(action.title())
+                        .into_any_element()
+                }))
+                .into_any_element()
+        });
         Some(
             div()
                 .id("panel-overlay")
                 .absolute()
-                .top_0()
-                .left_0()
-                .w_full()
-                .h_full()
-                .bg(gpui::rgba(0x00000080))
+                .inset_0()
+                .size_full()
+                .bg(gpui::rgba(0x00000033))
                 .flex()
                 .items_center()
                 .justify_center()
                 .on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(|this, _, _, cx| this.close_panel(cx)),
+                    cx.listener(|app, _, _, cx| app.close_panel(cx)),
                 )
                 .child(
                     div()
+                        .id("quick-panel")
+                        .debug_selector(|| "quick-panel".into())
+                        .relative()
                         .flex()
                         .flex_col()
-                        .gap_2()
+                        .gap(px(8.))
                         .w(px(PANEL_WIDTH))
                         .h(px(PANEL_HEIGHT))
-                        .p_3()
-                        .rounded_md()
+                        .rounded(px(8.))
                         .border_1()
                         .border_color(theme.border)
                         .bg(theme.chrome_bg)
-                        // 浮层内部点击不关闭面板。
+                        .shadow_lg()
+                        .text_size(px(13.))
+                        .line_height(px(16.))
+                        .text_color(theme.label())
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .child(div().flex().flex_row().gap_2().children(tabs))
-                        .child(
-                            div()
-                                .flex_none()
-                                .px_3()
-                                .py_1()
-                                .rounded_sm()
-                                .border_1()
-                                .border_color(theme.border)
-                                .text_sm()
-                                .text_color(if query.is_empty() {
-                                    theme.muted
-                                } else {
-                                    theme.fg
-                                })
-                                .child(SharedString::from(query_line)),
-                        )
-                        .child(empty_hint)
                         .child(
                             div()
                                 .flex()
+                                .flex_none()
+                                .h(px(28.))
+                                .items_center()
+                                .justify_between()
+                                .px(px(14.))
+                                .pt(px(6.))
+                                .child(div().flex().children(tabs))
+                                .child(
+                                    div()
+                                        .id("panel-cmd-k")
+                                        .debug_selector(|| "panel-cmd-k".into())
+                                        .px(px(8.))
+                                        .rounded(px(4.))
+                                        .bg(theme.active_bg)
+                                        .cursor_pointer()
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(|app, _, _, cx| {
+                                                app.toggle_panel_actions(cx)
+                                            }),
+                                        )
+                                        .child("⌘K"),
+                                ),
+                        )
+                        .child(search)
+                        .children(runtime_controls)
+                        .child(
+                            div()
+                                .id("panel-list")
+                                .debug_selector(|| "panel-list".into())
+                                .flex()
                                 .flex_col()
-                                .gap_1()
                                 .flex_1()
-                                .overflow_hidden()
-                                .children(rows)
-                                .children(new_project),
-                        ),
+                                .min_h_0()
+                                .mx(px(7.))
+                                .mb(px(5.))
+                                .overflow_y_scroll()
+                                .track_scroll(self.panel_scroll_handle())
+                                .children(rows),
+                        )
+                        .when(self.panel_operation_pending(), |element| {
+                            element.child(
+                                div()
+                                    .px(px(14.))
+                                    .pb(px(6.))
+                                    .text_color(theme.muted)
+                                    .child("Working…"),
+                            )
+                        })
+                        .children(action_menu),
                 )
                 .into_any_element(),
         )
     }
 }
 
-/// 面板根列表的行动作：Swift 的 `panelOpen`（"+ Open"），不再有 New project。
-pub const PANEL_OPEN_LABEL: &str = "+ Open";
-
-fn panel_row(row: PanelRow, theme: &Theme, selected: bool) -> AnyElement {
+fn render_row(
+    row: PanelRow,
+    index: usize,
+    selected: bool,
+    theme: &Theme,
+    cx: &mut gpui::Context<GpuiApp>,
+) -> AnyElement {
     let title = row.title();
     let detail = row.detail();
-    // 现有 runtime 用 + 前缀区分「要 attach 的东西」和「已经打开的 workspace」。
-    let is_existing = matches!(row, PanelRow::Existing { .. });
-    let title = if is_existing {
-        format!("+ {title}")
-    } else {
-        title
+    let (symbol, color) = match &row {
+        PanelRow::Aggregate(AggregateKind::Shells) => ("S".into(), gpui::rgb(0x2aabc1)),
+        PanelRow::Aggregate(AggregateKind::Agents) => ("A".into(), gpui::rgb(0xa24dd4)),
+        PanelRow::Action(PickerAction::Open) => ("+".into(), gpui::rgb(0xff8a00)),
+        PanelRow::Workspace { shortcut, .. } => (
+            shortcut.map(|n| n.to_string()).unwrap_or_default(),
+            theme.muted,
+        ),
+        _ => (String::new(), theme.muted),
     };
-    let active = matches!(row, PanelRow::Workspace { active: true, .. });
+    let is_project = matches!(
+        &row,
+        PanelRow::Target { .. } | PanelRow::Existing { saved: true, .. }
+    );
+    let can_save = matches!(&row, PanelRow::Existing { saved: false, .. });
+    let closable = match &row {
+        PanelRow::Workspace { workspace_id, .. } => Some(workspace_id.clone()),
+        _ => None,
+    };
+    let row_background = if selected {
+        theme.active_bg
+    } else {
+        theme.chrome_bg
+    };
     div()
-        .id(SharedString::from(format!("panel-row-{title}")))
+        .id(SharedString::from(format!("panel-row-{index}")))
+        .debug_selector(|| format!("panel-row-{index}"))
         .flex()
-        .flex_col()
-        .gap_0p5()
-        .px_3()
-        .py_1()
-        .rounded_sm()
-        .bg(if selected {
-            theme.active_bg
-        } else if active {
-            theme.active_bg
-        } else {
-            theme.chrome_bg
-        })
-        .when(selected, |element| {
-            element.border_l_2().border_color(theme.accent)
-        })
+        .items_center()
+        .flex_none()
+        .min_h(px(if detail.is_some() { 46. } else { 29. }))
+        .px(px(12.))
+        .py(px(5.))
+        .gap(px(8.))
+        .cursor_pointer()
+        .bg(row_background)
+        .hover(|style| style.bg(theme.active_bg))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |app, _, _, cx| app.select_panel_row(index, cx)),
+        )
         .child(
             div()
-                .text_sm()
-                .text_color(if selected { theme.fg } else { theme.label() })
-                .overflow_hidden()
-                .child(SharedString::from(title)),
+                .w(px(14.))
+                .flex_none()
+                .text_color(color)
+                .child(SharedString::from(symbol)),
         )
-        .when_some(detail, |element, detail| {
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .child(
+                            div()
+                                .overflow_hidden()
+                                .text_color(
+                                    if matches!(
+                                        row,
+                                        PanelRow::Aggregate(_)
+                                            | PanelRow::Action(PickerAction::Open)
+                                    ) {
+                                        color
+                                    } else {
+                                        theme.label()
+                                    },
+                                )
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .child(SharedString::from(title)),
+                        )
+                        .when(is_project, |element| {
+                            element.child(
+                                div()
+                                    .text_size(px(10.))
+                                    .text_color(theme.success)
+                                    .child("● Project"),
+                            )
+                        }),
+                )
+                .when_some(detail, |element, detail| {
+                    element.child(
+                        div()
+                            .text_size(px(11.))
+                            .line_height(px(14.))
+                            .text_color(theme.muted)
+                            .overflow_hidden()
+                            .child(SharedString::from(detail)),
+                    )
+                }),
+        )
+        .when(can_save, |element| {
             element.child(
                 div()
-                    .text_xs()
+                    .id(SharedString::from(format!("panel-save-{index}")))
+                    .debug_selector(|| format!("panel-save-{index}"))
+                    .flex_none()
+                    .px(px(8.))
+                    .py(px(2.))
+                    .rounded(px(4.))
+                    .bg(theme.active_bg)
+                    .child("Save")
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |app, _, _, cx| {
+                            cx.stop_propagation();
+                            app.save_panel_existing(index, cx);
+                        }),
+                    ),
+            )
+        })
+        .when_some(closable, |element, workspace| {
+            element.child(
+                div()
+                    .id(SharedString::from(format!("panel-close-{index}")))
                     .text_color(theme.muted)
-                    .overflow_hidden()
-                    .child(SharedString::from(detail)),
+                    .child("×")
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |app, _, _, cx| {
+                            cx.stop_propagation();
+                            app.close_workspace(workspace.clone(), cx);
+                        }),
+                    ),
             )
         })
         .into_any_element()
 }
-
-fn panel_tab_title(tab: PanelTab) -> String {
-    crate::frontend::utils::i18n::tr(match tab {
-        PanelTab::Workspaces => crate::frontend::utils::i18n::TextKey::SidebarWorkspaces,
-        PanelTab::Attention => crate::frontend::utils::i18n::TextKey::SidebarAgents,
-        PanelTab::Search => crate::frontend::utils::i18n::TextKey::StatusAttention,
-    })
+fn panel_tab_title(tab: PanelTab) -> &'static str {
+    match tab {
+        PanelTab::Workspaces => "Workspaces",
+        PanelTab::Attention => "Attention",
+        PanelTab::Search => "Search",
+    }
 }

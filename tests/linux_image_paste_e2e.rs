@@ -66,6 +66,7 @@ fn clipboard_image_pastes_private_png_path_locally_and_over_ssh() {
                 path: "/tmp".into(),
                 session: None,
                 socket: None,
+                workspace_id: None,
             },
             "image-ssh".into(),
             None,

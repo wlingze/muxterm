@@ -62,6 +62,7 @@ impl DaemonState {
                 path: String::new(),
                 session: None,
                 socket: None,
+                workspace_id: None,
             },
             ClientOpenIntent::CreateIfMissing,
         )?;

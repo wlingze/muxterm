@@ -241,6 +241,7 @@ pub(super) fn close_sidebar_workspace(s: &mut UiState, id: &WorkspaceId) {
                 path: String::new(),
                 session: None,
                 socket: None,
+                workspace_id: None,
             };
             if let Err(error) = s
                 .event_pump

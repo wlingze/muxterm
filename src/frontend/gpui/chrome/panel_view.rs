@@ -11,6 +11,100 @@ use crate::frontend::gpui::model::quick_connect::{TargetConfig, WorkspaceQuery};
 use crate::frontend::gpui::model::search::{search_rows, SearchHit, SearchSnapshot};
 use crate::frontend::gpui::model::sidebar::SidebarItem;
 use crate::frontend::gpui::model::target::{TargetRuntime, TargetTransport};
+use crate::frontend::gpui::model::workspace_picker::{PickerStage, WorkspacePicker};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AggregateKind {
+    Shells,
+    Agents,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PickerAction {
+    Open,
+    Back,
+    Host(TargetTransport),
+    OpenNewPath,
+    OpenThisDirectory,
+    Directory(String),
+    Create,
+}
+
+/// 面板选中行的行内动作。
+///
+/// 对照 Swift `QuickPanelActions.contextual(for:)`：每个行只给一小串动作，
+/// 不是全局命令表。标题用 Swift `panel_action_*` / `attention_*` 的英文文案。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowAction {
+    Open,
+    Close,
+    Connect,
+    Attach,
+    Save,
+    Edit,
+    Delete,
+    Jump,
+    Hide,
+}
+impl RowAction {
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Open => "Open",
+            Self::Close => "Close workspace",
+            Self::Connect => "Connect",
+            Self::Attach => "Attach",
+            Self::Save => "Save",
+            Self::Edit => "Edit",
+            Self::Delete => "Delete",
+            Self::Jump => "Jump",
+            Self::Hide => "Hide",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ActionMenu {
+    pub target: PanelRow,
+    pub query: String,
+    pub selected: usize,
+}
+impl ActionMenu {
+    pub fn rows(&self) -> Vec<RowAction> {
+        let actions = match &self.target {
+            // 聚合行是前端合成的 workspace：不可关闭，也没有运行时切换。
+            PanelRow::Aggregate(_) => vec![RowAction::Open],
+            PanelRow::Workspace { .. } => vec![RowAction::Open, RowAction::Close],
+            PanelRow::Target { .. } => {
+                vec![RowAction::Connect, RowAction::Edit, RowAction::Delete]
+            }
+            PanelRow::Existing { saved, .. } => {
+                if *saved {
+                    vec![RowAction::Connect, RowAction::Edit, RowAction::Delete]
+                } else {
+                    vec![RowAction::Attach, RowAction::Save]
+                }
+            }
+            PanelRow::Attention { .. } => vec![RowAction::Jump, RowAction::Hide],
+            // Swift `.search(line)` 只有 Jump。
+            PanelRow::Search(_) => vec![RowAction::Jump],
+            // Swift 里 .open / .back / .status 这类行没有行内动作。
+            PanelRow::Action(_) | PanelRow::Status(_) => vec![],
+        };
+        let terms: Vec<_> = self
+            .query
+            .split_whitespace()
+            .map(str::to_lowercase)
+            .collect();
+        actions
+            .into_iter()
+            .filter(|action| {
+                terms
+                    .iter()
+                    .all(|term| action.title().to_lowercase().contains(term))
+            })
+            .collect()
+    }
+}
 
 /// 面板一行。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,7 +114,14 @@ pub enum PanelRow {
         title: String,
         detail: String,
         active: bool,
+        shortcut: Option<usize>,
     },
+    Aggregate(AggregateKind),
+    Action(PickerAction),
+    Target {
+        config: TargetConfig,
+    },
+    Status(String),
     Attention {
         workspace_id: String,
         pane_id: u32,
@@ -33,6 +134,8 @@ pub enum PanelRow {
         index: usize,
         title: String,
         detail: String,
+        config: TargetConfig,
+        saved: bool,
     },
 }
 
@@ -40,6 +143,22 @@ impl PanelRow {
     /// 主行文本。
     pub fn title(&self) -> String {
         match self {
+            PanelRow::Aggregate(kind) => match kind {
+                AggregateKind::Shells => "Shells",
+                AggregateKind::Agents => "Agents",
+            }
+            .into(),
+            PanelRow::Action(action) => match action {
+                PickerAction::Open => "Open".into(),
+                PickerAction::Back => "‹ Back".into(),
+                PickerAction::Host(transport) => transport.label().into(),
+                PickerAction::OpenNewPath => "+ Open New Path".into(),
+                PickerAction::OpenThisDirectory => "Open This Directory".into(),
+                PickerAction::Directory(name) => name.clone(),
+                PickerAction::Create => "Create Workspace".into(),
+            },
+            PanelRow::Target { config } => config.name.clone(),
+            PanelRow::Status(text) => text.clone(),
             PanelRow::Workspace { title, .. } => title.clone(),
             PanelRow::Attention { title, .. } => title.clone(),
             PanelRow::Search(hit) => {
@@ -56,6 +175,14 @@ impl PanelRow {
     /// 次行文本；搜索命中没有次行。
     pub fn detail(&self) -> Option<String> {
         match self {
+            PanelRow::Aggregate(AggregateKind::Shells) => Some("aggregate @ local + ssh".into()),
+            PanelRow::Aggregate(AggregateKind::Agents) => Some("aggregate @ all workspaces".into()),
+            PanelRow::Target { config } => Some(format!(
+                "{} · {}",
+                crate::frontend::gpui::model::quick_connect::QuickConnect::subtitle(config),
+                config.path
+            )),
+            PanelRow::Action(_) | PanelRow::Status(_) => None,
             PanelRow::Workspace { detail, .. } => Some(detail.clone()),
             PanelRow::Attention { detail, .. } => Some(detail.clone()),
             PanelRow::Search(_) => None,
@@ -71,6 +198,8 @@ pub struct PanelState {
     pub model: PanelModel,
     /// 键盘选中的行（`rows` 的下标）。
     pub selected: usize,
+    pub picker: WorkspacePicker,
+    pub actions: Option<ActionMenu>,
 }
 
 impl PanelState {
@@ -112,6 +241,151 @@ impl PanelState {
         self.model.cycle_tab(back);
     }
 
+    fn workspace_rows(
+        &self,
+        workspaces: &[SidebarItem],
+        existing: &[ExistingRuntime],
+    ) -> Vec<PanelRow> {
+        use crate::frontend::gpui::model::workspace_picker::same_target;
+        use PickerAction as Action;
+        let query = &self.model.query;
+        let projects = self.picker.projects.configs();
+        let annotate = |rows: Vec<PanelRow>| {
+            rows.into_iter()
+                .map(|mut row| {
+                    if let PanelRow::Existing { config, saved, .. } = &mut row {
+                        *saved = self.picker.projects.contains(config);
+                    }
+                    row
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut result = match &self.picker.stage {
+            PickerStage::Root => {
+                let mut rows = vec![
+                    PanelRow::Aggregate(AggregateKind::Shells),
+                    PanelRow::Aggregate(AggregateKind::Agents),
+                    PanelRow::Action(Action::Open),
+                ];
+                let regular: Vec<_> = workspaces
+                    .iter()
+                    .filter(|workspace| workspace.runtime != "shell" && !workspace.is_aggregate())
+                    .cloned()
+                    .collect();
+                rows.extend(workspace_rows(&regular, ""));
+                rows.extend(
+                    projects
+                        .iter()
+                        .cloned()
+                        .map(|config| PanelRow::Target { config }),
+                );
+                rows.extend(
+                    annotate(existing_rows(existing, ""))
+                        .into_iter()
+                        .filter(|row| {
+                            let PanelRow::Existing { config, .. } = row else {
+                                return true;
+                            };
+                            !projects.iter().any(|project| same_target(project, config))
+                        }),
+                );
+                // 开启搜索后，各来源共用 WorkspaceQuery；空串保持截图中的分区顺序。
+                if query.trim().is_empty() {
+                    rows
+                } else {
+                    let parsed = WorkspaceQuery::new(query);
+                    let mut scored: Vec<_> =
+                        rows.into_iter()
+                            .enumerate()
+                            .filter_map(|(order, row)| {
+                                let score = match &row {
+                                    PanelRow::Target { config }
+                                    | PanelRow::Existing { config, .. } => parsed.score(config),
+                                    PanelRow::Workspace { workspace_id, .. } => workspaces
+                                        .iter()
+                                        .find(|item| &item.workspace_id == workspace_id)
+                                        .and_then(|item| parsed.score(&config_for(item))),
+                                    _ => row
+                                        .title()
+                                        .to_lowercase()
+                                        .contains(&query.trim().to_lowercase())
+                                        .then_some(10_000),
+                                }?;
+                                Some((score, order, row))
+                            })
+                            .collect();
+                    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+                    scored.into_iter().map(|(_, _, row)| row).collect()
+                }
+            }
+            PickerStage::Hosts => {
+                let mut rows = vec![PanelRow::Action(Action::Back)];
+                let mut hosts = vec![TargetTransport::Local];
+                hosts.extend(
+                    self.picker
+                        .aliases
+                        .iter()
+                        .cloned()
+                        .map(|name| TargetTransport::Ssh { name }),
+                );
+                if !query.trim().is_empty()
+                    && !hosts
+                        .iter()
+                        .any(|host| host.label().eq_ignore_ascii_case(query.trim()))
+                {
+                    hosts.push(TargetTransport::Ssh {
+                        name: query.trim().into(),
+                    });
+                }
+                rows.extend(
+                    hosts
+                        .into_iter()
+                        .filter(|host| {
+                            host.label()
+                                .to_lowercase()
+                                .contains(&query.trim().to_lowercase())
+                        })
+                        .map(|host| PanelRow::Action(Action::Host(host))),
+                );
+                rows
+            }
+            PickerStage::Sessions(_) => {
+                let mut rows = vec![
+                    PanelRow::Action(Action::Back),
+                    PanelRow::Action(Action::OpenNewPath),
+                ];
+                rows.extend(annotate(existing_rows(&self.picker.sessions, query)));
+                if self.picker.loading {
+                    rows.push(PanelRow::Status("Discovering tmux and Herdr…".into()));
+                }
+                rows
+            }
+            PickerStage::Path(_) => {
+                let mut rows = vec![
+                    PanelRow::Action(Action::Back),
+                    PanelRow::Action(Action::OpenThisDirectory),
+                ];
+                rows.extend(
+                    self.picker
+                        .path
+                        .candidates()
+                        .iter()
+                        .cloned()
+                        .map(|name| PanelRow::Action(Action::Directory(name))),
+                );
+                rows
+            }
+            PickerStage::Confirm(_) => vec![
+                PanelRow::Action(Action::Back),
+                PanelRow::Action(Action::Create),
+            ],
+        };
+        if let Some(error) = &self.picker.error {
+            result.push(PanelRow::Status(error.clone()));
+        }
+        result
+    }
+
     /// 按当前 tab 生成行。
     pub fn rows(
         &self,
@@ -121,11 +395,7 @@ impl PanelState {
         existing: &[ExistingRuntime],
     ) -> Vec<PanelRow> {
         match self.model.tab {
-            PanelTab::Workspaces => {
-                let mut rows = workspace_rows(workspaces, &self.model.query);
-                rows.extend(existing_rows(existing, &self.model.query));
-                rows
-            }
+            PanelTab::Workspaces => self.workspace_rows(workspaces, existing),
             PanelTab::Attention => match attention {
                 Some(snapshot) => attention_panel_rows(snapshot, workspaces, &self.model.query),
                 None => Vec::new(),
@@ -162,26 +432,24 @@ pub fn workspace_rows(workspaces: &[SidebarItem], query: &str) -> Vec<PanelRow> 
             title: workspace.display_title(),
             detail: format!("{} @ {}", workspace.runtime, workspace.transport),
             active: workspace.is_active,
+            shortcut: workspace.shortcut.map(|number| number as usize),
         })
         .collect()
 }
 
 /// Existing 分区：查询串按名字/session/transport 做无关大小写包含。
 pub fn existing_rows(existing: &[ExistingRuntime], query: &str) -> Vec<PanelRow> {
-    let needle = query.trim().to_lowercase();
+    let parsed = WorkspaceQuery::new(query);
     existing
         .iter()
         .enumerate()
-        .filter(|(_, runtime)| {
-            needle.is_empty()
-                || runtime.name.to_lowercase().contains(&needle)
-                || runtime.session.to_lowercase().contains(&needle)
-                || runtime.transport.to_lowercase().contains(&needle)
-        })
+        .filter(|(_, runtime)| parsed.matches(&runtime.config()))
         .map(|(index, runtime)| PanelRow::Existing {
             index,
             title: runtime.name.clone(),
             detail: runtime.detail(),
+            config: runtime.config(),
+            saved: false,
         })
         .collect()
 }
@@ -293,6 +561,7 @@ mod tests {
                 ..PanelModel::default()
             },
             selected: 0,
+            ..PanelState::default()
         };
         let rows = state.rows(&workspaces, None, None, &[]);
         assert_eq!(rows.len(), 1);
@@ -346,6 +615,7 @@ mod tests {
                 ..PanelModel::default()
             },
             selected: 0,
+            ..PanelState::default()
         };
         let rows = state.rows(&workspaces, Some(&snapshot), None, &[]);
         assert_eq!(rows.len(), 2);
@@ -366,6 +636,7 @@ mod tests {
                 ..PanelModel::default()
             },
             selected: 0,
+            ..PanelState::default()
         };
         assert!(state.rows(&[], None, None, &[]).is_empty());
     }
@@ -388,6 +659,7 @@ mod tests {
                 ..PanelModel::default()
             },
             selected: 0,
+            ..PanelState::default()
         };
         let rows = state.rows(&[], None, Some(&snapshot), &[]);
         assert_eq!(rows.len(), 1);

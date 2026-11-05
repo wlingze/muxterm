@@ -35,6 +35,8 @@ impl AppWindowTestExt for AppWindow {
             path: spec.path.clone(),
             session: (!spec.session.is_empty()).then(|| spec.session.clone()),
             socket: spec.socket.clone(),
+            workspace_id: (spec.runtime == "herdr" && !spec.path.is_empty())
+                .then(|| spec.path.clone()),
         };
         self.test_open_target(target, workspace_replica_id, spec.socket);
     }
