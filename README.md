@@ -6,7 +6,7 @@
 
 把 tmux / Herdr / 本地 shell 收成工作区的跨平台终端工作台，原生集成 tmux / Herdr，并可按 Project 组织本地和远程工作。
 
-官网：[`website/`](website/)（GitHub Pages，支持中英文与黑白主题）· 使用手册：[`docs/USER-GUIDE.md`](docs/USER-GUIDE.md)
+官网：<https://wlingze.github.io/muxterm/>（源码在 [`website/`](website/)，支持中英文与黑白主题）· 使用手册：[`docs/USER-GUIDE.md`](docs/USER-GUIDE.md)
 
 产品层级是 **Workspace = Runtime(Transport) + path**。Linux（GTK4）、macOS（Swift）、TUI、CLI 都是 frontend，只经共享 Rust Core 的 C FFI。详见 [PRODUCT.md](PRODUCT.md)。目录见 [docs/PROJECT-STRUCTURE.md](docs/PROJECT-STRUCTURE.md)。
 
@@ -28,7 +28,8 @@
 
 ## 官网与界面预览
 
-官网在 [`website/`](website/)，是纯静态页面，支持中英文与黑白主题，可直接打开或用本地 HTTP 预览：
+官网：<https://wlingze.github.io/muxterm/>（中文 <https://wlingze.github.io/muxterm/zh/>）。
+源码在 [`website/`](website/)，是纯静态页面，支持中英文与黑白主题，也可用本地 HTTP 预览：
 
 ```bash
 python3 -m http.server 8000 --bind 0.0.0.0 --directory website

@@ -52,17 +52,26 @@ The site is deployed by [`.github/workflows/pages.yml`](../.github/workflows/pag
 on every push to `main` that touches `website/`, or manually through
 **Actions → Website → Run workflow**.
 
-One-time repository setup:
-
-1. Open **Settings → Pages**.
-2. Under **Build and deployment**, set **Source** to **GitHub Actions**.
-3. Push to `main` (or run the workflow manually).
+One-time repository setup (already done for this repository): open
+**Settings → Pages** and set **Build and deployment → Source** to
+**GitHub Actions**. The Pages site is created with that source; the workflow
+then publishes on every push to `main`.
 
 The project site URL is:
 
 ```text
 https://wlingze.github.io/muxterm/
+https://wlingze.github.io/muxterm/zh/
 ```
+
+That is the GitHub *project site* form: `https://<owner>.github.io/<repo>/`.
+A `muxterm.github.io` address would need an account named `muxterm`, and a user
+site needs a repository named `wlingze.github.io`. The GitHub account `muxterm`
+already exists as somebody else's user account, so the organization route cannot
+produce that host either. A custom domain is the only way to drop the owner
+prefix: add it under **Settings → Pages → Custom domain**, point DNS at Pages,
+and keep the workflow as is (a `CNAME` file is ignored when publishing through
+Actions).
 
 All internal links are relative (`./assets/...`, `./docs.html`, `../assets/...`
 from `zh/`), so the site works both at that subpath and at a custom domain
