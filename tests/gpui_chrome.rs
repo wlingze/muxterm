@@ -1244,3 +1244,28 @@ fn menu_actions_run_through_the_action_table(cx: &mut TestAppContext) {
         "菜单里的 New Tab 必须发出 ClientTask::NewTab"
     );
 }
+
+/// 面板根列表的行动作是 Open（Swift `panelOpen`），不是 "New project"。
+#[gpui::test]
+fn panel_primary_action_is_open(cx: &mut TestAppContext) {
+    use muxterm::frontend::gpui::chrome::panel::PANEL_OPEN_LABEL;
+    assert_eq!(PANEL_OPEN_LABEL, "+ Open");
+    assert!(!PANEL_OPEN_LABEL.contains("New project"));
+
+    // 点它打开的是 Open 编辑器（非编辑态），保存走 Catalog。
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    let editing = cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.show_panel(
+                muxterm::frontend::gpui::model::panel::PanelTab::Workspaces,
+                cx,
+            );
+            app.close_panel(cx);
+            app.open_target_editor(None, cx);
+            app.target_editor()
+                .as_ref()
+                .map(|editor| editor.is_editing())
+        })
+    });
+    assert_eq!(editing, Some(false), "未编辑时是 Open 态");
+}

@@ -65,7 +65,7 @@ impl GpuiApp {
                             this.open_target_editor(None, cx);
                         }),
                     )
-                    .child(SharedString::from("+ New project"))
+                    .child(SharedString::from(PANEL_OPEN_LABEL))
                     .into_any_element()
             });
 
@@ -160,6 +160,9 @@ impl GpuiApp {
         )
     }
 }
+
+/// 面板根列表的行动作：Swift 的 `panelOpen`（"+ Open"），不再有 New project。
+pub const PANEL_OPEN_LABEL: &str = "+ Open";
 
 fn panel_row(row: PanelRow, theme: &Theme, selected: bool) -> AnyElement {
     let title = row.title();

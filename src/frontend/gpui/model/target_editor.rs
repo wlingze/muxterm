@@ -72,7 +72,16 @@ impl Default for TargetEditor {
 }
 
 impl TargetEditor {
+    /// 打开（Open）一个新目标：路径从 `~` 开始，name 跟随路径。
+    ///
+    /// 对照 macOS 面板的 `panelOpen` —— 入口是 Open，不是 "New project"。
+    pub fn open() -> Self {
+        Self::new_project()
+    }
+
     /// 新建：路径从 `~` 开始，name 跟随路径。
+    ///
+    /// 保留这个名字给测试与 `Default`；用户界面上的入口统一走 [`Self::open`]。
     pub fn new_project() -> Self {
         Self {
             editing: None,

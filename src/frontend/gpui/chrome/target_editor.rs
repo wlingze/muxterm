@@ -161,13 +161,11 @@ impl GpuiApp {
                         .border_1()
                         .border_color(theme.border)
                         .bg(theme.bg)
-                        .child(div().text_base().child(SharedString::from(
-                            if editor.is_editing() {
-                                "Edit project"
-                            } else {
-                                "New project"
-                            },
-                        )))
+                        .child(
+                            div()
+                                .text_base()
+                                .child(SharedString::from(editor_title(editor.is_editing()))),
+                        )
                         .child(div().flex().flex_row().gap_2().children(runtimes))
                         .child(div().flex().flex_row().gap_2().children(vec![
                             transport_card(TargetTransport::Local, "local"),
@@ -205,5 +203,28 @@ impl GpuiApp {
                 )
                 .into_any_element(),
         )
+    }
+}
+
+/// 编辑器标题：编辑已有目标，或打开（Open）一个新目标。
+///
+/// 对照 macOS 面板的 `panelOpen`：入口叫 Open，不叫 New project。
+pub fn editor_title(editing: bool) -> &'static str {
+    if editing {
+        "Edit project"
+    } else {
+        "Open"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::editor_title;
+
+    /// 面板入口是 Open（Swift `panelOpen`），不再出现 "New project"。
+    #[test]
+    fn the_new_target_title_is_open() {
+        assert_eq!(editor_title(false), "Open");
+        assert_eq!(editor_title(true), "Edit project");
     }
 }

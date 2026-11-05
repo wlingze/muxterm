@@ -198,10 +198,10 @@ Cmd-P 面板列出现有 runtime（discovery 驱动，点开即 attach）、macO
 ## 9. 验收
 
 - `cargo check --no-default-features --features gpui` 通过。
-- `cargo test --no-default-features --features gpui --lib` 通过（2026-11-05 实测 **1879 passed**）。
+- `cargo test --no-default-features --features gpui --lib` 通过（2026-11-05 实测 **1880 passed**）。
 - 集成测试（每个都实测通过）：
-  - `--test gpui_chrome`（42）：侧栏 / tab / 状态栏 / Cmd-P 面板（含 discovery 到的现有 runtime）/
-    Cmd-Shift-P 命令面板 / 输入框 / 设置 / 新建项目 / 历史回填 / 菜单动作，并断言真实布局
+  - `--test gpui_chrome`（43）：侧栏 / tab / 状态栏 / Cmd-P 面板（含 discovery 到的现有 runtime）/
+    Cmd-Shift-P 命令面板 / 输入框 / 设置 / Open 入口 / 历史回填 / 菜单动作，并断言真实布局
     （侧栏 240pt、24pt 单条栏、命令面板 600×360），全部走真实 `GpuiApp`。
   - `--test gpui_surface_events`（6）：滚轮、宽字符、鼠标报告、IME 提交、候选窗锚定。
   - `--test gpui_surface_e2e`（1）：隔离 tmux 里真实 shell 输出落到格子上。
