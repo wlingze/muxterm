@@ -180,7 +180,10 @@ cargo build --no-default-features --features gpui --release
 Cmd-P 面板列出现有 runtime（discovery 驱动，点开即 attach）、macOS 原生菜单栏
 （NSMenu，结构照抄 Swift `buildMenu`）、快速面板按 Swift `loadWorkspaceItems` 的
 根列表分段（Shells / Agents / Open / 编号 workspace / Project / discovery）、
-未保存项的 Save 与 Cmd-K 行内动作菜单、`Open` 分步导航 + 末端「运行时 + 名字」确认。
+未保存项的 Save 与 Cmd-K 行内动作菜单、`Open` 分步导航 + 末端「运行时 + 名字」确认、
+命令面板的 `Muxterm Info` 浮层（version / commit / 调试日志路径 / GitHub issue，
+数据走 Core `muxterm_build_info_json`）、提示符末尾光标（尾部空白裁剪不再吃掉光标格）、
+本地 `~` 路径展开（目录列表与 `create` 都用绝对路径；SSH 仍交给远端展开）。
 
 ### 8.2 快速面板与 Swift 的差异
 
@@ -196,6 +199,7 @@ Cmd-P 面板列出现有 runtime（discovery 驱动，点开即 attach）、macO
 | `Open preview` | 提醒行可开预览 | 没有预览窗口 |
 | `Cmd-K` 选中项 | 全局命令（Action Catalog）在独立面板 | 同一份行内动作，但不带全局命令 |
 | 本地化 | i18n 全量 | 字符串硬编码英文（与其它 gpui chrome 一致） |
+| `Muxterm Info` | 独立小窗口（`MuxtermInfoWindowController`） | 同内容的前端浮层，Esc 关闭 |
 | 现有 runtime 去重键 | `transport\|runtime\|session\|socket\|workspace_id\|name` | `(transport, target, runtime, session, socket, workspace_id)`：与 Swift 同语义，不按 name 去重（同 session 多个 Herdr workspace 是不同身份） |
 
 
@@ -217,9 +221,9 @@ Cmd-P 面板列出现有 runtime（discovery 驱动，点开即 attach）、macO
 ## 9. 验收
 
 - `cargo check --no-default-features --features gpui` 通过。
-- `cargo test --no-default-features --features gpui --lib` 通过（2026-11-05 实测 **1885 passed**）。
+- `cargo test --no-default-features --features gpui --lib` 通过（2026-11-05 实测 **1893 passed**）。
 - 集成测试（每个都实测通过）：
-  - `--test gpui_chrome`（43）：侧栏 / tab / 状态栏 / Cmd-P 面板（含 discovery 到的现有 runtime）/
+  - `--test gpui_chrome`（46）：侧栏 / tab / 状态栏 / Cmd-P 面板（含 discovery 到的现有 runtime）/
     Cmd-Shift-P 命令面板 / 输入框 / 设置 / Open 入口 / 历史回填 / 菜单动作，并断言真实布局
     （侧栏 240pt、24pt 单条栏、命令面板 600×360），全部走真实 `GpuiApp`。
   - `--test gpui_workspace_picker`（13）：根列表四段顺序与编号、Open 三层导航、目录完成后
@@ -228,7 +232,7 @@ Cmd-P 面板列出现有 runtime（discovery 驱动，点开即 attach）、macO
     已保存/未保存两套动作、Herdr attach 带 `workspace_id`、面板吞键不落 PTY。
   - `--test gpui_surface_events`（6）：滚轮、宽字符、鼠标报告、IME 提交、候选窗锚定。
   - `--test gpui_surface_e2e`（1）：隔离 tmux 里真实 shell 输出落到格子上。
-  - `--test gpui_acceptance`（4）：启动 workspace、按键进 shell、Cmd-T 加 tab、第二个 workspace 经 Catalog 打开并可切换。
+  - `--test gpui_acceptance`（5，含面板 Open 全流程真的建出 workspace）：启动 workspace、按键进 shell、Cmd-T 加 tab、第二个 workspace 经 Catalog 打开并可切换。
   - `--test gpui_acceptance_herdr`（2）：named Herdr session 出现在侧栏，输入有回显。
   - `--test gpui_harness_smoke`（1）：无头 harness 自身可用。
 - `muxterm gpui` 打开窗口，侧栏列出 workspace，tab 栏与 pane 网格按 `ClientLayout` 渲染。
