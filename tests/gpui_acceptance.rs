@@ -476,3 +476,43 @@ fn cmd_brackets_walk_the_panes_through_core(cx: &mut TestAppContext) {
         std::thread::sleep(Duration::from_millis(50));
     }
 }
+
+/// 活动接入：Core 的活动快照要 join 到前端 workspace id 上。
+///
+/// Core 用 replica id（`session:path@transport`）聚合活动，侧栏用产品 id；
+/// 这条用真实 FFI 快照证明两边对得上——对不上就是「跑着 pi，Agents 还是空」。
+#[gpui::test]
+fn core_activity_joins_the_frontend_workspace(cx: &mut TestAppContext) {
+    let tmux = IsolatedTmux::start();
+    let (view, cx) = app_with_isolated_tmux(cx, &tmux);
+
+    let workspace = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            app.visible_workspace().map(str::to_string).unwrap()
+        })
+    });
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        cx.update(|_, cx| {
+            view.update(cx, |app, cx| {
+                app.pump_once(cx);
+            })
+        });
+        let joined = cx.update(|_, cx| {
+            view.update(cx, |app, _| {
+                app.attention_workspace_ids()
+                    .iter()
+                    .any(|id| id == &workspace)
+            })
+        });
+        if joined {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "Core 的活动快照必须 join 到 {workspace:?} 上（实际 {:?}）",
+            cx.update(|_, cx| view.update(cx, |app, _| app.attention_workspace_ids()))
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}

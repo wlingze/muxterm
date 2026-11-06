@@ -1970,3 +1970,278 @@ fn a_new_pane_takes_the_focus(cx: &mut TestAppContext) {
     assert_eq!(focused, Some(12), "新建的 pane 必须是焦点");
     assert!(cx.debug_bounds("pane-cursor").is_some());
 }
+
+// ---------------------------------------------------------------------------
+// 统一面板根列表：两个特殊 shell 在最前，已打开的不能再以 Project 重复出现
+// ---------------------------------------------------------------------------
+
+/// 根列表顺序：Shells → Agents → Open → 已打开的 workspace（Swift
+/// `loadWorkspaceItems` 的 pinned + [.open] + opened）。
+#[gpui::test]
+fn panel_root_starts_with_the_two_special_shells(cx: &mut TestAppContext) {
+    use muxterm::frontend::gpui::chrome::panel_view::{AggregateKind, PickerAction};
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.update(|_, cx| view.update(cx, |app, cx| app.show_panel(PanelTab::Workspaces, cx)));
+    let rows = cx.update(|_, cx| view.update(cx, |app, _| app.panel_rows()));
+    assert!(
+        matches!(
+            rows[0],
+            muxterm::frontend::gpui::chrome::panel_view::PanelRow::Aggregate(AggregateKind::Shells)
+        ),
+        "第一行必须是 Shells：{rows:?}"
+    );
+    assert!(
+        matches!(
+            rows[1],
+            muxterm::frontend::gpui::chrome::panel_view::PanelRow::Aggregate(AggregateKind::Agents)
+        ),
+        "第二行必须是 Agents：{rows:?}"
+    );
+    assert!(
+        matches!(
+            rows[2],
+            muxterm::frontend::gpui::chrome::panel_view::PanelRow::Action(PickerAction::Open)
+        ),
+        "第三行必须是 Open：{rows:?}"
+    );
+    // 只有 Open 一行，不再混入 New / Open Folder。
+    let opens = rows
+        .iter()
+        .filter(|row| {
+            matches!(
+                row,
+                muxterm::frontend::gpui::chrome::panel_view::PanelRow::Action(PickerAction::Open)
+            )
+        })
+        .count();
+    assert_eq!(opens, 1, "Open 只能出现一次");
+}
+
+/// 已经打开的 workspace 不能再以 Project / 现有 runtime 的身份重复出现。
+#[gpui::test]
+fn panel_dedupes_open_workspaces_against_saved_projects(cx: &mut TestAppContext) {
+    use muxterm::frontend::gpui::chrome::panel_view::PanelRow;
+    let mut store = store_with_two_workspaces();
+    // 打开的是 ssh 上的 tmux（`resolved_target` 可能还没回，按名字兜底去重）。
+    store.replace_topology(
+        ClientWorkspace {
+            id: "ssh@@ryzen@yaklang-workspace@tmux@/home/u/yaklang-workspace".to_string(),
+            name: "yaklang-workspace".to_string(),
+            runtime: "tmux".to_string(),
+            active: false,
+            resolved_target: None,
+        },
+        vec![ClientTab {
+            id: 3,
+            name: "yaklang-workspace".to_string(),
+            is_active: true,
+        }],
+        vec![(
+            3,
+            vec![ClientPane {
+                id: 30,
+                cols: 80,
+                rows: 24,
+                is_active: true,
+                title: "yaklang-workspace".to_string(),
+            }],
+        )],
+    );
+    store
+        .ensure_workspace("ssh@@ryzen@yaklang-workspace@tmux@/home/u/yaklang-workspace")
+        .backend_status = Some(backend_status::CONNECTED);
+
+    let (view, cx) = mount(store, cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.set_picker_data_for_tests(
+                serde_json::json!([{
+                    "id": "project-1",
+                    "name": "yaklang-workspace",
+                    "path": "/home/u/yaklang-workspace",
+                    "runtime": { "id": "tmux", "session": "yaklang-workspace" },
+                    "transport": { "id": "ssh", "target": "ryzen" }
+                }]),
+                vec!["ryzen".to_string()],
+            );
+            app.show_panel(PanelTab::Workspaces, cx);
+        })
+    });
+    let rows = cx.update(|_, cx| view.update(cx, |app, _| app.panel_rows()));
+    let mentions = rows
+        .iter()
+        .filter(|row| {
+            matches!(
+                row,
+                PanelRow::Workspace { .. } | PanelRow::Target { .. } | PanelRow::Existing { .. }
+            ) && row.title().starts_with("yaklang-workspace")
+        })
+        .count();
+    assert_eq!(
+        mentions,
+        1,
+        "已打开的 workspace 只能出现一次：{:?}",
+        rows.iter().map(|row| row.title()).collect::<Vec<_>>()
+    );
+}
+
+/// 现有 runtime 里已经打开的那个 session 也不能再列一次。
+#[gpui::test]
+fn panel_dedupes_existing_sessions_that_are_already_open(cx: &mut TestAppContext) {
+    use muxterm::frontend::gpui::chrome::panel_view::PanelRow;
+    use muxterm::frontend::gpui::model::existing::ExistingRuntime;
+    let mut store = store_with_two_workspaces();
+    store.replace_topology(
+        ClientWorkspace {
+            id: "local@@dev@tmux@dev".to_string(),
+            name: "dev".to_string(),
+            runtime: "tmux".to_string(),
+            active: true,
+            resolved_target: None,
+        },
+        vec![ClientTab {
+            id: 1,
+            name: "dev".to_string(),
+            is_active: true,
+        }],
+        vec![(
+            1,
+            vec![ClientPane {
+                id: 10,
+                cols: 80,
+                rows: 24,
+                is_active: true,
+                title: "dev".to_string(),
+            }],
+        )],
+    );
+    let (view, cx) = mount(store, cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.set_existing_for_tests(vec![ExistingRuntime {
+                name: "dev".to_string(),
+                runtime: "tmux".to_string(),
+                transport: "local".to_string(),
+                target: String::new(),
+                session: "dev".to_string(),
+                socket: None,
+                windows: 1,
+                attached: false,
+                workspace_id: None,
+                path: "/home/u/dev".to_string(),
+            }]);
+            app.show_panel(PanelTab::Workspaces, cx);
+        })
+    });
+    let rows = cx.update(|_, cx| view.update(cx, |app, _| app.panel_rows()));
+    let dev_existing = rows
+        .iter()
+        .filter(|row| matches!(row, PanelRow::Existing { .. }) && row.title() == "dev")
+        .count();
+    assert_eq!(
+        dev_existing,
+        0,
+        "已打开的 session 不能再列成现有 runtime：{:?}",
+        rows.iter().map(|row| row.title()).collect::<Vec<_>>()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 活动接入：Core 的活动快照 → Agents / Commands / Attention
+// ---------------------------------------------------------------------------
+
+fn activity_snapshot_with_agent() -> muxterm::frontend::utils::corebridge::ClientActivitySnapshot {
+    use muxterm::frontend::utils::corebridge::{
+        ClientActivitySnapshot, ClientAttentionPane, ClientWorkspaceAttention,
+    };
+    let pane = |pane_id: u32, status: &str, process: &str, agent: bool| ClientAttentionPane {
+        muted: false,
+        workspace_id: "local@@dev@tmux@dev".to_string(),
+        pane_id,
+        status: status.to_string(),
+        acknowledged: false,
+        last_line: format!("{process} line"),
+        seq: 11,
+        process_name: Some(process.to_string()),
+        process_is_agent: agent,
+        agent_name: agent.then(|| process.to_string()),
+        shell_name: None,
+    };
+    ClientActivitySnapshot {
+        blocked_count: 0,
+        workspaces: vec![ClientWorkspaceAttention {
+            workspace_id: "local@@dev@tmux@dev".to_string(),
+            path: "/home/u/dev".to_string(),
+            blocked: 0,
+            done: 0,
+            working: 2,
+            panes: vec![
+                pane(10, "working", "pi", true),
+                pane(20, "working", "cargo", false),
+            ],
+        }],
+    }
+}
+
+/// `pi` 在前台时 Agents 段要有一行；非 agent 进程进 Commands。
+#[gpui::test]
+fn activity_snapshot_fills_the_agents_and_commands_sections(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    let changed = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            app.set_activity_snapshot_for_tests(&activity_snapshot_with_agent())
+        })
+    });
+    assert!(changed, "第一次注入必须算作变化");
+    cx.run_until_parked();
+
+    let model = cx.update(|_, cx| view.update(cx, |app, _| app.sidebar_model()));
+    let agents = &model[1];
+    assert_eq!(agents.section, Section::Agents);
+    assert_eq!(agents.rows.len(), 1, "pi 必须出现在 Agents：{agents:?}");
+    assert!(
+        agents.rows[0].title.starts_with("dev"),
+        "Agents 行标题来自 workspace：{}",
+        agents.rows[0].title
+    );
+    assert!(
+        agents.rows[0].detail.contains("pi"),
+        "详情要带 agent 名字：{}",
+        agents.rows[0].detail
+    );
+
+    let commands = &model[2];
+    assert_eq!(commands.section, Section::Commands);
+    assert_eq!(
+        commands.rows.len(),
+        1,
+        "cargo 必须出现在 Commands：{commands:?}"
+    );
+    assert!(commands.rows[0].detail.contains("cargo"));
+
+    // Attention tab 也能列出同样两条。
+    cx.update(|_, cx| view.update(cx, |app, cx| app.show_panel(PanelTab::Attention, cx)));
+    let rows = cx.update(|_, cx| view.update(cx, |app, _| app.panel_rows()));
+    assert!(
+        rows.len() >= 2,
+        "Attention 面板要有两条活动：{:?}",
+        rows.iter().map(|row| row.title()).collect::<Vec<_>>()
+    );
+}
+
+/// 快照没变就不算 dirty（别每帧都重绘侧栏）。
+#[gpui::test]
+fn repeated_activity_snapshots_are_not_dirty(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    let snapshot = activity_snapshot_with_agent();
+    let (first, second) = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            (
+                app.set_activity_snapshot_for_tests(&snapshot),
+                app.set_activity_snapshot_for_tests(&snapshot),
+            )
+        })
+    });
+    assert!(first);
+    assert!(!second, "同一份快照不能重复触发重绘");
+}

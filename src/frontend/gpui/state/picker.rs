@@ -31,19 +31,55 @@ impl GpuiApp {
             &self.existing,
         );
         if self.panel.picker.stage == PickerStage::Root {
-            let opened: Vec<_> = self
-                .store
-                .workspace_ids()
-                .filter_map(|id| self.workspace_target(id))
-                .collect();
             rows.retain(|row| match row {
                 PanelRow::Target { config } | PanelRow::Existing { config, .. } => {
-                    !opened.iter().any(|item| same_target(item, config))
+                    !self.is_workspace_open(config)
                 }
                 _ => true,
             });
         }
         rows
+    }
+
+    /// 这个目标是不是已经打开着（面板里不能再列一遍）。
+    ///
+    /// 三种身份都算同一个：canonical target 完全一致、workspace id 一致、
+    /// 名字 + runtime + session 一致。最后一种是为了 Core 还没回 canonical
+    /// 时也能拦住「同名 Project / 现有 session」的重复行。
+    pub(super) fn is_workspace_open(&self, config: &TargetConfig) -> bool {
+        let ids = self
+            .store
+            .workspace_ids()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        if config
+            .workspace_id
+            .as_deref()
+            .is_some_and(|id| ids.iter().any(|open| open == id))
+        {
+            return true;
+        }
+        for id in &ids {
+            if let Some(open) = self.workspace_target(id) {
+                if same_target(&open, config) {
+                    return true;
+                }
+                let same_runtime = open.runtime == config.runtime;
+                let same_session = match (open.session.as_deref(), config.session.as_deref()) {
+                    (Some(open), Some(target)) => open == target,
+                    _ => false,
+                };
+                if same_runtime && same_session && open.name == config.name {
+                    return true;
+                }
+                continue;
+            }
+            // 没有 canonical：按名字兜底（用户看到的就是同名重复）。
+            if self.workspace_name(id).eq_ignore_ascii_case(&config.name) {
+                return true;
+            }
+        }
+        false
     }
 
     pub(super) fn reset_panel_selection(&mut self) {

@@ -107,6 +107,48 @@ pub struct AttentionSnapshot {
 }
 
 impl AttentionSnapshot {
+    /// Core 的活动快照（`muxterm_attention_snapshot` 的 owned DTO）→ 前端视图。
+    ///
+    /// 对照 macOS `AttentionModel.Snapshot.decode(_:)`：字段缺省即默认值，
+    /// 状态字面量不认识就按 `unknown`（不丢整条 pane）。
+    pub fn snapshot_from_activity(
+        snapshot: &crate::frontend::utils::corebridge::ClientActivitySnapshot,
+    ) -> AttentionSnapshot {
+        let workspaces = snapshot
+            .workspaces
+            .iter()
+            .map(|workspace| WorkspaceAttention {
+                workspace_id: workspace.workspace_id.clone(),
+                name: String::new(),
+                transport: String::new(),
+                path: workspace.path.clone(),
+                blocked: workspace.blocked as u32,
+                done: workspace.done as u32,
+                working: workspace.working as u32,
+                panes: workspace
+                    .panes
+                    .iter()
+                    .map(|pane| PaneAttention {
+                        pane_id: pane.pane_id,
+                        status: PaneAttentionStatus::parse(&pane.status)
+                            .unwrap_or(PaneAttentionStatus::Unknown),
+                        acknowledged: pane.acknowledged,
+                        muted: pane.muted,
+                        last_line: pane.last_line.clone(),
+                        seq: pane.seq,
+                        process_name: pane.process_name.clone(),
+                        process_is_agent: pane.process_is_agent,
+                        agent_name: pane.agent_name.clone(),
+                    })
+                    .collect(),
+            })
+            .collect();
+        AttentionSnapshot {
+            blocked_count: snapshot.blocked_count as u32,
+            workspaces,
+        }
+    }
+
     /// 解析 Core `muxterm_attention_snapshot` JSON；失败返回 `None`，不 panic。
     ///
     /// 逐字段容错，与 Swift 的 `??` 默认值一致：缺省即取默认值，只有
@@ -1292,6 +1334,91 @@ mod tests {
         assert_eq!(
             AttentionRowLabel::normalized_process(Some(process)).as_deref(),
             Some("zsh")
+        );
+    }
+}
+
+#[cfg(test)]
+mod client_mapping_tests {
+    use super::*;
+    use crate::frontend::utils::corebridge::{
+        ClientActivitySnapshot, ClientAttentionPane, ClientWorkspaceAttention,
+    };
+
+    fn pane(
+        pane_id: u32,
+        status: &str,
+        process: Option<&str>,
+        is_agent: bool,
+    ) -> ClientAttentionPane {
+        ClientAttentionPane {
+            muted: false,
+            workspace_id: String::new(),
+            pane_id,
+            status: status.to_string(),
+            acknowledged: false,
+            last_line: "…".to_string(),
+            seq: 7,
+            process_name: process.map(str::to_string),
+            process_is_agent: is_agent,
+            agent_name: is_agent.then(|| process.unwrap_or_default().to_string()),
+            shell_name: None,
+        }
+    }
+
+    /// Core 的活动快照要原样落到前端视图：agent 标记、状态、末行。
+    ///
+    /// 对照 `AttentionModelTests` 里「agent pane 计入 Agents」的那组断言。
+    #[test]
+    fn activity_snapshot_maps_agent_panes() {
+        let snapshot = ClientActivitySnapshot {
+            blocked_count: 1,
+            workspaces: vec![ClientWorkspaceAttention {
+                workspace_id: "ws".to_string(),
+                path: "/home/u/dev".to_string(),
+                blocked: 1,
+                done: 0,
+                working: 2,
+                panes: vec![
+                    pane(7, "blocked", Some("pi"), true),
+                    pane(8, "working", Some("cargo"), false),
+                ],
+            }],
+        };
+        let attention = AttentionSnapshot::snapshot_from_activity(&snapshot);
+        assert_eq!(attention.blocked_count, 1);
+        assert_eq!(attention.workspaces.len(), 1);
+        let workspace = &attention.workspaces[0];
+        assert_eq!(workspace.workspace_id, "ws");
+        assert_eq!(workspace.path, "/home/u/dev");
+        assert_eq!(workspace.blocked, 1);
+        assert_eq!(workspace.working, 2);
+        assert_eq!(workspace.panes[0].status, PaneAttentionStatus::Blocked);
+        assert!(workspace.panes[0].process_is_agent);
+        assert_eq!(workspace.panes[0].agent_name.as_deref(), Some("pi"));
+        assert!(!workspace.panes[1].process_is_agent);
+        assert_eq!(workspace.panes[1].seq, 7);
+    }
+
+    /// 不认识的状态字面量按 unknown 处理，但 pane 不能整条丢掉。
+    #[test]
+    fn unknown_status_keeps_the_pane() {
+        let snapshot = ClientActivitySnapshot {
+            blocked_count: 1,
+            workspaces: vec![ClientWorkspaceAttention {
+                workspace_id: "ws".to_string(),
+                path: String::new(),
+                blocked: 0,
+                done: 0,
+                working: 0,
+                panes: vec![pane(3, "??", None, false)],
+            }],
+        };
+        let attention = AttentionSnapshot::snapshot_from_activity(&snapshot);
+        assert_eq!(attention.workspaces[0].panes.len(), 1);
+        assert_eq!(
+            attention.workspaces[0].panes[0].status,
+            PaneAttentionStatus::Unknown
         );
     }
 }

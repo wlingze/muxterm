@@ -24,6 +24,8 @@ use crate::frontend::view_store::ViewStore;
 
 /// 事件泵间隔：约 120Hz，够跟住输出又不空转。
 const PUMP_INTERVAL: Duration = Duration::from_millis(8);
+/// 活动/注意力快照的刷新间隔（侧栏 Agents/Commands 的数据源）。
+const ATTENTION_INTERVAL: Duration = Duration::from_millis(1_000);
 
 /// 一个已打开 pane 的常驻 Surface key。
 type SurfaceKey = (String, u32);
@@ -86,6 +88,8 @@ pub struct GpuiApp {
     /// tmux 自己的 status 左右段。
     status_snapshot: Option<crate::frontend::gpui::model::status_bar::StatusBarSnapshot>,
     status_snapshot_at: Option<std::time::Instant>,
+    /// 上一次拉活动/注意力快照的时间。
+    attention_at: Option<std::time::Instant>,
     /// 刚写过配置，下一轮事件泵要重读主题 / 语言 / 状态栏模式。
     config_reload_pending: bool,
     status: String,
@@ -244,6 +248,7 @@ impl GpuiApp {
             status_bar_mode,
             status_snapshot: None,
             status_snapshot_at: None,
+            attention_at: None,
             config_reload_pending: false,
             theme,
             cell,
@@ -408,6 +413,7 @@ impl GpuiApp {
         dirty |= self.poll_panel_operations(cx);
         dirty |= self.apply_pending_config();
         dirty |= self.refresh_status_snapshot_if_due();
+        dirty |= self.refresh_attention_if_due();
         // 焦点跟着 Core 的 active pane 走：切 tab、分屏、Cmd-[ / Cmd-] 之后
         // 键盘输入必须落在屏幕上真正活动的那个 pane 里，否则用户看到的是
         // 「切了 / 分了但光标不见了、打字没反应」。
@@ -560,6 +566,7 @@ impl GpuiApp {
             ),
             sidebar_visible: true,
             attention: None,
+            attention_at: None,
             existing: Vec::new(),
             existing_loaded: false,
             existing_loading: false,
@@ -594,13 +601,111 @@ impl GpuiApp {
         app
     }
 
-    /// 无头测试用的注意力快照注入（FFI 快照接入前只有测试会写）。
+    /// 无头测试用的注意力快照注入。
     #[doc(hidden)]
     pub fn set_attention(
         &mut self,
         attention: Option<crate::frontend::gpui::model::attention::AttentionSnapshot>,
     ) {
         self.attention = attention;
+    }
+
+    /// 无头测试用：注入一份 Core 活动快照，走与生产同一条映射。
+    #[doc(hidden)]
+    pub fn set_activity_snapshot_for_tests(
+        &mut self,
+        snapshot: &crate::frontend::utils::corebridge::ClientActivitySnapshot,
+    ) -> bool {
+        let mut next =
+            crate::frontend::gpui::model::attention::AttentionSnapshot::snapshot_from_activity(
+                snapshot,
+            );
+        self.join_attention_to_workspaces(&mut next);
+        if self.attention.as_ref() == Some(&next) {
+            return false;
+        }
+        self.attention = Some(next);
+        true
+    }
+
+    /// 把活动快照的 replica id 换成本前端的产品 workspace id。
+    ///
+    /// Core 的 `attention_snapshot` 用 `WorkspaceId::replica_id()`
+    /// （`session:path@transport`），侧栏用产品 id（`transport/alias/session/runtime/path`）。
+    /// 不换就永远 join 不上——这正是「跑着 pi，Agents 还是空」的原因。
+    fn join_attention_to_workspaces(
+        &self,
+        snapshot: &mut crate::frontend::gpui::model::attention::AttentionSnapshot,
+    ) {
+        use crate::frontend::gpui::model::replica_id::replica_id_for_workspace_id;
+        let ids = self
+            .store
+            .workspace_ids()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        for workspace in &mut snapshot.workspaces {
+            let Some(id) = ids
+                .iter()
+                .find(|id| replica_id_for_workspace_id(id) == workspace.workspace_id)
+                .cloned()
+            else {
+                continue;
+            };
+            workspace.name = self.workspace_name(&id);
+            workspace.transport = self
+                .store
+                .workspace(&id)
+                .and_then(|view| view.workspace.as_ref())
+                .map(transport_label)
+                .unwrap_or_default();
+            workspace.workspace_id = id;
+        }
+    }
+
+    /// 拉一次 Core 的活动/注意力快照（Agents / Commands / Attention 的数据源）。
+    ///
+    /// 返回是否有变化。查不到就保留上一次的快照，不把侧栏清空。
+    pub fn refresh_attention(&mut self) -> bool {
+        let Some(pump) = self.pump.as_ref() else {
+            return false;
+        };
+        let Ok(snapshot) = pump.client().activity_snapshot() else {
+            return false;
+        };
+        self.set_activity_snapshot_for_tests(&snapshot)
+    }
+
+    /// 按 `ATTENTION_INTERVAL` 节流拉活动快照。
+    pub fn refresh_attention_if_due(&mut self) -> bool {
+        let now = std::time::Instant::now();
+        if let Some(last) = self.attention_at {
+            if now.duration_since(last) < ATTENTION_INTERVAL {
+                return false;
+            }
+        }
+        self.attention_at = Some(now);
+        self.refresh_attention()
+    }
+
+    /// 验收测试用：拿到生产路径上的 Core 客户端（只读操作）。
+    #[doc(hidden)]
+    pub fn client_for_tests(&self) -> Option<&crate::frontend::utils::corebridge::FfiClient> {
+        self.pump.as_ref().map(|pump| pump.client())
+    }
+
+    /// 当前活动快照里的 workspace id（验收测试断言 join 用）。
+    #[doc(hidden)]
+    pub fn attention_workspace_ids(&self) -> Vec<String> {
+        self.attention
+            .as_ref()
+            .map(|snapshot| {
+                snapshot
+                    .workspaces
+                    .iter()
+                    .map(|workspace| workspace.workspace_id.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// 无头测试用：替换整个 ViewStore（模拟 Core 回了新拓扑）。

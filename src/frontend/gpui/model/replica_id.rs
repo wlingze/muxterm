@@ -32,6 +32,32 @@ pub fn default_name(path: &str) -> String {
     last.to_string()
 }
 
+/// 产品 workspace id（`transport/alias/session/runtime/path`）→ replica id。
+///
+/// 侧栏 / 面板 / Attention 用产品 id，Core 的活动快照用 replica id，
+/// 两边必须在这一层对齐；对不上就会「Core 有活动、侧栏却一直空」。
+pub fn replica_id_for_workspace_id(workspace_id: &str) -> String {
+    let mut parts = workspace_id.splitn(5, '/');
+    let transport = parts.next().unwrap_or_default();
+    let alias = parts.next().unwrap_or_default();
+    let session = parts.next().unwrap_or_default();
+    let path = parts.next().and_then(|_| parts.next()).unwrap_or_default();
+    let transport_label = if transport == "ssh" {
+        if alias.is_empty() {
+            "ssh"
+        } else {
+            alias
+        }
+    } else {
+        LOCAL_TRANSPORT
+    };
+    replica_id_from_parts(
+        (!session.is_empty()).then_some(session),
+        path,
+        transport_label,
+    )
+}
+
 /// 用一个工作区身份构造 replica id。
 ///
 /// 规则：
