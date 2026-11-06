@@ -33,11 +33,17 @@ impl CreateDraft {
         if !matches!(self.runtime, TargetRuntime::Herdr | TargetRuntime::Tmux) {
             return Err("Choose Herdr or tmux");
         }
+        // 本地路径必须先展开 `~`：Core 的 list_dir 只认字面 "~"，
+        // tmux/herdr 的 -c 也不会展开 `~/x`，不展开就会「找不到路径」。
+        let path = match self.transport {
+            super::target::TargetTransport::Local => super::directory::expand_home(&self.path),
+            super::target::TargetTransport::Ssh { .. } => self.path.clone(),
+        };
         Ok(TargetConfig::new(
             name,
             self.runtime,
             self.transport.clone(),
-            &self.path,
+            &path,
         ))
     }
 }
@@ -250,6 +256,27 @@ mod tests {
         let config = draft.config().unwrap();
         assert_eq!(config.path, "~/Developer/muxterm");
         assert_eq!(config.session, None, "Herdr named session 不能由展示名反推");
+    }
+
+    /// 本地路径必须落成绝对路径：Core 只展开字面 `~`，`~/x` 会「找不到路径」。
+    /// SSH 保留 `~`，远端 shell 自己展开。
+    #[test]
+    fn local_confirmation_expands_home_but_ssh_keeps_the_tilde() {
+        let home = crate::frontend::gpui::model::directory::home_directory().expect("HOME");
+        let mut draft = CreateDraft::new(TargetTransport::Local, "~/Developer/muxterm");
+        draft.runtime = TargetRuntime::Tmux;
+        assert_eq!(
+            draft.config().unwrap().path,
+            format!("{home}/Developer/muxterm")
+        );
+
+        let remote = CreateDraft::new(
+            TargetTransport::Ssh {
+                name: "ryzen".into(),
+            },
+            "~/dev/app",
+        );
+        assert_eq!(remote.config().unwrap().path, "~/dev/app");
     }
 
     #[test]

@@ -294,6 +294,7 @@ impl GpuiApp {
             },
         });
         self.open_pending = true;
+        self.open_started = Some(std::time::Instant::now());
         self.panel.picker.error = None;
         cx.notify();
     }
@@ -359,10 +360,11 @@ impl GpuiApp {
                     match draft.config() {
                         Ok(config) => {
                             self.commands.push(ClientCommand::OpenTarget {
-                                target: super::client_target_for(&config),
+                                target: self.client_target_with_app_socket(&config),
                                 intent: ClientOpenIntent::CreateIfMissing,
                             });
                             self.open_pending = true;
+                            self.open_started = Some(std::time::Instant::now());
                             self.panel.picker.error = None;
                         }
                         Err(error) => self.panel.picker.error = Some(error.into()),
@@ -574,13 +576,14 @@ impl GpuiApp {
         let navigation = self.panel.picker.request();
         cx.spawn(async move |this, cx| {
             let query = request.clone();
+            let listed = directory_listing_path(&query);
             let result = cx
                 .background_executor()
                 .spawn(async move {
                     CoreBridge::list_dir(
                         if query.is_ssh { "ssh" } else { "local" },
                         query.alias.as_deref(),
-                        &query.path,
+                        &listed,
                     )
                 })
                 .await;
@@ -624,10 +627,21 @@ impl GpuiApp {
         if !self.open_pending {
             return dirty;
         }
+        // Core 不回应时不能把面板永久锁在「正在打开」：超时就报错解卡。
+        if self
+            .open_started
+            .is_some_and(|started| started.elapsed() > OPEN_TIMEOUT)
+        {
+            self.open_pending = false;
+            self.open_started = None;
+            self.panel.picker.error = Some("Open timed out; Core did not answer".into());
+            return true;
+        }
         match pump.client().poll_open(true) {
             Ok(None) => {}
             Ok(Some(workspace)) => {
                 self.open_pending = false;
+                self.open_started = None;
                 if let Err(error) = pump.sync_view_store(&mut self.store) {
                     tracing::warn!(%error, "sync after open");
                 }
@@ -641,6 +655,7 @@ impl GpuiApp {
             }
             Err(error) => {
                 self.open_pending = false;
+                self.open_started = None;
                 self.panel.picker.error = Some(format!("Open failed: {error}"));
                 dirty = true;
             }
@@ -854,5 +869,57 @@ fn project_config(row: &PanelRow) -> Option<TargetConfig> {
             ..
         } => Some(config.clone()),
         _ => None,
+    }
+}
+
+/// 打开请求的最长等待时间（Core 侧本身有超时，这里只防面板卡死）。
+const OPEN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// 目录列表实际要查的路径。
+///
+/// 本地必须绝对：Core 的 `list_dir` 只展开字面 `"~"`，`"~/x"` 会被当成
+/// 相对目录名（于是「找不到路径」）。SSH 保持 `~`，由远端 shell 展开。
+pub(super) fn directory_listing_path(
+    request: &crate::frontend::gpui::model::directory::DirectoryListingRequest,
+) -> String {
+    if request.is_ssh {
+        request.path.clone()
+    } else {
+        crate::frontend::gpui::model::directory::expand_home(&request.path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::frontend::gpui::model::directory::{home_directory, DirectoryListingRequest};
+
+    fn request(path: &str, is_ssh: bool, alias: Option<&str>) -> DirectoryListingRequest {
+        DirectoryListingRequest {
+            generation: 1,
+            path: path.to_string(),
+            is_ssh,
+            alias: alias.map(str::to_string),
+        }
+    }
+
+    /// 本地 `~/Developer` 不展开就列不出来（Core 只认字面 `~`）。
+    #[test]
+    fn local_directory_listing_uses_an_absolute_path() {
+        let home = home_directory().expect("HOME");
+        assert_eq!(
+            directory_listing_path(&request("~/Developer", false, None)),
+            format!("{home}/Developer")
+        );
+        assert_eq!(directory_listing_path(&request("~", false, None)), home);
+    }
+
+    /// SSH 路径保持 `~`：远端 shell 自己展开，本地展开会指向错误的机器。
+    #[test]
+    fn ssh_directory_listing_keeps_the_remote_tilde() {
+        assert_eq!(
+            directory_listing_path(&request("~/dev", true, Some("ryzen"))),
+            "~/dev"
+        );
     }
 }

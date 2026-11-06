@@ -22,6 +22,36 @@ pub struct DirectoryListingResponse {
 
 pub struct DirectoryPathModel;
 
+/// 当前用户的 home 目录（绝对路径）。
+///
+/// 拿不到环境变量时返回 `None`：调用方不能猜一个假路径交给 Core。
+pub fn home_directory() -> Option<String> {
+    let key = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    std::env::var(key)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+/// 展开开头的 `~`。
+///
+/// Core 的 `list_dir` 只认字面 `"~"`，而 tmux / Herdr 的 `-c` 不会再展开
+/// `~/x`；本地路径必须在传给 Core 之前变成绝对路径，否则目录列不出来、
+/// 新建的 workspace 也打不开。SSH 路径不要调这个函数：远端 shell 自己展开。
+pub fn expand_home(path: &str) -> String {
+    let trimmed = path.trim();
+    if trimmed == "~" || trimmed == "~/" {
+        return home_directory().unwrap_or_else(|| trimmed.to_string());
+    }
+    let Some(rest) = trimmed.strip_prefix("~/") else {
+        return trimmed.to_string();
+    };
+    match home_directory() {
+        Some(home) => format!("{}/{}", home.trim_end_matches('/'), rest),
+        None => trimmed.to_string(),
+    }
+}
+
 impl DirectoryPathModel {
     /// 列表请求应针对的目录。
     pub fn base_directory(raw: &str) -> String {
@@ -544,5 +574,21 @@ mod tests {
         };
         assert!(controller.apply(&current));
         assert_eq!(controller.candidates(), ["srv"]);
+    }
+
+    /// `~` / `~/x` 必须展开成绝对路径：Core 只认字面 `~`，tmux/herdr 不展开。
+    #[test]
+    fn expand_home_turns_tilde_into_an_absolute_path() {
+        let home = home_directory().expect("测试机必须有 HOME");
+        assert_eq!(expand_home("~"), home);
+        assert_eq!(expand_home("~/"), home);
+        assert_eq!(expand_home("~/dev/x"), format!("{home}/dev/x"));
+        assert_eq!(
+            expand_home(" /opt/dev "),
+            "/opt/dev",
+            "绝对路径原样（去空白），不加前缀"
+        );
+        assert_eq!(expand_home("~someone"), "~someone", "别人的 home 不动");
+        assert_eq!(expand_home(""), "");
     }
 }
