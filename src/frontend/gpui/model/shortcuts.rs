@@ -163,12 +163,13 @@ pub fn builtin_action(chord: &KeyChord) -> Option<KeyAction> {
             return Some(KeyAction::NextTab);
         }
     }
-    // Cmd+[ / Cmd+]：上一个 / 下一个 pane（焦点跟随）
+    // Cmd+[ / Cmd+]：上一个 / 下一个 pane（焦点跟随）。
+    // 中文输入法/键盘布局下平台可能直接给出全角括号，两种写法都认。
     if chord.command && !chord.shift && !chord.option {
-        if key == "[" {
+        if key == "[" || key == "【" {
             return Some(KeyAction::PrevPane);
         }
-        if key == "]" {
+        if key == "]" || key == "】" {
             return Some(KeyAction::NextPane);
         }
     }
@@ -685,6 +686,15 @@ mod tests {
     /// 对照 `testCmdBracketIgnoresShift`。
     #[test]
     fn command_bracket_ignores_shift() {
+        // 中文键盘布局下就是全角括号，必须同样触发。
+        assert_eq!(
+            builtin_action(&KeyChord::command("【")),
+            Some(KeyAction::PrevPane)
+        );
+        assert_eq!(
+            builtin_action(&KeyChord::command("】")),
+            Some(KeyAction::NextPane)
+        );
         assert_eq!(builtin_action(&KeyChord::command_shift("[")), None);
         assert_eq!(builtin_action(&KeyChord::command_shift("]")), None);
     }

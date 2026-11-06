@@ -2004,6 +2004,15 @@ fn panel_root_starts_with_the_two_special_shells(cx: &mut TestAppContext) {
         ),
         "第三行必须是 Open：{rows:?}"
     );
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("panel-row-0").is_some(),
+        "Shells 行必须真的画出来"
+    );
+    assert!(
+        cx.debug_bounds("panel-row-1").is_some(),
+        "Agents 行必须真的画出来"
+    );
     // 只有 Open 一行，不再混入 New / Open Folder。
     let opens = rows
         .iter()
