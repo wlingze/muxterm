@@ -304,6 +304,15 @@ impl GpuiApp {
             .show(crate::frontend::gpui::model::panel::PanelTab::Workspaces);
         self.navigate_picker(PickerAction::Open, cx);
     }
+    /// 命令面板的 `Local`：直接进本机 session 列表（跳过机器选择）。
+    pub(super) fn navigate_picker_host(
+        &mut self,
+        transport: crate::frontend::gpui::model::target::TargetTransport,
+        cx: &mut Context<Self>,
+    ) {
+        self.navigate_picker(PickerAction::Host(transport), cx);
+    }
+
     fn navigate_picker(&mut self, action: PickerAction, cx: &mut Context<Self>) {
         match action {
             PickerAction::Open => {

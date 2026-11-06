@@ -38,6 +38,14 @@ impl GpuiApp {
             .unwrap_or_else(|| String::from("-"));
         let active_pane = self.focused_pane().unwrap_or(0);
         let right_text = format!("pane {active_pane} · {geometry}");
+        // `statusbar.mode = tmux` 时右侧换成 tmux 自己的 status-right；
+        // `theme` 模式用前端主题文案（下面 right_text）。
+        let (tmux_left, tmux_right) = self
+            .tmux_status_segments()
+            .map(|(left, right)| (Some(left), Some(right)))
+            .unwrap_or((None, None));
+        let tmux_right_text = tmux_right.filter(|text| !text.trim().is_empty());
+        let tmux_left_text = tmux_left.filter(|text| !text.trim().is_empty());
 
         let attention = self.status_attention();
         let attention_badge = attention.is_active().then(|| {
@@ -121,6 +129,20 @@ impl GpuiApp {
                     )
                     .child(SharedString::from("+")),
             )
+            .when_some(tmux_left_text, |element, text| {
+                element.child(
+                    div()
+                        .id("tmux-status-left")
+                        .debug_selector(|| "tmux-status-left".into())
+                        .flex_none()
+                        .max_w(px(240.0))
+                        .overflow_hidden()
+                        .text_size(px(TAB_BAR_FONT_SIZE))
+                        .line_height(px(14.0))
+                        .text_color(theme.muted)
+                        .child(SharedString::from(text)),
+                )
+            })
             .child(div().flex_1())
             .when_some(attention_badge, |element, badge| element.child(badge))
             .child(
@@ -129,7 +151,7 @@ impl GpuiApp {
                     .text_size(px(TAB_BAR_FONT_SIZE))
                     .line_height(px(14.0))
                     .text_color(theme.muted)
-                    .child(SharedString::from(right_text)),
+                    .child(SharedString::from(tmux_right_text.unwrap_or(right_text))),
             )
             .into_any_element()
     }

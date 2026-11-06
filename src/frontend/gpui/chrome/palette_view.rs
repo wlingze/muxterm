@@ -3,10 +3,11 @@
 //! 对照 macOS `App/CommandPalette.swift` 与 `MainWindow.rootPaletteItems()`：
 //! 一份命令目录 + 大小写无关的整串包含过滤 + 上下移动 + 回车执行。
 //!
-//! 前端还没有对应实现的命令（改名、语言、状态栏模式等）仍然列出来，
-//! 只是标成不可执行 —— 与 macOS 面板保持同一份目录，而不是悄悄少几条。
+//! 目录里的每一条都必须能执行（没有灰掉的占位项）。文案走
+//! `frontend::utils::i18n` catalog，所以「语言」切换会立刻反映到这份目录。
 
 use crate::frontend::gpui::model::shortcuts::KeyAction;
+use crate::frontend::utils::i18n::{self, Language, TextKey};
 
 /// 面板里一行命令。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,6 +29,11 @@ impl PaletteItem {
         }
     }
 
+    /// 用 catalog key 构造：标题与说明都走 i18n。
+    fn localized(title: TextKey, detail: TextKey, keywords: &str, action: PaletteAction) -> Self {
+        Self::new(&i18n::tr(title), &i18n::tr(detail), keywords, action)
+    }
+
     /// 过滤用的整串：标题 + 说明 + 关键词，全部小写。
     pub fn search_text(&self) -> String {
         format!("{} {} {}", self.title, self.detail, self.keywords).to_lowercase()
@@ -41,11 +47,6 @@ impl PaletteItem {
         }
         self.search_text().contains(&query)
     }
-
-    /// 这一行现在能不能执行。
-    pub fn available(&self) -> bool {
-        self.action != PaletteAction::Unavailable
-    }
 }
 
 /// 一条命令对应的动作。窗口级动作复用 `KeyAction`，其余是面板独有的。
@@ -57,8 +58,24 @@ pub enum PaletteAction {
     TabBarBottom,
     /// Muxterm Info：版本 / commit / 调试日志 / GitHub issue。
     Info,
-    /// 前端还没有实现：列出来但灰掉。
-    Unavailable,
+    /// Local：直接进本机 session 列表。
+    OpenLocal,
+    /// SSH：先选机器。
+    OpenSsh,
+    /// 重命名当前 tab / workspace：打开输入浮层。
+    RenameTab,
+    RenameWorkspace,
+    /// 重排当前 tab。
+    MoveTabLeft,
+    MoveTabRight,
+    /// 语言：换成语言子菜单。
+    Languages,
+    /// 语言子菜单里的一项。
+    SetLanguage(Language),
+    /// 主题在浅/深之间切换。
+    ToggleTheme,
+    /// 状态栏来源在 tmux / theme 之间切换。
+    ToggleStatusBarMode,
 }
 
 /// 面板状态：查询串 + 选中下标。
@@ -118,201 +135,201 @@ pub fn filter<'a>(items: &'a [PaletteItem], query: &str) -> Vec<&'a PaletteItem>
 /// 对照 `MainWindow.rootPaletteItems()`：命令顺序一致，动态项插在同样的位置。
 pub fn root_items(tabs: &[String]) -> Vec<PaletteItem> {
     let mut items = vec![
-        PaletteItem::new(
-            "Local",
-            "Choose a local tmux session",
+        PaletteItem::localized(
+            TextKey::Local,
+            TextKey::LocalTmuxSessions,
             "local tmux attach new 本地",
-            PaletteAction::Unavailable,
+            PaletteAction::OpenLocal,
         ),
-        PaletteItem::new(
-            "SSH",
-            "Choose an SSH host, then a remote tmux session",
+        PaletteItem::localized(
+            TextKey::Ssh,
+            TextKey::SshHosts,
             "ssh remote host tmux attach new 主机",
-            PaletteAction::Unavailable,
+            PaletteAction::OpenSsh,
         ),
-        PaletteItem::new(
-            "Quick Connect",
-            "Open Workspaces, Attention, and Search",
+        PaletteItem::localized(
+            TextKey::QuickConnect,
+            TextKey::QuickConnectDetail,
             "quick connect workspace attention search 快速连接 工作区 提醒 搜索",
             PaletteAction::KeyAction(KeyAction::QuickConnect),
         ),
-        PaletteItem::new(
-            "New Tab",
-            "Create a local tab",
+        PaletteItem::localized(
+            TextKey::NewTab,
+            TextKey::NewTabDetail,
             "new tab 新建 标签页",
             PaletteAction::KeyAction(KeyAction::NewTab),
         ),
-        PaletteItem::new(
-            "Rename Tab…",
-            "Change the current tab name",
+        PaletteItem::localized(
+            TextKey::RenameTab,
+            TextKey::RenameTabDetail,
             "rename tab title 重命名 标签页",
-            PaletteAction::Unavailable,
+            PaletteAction::RenameTab,
         ),
-        PaletteItem::new(
-            "Rename Workspace…",
-            "Change the current workspace name",
+        PaletteItem::localized(
+            TextKey::RenameWorkspace,
+            TextKey::RenameWorkspaceDetail,
             "rename workspace title 重命名 工作区",
-            PaletteAction::Unavailable,
+            PaletteAction::RenameWorkspace,
         ),
-        PaletteItem::new(
-            "Move Tab Left",
-            "Move the current tab one position left",
+        PaletteItem::localized(
+            TextKey::MoveTabLeft,
+            TextKey::MoveTabLeftDetail,
             "move tab left reorder 向左 移动 标签页",
-            PaletteAction::Unavailable,
+            PaletteAction::MoveTabLeft,
         ),
-        PaletteItem::new(
-            "Move Tab Right",
-            "Move the current tab one position right",
+        PaletteItem::localized(
+            TextKey::MoveTabRight,
+            TextKey::MoveTabRightDetail,
             "move tab right reorder 向右 移动 标签页",
-            PaletteAction::Unavailable,
+            PaletteAction::MoveTabRight,
         ),
-        PaletteItem::new(
-            "Split Pane Horizontally",
-            "Split the current pane horizontally",
+        PaletteItem::localized(
+            TextKey::SplitPaneHorizontal,
+            TextKey::SplitPaneHorizontalDetail,
             "split pane horizontal 水平 分割",
             PaletteAction::KeyAction(KeyAction::SplitHorizontal),
         ),
-        PaletteItem::new(
-            "Split Pane Vertically",
-            "Split the current pane vertically",
+        PaletteItem::localized(
+            TextKey::SplitPaneVertical,
+            TextKey::SplitPaneVerticalDetail,
             "split pane vertical 竖直 上下",
             PaletteAction::KeyAction(KeyAction::SplitVertical),
         ),
-        PaletteItem::new(
-            "Enter Window Full Screen",
-            "⇧⌘F / ⇧⌘↩",
+        PaletteItem::localized(
+            TextKey::WindowFullscreenEnter,
+            TextKey::WindowFullscreenEnterDetail,
             "window fullscreen screen 窗口全屏 整个窗口",
             PaletteAction::KeyAction(KeyAction::ToggleWindowFullscreen),
         ),
-        PaletteItem::new(
-            "Fill the Desktop",
-            "⇧⌘T",
+        PaletteItem::localized(
+            TextKey::FillDesktop,
+            TextKey::FillDesktopDetail,
             "zoom maximize desktop window 最大化 当前桌面 占满",
             PaletteAction::KeyAction(KeyAction::ToggleWindowZoom),
         ),
-        PaletteItem::new(
-            "Preferences",
-            "⌘,",
+        PaletteItem::localized(
+            TextKey::CmdPreferences,
+            TextKey::CmdPreferencesDetail,
             "settings preferences configuration 设置 偏好",
             PaletteAction::KeyAction(KeyAction::OpenSettings),
         ),
-        PaletteItem::new(
-            "Toggle Pane Zoom",
-            "Zoom the current pane to fill the window (Cmd+Enter)",
+        PaletteItem::localized(
+            TextKey::TogglePaneFullscreen,
+            TextKey::TogglePaneFullscreenDetail,
             "pane fullscreen zoom toggle 全屏 放大",
             PaletteAction::KeyAction(KeyAction::TogglePaneFullscreen),
         ),
-        PaletteItem::new(
-            "Cycle Layout",
-            "Switch the current tab between side-by-side and stacked splits",
+        PaletteItem::localized(
+            TextKey::CycleLayout,
+            TextKey::CycleLayoutDetail,
             "layout cycle rotate next-layout 布局 切换 上下 左右",
             PaletteAction::KeyAction(KeyAction::CycleLayout),
         ),
-        PaletteItem::new(
-            "Next Pane",
-            "Switch to the next pane in the current tab",
+        PaletteItem::localized(
+            TextKey::NextPane,
+            TextKey::NextPaneDetail,
             "pane next cmd bracket 下一个",
             PaletteAction::KeyAction(KeyAction::NextPane),
         ),
-        PaletteItem::new(
-            "Previous Pane",
-            "Switch to the previous pane in the current tab",
+        PaletteItem::localized(
+            TextKey::PreviousPane,
+            TextKey::PreviousPaneDetail,
             "pane previous prev cmd bracket 上一个",
             PaletteAction::KeyAction(KeyAction::PrevPane),
         ),
-        PaletteItem::new(
-            "Previous Command",
-            "Jump to the previous command mark",
+        PaletteItem::localized(
+            TextKey::PreviousCommand,
+            TextKey::PreviousCommandDetail,
             "previous command mark timeline history 上一条 命令",
             PaletteAction::KeyAction(KeyAction::PreviousCommand),
         ),
-        PaletteItem::new(
-            "Next Command",
-            "Jump to the next command mark",
+        PaletteItem::localized(
+            TextKey::NextCommand,
+            TextKey::NextCommandDetail,
             "next command mark timeline history 下一条 命令",
             PaletteAction::KeyAction(KeyAction::NextCommand),
         ),
-        PaletteItem::new(
-            "Search Panes",
-            "Search terminal history across panes",
+        PaletteItem::localized(
+            TextKey::SearchPanes,
+            TextKey::SearchPanesDetail,
             "search find pane terminal history 搜索 查找",
             PaletteAction::KeyAction(KeyAction::SearchWorkspace),
         ),
-        PaletteItem::new(
-            "Close Pane",
-            "Close the current pane",
+        PaletteItem::localized(
+            TextKey::ClosePane,
+            TextKey::ClosePaneDetail,
             "close pane 关闭",
             PaletteAction::KeyAction(KeyAction::ClosePane),
         ),
-        PaletteItem::new(
-            "Close Tab",
-            "Close the current tab",
+        PaletteItem::localized(
+            TextKey::CloseTab,
+            TextKey::CloseTabDetail,
             "close tab 关闭 标签页",
             PaletteAction::KeyAction(KeyAction::CloseTab),
         ),
-        PaletteItem::new(
-            "Close Window",
-            "Close the current window",
+        PaletteItem::localized(
+            TextKey::CloseWindow,
+            TextKey::CloseWindowDetail,
             "close window 关闭",
             PaletteAction::KeyAction(KeyAction::CloseWindow),
         ),
-        PaletteItem::new(
-            "Language",
-            "Choose the interface language",
+        PaletteItem::localized(
+            TextKey::Language,
+            TextKey::LanguageDetail,
             "language locale 语言",
-            PaletteAction::Unavailable,
+            PaletteAction::Languages,
         ),
-        PaletteItem::new(
-            "Increase Font Size",
-            "Make terminal text larger",
+        PaletteItem::localized(
+            TextKey::MenuIncreaseFontSize,
+            TextKey::MenuIncreaseFontSizeDetail,
             "font size increase zoom text 字体 放大",
             PaletteAction::KeyAction(KeyAction::IncreaseFontSize),
         ),
-        PaletteItem::new(
-            "Decrease Font Size",
-            "Make terminal text smaller",
+        PaletteItem::localized(
+            TextKey::MenuDecreaseFontSize,
+            TextKey::MenuDecreaseFontSizeDetail,
             "font size decrease zoom text 字体 缩小",
             PaletteAction::KeyAction(KeyAction::DecreaseFontSize),
         ),
-        PaletteItem::new(
-            "Reset Font Size",
-            "Restore the configured terminal font size",
+        PaletteItem::localized(
+            TextKey::MenuResetFontSize,
+            TextKey::MenuResetFontSizeDetail,
             "font size reset default 字体 重置",
             PaletteAction::KeyAction(KeyAction::ResetFontSize),
         ),
-        PaletteItem::new(
-            "Theme",
-            "Switch between light and dark",
+        PaletteItem::localized(
+            TextKey::ThemeSwitchTo,
+            TextKey::ThemeDetail,
             "theme light dark 主题 浅色 深色",
-            PaletteAction::Unavailable,
+            PaletteAction::ToggleTheme,
         ),
-        PaletteItem::new(
-            "Status Bar Mode",
-            "Switch between tmux and theme status bar",
+        PaletteItem::localized(
+            TextKey::StatusBarMode,
+            TextKey::StatusBarModeDetail,
             "statusbar status bar mode tmux theme 状态栏 模式",
-            PaletteAction::Unavailable,
+            PaletteAction::ToggleStatusBarMode,
         ),
-        PaletteItem::new(
-            "Tab Bar on Top",
-            "Move the tab bar to the top",
+        PaletteItem::localized(
+            TextKey::MenuTabBarTop,
+            TextKey::TabBarTopDetail,
             "tab bar position top 标签栏 顶部",
             PaletteAction::TabBarTop,
         ),
-        PaletteItem::new(
-            "Tab Bar on Bottom",
-            "Move the tab bar to the bottom",
+        PaletteItem::localized(
+            TextKey::MenuTabBarBottom,
+            TextKey::TabBarBottomDetail,
             "tab bar position bottom 标签栏 底部",
             PaletteAction::TabBarBottom,
         ),
-        PaletteItem::new(
-            "Quit Muxterm",
-            "Quit the application",
+        PaletteItem::localized(
+            TextKey::QuitMuxterm,
+            TextKey::QuitMuxtermDetail,
             "quit exit 退出",
             PaletteAction::KeyAction(KeyAction::Quit),
         ),
-        PaletteItem::new(
-            "Muxterm Info",
-            "Version, debug log, and GitHub issue",
+        PaletteItem::localized(
+            TextKey::MuxtermInfo,
+            TextKey::MuxtermInfoDetail,
             "about info version commit debug log github issue 关于 版本 日志",
             PaletteAction::Info,
         ),
@@ -324,7 +341,7 @@ pub fn root_items(tabs: &[String]) -> Vec<PaletteItem> {
         .enumerate()
         .map(|(index, name)| {
             PaletteItem::new(
-                &format!("Switch to Tab {}", index + 1),
+                &i18n::tr_args(TextKey::SwitchToTab, &[("index", &(index + 1).to_string())]),
                 name,
                 &format!("switch tab {} {} 切换 标签页", index + 1, name),
                 PaletteAction::KeyAction(KeyAction::SwitchTab(index + 1)),
@@ -338,9 +355,9 @@ pub fn root_items(tabs: &[String]) -> Vec<PaletteItem> {
         if many {
             items.insert(
                 insertion + tabs.len(),
-                PaletteItem::new(
-                    "Switch to Last Tab",
-                    "Focus the final open tab",
+                PaletteItem::localized(
+                    TextKey::SwitchToLastTab,
+                    TextKey::SwitchToLastTabDetail,
                     "switch last final tab 0 最后 标签页",
                     PaletteAction::KeyAction(KeyAction::SwitchLastTab),
                 ),
@@ -350,12 +367,50 @@ pub fn root_items(tabs: &[String]) -> Vec<PaletteItem> {
     items
 }
 
+/// 语言子菜单：Swift `showLanguageOptions()` 的等价列表。
+///
+/// 当前语言带 `· Current` 后缀；选择后立刻 `set_language` 并写回 Core 配置。
+pub fn language_items(current: Language) -> Vec<PaletteItem> {
+    let marker = i18n::tr(TextKey::LanguageCurrent);
+    let languages = [
+        (Language::System, TextKey::LanguageSystem),
+        (Language::English, TextKey::LanguageEnglish),
+        (
+            Language::SimplifiedChinese,
+            TextKey::LanguageSimplifiedChinese,
+        ),
+    ];
+    languages
+        .into_iter()
+        .map(|(language, key)| {
+            let title = i18n::tr(key);
+            let detail = if language == current {
+                format!("· {marker}")
+            } else {
+                String::new()
+            };
+            PaletteItem::new(
+                &title,
+                &detail,
+                &format!("language locale 语言 {}", language.tag()),
+                PaletteAction::SetLanguage(language),
+            )
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// 目录文案走 i18n，测试必须钉住一种语言；否则 LANG=zh 的机器上断言会漂。
+    fn english() {
+        i18n::set_language(Language::English);
+    }
+
     #[test]
     fn root_catalog_matches_macos_order() {
+        english();
         // 对照 `MainWindow.rootPaletteItems()`：前 8 条固定命令的顺序。
         let items = root_items(&[]);
         let titles: Vec<&str> = items
@@ -380,6 +435,7 @@ mod tests {
 
     #[test]
     fn tab_items_are_inserted_after_eighth_command() {
+        english();
         // 对照 macOS：`insertion = min(8, items.count)`。
         let items = root_items(&["zsh".into(), "vim".into()]);
         assert_eq!(items[8].title, "Switch to Tab 1");
@@ -391,6 +447,7 @@ mod tests {
 
     #[test]
     fn single_tab_does_not_add_last_tab_item() {
+        english();
         let items = root_items(&["zsh".into()]);
         assert_eq!(items[8].title, "Switch to Tab 1");
         assert!(!items.iter().any(|item| item.title == "Switch to Last Tab"));
@@ -398,6 +455,7 @@ mod tests {
 
     #[test]
     fn filter_is_case_insensitive_substring_over_title_detail_keywords() {
+        english();
         // 对照 `PaletteItem.searchText` + `applyFilter`。
         let items = root_items(&[]);
         let by_title = filter(&items, "NEW TAB");
@@ -412,24 +470,56 @@ mod tests {
 
     #[test]
     fn empty_query_keeps_every_item() {
+        english();
         let items = root_items(&[]);
         assert_eq!(filter(&items, "  ").len(), items.len());
     }
 
     #[test]
-    fn unavailable_commands_are_listed_but_marked() {
-        // 语言、改名这些前端还没有的条目仍然出现，只是不可执行。
+    fn every_command_has_a_real_action() {
+        english();
         let items = root_items(&[]);
-        let language = items
-            .iter()
-            .find(|item| item.title == "Language")
-            .expect("Language 必须在目录里");
-        assert!(!language.available());
-        let new_tab = items
-            .iter()
-            .find(|item| item.title == "New Tab")
-            .expect("New Tab 必须在目录里");
-        assert!(new_tab.available());
+        let actions: Vec<PaletteAction> = items.iter().map(|item| item.action).collect();
+        assert_eq!(
+            actions.len(),
+            items.len(),
+            "每条命令都必须映射到一个真实动作"
+        );
+        for expected in [
+            PaletteAction::OpenLocal,
+            PaletteAction::OpenSsh,
+            PaletteAction::RenameTab,
+            PaletteAction::RenameWorkspace,
+            PaletteAction::MoveTabLeft,
+            PaletteAction::MoveTabRight,
+            PaletteAction::Languages,
+            PaletteAction::ToggleTheme,
+            PaletteAction::ToggleStatusBarMode,
+        ] {
+            assert!(
+                actions.contains(&expected),
+                "目录缺少 {expected:?}：{:?}",
+                items
+                    .iter()
+                    .map(|item| item.title.clone())
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    /// 语言子菜单：三种语言，当前语言带标记。
+    #[test]
+    fn language_menu_marks_the_current_language() {
+        english();
+        let items = language_items(Language::English);
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].title, "Follow System");
+        assert_eq!(items[1].detail, "· Current");
+        assert!(items[2].detail.is_empty());
+        assert!(matches!(
+            items[2].action,
+            PaletteAction::SetLanguage(Language::SimplifiedChinese)
+        ));
     }
 
     #[test]

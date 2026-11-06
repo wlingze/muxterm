@@ -7,6 +7,7 @@
 
 use gpui::{px, size, TestAppContext};
 use muxterm::frontend::command_queue::ClientCommand;
+use muxterm::frontend::gpui::chrome::palette_view::PaletteAction;
 use muxterm::frontend::gpui::chrome::sidebar_view::{CommandKey, RowTarget, Section};
 use muxterm::frontend::gpui::chrome::tab_bar_view::TabBarPosition;
 use muxterm::frontend::gpui::model::attention::{
@@ -853,27 +854,37 @@ fn cmd_shift_p_opens_the_command_palette(cx: &mut TestAppContext) {
 fn palette_lists_tabs_and_filters_by_query(cx: &mut TestAppContext) {
     let (view, cx) = mount(store_with_two_workspaces(), cx);
     cx.update(|_, cx| view.update(cx, |app, cx| app.open_palette(cx)));
-    let titles: Vec<String> = cx.update(|_, cx| {
+    // 用动作而不是标题断言：目录文案会随语言变，动作不会。
+    let actions: Vec<PaletteAction> = cx.update(|_, cx| {
         view.update(cx, |app, _| {
             app.palette_items()
                 .into_iter()
-                .map(|item| item.title)
+                .map(|item| item.action)
                 .collect()
         })
     });
-    assert!(titles.iter().any(|title| title == "Switch to Tab 1"));
-    assert!(titles.iter().any(|title| title == "New Tab"));
+    assert!(actions.contains(&PaletteAction::KeyAction(
+        muxterm::frontend::gpui::model::shortcuts::KeyAction::SwitchTab(1)
+    )));
+    assert!(actions.contains(&PaletteAction::KeyAction(
+        muxterm::frontend::gpui::model::shortcuts::KeyAction::NewTab
+    )));
 
     cx.update(|_, cx| view.update(cx, |app, cx| app.palette_push("new tab", cx)));
-    let visible: Vec<String> = cx.update(|_, cx| {
+    let visible: Vec<PaletteAction> = cx.update(|_, cx| {
         view.update(cx, |app, _| {
             app.palette_visible()
                 .into_iter()
-                .map(|item| item.title)
+                .map(|item| item.action)
                 .collect()
         })
     });
-    assert_eq!(visible, vec!["New Tab".to_string()]);
+    assert_eq!(
+        visible,
+        vec![PaletteAction::KeyAction(
+            muxterm::frontend::gpui::model::shortcuts::KeyAction::NewTab
+        )]
+    );
 }
 
 /// 回车执行选中项：New Tab 走 `ClientTask::NewTab`，面板同时收起。
@@ -887,11 +898,16 @@ fn palette_enter_runs_the_selected_command(cx: &mut TestAppContext) {
         view.update(cx, |app, _| {
             app.palette_visible()
                 .into_iter()
-                .map(|item| item.title)
+                .map(|item| item.action)
                 .collect::<Vec<_>>()
         })
     });
-    assert_eq!(visible, vec!["New Tab".to_string()]);
+    assert_eq!(
+        visible,
+        vec![PaletteAction::KeyAction(
+            muxterm::frontend::gpui::model::shortcuts::KeyAction::NewTab
+        )]
+    );
     cx.simulate_keystrokes("enter");
     let (open, commands) = cx.update(|_, cx| {
         view.update(cx, |app, _| {
@@ -1372,4 +1388,320 @@ fn muxterm_info_opens_from_the_palette_and_owns_keystrokes(cx: &mut TestAppConte
     });
     cx.run_until_parked();
     assert!(cx.debug_bounds("info-panel").is_some());
+}
+
+// ---------------------------------------------------------------------------
+// 命令面板：不再有「列出来但点不动」的条目
+// ---------------------------------------------------------------------------
+
+/// 打开命令面板，按动作选中一条命令，再用真实回车执行。
+///
+/// 按「动作」而不是标题定位：目录文案会随语言变，动作是稳定的。
+fn run_palette_action(
+    view: &gpui::Entity<GpuiApp>,
+    cx: &mut gpui::VisualTestContext,
+    action: muxterm::frontend::gpui::chrome::palette_view::PaletteAction,
+) {
+    cx.simulate_keystrokes("cmd-shift-p");
+    let found =
+        cx.update(|_, cx| view.update(cx, |app, _| app.palette_select_action_for_tests(action)));
+    assert!(found, "命令目录里找不到 {action:?}");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+}
+
+/// `Local` / `SSH` 直接把面板导航到会话列表 / 机器列表。
+#[gpui::test]
+fn palette_local_and_ssh_open_the_picker_on_the_right_stage(cx: &mut TestAppContext) {
+    use muxterm::frontend::gpui::model::workspace_picker::PickerStage;
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    run_palette_action(&view, cx, PaletteAction::OpenLocal);
+    let stage = cx.update(|_, cx| view.update(cx, |app, _| app.panel_stage().clone()));
+    assert!(
+        matches!(
+            stage,
+            PickerStage::Sessions(muxterm::frontend::gpui::model::target::TargetTransport::Local)
+        ),
+        "Local 要直接进本机会话列表，实际 {stage:?}"
+    );
+    assert!(cx.update(|_, cx| view.update(cx, |app, _| app.panel_open())));
+
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    run_palette_action(&view, cx, PaletteAction::OpenSsh);
+    let stage = cx.update(|_, cx| view.update(cx, |app, _| app.panel_stage().clone()));
+    assert!(matches!(stage, PickerStage::Hosts), "SSH 要先选机器");
+}
+
+/// Rename Tab…：浮层带出当前名字，回车发 RenameTab；Esc 什么都不发。
+#[gpui::test]
+fn rename_tab_prompt_seeds_the_name_and_sends_the_task(cx: &mut TestAppContext) {
+    use muxterm::frontend::command_queue::ClientCommand;
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    run_palette_action(&view, cx, PaletteAction::RenameTab);
+    let seeded = cx
+        .update(|_, cx| view.update(cx, |app, _| app.prompt().map(|prompt| prompt.value.clone())));
+    assert_eq!(seeded.as_deref(), Some("dev"), "浮层要带出当前 tab 名字");
+    assert!(
+        cx.debug_bounds("prompt-panel").is_some(),
+        "浮层要真的画出来"
+    );
+
+    // 清掉旧名字再输入新名字：Cmd-A 在浮层里不做全选，这里用退格。
+    for _ in 0..8 {
+        cx.simulate_keystrokes("backspace");
+    }
+    cx.simulate_keystrokes("l o g s");
+    cx.simulate_keystrokes("enter");
+    let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            ClientCommand::RenameTab { name, .. } if name == "logs"
+        )),
+        "回车必须发 RenameTab：{commands:?}"
+    );
+    assert!(cx.update(|_, cx| view.update(cx, |app, _| app.prompt().is_none())));
+
+    // Esc 路径：不发命令。
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    run_palette_action(&view, cx, PaletteAction::RenameWorkspace);
+    cx.simulate_keystrokes("escape");
+    let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    assert!(!commands
+        .iter()
+        .any(|command| matches!(command, ClientCommand::RenameWorkspace { .. })));
+}
+
+/// Rename Workspace…：空名字留在浮层，不把空名字发给 Core。
+#[gpui::test]
+fn rename_workspace_rejects_an_empty_name(cx: &mut TestAppContext) {
+    use muxterm::frontend::command_queue::ClientCommand;
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    run_palette_action(&view, cx, PaletteAction::RenameWorkspace);
+    for _ in 0..8 {
+        cx.simulate_keystrokes("backspace");
+    }
+    cx.simulate_keystrokes("enter");
+    let (open, error) = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            (
+                app.prompt().is_some(),
+                app.prompt().and_then(|prompt| prompt.error.clone()),
+            )
+        })
+    });
+    assert!(open, "空名字不能提交");
+    assert!(error.is_some(), "要给出错误提示");
+    let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    assert!(!commands
+        .iter()
+        .any(|command| matches!(command, ClientCommand::RenameWorkspace { .. })));
+}
+
+/// Move Tab Left/Right：按相邻 tab 发 Core 的 move_tab。
+#[gpui::test]
+fn move_tab_sends_the_neighbour_target(cx: &mut TestAppContext) {
+    use muxterm::frontend::command_queue::ClientCommand;
+    use muxterm::frontend::utils::corebridge::{ClientLayout, ClientPane, ClientTab};
+    let mut store = store_with_two_workspaces();
+    store.replace_topology(
+        workspace("local@@dev@tmux@dev", "dev", true),
+        vec![
+            ClientTab {
+                id: 1,
+                name: "one".to_string(),
+                is_active: true,
+            },
+            ClientTab {
+                id: 2,
+                name: "two".to_string(),
+                is_active: false,
+            },
+        ],
+        vec![
+            (
+                1,
+                vec![ClientPane {
+                    id: 10,
+                    cols: 80,
+                    rows: 24,
+                    is_active: true,
+                    title: "one".to_string(),
+                }],
+            ),
+            (
+                2,
+                vec![ClientPane {
+                    id: 11,
+                    cols: 80,
+                    rows: 24,
+                    is_active: false,
+                    title: "two".to_string(),
+                }],
+            ),
+        ],
+    );
+    store.replace_layouts(
+        "local@@dev@tmux@dev",
+        vec![(1, ClientLayout::Leaf { pane_id: 10 })],
+    );
+    let (view, cx) = mount(store, cx);
+
+    run_palette_action(&view, cx, PaletteAction::MoveTabRight);
+    let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            ClientCommand::MoveTab {
+                from: 1,
+                target: 2,
+                before: false,
+                ..
+            }
+        )),
+        "右移要发给右侧邻居：{commands:?}"
+    );
+
+    // 已经在最左：左移不再发命令。
+    run_palette_action(&view, cx, PaletteAction::MoveTabLeft);
+    let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    assert!(!commands
+        .iter()
+        .any(|command| matches!(command, ClientCommand::MoveTab { .. })));
+}
+
+/// Theme：切换写 `[theme] name`，方向由当前底色决定。
+#[gpui::test]
+fn palette_theme_toggle_persists_the_opposite_theme(cx: &mut TestAppContext) {
+    use muxterm::frontend::command_queue::ClientCommand;
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    let dark = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            let bg = app.theme().bg;
+            0.2126 * bg.r + 0.7152 * bg.g + 0.0722 * bg.b < 0.5
+        })
+    });
+    run_palette_action(&view, cx, PaletteAction::ToggleTheme);
+    let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    let value = commands
+        .iter()
+        .find_map(|command| match command {
+            ClientCommand::ConfigApply { path, value } if path == "theme.name" => {
+                Some(value.as_str().unwrap_or_default().to_string())
+            }
+            _ => None,
+        })
+        .expect("主题切换必须写配置");
+    assert_eq!(value, if dark { "white" } else { "black" });
+}
+
+/// Status Bar Mode：写 `[statusbar] mode`，tmux 模式显示 tmux 自己的左右段。
+#[gpui::test]
+fn status_bar_mode_toggles_and_tmux_mode_shows_tmux_segments(cx: &mut TestAppContext) {
+    use muxterm::frontend::command_queue::ClientCommand;
+    use muxterm::frontend::gpui::model::status_bar::StatusBarSnapshot;
+    use muxterm::frontend::gpui::state::StatusBarMode;
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.set_status_snapshot_for_tests(StatusBarSnapshot {
+                enabled: true,
+                left: "tmux-left".into(),
+                right: "tmux-right".into(),
+                ..StatusBarSnapshot::default()
+            });
+            app.set_status_bar_mode_for_tests(StatusBarMode::Tmux);
+            cx.notify();
+        })
+    });
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("tmux-status-left").is_some(),
+        "tmux 模式要画出 tmux 的 status-left"
+    );
+
+    run_palette_action(&view, cx, PaletteAction::ToggleStatusBarMode);
+    let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    let value = commands
+        .iter()
+        .find_map(|command| match command {
+            ClientCommand::ConfigApply { path, value } if path == "statusbar.mode" => {
+                Some(value.as_str().unwrap_or_default().to_string())
+            }
+            _ => None,
+        })
+        .expect("必须写 statusbar.mode");
+    assert_eq!(value, "theme");
+    cx.run_until_parked();
+    let (mode, segments) = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            (app.status_bar_mode(), app.tmux_status_segments())
+        })
+    });
+    assert_eq!(mode, StatusBarMode::Theme);
+    assert!(
+        segments.is_none(),
+        "theme 模式不再取 tmux 段（渲染由它门控）"
+    );
+}
+
+/// Language：二级列表选中文后立刻改文案并写 `[ui] language`，Esc 只退回目录。
+#[gpui::test]
+fn language_menu_switches_the_catalog_and_persists(cx: &mut TestAppContext) {
+    use muxterm::frontend::command_queue::ClientCommand;
+    use muxterm::frontend::utils::i18n::Language;
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.simulate_keystrokes("cmd-shift-p");
+    assert!(cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            app.palette_select_action_for_tests(PaletteAction::Languages)
+        })
+    }));
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert!(cx.update(|_, cx| view.update(cx, |app, _| app.palette_menu().is_some())));
+
+    // Esc 先退回目录，面板不关。
+    cx.simulate_keystrokes("escape");
+    assert!(cx.update(|_, cx| view.update(cx, |app, _| app.palette_open())));
+    assert!(cx.update(|_, cx| view.update(cx, |app, _| app.palette_menu().is_none())));
+
+    // 再进一次语言子菜单（Esc 只退回目录），选中文。
+    let reopened = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            app.palette_select_action_for_tests(PaletteAction::Languages)
+        })
+    });
+    assert!(reopened, "目录里必须有语言项");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    let selected = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            app.palette_select_action_for_tests(PaletteAction::SetLanguage(
+                muxterm::frontend::utils::i18n::Language::SimplifiedChinese,
+            ))
+        })
+    });
+    assert!(selected, "语言子菜单必须有中文选项");
+    cx.simulate_keystrokes("enter");
+    let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            ClientCommand::ConfigApply { path, value }
+                if path == "ui.language" && value.as_str() == Some("zh-CN")
+        )),
+        "语言选择必须持久化：{commands:?}"
+    );
+    assert_eq!(
+        cx.update(|_, cx| view.update(cx, |app, _| app.language())),
+        Language::SimplifiedChinese
+    );
+    assert_eq!(
+        cx.update(|_, cx| view.update(cx, |app, _| app.palette_items()[0].title.clone())),
+        "本地",
+        "目录文案要立刻变成中文"
+    );
+    // 收尾：把全局语言恢复成英文，别影响其它测试。
+    cx.update(|_, _| muxterm::frontend::utils::i18n::set_language(Language::English));
 }

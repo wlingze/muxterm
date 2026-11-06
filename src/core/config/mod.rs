@@ -342,6 +342,15 @@ pub struct UiConfig {
     /// 无边框模式（预留，GTK 侧按能力启用）。
     #[serde(default)]
     pub borderless: bool,
+    /// 界面语言：`system`（跟随环境）、`en`、`zh-CN`。
+    ///
+    /// 前端各自渲染文案；Core 只负责持久化，好让「命令面板 → 语言」在重启后
+    /// 仍然生效。
+    #[serde(default = "default_language")]
+    pub language: String,
+}
+fn default_language() -> String {
+    "system".into()
 }
 fn default_tab_bar_position() -> String {
     "bottom".into()
@@ -363,6 +372,7 @@ impl Default for UiConfig {
             tab_bar_height: default_tab_bar_height(),
             show_title_bar: true,
             borderless: false,
+            language: default_language(),
         }
     }
 }
