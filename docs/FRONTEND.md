@@ -112,8 +112,13 @@ AppWindow
   - `Status Bar Mode`：切 `statusbar.mode`；`tmux` 模式显示 tmux 自己的左右段，
     `theme` 模式用前端主题文案；
   - `Muxterm Info`：打开版本面板（version、commit、当前调试日志文件、GitHub issue
-    入口）。版本/commit/日志路径一律由 Core 提供，前端不自己拼。
+    入口）。版本/commit/日志路径一律由 Core 提供，前端不自己拼。两个复制按钮
+    **永远可点**：日志开着复制文件路径，没开复制日志目录，并在面板底部回一句
+    「… copied」——不能让用户点了没反应。
   面板文案走 `frontend/utils/i18n` catalog，所以切换语言后目录立刻跟着变。
+  根列表里**已经打开的 workspace 不再重复出现**成 Project 或 discovery 行（身份按
+  canonical target → workspace id → 名字三级判定），`Shells` / `Agents` 两个特殊槽
+  永远在最前面。
 - **快速面板里的 Cmd-K**：面板是 key window 时，`Cmd-K` 只换成当前选中行的动作
   （工作区打开 / 关闭 / 更新，连接 attach，提醒跳转 / 隐藏等）。不带命令面板的全局命令。
   输入继续过滤这份短列表。`Esc` 先退出这一层，再恢复进入前的查询和原来的 tab，
@@ -132,6 +137,13 @@ AppWindow
   不能只更新前端路由，否则 Herdr 会一直保持后台 Observe。点击路径仍不调用 FFI，
   不查询快照、不重新连接、不做前台校准。
 - focus：Scene 变可见 → focus 其 active pane；键盘只路由给可见 Scene 的 focus pane。
+  **焦点永远跟随 Core 的 active pane**：切 tab、分屏、`Cmd-[` / `Cmd-]`、Core 回拓扑之后，
+  前端都要把 focus 同步到当前 tab 的 active pane，光标画在那里。否则用户看到的是
+  「切了 tab / 分了屏，光标没了、打字没反应」。手动点 pane 的意图（`SwitchPane`）
+  在 Core 确认前不被抢走。
+- 活动（Agents / Commands）：前端按固定间隔拉 Core 的
+  `muxterm_attention_snapshot`，并按 `WorkspaceId::replica_id()` 把活动条目 join 回
+  产品 workspace id。两套 id 对不上时侧栏会永远空着——这是一个真实踩过的坑。
 - 关闭：close workspace 是 Scene 的唯一销毁点。detach ≠ destroy。
 - 嵌套分割：每次只替换当前叶子 pane，不重新平铺全树。
 - 焦点操作后回到终端，不落到工具栏。不要底部输入框发 send-keys。

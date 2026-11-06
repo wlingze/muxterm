@@ -201,6 +201,9 @@ Cmd-P 面板列出现有 runtime（discovery 驱动，点开即 attach）、macO
 | `Open preview` | 提醒行可开预览 | 没有预览窗口 |
 | `Cmd-K` 选中项 | 全局命令（Action Catalog）在独立面板 | 同一份行内动作，但不带全局命令 |
 | 本地化 | i18n 全量 | 命令面板 / 改名浮层 / 侧栏段头走 `i18n` catalog；其余 chrome 文案仍硬编码英文 |
+| 终端选区复制 | 有 | 没有鼠标拖选；`Edit → Copy` 仍是禁用项（Info 浮层的复制已可用） |
+| 活动 / Agents | Core 推送 + 轮询 | 每秒拉一次 `muxterm_attention_snapshot`，按 replica id join 到产品 workspace id |
+| 命令刻度轨 | 有（`CommandMarkRail`） | 未移植（`docs/gpui-parity/tests.md` §5.2 缺口表） |
 | `Muxterm Info` | 独立小窗口（`MuxtermInfoWindowController`） | 同内容的前端浮层，Esc 关闭 |
 | 现有 runtime 去重键 | `transport\|runtime\|session\|socket\|workspace_id\|name` | `(transport, target, runtime, session, socket, workspace_id)`：与 Swift 同语义，不按 name 去重（同 session 多个 Herdr workspace 是不同身份） |
 
@@ -223,9 +226,10 @@ Cmd-P 面板列出现有 runtime（discovery 驱动，点开即 attach）、macO
 ## 9. 验收
 
 - `cargo check --no-default-features --features gpui` 通过。
-- `cargo test --no-default-features --features gpui --lib` 通过（2026-11-05 实测 **1899 passed**）。
+- `cargo test --no-default-features --features gpui --lib` 通过（2026-11-06 实测 **1903 passed**）。
 - 集成测试（每个都实测通过）：
-  - `--test gpui_chrome`（53，含命令面板每条命令的动作、改名浮层、tab 重排、语言/主题/状态栏）：侧栏 / tab / 状态栏 / Cmd-P 面板（含 discovery 到的现有 runtime）/
+  - `--test gpui_chrome`（64，含命令面板每条命令的动作、改名浮层、tab 重排、语言/主题/状态栏、
+    面板去重与两个特殊 shell、活动快照填充 Agents/Commands、Info 复制按钮、空闲 pump 不重绘）：侧栏 / tab / 状态栏 / Cmd-P 面板（含 discovery 到的现有 runtime）/
     Cmd-Shift-P 命令面板 / 输入框 / 设置 / Open 入口 / 历史回填 / 菜单动作，并断言真实布局
     （侧栏 240pt、24pt 单条栏、命令面板 600×360），全部走真实 `GpuiApp`。
   - `--test gpui_workspace_picker`（13）：根列表四段顺序与编号、Open 三层导航、目录完成后
@@ -234,7 +238,9 @@ Cmd-P 面板列出现有 runtime（discovery 驱动，点开即 attach）、macO
     已保存/未保存两套动作、Herdr attach 带 `workspace_id`、面板吞键不落 PTY。
   - `--test gpui_surface_events`（6）：滚轮、宽字符、鼠标报告、IME 提交、候选窗锚定。
   - `--test gpui_surface_e2e`（1）：隔离 tmux 里真实 shell 输出落到格子上。
-  - `--test gpui_acceptance`（5，含面板 Open 全流程真的建出 workspace）：启动 workspace、按键进 shell、Cmd-T 加 tab、第二个 workspace 经 Catalog 打开并可切换。
+  - `--test gpui_acceptance`（10）：启动 workspace、按键进 shell、Cmd-T 加 tab、Cmd-D 分屏与
+    Cmd-[ / Cmd-] 换 pane（焦点跟随）、Rename Tab / Move Tab 走 Core 往返、活动快照 join 到
+    前端 workspace id、面板 Open 全流程真的建出 workspace、第二个 workspace 经 Catalog 打开。
   - `--test gpui_acceptance_herdr`（2）：named Herdr session 出现在侧栏，输入有回显。
   - `--test gpui_harness_smoke`（1）：无头 harness 自身可用。
 - `muxterm gpui` 打开窗口，侧栏列出 workspace，tab 栏与 pane 网格按 `ClientLayout` 渲染。
