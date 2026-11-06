@@ -359,3 +359,120 @@ fn picker_open_flow_creates_a_real_workspace(cx: &mut TestAppContext) {
         std::thread::sleep(Duration::from_millis(100));
     }
 }
+
+/// 布局里的叶子 pane 数量与 id（分屏断言用）。
+fn leaves(layout: &Option<muxterm::frontend::utils::corebridge::ClientLayout>) -> usize {
+    leaf_ids(layout).len()
+}
+
+fn leaf_ids(layout: &Option<muxterm::frontend::utils::corebridge::ClientLayout>) -> Vec<u32> {
+    use muxterm::frontend::utils::corebridge::ClientLayout;
+    fn walk(layout: &ClientLayout, out: &mut Vec<u32>) {
+        match layout {
+            ClientLayout::Leaf { pane_id } => out.push(*pane_id),
+            ClientLayout::Split { first, second, .. } => {
+                walk(first, out);
+                walk(second, out);
+            }
+        }
+    }
+    layout
+        .as_ref()
+        .map(|layout| {
+            let mut out = Vec::new();
+            walk(layout, &mut out);
+            out
+        })
+        .unwrap_or_default()
+}
+
+/// Cmd-D 分屏：Core 回来的拓扑里多一个 pane，两块画面都在，焦点跟到新 pane。
+#[gpui::test]
+fn cmd_d_splits_the_pane_through_core(cx: &mut TestAppContext) {
+    let tmux = IsolatedTmux::start();
+    let (view, cx) = app_with_isolated_tmux(cx, &tmux);
+    let before = cx.update(|_, cx| view.update(cx, |app, _| app.layout()));
+    assert_eq!(leaves(&before), 1, "启动只有一个 pane");
+
+    cx.simulate_keystrokes("cmd-d");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        cx.update(|_, cx| {
+            view.update(cx, |app, cx| {
+                app.pump_once(cx);
+            })
+        });
+        let panes = cx.update(|_, cx| view.update(cx, |app, _| leaves(&app.layout())));
+        if panes >= 2 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "Cmd-D 之后必须有两个 pane（实际 {panes}）"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let (focused, pane_ids) =
+        cx.update(|_, cx| view.update(cx, |app, _| (app.focused_pane(), leaf_ids(&app.layout()))));
+    assert!(
+        focused.is_some_and(|pane| pane_ids.contains(&pane) && pane_ids.last() == Some(&pane)),
+        "分屏后焦点必须在新 pane 上（焦点 {focused:?}，panes {pane_ids:?}）"
+    );
+}
+
+/// Cmd-[ / Cmd-]：Core 换 active pane，前端焦点必须跟着。
+#[gpui::test]
+fn cmd_brackets_walk_the_panes_through_core(cx: &mut TestAppContext) {
+    let tmux = IsolatedTmux::start();
+    let (view, cx) = app_with_isolated_tmux(cx, &tmux);
+    cx.simulate_keystrokes("cmd-d");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        cx.update(|_, cx| {
+            view.update(cx, |app, cx| {
+                app.pump_once(cx);
+            })
+        });
+        if cx.update(|_, cx| view.update(cx, |app, _| leaves(&app.layout()))) >= 2 {
+            break;
+        }
+        assert!(Instant::now() < deadline, "Cmd-D 必须先分出一个 pane");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let first = cx.update(|_, cx| view.update(cx, |app, _| app.focused_pane()));
+    cx.simulate_keystrokes("cmd-[");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        cx.update(|_, cx| {
+            view.update(cx, |app, cx| {
+                app.pump_once(cx);
+            })
+        });
+        let focused = cx.update(|_, cx| view.update(cx, |app, _| app.focused_pane()));
+        if focused != first {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "Cmd-[ 之后焦点必须换到另一个 pane（还停在 {first:?}）"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let second = cx.update(|_, cx| view.update(cx, |app, _| app.focused_pane()));
+    assert_ne!(first, second, "Cmd-[ 必须换 pane");
+    // Cmd-] 回到原来的 pane。
+    cx.simulate_keystrokes("cmd-]");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        cx.update(|_, cx| {
+            view.update(cx, |app, cx| {
+                app.pump_once(cx);
+            })
+        });
+        if cx.update(|_, cx| view.update(cx, |app, _| app.focused_pane())) == first {
+            break;
+        }
+        assert!(Instant::now() < deadline, "Cmd-] 必须回到原来的 pane");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
