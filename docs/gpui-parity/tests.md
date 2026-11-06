@@ -193,6 +193,76 @@ These selectors identify the source tests that supply a GPUI acceptance scenario
 | `MuxtermAppUITests/MuxtermAppUITests.swift:281,730` | `testBackspaceDeletesCharacterInShell` and `echoAndVerifyVisible` search for a marker that may already be present in the echoed command. | Assert a distinct output-only marker or a controlled command response, not merely text also present in input. |
 | `AppE2ETests/NativeNotificationTests.swift:63` | The test checks the XCTest suppression flag and calls the service; it does not inspect delivered OS notifications. | Use an isolated notification adapter or platform driver to observe actual delivery and suppression. |
 
+## Summary 5: GPUI 覆盖现状（2026-11-06）
+
+上面的清单回答「Swift 有哪些测试」；这一节回答「gpui 现在有没有对应的测试」。
+统计方式：
+
+```sh
+rg -c '#\[(gpui::)?test\]' src/frontend/gpui -g '*.rs' | awk -F: '{s+=$2} END {print s}'
+rg -c '#\[(gpui::)?test\]' tests/gpui_*.rs | awk -F: '{s+=$2} END {print s}'
+```
+
+当前（2026-11-06 实测）：gpui 模块内 **461** 个单测（按文件拆，不照抄 Swift 的巨型
+`FlatChromeTests`），集成测试 **97** 个：`gpui_chrome` 64、`gpui_workspace_picker` 13、
+`gpui_acceptance` 10、`gpui_acceptance_herdr` 2、`gpui_surface_events` 6、
+`gpui_surface_e2e` 1、`gpui_harness_smoke` 1。加上 lib 里其它前端共享模块，`--lib`
+总计 1903 个测试。
+
+### 5.1 纯逻辑层（ChromeTests 对应）
+
+| Swift 文件（方法数） | gpui 对应 | 状态 |
+|---|---|---|
+| AttentionModelTests (19) | model/attention.rs (23)，含 Core 活动快照映射与 replica id join | 已覆盖 |
+| AggregateWorkspaceModelTests (5) | model/aggregate.rs (7) | 已覆盖 |
+| ComposerDraftTests (14) / ComposerDraftsTests (7) | model/composer.rs (23) | 已覆盖 |
+| DirectorySuggestionControllerTests (15) | model/directory.rs (13) + state/picker.rs | 部分（目录建议合并逻辑在 state 层，未逐条对照） |
+| ImagePasteFeedbackTests (18) | model/image_paste.rs (18) | 已覆盖 |
+| PaneNavigationTests (5) | model/shortcuts.rs (20) + state.rs 焦点同步 + gpui_chrome/gpui_acceptance | 已覆盖（2026-11-06 起有真 tmux 的 Cmd-[ / Cmd-] 用例） |
+| PanelModelTests (4) / QuickPanelActionsTests (10) | model/panel.rs (5) + chrome/panel_view.rs (7) + gpui_chrome 面板组 | 部分（行内动作集已覆盖，面板窗口布局未做像素对照） |
+| ProgressiveWordSelectionTests (19) | model/word_selection.rs (22) | 已覆盖 |
+| ProjectConnectFlowTests (8) | model/workspace_picker.rs + model/quick_connect.rs (21) + gpui_workspace_picker (13) | 部分（源测试自带假断言，已按文档要求改成观察 Core 结果） |
+| ResizeRedrawRegressionTests (3) | model/resize_math.rs (7) + chrome/pane_grid.rs (5) | 部分（重绘时序没有逐帧对照） |
+| SearchModelTests (4) | model/search.rs (7) | 已覆盖 |
+| ShortcutEditorTests (7) | model/shortcuts.rs (20) + state/palette_actions.rs | 已覆盖 |
+| SidebarSectionSplitLayoutTests (5) | chrome/sidebar_view.rs (8) | 已覆盖 |
+| StatusBarTests (28) | model/status_bar.rs (30) | 已覆盖 |
+| SwiftTermQueryReplyTests (5) | model/query_reply.rs (8) + model/query_detector.rs (9) | 已覆盖 |
+| TargetOptionSelectionTests (5) | model/target.rs (7) + chrome/target_editor.rs | 已覆盖 |
+| WorkspaceQueryTests (4) | model/quick_connect.rs (21) | 已覆盖 |
+| WorkspaceReplicaIDTests (5) | model/replica_id.rs (11) + 验收里的 join 用例 | 已覆盖 |
+| WorkspaceSidebarModelTests (22) | model/sidebar.rs (21) | 已覆盖 |
+| CommandQueueTests (20) | command_queue.rs (4) + gpui_chrome 命令队列断言 | 部分（KeyAction 编解码在 model/shortcuts，队列本身用例较少） |
+| CmdEnterRoutingTests (3) | model/shortcuts.rs（Cmd-Enter / Alt-Enter）+ state.run_action | 部分 |
+| AgentInputRenderRegressionTests (7) | terminal/parser.rs (19) + model/surface_feed.rs (14) + gpui_surface_events (6) | 部分 |
+| PerEventModelRegressionTests (3) | model/surface_feed.rs (14) | 已覆盖 |
+| ConnectProgressTests (2) | model/existing.rs (6) + state/picker.rs | 部分 |
+| GuiLogFilePolicyTests (2) | chrome/info.rs (3，日志开/关两条路径) | 部分 |
+| CommandMarkRailTests (7) | 无 | **缺口**（命令刻度轨还没移植） |
+| FlatChromeTests (199) | 拆到 chrome/* 与 model/* 各文件 | 部分（它是 12 个类的合集，逐类对应见上；剩余差异在调度/合并等内部机制） |
+| SceneStackTests (23) | 不移植 | 差异（池/场景栈归 Core，见 Summary 3） |
+
+### 5.2 真实运行层（AppE2ETests 对应）
+
+gpui 用 `tests/gpui_acceptance*.rs` 跑隔离 tmux / herdr，覆盖：
+
+- 启动即有 workspace、输入进 shell；
+- Cmd-T 新 tab、Cmd-D 分屏、Cmd-[ / Cmd-] 换 pane（焦点跟随）；
+- Rename Tab、Move Tab 走 Core 往返；
+- 命令面板 Open 流程真的建出 workspace（tmux / herdr 各一条）；
+- 活动快照 join 到前端 workspace id（Core 有 agent 时侧栏 Agents 有行）。
+
+其余 AppE2ETests（约 400 个方法）里，凡是需要真实 AppKit 窗口、原生通知、系统剪贴板、
+SSH 远端或 GPU 绘制的，gpui 侧目前用「模型断言 + 无头 harness」替代；剩余未覆盖项：
+
+| 缺口 | 说明 |
+|---|---|
+| 终端选区复制 / Select All | gpui 还没有鼠标拖选；菜单 `Copy` 仍是禁用项 |
+| 命令刻度轨 / CommandTimeline | 没有对应的模型与断言 |
+| 原生通知 | gpui 未接通知通道 |
+| SSH / 端口转发 / 更新横幅 | 属于 Core 能力，gpui 只做了面板入口 |
+| 逐帧像素对照（InactivePaneDimming / Zoom 等） | 用状态断言替代，没有做像素级对比 |
+
 ## Summary 3: source tests that can be dropped or replaced
 
 Dropping the Swift-specific test is not permission to drop the user-visible outcome. The table states whether a behavioral replacement is required.

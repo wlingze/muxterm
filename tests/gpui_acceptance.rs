@@ -516,3 +516,82 @@ fn core_activity_joins_the_frontend_workspace(cx: &mut TestAppContext) {
         std::thread::sleep(Duration::from_millis(50));
     }
 }
+
+/// 泵到某个条件成立（超时失败）。
+fn pump_until_true(
+    view: &gpui::Entity<GpuiApp>,
+    cx: &mut gpui::VisualTestContext,
+    what: &str,
+    mut done: impl FnMut(&GpuiApp) -> bool,
+) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        cx.update(|_, cx| {
+            view.update(cx, |app, cx| {
+                app.pump_once(cx);
+            })
+        });
+        let ok = cx.update(|_, cx| view.update(cx, |app, _| done(app)));
+        if ok {
+            return;
+        }
+        assert!(Instant::now() < deadline, "等待 {what} 超时");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Rename Tab 走真实 Core：面板里改名 → tmux 窗口名变了 → tab 栏跟着变。
+#[gpui::test]
+fn rename_tab_reaches_core(cx: &mut TestAppContext) {
+    let tmux = IsolatedTmux::start();
+    let (view, cx) = app_with_isolated_tmux(cx, &tmux);
+    cx.simulate_keystrokes("cmd-shift-p");
+    let picked = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            app.palette_select_action_for_tests(
+                muxterm::frontend::gpui::chrome::palette_view::PaletteAction::RenameTab,
+            )
+        })
+    });
+    assert!(picked, "命令面板里必须有 Rename Tab");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    // 清掉带出的旧名字，输入新名字。
+    for _ in 0..40 {
+        cx.simulate_keystrokes("backspace");
+    }
+    cx.simulate_keystrokes("g p u i space r e n a m e d");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+
+    pump_until_true(&view, cx, "tab 改名生效", |app| {
+        app.tab_items()
+            .iter()
+            .any(|tab| tab.title.contains("gpui renamed"))
+    });
+}
+
+/// Move Tab Right 走真实 Core：两个 tab 交换顺序。
+#[gpui::test]
+fn move_tab_reorders_through_core(cx: &mut TestAppContext) {
+    let tmux = IsolatedTmux::start();
+    let (view, cx) = app_with_isolated_tmux(cx, &tmux);
+    cx.simulate_keystrokes("cmd-t");
+    pump_until_true(&view, cx, "第二个 tab", |app| app.tab_items().len() >= 2);
+    cx.simulate_keystrokes("cmd-shift-p");
+    let picked = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            app.palette_select_action_for_tests(
+                muxterm::frontend::gpui::chrome::palette_view::PaletteAction::MoveTabLeft,
+            )
+        })
+    });
+    assert!(picked, "命令面板里必须有 Move Tab Left");
+    cx.simulate_keystrokes("enter");
+
+    // 活动 tab（第二个）左移后应该变成第一个。
+    pump_until_true(&view, cx, "tab 顺序变化", |app| {
+        let tabs = app.tab_items();
+        tabs.len() >= 2 && tabs[0].active
+    });
+}
