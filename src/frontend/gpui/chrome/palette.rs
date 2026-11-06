@@ -123,15 +123,12 @@ fn palette_row(
     theme: &Theme,
     cx: &mut gpui::Context<GpuiApp>,
 ) -> AnyElement {
-    let available = item.available();
     let action = item.action;
-    // macOS 选中行：强调色底 + 白字；不可执行项灰掉。
+    // macOS 选中行：强调色底 + 白字。目录里没有灰掉的占位项。
     let (bg, title_color, detail_color) = if selected {
         (theme.accent, gpui::rgb(0xffffff), gpui::rgba(0xffffffbf))
-    } else if available {
-        (theme.chrome_bg, theme.label(), theme.muted)
     } else {
-        (theme.chrome_bg, theme.muted, theme.muted)
+        (theme.chrome_bg, theme.label(), theme.muted)
     };
 
     div()

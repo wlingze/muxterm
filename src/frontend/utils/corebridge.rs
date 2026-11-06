@@ -1670,6 +1670,29 @@ impl CoreBridge {
         unsafe { ffi::muxterm_execute_workspace(self.handle.as_ptr(), workspace_id.as_ptr(), &raw) }
     }
 
+    /// Reorder a tab: insert `from` before/after `target` (Core `Task::MoveTab`).
+    pub fn move_workspace_tab(
+        &self,
+        workspace_id: &str,
+        from: u32,
+        target: u32,
+        before: bool,
+    ) -> i32 {
+        let workspace_id = cstring(workspace_id);
+        let raw = CTask {
+            type_: ffi::TASK_MOVE_TAB,
+            target_pane: target,
+            target_tab: from,
+            dir: if before {
+                ffi::TAB_MOVE_BEFORE
+            } else {
+                ffi::TAB_MOVE_AFTER
+            },
+            name: ptr::null(),
+        };
+        unsafe { ffi::muxterm_execute_workspace(self.handle.as_ptr(), workspace_id.as_ptr(), &raw) }
+    }
+
     /// Write input to a pane in a specific workspace without activating it.
     pub fn send_workspace_input(&self, workspace_id: &str, pane_id: u32, data: &[u8]) -> i32 {
         if data.is_empty() {

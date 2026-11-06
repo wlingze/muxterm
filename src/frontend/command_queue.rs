@@ -49,6 +49,24 @@ pub enum ClientCommand {
         target: crate::frontend::utils::corebridge::ClientTarget,
         intent: crate::frontend::utils::corebridge::ClientOpenIntent,
     },
+    /// 重命名 tab（Core `rename_tab`；名字由前端输入，不能塞进 CTask）。
+    RenameTab {
+        workspace_id: String,
+        tab_id: u32,
+        name: String,
+    },
+    /// 重命名 workspace（Core `rename_workspace`）。
+    RenameWorkspace {
+        workspace_id: String,
+        name: String,
+    },
+    /// 重排 tab：把 `from` 放到 `target` 前/后（Core `move_tab`）。
+    MoveTab {
+        workspace_id: String,
+        from: u32,
+        target: u32,
+        before: bool,
+    },
 }
 
 #[derive(Debug, Default)]
@@ -170,6 +188,20 @@ fn dispatch(client: &FfiClient, command: ClientCommand) -> i32 {
                 Err(_) => -1,
             }
         }
+        ClientCommand::RenameTab {
+            workspace_id,
+            tab_id,
+            name,
+        } => client.rename_workspace_tab(&workspace_id, tab_id, &name),
+        ClientCommand::RenameWorkspace { workspace_id, name } => {
+            client.rename_workspace(&workspace_id, &name)
+        }
+        ClientCommand::MoveTab {
+            workspace_id,
+            from,
+            target,
+            before,
+        } => client.move_workspace_tab(&workspace_id, from, target, before),
         ClientCommand::ActivateWorkspace(workspace_id) => {
             client.activate_workspace(&workspace_id).map_or(-1, |_| 0)
         }

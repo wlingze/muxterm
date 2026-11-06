@@ -377,6 +377,7 @@ impl ConfigDocument {
                 ]},
                 {"id":"ui","title_key":"settings.ui","fields":[
                     {"path":"/ui/tab_bar_position","control":"select","options":["top","bottom"],"apply":"next_workspace","title_key":"settings.ui.tab_bar_position"},
+                    {"path":"/ui/language","control":"select","options":["system","en","zh-CN"],"apply":"immediate","title_key":"settings.ui.language"},
                     {"path":"/ui/tab_bar_style","control":"select","options":["equal_width","fixed","compact"],"apply":"immediate","title_key":"settings.ui.tab_bar_style"},
                     {"path":"/statusbar/mode","control":"select","options":["tmux","theme"],"apply":"immediate","title_key":"settings.statusbar"},
                     {"path":"/ui/tab_bar_height","control":"number","platforms":["linux"],"apply":"next_workspace","title_key":"settings.ui.tab_bar_height"},
@@ -715,6 +716,7 @@ fn validate_toml_shape(value: &toml::Value) -> Result<()> {
             "tab_bar_height",
             "show_title_bar",
             "borderless",
+            "language",
         ],
     )?;
     check_table(table, "pane", &["default_command", "workdir"])?;

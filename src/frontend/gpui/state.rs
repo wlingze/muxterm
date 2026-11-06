@@ -45,6 +45,11 @@ pub struct WheelInput {
 #[path = "state/picker.rs"]
 mod picker;
 
+#[path = "state/palette_actions.rs"]
+mod palette_actions;
+
+pub use palette_actions::{PaletteMenu, PromptState, PromptTarget, StatusBarMode};
+
 /// 窗口级状态。一个窗口一份。
 pub struct GpuiApp {
     pump: Option<EventPump>,
@@ -68,6 +73,19 @@ pub struct GpuiApp {
     pub(crate) palette: crate::frontend::gpui::chrome::palette_view::PaletteState,
     /// Muxterm Info 浮层：`None` 表示没打开。
     info: Option<crate::frontend::utils::corebridge::ClientBuildInfo>,
+    /// 命令面板的二级列表（语言）。
+    palette_menu: Option<palette_actions::PaletteMenu>,
+    /// 重命名输入浮层。
+    prompt: Option<palette_actions::PromptState>,
+    /// 界面语言（`[ui] language`）。
+    language: crate::frontend::utils::i18n::Language,
+    /// 状态栏来源（`[statusbar] mode`）。
+    status_bar_mode: palette_actions::StatusBarMode,
+    /// tmux 自己的 status 左右段。
+    status_snapshot: Option<crate::frontend::gpui::model::status_bar::StatusBarSnapshot>,
+    status_snapshot_at: Option<std::time::Instant>,
+    /// 刚写过配置，下一轮事件泵要重读主题 / 语言 / 状态栏模式。
+    config_reload_pending: bool,
     status: String,
     /// IME 组合中的文本（尚未提交）。只在聚焦 pane 的光标处画。
     marked_text: String,
@@ -152,6 +170,29 @@ impl GpuiApp {
             .ok()
             .map(|snapshot| tab_bar_position_from_snapshot(&snapshot))
             .unwrap_or_default();
+        // 语言与状态栏来源同样来自 Core 配置；读不到就用进程默认。
+        let (language, status_bar_mode) = pump
+            .client()
+            .config_describe()
+            .ok()
+            .map(|snapshot| {
+                (
+                    palette_actions::language_from_config(
+                        snapshot.values["ui"]["language"]
+                            .as_str()
+                            .unwrap_or("system"),
+                    ),
+                    palette_actions::StatusBarMode::from_config(
+                        snapshot.values["statusbar"]["mode"]
+                            .as_str()
+                            .unwrap_or("tmux"),
+                    ),
+                )
+            })
+            .unwrap_or((
+                crate::frontend::utils::i18n::Language::System,
+                palette_actions::StatusBarMode::default(),
+            ));
         let mut app = Self {
             pump: Some(pump),
             store,
@@ -194,6 +235,13 @@ impl GpuiApp {
             hidden_commands: std::collections::HashSet::new(),
             palette: crate::frontend::gpui::chrome::palette_view::PaletteState::default(),
             info: None,
+            palette_menu: None,
+            prompt: None,
+            language,
+            status_bar_mode,
+            status_snapshot: None,
+            status_snapshot_at: None,
+            config_reload_pending: false,
             theme,
             cell,
             last_client_size: None,
@@ -201,6 +249,8 @@ impl GpuiApp {
             status: String::from("muxterm · gpui"),
         };
         app.focus_default_pane();
+        // 配置里的语言在启动时立刻生效（越早越好，避免第一帧是错的文案）。
+        crate::frontend::utils::i18n::set_language(app.language);
         if let Ok(snapshot) = app.pump.as_ref().unwrap().client().config_describe() {
             app.panel.picker.projects =
                 crate::frontend::gpui::model::workspace_picker::ProjectList::new(
@@ -352,6 +402,8 @@ impl GpuiApp {
             dirty
         };
         dirty |= self.poll_panel_operations(cx);
+        dirty |= self.apply_pending_config();
+        dirty |= self.refresh_status_snapshot_if_due();
         dirty |= self.drain_render_events();
         let active = self.store.active_workspace_id().map(str::to_string);
         if self.visible.is_none() {
@@ -477,6 +529,13 @@ impl GpuiApp {
             hidden_commands: std::collections::HashSet::new(),
             palette: crate::frontend::gpui::chrome::palette_view::PaletteState::default(),
             info: None,
+            palette_menu: None,
+            prompt: None,
+            language: crate::frontend::utils::i18n::Language::System,
+            status_bar_mode: palette_actions::StatusBarMode::default(),
+            status_snapshot: None,
+            status_snapshot_at: None,
+            config_reload_pending: false,
             theme: Theme::default(),
             cell: (
                 Theme::default().cell_width(),
@@ -909,6 +968,12 @@ impl GpuiApp {
 
     /// 面板里的命令目录。tab 名字来自当前 workspace，顺序与 macOS 一致。
     pub fn palette_items(&self) -> Vec<crate::frontend::gpui::chrome::palette_view::PaletteItem> {
+        if matches!(
+            self.palette_menu,
+            Some(palette_actions::PaletteMenu::Languages)
+        ) {
+            return self.language_menu_items();
+        }
         let tabs: Vec<String> = self.tabs().into_iter().map(|tab| tab.name).collect();
         crate::frontend::gpui::chrome::palette_view::root_items(&tabs)
     }
@@ -922,6 +987,19 @@ impl GpuiApp {
         .into_iter()
         .cloned()
         .collect()
+    }
+
+    /// 测试用：按动作选中一条命令（标题会随语言变，动作不会）。
+    pub fn palette_select_action_for_tests(
+        &mut self,
+        action: crate::frontend::gpui::chrome::palette_view::PaletteAction,
+    ) -> bool {
+        let visible = self.palette_visible();
+        let Some(index) = visible.iter().position(|item| item.action == action) else {
+            return false;
+        };
+        self.palette.selected = index;
+        true
     }
 
     /// 命令面板是否打开。
@@ -1021,6 +1099,8 @@ impl GpuiApp {
     }
 
     /// 面板行点击与回车共用一条执行路径。
+    ///
+    /// `Languages` 是唯一不关面板的动作：它把目录换成语言子菜单（Esc 回目录）。
     pub fn run_palette_action(
         &mut self,
         action: crate::frontend::gpui::chrome::palette_view::PaletteAction,
@@ -1028,6 +1108,10 @@ impl GpuiApp {
         cx: &mut Context<Self>,
     ) {
         use crate::frontend::gpui::chrome::palette_view::PaletteAction;
+        if matches!(action, PaletteAction::Languages) {
+            self.open_language_menu(cx);
+            return;
+        }
         self.close_palette(cx);
         match action {
             PaletteAction::KeyAction(action) => {
@@ -1042,7 +1126,16 @@ impl GpuiApp {
                 cx,
             ),
             PaletteAction::Info => self.open_info(cx),
-            PaletteAction::Unavailable => {}
+            PaletteAction::OpenLocal => self.open_local_sessions(cx),
+            PaletteAction::OpenSsh => self.open_ssh_hosts(cx),
+            PaletteAction::RenameTab => self.open_rename_tab(cx),
+            PaletteAction::RenameWorkspace => self.open_rename_workspace(cx),
+            PaletteAction::MoveTabLeft => self.move_active_tab(-1, cx),
+            PaletteAction::MoveTabRight => self.move_active_tab(1, cx),
+            PaletteAction::SetLanguage(language) => self.set_language(language, cx),
+            PaletteAction::ToggleTheme => self.toggle_theme(cx),
+            PaletteAction::ToggleStatusBarMode => self.toggle_status_bar_mode(cx),
+            PaletteAction::Languages => unreachable!("Languages 已在上面处理"),
         }
     }
 
@@ -2080,6 +2173,39 @@ impl GpuiApp {
             }
         }
 
+        // 重命名浮层独占按键：Esc 取消、回车提交、退格删字，
+        // 其余可打印字符进输入框（与其他浮层同样的规则，绝不漏进终端）。
+        if self.prompt.is_some() {
+            if keystroke.modifiers.platform {
+                if keystroke.key == "v" {
+                    if let Some(text) = cx.read_from_clipboard().and_then(|item| {
+                        item.entries().iter().find_map(|entry| match entry {
+                            gpui::ClipboardEntry::String(text) => Some(text.text().to_string()),
+                            gpui::ClipboardEntry::Image(_) => None,
+                        })
+                    }) {
+                        self.prompt_push(&text, cx);
+                    }
+                }
+                cx.stop_propagation();
+                return;
+            }
+            match keystroke.key.as_str() {
+                "escape" => self.cancel_prompt(cx),
+                "enter" => self.submit_prompt(cx),
+                "backspace" => self.prompt_backspace(cx),
+                _ => {
+                    if let Some(text) = keystroke.key_char.as_deref() {
+                        if !text.is_empty() && text.chars().all(|ch| !ch.is_control()) {
+                            self.prompt_push(text, cx);
+                        }
+                    }
+                }
+            }
+            cx.stop_propagation();
+            return;
+        }
+
         // Muxterm Info 浮层：Esc 关闭，其余无修饰键不落到终端。
         if self.info.is_some() && !keystroke.modifiers.platform {
             if keystroke.key == "escape" {
@@ -2098,7 +2224,11 @@ impl GpuiApp {
                 && !keystroke.modifiers.alt;
             match keystroke.key.as_str() {
                 "escape" => {
-                    self.close_palette(cx);
+                    // 二级列表先退回命令目录，再按一次才关面板。
+                    if !self.palette_menu_back(cx) {
+                        self.close_palette(cx);
+                    }
+                    cx.stop_propagation();
                     return;
                 }
                 "enter" => {
