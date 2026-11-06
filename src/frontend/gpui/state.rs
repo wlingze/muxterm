@@ -24,6 +24,8 @@ use crate::frontend::view_store::ViewStore;
 
 /// 事件泵间隔：约 120Hz，够跟住输出又不空转。
 const PUMP_INTERVAL: Duration = Duration::from_millis(8);
+/// 空闲轮询上限：没有事件时 8ms → 16 → … → 64ms。
+const IDLE_PUMP_INTERVAL: Duration = Duration::from_millis(64);
 /// 活动/注意力快照的刷新间隔（侧栏 Agents/Commands 的数据源）。
 const ATTENTION_INTERVAL: Duration = Duration::from_millis(1_000);
 
@@ -60,6 +62,8 @@ pub struct GpuiApp {
     surfaces: HashMap<SurfaceKey, Surface>,
     visible: Option<String>,
     focused_pane: Option<u32>,
+    /// 上次量格子用的字体参数（没变就不重量）。
+    cell_metrics_key: Option<(gpui::SharedString, u32, u32, u32)>,
     /// 刚点过、还没被 Core 确认的焦点（同步时让路，避免来回跳）。
     pending_focus: Option<u32>,
     last_sizes: HashMap<SurfaceKey, (u16, u16)>,
@@ -77,6 +81,8 @@ pub struct GpuiApp {
     pub(crate) palette: crate::frontend::gpui::chrome::palette_view::PaletteState,
     /// Muxterm Info 浮层：`None` 表示没打开。
     info: Option<crate::frontend::utils::corebridge::ClientBuildInfo>,
+    /// Info 浮层的复制反馈（「已复制…」）。
+    info_status: Option<String>,
     /// 命令面板的二级列表（语言）。
     palette_menu: Option<palette_actions::PaletteMenu>,
     /// 重命名输入浮层。
@@ -206,6 +212,7 @@ impl GpuiApp {
             surfaces: HashMap::new(),
             visible,
             focused_pane: None,
+            cell_metrics_key: None,
             pending_focus: None,
             last_sizes: HashMap::new(),
             wheel_accumulators: HashMap::new(),
@@ -242,6 +249,7 @@ impl GpuiApp {
             hidden_commands: std::collections::HashSet::new(),
             palette: crate::frontend::gpui::chrome::palette_view::PaletteState::default(),
             info: None,
+            info_status: None,
             palette_menu: None,
             prompt: None,
             language,
@@ -299,7 +307,19 @@ impl GpuiApp {
     /// 前端上报给 Core 的 cols/rows 与鼠标命中都用这个值，所以不能长期停在
     /// 0.6em 的估算上（字体一换就会错列）。
     pub fn measure_cell(&mut self, window: &mut Window) {
+        // 字体 / 字号 / 行距没变就不用再量：每帧三次 shaping 在 60fps 下
+        // 是纯浪费，而且结果不会变。
+        let key = (
+            self.theme.font_family.clone(),
+            self.theme.font_size.to_bits(),
+            self.theme.line_spacing.to_bits(),
+            self.theme.column_spacing.to_bits(),
+        );
+        if self.cell_metrics_key.as_ref() == Some(&key) {
+            return;
+        }
         let (width, height) = measure_cell_size(&self.theme, window.text_system());
+        self.cell_metrics_key = Some(key);
         if (width - self.cell.0).abs() > 0.01 || (height - self.cell.1).abs() > 0.01 {
             self.cell = (width, height);
         }
@@ -340,15 +360,21 @@ impl GpuiApp {
     }
 
     fn start_pump(&mut self, cx: &mut Context<Self>) {
-        cx.spawn(async move |this, cx| loop {
-            Timer::after(PUMP_INTERVAL).await;
-            let alive = this.update(cx, |app, cx| {
-                if app.pump_once(cx) {
-                    cx.notify();
-                }
-            });
-            if alive.is_err() {
-                break;
+        cx.spawn(async move |this, cx| {
+            let mut delay = PUMP_INTERVAL;
+            loop {
+                Timer::after(delay).await;
+                let outcome = this.update(cx, |app, cx| {
+                    let dirty = app.pump_once(cx);
+                    if dirty {
+                        cx.notify();
+                    }
+                    dirty
+                });
+                let Ok(dirty) = outcome else {
+                    break;
+                };
+                delay = pump_delay(delay, dirty);
             }
         })
         .detach();
@@ -543,6 +569,7 @@ impl GpuiApp {
             surfaces: HashMap::new(),
             visible,
             focused_pane: None,
+            cell_metrics_key: None,
             pending_focus: None,
             last_sizes: HashMap::new(),
             wheel_accumulators: HashMap::new(),
@@ -581,6 +608,7 @@ impl GpuiApp {
             hidden_commands: std::collections::HashSet::new(),
             palette: crate::frontend::gpui::chrome::palette_view::PaletteState::default(),
             info: None,
+            info_status: None,
             palette_menu: None,
             prompt: None,
             language: crate::frontend::utils::i18n::Language::System,
@@ -1169,10 +1197,12 @@ impl GpuiApp {
     /// 决定的，缓存旧值会让用户以为日志没开。
     pub fn open_info(&mut self, cx: &mut Context<Self>) {
         self.info = Some(crate::frontend::utils::corebridge::ClientBuildInfo::load());
+        self.info_status = None;
         cx.notify();
     }
 
     pub fn close_info(&mut self, cx: &mut Context<Self>) {
+        self.info_status = None;
         if self.info.take().is_some() {
             cx.notify();
         }
@@ -1188,18 +1218,32 @@ impl GpuiApp {
         info: crate::frontend::utils::corebridge::ClientBuildInfo,
     ) {
         self.info = Some(info);
+        self.info_status = None;
     }
 
+    /// 复制日志位置：日志开没开都要能复制（没开就复制目录）。
     pub fn copy_log_path(&mut self, cx: &mut Context<Self>) {
-        if let Some(path) = self.info.as_ref().and_then(|info| info.log_file.clone()) {
-            cx.write_to_clipboard(gpui::ClipboardItem::new_string(path));
-        }
+        let Some(info) = self.info.as_ref() else {
+            return;
+        };
+        let (value, label) = crate::frontend::gpui::chrome::info::log_copy_target(info);
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(value));
+        self.info_status = Some(format!("{label}… copied"));
+        cx.notify();
     }
 
     pub fn copy_commit(&mut self, cx: &mut Context<Self>) {
-        if let Some(commit) = self.info.as_ref().map(|info| info.commit.clone()) {
-            cx.write_to_clipboard(gpui::ClipboardItem::new_string(commit));
-        }
+        let Some(commit) = self.info.as_ref().map(|info| info.commit.clone()) else {
+            return;
+        };
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(commit));
+        self.info_status = Some("Commit copied".to_string());
+        cx.notify();
+    }
+
+    /// Info 浮层底部的状态文案（复制反馈）。
+    pub fn info_status(&self) -> Option<&str> {
+        self.info_status.as_deref()
     }
 
     /// 命令面板查询串（测试用）。
@@ -2749,6 +2793,17 @@ pub(crate) fn theme_from_snapshot(
 ///
 /// 宽 = 字符 advance × 字距；高 = (ascent + descent) × 行距。字体不存在时
 /// gpui 会退回 fallback 字体栈，量出来的仍然是它实际绘制的那一份。
+/// 空闲时把轮询间隔按倍数退避，上限 [`IDLE_PUMP_INTERVAL`]。
+///
+/// 有事件就回到 [`PUMP_INTERVAL`]：打字 / 输出时不牺牲延迟；空闲时不空转
+/// （每次轮询都是一次 FFI + JSON 解析，125Hz 空转会明显吃 CPU）。
+pub fn pump_delay(current: Duration, dirty: bool) -> Duration {
+    if dirty {
+        return PUMP_INTERVAL;
+    }
+    (current * 2).min(IDLE_PUMP_INTERVAL)
+}
+
 fn measure_cell_size(theme: &Theme, text_system: &gpui::WindowTextSystem) -> (f32, f32) {
     use gpui::px;
     let font = gpui::font(theme.font_family.clone());
@@ -2821,4 +2876,22 @@ fn discover_existing_rows(
         ))
     });
     Ok(rows)
+}
+
+#[cfg(test)]
+mod pump_tests {
+    use super::*;
+
+    /// 空闲时退避、有事件时立刻回到最快节奏。
+    #[test]
+    fn pump_delay_backs_off_when_idle_and_resets_on_activity() {
+        assert_eq!(pump_delay(PUMP_INTERVAL, true), PUMP_INTERVAL);
+        let mut delay = PUMP_INTERVAL;
+        for _ in 0..8 {
+            delay = pump_delay(delay, false);
+        }
+        assert_eq!(delay, IDLE_PUMP_INTERVAL, "空闲不能超过上限");
+        assert_eq!(pump_delay(IDLE_PUMP_INTERVAL, false), IDLE_PUMP_INTERVAL);
+        assert_eq!(pump_delay(IDLE_PUMP_INTERVAL, true), PUMP_INTERVAL);
+    }
 }

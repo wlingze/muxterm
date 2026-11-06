@@ -14,21 +14,40 @@ pub const INFO_HEIGHT: f32 = 280.0;
 /// 问题入口：与 macOS `submitIssue` 同一个仓库。
 pub const ISSUE_URL: &str = "https://github.com/wlingze/muxterm/issues/new";
 
+/// 调试日志的目录（没开日志时也能复制它）。
+pub fn log_directory() -> String {
+    std::env::temp_dir()
+        .join("muxterm-logs")
+        .display()
+        .to_string()
+}
+
 /// 调试日志没开时的说明：仍然告诉用户日志会落在哪个目录。
 pub fn log_placeholder() -> String {
-    let dir = std::env::temp_dir().join("muxterm-logs");
     format!(
         "off — enable Settings → Debug (files go to {})",
-        dir.display()
+        log_directory()
     )
+}
+
+/// 「Copy log」按钮实际复制什么、按钮叫什么。
+///
+/// 日志没开也必须能复制（复制目录），否则按钮点了没反应——用户看到的就是
+/// 「copy 失败」。
+pub fn log_copy_target(info: &ClientBuildInfo) -> (String, &'static str) {
+    match info.log_file.as_deref().filter(|path| !path.is_empty()) {
+        Some(path) => (path.to_string(), "Copy log path"),
+        None => (log_directory(), "Copy log dir"),
+    }
 }
 
 impl GpuiApp {
     pub(crate) fn render_info(&self, cx: &mut gpui::Context<Self>) -> Option<AnyElement> {
         let info = self.info()?;
         let theme = self.theme().clone();
-        let log_path = info.log_file.clone();
-        let log_text = log_path.clone().unwrap_or_else(log_placeholder);
+        let log_text = info.log_file.clone().unwrap_or_else(log_placeholder);
+        let (_, log_label) = log_copy_target(info);
+        let status = self.info_status().map(str::to_string);
         let rows = [
             ("Version", info.version.clone()),
             ("Commit", info.commit.clone()),
@@ -101,8 +120,8 @@ impl GpuiApp {
                                 .gap(px(8.0))
                                 .child(info_button(
                                     "info-copy-log",
-                                    "Copy log path",
-                                    !log_path.is_some(),
+                                    log_label,
+                                    false,
                                     &theme,
                                     cx,
                                     move |app, _, cx| app.copy_log_path(cx),
@@ -128,7 +147,10 @@ impl GpuiApp {
                             div()
                                 .text_size(px(11.0))
                                 .text_color(theme.muted)
-                                .child("Esc closes this panel"),
+                                .debug_selector(|| "info-status".into())
+                                .child(SharedString::from(
+                                    status.unwrap_or_else(|| "Esc closes this panel".to_string()),
+                                )),
                         ),
                 )
                 .into_any_element(),
@@ -187,6 +209,26 @@ mod tests {
         assert!(text.contains("off"));
         assert!(text.contains("muxterm-logs"));
         assert!(!text.contains("muxterm-0000"));
+    }
+
+    /// 日志没开时按钮改成「复制目录」，点了必须有东西可复制。
+    #[test]
+    fn log_copy_target_falls_back_to_the_directory() {
+        let off = ClientBuildInfo {
+            version: "0.1.0".into(),
+            commit: "abc1234".into(),
+            log_file: None,
+        };
+        let (value, label) = log_copy_target(&off);
+        assert_eq!(label, "Copy log dir");
+        assert!(value.contains("muxterm-logs"), "{value}");
+        let on = ClientBuildInfo {
+            log_file: Some("/tmp/muxterm-logs/muxterm-1.log".into()),
+            ..off
+        };
+        let (value, label) = log_copy_target(&on);
+        assert_eq!(label, "Copy log path");
+        assert_eq!(value, "/tmp/muxterm-logs/muxterm-1.log");
     }
 
     /// 日志开着时抄路径，没开时不提供（按钮由渲染层禁用）。
