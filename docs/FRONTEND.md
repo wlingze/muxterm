@@ -100,9 +100,20 @@ AppWindow
   `herdr`，可切 `tmux`；名字默认取路径末段，可编辑。确认后一次 `OpenTarget`
   （`create_if_missing`）；现有 session 走 attach-only，永不新建 session。
   中途 `Esc` 逐层退回，退到根列表还按一次才关面板；任何一层都不产生打开请求。
-- **命令面板**：Action Catalog，不按 GTK/AppKit 类型存盘。面板里的 `Muxterm Info`
-  打开版本面板：version、commit、当前调试日志文件（没开时说明日志落在哪个目录、
-  怎么开）、GitHub issue 入口。版本/commit/日志路径一律由 Core 提供，前端不自己拼。
+- **命令面板**：Action Catalog，不按 GTK/AppKit 类型存盘。**目录里不允许出现「列出来
+  但点不动」的占位项**；每条命令都必须有真实动作：
+  - `Local` / `SSH`：直接把快速面板导航到本机会话列表 / 机器列表；
+  - `Rename Tab…` / `Rename Workspace…`：输入浮层（带出当前名字）→ Core `rename_*`；
+    空名字留在浮层报错，不提交；
+  - `Move Tab Left` / `Move Tab Right`：Core `move_tab`，到两端就不发命令；
+  - `Language`：换成语言子菜单（跟随系统 / English / 简体中文），选择后立刻生效并
+    写回 `[ui] language`；`Esc` 只退回命令目录，不关面板；
+  - `Theme`：写完 `theme.name` 后从 Core 快照重读主题（浅 ↔ 深）；
+  - `Status Bar Mode`：切 `statusbar.mode`；`tmux` 模式显示 tmux 自己的左右段，
+    `theme` 模式用前端主题文案；
+  - `Muxterm Info`：打开版本面板（version、commit、当前调试日志文件、GitHub issue
+    入口）。版本/commit/日志路径一律由 Core 提供，前端不自己拼。
+  面板文案走 `frontend/utils/i18n` catalog，所以切换语言后目录立刻跟着变。
 - **快速面板里的 Cmd-K**：面板是 key window 时，`Cmd-K` 只换成当前选中行的动作
   （工作区打开 / 关闭 / 更新，连接 attach，提醒跳转 / 隐藏等）。不带命令面板的全局命令。
   输入继续过滤这份短列表。`Esc` 先退出这一层，再恢复进入前的查询和原来的 tab，
