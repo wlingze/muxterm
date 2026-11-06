@@ -304,6 +304,8 @@ jobs:
           mkdir -p artifacts build/macos/dmg-root
           rm -rf build/macos/dmg-root/Muxterm.app
           cp -R build/macos/Muxterm.app build/macos/dmg-root/Muxterm.app
+          # Provide the standard drag-to-install shortcut shown next to the app.
+          ln -sfn /Applications build/macos/dmg-root/Applications
           DMG="artifacts/muxterm-macos-arm64-${FS_VERSION}.dmg"
           # GitHub macOS runner 上的 diskimages-helper 偶尔会卡住，hdiutil 报
           # "Resource temporarily unavailable"(EAGAIN)：create 已成功、镜像可读，
@@ -360,6 +362,9 @@ jobs:
           test -x "$MOUNT/Muxterm.app/Contents/MacOS/Muxterm"
           codesign --verify --deep --strict --verbose=4 "$MOUNT/Muxterm.app"
           test "$(find "$MOUNT" -mindepth 1 -maxdepth 1 -name 'Muxterm.app' | wc -l | tr -d ' ')" = 1
+          # Finder needs an /Applications symlink for drag-to-install.
+          test -L "$MOUNT/Applications"
+          test "$(readlink "$MOUNT/Applications")" = "/Applications"
 
       - uses: actions/upload-artifact@v4
         with:
