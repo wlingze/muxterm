@@ -1705,3 +1705,268 @@ fn language_menu_switches_the_catalog_and_persists(cx: &mut TestAppContext) {
     // 收尾：把全局语言恢复成英文，别影响其它测试。
     cx.update(|_, _| muxterm::frontend::utils::i18n::set_language(Language::English));
 }
+
+// ---------------------------------------------------------------------------
+// 快捷键与焦点：Cmd-D/Cmd-S 分屏、Cmd-[ / Cmd-]、切 tab / 新建 pane 后焦点
+// ---------------------------------------------------------------------------
+
+fn two_tab_store() -> ViewStore {
+    use muxterm::frontend::utils::corebridge::ClientLayout;
+    let mut store = store_with_two_workspaces();
+    store.replace_topology(
+        workspace("local@@dev@tmux@dev", "dev", true),
+        vec![
+            ClientTab {
+                id: 1,
+                name: "one".to_string(),
+                is_active: true,
+            },
+            ClientTab {
+                id: 2,
+                name: "two".to_string(),
+                is_active: false,
+            },
+        ],
+        vec![
+            (
+                1,
+                vec![ClientPane {
+                    id: 10,
+                    cols: 80,
+                    rows: 24,
+                    is_active: true,
+                    title: "one".to_string(),
+                }],
+            ),
+            (
+                2,
+                vec![ClientPane {
+                    id: 11,
+                    cols: 80,
+                    rows: 24,
+                    is_active: false,
+                    title: "two".to_string(),
+                }],
+            ),
+        ],
+    );
+    store.replace_layouts(
+        "local@@dev@tmux@dev",
+        vec![
+            (1, ClientLayout::Leaf { pane_id: 10 }),
+            (2, ClientLayout::Leaf { pane_id: 11 }),
+        ],
+    );
+    store
+}
+
+/// Cmd-D 左右分屏、Cmd-S 上下分屏（对照 `KeyBindingsTests`）。
+#[gpui::test]
+fn cmd_d_and_cmd_s_split_the_focused_pane(cx: &mut TestAppContext) {
+    let (view, cx) = mount(two_tab_store(), cx);
+    cx.simulate_keystrokes("cmd-d");
+    let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            ClientCommand::Task {
+                task: ClientTask::SplitPane {
+                    pane_id: 10,
+                    horizontal: true
+                },
+                ..
+            }
+        )),
+        "Cmd-D 必须左右分屏：{commands:?}"
+    );
+
+    cx.simulate_keystrokes("cmd-s");
+    let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            ClientCommand::Task {
+                task: ClientTask::SplitPane {
+                    pane_id: 10,
+                    horizontal: false
+                },
+                ..
+            }
+        )),
+        "Cmd-S 必须上下分屏：{commands:?}"
+    );
+}
+
+/// Cmd-[ / Cmd-]：上一个 / 下一个 pane（对照 `PaneNavigationTests`）。
+#[gpui::test]
+fn cmd_brackets_walk_the_panes(cx: &mut TestAppContext) {
+    let (view, cx) = mount(two_tab_store(), cx);
+    cx.simulate_keystrokes("cmd-]");
+    let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            ClientCommand::Task {
+                task: ClientTask::NextPane,
+                ..
+            }
+        )),
+        "Cmd-] 必须是下一个 pane：{commands:?}"
+    );
+    cx.simulate_keystrokes("cmd-[");
+    let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            ClientCommand::Task {
+                task: ClientTask::PreviousPane,
+                ..
+            }
+        )),
+        "Cmd-[ 必须是上一个 pane：{commands:?}"
+    );
+}
+
+/// 切 tab 之后焦点必须跟着走：光标要画在新 tab 的活动 pane 上。
+#[gpui::test]
+fn switching_tab_moves_the_focus_and_the_cursor(cx: &mut TestAppContext) {
+    use muxterm::frontend::utils::corebridge::ClientLayout;
+    let (view, cx) = mount(two_tab_store(), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.feed_pane_for_tests("local@@dev@tmux@dev", 10, 80, 24, b"one", cx);
+            app.feed_pane_for_tests("local@@dev@tmux@dev", 11, 80, 24, b"two", cx);
+        })
+    });
+    assert_eq!(
+        cx.update(|_, cx| view.update(cx, |app, _| app.focused_pane())),
+        Some(10),
+        "起始焦点在 tab 1"
+    );
+
+    // Core 回包：tab 2 变成 active，它的 pane 11 也是 active。
+    let mut store = two_tab_store();
+    store.replace_topology(
+        workspace("local@@dev@tmux@dev", "dev", true),
+        vec![
+            ClientTab {
+                id: 1,
+                name: "one".to_string(),
+                is_active: false,
+            },
+            ClientTab {
+                id: 2,
+                name: "two".to_string(),
+                is_active: true,
+            },
+        ],
+        vec![
+            (
+                1,
+                vec![ClientPane {
+                    id: 10,
+                    cols: 80,
+                    rows: 24,
+                    is_active: false,
+                    title: "one".to_string(),
+                }],
+            ),
+            (
+                2,
+                vec![ClientPane {
+                    id: 11,
+                    cols: 80,
+                    rows: 24,
+                    is_active: true,
+                    title: "two".to_string(),
+                }],
+            ),
+        ],
+    );
+    store.replace_layouts(
+        "local@@dev@tmux@dev",
+        vec![
+            (1, ClientLayout::Leaf { pane_id: 10 }),
+            (2, ClientLayout::Leaf { pane_id: 11 }),
+        ],
+    );
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.replace_store_for_tests(store);
+            app.pump_once(cx);
+        })
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(|_, cx| view.update(cx, |app, _| app.focused_pane())),
+        Some(11),
+        "切 tab 后焦点必须在 tab 2 的 pane 上"
+    );
+    assert!(
+        cx.debug_bounds("pane-cursor").is_some(),
+        "焦点 pane 变了，光标必须画出来"
+    );
+}
+
+/// 分屏后新 pane 要接管焦点（Core 回的拓扑里新 pane 是 active）。
+#[gpui::test]
+fn a_new_pane_takes_the_focus(cx: &mut TestAppContext) {
+    let (view, cx) = mount(two_tab_store(), cx);
+    let mut store = two_tab_store();
+    // Core 完成分屏：tab 1 变成两个 pane，新的 12 是 active。
+    store.replace_topology(
+        workspace("local@@dev@tmux@dev", "dev", true),
+        vec![ClientTab {
+            id: 1,
+            name: "one".to_string(),
+            is_active: true,
+        }],
+        vec![(
+            1,
+            vec![
+                ClientPane {
+                    id: 10,
+                    cols: 40,
+                    rows: 24,
+                    is_active: false,
+                    title: "one".to_string(),
+                },
+                ClientPane {
+                    id: 12,
+                    cols: 40,
+                    rows: 24,
+                    is_active: true,
+                    title: "two".to_string(),
+                },
+            ],
+        )],
+    );
+    // 分屏后的布局：两个叶子并排，新的在右边。
+    store.replace_layouts(
+        "local@@dev@tmux@dev",
+        vec![(
+            1,
+            muxterm::frontend::utils::corebridge::ClientLayout::Split {
+                horizontal: true,
+                ratio: 500,
+                first: Box::new(muxterm::frontend::utils::corebridge::ClientLayout::Leaf {
+                    pane_id: 10,
+                }),
+                second: Box::new(muxterm::frontend::utils::corebridge::ClientLayout::Leaf {
+                    pane_id: 12,
+                }),
+            },
+        )],
+    );
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.replace_store_for_tests(store);
+            app.feed_pane_for_tests("local@@dev@tmux@dev", 12, 40, 24, b"new", cx);
+            app.pump_once(cx);
+        })
+    });
+    cx.run_until_parked();
+    let focused = cx.update(|_, cx| view.update(cx, |app, _| app.focused_pane()));
+    assert_eq!(focused, Some(12), "新建的 pane 必须是焦点");
+    assert!(cx.debug_bounds("pane-cursor").is_some());
+}

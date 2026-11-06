@@ -58,6 +58,8 @@ pub struct GpuiApp {
     surfaces: HashMap<SurfaceKey, Surface>,
     visible: Option<String>,
     focused_pane: Option<u32>,
+    /// 刚点过、还没被 Core 确认的焦点（同步时让路，避免来回跳）。
+    pending_focus: Option<u32>,
     last_sizes: HashMap<SurfaceKey, (u16, u16)>,
     /// 触控板的零头：不足一格的部分留到下一次事件，见 `wheel_lines`。
     wheel_accumulators: HashMap<SurfaceKey, f32>,
@@ -200,6 +202,7 @@ impl GpuiApp {
             surfaces: HashMap::new(),
             visible,
             focused_pane: None,
+            pending_focus: None,
             last_sizes: HashMap::new(),
             wheel_accumulators: HashMap::new(),
             focus_handle: cx.focus_handle(),
@@ -383,12 +386,10 @@ impl GpuiApp {
     }
 
     pub fn pump_once(&mut self, cx: &mut Context<Self>) -> bool {
-        let mut dirty = {
-            let Some(pump) = self.pump.as_ref() else {
-                return false;
-            };
+        let mut dirty = false;
+        if let Some(pump) = self.pump.as_ref() {
             let events = pump.poll_into_with_events(&mut self.store);
-            let dirty = events.iter().any(|event| event.event.is_topology());
+            dirty |= events.iter().any(|event| event.event.is_topology());
             // `commands` 与 `pump` 是不同字段，借用互不冲突。
             let outcomes = self.commands.flush(pump.client());
             if outcomes.iter().any(|code| *code != 0)
@@ -399,18 +400,61 @@ impl GpuiApp {
                 self.open_pending = false;
                 self.projects_pending = false;
             }
-            dirty
-        };
-        dirty |= self.poll_panel_operations(cx);
-        dirty |= self.apply_pending_config();
-        dirty |= self.refresh_status_snapshot_if_due();
-        dirty |= self.drain_render_events();
+        }
         let active = self.store.active_workspace_id().map(str::to_string);
         if self.visible.is_none() {
             self.visible = active;
         }
+        dirty |= self.poll_panel_operations(cx);
+        dirty |= self.apply_pending_config();
+        dirty |= self.refresh_status_snapshot_if_due();
+        // 焦点跟着 Core 的 active pane 走：切 tab、分屏、Cmd-[ / Cmd-] 之后
+        // 键盘输入必须落在屏幕上真正活动的那个 pane 里，否则用户看到的是
+        // 「切了 / 分了但光标不见了、打字没反应」。
+        dirty |= self.sync_focused_pane();
+        dirty |= self.drain_render_events();
         let _ = cx;
         dirty
+    }
+
+    /// 把焦点同步到当前 tab 的活动 pane。
+    ///
+    /// 返回是否发生变化（调用方据此重绘光标）。用户刚点过某个 pane 时
+    /// `pending_focus` 还没被 Core 确认，这个窗口期不抢焦点，避免来回跳。
+    pub fn sync_focused_pane(&mut self) -> bool {
+        let Some(workspace) = self.visible.clone() else {
+            return false;
+        };
+        let Some(view) = self.store.workspace(&workspace) else {
+            return false;
+        };
+        let Some(tab) = view.active_tab_id() else {
+            return false;
+        };
+        let panes = view.panes_for_tab(tab);
+        if panes.is_empty() {
+            return false;
+        }
+        let core_active = panes.iter().find(|pane| pane.is_active).map(|pane| pane.id);
+        if let Some(pending) = self.pending_focus {
+            if core_active == Some(pending) {
+                self.pending_focus = None;
+            } else if panes.iter().any(|pane| pane.id == pending) {
+                return false;
+            } else {
+                // Core 没听（pane 已经没了）：放弃这次待定焦点。
+                self.pending_focus = None;
+            }
+        }
+        let target = core_active.or_else(|| panes.first().map(|pane| pane.id));
+        let Some(target) = target else {
+            return false;
+        };
+        if self.focused_pane == Some(target) {
+            return false;
+        }
+        self.focused_pane = Some(target);
+        true
     }
 
     /// 把 store 里排队的渲染事件喂给各自的 Surface。
@@ -493,6 +537,7 @@ impl GpuiApp {
             surfaces: HashMap::new(),
             visible,
             focused_pane: None,
+            pending_focus: None,
             last_sizes: HashMap::new(),
             wheel_accumulators: HashMap::new(),
             focus_handle: cx.focus_handle(),
@@ -556,6 +601,12 @@ impl GpuiApp {
         attention: Option<crate::frontend::gpui::model::attention::AttentionSnapshot>,
     ) {
         self.attention = attention;
+    }
+
+    /// 无头测试用：替换整个 ViewStore（模拟 Core 回了新拓扑）。
+    #[doc(hidden)]
+    pub fn replace_store_for_tests(&mut self, store: crate::frontend::view_store::ViewStore) {
+        self.store = store;
     }
 
     /// 无头测试用：取走待发送给 Core 的命令。
@@ -2110,6 +2161,7 @@ impl GpuiApp {
             return;
         }
         self.focused_pane = Some(pane_id);
+        self.pending_focus = Some(pane_id);
         self.commands.push(ClientCommand::Task {
             workspace_id: self.visible.clone(),
             task: crate::frontend::utils::corebridge::ClientTask::SwitchPane { pane_id },
