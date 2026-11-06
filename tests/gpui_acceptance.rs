@@ -279,3 +279,83 @@ fn opening_a_second_workspace_through_core_adds_a_sidebar_row(cx: &mut TestAppCo
         std::thread::sleep(Duration::from_millis(50));
     }
 }
+
+/// 面板的 Open 流程真的建出 workspace：机器 → 新路径 → 目录 → 确认 → Core。
+///
+/// 回归两件事：`Open` 不再打开旧表单；本地 `~/…` 路径必须先展开成绝对路径，
+/// 否则列表为空、`create` 也「找不到路径」打不开。
+#[gpui::test]
+fn picker_open_flow_creates_a_real_workspace(cx: &mut TestAppContext) {
+    use muxterm::frontend::gpui::chrome::panel_view::PanelRow;
+    use muxterm::frontend::gpui::model::panel::PanelTab;
+    use muxterm::frontend::gpui::model::target::TargetRuntime;
+
+    let tmux = IsolatedTmux::start();
+    let (view, cx) = app_with_isolated_tmux(cx, &tmux);
+
+    let activate = |view: &gpui::Entity<GpuiApp>, cx: &mut gpui::VisualTestContext, title: &str| {
+        cx.update(|_, cx| {
+            view.update(cx, |app, cx| {
+                let rows = app.panel_rows();
+                let index = rows
+                    .iter()
+                    .position(|row| row.title() == title)
+                    .unwrap_or_else(|| panic!("面板缺少 {title:?}：{rows:?}"));
+                app.select_panel_row(index, cx);
+            })
+        })
+    };
+
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.begin_panel_open(cx);
+            app.show_panel(PanelTab::Workspaces, cx);
+        })
+    });
+    activate(&view, cx, "local");
+    activate(&view, cx, "+ Open New Path");
+    // `~` 开头是默认 seed：目录列表与 create 都必须展开它。
+    cx.update(|_, cx| view.update(cx, |app, cx| app.set_panel_query("~/tmp", cx)));
+    activate(&view, cx, "Open This Directory");
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.choose_panel_runtime(TargetRuntime::Tmux, cx);
+            app.set_panel_query("picker-new", cx);
+        })
+    });
+    activate(&view, cx, "Create Workspace");
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        cx.update(|_, cx| {
+            view.update(cx, |app, cx| {
+                app.pump_once(cx);
+            })
+        });
+        let (sidebar, panel_open, error, rows) = cx.update(|_, cx| {
+            view.update(cx, |app, _| {
+                (
+                    app.sidebar_items()
+                        .iter()
+                        .map(|item| item.name.clone())
+                        .collect::<Vec<_>>(),
+                    app.panel_open(),
+                    app.panel_rows().into_iter().find_map(|row| match row {
+                        PanelRow::Status(message) => Some(message),
+                        _ => None,
+                    }),
+                    app.panel_rows().len(),
+                )
+            })
+        });
+        if sidebar.iter().any(|item| item.contains("picker-new")) {
+            assert!(!panel_open, "打开成功后必须收起面板");
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "Open 流程必须建出 workspace；侧栏={sidebar:?} 错误={error:?} 行数={rows}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}

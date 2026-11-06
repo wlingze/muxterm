@@ -1278,3 +1278,98 @@ fn panel_primary_action_is_open(cx: &mut TestAppContext) {
         })
     });
 }
+
+/// 命令面板打开时独占按键：查询串收字，绝不漏进 PTY。
+#[gpui::test]
+fn palette_owns_keystrokes_and_never_reaches_the_shell(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.simulate_keystrokes("cmd-shift-p");
+    assert!(cx.update(|_, cx| view.update(cx, |app, _| app.palette_open())));
+    cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    cx.simulate_keystrokes("i n f o");
+    let (query, serial) = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            (app.palette_query_for_tests(), app.take_commands_for_tests())
+        })
+    });
+    assert_eq!(query, "info", "按键必须进命令面板的查询串");
+    assert!(
+        !serial
+            .iter()
+            .any(|command| matches!(command, ClientCommand::Input { .. })),
+        "命令面板打字不能漏进终端：{serial:?}"
+    );
+}
+
+/// 光标在提示符后面的空格上：不能因为「裁剪尾部空白」把光标一起裁掉。
+#[gpui::test]
+fn cursor_is_rendered_on_a_trailing_blank_cell(cx: &mut TestAppContext) {
+    let mut store = store_with_two_workspaces();
+    // 有 layout 才会渲染 pane；`replace_topology` 只给拓扑。
+    store.replace_layouts(
+        "local@@dev@tmux@dev",
+        vec![(
+            1,
+            muxterm::frontend::utils::corebridge::ClientLayout::Leaf { pane_id: 10 },
+        )],
+    );
+    let (view, cx) = mount(store, cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            // 一行 `❯ ` + 光标停在最后那个空格（shell 提示符的常态）。
+            app.feed_pane_for_tests("local@@dev@tmux@dev", 10, 80, 24, "❯ ".as_bytes(), cx);
+        })
+    });
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("pane-cursor").is_some(),
+        "光标必须画出来，即使它落在一个尾部空白格子上（回归：之前尾部空白裁剪会把光标剪掉）"
+    );
+}
+
+/// Muxterm Info：命令面板能打开它，浮层有版本/commit/日志路径，Esc 关掉，
+/// 打开期间打字不漏进终端。
+#[gpui::test]
+fn muxterm_info_opens_from_the_palette_and_owns_keystrokes(cx: &mut TestAppContext) {
+    use muxterm::frontend::utils::corebridge::ClientBuildInfo;
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    // 走真实入口：Cmd-Shift-P → 输入 info → 回车。
+    cx.simulate_keystrokes("cmd-shift-p");
+    cx.simulate_keystrokes("i n f o");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    let opened = cx.update(|_, cx| view.update(cx, |app, _| app.info().is_some()));
+    assert!(opened, "Muxterm Info 必须能打开（之前是灰掉的占位项）");
+    assert!(
+        cx.debug_bounds("info-panel").is_some(),
+        "浮层必须真的画出来"
+    );
+
+    // 打开期间打字：不进终端。
+    cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    cx.simulate_keystrokes("x y z");
+    let serial = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    assert!(
+        !serial
+            .iter()
+            .any(|command| matches!(command, ClientCommand::Input { .. })),
+        "Info 浮层打开时不能往 PTY 写字符：{serial:?}"
+    );
+
+    cx.simulate_keystrokes("escape");
+    assert!(cx.update(|_, cx| view.update(cx, |app, _| app.info().is_none())));
+
+    // 日志没开时仍然给出目录，用户不用猜路径。
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.set_info_for_tests(ClientBuildInfo {
+                version: "0.1.0".into(),
+                commit: "abc1234".into(),
+                log_file: None,
+            });
+            cx.notify();
+        })
+    });
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("info-panel").is_some());
+}

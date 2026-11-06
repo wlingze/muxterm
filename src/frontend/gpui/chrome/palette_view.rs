@@ -55,6 +55,8 @@ pub enum PaletteAction {
     /// tab 栏挪到顶部 / 底部（写 Core `[ui] tab_bar_position`）。
     TabBarTop,
     TabBarBottom,
+    /// Muxterm Info：版本 / commit / 调试日志 / GitHub issue。
+    Info,
     /// 前端还没有实现：列出来但灰掉。
     Unavailable,
 }
@@ -312,7 +314,7 @@ pub fn root_items(tabs: &[String]) -> Vec<PaletteItem> {
             "Muxterm Info",
             "Version, debug log, and GitHub issue",
             "about info version commit debug log github issue 关于 版本 日志",
-            PaletteAction::Unavailable,
+            PaletteAction::Info,
         ),
     ];
 

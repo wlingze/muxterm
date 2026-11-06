@@ -66,6 +66,8 @@ pub struct GpuiApp {
     configured_font_size: f32,
     /// Cmd-Shift-P 命令面板。
     pub(crate) palette: crate::frontend::gpui::chrome::palette_view::PaletteState,
+    /// Muxterm Info 浮层：`None` 表示没打开。
+    info: Option<crate::frontend::utils::corebridge::ClientBuildInfo>,
     status: String,
     /// IME 组合中的文本（尚未提交）。只在聚焦 pane 的光标处画。
     marked_text: String,
@@ -111,6 +113,8 @@ pub struct GpuiApp {
     socket: Option<String>,
     panel_scroll: gpui::ScrollHandle,
     open_pending: bool,
+    /// 打开请求的起始时刻：Core 不回应时用它兜底解卡。
+    open_started: Option<std::time::Instant>,
     projects_pending: bool,
     aggregate: Option<crate::frontend::gpui::chrome::panel_view::AggregateKind>,
     /// 侧栏四段的展开状态。
@@ -182,12 +186,14 @@ impl GpuiApp {
             socket: socket.clone(),
             panel_scroll: gpui::ScrollHandle::new(),
             open_pending: false,
+            open_started: None,
             projects_pending: false,
             aggregate: None,
             sidebar_expansion:
                 crate::frontend::gpui::chrome::sidebar_view::SectionExpansion::default(),
             hidden_commands: std::collections::HashSet::new(),
             palette: crate::frontend::gpui::chrome::palette_view::PaletteState::default(),
+            info: None,
             theme,
             cell,
             last_client_size: None,
@@ -292,6 +298,25 @@ impl GpuiApp {
 
     /// 收一批事件、喂 Surface、冲刷命令。返回是否有可见变化。
     /// 某个 pane 现有多少行历史（测试用来确认 `PaneHistory` 真的落地了）。
+    /// 测试注入：直接给某个 pane 一块画面（不经过 FFI / 事件泵）。
+    pub fn feed_pane_for_tests(
+        &mut self,
+        workspace: &str,
+        pane_id: u32,
+        cols: u16,
+        rows: u16,
+        ansi: &[u8],
+        cx: &mut Context<Self>,
+    ) {
+        let surface = self
+            .surfaces
+            .entry((workspace.to_string(), pane_id))
+            .or_insert_with(|| Surface::new(cols as usize, rows as usize));
+        surface.resize(cols as usize, rows as usize);
+        surface.feed_full(ansi);
+        cx.notify();
+    }
+
     pub fn history_depth_for_tests(&self, workspace: &str, pane_id: u32) -> usize {
         self.surfaces
             .get(&(workspace.to_string(), pane_id))
@@ -444,12 +469,14 @@ impl GpuiApp {
             socket: None,
             panel_scroll: gpui::ScrollHandle::new(),
             open_pending: false,
+            open_started: None,
             projects_pending: false,
             aggregate: None,
             sidebar_expansion:
                 crate::frontend::gpui::chrome::sidebar_view::SectionExpansion::default(),
             hidden_commands: std::collections::HashSet::new(),
             palette: crate::frontend::gpui::chrome::palette_view::PaletteState::default(),
+            info: None,
             theme: Theme::default(),
             cell: (
                 Theme::default().cell_width(),
@@ -902,6 +929,50 @@ impl GpuiApp {
         self.palette.open
     }
 
+    /// 命令面板里的「Muxterm Info」：打开浮层并从 Core 读构建信息。
+    ///
+    /// 对照 macOS `AboutWindow.swift`。信息每次打开都重读：日志开关是启动期
+    /// 决定的，缓存旧值会让用户以为日志没开。
+    pub fn open_info(&mut self, cx: &mut Context<Self>) {
+        self.info = Some(crate::frontend::utils::corebridge::ClientBuildInfo::load());
+        cx.notify();
+    }
+
+    pub fn close_info(&mut self, cx: &mut Context<Self>) {
+        if self.info.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    pub fn info(&self) -> Option<&crate::frontend::utils::corebridge::ClientBuildInfo> {
+        self.info.as_ref()
+    }
+
+    /// 测试注入：无头环境也能验证浮层文案。
+    pub fn set_info_for_tests(
+        &mut self,
+        info: crate::frontend::utils::corebridge::ClientBuildInfo,
+    ) {
+        self.info = Some(info);
+    }
+
+    pub fn copy_log_path(&mut self, cx: &mut Context<Self>) {
+        if let Some(path) = self.info.as_ref().and_then(|info| info.log_file.clone()) {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(path));
+        }
+    }
+
+    pub fn copy_commit(&mut self, cx: &mut Context<Self>) {
+        if let Some(commit) = self.info.as_ref().map(|info| info.commit.clone()) {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(commit));
+        }
+    }
+
+    /// 命令面板查询串（测试用）。
+    pub fn palette_query_for_tests(&self) -> String {
+        self.palette.query.clone()
+    }
+
     /// 命令面板当前选中下标（过滤后列表内）。
     pub fn palette_selected(&self) -> usize {
         self.palette.selected
@@ -970,6 +1041,7 @@ impl GpuiApp {
                 crate::frontend::gpui::chrome::tab_bar_view::TabBarPosition::Bottom,
                 cx,
             ),
+            PaletteAction::Info => self.open_info(cx),
             PaletteAction::Unavailable => {}
         }
     }
@@ -1136,6 +1208,21 @@ impl GpuiApp {
         }
     }
 
+    /// 打开用的 ClientTarget：本地 tmux 没有显式 socket 时用本进程的 `-L`。
+    ///
+    /// 否则用 `-L` 启动的隔离 server 上新建 workspace 会跑到默认 server，
+    /// 测试也会误碰用户会话。
+    pub(crate) fn client_target_with_app_socket(
+        &self,
+        config: &TargetConfig,
+    ) -> crate::frontend::utils::corebridge::ClientTarget {
+        let mut target = client_target_for(config);
+        if target.socket.is_none() && target.transport == "local" && target.runtime == "tmux" {
+            target.socket = self.socket.clone();
+        }
+        target
+    }
+
     /// 保存：配置通过 `ClientCommand::OpenTarget` 交给 Catalog 打开。
     pub fn save_target_editor(&mut self, cx: &mut Context<Self>) {
         let Some(editor) = self.target_editor.as_ref() else {
@@ -1150,8 +1237,9 @@ impl GpuiApp {
             }
         };
         self.open_pending = true;
+        self.open_started = Some(std::time::Instant::now());
         self.commands.push(ClientCommand::OpenTarget {
-            target: client_target_for(&config),
+            target: self.client_target_with_app_socket(&config),
             intent: crate::frontend::utils::corebridge::ClientOpenIntent::CreateIfMissing,
         });
         self.target_editor = None;
@@ -1990,6 +2078,15 @@ impl GpuiApp {
                     return;
                 }
             }
+        }
+
+        // Muxterm Info 浮层：Esc 关闭，其余无修饰键不落到终端。
+        if self.info.is_some() && !keystroke.modifiers.platform {
+            if keystroke.key == "escape" {
+                self.close_info(cx);
+            }
+            cx.stop_propagation();
+            return;
         }
 
         // 命令面板打开时独占按键：Esc 关闭、上下键移动、回车执行，

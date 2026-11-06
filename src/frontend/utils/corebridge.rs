@@ -347,6 +347,45 @@ impl Default for ClientScrollbackConfig {
     }
 }
 
+/// 版本 / commit / 当前日志文件。命令面板的 Muxterm Info 与问题报告共用。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ClientBuildInfo {
+    pub version: String,
+    pub commit: String,
+    /// 进程真的在写日志时才有；`None` 表示调试日志没开。
+    pub log_file: Option<String>,
+}
+
+impl ClientBuildInfo {
+    /// 通过 Core ABI 读构建信息。读不到时退回 `unknown`，不让 UI 崩。
+    pub fn load() -> Self {
+        use std::os::raw::c_char;
+        let raw: *mut c_char = crate::protocol::ffi::muxterm_build_info_json();
+        if raw.is_null() {
+            return Self {
+                version: "unknown".into(),
+                commit: "unknown".into(),
+                log_file: None,
+            };
+        }
+        let text = copy_c_string(raw);
+        unsafe { crate::protocol::ffi::muxterm_free_string(raw) };
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+        let field = |key: &str| {
+            value
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+                .filter(|text| !text.is_empty())
+        };
+        Self {
+            version: field("version").unwrap_or_else(|| "unknown".into()),
+            commit: field("commit").unwrap_or_else(|| "unknown".into()),
+            log_file: field("log_file"),
+        }
+    }
+}
+
 /// Owned configuration snapshot returned by the Core configuration ABI.
 #[derive(Debug, Clone, serde::Deserialize, PartialEq)]
 pub struct ClientConfigSnapshot {
