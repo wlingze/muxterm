@@ -162,19 +162,12 @@ impl GpuiApp {
         cursor: (usize, usize),
         show_cursor: bool,
     ) -> AnyElement {
-        // 跳过尾部空白：既省 run，也不改变可见结果。
-        let mut last = cols.min(cells.len());
-        while last > 0 {
-            let cell = &cells[last - 1];
-            if cell.ch != ' ' || cell.bg != Color::Default || cell.attrs.reverse {
-                break;
-            }
-            last -= 1;
-        }
+        let last = Self::last_visible_cell(cells, cols, row, cursor, show_cursor);
 
         let mut runs: Vec<AnyElement> = Vec::new();
         let mut index = 0;
         while index < last {
+            let run_start = index;
             let (fg, bg) = Self::cell_colors(&cells[index], theme, row, index, cursor, show_cursor);
             let mut text = String::new();
             while index < last {
@@ -189,6 +182,8 @@ impl GpuiApp {
                 }
                 index += 1;
             }
+            let holds_cursor =
+                show_cursor && cursor.0 == row && (run_start..index).contains(&cursor.1);
             runs.push(
                 div()
                     .h(px(cell_height))
@@ -197,6 +192,9 @@ impl GpuiApp {
                     .line_height(px(cell_height))
                     .bg(bg)
                     .text_color(fg)
+                    .when(holds_cursor, |this| {
+                        this.debug_selector(|| "pane-cursor".into())
+                    })
                     .child(SharedString::from(text))
                     .into_any_element(),
             );
@@ -210,6 +208,32 @@ impl GpuiApp {
             .w_full()
             .children(runs)
             .into_any_element()
+    }
+
+    /// 一行要画到第几格（不含）。
+    ///
+    /// 跳过尾部空白：既省 run，也不改变可见结果。**但光标格子必须保留**：
+    /// shell 提示符后面通常是一个空格，把尾部空白剪掉等于把光标也剪掉了
+    /// （用户看到的就是「没有光标」）。
+    fn last_visible_cell(
+        cells: &[Cell],
+        cols: usize,
+        row: usize,
+        cursor: (usize, usize),
+        show_cursor: bool,
+    ) -> usize {
+        let mut last = cols.min(cells.len());
+        while last > 0 {
+            let cell = &cells[last - 1];
+            if cell.ch != ' ' || cell.bg != Color::Default || cell.attrs.reverse {
+                break;
+            }
+            last -= 1;
+        }
+        if show_cursor && cursor.0 == row {
+            last = last.max(cursor.1 + 1).min(cells.len());
+        }
+        last
     }
 
     fn cell_colors(
@@ -227,5 +251,41 @@ impl GpuiApp {
             std::mem::swap(&mut fg, &mut bg);
         }
         (fg, bg)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cells(text: &str) -> Vec<Cell> {
+        text.chars()
+            .map(|ch| Cell {
+                ch,
+                ..Cell::default()
+            })
+            .collect()
+    }
+
+    /// 回归：光标落在一个尾部空白格子上时，尾部空白裁剪不能把它一起裁掉。
+    #[test]
+    fn trailing_blank_trim_keeps_the_cursor_cell() {
+        let line = cells("❯ ");
+        assert_eq!(GpuiApp::last_visible_cell(&line, 80, 0, (0, 5), false), 1);
+        assert_eq!(
+            GpuiApp::last_visible_cell(&line, 80, 0, (0, 1), true),
+            2,
+            "光标在最后的空格上时这一格必须留着"
+        );
+        // 光标在别的行时不影响该行的裁剪。
+        assert_eq!(GpuiApp::last_visible_cell(&line, 80, 3, (0, 1), true), 1);
+    }
+
+    /// 整行空白且没有光标：不画任何 run（省一次布局）。
+    #[test]
+    fn blank_rows_stay_empty_without_a_cursor() {
+        let blank = cells("    ");
+        assert_eq!(GpuiApp::last_visible_cell(&blank, 80, 0, (0, 0), false), 0);
+        assert_eq!(GpuiApp::last_visible_cell(&blank, 80, 0, (0, 0), true), 1);
     }
 }
