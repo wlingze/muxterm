@@ -95,11 +95,14 @@ AppWindow
   `[[projects]]`，不 attach，也不做乐观置位（成功提交后从 Core 重新读配置）。
 
   打开流程（`Open`）：选机器（local / SSH alias）→ 该机器上的现有 session 或
-  `Open New Path` → 目录 → 确认页。确认页是唯一新增的一步：运行时默认
+  `Open New Path` → 目录 → 确认页。本地路径必须先展开成绝对路径（`~` 只在
+  SSH 上留给远端 shell 展开），否则目录列不出来、新建也「找不到路径」。确认页是唯一新增的一步：运行时默认
   `herdr`，可切 `tmux`；名字默认取路径末段，可编辑。确认后一次 `OpenTarget`
   （`create_if_missing`）；现有 session 走 attach-only，永不新建 session。
   中途 `Esc` 逐层退回，退到根列表还按一次才关面板；任何一层都不产生打开请求。
-- **命令面板**：Action Catalog，不按 GTK/AppKit 类型存盘。
+- **命令面板**：Action Catalog，不按 GTK/AppKit 类型存盘。面板里的 `Muxterm Info`
+  打开版本面板：version、commit、当前调试日志文件（没开时说明日志落在哪个目录、
+  怎么开）、GitHub issue 入口。版本/commit/日志路径一律由 Core 提供，前端不自己拼。
 - **快速面板里的 Cmd-K**：面板是 key window 时，`Cmd-K` 只换成当前选中行的动作
   （工作区打开 / 关闭 / 更新，连接 attach，提醒跳转 / 隐藏等）。不带命令面板的全局命令。
   输入继续过滤这份短列表。`Esc` 先退出这一层，再恢复进入前的查询和原来的 tab，
