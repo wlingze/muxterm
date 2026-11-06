@@ -243,6 +243,9 @@ Cmd-P 面板列出现有 runtime（discovery 驱动，点开即 attach）、macO
     前端 workspace id、面板 Open 全流程真的建出 workspace、第二个 workspace 经 Catalog 打开。
   - `--test gpui_acceptance_herdr`（2）：named Herdr session 出现在侧栏，输入有回显。
   - `--test gpui_harness_smoke`（1）：无头 harness 自身可用。
+- 空闲开销（2026-11-06 实测，`muxterm gpui -L <隔离 socket>` 空转 6 秒后连采 3 次）：
+  轮询固定 8ms 时 **2.9% / 3.0% / 2.9% CPU**，改成「空闲退避到 64ms、有事件立刻回 8ms」
+  加「tmux status 无变化不重绘」后 **0.8% / 0.7% / 0.7% CPU**，RSS 89MB 左右不变。
 - `muxterm gpui` 打开窗口，侧栏列出 workspace，tab 栏与 pane 网格按 `ClientLayout` 渲染。
 - `build/macos/MuxtermGpui.app` 存在、`codesign --verify` 通过、双击可启动。
 
