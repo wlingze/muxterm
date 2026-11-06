@@ -2245,3 +2245,68 @@ fn repeated_activity_snapshots_are_not_dirty(cx: &mut TestAppContext) {
     assert!(first);
     assert!(!second, "同一份快照不能重复触发重绘");
 }
+
+/// Info 浮层的复制按钮：日志没开也要能复制（复制目录），并且给出反馈。
+#[gpui::test]
+fn info_copy_buttons_always_put_something_on_the_clipboard(cx: &mut TestAppContext) {
+    use muxterm::frontend::utils::corebridge::ClientBuildInfo;
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.set_info_for_tests(ClientBuildInfo {
+                version: "0.1.0".to_string(),
+                commit: "deadbee".to_string(),
+                log_file: None,
+            });
+            cx.notify();
+        })
+    });
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("info-panel").is_some(), "Info 必须画出来");
+
+    // 点「Copy log dir」：日志没开时复制目录，不能什么都不做。
+    let bounds = cx.debug_bounds("info-copy-log-button").unwrap();
+    cx.simulate_click(bounds.center(), Default::default());
+    cx.run_until_parked();
+    let copied = cx.update(|_, cx| {
+        cx.read_from_clipboard().and_then(|item| {
+            item.entries().iter().find_map(|entry| match entry {
+                gpui::ClipboardEntry::String(text) => Some(text.text().to_string()),
+                _ => None,
+            })
+        })
+    });
+    assert!(
+        copied
+            .as_deref()
+            .is_some_and(|text| text.contains("muxterm-logs")),
+        "日志没开时也要复制日志目录，实际 {copied:?}"
+    );
+    let status = cx.update(|_, cx| view.update(cx, |app, _| app.info_status().map(str::to_string)));
+    assert!(
+        status.unwrap_or_default().contains("copied"),
+        "要有复制反馈"
+    );
+
+    // 点「Copy commit」。
+    let bounds = cx.debug_bounds("info-copy-commit-button").unwrap();
+    cx.simulate_click(bounds.center(), Default::default());
+    cx.run_until_parked();
+    let copied = cx.update(|_, cx| {
+        cx.read_from_clipboard().and_then(|item| {
+            item.entries().iter().find_map(|entry| match entry {
+                gpui::ClipboardEntry::String(text) => Some(text.text().to_string()),
+                _ => None,
+            })
+        })
+    });
+    assert_eq!(copied.as_deref(), Some("deadbee"));
+}
+
+/// 空闲的 pump 不能报告 dirty：没有变化就不重绘（CPU 不做白工）。
+#[gpui::test]
+fn idle_pump_is_not_dirty(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    let dirty = cx.update(|_, cx| view.update(cx, |app, cx| app.pump_once(cx)));
+    assert!(!dirty, "没有事件时 pump_once 不能要求重绘");
+}

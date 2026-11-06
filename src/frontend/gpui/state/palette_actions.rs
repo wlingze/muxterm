@@ -396,8 +396,11 @@ impl GpuiApp {
         if !due {
             return false;
         }
+        let before = self.status_snapshot.clone();
         self.refresh_status_snapshot();
-        true
+        // 只有真的变了才要求重绘：tmux status 每 2 秒都查一次，
+        // 内容没变时不能白重绘整窗。
+        self.status_snapshot != before
     }
 
     /// 读一次可见 workspace 的 tmux status 快照（`statusbar.mode = tmux` 才用）。
