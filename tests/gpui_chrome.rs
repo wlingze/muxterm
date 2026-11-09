@@ -195,6 +195,94 @@ fn sidebar_hides_the_raw_local_shell_workspace(cx: &mut TestAppContext) {
     assert!(items[0].is_active, "启动就是本机 shell 时 Shells 高亮");
 }
 
+/// Shells 里没有任何本机 shell 时，点聚合行进 Catalog 开一个。
+///
+/// 对照 Swift `activateShells` → `openLocalShellWorkspace()`：不能只把
+/// presentation 切过去，那样主区是一片空白。
+#[gpui::test]
+fn clicking_shells_without_a_shell_opens_one(cx: &mut TestAppContext) {
+    use muxterm::frontend::gpui::chrome::panel_view::AggregateKind;
+    use muxterm::frontend::gpui::model::sidebar::AGGREGATE_SHELLS;
+    use muxterm::frontend::utils::corebridge::ClientOpenIntent;
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.activate_sidebar_row(RowTarget::Workspace(AGGREGATE_SHELLS.to_string()), cx)
+        })
+    });
+    assert_eq!(
+        cx.update(|_, cx| view.update(cx, |app, _| app.aggregate_kind())),
+        Some(AggregateKind::Shells)
+    );
+    let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    let (target, intent) = commands
+        .iter()
+        .find_map(|command| match command {
+            ClientCommand::OpenTarget { target, intent } => Some((target.clone(), *intent)),
+            _ => None,
+        })
+        .expect("Shells 里没有 shell 时必须经 Catalog 开一个：");
+    assert_eq!(target.runtime, "shell");
+    assert_eq!(target.transport, "local");
+    assert_eq!(intent, ClientOpenIntent::CreateIfMissing);
+    assert!(
+        target.path.starts_with('/'),
+        "本机路径要展开成绝对路径：{}",
+        target.path
+    );
+}
+
+/// Shells 投影里的 Cmd-T 落在真实本机 shell 上，不是当前 tmux workspace。
+#[gpui::test]
+fn cmd_t_in_the_shells_aggregate_targets_the_local_shell(cx: &mut TestAppContext) {
+    use muxterm::frontend::gpui::chrome::panel_view::AggregateKind;
+    let mut store = ViewStore::default();
+    store.replace_topology(
+        ClientWorkspace {
+            id: "local//shell/tmux/".to_string(),
+            name: "shell".to_string(),
+            runtime: "shell".to_string(),
+            active: false,
+            resolved_target: None,
+        },
+        vec![ClientTab {
+            id: 1,
+            name: "shell".to_string(),
+            is_active: true,
+        }],
+        vec![(
+            1,
+            vec![ClientPane {
+                id: 5,
+                cols: 80,
+                rows: 24,
+                is_active: true,
+                title: "shell".to_string(),
+            }],
+        )],
+    );
+    store.ensure_workspace("local//shell/tmux/").backend_status = Some(backend_status::CONNECTED);
+    let (view, cx) = mount(store, cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.select_aggregate(AggregateKind::Shells, cx);
+            let _ = app.take_commands_for_tests();
+        })
+    });
+    cx.simulate_keystrokes("cmd-t");
+    let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            ClientCommand::Task {
+                workspace_id: Some(workspace_id),
+                task: ClientTask::NewTab,
+            } if workspace_id == "local//shell/tmux/"
+        )),
+        "Cmd-T 必须落在本机 shell 上：{commands:?}"
+    );
+}
+
 /// 本机 shell 退出（没有 tab/pane）时补一个新 tab；只发一次。
 ///
 /// 对照 Swift `maybeCloseIfSessionEnded()`：`shell` + `local` 空工作区 → `newTab`。

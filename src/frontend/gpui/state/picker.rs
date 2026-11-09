@@ -869,6 +869,12 @@ impl GpuiApp {
     }
     pub fn select_aggregate(&mut self, kind: AggregateKind, cx: &mut Context<Self>) {
         self.aggregate = Some(kind);
+        // 对照 Swift `activateShells`：Shells 里没有任何本机 shell 时开一个，
+        // 否则主区会是一片空白（用户点了聚合行却什么都没发生）。
+        if kind == AggregateKind::Shells && self.aggregate_pages().is_empty() {
+            self.open_local_shell(cx);
+            return;
+        }
         if let Some((workspace, tab, _)) = self.aggregate_pages().first().cloned() {
             // 固定聚合 ID 从不进入 Core；仅激活真实源 workspace/tab。
             self.visible = Some(workspace.clone());
@@ -880,6 +886,41 @@ impl GpuiApp {
             });
             self.focus_default_pane();
         }
+        cx.notify();
+    }
+
+    /// 当前可见的本机 shell workspace（Shells 聚合的真实来源）。
+    pub(super) fn local_shell_workspace(&self) -> Option<String> {
+        self.store
+            .workspace_ids()
+            .find(|id| {
+                self.store
+                    .workspace(id)
+                    .and_then(|view| view.workspace.as_ref())
+                    .is_some_and(|workspace| {
+                        workspace.runtime == "shell" && transport_label(workspace) == "local"
+                    })
+            })
+            .map(str::to_string)
+    }
+
+    /// 对照 Swift `openLocalShellWorkspace()`：经 Catalog 打开一个新的本机 shell。
+    ///
+    /// 只在 Shells 里一个 shell 都没有（Cmd-T / 点聚合行）时用；已有 shell
+    /// 时新 tab 走 `ClientTask::NewTab`，不能每次重开 workspace。
+    pub(super) fn open_local_shell(&mut self, cx: &mut Context<Self>) {
+        if self.open_pending {
+            return;
+        }
+        let path = crate::frontend::gpui::model::directory::home_directory()
+            .unwrap_or_else(|| "/".to_string());
+        let config = TargetConfig::new("local", TargetRuntime::Shell, TargetTransport::Local, path);
+        self.open_pending = true;
+        self.open_started = Some(std::time::Instant::now());
+        self.commands.push(ClientCommand::OpenTarget {
+            target: self.client_target_with_app_socket(&config),
+            intent: ClientOpenIntent::CreateIfMissing,
+        });
         cx.notify();
     }
 
