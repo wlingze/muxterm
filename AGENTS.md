@@ -96,6 +96,8 @@ gpui 的行为回接到 Swift。新功能优先在 gpui 落地。
 - [ ] `cargo clippy`（CI 会以 `-D warnings` 检查）
 - [ ] commit 信息符合规范，且无 Co-authored-by
 - [ ] 没有引入 `RuntimeMode` 复合变体、frontend 对 `crate::core` 的直接引用、或 live `visible_ansi`
+- [ ] 改了 gpui 前端就重建 `./build/macos/MuxtermGpui.app`（`scripts/build-gpui-macos.sh`）并通过
+      `codesign --verify --deep --strict`：用户每次都用这个 `.app` 试用，产物必须是当前 HEAD 的代码
 
 ## Time verification (MUST)
 
