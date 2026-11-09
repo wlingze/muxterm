@@ -206,7 +206,22 @@ Cmd-P 面板列出现有 runtime（discovery 驱动，点开即 attach）、macO
 命令面板里所有条目都有真实动作（Local / SSH 导航、改名浮层、tab 重排、语言子菜单、
 主题切换、状态栏模式）与对应 Core 任务（`rename_tab` / `rename_workspace` / `move_tab`）、
 SGR 字体属性真正参与绘制（粗体 / 斜体 / 下划线 / 删除线，粗体按 SwiftTerm 规则提亮
-ANSI 0–6，dim 与背景对半混合）、终端字形按**列坐标**绘制（`paint_text` 只借用
+ANSI 0–6，dim 与背景对半混合）
+
+### 分屏拖拽带、pane 标题条、图片粘贴
+
+- 分屏之间留 6pt（`pane_grid::DIVIDER_LENGTH`，对照 `PaneTitleBarGeometry.dividerLength`），
+  露出的底色是 `chrome_bg`（= `NSColor.windowBackgroundColor`）。之前 pane 直接相邻，
+  比 Swift 挤。
+- pane 标题条：`model::pane_title` 移植 `PaneTitleLayoutPolicy` / `PaneTitleBarGeometry` —
+  只在可见 pane > 1 时出现，`reservedHeight` 恒 0（浮在 Surface 上，不改变 cols/rows），
+  空标题退回 `Pane @<id>`。
+- 图片粘贴**只调 Core**：前端读剪贴板 → 只接受 PNG → `start_image_paste` →
+  每个 tick `poll_image_paste` 取路径。前端不拼 `scp`、不起进程；阶段由
+  `model/image_paste::ImagePasteTimeline` 驱动横幅（进度 / 成功 / 失败）。
+- 指示色对齐 Swift 语义色：`working` = systemYellow、`blocked` = systemPink、
+  `done` = systemTeal（之前借用 success/danger/warning，侧栏与 tab 看起来偏红偏绿）。
+、终端字形按**列坐标**绘制（`paint_text` 只借用
 `shape_line` 的 glyph / font id，位置由 `列号 × 格子宽` 决定；中文回退字体、粗斜体、
 emoji 都不会推开同一行后面的竖线）、设置浮层与 Swift 同构（680×680、200pt 左栏、
 搜索框、分类/字段、52pt 底部条：dirty 摘要 + Cancel + Apply；Esc 取消、⏎ 应用、
@@ -255,7 +270,7 @@ Project / discovery 行用 Core 记账的 attach 频率排序（`attach-history.
 ## 9. 验收
 
 - `cargo check --no-default-features --features gpui` 通过。
-- `cargo test --no-default-features --features gpui --lib` 通过（2026-11-09 实测 **1932 passed**）。
+- `cargo test --no-default-features --features gpui --lib` 通过（2026-11-09 实测 **1948 passed**）。
 - 集成测试（每个都实测通过）：
   - `--test gpui_chrome`（81，含命令面板每条命令的动作、改名浮层、tab 重排、语言/主题/状态栏、
     设置浮层的 Esc / ⏎ / Cancel / Apply 与放弃修改确认（有改动先问、点遮罩也走同一条路）、
