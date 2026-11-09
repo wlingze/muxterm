@@ -82,7 +82,8 @@ pub enum PaletteAction {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PaletteState {
     pub open: bool,
-    pub query: String,
+    /// 查询串 + 光标 + 选区。`query()` 取纯文本给过滤用。
+    pub input: crate::frontend::gpui::model::text_input::TextInput,
     /// 选中项在**过滤后**列表里的下标。
     pub selected: usize,
 }
@@ -91,25 +92,30 @@ impl PaletteState {
     /// 打开时清空查询，选中第一行（与 macOS `present` 一致）。
     pub fn show(&mut self) {
         self.open = true;
-        self.query.clear();
+        self.input.clear();
         self.selected = 0;
     }
 
     pub fn dismiss(&mut self) {
         self.open = false;
-        self.query.clear();
+        self.input.clear();
         self.selected = 0;
+    }
+
+    /// 查询串纯文本（过滤 / 渲染都用它）。
+    pub fn query(&self) -> String {
+        self.input.text()
     }
 
     /// 追加一个字符：查询变化后选中回到第一行（与 macOS 重新过滤一致）。
     pub fn push_char(&mut self, ch: char, _visible: usize) {
-        self.query.push(ch);
+        self.input.insert(&ch.to_string());
         self.selected = 0;
     }
 
     /// 退格：选中项夹回新的列表范围。
     pub fn backspace(&mut self, visible: usize) {
-        self.query.pop();
+        self.input.backspace();
         self.selected = self.selected.min(visible.saturating_sub(1));
     }
 
@@ -543,11 +549,11 @@ mod tests {
         state.show();
         state.selected = 2;
         state.push_char('n', 5);
-        assert_eq!(state.query, "n");
+        assert_eq!(state.query(), "n");
         assert_eq!(state.selected, 0);
         state.selected = 4;
         state.backspace(2);
-        assert_eq!(state.query, "");
+        assert_eq!(state.query(), "");
         assert_eq!(state.selected, 1);
     }
 
@@ -558,6 +564,6 @@ mod tests {
         state.push_char('x', 10);
         state.dismiss();
         assert!(!state.open);
-        assert!(state.query.is_empty());
+        assert!(state.query().is_empty());
     }
 }

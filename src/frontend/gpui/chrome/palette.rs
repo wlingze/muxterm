@@ -22,7 +22,7 @@ impl GpuiApp {
         }
         let theme = self.theme().clone();
         let items = self.palette_items();
-        let visible = palette_view::filter(&items, &self.palette.query);
+        let visible = palette_view::filter(&items, &self.palette.query());
         let selected = self.palette.selected;
 
         let rows: Vec<AnyElement> = visible
@@ -42,18 +42,6 @@ impl GpuiApp {
                 .into_any_element()
         } else {
             div().into_any_element()
-        };
-
-        // 查询为空时显示占位文案，与 `NSSearchField.placeholderString` 一致。
-        let query_text = if self.palette.query.is_empty() {
-            "Type a command or search..."
-        } else {
-            self.palette.query.as_str()
-        };
-        let query_color = if self.palette.query.is_empty() {
-            theme.muted
-        } else {
-            theme.label()
         };
 
         Some(
@@ -99,8 +87,14 @@ impl GpuiApp {
                                 .border_b_1()
                                 .border_color(theme.border)
                                 .text_size(px(13.0))
-                                .text_color(query_color)
-                                .child(SharedString::from(query_text.to_string())),
+                                // 查询框：选区高亮 + 可见光标（`Cmd-A` 能看见结果）。
+                                .child(SharedString::from("⌕"))
+                                .child(div().w(px(6.0)))
+                                .child(crate::frontend::gpui::chrome::input_line::input_line(
+                                    &self.palette.input,
+                                    "Type a command or search...",
+                                    &theme,
+                                )),
                         )
                         .child(
                             div()

@@ -117,7 +117,6 @@ impl GpuiApp {
                 )
                 .into_any_element()
         });
-        let main_query = self.panel.model.query.clone();
         let search = div()
             .id("panel-query")
             .debug_selector(|| "panel-query".into())
@@ -133,20 +132,12 @@ impl GpuiApp {
             .border_color(theme.border)
             .bg(theme.active_bg)
             .child(div().text_color(theme.muted).child("⌕"))
-            .child(
-                div()
-                    .overflow_hidden()
-                    .text_color(if main_query.is_empty() {
-                        theme.muted
-                    } else {
-                        theme.label()
-                    })
-                    .child(SharedString::from(if main_query.is_empty() {
-                        self.panel_placeholder().to_string()
-                    } else {
-                        main_query
-                    })),
-            );
+            // 查询框：选区高亮 + 可见光标（`Cmd-A` 能看见结果）。
+            .child(crate::frontend::gpui::chrome::input_line::input_line(
+                &self.panel.model.input,
+                self.panel_placeholder(),
+                &theme,
+            ));
         let action_menu = self.panel_actions().map(|menu| {
             div()
                 .id("panel-actions")

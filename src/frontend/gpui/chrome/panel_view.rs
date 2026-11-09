@@ -229,13 +229,18 @@ impl PanelState {
 
     /// 查询串编辑：可打印字符进 query，任何编辑都把选中打回第一行。
     pub fn push_query(&mut self, text: &str) {
-        self.model.query.push_str(text);
+        self.model.input.insert(text);
         self.selected = 0;
     }
 
     pub fn backspace_query(&mut self) {
-        self.model.query.pop();
+        self.model.input.backspace();
         self.selected = 0;
+    }
+
+    /// 查询串的光标与选区（渲染光标 / 高亮用）。
+    pub fn query_segments(&self) -> (String, String, String) {
+        self.model.input.segments()
     }
 
     /// Tab / Shift+Tab 循环；query 跨 tab 保留。
@@ -250,7 +255,8 @@ impl PanelState {
     ) -> Vec<PanelRow> {
         use crate::frontend::gpui::model::workspace_picker::same_target;
         use PickerAction as Action;
-        let query = &self.model.query;
+        let query = self.model.query();
+        let query = &query;
         let projects = self.picker.projects.configs();
         let annotate = |rows: Vec<PanelRow>| {
             rows.into_iter()
@@ -449,12 +455,12 @@ impl PanelState {
         match self.model.tab {
             PanelTab::Workspaces => self.workspace_rows(workspaces, existing),
             PanelTab::Attention => match attention {
-                Some(snapshot) => attention_panel_rows(snapshot, workspaces, &self.model.query),
+                Some(snapshot) => attention_panel_rows(snapshot, workspaces, &self.model.query()),
                 None => Vec::new(),
             },
             PanelTab::Search => match search {
                 Some(snapshot) => {
-                    let (hits, _) = search_rows(snapshot, &self.model.query);
+                    let (hits, _) = search_rows(snapshot, &self.model.query());
                     hits.into_iter().map(PanelRow::Search).collect()
                 }
                 None => Vec::new(),
@@ -690,10 +696,10 @@ mod tests {
         assert!(state.open);
         assert_eq!(state.model.tab, PanelTab::Workspaces);
 
-        state.model.query = "dev".into();
+        state.model.input.set_text("dev");
         state.cycle(false);
         assert_eq!(state.model.tab, PanelTab::Attention);
-        assert_eq!(state.model.query, "dev", "query 跨 tab 保留");
+        assert_eq!(state.model.query(), "dev", "query 跨 tab 保留");
 
         state.cycle(true);
         assert_eq!(state.model.tab, PanelTab::Workspaces);
@@ -711,7 +717,7 @@ mod tests {
             open: true,
             model: PanelModel {
                 tab: PanelTab::Workspaces,
-                query: "ryzen".into(),
+                input: crate::frontend::gpui::model::text_input::TextInput::from_text("ryzen"),
                 ..PanelModel::default()
             },
             selected: 0,
@@ -809,7 +815,7 @@ mod tests {
             open: true,
             model: PanelModel {
                 tab: PanelTab::Search,
-                query: "failed".into(),
+                input: crate::frontend::gpui::model::text_input::TextInput::from_text("failed"),
                 ..PanelModel::default()
             },
             selected: 0,
@@ -820,7 +826,7 @@ mod tests {
         assert_eq!(rows[0].title(), "cargo test failed");
         assert_eq!(rows[0].detail(), None);
 
-        state.model.query.clear();
+        state.model.input.clear();
         assert_eq!(state.rows(&[], None, Some(&snapshot), &[]).len(), 2);
     }
 
