@@ -59,6 +59,12 @@ pub struct Theme {
     pub danger: Rgba,
     /// 进行中（tab 上的 working 环）。
     pub warning: Rgba,
+    /// Swift `NSColor.systemYellow`：侧栏 working 标记。
+    pub working: Rgba,
+    /// Swift `NSColor.systemPink`：blocked 标记（不是红色 danger）。
+    pub blocked: Rgba,
+    /// Swift `NSColor.systemTeal`：done 标记（不是绿色 success）。
+    pub done: Rgba,
     /// 终端字体家族（`[font] family`）。
     pub font_family: SharedString,
     /// 终端字号（`[font] size`）。
@@ -88,6 +94,11 @@ impl Default for Theme {
             success: rgb(0x28cd41),
             danger: rgb(0xff3b30),
             warning: rgb(0xff9500),
+            // 与 macOS `WorkspaceSidebar.indicatorColor` / `TabActivityIndicatorView`
+            // 一致：working = systemYellow、blocked = systemPink、done = systemTeal。
+            working: rgb(0xffcc00),
+            blocked: rgb(0xff2d55),
+            done: rgb(0x30b0c7),
             font_family: SharedString::from(DEFAULT_FONT_FAMILY),
             font_size: DEFAULT_FONT_SIZE,
             line_spacing: DEFAULT_FONT_SPACING,
@@ -165,6 +176,9 @@ impl Theme {
             success: rgb(0x32d74b),
             danger: rgb(0xff453a),
             warning: rgb(0xff9f0a),
+            working: rgb(0xffd60a),
+            blocked: rgb(0xff375f),
+            done: rgb(0x40c8e0),
             font_family: SharedString::from(DEFAULT_FONT_FAMILY),
             font_size: DEFAULT_FONT_SIZE,
             line_spacing: DEFAULT_FONT_SPACING,

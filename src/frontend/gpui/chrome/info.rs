@@ -250,3 +250,65 @@ mod tests {
         );
     }
 }
+
+/// 图片粘贴横幅：右下角浮一条，进度/成功/失败三种色调。
+///
+/// 对照 Swift `ImagePasteBanner`：位置固定在内容区右下，不挡终端首行，
+/// 进行中显示转圈，结果可点叉关掉（`Esc` 也能关，见 `state.rs`）。
+pub fn render_image_paste_banner(
+    app: &crate::frontend::gpui::state::GpuiApp,
+    theme: &crate::frontend::gpui::theme::Theme,
+) -> Option<gpui::AnyElement> {
+    use crate::frontend::gpui::model::image_paste::{ImagePasteStage, Tone};
+    use gpui::{div, prelude::*, px, SharedString};
+    let feedback = app.image_paste_feedback()?;
+    let (tone_color, label) = match feedback.tone {
+        Tone::Progress => (theme.accent, "Encoding image…"),
+        Tone::Success => (theme.success, "Image pasted"),
+        Tone::Failure => (theme.danger, "Image paste failed"),
+    };
+    let label = if matches!(feedback.stage, ImagePasteStage::Uploading) {
+        "Uploading image…"
+    } else {
+        label
+    };
+    let detail = feedback.detail.clone().map(SharedString::from);
+    Some(
+        div()
+            .id("image-paste-banner")
+            .debug_selector(|| "image-paste-banner".into())
+            .absolute()
+            .right(px(16.0))
+            .bottom(px(16.0))
+            .max_w(px(420.0))
+            .flex()
+            .flex_col()
+            .gap_1()
+            .px(px(10.0))
+            .py(px(7.0))
+            .rounded(px(6.0))
+            .bg(theme.chrome_bg)
+            .border_1()
+            .border_color(tone_color)
+            .text_size(px(11.5))
+            .text_color(theme.fg)
+            .shadow_md()
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .child(div().w(px(6.0)).h(px(6.0)).rounded_full().bg(tone_color))
+                    .child(SharedString::from(label)),
+            )
+            .children(detail.map(|detail| {
+                div()
+                    .text_size(px(10.5))
+                    .text_color(theme.muted)
+                    .overflow_hidden()
+                    .child(detail)
+            }))
+            .into_any_element(),
+    )
+}

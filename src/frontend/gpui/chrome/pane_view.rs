@@ -194,6 +194,66 @@ impl GpuiApp {
                 },
             ));
 
+        // 多 pane 时浮一条标题条（不占终端格子，见 `model::pane_title`）。
+        let title_bar = if crate::frontend::gpui::model::pane_title::shows_title_bar(visible_panes)
+        {
+            let title = crate::frontend::gpui::model::pane_title::display_title(
+                &self.pane_title(pane_id).unwrap_or_default(),
+                pane_id,
+            );
+            Some(
+                div()
+                    .id(SharedString::from(format!("pane-title-{pane_id}")))
+                    .debug_selector(|| format!("pane-title-{pane_id}"))
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .w_full()
+                    .h(px(crate::frontend::gpui::model::pane_title::TITLE_BAR_HEIGHT))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .px(px(7.0))
+                    .bg(theme.chrome_bg)
+                    .border_b_1()
+                    .border_color(theme.border)
+                    .text_size(px(11.0))
+                    .when(focused, |this| this.text_color(theme.accent))
+                    .when(!focused, |this| this.text_color(theme.muted))
+                    .child(
+                        div()
+                            .overflow_hidden()
+                            .child(SharedString::from(title)),
+                    )
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("pane-actions-{pane_id}")))
+                            .debug_selector(|| format!("pane-actions-{pane_id}"))
+                            .cursor_pointer()
+                            .text_color(theme.muted)
+                            .px(px(4.0))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    // `⋯` 就是动作集本身：先切成水平分割的那一条，
+                                    // 其余动作在菜单栏与快捷键里都在。
+                                    this.run_action(
+                                        crate::frontend::gpui::model::shortcuts::KeyAction::SplitHorizontal,
+                                        window,
+                                        cx,
+                                    );
+                                }),
+                            )
+                            .child(SharedString::from("⋯")),
+                    )
+                    .into_any_element(),
+            )
+        } else {
+            None
+        };
+
         let border = if focused { theme.accent } else { theme.border };
         div()
             .id(SharedString::from(format!("pane-{pane_id}")))
@@ -254,6 +314,7 @@ impl GpuiApp {
             )
             .children(row_elements)
             .child(text_layer)
+            .children(title_bar)
             .child(input_handler)
             .into_any_element()
     }

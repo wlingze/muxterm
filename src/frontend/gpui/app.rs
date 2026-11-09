@@ -137,7 +137,9 @@ impl Render for GpuiApp {
                             .relative()
                             .flex_1()
                             .w_full()
-                            .bg(theme.bg)
+                            // 分屏拖拽带露出的底色：Swift 是 `windowBackgroundColor`，
+                            // 所以 pane 之间看得到一条 chrome 色，而不是连成一片。
+                            .bg(theme.chrome_bg)
                             .children(panes)
                             .children(self.render_panel(cx))
                             .children(self.render_composer(cx))
@@ -145,7 +147,12 @@ impl Render for GpuiApp {
                             .children(self.render_target_editor(cx))
                             .children(self.render_palette(cx))
                             .children(self.render_info(cx))
-                            .children(self.render_prompt(cx)),
+                            .children(self.render_prompt(cx))
+                            .children(
+                                crate::frontend::gpui::chrome::info::render_image_paste_banner(
+                                    self, &theme,
+                                ),
+                            ),
                     )
                     .child(bar_bottom),
             )
