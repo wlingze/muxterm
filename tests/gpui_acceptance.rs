@@ -148,10 +148,99 @@ fn startup_workspace_renders_end_to_end(cx: &mut TestAppContext) {
 
     let (sidebar, tabs) =
         cx.update(|_, cx| view.update(cx, |app, _| (app.sidebar_items(), app.tab_items())));
-    assert_eq!(sidebar.len(), 1, "启动只有一个 workspace");
-    assert_eq!(sidebar[0].runtime, "tmux");
+    // 对照 Swift `sidebarItems()`：两个固定聚合槽永远在最前，真实 workspace 跟在其后。
+    assert_eq!(
+        sidebar.len(),
+        3,
+        "Shells + Agents + 一个真实 workspace：{:?}",
+        sidebar.iter().map(|item| &item.name).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        sidebar[0].workspace_id,
+        muxterm::frontend::gpui::model::sidebar::AGGREGATE_SHELLS
+    );
+    assert_eq!(
+        sidebar[1].workspace_id,
+        muxterm::frontend::gpui::model::sidebar::AGGREGATE_AGENTS
+    );
+    assert_eq!(sidebar[2].runtime, "tmux");
     assert_eq!(tabs.len(), 1, "启动只有一个 tab");
     assert!(tabs[0].title.contains("(1)") || !tabs[0].title.is_empty());
+}
+
+/// 本机 shell 启动：侧栏只有两个聚合槽，Shells 高亮，tab 栏是 shell 的 tab。
+///
+/// 对照 Swift 启动路径 `workspacePresentation = .shells(...)` 与
+/// `sidebarItems()`：`shell` runtime 的原始 workspace 不单独占侧栏行。
+#[gpui::test]
+fn local_shell_launch_shows_the_shells_aggregate(cx: &mut TestAppContext) {
+    let client = FfiClient::new_connect("local", None, None, None, Some("")).expect("本机连接");
+    let pump = EventPump::new(client);
+    let mut store = ViewStore::default();
+    pump.sync_view_store(&mut store).expect("初始快照");
+
+    let (view, cx) = cx.add_window_view(|_, cx| {
+        let mut app = GpuiApp::new(pump, store, CommandQueue::default(), None, cx);
+        app.pump_once(cx);
+        app
+    });
+    cx.update(|window, cx| window.focus(&view.read(cx).focus_handle()));
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        cx.update(|_, cx| view.update(cx, |app, cx| app.pump_once(cx)));
+        let ready = cx.update(|_, cx| {
+            view.update(cx, |app, _| {
+                app.focused_pane()
+                    .and_then(|pane| app.pane_screen(pane))
+                    .is_some_and(|screen| !screen.trim().is_empty())
+            })
+        });
+        if ready {
+            break;
+        }
+        assert!(Instant::now() < deadline, "本机 shell 必须起来");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let (items, aggregate, tabs) = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            (app.sidebar_items(), app.aggregate_kind(), app.tab_items())
+        })
+    });
+    assert_eq!(
+        items.len(),
+        2,
+        "本机 shell 不占原始 workspace 行：{:?}",
+        items.iter().map(|item| &item.name).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        items[0].workspace_id,
+        muxterm::frontend::gpui::model::sidebar::AGGREGATE_SHELLS
+    );
+    assert_eq!(
+        items[1].workspace_id,
+        muxterm::frontend::gpui::model::sidebar::AGGREGATE_AGENTS
+    );
+    assert!(items[0].is_active, "启动后 Shells 聚合应当是当前来源");
+    assert_eq!(
+        aggregate,
+        Some(muxterm::frontend::gpui::chrome::panel_view::AggregateKind::Shells)
+    );
+    assert_eq!(tabs.len(), 1, "Shells 聚合里有 shell 的 tab");
+    assert!(
+        tabs[0].title.contains("local"),
+        "聚合 tab 标题要带来源：{:?}",
+        tabs[0].title
+    );
+    let screen = cx
+        .update(|_, cx| {
+            view.update(cx, |app, _| {
+                app.focused_pane().and_then(|pane| app.pane_screen(pane))
+            })
+        })
+        .unwrap_or_default();
+    assert!(!screen.trim().is_empty(), "shell 首帧不能是空画面");
 }
 
 /// 真实按键路径：`simulate_keystrokes` → encode → CommandQueue → tmux → Surface。
@@ -219,7 +308,8 @@ fn opening_a_second_workspace_through_core_adds_a_sidebar_row(cx: &mut TestAppCo
             })
         });
         let sidebar = cx.update(|_, cx| view.update(cx, |app, _| app.sidebar_items()));
-        if sidebar.len() >= 2 {
+        // 聚合槽不算真实 workspace：只数后面的行。
+        if sidebar.iter().filter(|item| !item.is_aggregate()).count() >= 2 {
             assert!(
                 sidebar.iter().any(|item| item.name.contains("second")),
                 "侧栏要出现新 workspace：{:?}",

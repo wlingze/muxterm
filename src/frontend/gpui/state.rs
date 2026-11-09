@@ -66,6 +66,8 @@ pub struct GpuiApp {
     cell_metrics_key: Option<(gpui::SharedString, u32, u32, u32)>,
     /// 刚点过、还没被 Core 确认的焦点（同步时让路，避免来回跳）。
     pending_focus: Option<u32>,
+    /// 本机 shell 工作区空了之后已经要过新 tab，避免每拍都发一遍。
+    shell_restart_requested: bool,
     last_sizes: HashMap<SurfaceKey, (u16, u16)>,
     /// 触控板的零头：不足一格的部分留到下一次事件，见 `wheel_lines`。
     wheel_accumulators: HashMap<SurfaceKey, f32>,
@@ -214,6 +216,7 @@ impl GpuiApp {
             focused_pane: None,
             cell_metrics_key: None,
             pending_focus: None,
+            shell_restart_requested: false,
             last_sizes: HashMap::new(),
             wheel_accumulators: HashMap::new(),
             focus_handle: cx.focus_handle(),
@@ -264,6 +267,7 @@ impl GpuiApp {
             configured_font_size,
             status: String::from("muxterm · gpui"),
         };
+        app.sync_aggregate_presentation();
         app.focus_default_pane();
         // 配置里的语言在启动时立刻生效（越早越好，避免第一帧是错的文案）。
         crate::frontend::utils::i18n::set_language(app.language);
@@ -435,7 +439,9 @@ impl GpuiApp {
         let active = self.store.active_workspace_id().map(str::to_string);
         if self.visible.is_none() {
             self.visible = active;
+            dirty |= self.sync_aggregate_presentation();
         }
+        dirty |= self.restart_local_shell_if_empty();
         dirty |= self.poll_panel_operations(cx);
         dirty |= self.apply_pending_config();
         dirty |= self.refresh_status_snapshot_if_due();
@@ -486,6 +492,67 @@ impl GpuiApp {
             return false;
         }
         self.focused_pane = Some(target);
+        true
+    }
+
+    /// 首屏就是本机 shell 时按 Shells 聚合展示。
+    ///
+    /// 对照 Swift 启动路径：初始 workspace 是 shell 时
+    /// `workspacePresentation = .shells(...)`，所以侧栏高亮在 Shells 上，
+    /// 而不是没有行可选。
+    fn sync_aggregate_presentation(&mut self) -> bool {
+        use crate::frontend::gpui::chrome::panel_view::AggregateKind;
+        if self.aggregate.is_some() {
+            return false;
+        }
+        let Some(workspace) = self.visible.as_deref() else {
+            return false;
+        };
+        if self.workspace_runtime(workspace) != "shell" {
+            return false;
+        }
+        self.aggregate = Some(AggregateKind::Shells);
+        true
+    }
+
+    /// 本机 shell 工作区空了（shell 退出）就补一个新 tab。
+    ///
+    /// 对照 Swift `maybeCloseIfSessionEnded()`：`shell` + `local` 且没有
+    /// tab/pane 时发 `NewTab`，窗口始终有一个活着的本机 shell；其它
+    /// runtime 的空工作区保持原样，由用户自己决定。
+    fn restart_local_shell_if_empty(&mut self) -> bool {
+        let Some(workspace) = self.visible.clone() else {
+            return false;
+        };
+        let Some(view) = self.store.workspace(&workspace) else {
+            return false;
+        };
+        let Some(client) = view.workspace.as_ref() else {
+            return false;
+        };
+        if client.runtime != "shell" || transport_label(client) != "local" {
+            return false;
+        }
+        // 只补「shell 已经退出了」的空工作区：启动中的空快照不需要抢 tab。
+        if view.backend_status
+            != Some(crate::frontend::gpui::model::sidebar::backend_status::EXITED)
+        {
+            return false;
+        }
+        let empty = view.tabs.is_empty() && view.panes.values().all(Vec::is_empty);
+        if !empty {
+            self.shell_restart_requested = false;
+            return false;
+        }
+        // Core 回包前不要每拍都重发；新 tab 出现后自动复位。
+        if self.shell_restart_requested {
+            return false;
+        }
+        self.shell_restart_requested = true;
+        self.commands.push(ClientCommand::Task {
+            workspace_id: Some(workspace),
+            task: crate::frontend::utils::corebridge::ClientTask::NewTab,
+        });
         true
     }
 
@@ -571,6 +638,7 @@ impl GpuiApp {
             focused_pane: None,
             cell_metrics_key: None,
             pending_focus: None,
+            shell_restart_requested: false,
             last_sizes: HashMap::new(),
             wheel_accumulators: HashMap::new(),
             focus_handle: cx.focus_handle(),
@@ -625,6 +693,7 @@ impl GpuiApp {
             configured_font_size: crate::frontend::gpui::theme::DEFAULT_FONT_SIZE,
             status: String::from("muxterm · gpui"),
         };
+        app.sync_aggregate_presentation();
         app.focus_default_pane();
         app
     }
@@ -833,46 +902,67 @@ impl GpuiApp {
     }
 
     /// 侧栏工作区行的输入：顺序、快捷键、连接状态都来自 ViewStore。
+    ///
+    /// 对照 Swift `MainWindow.sidebarItems()`：
+    /// - 两个固定聚合槽（Shells / Agents）永远排在最前面，不可关闭/拖动；
+    /// - `shell` runtime 的原始 workspace 不单独占行，它的 tab 只经 Shells 投影；
+    /// - 编号快捷键只在真实 workspace 上分配。
     pub fn sidebar_items(&self) -> Vec<crate::frontend::gpui::model::sidebar::SidebarItem> {
-        use crate::frontend::gpui::model::sidebar::{shortcut_index_by_workspace_id, SidebarItem};
-        let ids = self.workspace_ids();
+        use crate::frontend::gpui::chrome::panel_view::AggregateKind;
+        use crate::frontend::gpui::model::sidebar::{
+            shortcut_index_by_workspace_id, SidebarItem, AGGREGATE_AGENTS, AGGREGATE_SHELLS,
+        };
+        let ids: Vec<String> = self
+            .workspace_ids()
+            .into_iter()
+            .filter(|id| self.workspace_runtime(id) != "shell")
+            .collect();
         let shortcuts =
             shortcut_index_by_workspace_id(&ids.iter().map(String::as_str).collect::<Vec<_>>());
-        ids.iter()
-            .map(|id| {
-                let view = self.store.workspace(id);
-                let workspace = view.and_then(|view| view.workspace.as_ref());
-                let mut item = SidebarItem::new(id.clone(), self.workspace_name(id));
-                item.runtime = self.workspace_runtime(id);
-                item.transport = workspace.map(transport_label).unwrap_or_default();
-                item.is_active = self.visible.as_deref() == Some(id.as_str());
-                item.backend_status = view
-                    .and_then(|view| view.backend_status)
-                    .unwrap_or(crate::frontend::gpui::model::sidebar::backend_status::DISCONNECTED);
-                item.shortcut = shortcuts.get(id).copied();
-                // pane → tab 的映射来自拓扑快照：侧栏点击和 tab 指示灯都要它。
-                if let Some(view) = view {
-                    for (tab_id, panes) in &view.panes {
-                        for pane in panes {
-                            item.tab_id_by_pane.insert(pane.id, *tab_id);
-                        }
-                    }
-                    for (number, tab) in self
-                        .store
-                        .workspace(id)
-                        .map(|view| view.tabs.clone())
-                        .unwrap_or_default()
-                        .iter()
-                        .enumerate()
-                    {
-                        for pane in view.panes.get(&tab.id).map(Vec::as_slice).unwrap_or(&[]) {
-                            item.tab_number_by_pane.insert(pane.id, number as u32 + 1);
-                        }
+        let mut items = vec![
+            SidebarItem::new(AGGREGATE_SHELLS, "Shells").with(|item| {
+                item.runtime = "aggregate".into();
+                item.transport = "local + ssh".into();
+                item.is_active = self.aggregate == Some(AggregateKind::Shells);
+                item.is_closable = false;
+                item.is_reorderable = false;
+            }),
+            SidebarItem::new(AGGREGATE_AGENTS, "Agents").with(|item| {
+                item.runtime = "aggregate".into();
+                item.transport = "all workspaces".into();
+                item.is_active = self.aggregate == Some(AggregateKind::Agents);
+                item.is_closable = false;
+                item.is_reorderable = false;
+            }),
+        ];
+        items.extend(ids.iter().map(|id| {
+            let view = self.store.workspace(id);
+            let workspace = view.and_then(|view| view.workspace.as_ref());
+            let mut item = SidebarItem::new(id.clone(), self.workspace_name(id));
+            item.runtime = self.workspace_runtime(id);
+            item.transport = workspace.map(transport_label).unwrap_or_default();
+            item.is_active =
+                self.aggregate.is_none() && self.visible.as_deref() == Some(id.as_str());
+            item.backend_status = view
+                .and_then(|view| view.backend_status)
+                .unwrap_or(crate::frontend::gpui::model::sidebar::backend_status::DISCONNECTED);
+            item.shortcut = shortcuts.get(id).copied();
+            // pane → tab 的映射来自拓扑快照：侧栏点击和 tab 指示灯都要它。
+            if let Some(view) = view {
+                for (tab_id, panes) in &view.panes {
+                    for pane in panes {
+                        item.tab_id_by_pane.insert(pane.id, *tab_id);
                     }
                 }
-                item
-            })
-            .collect()
+                for (number, tab) in view.tabs.iter().enumerate() {
+                    for pane in view.panes.get(&tab.id).map(Vec::as_slice).unwrap_or(&[]) {
+                        item.tab_number_by_pane.insert(pane.id, number as u32 + 1);
+                    }
+                }
+            }
+            item
+        }));
+        items
     }
 
     /// 侧栏模型：四段 + 行。Agents/Commands 目前只有 attention 数据源时有内容。
@@ -1013,16 +1103,10 @@ impl GpuiApp {
                 true
             }
             KeyAction::NextPane | KeyAction::PrevPane => {
-                let next = action == KeyAction::NextPane;
-                self.commands.push(ClientCommand::Task {
-                    workspace_id: self.visible.clone(),
-                    task: if next {
-                        ClientTask::NextPane
-                    } else {
-                        ClientTask::PreviousPane
-                    },
-                });
-                true
+                // 对照 Swift `MainWindow.movePane(offset:)`：导航范围是当前 tab
+                // 的布局叶子，结果用 `SwitchPane` 定位，不能交给全局 active pane 推断。
+                let offset = if action == KeyAction::NextPane { 1 } else { -1 };
+                self.move_pane_focus(offset, cx)
             }
             KeyAction::SwitchTab(index) => {
                 let tabs = self.tabs();
@@ -1676,8 +1760,7 @@ impl GpuiApp {
             .unwrap_or("local");
         let (kind, host) = if transport == "ssh" {
             let alias = canonical
-                .and_then(|canonical| canonical.get("alias"))
-                .and_then(serde_json::Value::as_str)
+                .map(crate::frontend::gpui::model::target::canonical_target)
                 .unwrap_or_default();
             (ComposerTargetKind::Ssh, alias.to_string())
         } else {
@@ -2272,6 +2355,11 @@ impl GpuiApp {
     }
 
     pub fn select_workspace(&mut self, workspace: String, cx: &mut Context<Self>) {
+        // 固定聚合槽不是 Core workspace：点它只能切到聚合投影。
+        if let Some(kind) = aggregate_kind_for_identity(&workspace) {
+            self.select_aggregate(kind, cx);
+            return;
+        }
         self.aggregate = None;
         if self.visible.as_deref() == Some(workspace.as_str()) {
             return;
@@ -2303,6 +2391,63 @@ impl GpuiApp {
             task: crate::frontend::utils::corebridge::ClientTask::CloseTab { tab_id },
         });
         cx.notify();
+    }
+
+    /// `Cmd-[` / `Cmd-]`：在当前 tab 的布局叶子之间循环。
+    ///
+    /// 对照 Swift `MainWindow.movePane(offset:)`：
+    /// - 导航范围只取当前 tab（布局叶子优先，zoom 时回到快照顺序）；
+    /// - 结果是显式 `SwitchPane(pane)`，不是让 Core 自己猜 `active_pane`；
+    /// - zoom 中切 pane 会先退出 zoom，再对新 pane 重新全屏。
+    pub fn move_pane_focus(&mut self, offset: i32, cx: &mut Context<Self>) -> bool {
+        use crate::frontend::gpui::model::pane_navigation;
+        use crate::frontend::utils::corebridge::ClientTask;
+        let Some(workspace) = self.visible.clone() else {
+            return false;
+        };
+        let Some(view) = self.store.workspace(&workspace) else {
+            return false;
+        };
+        let Some(tab_id) = view.active_tab_id() else {
+            return false;
+        };
+        let panes = view.panes_for_tab(tab_id);
+        let pane_ids: Vec<u32> = panes.iter().map(|pane| pane.id).collect();
+        let active = self
+            .focused_pane
+            .filter(|id| pane_ids.contains(id))
+            .or_else(|| panes.iter().find(|pane| pane.is_active).map(|pane| pane.id));
+        let Some(active) = active else {
+            return false;
+        };
+        let layout_leaves = view
+            .layouts
+            .get(&tab_id)
+            .map(pane_navigation::layout_leaf_ids);
+        let navigation = pane_navigation::navigation_pane_ids(layout_leaves.as_deref(), &pane_ids);
+        let Some(target) = pane_navigation::target(&navigation, active, offset) else {
+            return false;
+        };
+        if target == active {
+            return false;
+        }
+        let was_zoomed = layout_leaves
+            .as_deref()
+            .and_then(|leaves| pane_navigation::zoomed_pane_id(leaves, &pane_ids))
+            .is_some();
+        self.commands.push(ClientCommand::Task {
+            workspace_id: Some(workspace.clone()),
+            task: ClientTask::SwitchPane { pane_id: target },
+        });
+        if was_zoomed {
+            // tmux 选别的 pane 会自动退出 zoom；重新对目标 pane 全屏。
+            self.commands.push(ClientCommand::Task {
+                workspace_id: Some(workspace),
+                task: ClientTask::TogglePaneFullscreen { pane_id: target },
+            });
+        }
+        cx.notify();
+        true
     }
 
     pub fn focus_pane(&mut self, pane_id: u32, cx: &mut Context<Self>) {
@@ -2723,6 +2868,19 @@ impl EntityInputHandler for GpuiApp {
     }
 }
 
+/// 固定聚合槽的身份 → 聚合投影。真实 workspace id 返回 `None`。
+fn aggregate_kind_for_identity(
+    identity: &str,
+) -> Option<crate::frontend::gpui::chrome::panel_view::AggregateKind> {
+    use crate::frontend::gpui::chrome::panel_view::AggregateKind;
+    use crate::frontend::gpui::model::aggregate::{AGENTS_IDENTITY, SHELLS_IDENTITY};
+    match identity {
+        SHELLS_IDENTITY => Some(AggregateKind::Shells),
+        AGENTS_IDENTITY => Some(AggregateKind::Agents),
+        _ => None,
+    }
+}
+
 /// 工作区行展示的机器名：`TargetTransport.label`，SSH 用别名、本机是 `local`。
 ///
 /// 对照 macOS `WorkspaceSidebarItem.transport`（值来自 `TargetConfig.transport.label`）。
@@ -2738,8 +2896,8 @@ fn transport_label(workspace: &crate::frontend::utils::corebridge::ClientWorkspa
         .unwrap_or("local");
     if transport == "ssh" {
         let alias = canonical
-            .and_then(|canonical| canonical.get("alias"))
-            .and_then(serde_json::Value::as_str)
+            .map(crate::frontend::gpui::model::target::canonical_target)
+            .filter(|alias| !alias.is_empty())
             .unwrap_or("ssh");
         return TargetTransport::Ssh {
             name: alias.to_string(),

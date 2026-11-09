@@ -43,9 +43,13 @@ impl GpuiApp {
 
     /// 这个目标是不是已经打开着（面板里不能再列一遍）。
     ///
-    /// 三种身份都算同一个：canonical target 完全一致、workspace id 一致、
-    /// 名字 + runtime + session 一致。最后一种是为了 Core 还没回 canonical
-    /// 时也能拦住「同名 Project / 现有 session」的重复行。
+    /// 按可信度依次判定：
+    /// 1. Project provenance（`spec.provenance.project_id`）——打开 Project /
+    ///    worktree 时 Core 自己写的来源，最权威；
+    /// 2. canonical target 完全一致（含 SSH 主机、session、socket、Herdr id）；
+    /// 3. workspace id 一致（`canonical.workspace_id` 或产品 id）；
+    /// 4. 名字 + runtime + session 一致——Core 还没回 canonical 时也要拦住
+    ///    「同名 Project / 现有 session」的重复行。
     pub(super) fn is_workspace_open(&self, config: &TargetConfig) -> bool {
         let ids = self
             .store
@@ -60,9 +64,19 @@ impl GpuiApp {
             return true;
         }
         for id in &ids {
+            if config.persisted_id.is_some() && self.open_provenance(id) == config.persisted_id {
+                return true;
+            }
             if let Some(open) = self.workspace_target(id) {
                 if same_target(&open, config) {
                     return true;
+                }
+                if let (Some(open_id), Some(target_id)) =
+                    (open.workspace_id.as_deref(), config.workspace_id.as_deref())
+                {
+                    if open_id == target_id {
+                        return true;
+                    }
                 }
                 let same_runtime = open.runtime == config.runtime;
                 let same_session = match (open.session.as_deref(), config.session.as_deref()) {
@@ -716,7 +730,7 @@ impl GpuiApp {
         let canonical = &workspace.resolved_target.as_ref()?["canonical"];
         let transport = if canonical["transport"] == "ssh" {
             TargetTransport::Ssh {
-                name: canonical["alias"].as_str().unwrap_or_default().into(),
+                name: crate::frontend::gpui::model::target::canonical_target(canonical).into(),
             }
         } else {
             TargetTransport::Local
@@ -731,6 +745,24 @@ impl GpuiApp {
             workspace_id: canonical["workspace_id"].as_str().map(str::to_string),
             persisted_id: None,
         })
+    }
+
+    /// 已打开 workspace 的 Catalog provenance（`spec.provenance`）。
+    ///
+    /// 打开 Project / worktree 时 Core 会把来源 id 写进 canonical 描述；
+    /// 它比 target 字段更权威：同一 Project 可能被解析成不同的 session/socket
+    /// 展示值，但 provenance 不变。
+    fn open_provenance(&self, id: &str) -> Option<String> {
+        let workspace = self.store.workspace(id)?.workspace.as_ref()?;
+        let provenance = workspace
+            .resolved_target
+            .as_ref()?
+            .get("spec")?
+            .get("provenance")?;
+        provenance
+            .get("project_id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
     }
 
     pub fn aggregate_kind(&self) -> Option<AggregateKind> {
