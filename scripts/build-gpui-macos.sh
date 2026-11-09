@@ -52,6 +52,15 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 install_executable "$BIN" "$APP/Contents/Resources/muxterm"
 
+# App icon：与 macOS Swift 前端共用仓库里唯一的一份 .icns。以前这里没拷图标、
+# Info.plist 也没写 CFBundleIconFile，Finder / Dock 只能给通用图标。
+ICON="$ROOT/src/frontend/macos/Resources/MuxtermLogo.icns"
+if [[ -f "$ICON" ]]; then
+  cp -f "$ICON" "$APP/Contents/Resources/MuxtermLogo.icns"
+else
+  echo "WARN: $ICON 缺失，app 将显示通用图标" >&2
+fi
+
 # Info.plist 里 NSHighResolutionCapable 必须为 true，否则 Retina 下按 1x 绘制。
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -64,6 +73,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <string>Muxterm GPUI</string>
   <key>CFBundleExecutable</key>
   <string>MuxtermGpui</string>
+  <key>CFBundleIconFile</key>
+  <string>MuxtermLogo.icns</string>
   <key>CFBundleIdentifier</key>
   <string>$BUNDLE_IDENTIFIER</string>
   <key>CFBundleVersion</key>
