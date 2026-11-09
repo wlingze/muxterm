@@ -87,7 +87,8 @@ impl SearchScope {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PanelModel {
     pub tab: PanelTab,
-    pub query: String,
+    /// 查询串 + 光标 + 选区。
+    pub input: crate::frontend::gpui::model::text_input::TextInput,
     pub scope: SearchScope,
 }
 
@@ -95,13 +96,18 @@ impl Default for PanelModel {
     fn default() -> Self {
         Self {
             tab: PanelTab::Workspaces,
-            query: String::new(),
+            input: crate::frontend::gpui::model::text_input::TextInput::new(),
             scope: SearchScope::Workspace,
         }
     }
 }
 
 impl PanelModel {
+    /// 查询串纯文本（过滤 / 渲染都用它）。
+    pub fn query(&self) -> String {
+        self.input.text()
+    }
+
     /// 打开面板：指定初始 tab，query 清空。
     pub fn open(initial: PanelTab) -> Self {
         Self {
@@ -151,10 +157,10 @@ mod tests {
     #[test]
     fn query_survives_tab_change() {
         let mut model = PanelModel::open(PanelTab::Workspaces);
-        model.query = "legion".to_string();
+        model.input.set_text("legion");
         model.cycle_tab(false);
         assert_eq!(model.tab, PanelTab::Attention);
-        assert_eq!(model.query, "legion");
+        assert_eq!(model.query(), "legion");
     }
 
     /// 对照 `testSearchScopeDefaultsToWorkspaceAndSurvivesTabChange`。

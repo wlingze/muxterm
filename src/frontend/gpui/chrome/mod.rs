@@ -2,6 +2,7 @@
 
 pub mod composer;
 pub mod info;
+pub mod input_line;
 pub mod palette;
 pub mod palette_view;
 pub mod pane_grid;

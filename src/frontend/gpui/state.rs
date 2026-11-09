@@ -134,6 +134,9 @@ pub struct GpuiApp {
     pub target_editor_focus: crate::frontend::gpui::model::target_editor::TargetEditorFocus,
     /// 设置窗口是否打开。
     pub settings_open: bool,
+    /// 上次按键是否已被前端消费（不再交给原生菜单再执行一遍）。
+    /// 测试用：回归「按一次 Cmd-D 只能分一次屏」。
+    key_consumed: bool,
     /// Core manifest 解析出来的分类与字段。
     pub(crate) settings_manifest: crate::frontend::gpui::model::settings::SettingsManifest,
     /// 设置草稿：值与 baseline 的差就是 Apply 要提交的 patch。
@@ -253,6 +256,7 @@ impl GpuiApp {
             settings_focus: SettingsFocus::default(),
             settings_edit: None,
             settings_discard_pending: false,
+            key_consumed: false,
             composer: crate::frontend::gpui::model::composer::ComposerDraftStore::new(),
             composer_open: false,
             composer_selection: crate::frontend::gpui::model::composer::TextRange::default(),
@@ -678,6 +682,7 @@ impl GpuiApp {
             settings_focus: SettingsFocus::default(),
             settings_edit: None,
             settings_discard_pending: false,
+            key_consumed: false,
             composer: crate::frontend::gpui::model::composer::ComposerDraftStore::new(),
             composer_open: false,
             composer_selection: crate::frontend::gpui::model::composer::TextRange::default(),
@@ -842,6 +847,12 @@ impl GpuiApp {
     #[doc(hidden)]
     pub fn take_commands_for_tests(&mut self) -> Vec<ClientCommand> {
         self.commands.drain()
+    }
+
+    /// 无头测试用：上一个按键有没有被消费（消费后才不会被原生菜单再跑一遍）。
+    #[doc(hidden)]
+    pub fn take_key_consumed_for_tests(&mut self) -> bool {
+        std::mem::take(&mut self.key_consumed)
     }
 
     /// 侧栏是否显示。
@@ -1158,6 +1169,11 @@ impl GpuiApp {
                 self.move_pane_focus(offset, cx)
             }
             KeyAction::SwitchTab(index) => {
+                // 聚合投影里的 tab 条是「1..N 个页面」（跨 workspace），不是当前
+                // workspace 的真实 tab id：拿真实 id 去查页会跳错行甚至不跳。
+                if self.aggregate.is_some() {
+                    return self.select_aggregate_tab(index as u32, cx);
+                }
                 let tabs = self.tabs();
                 let Some(tab) = tabs.get(index.saturating_sub(1)) else {
                     return false;
@@ -1167,6 +1183,10 @@ impl GpuiApp {
                 true
             }
             KeyAction::SwitchLastTab => {
+                if self.aggregate.is_some() {
+                    let last = self.aggregate_pages().len() as u32;
+                    return last > 0 && self.select_aggregate_tab(last, cx);
+                }
                 let tabs = self.tabs();
                 let Some(tab) = tabs.last() else {
                     return false;
@@ -1176,6 +1196,19 @@ impl GpuiApp {
                 true
             }
             KeyAction::PreviousTab | KeyAction::NextTab => {
+                if self.aggregate.is_some() {
+                    let pages = self.aggregate_pages();
+                    if pages.len() < 2 {
+                        return false;
+                    }
+                    let current = self.aggregate_page_index().unwrap_or(0);
+                    let next = if action == KeyAction::PreviousTab {
+                        (current + pages.len() - 1) % pages.len()
+                    } else {
+                        (current + 1) % pages.len()
+                    };
+                    return self.select_aggregate_tab(next as u32 + 1, cx);
+                }
                 let tabs = self.tabs();
                 if tabs.len() < 2 {
                     return false;
@@ -1304,7 +1337,7 @@ impl GpuiApp {
     pub fn palette_visible(&self) -> Vec<crate::frontend::gpui::chrome::palette_view::PaletteItem> {
         crate::frontend::gpui::chrome::palette_view::filter(
             &self.palette_items(),
-            &self.palette.query,
+            &self.palette.query(),
         )
         .into_iter()
         .cloned()
@@ -1386,7 +1419,7 @@ impl GpuiApp {
 
     /// 命令面板查询串（测试用）。
     pub fn palette_query_for_tests(&self) -> String {
-        self.palette.query.clone()
+        self.palette.query()
     }
 
     /// 命令面板当前选中下标（过滤后列表内）。
@@ -2352,7 +2385,7 @@ impl GpuiApp {
             .actions
             .as_ref()
             .map(|menu| menu.query.clone())
-            .unwrap_or_else(|| self.panel.model.query.clone())
+            .unwrap_or_else(|| self.panel.model.query())
     }
 
     /// 面板当前选中的行（渲染高亮用）。
@@ -2455,7 +2488,7 @@ impl GpuiApp {
             self.panel
                 .picker
                 .navigate(crate::frontend::gpui::model::workspace_picker::PickerStage::Root);
-            self.panel.model.query.clear();
+            self.panel.model.input.clear();
             self.panel.actions = None;
         }
         if tab == crate::frontend::gpui::model::panel::PanelTab::Workspaces {
@@ -3029,8 +3062,61 @@ impl GpuiApp {
                     self.move_palette_selection(1, cx);
                     return;
                 }
+                // `Alt`/`Ctrl`+Backspace 按词删；放在裸 `backspace` 之前，
+                // 否则会被它先吃掉（unreachable pattern）。
+                "backspace" if keystroke.modifiers.alt || keystroke.modifiers.control => {
+                    self.palette.input.delete_word_backward();
+                    self.palette.selected = 0;
+                    cx.notify();
+                    return;
+                }
                 "backspace" => {
                     self.palette_backspace(cx);
+                    return;
+                }
+                // 查询框是真正的单行编辑器：光标、选区、行首行尾、向前删除。
+                "left" | "right" | "home" | "end" | "delete" => {
+                    let input = &mut self.palette.input;
+                    match keystroke.key.as_str() {
+                        "delete" => input.delete_forward(),
+                        "home" => input.move_to(false, keystroke.modifiers.shift),
+                        "end" => input.move_to(true, keystroke.modifiers.shift),
+                        "left" if keystroke.modifiers.alt => {
+                            input.move_word(false, keystroke.modifiers.shift)
+                        }
+                        "right" if keystroke.modifiers.alt => {
+                            input.move_word(true, keystroke.modifiers.shift)
+                        }
+                        "left" => input.move_cursor(-1, keystroke.modifiers.shift),
+                        _ => input.move_cursor(1, keystroke.modifiers.shift),
+                    }
+                    cx.notify();
+                    return;
+                }
+                "a" if keystroke.modifiers.platform => {
+                    self.palette.input.select_all();
+                    cx.notify();
+                    return;
+                }
+                "c" | "x" if keystroke.modifiers.platform => {
+                    if let Some(text) = self.palette.input.selected_text() {
+                        if keystroke.key == "x" {
+                            self.palette.input.backspace();
+                        }
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+                        cx.notify();
+                    }
+                    return;
+                }
+                "v" if keystroke.modifiers.platform => {
+                    if let Some(text) = cx.read_from_clipboard().and_then(|item| {
+                        item.entries().iter().find_map(|entry| match entry {
+                            gpui::ClipboardEntry::String(text) => Some(text.text().to_string()),
+                            gpui::ClipboardEntry::Image(_) => None,
+                        })
+                    }) {
+                        self.palette_push(&text, cx);
+                    }
                     return;
                 }
                 "p" | "n" if control_only => {
@@ -3108,6 +3194,11 @@ impl GpuiApp {
 
         if let Some(action) = crate::frontend::gpui::model::shortcuts::builtin_action(&chord) {
             if self.run_action(action, window, cx) {
+                // **必须消费事件**：macOS 会先拿同一条 chord 问视图（performKeyEquivalent），
+                // 再拿它去匹配原生菜单。不消费就等于按一次执行两遍——Cmd-D 分两个窗格、
+                // Cmd-, 打开设置后又马上被菜单那条 `OpenSettings` 当成取消关掉。
+                self.key_consumed = true;
+                cx.stop_propagation();
                 cx.notify();
                 return;
             }
@@ -3125,6 +3216,9 @@ impl GpuiApp {
                     self.handle_paste(&text, cx);
                 }
             }
+            // 同上：带 Command 的按键绝不能同时交给原生菜单再执行一遍。
+            self.key_consumed = true;
+            cx.stop_propagation();
             cx.notify();
             return;
         }

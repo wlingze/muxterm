@@ -307,7 +307,7 @@ impl GpuiApp {
     /// `Language`：切到语言子菜单。
     pub fn open_language_menu(&mut self, cx: &mut Context<Self>) {
         self.palette_menu = Some(PaletteMenu::Languages);
-        self.palette.query.clear();
+        self.palette.input.clear();
         self.palette.selected = 0;
         cx.notify();
     }
@@ -317,7 +317,7 @@ impl GpuiApp {
         if self.palette_menu.take().is_none() {
             return false;
         }
-        self.palette.query.clear();
+        self.palette.input.clear();
         self.palette.selected = 0;
         cx.notify();
         true
@@ -333,7 +333,7 @@ impl GpuiApp {
         });
         self.config_reload_pending = true;
         self.palette_menu = None;
-        self.palette.query.clear();
+        self.palette.input.clear();
         self.palette.selected = 0;
         cx.notify();
     }

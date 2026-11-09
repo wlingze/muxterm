@@ -98,7 +98,7 @@ impl GpuiApp {
 
     pub(super) fn reset_panel_selection(&mut self) {
         let rows = self.panel_rows();
-        let query_empty = self.panel.model.query.trim().is_empty();
+        let query_empty = self.panel.model.query().trim().is_empty();
         self.panel.selected = rows
             .iter()
             .position(|row| match (&self.panel.picker.stage, row) {
@@ -149,14 +149,17 @@ impl GpuiApp {
             menu.selected = 0;
         } else {
             if let Some(text) = text {
-                self.panel.model.query.push_str(text);
+                self.panel.model.input.insert(text);
             } else {
-                self.panel.model.query.pop();
+                self.panel.model.input.backspace();
             }
             if let PickerStage::Confirm(draft) = &mut self.panel.picker.stage {
-                draft.name = self.panel.model.query.clone();
+                draft.name = self.panel.model.query();
             } else if matches!(self.panel.picker.stage, PickerStage::Path(_)) {
-                self.panel.picker.path.update_input(&self.panel.model.query);
+                self.panel
+                    .picker
+                    .path
+                    .update_input(&self.panel.model.query());
                 self.refresh_picker_directories(cx);
             }
             self.reset_panel_selection();
@@ -367,24 +370,24 @@ impl GpuiApp {
         match action {
             PickerAction::Open => {
                 self.panel.picker.navigate(PickerStage::Hosts);
-                self.panel.model.query.clear();
+                self.panel.model.input.clear();
                 self.discover_picker_aliases(cx);
             }
             PickerAction::Back => {
                 self.panel.picker.back();
-                self.panel.model.query = if matches!(self.panel.picker.stage, PickerStage::Path(_))
-                {
-                    self.panel.picker.path.text().into()
+                if matches!(self.panel.picker.stage, PickerStage::Path(_)) {
+                    let text = self.panel.picker.path.text().to_string();
+                    self.panel.model.input.set_text(&text);
                 } else {
-                    String::new()
-                };
+                    self.panel.model.input.clear();
+                }
                 if matches!(self.panel.picker.stage, PickerStage::Sessions(_)) {
                     self.discover_picker_sessions(cx);
                 }
             }
             PickerAction::Host(transport) => {
                 self.panel.picker.enter_sessions(transport);
-                self.panel.model.query.clear();
+                self.panel.model.input.clear();
                 self.discover_picker_sessions(cx);
             }
             PickerAction::OpenNewPath => {
@@ -398,19 +401,21 @@ impl GpuiApp {
                         TargetTransport::Ssh { name } => Some(name.as_str()),
                     };
                     self.panel.picker.path.set_transport(alias.is_some(), alias);
-                    self.panel.model.query = "~".into();
+                    self.panel.model.input.set_text("~");
                     self.refresh_picker_directories(cx);
                 }
             }
             PickerAction::Directory(name) => {
                 self.panel.picker.path.select(&name);
-                self.panel.model.query = self.panel.picker.path.text().into();
+                let path_text = self.panel.picker.path.text().to_string();
+                self.panel.model.input.set_text(&path_text);
                 self.refresh_picker_directories(cx);
             }
             PickerAction::OpenThisDirectory => {
                 if let PickerStage::Path(transport) = self.panel.picker.stage.clone() {
                     let draft = CreateDraft::new(transport, self.panel.picker.path.text());
-                    self.panel.model.query = draft.name.clone();
+                    let draft_name = draft.name.clone();
+                    self.panel.model.input.set_text(&draft_name);
                     self.panel.picker.navigate(PickerStage::Confirm(draft));
                 }
             }
@@ -446,7 +451,7 @@ impl GpuiApp {
         if let Some(menu) = &mut self.panel.actions {
             menu.query.clear();
         } else {
-            self.panel.model.query.clear();
+            self.panel.model.input.clear();
         }
         self.edit_panel_query(Some(query), cx);
     }
@@ -456,21 +461,59 @@ impl GpuiApp {
             return;
         }
         if key.modifiers.platform {
-            if key.key == "a" {
-                self.set_panel_query("", cx);
-            }
-            if key.key == "v" {
-                if let Some(item) = cx.read_from_clipboard() {
-                    let text = item.entries().iter().find_map(|entry| match entry {
-                        gpui::ClipboardEntry::String(text) => Some(text.text().to_string()),
-                        _ => None,
-                    });
-                    if let Some(text) = text {
-                        self.panel_push_query(&text, cx);
+            match key.key.as_str() {
+                // `Cmd-A` 是**全选**，不是清除：以前这里直接把查询清空了。
+                "a" => {
+                    self.panel.model.input.select_all();
+                    cx.notify();
+                }
+                "v" => {
+                    if let Some(item) = cx.read_from_clipboard() {
+                        let text = item.entries().iter().find_map(|entry| match entry {
+                            gpui::ClipboardEntry::String(text) => Some(text.text().to_string()),
+                            _ => None,
+                        });
+                        if let Some(text) = text {
+                            self.panel_push_query(&text, cx);
+                        }
                     }
                 }
+                "c" | "x" => {
+                    if let Some(text) = self.panel.model.input.selected_text() {
+                        if key.key == "x" {
+                            self.panel.model.input.backspace();
+                        }
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+                        cx.notify();
+                    }
+                }
+                _ => {}
             }
             return;
+        }
+        // 单行编辑：光标、选区、行首行尾、向后删除、按词删除。
+        match key.key.as_str() {
+            "left" | "right" | "home" | "end" | "delete" => {
+                let input = &mut self.panel.model.input;
+                match key.key.as_str() {
+                    "delete" => input.delete_forward(),
+                    "home" => input.move_to(false, key.modifiers.shift),
+                    "end" => input.move_to(true, key.modifiers.shift),
+                    "left" if key.modifiers.alt => input.move_word(false, key.modifiers.shift),
+                    "right" if key.modifiers.alt => input.move_word(true, key.modifiers.shift),
+                    "left" => input.move_cursor(-1, key.modifiers.shift),
+                    _ => input.move_cursor(1, key.modifiers.shift),
+                }
+                cx.notify();
+                return;
+            }
+            "backspace" if key.modifiers.alt || key.modifiers.control => {
+                self.panel.model.input.delete_word_backward();
+                self.reset_panel_selection();
+                cx.notify();
+                return;
+            }
+            _ => {}
         }
         match key.key.as_str() {
             "escape" => {
@@ -802,10 +845,13 @@ impl GpuiApp {
         if self.aggregate.is_none() {
             return false;
         }
-        if let Some((workspace, tab, _)) = self
+        let Some((workspace, tab, _)) = self
             .aggregate_pages()
             .get(display_id.saturating_sub(1) as usize)
             .cloned()
+        else {
+            return false;
+        };
         {
             self.visible = Some(workspace.clone());
             self.commands
@@ -820,6 +866,23 @@ impl GpuiApp {
         }
         true
     }
+    /// 当前聚合投影里选中的是第几页（0-based）。
+    ///
+    /// `visible` 只记真实 workspace，所以要同时比对它的 active tab。
+    pub(super) fn aggregate_page_index(&self) -> Option<usize> {
+        self.aggregate?;
+        self.aggregate_pages()
+            .iter()
+            .position(|(workspace, tab, _)| {
+                self.visible.as_deref() == Some(workspace.as_str())
+                    && self
+                        .store
+                        .workspace(workspace)
+                        .and_then(|view| view.active_tab_id())
+                        == Some(*tab)
+            })
+    }
+
     pub fn aggregate_pages(&self) -> Vec<(String, u32, String)> {
         use crate::frontend::gpui::model::{aggregate, sidebar};
         match self.aggregate {

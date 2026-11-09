@@ -3400,3 +3400,254 @@ fn idle_pump_is_not_dirty(cx: &mut TestAppContext) {
     let dirty = cx.update(|_, cx| view.update(cx, |app, cx| app.pump_once(cx)));
     assert!(!dirty, "没有事件时 pump_once 不能要求重绘");
 }
+
+/// 一次 Cmd-D 只能分一次屏。
+///
+/// 回归：`handle_key` 没消费 `Command` 组合，macOS 会先把同一条 chord 交给视图
+/// （performKeyEquivalent），再交给原生菜单 → 按一次命令执行两遍：Cmd-D 分两个
+/// 窗格、Cmd-, 打开设置后又被菜单那条 `OpenSettings` 当取消关掉（一闪消失）。
+#[gpui::test]
+fn command_shortcuts_are_consumed_before_the_native_menu(cx: &mut TestAppContext) {
+    use muxterm::frontend::command_queue::ClientCommand;
+    use muxterm::frontend::utils::corebridge::ClientTask;
+    let (view, cx) = mount(two_tab_store(), cx);
+    cx.simulate_keystrokes("cmd-d");
+    let (splits, consumed) = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            let splits = app
+                .take_commands_for_tests()
+                .iter()
+                .filter(|command| {
+                    matches!(
+                        command,
+                        ClientCommand::Task {
+                            task: ClientTask::SplitPane { .. },
+                            ..
+                        }
+                    )
+                })
+                .count();
+            (splits, app.take_key_consumed_for_tests())
+        })
+    });
+    assert_eq!(splits, 1, "一次按键只能分一次屏");
+    assert!(
+        consumed,
+        "带 Command 的动作必须 stop_propagation，否则原生菜单会再执行一遍"
+    );
+}
+
+/// Cmd-, 打开设置后必须一直开着（回归：菜单那条 OpenSettings 立刻把它关掉）。
+#[gpui::test]
+fn cmd_comma_opens_settings_and_keeps_them_open(cx: &mut TestAppContext) {
+    let (view, cx) = mount(two_tab_store(), cx);
+    cx.simulate_keystrokes("cmd-,");
+    cx.run_until_parked();
+    assert!(
+        cx.update(|_, cx| view.update(cx, |app, _| app.settings_open)),
+        "Cmd-, 要能打开设置"
+    );
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.pump_once(cx);
+        })
+    });
+    cx.run_until_parked();
+    assert!(
+        cx.update(|_, cx| view.update(cx, |app, _| app.settings_open)),
+        "打开的设置不能被自己关掉"
+    );
+}
+
+/// 聚合投影里 Cmd-1..N 切的是**页面**，不是当前 workspace 的 tab id。
+///
+/// 回归：`SwitchTab(n)` 以前拿 `self.tabs()`（当前 workspace 的真实 tab id）去
+/// 选页，Agents / Shells 里第 2 页之后按数字要么跳错、要么完全不动。
+#[gpui::test]
+fn aggregates_switch_pages_with_cmd_digits(cx: &mut TestAppContext) {
+    use muxterm::frontend::gpui::chrome::panel_view::AggregateKind;
+    let mut store = ViewStore::default();
+    for (id, name, tab, pane) in [
+        ("local//shell/tmux/", "one", 1, 10),
+        ("local//shell2/tmux/", "two", 2, 20),
+    ] {
+        store.replace_topology(
+            ClientWorkspace {
+                id: id.to_string(),
+                name: name.to_string(),
+                runtime: "shell".to_string(),
+                active: tab == 1,
+                resolved_target: None,
+            },
+            vec![ClientTab {
+                id: tab,
+                name: name.to_string(),
+                is_active: true,
+            }],
+            vec![(
+                tab,
+                vec![ClientPane {
+                    id: pane,
+                    cols: 80,
+                    rows: 24,
+                    is_active: true,
+                    title: name.to_string(),
+                }],
+            )],
+        );
+        store.ensure_workspace(id).backend_status = Some(backend_status::CONNECTED);
+    }
+    let (view, cx) = mount(store, cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.select_aggregate(AggregateKind::Shells, cx);
+        })
+    });
+    let pages = cx.update(|_, cx| view.update(cx, |app, _| app.aggregate_pages().len()));
+    assert_eq!(pages, 2, "两个本机 shell 应该是两页");
+
+    cx.simulate_keystrokes("cmd-2");
+    let visible =
+        cx.update(|_, cx| view.update(cx, |app, _| app.visible_workspace().map(str::to_string)));
+    assert_eq!(
+        visible.as_deref(),
+        Some("local//shell2/tmux/"),
+        "Cmd-2 必须切到第 2 页"
+    );
+
+    cx.simulate_keystrokes("cmd-1");
+    let visible =
+        cx.update(|_, cx| view.update(cx, |app, _| app.visible_workspace().map(str::to_string)));
+    assert_eq!(visible.as_deref(), Some("local//shell/tmux/"));
+}
+
+/// 分屏后：活动 pane 正常，非活动 pane 压暗；单 pane 不压。
+///
+/// 对照 macOS `InactivePaneDimmingPolicy`（iTerm2 `SplitPaneDimmingAmount` = 0.15）。
+#[gpui::test]
+fn inactive_panes_are_dimmed_when_a_tab_is_split(cx: &mut TestAppContext) {
+    use muxterm::frontend::utils::corebridge::ClientLayout;
+    let mut store = store_with_two_workspaces();
+    store.replace_topology(
+        workspace("local@@dev@tmux@dev", "dev", true),
+        vec![ClientTab {
+            id: 1,
+            name: "dev".to_string(),
+            is_active: true,
+        }],
+        vec![
+            (
+                1,
+                vec![ClientPane {
+                    id: 10,
+                    cols: 80,
+                    rows: 24,
+                    is_active: true,
+                    title: "one".to_string(),
+                }],
+            ),
+            (
+                1,
+                vec![ClientPane {
+                    id: 11,
+                    cols: 80,
+                    rows: 24,
+                    is_active: false,
+                    title: "two".to_string(),
+                }],
+            ),
+        ],
+    );
+    store.replace_layouts(
+        "local@@dev@tmux@dev",
+        vec![(
+            1,
+            ClientLayout::Split {
+                first: Box::new(ClientLayout::Leaf { pane_id: 10 }),
+                second: Box::new(ClientLayout::Leaf { pane_id: 11 }),
+                horizontal: true,
+                ratio: 5,
+            },
+        )],
+    );
+    let (view, cx) = mount(store, cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.feed_pane_for_tests("local@@dev@tmux@dev", 11, 80, 24, b"other", cx);
+        })
+    });
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("pane-dimmed").is_some(),
+        "非活动 pane 必须压暗"
+    );
+}
+
+/// 命令面板的查询框要有可见光标；`Cmd-A` 要真的全选（以前是清空）。
+#[gpui::test]
+fn palette_query_shows_a_caret_and_cmd_a_selects_all(cx: &mut TestAppContext) {
+    let (view, cx) = mount(two_tab_store(), cx);
+    cx.simulate_keystrokes("cmd-shift-p");
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("input-caret").is_some(),
+        "查询框必须有可见光标"
+    );
+    cx.simulate_keystrokes("a b c");
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(|_, cx| view.update(cx, |app, _| app.palette_query_for_tests())),
+        "abc"
+    );
+    // Cmd-A 全选：查询串保留，选区非空。
+    cx.simulate_keystrokes("cmd-a");
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(|_, cx| view.update(cx, |app, _| app.palette_query_for_tests())),
+        "abc",
+        "Cmd-A 是全选，不能清空查询"
+    );
+    assert!(
+        cx.debug_bounds("input-selection").is_some(),
+        "全选后要看见选区高亮"
+    );
+    // 直接打字替换整个选区。
+    cx.simulate_keystrokes("x");
+    assert_eq!(
+        cx.update(|_, cx| view.update(cx, |app, _| app.palette_query_for_tests())),
+        "x"
+    );
+}
+
+/// 统一面板（Cmd-P）的查询框同样有光标、Cmd-A、方向键。
+#[gpui::test]
+fn panel_query_supports_selection_and_caret(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.simulate_keystrokes("cmd-p");
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("input-caret").is_some(),
+        "面板查询框必须有可见光标"
+    );
+    cx.simulate_keystrokes("d e v");
+    assert_eq!(
+        cx.update(|_, cx| view.update(cx, |app, _| app.panel_query())),
+        "dev"
+    );
+    cx.simulate_keystrokes("left");
+    cx.simulate_keystrokes("x");
+    assert_eq!(
+        cx.update(|_, cx| view.update(cx, |app, _| app.panel_query())),
+        "dexv",
+        "方向键把光标移到中间再插入"
+    );
+    cx.simulate_keystrokes("cmd-a");
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("input-selection").is_some());
+    cx.simulate_keystrokes("backspace");
+    assert_eq!(
+        cx.update(|_, cx| view.update(cx, |app, _| app.panel_query())),
+        "",
+        "有选区时退格删掉整个选区"
+    );
+}

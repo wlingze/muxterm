@@ -15,8 +15,8 @@ use std::sync::Arc;
 
 use gpui::{
     canvas, div, point, prelude::*, px, AnyElement, ElementInputHandler, FontStyle, FontWeight,
-    Hsla, MouseButton, ScrollDelta, ScrollWheelEvent, SharedString, StrikethroughStyle, TextRun,
-    UnderlineStyle,
+    Hsla, MouseButton, Pixels, ScrollDelta, ScrollWheelEvent, SharedString, StrikethroughStyle,
+    TextRun, UnderlineStyle,
 };
 
 use crate::frontend::gpui::chrome::pane_grid::Rect;
@@ -81,6 +81,14 @@ impl GpuiApp {
         let cols = (rect.max_width() / cell_width).floor().max(1.0) as usize;
         let rows = (rect.max_height() / cell_height).floor().max(1.0) as usize;
         let focused = self.focused_pane() == Some(pane_id);
+        // 未聚焦 pane 压暗（对齐 iTerm2 `SplitPaneDimmingAmount`）。
+        let visible_panes = self
+            .layout()
+            .map(|layout| {
+                crate::frontend::gpui::model::pane_navigation::layout_leaf_ids(&layout).len()
+            })
+            .unwrap_or(1);
+        let dimmed = crate::frontend::gpui::model::pane_dimming::should_dim(focused, visible_panes);
 
         let mut row_elements: Vec<AnyElement> = Vec::new();
         let mut row_texts: Vec<RowText> = Vec::new();
@@ -96,7 +104,8 @@ impl GpuiApp {
                     let Some(cells) = surface.visible_row(row) else {
                         break;
                     };
-                    let runs = Self::row_runs(&theme, cells, row, draw_cols, cursor, show_cursor);
+                    let runs =
+                        Self::row_runs(&theme, cells, row, draw_cols, cursor, show_cursor, dimmed);
                     row_elements.push(Self::render_row(
                         &runs,
                         row,
@@ -198,7 +207,15 @@ impl GpuiApp {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .bg(theme.bg)
+            .bg(if dimmed {
+                crate::frontend::gpui::model::pane_dimming::dim(
+                    theme.bg,
+                    crate::frontend::gpui::model::pane_dimming::INACTIVE_PANE_DIM,
+                )
+            } else {
+                theme.bg
+            })
+            .when(dimmed, |this| this.debug_selector(|| "pane-dimmed".into()))
             .border_1()
             .border_color(border)
             .font_family(theme.font_family)
@@ -311,6 +328,7 @@ impl GpuiApp {
         cols: usize,
         cursor: (usize, usize),
         show_cursor: bool,
+        dimmed: bool,
     ) -> Vec<RowRun> {
         let last = Self::last_visible_cell(cells, cols, row, cursor, show_cursor);
         let cursor_col = (show_cursor && cursor.0 == row).then_some(cursor.1);
@@ -319,7 +337,15 @@ impl GpuiApp {
         while index < last {
             let start = index;
             let style = RunStyle::of(&cells[index]);
-            let (fg, bg) = Self::cell_colors(&cells[index], theme, row, index, cursor, show_cursor);
+            let (fg, bg) = Self::cell_colors(
+                &cells[index],
+                theme,
+                row,
+                index,
+                cursor,
+                show_cursor,
+                dimmed,
+            );
             let mut text = String::new();
             let mut cols: Vec<usize> = Vec::new();
             while index < last {
@@ -327,8 +353,15 @@ impl GpuiApp {
                 if Some(index) == cursor_col && index > start {
                     break;
                 }
-                let (next_fg, next_bg) =
-                    Self::cell_colors(&cells[index], theme, row, index, cursor, show_cursor);
+                let (next_fg, next_bg) = Self::cell_colors(
+                    &cells[index],
+                    theme,
+                    row,
+                    index,
+                    cursor,
+                    show_cursor,
+                    dimmed,
+                );
                 if (next_fg, next_bg) != (fg, bg) || RunStyle::of(&cells[index]) != style {
                     break;
                 }
@@ -382,6 +415,7 @@ impl GpuiApp {
         last
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn cell_colors(
         cell: &Cell,
         theme: &crate::frontend::gpui::theme::Theme,
@@ -389,6 +423,7 @@ impl GpuiApp {
         col: usize,
         cursor: (usize, usize),
         show_cursor: bool,
+        dimmed: bool,
     ) -> (gpui::Rgba, gpui::Rgba) {
         let (fg, bg) = cell.resolved();
         // 反显已经换过前景/背景：提亮必须作用在真正当前景的那个颜色上
@@ -400,6 +435,12 @@ impl GpuiApp {
         }
         if show_cursor && cursor == (row, col) {
             std::mem::swap(&mut fg, &mut bg);
+        }
+        if dimmed {
+            use crate::frontend::gpui::model::pane_dimming;
+            let amount = pane_dimming::INACTIVE_PANE_DIM;
+            fg = pane_dimming::dim(fg, amount);
+            bg = pane_dimming::dim(bg, amount);
         }
         (fg, bg)
     }
@@ -485,9 +526,10 @@ fn paint_text(
 
             let left = bounds.origin.x + px(run.start as f32 * cell_width);
             let width = px((run.end - run.start) as f32 * cell_width);
+            let (underline_y, strike_y) = decoration_offsets(baseline, ascent, descent);
             if run.style.underline {
                 window.paint_underline(
-                    point(left, row_top + baseline + descent * 0.618),
+                    point(left, row_top + underline_y),
                     width,
                     &UnderlineStyle {
                         thickness: px(1.0),
@@ -498,7 +540,7 @@ fn paint_text(
             }
             if run.style.strike {
                 window.paint_strikethrough(
-                    point(left, row_top + (ascent * 0.5 + baseline) * 0.5),
+                    point(left, row_top + strike_y),
                     width,
                     &StrikethroughStyle {
                         thickness: px(1.0),
@@ -508,6 +550,19 @@ fn paint_text(
             }
         }
     }
+}
+
+/// 下划线与删除线的纵坐标（相对行顶）。
+///
+/// `TextSystem::descent()` 返回的是**负值**（基线以下为负）。gpui 自己那段
+/// `baseline + descent * 0.618` 用的是 `LineLayout` 里已经翻正的 descent，直接
+/// 照搬到我们这里会把下划线画到基线**上方**、横穿字形（用户看到的就是这个）。
+/// 所以这里显式取绝对值：下划线在基线下，删除线在基线稍上。
+fn decoration_offsets(baseline: Pixels, ascent: Pixels, descent: Pixels) -> (Pixels, Pixels) {
+    let below = -descent;
+    let underline = baseline + below * 0.618;
+    let strike = (ascent * 0.5 + baseline) * 0.5;
+    (underline, strike)
 }
 
 #[cfg(test)]
@@ -562,6 +617,7 @@ mod tests {
             0,
             cells.len(),
             (usize::MAX, usize::MAX),
+            false,
             false,
         )
     }
@@ -720,10 +776,41 @@ mod tests {
                 ..Attributes::default()
             },
         )];
-        let runs = GpuiApp::row_runs(&theme, &line, 0, 1, (0, 0), true);
+        let runs = GpuiApp::row_runs(&theme, &line, 0, 1, (0, 0), true, false);
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].fg, theme.bg, "光标格前景变背景色");
         assert_eq!(runs[0].bg, theme.fg, "光标格背景变前景色");
         assert!(runs[0].style.bold, "反色不能丢掉粗体");
+    }
+}
+
+#[cfg(test)]
+mod decoration_tests {
+    use super::decoration_offsets;
+    use gpui::px;
+
+    /// 下划线必须在基线**下方**、删除线在基线**上方**。
+    ///
+    /// 回归：`TextSystem::descent()` 是负值，直接 `baseline + descent * 0.618`
+    /// 会把下划线画到字形中间（截图里的「下划线穿过文字」）。
+    #[test]
+    fn underline_sits_below_the_baseline_and_strike_above() {
+        let baseline = px(15.0);
+        let ascent = px(13.7);
+        // gpui 的 descent 是负值。
+        let descent = px(-3.9);
+        let (underline, strike) = decoration_offsets(baseline, ascent, descent);
+        assert!(
+            underline > baseline,
+            "下划线要在基线下：underline={underline:?} baseline={baseline:?}"
+        );
+        assert!(
+            underline < baseline + (-descent),
+            "下划线不能掉出格子：underline={underline:?}"
+        );
+        assert!(
+            strike < baseline && strike > baseline - ascent,
+            "删除线要在字形中部：strike={strike:?}"
+        );
     }
 }
