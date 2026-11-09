@@ -85,13 +85,21 @@ fn sidebar_rows_render_the_projection(cx: &mut TestAppContext) {
     let model = cx.update(|_, cx| view.update(cx, |app, _| app.sidebar_model()));
     let workspaces = &model[0];
     assert_eq!(workspaces.section, Section::Workspaces);
-    assert_eq!(workspaces.rows.len(), 2);
-    assert_eq!(workspaces.rows[0].title, "dev");
-    assert_eq!(workspaces.rows[0].shortcut.as_deref(), Some("1"));
-    assert_eq!(workspaces.rows[1].title, "ops");
-    assert_eq!(workspaces.rows[1].shortcut.as_deref(), Some("2"));
-    assert!(workspaces.rows[0].active, "第一个工作区是当前活动");
-    assert_eq!(workspaces.rows[0].detail, "tmux @ local");
+    // 对照 Swift `sidebarItems()`：两个固定聚合槽永远在最前面。
+    assert_eq!(workspaces.rows.len(), 4, "两个聚合槽 + 两个工作区");
+    assert_eq!(workspaces.rows[0].title, "Shells");
+    assert_eq!(workspaces.rows[0].shortcut.as_deref(), Some("S"));
+    assert_eq!(workspaces.rows[0].trailing, None, "聚合槽不可关闭");
+    assert_eq!(workspaces.rows[0].detail, "aggregate @ local + ssh");
+    assert_eq!(workspaces.rows[1].title, "Agents");
+    assert_eq!(workspaces.rows[1].shortcut.as_deref(), Some("A"));
+    assert_eq!(workspaces.rows[1].detail, "aggregate @ all workspaces");
+    assert_eq!(workspaces.rows[2].title, "dev");
+    assert_eq!(workspaces.rows[2].shortcut.as_deref(), Some("1"));
+    assert_eq!(workspaces.rows[3].title, "ops");
+    assert_eq!(workspaces.rows[3].shortcut.as_deref(), Some("2"));
+    assert!(workspaces.rows[2].active, "第一个工作区是当前活动");
+    assert_eq!(workspaces.rows[2].detail, "tmux @ local");
 }
 
 /// 点第二行切工作区（`onWorkspaceActivate` 的等价路径）。
@@ -106,6 +114,143 @@ fn clicking_a_sidebar_row_switches_workspace(cx: &mut TestAppContext) {
     let visible =
         cx.update(|_, cx| view.update(cx, |app, _| app.visible_workspace().map(str::to_string)));
     assert_eq!(visible.as_deref(), Some("local@@ops@tmux@ops"));
+}
+
+/// 侧栏的 Shells / Agents 行点进去 = 固定聚合投影，绝不能当成 Core workspace。
+#[gpui::test]
+fn clicking_an_aggregate_row_switches_the_projection(cx: &mut TestAppContext) {
+    use muxterm::frontend::gpui::chrome::panel_view::AggregateKind;
+    use muxterm::frontend::gpui::model::sidebar::{AGGREGATE_AGENTS, AGGREGATE_SHELLS};
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.activate_sidebar_row(RowTarget::Workspace(AGGREGATE_SHELLS.to_string()), cx)
+        })
+    });
+    assert_eq!(
+        cx.update(|_, cx| view.update(cx, |app, _| app.aggregate_kind())),
+        Some(AggregateKind::Shells)
+    );
+    assert_eq!(
+        cx.update(|_, cx| view.update(cx, |app, _| app.visible_workspace().map(str::to_string)))
+            .as_deref(),
+        Some("local@@dev@tmux@dev"),
+        "聚合槽不拥有 Surface，不能把 visible 改成聚合 id"
+    );
+
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.activate_sidebar_row(RowTarget::Workspace(AGGREGATE_AGENTS.to_string()), cx)
+        })
+    });
+    assert_eq!(
+        cx.update(|_, cx| view.update(cx, |app, _| app.aggregate_kind())),
+        Some(AggregateKind::Agents)
+    );
+}
+
+/// 本机 shell 的原始 workspace 不占侧栏行：它的 tab 只经 Shells 投影出现。
+///
+/// 对照 Swift `sidebarItems()`：`regularItems` 过滤 `runtime == shell`。
+#[gpui::test]
+fn sidebar_hides_the_raw_local_shell_workspace(cx: &mut TestAppContext) {
+    let mut store = ViewStore::default();
+    store.replace_topology(
+        ClientWorkspace {
+            id: "local//shell/tmux/".to_string(),
+            name: "shell".to_string(),
+            runtime: "shell".to_string(),
+            active: true,
+            resolved_target: None,
+        },
+        vec![ClientTab {
+            id: 1,
+            name: "shell".to_string(),
+            is_active: true,
+        }],
+        vec![(
+            1,
+            vec![ClientPane {
+                id: 5,
+                cols: 80,
+                rows: 24,
+                is_active: true,
+                title: "shell".to_string(),
+            }],
+        )],
+    );
+    store.ensure_workspace("local//shell/tmux/").backend_status = Some(backend_status::EXITED);
+    let (view, cx) = mount(store, cx);
+    let items = cx.update(|_, cx| view.update(cx, |app, _| app.sidebar_items()));
+    assert_eq!(items.len(), 2, "只剩两个聚合槽：{items:?}");
+    assert_eq!(
+        items[0].workspace_id,
+        muxterm::frontend::gpui::model::sidebar::AGGREGATE_SHELLS
+    );
+    assert_eq!(
+        items[1].workspace_id,
+        muxterm::frontend::gpui::model::sidebar::AGGREGATE_AGENTS
+    );
+    assert!(!items.iter().any(|item| item.runtime == "shell"));
+    assert!(items[0].is_active, "启动就是本机 shell 时 Shells 高亮");
+}
+
+/// 本机 shell 退出（没有 tab/pane）时补一个新 tab；只发一次。
+///
+/// 对照 Swift `maybeCloseIfSessionEnded()`：`shell` + `local` 空工作区 → `newTab`。
+#[gpui::test]
+fn an_empty_local_shell_asks_core_for_one_new_tab(cx: &mut TestAppContext) {
+    let mut store = ViewStore::default();
+    store.replace_topology(
+        ClientWorkspace {
+            id: "local//shell/tmux/".to_string(),
+            name: "shell".to_string(),
+            runtime: "shell".to_string(),
+            active: true,
+            resolved_target: None,
+        },
+        vec![],
+        vec![],
+    );
+    store.ensure_workspace("local//shell/tmux/").backend_status = Some(backend_status::EXITED);
+    let (view, cx) = mount(store, cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.pump_once(cx);
+        })
+    });
+    let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|command| matches!(
+                command,
+                ClientCommand::Task {
+                    task: ClientTask::NewTab,
+                    ..
+                }
+            ))
+            .count(),
+        1,
+        "空 shell 必须补一个新 tab：{commands:?}"
+    );
+
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.pump_once(cx);
+        })
+    });
+    let again = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    assert!(
+        !again.iter().any(|command| matches!(
+            command,
+            ClientCommand::Task {
+                task: ClientTask::NewTab,
+                ..
+            }
+        )),
+        "Core 回包前不能每拍重发：{again:?}"
+    );
 }
 
 /// Cmd-Ctrl-2 切到第二个工作区；Cmd-Ctrl-0 回到最后一个。
@@ -154,7 +299,7 @@ fn collapsing_a_section_is_remembered(cx: &mut TestAppContext) {
     });
     let model = cx.update(|_, cx| view.update(cx, |app, _| app.sidebar_model()));
     assert!(!model[0].expanded);
-    assert_eq!(model[0].rows.len(), 2, "折叠不删行");
+    assert_eq!(model[0].rows.len(), 4, "折叠不删行（含两个聚合槽）");
 }
 
 /// 命令可见性切换：同一行在两段之间移动，且只在前端生效。
@@ -1797,33 +1942,157 @@ fn cmd_d_and_cmd_s_split_the_focused_pane(cx: &mut TestAppContext) {
     );
 }
 
-/// Cmd-[ / Cmd-]：上一个 / 下一个 pane（对照 `PaneNavigationTests`）。
+/// 一个 tab 里三个 pane，布局叶子顺序 = 屏幕顺序。
+fn three_pane_store(active_pane: u32) -> ViewStore {
+    use muxterm::frontend::utils::corebridge::ClientLayout;
+    let mut store = ViewStore::default();
+    let id = "local@@dev@tmux@dev";
+    store.replace_topology(
+        workspace(id, "dev", true),
+        vec![ClientTab {
+            id: 1,
+            name: "dev".to_string(),
+            is_active: true,
+        }],
+        vec![(
+            1,
+            [10, 11, 12]
+                .into_iter()
+                .map(|pane_id| ClientPane {
+                    id: pane_id,
+                    cols: 80,
+                    rows: 24,
+                    is_active: pane_id == active_pane,
+                    title: format!("pane {pane_id}"),
+                })
+                .collect(),
+        )],
+    );
+    store.replace_layouts(
+        id,
+        vec![(
+            1,
+            ClientLayout::Split {
+                horizontal: true,
+                ratio: 50,
+                first: Box::new(ClientLayout::Leaf { pane_id: 10 }),
+                second: Box::new(ClientLayout::Split {
+                    horizontal: false,
+                    ratio: 50,
+                    first: Box::new(ClientLayout::Leaf { pane_id: 11 }),
+                    second: Box::new(ClientLayout::Leaf { pane_id: 12 }),
+                }),
+            },
+        )],
+    );
+    store.ensure_workspace(id).backend_status = Some(backend_status::CONNECTED);
+    store
+}
+
+/// Cmd-[ / Cmd-] 必须落到当前 tab 的具体 pane（对照 `PaneNavigationTests`
+/// 与 Swift `MainWindow.movePane(offset:)`），不能交给 Core 的全局推断。
 #[gpui::test]
-fn cmd_brackets_walk_the_panes(cx: &mut TestAppContext) {
-    let (view, cx) = mount(two_tab_store(), cx);
+fn cmd_brackets_walk_the_panes_of_the_current_tab(cx: &mut TestAppContext) {
+    let (view, cx) = mount(three_pane_store(10), cx);
     cx.simulate_keystrokes("cmd-]");
     let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
     assert!(
         commands.iter().any(|command| matches!(
             command,
             ClientCommand::Task {
-                task: ClientTask::NextPane,
+                task: ClientTask::SwitchPane { pane_id: 11 },
                 ..
             }
         )),
-        "Cmd-] 必须是下一个 pane：{commands:?}"
+        "Cmd-] 必须是布局里的下一个 pane：{commands:?}"
     );
+    assert!(
+        !commands.iter().any(|command| matches!(
+            command,
+            ClientCommand::Task {
+                task: ClientTask::NextPane | ClientTask::PreviousPane,
+                ..
+            }
+        )),
+        "不能退化成让 Core 自己猜 active pane：{commands:?}"
+    );
+
+    // Core 确认后焦点跟着走，下一次 Cmd-] 从 11 继续。
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.replace_store_for_tests(three_pane_store(11));
+            app.pump_once(cx);
+        })
+    });
+    assert_eq!(
+        cx.update(|_, cx| view.update(cx, |app, _| app.focused_pane())),
+        Some(11)
+    );
+    cx.simulate_keystrokes("cmd-]");
+    let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            ClientCommand::Task {
+                task: ClientTask::SwitchPane { pane_id: 12 },
+                ..
+            }
+        )),
+        "Cmd-] 继续往后走：{commands:?}"
+    );
+
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.replace_store_for_tests(three_pane_store(12));
+            app.pump_once(cx);
+        })
+    });
     cx.simulate_keystrokes("cmd-[");
     let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
     assert!(
         commands.iter().any(|command| matches!(
             command,
             ClientCommand::Task {
-                task: ClientTask::PreviousPane,
+                task: ClientTask::SwitchPane { pane_id: 11 },
                 ..
             }
         )),
-        "Cmd-[ 必须是上一个 pane：{commands:?}"
+        "Cmd-[ 回上一个：{commands:?}"
+    );
+}
+
+/// tmux zoom：布局只剩一个叶子，导航仍要走完当前 tab 的全部 pane，
+/// 并在切换后对目标 pane 重新全屏（Swift `movePane` 的 wasZoomed 分支）。
+#[gpui::test]
+fn cmd_brackets_leave_a_zoomed_pane_by_walking_the_snapshot(cx: &mut TestAppContext) {
+    use muxterm::frontend::utils::corebridge::ClientLayout;
+    let mut store = three_pane_store(11);
+    store.replace_layouts(
+        "local@@dev@tmux@dev",
+        vec![(1, ClientLayout::Leaf { pane_id: 11 })],
+    );
+    let (view, cx) = mount(store, cx);
+    cx.simulate_keystrokes("cmd-]");
+    let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            ClientCommand::Task {
+                task: ClientTask::SwitchPane { pane_id: 12 },
+                ..
+            }
+        )),
+        "zoom 下仍要有下一个 pane：{commands:?}"
+    );
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            ClientCommand::Task {
+                task: ClientTask::TogglePaneFullscreen { pane_id: 12 },
+                ..
+            }
+        )),
+        "切换后对新 pane 重新全屏：{commands:?}"
     );
 }
 
@@ -2151,6 +2420,167 @@ fn panel_dedupes_existing_sessions_that_are_already_open(cx: &mut TestAppContext
         dev_existing,
         0,
         "已打开的 session 不能再列成现有 runtime：{:?}",
+        rows.iter().map(|row| row.title()).collect::<Vec<_>>()
+    );
+}
+
+/// 远端 Project 的连接身份来自 `canonical.target`（Core 字段名）。
+///
+/// 回归：gpui 曾误读 `canonical.alias`，SSH 主机变空串 → 已打开的远端
+/// Project 又在 Project 列表里重复一次。
+#[gpui::test]
+fn panel_dedupes_ssh_projects_by_the_canonical_target(cx: &mut TestAppContext) {
+    use muxterm::frontend::gpui::chrome::panel_view::PanelRow;
+    let mut store = store_with_two_workspaces();
+    store.replace_topology(
+        ClientWorkspace {
+            id: "ssh/ryzen/dev/tmux//home/u/dev".to_string(),
+            name: "dev-remote".to_string(),
+            runtime: "tmux".to_string(),
+            active: false,
+            resolved_target: Some(serde_json::json!({
+                "canonical": {
+                    "name": "dev-remote",
+                    "runtime": "tmux",
+                    "transport": "ssh",
+                    "target": "ryzen",
+                    "path": "/home/u/dev",
+                    "session": "dev",
+                    "socket": null,
+                    "workspace_id": null
+                },
+                "spec": {
+                    "transport": "ssh",
+                    "alias": "ryzen",
+                    "session": "dev",
+                    "runtime": "tmux",
+                    "path": "/home/u/dev",
+                    "socket": null,
+                    "provenance": null,
+                    "template": null
+                }
+            })),
+        },
+        vec![ClientTab {
+            id: 4,
+            name: "dev".to_string(),
+            is_active: true,
+        }],
+        vec![(
+            4,
+            vec![ClientPane {
+                id: 40,
+                cols: 80,
+                rows: 24,
+                is_active: true,
+                title: "dev".to_string(),
+            }],
+        )],
+    );
+
+    let (view, cx) = mount(store, cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.set_picker_data_for_tests(
+                serde_json::json!([{
+                    "id": "project-dev",
+                    "name": "dev-remote",
+                    "path": "/home/u/dev",
+                    "runtime": { "id": "tmux", "session": "dev" },
+                    "transport": { "id": "ssh", "target": "ryzen" }
+                }]),
+                vec!["ryzen".to_string()],
+            );
+            app.show_panel(PanelTab::Workspaces, cx);
+        })
+    });
+    let rows = cx.update(|_, cx| view.update(cx, |app, _| app.panel_rows()));
+    assert_eq!(
+        rows.iter()
+            .filter(|row| matches!(row, PanelRow::Target { .. }))
+            .count(),
+        0,
+        "已打开的远端 Project 不能再列一次：{:?}",
+        rows.iter().map(|row| row.title()).collect::<Vec<_>>()
+    );
+}
+
+/// 打开 Project 时 Core 会写 provenance；它是比 target 字段更稳的去重身份。
+#[gpui::test]
+fn panel_dedupes_projects_by_core_provenance(cx: &mut TestAppContext) {
+    use muxterm::frontend::gpui::chrome::panel_view::PanelRow;
+    let mut store = store_with_two_workspaces();
+    // canonical 与 Project 配置并不完全相等（Herdr 的 socket/session 由 Core
+    // 解析后可能变形），但 provenance 指向同一个 project id。
+    store.replace_topology(
+        ClientWorkspace {
+            id: "local//work/herdr/w2".to_string(),
+            name: "legion".to_string(),
+            runtime: "herdr".to_string(),
+            active: false,
+            resolved_target: Some(serde_json::json!({
+                "canonical": {
+                    "name": "legion",
+                    "runtime": "herdr",
+                    "transport": "local",
+                    "target": "",
+                    "path": "/work",
+                    "session": "default",
+                    "socket": "/tmp/herdr-forward.sock",
+                    "workspace_id": "w2"
+                },
+                "spec": {
+                    "transport": "local",
+                    "alias": null,
+                    "session": "default",
+                    "runtime": "herdr",
+                    "path": "/work",
+                    "socket": "/tmp/herdr-forward.sock",
+                    "provenance": { "project_id": "project-legion", "worktree_id": null },
+                    "template": null
+                }
+            })),
+        },
+        vec![ClientTab {
+            id: 5,
+            name: "main".to_string(),
+            is_active: true,
+        }],
+        vec![(
+            5,
+            vec![ClientPane {
+                id: 50,
+                cols: 80,
+                rows: 24,
+                is_active: true,
+                title: "main".to_string(),
+            }],
+        )],
+    );
+
+    let (view, cx) = mount(store, cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.set_picker_data_for_tests(
+                serde_json::json!([{
+                    "id": "project-legion",
+                    "name": "legion",
+                    "path": "~/Developer/work/legion",
+                    "runtime": { "id": "herdr" },
+                    "transport": { "id": "local" }
+                }]),
+                vec![],
+            );
+            app.show_panel(PanelTab::Workspaces, cx);
+        })
+    });
+    let rows = cx.update(|_, cx| view.update(cx, |app, _| app.panel_rows()));
+    assert_eq!(
+        rows.iter()
+            .filter(|row| matches!(row, PanelRow::Target { .. }))
+            .count(),
+        0,
+        "provenance 命中就不能再列 Project：{:?}",
         rows.iter().map(|row| row.title()).collect::<Vec<_>>()
     );
 }

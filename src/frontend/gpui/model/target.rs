@@ -86,6 +86,21 @@ impl TargetTransport {
     }
 }
 
+/// 从 Core 的 `resolved_target.canonical` 里读 SSH 主机标识。
+///
+/// Core 的字段名是 `target`（`src/core/protocol/ffi/functions/catalog.rs`
+/// 的 `resolved_target_json`）。早期前端误读 `alias`，导致远端 workspace 的
+/// transport 变成空串，面板按连接身份去重时永远匹配不上 Project。
+/// `alias` 只作为旧快照的兼容回退。
+pub fn canonical_target(canonical: &serde_json::Value) -> &str {
+    canonical
+        .get("target")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .or_else(|| canonical.get("alias").and_then(serde_json::Value::as_str))
+        .unwrap_or_default()
+}
+
 /// 新建/编辑 Project 时 runtime / transport 单选卡的纯状态模型。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TargetOptionSelection {
@@ -134,6 +149,23 @@ pub fn option_identifier(kind: &str, option: &str, selected: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Core 的 canonical 用 `target` 表示 SSH 主机；`alias` 只是旧兼容。
+    #[test]
+    fn canonical_target_reads_the_core_field_not_the_legacy_alias() {
+        let canonical = serde_json::json!({
+            "transport": "ssh",
+            "target": "ryzen",
+            "alias": "wrong",
+        });
+        assert_eq!(canonical_target(&canonical), "ryzen");
+
+        let legacy = serde_json::json!({ "transport": "ssh", "alias": "legacy" });
+        assert_eq!(canonical_target(&legacy), "legacy");
+
+        let local = serde_json::json!({ "transport": "local", "target": "" });
+        assert_eq!(canonical_target(&local), "");
+    }
 
     /// 对照 `TargetOptionSelectionTests.testDefaultSelectionIsTMUXLocal`。
     #[test]
