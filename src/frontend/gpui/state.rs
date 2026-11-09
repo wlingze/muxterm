@@ -1027,6 +1027,21 @@ impl GpuiApp {
                 true
             }
             KeyAction::NewTab => {
+                // 对照 Swift `newTab()`：Shells 投影里的 Cmd-T 必须落在一个
+                // 真实本机 shell 上；连 shell 都没有就先开一个。
+                if self.aggregate
+                    == Some(crate::frontend::gpui::chrome::panel_view::AggregateKind::Shells)
+                {
+                    let Some(local) = self.local_shell_workspace() else {
+                        self.open_local_shell(cx);
+                        return true;
+                    };
+                    self.commands.push(ClientCommand::Task {
+                        workspace_id: Some(local),
+                        task: ClientTask::NewTab,
+                    });
+                    return true;
+                }
                 self.commands.push(ClientCommand::Task {
                     workspace_id: self.visible.clone(),
                     task: ClientTask::NewTab,
