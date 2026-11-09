@@ -84,6 +84,12 @@ AppWindow
 
 - **侧边栏**：数据 = ViewStore 的 Pool 快照 + Activity lane badge。点击 = 换可见 Scene。
   按 `provenance.project` 归组，worktree 缩进。tmux / shell / herdr 同一套 UI 数据。
+  工作区段顺序固定：`Shells`、`Agents` 两个固定聚合行永远在最前（`S` / `A` 地标，
+  不可关闭、不可拖动），后面才是真实 workspace 的 `Cmd-Ctrl-N` 编号。
+  `shell` runtime 的原始 workspace **不单独占一行**——它的 tab 只经 `Shells` 投影出现，
+  否则启动的本机 shell 会以 `shell · exited` 这样的原始行挂在侧栏上。
+  启动时若当前就是本机 shell，展示状态即为 `Shells`（聚合行高亮），
+  与 macOS 的 `workspacePresentation = .shells` 一致。
 - **快速面板**：fuzzy 候选 = Catalog `Candidate`（Project / Worktree / Existing / Recent）
   + 已开 workspace + activity record 跳转。选择产出 `OpenRequest`。
   Workspaces tab 的根列表固定四段顺序，不要按字母或时间重排：
@@ -116,8 +122,10 @@ AppWindow
     **永远可点**：日志开着复制文件路径，没开复制日志目录，并在面板底部回一句
     「… copied」——不能让用户点了没反应。
   面板文案走 `frontend/utils/i18n` catalog，所以切换语言后目录立刻跟着变。
-  根列表里**已经打开的 workspace 不再重复出现**成 Project 或 discovery 行（身份按
-  canonical target → workspace id → 名字三级判定），`Shells` / `Agents` 两个特殊槽
+  根列表里**已经打开的 workspace 不再重复出现**成 Project 或 discovery 行。身份按可信度
+  依次判定：Core 写的 `spec.provenance.project_id` → canonical target 完全一致（SSH 主机
+  读 `canonical.target`，不是 `alias`；session / socket / Herdr id 一并比较）→
+  `canonical.workspace_id` → 名字 + runtime + session。`Shells` / `Agents` 两个特殊槽
   永远在最前面。
 - **快速面板里的 Cmd-K**：面板是 key window 时，`Cmd-K` 只换成当前选中行的动作
   （工作区打开 / 关闭 / 更新，连接 attach，提醒跳转 / 隐藏等）。不带命令面板的全局命令。
@@ -144,6 +152,12 @@ AppWindow
 - 活动（Agents / Commands）：前端按固定间隔拉 Core 的
   `muxterm_attention_snapshot`，并按 `WorkspaceId::replica_id()` 把活动条目 join 回
   产品 workspace id。两套 id 对不上时侧栏会永远空着——这是一个真实踩过的坑。
+- `Cmd-[` / `Cmd-]`：在当前 tab 的 pane 之间循环。顺序取布局叶子（屏幕几何顺序），
+  tmux zoom 时退回当前 tab 的完整快照顺序；结果永远是显式的 `SwitchPane(pane)`，
+  不交给 Core 的全局 active pane 推断（否则分屏后可能跳到别的 tab / 没有目标）。
+  zoom 中切换会先退出 zoom，再对目标 pane 重新全屏。
+- 本机 shell 退出：`shell` + `local`、状态 `exited`、且没有 tab/pane 时，前端自动补一次
+  `NewTab`（只发一次，Core 回包后复位），窗口始终留着一个活着的本机 shell。
 - 关闭：close workspace 是 Scene 的唯一销毁点。detach ≠ destroy。
 - 嵌套分割：每次只替换当前叶子 pane，不重新平铺全树。
 - 焦点操作后回到终端，不落到工具栏。不要底部输入框发 send-keys。
