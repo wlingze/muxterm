@@ -193,7 +193,7 @@ These selectors identify the source tests that supply a GPUI acceptance scenario
 | `MuxtermAppUITests/MuxtermAppUITests.swift:281,730` | `testBackspaceDeletesCharacterInShell` and `echoAndVerifyVisible` search for a marker that may already be present in the echoed command. | Assert a distinct output-only marker or a controlled command response, not merely text also present in input. |
 | `AppE2ETests/NativeNotificationTests.swift:63` | The test checks the XCTest suppression flag and calls the service; it does not inspect delivered OS notifications. | Use an isolated notification adapter or platform driver to observe actual delivery and suppression. |
 
-## Summary 5: GPUI 覆盖现状（2026-11-06）
+## Summary 5: GPUI 覆盖现状（2026-11-09）
 
 上面的清单回答「Swift 有哪些测试」；这一节回答「gpui 现在有没有对应的测试」。
 统计方式：
@@ -203,11 +203,11 @@ rg -c '#\[(gpui::)?test\]' src/frontend/gpui -g '*.rs' | awk -F: '{s+=$2} END {p
 rg -c '#\[(gpui::)?test\]' tests/gpui_*.rs | awk -F: '{s+=$2} END {print s}'
 ```
 
-当前（2026-11-06 实测）：gpui 模块内 **461** 个单测（按文件拆，不照抄 Swift 的巨型
-`FlatChromeTests`），集成测试 **97** 个：`gpui_chrome` 64、`gpui_workspace_picker` 13、
-`gpui_acceptance` 10、`gpui_acceptance_herdr` 2、`gpui_surface_events` 6、
+当前（2026-11-09 实测）：gpui 模块内 **469** 个单测（按文件拆，不照抄 Swift 的巨型
+`FlatChromeTests`），集成测试 **104** 个：`gpui_chrome` 70、`gpui_workspace_picker` 13、
+`gpui_acceptance` 11、`gpui_acceptance_herdr` 2、`gpui_surface_events` 6、
 `gpui_surface_e2e` 1、`gpui_harness_smoke` 1。加上 lib 里其它前端共享模块，`--lib`
-总计 1903 个测试。
+总计 1911 个测试。
 
 ### 5.1 纯逻辑层（ChromeTests 对应）
 
@@ -218,7 +218,7 @@ rg -c '#\[(gpui::)?test\]' tests/gpui_*.rs | awk -F: '{s+=$2} END {print s}'
 | ComposerDraftTests (14) / ComposerDraftsTests (7) | model/composer.rs (23) | 已覆盖 |
 | DirectorySuggestionControllerTests (15) | model/directory.rs (13) + state/picker.rs | 部分（目录建议合并逻辑在 state 层，未逐条对照） |
 | ImagePasteFeedbackTests (18) | model/image_paste.rs (18) | 已覆盖 |
-| PaneNavigationTests (5) | model/shortcuts.rs (20) + state.rs 焦点同步 + gpui_chrome/gpui_acceptance | 已覆盖（2026-11-06 起有真 tmux 的 Cmd-[ / Cmd-] 用例） |
+| PaneNavigationTests (5) | model/pane_navigation.rs (7，逐条对照五个用例) + state.rs `move_pane_focus` + gpui_chrome（布局叶子 / zoom）+ gpui_acceptance | 已覆盖（2026-11-09 起 Cmd-[ / Cmd-] 走显式 `SwitchPane`，不再交给 Core 推断） |
 | PanelModelTests (4) / QuickPanelActionsTests (10) | model/panel.rs (5) + chrome/panel_view.rs (7) + gpui_chrome 面板组 | 部分（行内动作集已覆盖，面板窗口布局未做像素对照） |
 | ProgressiveWordSelectionTests (19) | model/word_selection.rs (22) | 已覆盖 |
 | ProjectConnectFlowTests (8) | model/workspace_picker.rs + model/quick_connect.rs (21) + gpui_workspace_picker (13) | 部分（源测试自带假断言，已按文档要求改成观察 Core 结果） |

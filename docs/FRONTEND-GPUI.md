@@ -226,10 +226,13 @@ Cmd-P 面板列出现有 runtime（discovery 驱动，点开即 attach）、macO
 ## 9. 验收
 
 - `cargo check --no-default-features --features gpui` 通过。
-- `cargo test --no-default-features --features gpui --lib` 通过（2026-11-06 实测 **1903 passed**）。
+- `cargo test --no-default-features --features gpui --lib` 通过（2026-11-09 实测 **1911 passed**）。
 - 集成测试（每个都实测通过）：
-  - `--test gpui_chrome`（64，含命令面板每条命令的动作、改名浮层、tab 重排、语言/主题/状态栏、
-    面板去重与两个特殊 shell、活动快照填充 Agents/Commands、Info 复制按钮、空闲 pump 不重绘）：侧栏 / tab / 状态栏 / Cmd-P 面板（含 discovery 到的现有 runtime）/
+  - `--test gpui_chrome`（70，含命令面板每条命令的动作、改名浮层、tab 重排、语言/主题/状态栏、
+    侧栏两个固定聚合槽与 `shell` 行隐藏、空本机 shell 只补一次 `NewTab`、
+    `Cmd-[` / `Cmd-]` 按当前 tab 布局选目标（含 zoom）、面板三条身份去重
+    （provenance / canonical target / 名字）、活动快照填充 Agents/Commands、Info 复制按钮、
+    空闲 pump 不重绘）：侧栏 / tab / 状态栏 / Cmd-P 面板（含 discovery 到的现有 runtime）/
     Cmd-Shift-P 命令面板 / 输入框 / 设置 / Open 入口 / 历史回填 / 菜单动作，并断言真实布局
     （侧栏 240pt、24pt 单条栏、命令面板 600×360），全部走真实 `GpuiApp`。
   - `--test gpui_workspace_picker`（13）：根列表四段顺序与编号、Open 三层导航、目录完成后
@@ -238,7 +241,8 @@ Cmd-P 面板列出现有 runtime（discovery 驱动，点开即 attach）、macO
     已保存/未保存两套动作、Herdr attach 带 `workspace_id`、面板吞键不落 PTY。
   - `--test gpui_surface_events`（6）：滚轮、宽字符、鼠标报告、IME 提交、候选窗锚定。
   - `--test gpui_surface_e2e`（1）：隔离 tmux 里真实 shell 输出落到格子上。
-  - `--test gpui_acceptance`（10）：启动 workspace、按键进 shell、Cmd-T 加 tab、Cmd-D 分屏与
+  - `--test gpui_acceptance`（11）：启动 workspace、本机 shell 启动即显示 Shells 聚合
+    （侧栏只有两个聚合槽、聚合 tab 带来源）、按键进 shell、Cmd-T 加 tab、Cmd-D 分屏与
     Cmd-[ / Cmd-] 换 pane（焦点跟随）、Rename Tab / Move Tab 走 Core 往返、活动快照 join 到
     前端 workspace id、面板 Open 全流程真的建出 workspace、第二个 workspace 经 Catalog 打开。
   - `--test gpui_acceptance_herdr`（2）：named Herdr session 出现在侧栏，输入有回显。
