@@ -183,6 +183,10 @@ AppWindow
 - pane 创建即建 PaneSurface，pane 关闭即毁，**切换不碰它**。
 - 隐藏 Scene 不绘制，但 VT 继续 feed，画面始终是最新的。
 - 部分渲染：VT 标 dirty rows，同一帧内多次 `PaneOutput` 合并成一次重绘。
+- 文本属性必须画出来，不能只解析：粗体 / 斜体 / 下划线 / 删除线各有真实字体变体；
+  SGR 粗体按 SwiftTerm 规则把 ANSI 0–6 提亮到 8–14，`dim` 与背景对半混合，
+  `hidden` 保留格子宽度与背景但不画字形。markdown / agent 输出靠这些属性区分标题和强调，
+  只变色会让正文和标题糊成一片。
 - 隐藏 pane 三档资源策略（按 transport 成本配置）：`live` / `coalesce` / `pause`。
   这是资源旋钮，不是正确性条件：切过去永远先看到最后已知帧，不允许白屏等待。
 - resize：只对可见 Scene 发 `Task::Resize`；隐藏 Scene 记 pending size，可见时一次性应用。

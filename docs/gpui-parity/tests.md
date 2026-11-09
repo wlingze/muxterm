@@ -203,11 +203,11 @@ rg -c '#\[(gpui::)?test\]' src/frontend/gpui -g '*.rs' | awk -F: '{s+=$2} END {p
 rg -c '#\[(gpui::)?test\]' tests/gpui_*.rs | awk -F: '{s+=$2} END {print s}'
 ```
 
-当前（2026-11-09 实测）：gpui 模块内 **469** 个单测（按文件拆，不照抄 Swift 的巨型
-`FlatChromeTests`），集成测试 **104** 个：`gpui_chrome` 70、`gpui_workspace_picker` 13、
+当前（2026-11-09 实测）：gpui 模块内 **477** 个单测（按文件拆，不照抄 Swift 的巨型
+`FlatChromeTests`），集成测试 **108** 个：`gpui_chrome` 74、`gpui_workspace_picker` 13、
 `gpui_acceptance` 11、`gpui_acceptance_herdr` 2、`gpui_surface_events` 6、
 `gpui_surface_e2e` 1、`gpui_harness_smoke` 1。加上 lib 里其它前端共享模块，`--lib`
-总计 1911 个测试。
+总计 1919 个测试。
 
 ### 5.1 纯逻辑层（ChromeTests 对应）
 
@@ -228,6 +228,7 @@ rg -c '#\[(gpui::)?test\]' tests/gpui_*.rs | awk -F: '{s+=$2} END {print s}'
 | SidebarSectionSplitLayoutTests (5) | chrome/sidebar_view.rs (8) | 已覆盖 |
 | StatusBarTests (28) | model/status_bar.rs (30) | 已覆盖 |
 | SwiftTermQueryReplyTests (5) | model/query_reply.rs (8) + model/query_detector.rs (9) | 已覆盖 |
+| SwiftTerm 1.15 属性绘制（`getAttributes` / `mapColor`，无同名 Swift 测试） | chrome/pane_view.rs (8，切段与颜色) + theme.rs（提亮 / dim 数学）+ gpui_chrome（`pane-bold` 等渲染断言） | 已覆盖（粗体提亮 0–6、dim 对半混合、反显后再提亮、隐藏格保宽度） |
 | TargetOptionSelectionTests (5) | model/target.rs (7) + chrome/target_editor.rs | 已覆盖 |
 | WorkspaceQueryTests (4) | model/quick_connect.rs (21) | 已覆盖 |
 | WorkspaceReplicaIDTests (5) | model/replica_id.rs (11) + 验收里的 join 用例 | 已覆盖 |

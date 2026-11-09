@@ -106,6 +106,21 @@ CellGrid 实现的 VT 范围（每一项都有 `terminal/` 里的字节级测试
 - CSI：`A B C D E F G H f J K L M P @ X S T r d s u`、`m`（SGR）、`h/l`
 - 私有模式：`25`（光标）、`47/1049`（alternate screen）、`1000/1002/1003`（鼠标）、`1006`（SGR 鼠标）、`2004`（bracketed paste）
 - SGR：`0 1 2 3 4 7 8 9`、`30-37 / 40-47`、`90-97 / 100-107`、`38;5;n`、`48;5;n`、`38;2;r;g;b`、`48;2;r;g;b`、`39 / 49`
+
+SGR 属性不是只解析、不画：绘制 run 的 key 是「颜色 + 字体变体」，粗体 / 斜体 /
+下划线 / 删除线分别落到 gpui 的 `font_weight(BOLD)` / `italic()` / `underline()` /
+`line_through()`。颜色侧对齐 SwiftTerm 1.15（macOS 前端的事实标准）：
+
+| 属性 | 规则 | 对照 |
+|---|---|---|
+| 粗体提亮 | `Color::Indexed(i)` 且 `i < 7` → `i + 8`（7 是 SwiftTerm 源码里的例外；8–15 已经是高亮色；Truecolor / 默认色不变） | `AppleTerminalView.mapColor(isBold:)` |
+| dim（SGR 2） | 前景与背景逐通道 `(fg + bg) * 0.5`，alpha 保持前景 | `NSColor.dimmedColor(towards:)` |
+| 反显（SGR 7） | 先交换前景/背景，再对交换后的前景做粗体提亮 | `getAttributes` 先 `swap` 再 `mapColor(isFg:)` |
+| 隐藏（SGR 8） | 保留格子宽度与背景，字形换成空格 | xterm 语义（SwiftTerm 忽略该属性，这里按规范隐藏） |
+
+模块单测覆盖切段与颜色（`chrome/pane_view.rs`）、提亮/dim 数学（`theme.rs`）；
+`gpui_chrome` 另外断言这些属性真的进了渲染树（`pane-bold` / `pane-italic` /
+`pane-underline` / `pane-strike`），普通文本不会误带样式。
 - ESC：`7 8 M c D E`
 - OSC：`0 / 2` 标题，其余忽略（133 标记由 Core 处理，前端不消费）
 
@@ -185,7 +200,9 @@ Cmd-P 面板列出现有 runtime（discovery 驱动，点开即 attach）、macO
 数据走 Core `muxterm_build_info_json`）、提示符末尾光标（尾部空白裁剪不再吃掉光标格）、
 本地 `~` 路径展开（目录列表与 `create` 都用绝对路径；SSH 仍交给远端展开）、
 命令面板里所有条目都有真实动作（Local / SSH 导航、改名浮层、tab 重排、语言子菜单、
-主题切换、状态栏模式）与对应 Core 任务（`rename_tab` / `rename_workspace` / `move_tab`）。
+主题切换、状态栏模式）与对应 Core 任务（`rename_tab` / `rename_workspace` / `move_tab`）、
+SGR 字体属性真正参与绘制（粗体 / 斜体 / 下划线 / 删除线，粗体按 SwiftTerm 规则提亮
+ANSI 0–6，dim 与背景对半混合）。
 
 ### 8.2 快速面板与 Swift 的差异
 
@@ -226,9 +243,10 @@ Cmd-P 面板列出现有 runtime（discovery 驱动，点开即 attach）、macO
 ## 9. 验收
 
 - `cargo check --no-default-features --features gpui` 通过。
-- `cargo test --no-default-features --features gpui --lib` 通过（2026-11-09 实测 **1911 passed**）。
+- `cargo test --no-default-features --features gpui --lib` 通过（2026-11-09 实测 **1919 passed**）。
 - 集成测试（每个都实测通过）：
-  - `--test gpui_chrome`（70，含命令面板每条命令的动作、改名浮层、tab 重排、语言/主题/状态栏、
+  - `--test gpui_chrome`（74，含命令面板每条命令的动作、改名浮层、tab 重排、语言/主题/状态栏、
+    SGR 粗体/斜体/下划线/删除线真的进渲染树、
     侧栏两个固定聚合槽与 `shell` 行隐藏、空本机 shell 只补一次 `NewTab`、
     `Cmd-[` / `Cmd-]` 按当前 tab 布局选目标（含 zoom）、面板三条身份去重
     （provenance / canonical target / 名字）、活动快照填充 Agents/Commands、Info 复制按钮、
