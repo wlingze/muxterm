@@ -178,6 +178,13 @@ Two comments conflict with executable layout. `PaneLayout.swift:1010-1011` descr
 
 The ICNS is the user-visible Dock and Finder icon on macOS. A cross-platform gpui build needs the PNG or SVG for its own window, About, or taskbar icon. Sources: `Info.plist:10`, `project.yml:87`, `project.yml:116`.
 
+**gpui macOS bundle:** `scripts/build-gpui-macos.sh` copies this same
+`MuxtermLogo.icns` into `Contents/Resources/` and writes
+`CFBundleIconFile = MuxtermLogo.icns`, so the `.app` shows the Muxterm icon in
+Finder and the Dock. Before that the bundle shipped no icon at all and macOS
+fell back to the generic application icon. Linux/Windows packaging still needs
+the PNG for `.desktop` / `.ico`.
+
 ### Localization catalog
 
 - **Lookup:** `MuxtermI18n.shared.tr(key, arguments:)` resolves the current language, falls back to English, then to the key id. It replaces `{{name}}` placeholders with the supplied strings. `trDynamic` exists for catalog keys that enter from Core data. Sources: `App/I18n.swift:655-705`.

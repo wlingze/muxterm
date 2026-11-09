@@ -243,6 +243,7 @@ Tab 换分类、↑↓ 换字段、←→/空格改开关与枚举；有改动�
 | 菜单栏 | macOS 走原生 NSMenu（`platform/macos_menu.rs`，结构 = `model/menu.rs`）。Linux / Windows 还没有菜单条（`platform::install_menu()` 返回 `None`）。 | 自绘菜单条：同一份 `model::menu` 数据，用 gpui 元素画在窗口顶部。 |
 | CI | `.github/workflows/*.yml` 里 `gpui` 出现 0 次。 | 加一个 `ubuntu-latest` 的 `cargo check --no-default-features --features gpui`。 |
 | 打包 | 只有 `scripts/build-gpui-macos.sh`，没有 Linux `.desktop` / Windows 打包。 | 与各平台 frontend 一起补。 |
+| 图标 | macOS `.app` 内置 `MuxtermLogo.icns` + `CFBundleIconFile`（与 Swift 同一份资源）。 | Linux / Windows 用同一张 PNG 生成 `.desktop` / `.ico`。 |
 
 ## 9. 验收
 
