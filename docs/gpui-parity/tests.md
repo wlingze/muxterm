@@ -207,7 +207,7 @@ rg -c '#\[(gpui::)?test\]' tests/gpui_*.rs | awk -F: '{s+=$2} END {print s}'
 `FlatChromeTests`），集成测试 **119** 个：`gpui_chrome` 85、`gpui_workspace_picker` 13、
 `gpui_acceptance` 11、`gpui_acceptance_herdr` 2、`gpui_surface_events` 6、
 `gpui_surface_e2e` 1、`gpui_harness_smoke` 1。加上 lib 里其它前端共享模块，`--lib`
-总计 1932 个测试（Core 侧新增 attach 历史 6 个单测）。
+总计 1948 个测试（Core 侧新增 attach 历史 6 个单测）。
 
 ### 5.1 纯逻辑层（ChromeTests 对应）
 
