@@ -2673,6 +2673,57 @@ fn panel_dedupes_projects_by_core_provenance(cx: &mut TestAppContext) {
     );
 }
 
+/// SGR 属性必须真的进到渲染树：粗体 / 斜体 / 下划线 / 删除线各有样式 run。
+///
+/// 对照 macOS SwiftTerm `getAttributes`：`bold` → bold 字体、`italic` → italic、
+/// `underline`/`crossedOut` → 下划线/删除线。之前只画颜色，markdown 的标题和
+/// 强调看起来和正文一模一样。
+#[gpui::test]
+fn terminal_renders_bold_italic_underline_and_strike(cx: &mut TestAppContext) {
+    let (view, cx) = mount(two_tab_store(), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.feed_pane_for_tests(
+                "local@@dev@tmux@dev",
+                10,
+                80,
+                24,
+                b"plain\r\n\x1b[1mBOLD\x1b[0m\r\n\x1b[3mitalic\x1b[0m\r\n\x1b[4munderline\x1b[0m\r\n\x1b[9mstrike\x1b[0m",
+                cx,
+            );
+        })
+    });
+    cx.run_until_parked();
+    for selector in ["pane-bold", "pane-italic", "pane-underline", "pane-strike"] {
+        assert!(
+            cx.debug_bounds(selector).is_some(),
+            "{selector} 应该出现在渲染树里"
+        );
+    }
+}
+
+/// 没有 SGR 属性的普通文本不能带出这些样式（否则整屏都变粗）。
+#[gpui::test]
+fn plain_terminal_text_carries_no_style_runs(cx: &mut TestAppContext) {
+    let (view, cx) = mount(two_tab_store(), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.feed_pane_for_tests("local@@dev@tmux@dev", 10, 80, 24, b"plain text", cx);
+        })
+    });
+    cx.run_until_parked();
+    for selector in ["pane-bold", "pane-italic", "pane-underline", "pane-strike"] {
+        assert!(
+            cx.debug_bounds(selector).is_none(),
+            "{selector} 不该出现在普通文本里"
+        );
+    }
+    assert!(
+        cx.debug_bounds("pane-cursor").is_some(),
+        "普通文本仍然要比光标"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 活动接入：Core 的活动快照 → Agents / Commands / Attention
 // ---------------------------------------------------------------------------

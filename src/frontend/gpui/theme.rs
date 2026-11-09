@@ -197,6 +197,35 @@ impl Theme {
         self.resolve(color, self.fg)
     }
 
+    /// 前景色，并把 SGR 粗体的提亮算进去。
+    ///
+    /// 对照 SwiftTerm 1.15 `AppleTerminalView.mapColor(isBold:)`：
+    /// `midx = ansi < 7 ? ansi + 8 : ansi`。7 是源码里的例外（保持原色），
+    /// 8–15 本来就是高亮色，不再上移。Truecolor / 默认色不受影响。
+    pub fn foreground_with_bold(&self, color: Color, bold: bool) -> Rgba {
+        if bold {
+            if let Color::Indexed(index) = color {
+                if index < 7 {
+                    return self.indexed(index + 8);
+                }
+            }
+        }
+        self.foreground(color)
+    }
+
+    /// SGR 2（dim/faint）：前景往背景方向混合 50%。
+    ///
+    /// 对照 SwiftTerm 1.15 `NSColor.dimmedColor(towards:)`：逐通道
+    /// `(fg + bg) * 0.5`，alpha 保持前景。
+    pub fn dimmed(foreground: Rgba, background: Rgba) -> Rgba {
+        Rgba {
+            r: (foreground.r + background.r) * 0.5,
+            g: (foreground.g + background.g) * 0.5,
+            b: (foreground.b + background.b) * 0.5,
+            a: foreground.a,
+        }
+    }
+
     /// 背景色。`Color::Default` 跟随主题。
     pub fn background(&self, color: Color) -> Rgba {
         self.resolve(color, self.bg)
@@ -329,6 +358,63 @@ mod tests {
         let theme = Theme::default();
         assert_eq!(theme.foreground(Color::Default), theme.fg);
         assert_eq!(theme.background(Color::Default), theme.bg);
+    }
+
+    /// 对照 SwiftTerm 1.15 `AppleTerminalView.mapColor(isBold:)`：
+    /// 粗体把 ANSI 0–6 往高亮 8–14 推，7 和 8–15 维持原色。
+    #[test]
+    fn bold_brightens_only_the_first_seven_ansi_colors() {
+        let theme = Theme::default();
+        for index in 0u8..7 {
+            assert_eq!(
+                theme.foreground_with_bold(Color::Indexed(index), true),
+                theme.indexed(index + 8),
+                "ANSI {index} 粗体要提亮"
+            );
+            assert_eq!(
+                theme.foreground_with_bold(Color::Indexed(index), false),
+                theme.indexed(index),
+                "不加粗保持原色"
+            );
+        }
+        assert_eq!(
+            theme.foreground_with_bold(Color::Indexed(7), true),
+            theme.indexed(7),
+            "7 是 SwiftTerm 源码里的例外"
+        );
+        assert_eq!(
+            theme.foreground_with_bold(Color::Indexed(11), true),
+            theme.indexed(11),
+            "8–15 已经是高亮色"
+        );
+        assert_eq!(
+            theme.foreground_with_bold(Color::Rgb(1, 2, 3), true),
+            rgb(0x010203),
+            "Truecolor 不参与提亮"
+        );
+        assert_eq!(
+            theme.foreground_with_bold(Color::Default, true),
+            theme.fg,
+            "默认前景色不参与提亮"
+        );
+    }
+
+    /// 对照 SwiftTerm 1.15 `NSColor.dimmedColor(towards:)`：与背景对半混合。
+    #[test]
+    fn dim_blends_halfway_towards_the_background() {
+        let fg = rgb(0x000000);
+        let bg = rgb(0xffffff);
+        let dimmed = Theme::dimmed(fg, bg);
+        assert!((dimmed.r - 0.5).abs() < 1e-6, "{dimmed:?}");
+        assert!((dimmed.g - 0.5).abs() < 1e-6, "{dimmed:?}");
+        assert!((dimmed.b - 0.5).abs() < 1e-6, "{dimmed:?}");
+        assert!((dimmed.a - 1.0).abs() < 1e-6, "{dimmed:?}");
+
+        let colored = Theme::dimmed(rgb(0x204060), rgb(0x000000));
+        assert!(
+            (colored.r - 0x20 as f32 / 255.0 / 2.0).abs() < 1e-6,
+            "{colored:?}"
+        );
     }
 
     #[test]
