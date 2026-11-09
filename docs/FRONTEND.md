@@ -231,6 +231,10 @@ frontend **不直接读写文件**。读 = FFI 配置快照；写 = draft transa
 `ConfigChanged` → EventPump → ViewStore 热应用主题 / 快捷键 / 字号，不重启、不重建 Scene。
 
 设置页只渲染 Schema + Settings Manifest。新增配置项不改前端代码。
+设置窗口是模态浮层，关闭路径只有两条：Cancel（有改动先确认「放弃修改」）与 Apply
+（写 Core 事务后关闭）；Esc = 取消、⏎ = 应用。打开期间浮层独占无修饰键，
+可打印字符进搜索框，绝不漏进 PTY。布局与 macOS 对齐（680×680 / 左栏 200pt /
+底部 52pt：dirty 摘要 + Cancel + Apply）。
 相关节：`[theme]`、`[shortcuts]`、`[platform.*]`、`[[templates]]`。详见 [`CONFIG.md`](CONFIG.md)。
 
 ---
@@ -298,6 +302,9 @@ Chat 不改 Surface、不改 pty 尺寸、不建第二个 VT；无 adapter 的 p
 - 隐藏 chatty pane：回看先显示最后已知帧，再异步补基线，不白屏。
 - 高速输出下其它 pane / 其它 workspace 不被拖慢。
 - 设置修改经 draft transaction；`ConfigChanged` 热应用，不重启。
+- 面板「最近使用」排序由 Core 记账：`attach-history.json`（保留天数 =
+  `[quick_panel].attach_history_days`），经 `muxterm_workspace_usage_json` 给所有前端；
+  frontend 不自己存使用频次。
 - macOS 前端无 `bridgeLock` / 串行后台队列 / 前台校准；激活日志不再出现秒级 `elapsed_ms`。
 - `rg 'bridgeLock|backgroundPollQueue|WarmConnectionSlot|ForegroundAuthority'` 在 macOS 前端为空。
 - `rg 'ffi_bridge'` 在 frontend 为空。

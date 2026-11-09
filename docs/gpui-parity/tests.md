@@ -203,11 +203,11 @@ rg -c '#\[(gpui::)?test\]' src/frontend/gpui -g '*.rs' | awk -F: '{s+=$2} END {p
 rg -c '#\[(gpui::)?test\]' tests/gpui_*.rs | awk -F: '{s+=$2} END {print s}'
 ```
 
-当前（2026-11-09 实测）：gpui 模块内 **477** 个单测（按文件拆，不照抄 Swift 的巨型
-`FlatChromeTests`），集成测试 **108** 个：`gpui_chrome` 74、`gpui_workspace_picker` 13、
+当前（2026-11-09 实测）：gpui 模块内 **482** 个单测（按文件拆，不照抄 Swift 的巨型
+`FlatChromeTests`），集成测试 **115** 个：`gpui_chrome` 81、`gpui_workspace_picker` 13、
 `gpui_acceptance` 11、`gpui_acceptance_herdr` 2、`gpui_surface_events` 6、
 `gpui_surface_e2e` 1、`gpui_harness_smoke` 1。加上 lib 里其它前端共享模块，`--lib`
-总计 1919 个测试。
+总计 1931 个测试（Core 侧新增 attach 历史 6 个单测）。
 
 ### 5.1 纯逻辑层（ChromeTests 对应）
 
@@ -219,7 +219,8 @@ rg -c '#\[(gpui::)?test\]' tests/gpui_*.rs | awk -F: '{s+=$2} END {print s}'
 | DirectorySuggestionControllerTests (15) | model/directory.rs (13) + state/picker.rs | 部分（目录建议合并逻辑在 state 层，未逐条对照） |
 | ImagePasteFeedbackTests (18) | model/image_paste.rs (18) | 已覆盖 |
 | PaneNavigationTests (5) | model/pane_navigation.rs (7，逐条对照五个用例) + state.rs `move_pane_focus` + gpui_chrome（布局叶子 / zoom）+ gpui_acceptance | 已覆盖（2026-11-09 起 Cmd-[ / Cmd-] 走显式 `SwitchPane`，不再交给 Core 推断） |
-| PanelModelTests (4) / QuickPanelActionsTests (10) | model/panel.rs (5) + chrome/panel_view.rs (7) + gpui_chrome 面板组 | 部分（行内动作集已覆盖，面板窗口布局未做像素对照） |
+| PanelModelTests (4) / QuickPanelActionsTests (10) | model/panel.rs (5) + chrome/panel_view.rs (9，含 Core attach 频率排序) + gpui_chrome 面板组 | 部分（行内动作集与排序已覆盖，面板窗口布局未做像素对照） |
+| `SettingsWindowE2ETests`（Swift 设置窗口：Esc 关闭 / Cancel / Apply / 放弃修改确认） | chrome/settings.rs（渲染 + 按钮）+ state.rs `route_settings_key` / `settings_cancel` / `settings_apply_and_close` + gpui_chrome（6 条：Esc、未保存确认、Cancel/Apply、按键不漏进 PTY、数字字段、开关）+ model/settings.rs（枚举控件） | 已覆盖 |
 | ProgressiveWordSelectionTests (19) | model/word_selection.rs (22) | 已覆盖 |
 | ProjectConnectFlowTests (8) | model/workspace_picker.rs + model/quick_connect.rs (21) + gpui_workspace_picker (13) | 部分（源测试自带假断言，已按文档要求改成观察 Core 结果） |
 | ResizeRedrawRegressionTests (3) | model/resize_math.rs (7) + chrome/pane_grid.rs (5) | 部分（重绘时序没有逐帧对照） |
