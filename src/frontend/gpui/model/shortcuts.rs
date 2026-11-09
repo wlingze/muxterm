@@ -786,6 +786,40 @@ mod tests {
         );
     }
 
+    /// 聚合槽不占数字编号：Shells = `Cmd-Ctrl-S`，Agents = `Cmd-Ctrl-A`。
+    ///
+    /// 回归：Shells 曾占用 `Cmd-Shift-1`，于是侧栏第一个 workspace 的「1」
+    /// 与它撞位；现在 1..9 只属于打开的 workspace。
+    #[test]
+    fn aggregates_use_letters_and_never_take_a_number() {
+        assert_eq!(
+            builtin_action(&KeyChord::new(true, false, false, true, "s")),
+            Some(KeyAction::OpenShells)
+        );
+        assert_eq!(
+            builtin_action(&KeyChord::new(true, false, false, true, "a")),
+            Some(KeyAction::OpenAgents)
+        );
+        // `Cmd-Ctrl-1..9` 是已打开 workspace 的编号，不能被聚合抢走。
+        for number in 1..=9 {
+            assert_eq!(
+                builtin_action(&KeyChord::new(
+                    true,
+                    false,
+                    false,
+                    true,
+                    &number.to_string()
+                )),
+                Some(KeyAction::SwitchWorkspace(number))
+            );
+        }
+        // `Cmd-Shift-1` 不再是 Shells：它属于 tab 快捷键那一层。
+        assert_ne!(
+            builtin_action(&KeyChord::command_shift("1")),
+            Some(KeyAction::OpenShells)
+        );
+    }
+
     /// 对照 `testCmdFontZoomShortcuts`。
     #[test]
     fn command_font_zoom_shortcuts() {

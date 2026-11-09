@@ -365,6 +365,78 @@ fn workspace_shortcuts_follow_the_key_table(cx: &mut TestAppContext) {
     assert_eq!(visible.as_deref(), Some("local@@dev@tmux@dev"));
 }
 
+/// 本机 shell 的原始 workspace 不占编号：`Cmd-Ctrl-1` 永远是侧栏第一个 workspace。
+///
+/// 回归：`SwitchWorkspace` 以前用的是未过滤的 store 顺序，shell 占着第 1 位，
+/// 侧栏和面板却把它隐藏了，于是「按 1」跳到侧栏里写着「2」的行。
+#[gpui::test]
+fn workspace_numbers_skip_the_raw_local_shell(cx: &mut TestAppContext) {
+    let mut store = ViewStore::default();
+    // shell 先进 store，所以“按打开顺序”它排第一；但它不该占编号。
+    store.replace_topology(
+        ClientWorkspace {
+            id: "local//shell/tmux/".to_string(),
+            name: "shell".to_string(),
+            runtime: "shell".to_string(),
+            active: true,
+            resolved_target: None,
+        },
+        vec![ClientTab {
+            id: 1,
+            name: "shell".to_string(),
+            is_active: true,
+        }],
+        vec![(
+            1,
+            vec![ClientPane {
+                id: 5,
+                cols: 80,
+                rows: 24,
+                is_active: true,
+                title: "shell".to_string(),
+            }],
+        )],
+    );
+    store.ensure_workspace("local//shell/tmux/").backend_status = Some(backend_status::CONNECTED);
+    for (id, name, tab) in [
+        ("local@@dev@tmux@dev", "dev", 2),
+        ("local@@ops@tmux@ops", "ops", 3),
+    ] {
+        store.replace_topology(
+            workspace(id, name, false),
+            vec![ClientTab {
+                id: tab,
+                name: name.to_string(),
+                is_active: true,
+            }],
+            vec![(
+                tab,
+                vec![ClientPane {
+                    id: tab * 10,
+                    cols: 80,
+                    rows: 24,
+                    is_active: true,
+                    title: name.to_string(),
+                }],
+            )],
+        );
+        store.ensure_workspace(id).backend_status = Some(backend_status::CONNECTED);
+    }
+    let (view, cx) = mount(store, cx);
+    cx.simulate_keystrokes("cmd-ctrl-1");
+    let visible =
+        cx.update(|_, cx| view.update(cx, |app, _| app.visible_workspace().map(str::to_string)));
+    assert_eq!(
+        visible.as_deref(),
+        Some("local@@dev@tmux@dev"),
+        "1 必须是侧栏第一个 workspace，不是被隐藏的 shell"
+    );
+    cx.simulate_keystrokes("cmd-ctrl-2");
+    let visible =
+        cx.update(|_, cx| view.update(cx, |app, _| app.visible_workspace().map(str::to_string)));
+    assert_eq!(visible.as_deref(), Some("local@@ops@tmux@ops"));
+}
+
 /// Cmd-B 切换侧栏，同时改变主区宽度。
 #[gpui::test]
 fn cmd_b_toggles_the_sidebar(cx: &mut TestAppContext) {
@@ -973,11 +1045,14 @@ fn settings_search_filters_without_losing_the_draft(cx: &mut TestAppContext) {
     assert_eq!(value, Some(serde_json::json!(17.0)), "草稿不因搜索丢");
 }
 
-/// 面板的「最近使用」排序来自 Core 的 attach 频率快照：次数多的在活跃项之后。
+/// 已打开的 workspace 在面板里按打开顺序排，与侧栏编号、`Cmd-Ctrl-N` 一致。
+///
+/// 回归：之前在面板里按 Core 的 attach 频次重排，行首却还写着编号，
+/// 于是「第 1 个打开的」跑到列表后面，按 `Cmd-Ctrl-1` 落到别的行。
 #[gpui::test]
-fn panel_orders_rows_with_the_core_usage_snapshot(cx: &mut TestAppContext) {
+fn panel_keeps_opened_workspaces_in_numbered_order(cx: &mut TestAppContext) {
     let mut store = store_with_two_workspaces();
-    // 第三个（非活跃）workspace：用来证明顺序真的由 Core 的次数决定。
+    // 第三个（非活跃）workspace：频次最高，但那不能把它排到前面。
     store.replace_topology(
         workspace("local@@web@tmux@web", "web", false),
         vec![ClientTab {
@@ -1006,16 +1081,16 @@ fn panel_orders_rows_with_the_core_usage_snapshot(cx: &mut TestAppContext) {
                     workspace_id: Some("local@@ops@tmux@ops".into()),
                     target_workspace_id: None,
                     project_id: None,
-                    count: 9,
-                    last_used_at: 100,
+                    count: 4,
+                    last_used_at: 10,
                 },
                 muxterm::frontend::gpui::model::usage::UsageEntry {
                     identity: "local@@web@tmux@web".into(),
                     workspace_id: Some("local@@web@tmux@web".into()),
                     target_workspace_id: None,
                     project_id: None,
-                    count: 4,
-                    last_used_at: 10,
+                    count: 9,
+                    last_used_at: 100,
                 },
             ]);
             app.show_panel(
@@ -1041,8 +1116,73 @@ fn panel_orders_rows_with_the_core_usage_snapshot(cx: &mut TestAppContext) {
     assert_eq!(
         titles,
         vec!["dev · local", "ops · local", "web · local"],
-        "活跃的 dev 固定第一，其余按 Core 的次数降序（ops=9、web=4）：{titles:?}"
+        "打开顺序就是侧栏编号顺序，频次和活跃度都不能重排：{titles:?}"
     );
+}
+
+/// 面板行首的编号与侧栏一致：1 永远是第一个打开的 workspace。
+#[gpui::test]
+fn panel_numbers_match_the_sidebar(cx: &mut TestAppContext) {
+    use muxterm::frontend::gpui::chrome::panel_view::PanelRow;
+    use muxterm::frontend::gpui::model::sidebar::{AGGREGATE_AGENTS, AGGREGATE_SHELLS};
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    let (sidebar, panel) = cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.show_panel(
+                muxterm::frontend::gpui::model::panel::PanelTab::Workspaces,
+                cx,
+            );
+            let sidebar: Vec<(String, Option<usize>)> = app
+                .sidebar_model()
+                .into_iter()
+                .flat_map(|section| section.rows)
+                .filter_map(|row| match &row.target {
+                    RowTarget::Workspace(id)
+                        if id != AGGREGATE_SHELLS && id != AGGREGATE_AGENTS =>
+                    {
+                        Some((
+                            id.clone(),
+                            row.shortcut
+                                .as_deref()
+                                .and_then(|text| text.parse::<usize>().ok()),
+                        ))
+                    }
+                    _ => None,
+                })
+                .collect();
+            let panel: Vec<(String, Option<usize>)> = app
+                .panel_rows()
+                .iter()
+                .filter_map(|row| match row {
+                    PanelRow::Workspace {
+                        workspace_id,
+                        shortcut,
+                        ..
+                    } => Some((workspace_id.clone(), *shortcut)),
+                    _ => None,
+                })
+                .collect();
+            (sidebar, panel)
+        })
+    });
+    assert_eq!(
+        sidebar.len(),
+        panel.len(),
+        "面板与侧栏的 workspace 集合必须一致"
+    );
+    for (index, ((sidebar_id, sidebar_number), (panel_id, panel_number))) in
+        sidebar.iter().zip(panel.iter()).enumerate()
+    {
+        assert_eq!(sidebar_number, panel_number, "同一行的编号必须一致");
+        assert_eq!(
+            panel_number,
+            &Some(index + 1),
+            "第 {} 行的编号必须是 {}：{panel_id}",
+            index + 1,
+            index + 1
+        );
+        assert_eq!(sidebar_id, panel_id, "面板顺序必须就是侧栏顺序");
+    }
 }
 
 /// Esc 关设置。以前浮层没有按键分支：Esc 既关不掉，还会漏进终端。
@@ -3186,13 +3326,6 @@ fn info_copy_buttons_always_put_something_on_the_clipboard(cx: &mut TestAppConte
     assert_eq!(copied.as_deref(), Some("deadbee"));
 }
 
-/// 空闲的 pump 不能报告 dirty：没有变化就不重绘（CPU 不做白工）。
-#[gpui::test]
-fn idle_pump_is_not_dirty(cx: &mut TestAppContext) {
-    let (view, cx) = mount(store_with_two_workspaces(), cx);
-    let dirty = cx.update(|_, cx| view.update(cx, |app, cx| app.pump_once(cx)));
-    assert!(!dirty, "没有事件时 pump_once 不能要求重绘");
-}
 /// 中英文占相同终端列时，后面的 SGR run 必须落在同一个 x。
 /// 回归用户截图：`中` 的 fallback 字宽不能把同一列的竖线推歪。
 ///
@@ -3260,3 +3393,10 @@ fn terminal_cursor_after_cjk_uses_the_same_grid(cx: &mut TestAppContext) {
     );
 }
 
+/// 空闲的 pump 不能报告 dirty：没有变化就不重绘（CPU 不做白工）。
+#[gpui::test]
+fn idle_pump_is_not_dirty(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    let dirty = cx.update(|_, cx| view.update(cx, |app, cx| app.pump_once(cx)));
+    assert!(!dirty, "没有事件时 pump_once 不能要求重绘");
+}

@@ -274,10 +274,15 @@ impl PanelState {
                     .filter(|workspace| workspace.runtime != "shell" && !workspace.is_aggregate())
                     .cloned()
                     .collect();
-                // 每组内按 Core 的 attach 频率排序（活跃项固定第一）；
-                // 组与组之间的顺序不变：Shells/Agents → Open → 现有 → Project → discovery。
+                // 已打开的 workspace **不**按使用频率或活跃度重排：它们带固定编号，
+                // 面板顺序必须就是侧栏顺序，也就是 `Cmd-Ctrl-1..9` 的顺序。
+                // 一重排，行首的数字就会变成“第几个打开”而位置变成“多常用”，
+                // 用户按 1 却跳到别处。频次只用于未打开的 Project / discovery。
                 let mut live = workspace_rows(&regular, "");
-                self.sort_by_usage(&mut live);
+                live.sort_by_key(|row| match row {
+                    PanelRow::Workspace { shortcut, .. } => shortcut.unwrap_or(usize::MAX),
+                    _ => usize::MAX,
+                });
                 rows.extend(live);
                 let mut project_rows: Vec<_> = projects
                     .iter()
@@ -590,9 +595,12 @@ mod tests {
         }
     }
 
-    /// 现有 workspace 行按 Core 的 attach 频率排序，活跃项固定第一。
+    /// 已打开的 workspace 按打开顺序 = 侧栏顺序 = 数字快捷键：1 永远是第一个打开的。
+    ///
+    /// Core 的 attach 频次**不能**重排这一组：行首数字与位置一旦不一致，
+    /// 按 `Cmd-Ctrl-1` 就会跳到用户没预期的行。
     #[test]
-    fn existing_workspace_rows_follow_the_core_attach_frequency() {
+    fn opened_workspaces_keep_the_sidebar_order_and_numbers() {
         let state = PanelState {
             open: true,
             model: PanelModel {
@@ -605,22 +613,35 @@ mod tests {
             ],
             ..PanelState::default()
         };
-        let workspaces = [
+        let mut workspaces = vec![
             workspace("ws-a", "a", false),
             workspace("ws-b", "b", false),
             workspace("ws-c", "c", false),
             workspace("ws-d", "d", true),
         ];
+        for (offset, item) in workspaces.iter_mut().enumerate() {
+            item.shortcut = Some(offset as u32 + 1);
+        }
         let rows = state.rows(&workspaces, None, None, &[]);
-        let titles: Vec<String> = rows
+        let live: Vec<(String, Option<usize>)> = rows
             .iter()
             .skip(3) // Shells / Agents / Open
-            .map(|row| row.title())
+            .filter_map(|row| match row {
+                PanelRow::Workspace {
+                    title, shortcut, ..
+                } => Some((title.clone(), *shortcut)),
+                _ => None,
+            })
             .collect();
         assert_eq!(
-            titles,
-            vec!["d · local", "c · local", "b · local", "a · local"],
-            "活跃第一，然后按次数：{titles:?}"
+            live,
+            vec![
+                ("a · local".to_string(), Some(1)),
+                ("b · local".to_string(), Some(2)),
+                ("c · local".to_string(), Some(3)),
+                ("d · local".to_string(), Some(4)),
+            ],
+            "打开顺序不能被频次/活跃度打乱：{live:?}"
         );
     }
 
