@@ -204,10 +204,10 @@ rg -c '#\[(gpui::)?test\]' tests/gpui_*.rs | awk -F: '{s+=$2} END {print s}'
 ```
 
 当前（2026-11-09 实测）：gpui 模块内 **482** 个单测（按文件拆，不照抄 Swift 的巨型
-`FlatChromeTests`），集成测试 **115** 个：`gpui_chrome` 81、`gpui_workspace_picker` 13、
+`FlatChromeTests`），集成测试 **119** 个：`gpui_chrome` 85、`gpui_workspace_picker` 13、
 `gpui_acceptance` 11、`gpui_acceptance_herdr` 2、`gpui_surface_events` 6、
 `gpui_surface_e2e` 1、`gpui_harness_smoke` 1。加上 lib 里其它前端共享模块，`--lib`
-总计 1931 个测试（Core 侧新增 attach 历史 6 个单测）。
+总计 1932 个测试（Core 侧新增 attach 历史 6 个单测）。
 
 ### 5.1 纯逻辑层（ChromeTests 对应）
 
@@ -219,7 +219,7 @@ rg -c '#\[(gpui::)?test\]' tests/gpui_*.rs | awk -F: '{s+=$2} END {print s}'
 | DirectorySuggestionControllerTests (15) | model/directory.rs (13) + state/picker.rs | 部分（目录建议合并逻辑在 state 层，未逐条对照） |
 | ImagePasteFeedbackTests (18) | model/image_paste.rs (18) | 已覆盖 |
 | PaneNavigationTests (5) | model/pane_navigation.rs (7，逐条对照五个用例) + state.rs `move_pane_focus` + gpui_chrome（布局叶子 / zoom）+ gpui_acceptance | 已覆盖（2026-11-09 起 Cmd-[ / Cmd-] 走显式 `SwitchPane`，不再交给 Core 推断） |
-| PanelModelTests (4) / QuickPanelActionsTests (10) | model/panel.rs (5) + chrome/panel_view.rs (9，含 Core attach 频率排序) + gpui_chrome 面板组 | 部分（行内动作集与排序已覆盖，面板窗口布局未做像素对照） |
+| PanelModelTests (4) / QuickPanelActionsTests (10) | model/panel.rs (5) + chrome/panel_view.rs (9，打开顺序编号 + Core attach 频率) + gpui_chrome 面板组 | 部分（行内动作集与排序已覆盖，面板窗口布局未做像素对照） |
 | `SettingsWindowE2ETests`（Swift 设置窗口：Esc 关闭 / Cancel / Apply / 放弃修改确认） | chrome/settings.rs（渲染 + 按钮）+ state.rs `route_settings_key` / `settings_cancel` / `settings_apply_and_close` + gpui_chrome（6 条：Esc、未保存确认、Cancel/Apply、按键不漏进 PTY、数字字段、开关）+ model/settings.rs（枚举控件） | 已覆盖 |
 | ProgressiveWordSelectionTests (19) | model/word_selection.rs (22) | 已覆盖 |
 | ProjectConnectFlowTests (8) | model/workspace_picker.rs + model/quick_connect.rs (21) + gpui_workspace_picker (13) | 部分（源测试自带假断言，已按文档要求改成观察 Core 结果） |
@@ -229,7 +229,7 @@ rg -c '#\[(gpui::)?test\]' tests/gpui_*.rs | awk -F: '{s+=$2} END {print s}'
 | SidebarSectionSplitLayoutTests (5) | chrome/sidebar_view.rs (8) | 已覆盖 |
 | StatusBarTests (28) | model/status_bar.rs (30) | 已覆盖 |
 | SwiftTermQueryReplyTests (5) | model/query_reply.rs (8) + model/query_detector.rs (9) | 已覆盖 |
-| SwiftTerm 1.15 属性绘制（`getAttributes` / `mapColor`，无同名 Swift 测试） | chrome/pane_view.rs (8，切段与颜色) + theme.rs（提亮 / dim 数学）+ gpui_chrome（`pane-bold` 等渲染断言） | 已覆盖（粗体提亮 0–6、dim 对半混合、反显后再提亮、隐藏格保宽度） |
+| SwiftTerm 1.15 属性绘制（`getAttributes` / `mapColor`，无同名 Swift 测试） | chrome/pane_view.rs (8，切段与颜色 + `paint_text` 按列坐标绘字形) + theme.rs（提亮 / dim 数学）+ gpui_chrome（`pane-bold` 等渲染断言、`terminal_mixed_width_runs_use_terminal_columns`、`terminal_cursor_after_cjk_uses_the_same_grid`） | 已覆盖（粗体提亮 0–6、dim 对半混合、反显后再提亮、隐藏格保宽度；中英同列对齐） |
 | TargetOptionSelectionTests (5) | model/target.rs (7) + chrome/target_editor.rs | 已覆盖 |
 | WorkspaceQueryTests (4) | model/quick_connect.rs (21) | 已覆盖 |
 | WorkspaceReplicaIDTests (5) | model/replica_id.rs (11) + 验收里的 join 用例 | 已覆盖 |
