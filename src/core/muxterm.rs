@@ -99,6 +99,10 @@ pub struct Muxterm {
     pub(crate) activity: ActivityState,
     /// Core-owned configuration service shared by adapters.
     pub(crate) settings: SettingsService,
+    /// 工作区 attach 频率：面板排序的唯一数据源（所有前端共享）。
+    pub(crate) usage: crate::projects::AttachHistory,
+    /// 使用历史的落盘位置；`None` = 只保留在内存（测试 / 无配置目录）。
+    pub(crate) usage_path: Option<std::path::PathBuf>,
     /// C buffers whose pointers remain valid until the next poll/query.
     pub(crate) event_data: Vec<Vec<u8>>,
     pub(crate) event_names: Vec<CString>,
@@ -161,6 +165,59 @@ impl Muxterm {
 
     pub(crate) fn pool_mut(&mut self) -> &mut WorkspacePool {
         &mut self.pool
+    }
+
+    /// 记一次 attach：面板「最近使用」排序由 Core 统一记账。
+    ///
+    /// 身份键与 Quick Panel 去重同源（`ResolvedTargetDescriptor::identity_key`），
+    /// 同时存产品 id / canonical id / project id，前端不需要重算身份。
+    pub(crate) fn record_attach(&mut self, id: &crate::protocol::WorkspaceId) {
+        let Some(workspace) = self.pool.get(id) else {
+            return;
+        };
+        let Some(resolved) = workspace.resolved_target() else {
+            return;
+        };
+        let identity = resolved.canonical.identity_key();
+        let project_id = resolved
+            .spec
+            .provenance
+            .as_ref()
+            .and_then(|provenance| provenance.project_id.as_ref())
+            .map(|project_id| project_id.as_str().to_string());
+        let target_workspace_id = resolved.canonical.workspace_id.clone();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs() as i64)
+            .unwrap_or(0);
+        // 保留天数来自 `[quick_panel].attach_history_days`（Core 配置的唯一来源）。
+        let retain_days = self
+            .settings
+            .document()
+            .config
+            .quick_panel
+            .attach_history_days;
+        self.usage.record(
+            &identity,
+            Some(&id.as_str()),
+            target_workspace_id.as_deref(),
+            project_id.as_deref(),
+            now,
+        );
+        self.usage.prune(retain_days, now);
+        if let Some(path) = &self.usage_path {
+            if let Err(error) = self.usage.save(path) {
+                tracing::warn!(
+                    target = "muxterm::usage",
+                    "写 attach 历史失败（不影响使用）: {error}"
+                );
+            }
+        }
+    }
+
+    /// FFI 快照：排序后的 attach 历史。
+    pub(crate) fn workspace_usage_json(&self) -> serde_json::Value {
+        self.usage.json()
     }
 
     pub(crate) fn projects(&self) -> &ProjectsService {

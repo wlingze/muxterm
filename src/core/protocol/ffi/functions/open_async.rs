@@ -180,7 +180,10 @@ pub unsafe extern "C" fn muxterm_open_poll_json(
                 if let Some(previous) = previous { handle.pool.activate(&previous); }
             }
         }
-        if activate { handle.pool.activate(&id); }
+        if activate {
+            handle.pool.activate(&id);
+            handle.record_attach(&id);
+        }
         if let Some(OpenRequest { candidate: CandidateRef::Worktree { project_id, worktree_id }, .. }) = pending.request {
             if let Some(worktree) = handle.projects.store_mut()
                 .get_mut(&crate::projects::ProjectId::from(project_id.as_str()))

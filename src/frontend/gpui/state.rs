@@ -2391,7 +2391,34 @@ impl GpuiApp {
     ///
     /// 面板打开时按需跑：这是跨进程查询，不能放在渲染路径上。
     pub fn refresh_existing(&mut self, cx: &mut Context<Self>) {
+        self.refresh_usage(cx);
         self.discover_picker_root(cx);
+    }
+
+    /// 读 Core 的 attach 频率（面板排序）。同步调用：Core 只回内存快照。
+    pub fn refresh_usage(&mut self, cx: &mut Context<Self>) {
+        let Some(client) = self.pump.as_ref().map(|pump| pump.client()) else {
+            return;
+        };
+        match client.workspace_usage() {
+            Ok(entries) => {
+                self.panel.usage =
+                    crate::frontend::gpui::model::usage::UsageEntry::collect(&entries);
+                cx.notify();
+            }
+            Err(error) => {
+                tracing::warn!(target = "muxterm::gpui", "读 attach 频率失败: {error}");
+            }
+        }
+    }
+
+    /// 无头测试注入 Core 的 attach 频率。
+    #[doc(hidden)]
+    pub fn set_usage_for_tests(
+        &mut self,
+        entries: Vec<crate::frontend::gpui::model::usage::UsageEntry>,
+    ) {
+        self.panel.usage = entries;
     }
 
     /// 无头测试注入 discovery 结果。
