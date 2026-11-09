@@ -973,6 +973,239 @@ fn settings_search_filters_without_losing_the_draft(cx: &mut TestAppContext) {
     assert_eq!(value, Some(serde_json::json!(17.0)), "草稿不因搜索丢");
 }
 
+/// Esc 关设置。以前浮层没有按键分支：Esc 既关不掉，还会漏进终端。
+#[gpui::test]
+fn escape_closes_the_settings_overlay(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.open_settings(&settings_manifest(), &serde_json::json!({}), cx)
+        })
+    });
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("settings-panel").is_some(),
+        "设置必须画出来"
+    );
+    cx.simulate_keystrokes("escape");
+    assert!(
+        !cx.update(|_, cx| view.update(cx, |app, _| app.settings_open)),
+        "Esc 必须关掉设置"
+    );
+}
+
+/// 有未保存修改时 Esc 先问；再按 Esc 回到编辑；点 Discard 才关，且值回滚。
+#[gpui::test]
+fn escape_with_unsaved_changes_asks_before_discarding(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.open_settings(
+                &settings_manifest(),
+                &serde_json::json!({ "font": { "size": 13.0 } }),
+                cx,
+            );
+            app.settings_set("/font/size", serde_json::json!(17.0), cx);
+        })
+    });
+
+    cx.simulate_keystrokes("escape");
+    let (open, pending) = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            (app.settings_open, app.settings_discard_pending())
+        })
+    });
+    assert!(open, "有改动时 Esc 不能直接关");
+    assert!(pending, "要先确认放弃修改");
+    assert!(
+        cx.debug_bounds("settings-discard").is_some(),
+        "确认条必须画出 Discard"
+    );
+
+    cx.simulate_keystrokes("escape");
+    let (open, pending) = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            (app.settings_open, app.settings_discard_pending())
+        })
+    });
+    assert!(open, "再按 Esc 是继续编辑，不是关闭");
+    assert!(!pending, "确认条要收起来");
+
+    // 再按 Esc 回到确认条，然后点 Discard：关闭并回滚。
+    cx.simulate_keystrokes("escape");
+    let discard = cx.debug_bounds("settings-discard").expect("确认条要回来");
+    cx.simulate_click(discard.center(), Default::default());
+    let (open, dirty, value) = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            (
+                app.settings_open,
+                app.settings_dirty(),
+                app.settings_value("/font/size"),
+            )
+        })
+    });
+    assert!(!open, "Discard 关闭设置");
+    assert!(!dirty, "Discard 回滚草稿");
+    assert_eq!(value, Some(serde_json::json!(13.0)), "回到打开时的值");
+}
+
+/// 底部按钮：Cancel 有改动先确认，Discard 关窗口并回滚；Apply 写 Core 后关闭。
+#[gpui::test]
+fn settings_footer_buttons_apply_discard_and_cancel(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.open_settings(
+                &settings_manifest(),
+                &serde_json::json!({ "font": { "size": 13.0 } }),
+                cx,
+            )
+        })
+    });
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.settings_set("/font/size", serde_json::json!(17.0), cx)
+        })
+    });
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("settings-cancel").is_some(),
+        "Cancel 必须画出来"
+    );
+    assert!(
+        cx.debug_bounds("settings-apply").is_some(),
+        "Apply 必须画出来"
+    );
+
+    let cancel = cx.debug_bounds("settings-cancel").unwrap();
+    cx.simulate_click(cancel.center(), Default::default());
+    let state = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            (
+                app.settings_open,
+                app.settings_discard_pending(),
+                app.settings_dirty(),
+            )
+        })
+    });
+    assert!(state.1, "Cancel 有改动时先确认（实际 {state:?}）");
+
+    // Discard：关窗口 + 回滚。
+    let discard = cx.debug_bounds("settings-discard").unwrap();
+    cx.simulate_click(discard.center(), Default::default());
+    let (is_open, dirty) =
+        cx.update(|_, cx| view.update(cx, |app, _| (app.settings_open, app.settings_dirty())));
+    assert!(!is_open, "Discard 关闭设置");
+    assert!(!dirty, "Discard 回滚草稿");
+
+    // Apply：写 Core 一条 patch 后关闭。
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.open_settings(
+                &settings_manifest(),
+                &serde_json::json!({ "font": { "size": 13.0 } }),
+                cx,
+            )
+        })
+    });
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.settings_set("/font/size", serde_json::json!(19.0), cx)
+        })
+    });
+    let apply = cx.debug_bounds("settings-apply").unwrap();
+    cx.simulate_click(apply.center(), Default::default());
+    assert!(!cx.update(|_, cx| view.update(cx, |app, _| app.settings_open)));
+    let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            ClientCommand::ConfigApply { path, value }
+                if path == "/font/size" && value == &serde_json::json!(19.0)
+        )),
+        "Apply 必须写 Core：{commands:?}"
+    );
+}
+
+/// 设置浮层独占键盘：可打印键只改搜索词，绝不进 PTY。
+#[gpui::test]
+fn settings_keys_never_reach_the_shell(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.open_settings(&settings_manifest(), &serde_json::json!({}), cx)
+        })
+    });
+    let before = cx.update(|_, cx| view.update(cx, |app, _| app.settings_query().to_string()));
+    cx.simulate_keystrokes("a b");
+    let after = cx.update(|_, cx| view.update(cx, |app, _| app.settings_query().to_string()));
+    assert_eq!(before, "", "搜索词初始为空");
+    assert_eq!(after, "ab", "可打印键写进搜索框");
+    let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    assert!(
+        !commands
+            .iter()
+            .any(|command| matches!(command, ClientCommand::Input { .. })),
+        "设置打开时按键不能漏进终端：{commands:?}"
+    );
+}
+
+/// 数字字段：退格删字符、打字追加，都落进草稿。
+#[gpui::test]
+fn typing_into_a_number_field_updates_the_draft(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.open_settings(
+                &settings_manifest(),
+                &serde_json::json!({ "quick_panel": { "attach_history_days": 30 } }),
+                cx,
+            );
+            app.settings_select("quick_panel", cx);
+            app.settings_focus_field(0, cx);
+        })
+    });
+    cx.simulate_keystrokes("backspace backspace 1 2");
+    let value = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            app.settings_value("/quick_panel/attach_history_days")
+        })
+    });
+    assert_eq!(value, Some(serde_json::json!(12.0)), "数字字段要能改");
+    assert!(cx.update(|_, cx| view.update(cx, |app, _| app.settings_dirty())));
+}
+
+/// 开关控件：点一下在草稿里翻转，不写 Core。
+#[gpui::test]
+fn clicking_a_switch_toggles_it_in_the_draft(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.open_settings(
+                &settings_manifest(),
+                &serde_json::json!({ "attention": { "enabled": true } }),
+                cx,
+            );
+            app.settings_select("attention", cx);
+        })
+    });
+    cx.run_until_parked();
+    let control = cx
+        .debug_bounds("settings-control-/attention/enabled")
+        .expect("开关控件必须画出来");
+    cx.simulate_click(control.center(), Default::default());
+    let value =
+        cx.update(|_, cx| view.update(cx, |app, _| app.settings_value("/attention/enabled")));
+    assert_eq!(value, Some(serde_json::json!(false)), "点开关要翻转");
+    let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    assert!(
+        !commands
+            .iter()
+            .any(|command| matches!(command, ClientCommand::ConfigApply { .. })),
+        "草稿阶段不能直接写 Core：{commands:?}"
+    );
+}
+
 /// 新建项目：路径自动带出 name，保存后交给 Catalog 打开。
 #[gpui::test]
 fn new_project_saves_through_the_catalog(cx: &mut TestAppContext) {

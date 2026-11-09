@@ -424,5 +424,9 @@
   "statusbar_mode_toggle": "在 tmux 与 Muxterm 配色之间切换状态栏",
   "switch_to_tab": "切换到标签页 {{index}}",
   "switch_to_last_tab": "切换到最后一个标签页",
-  "switch_to_last_tab_detail": "聚焦最后一个打开的标签页"
+  "switch_to_last_tab_detail": "聚焦最后一个打开的标签页",
+  "settings_apply": "应用",
+  "settings_unsaved": "有未保存的修改",
+  "settings_synced_with_core": "已与 Core 同步 · {{count}} 个项目",
+  "settings_keep_editing": "继续编辑"
 }

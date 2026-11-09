@@ -424,5 +424,9 @@
   "statusbar_mode_toggle": "Switch the status bar between tmux and Muxterm colors",
   "switch_to_tab": "Switch to Tab {{index}}",
   "switch_to_last_tab": "Switch to Last Tab",
-  "switch_to_last_tab_detail": "Focus the final open tab"
+  "switch_to_last_tab_detail": "Focus the final open tab",
+  "settings_apply": "Apply",
+  "settings_unsaved": "Unsaved changes",
+  "settings_synced_with_core": "Synced with Core · {{count}} project(s)",
+  "settings_keep_editing": "Keep editing"
 }
