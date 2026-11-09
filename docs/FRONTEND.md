@@ -304,7 +304,11 @@ Chat 不改 Surface、不改 pty 尺寸、不建第二个 VT；无 adapter 的 p
 - 设置修改经 draft transaction；`ConfigChanged` 热应用，不重启。
 - 面板「最近使用」排序由 Core 记账：`attach-history.json`（保留天数 =
   `[quick_panel].attach_history_days`），经 `muxterm_workspace_usage_json` 给所有前端；
-  frontend 不自己存使用频次。
+  frontend 不自己存使用频次。**已打开的 workspace 不参与排序**：它们按打开顺序编号，
+  行首数字、列表顺序、侧栏与 `Cmd-Ctrl-1..9` 必须是同一份列表（本机 shell 不占编号）。
+- 终端字形位置只由终端列决定：每个字形按 `列号 × 格子宽` 绘制，行内位置不依赖字体的
+  自然 advance（中文回退字体、粗斜体、emoji 都不得把后面的竖线推歪）。背景、光标与字形
+  共用同一套列坐标。Shells / Agents 两个聚合槽用 `Cmd-Ctrl-S` / `Cmd-Ctrl-A`，不占数字。
 - macOS 前端无 `bridgeLock` / 串行后台队列 / 前台校准；激活日志不再出现秒级 `elapsed_ms`。
 - `rg 'bridgeLock|backgroundPollQueue|WarmConnectionSlot|ForegroundAuthority'` 在 macOS 前端为空。
 - `rg 'ffi_bridge'` 在 frontend 为空。
