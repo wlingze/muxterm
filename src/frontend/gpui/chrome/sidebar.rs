@@ -289,10 +289,12 @@ fn section_header_title(section: &SidebarSectionModel) -> String {
 
 /// 指示标记的颜色：done 用成功色、blocked 用危险色、working 用强调色。
 fn indicator_color(indicator: Indicator, theme: &Theme) -> gpui::Rgba {
+    // 与 macOS `WorkspaceSidebar.indicatorColor` 完全一致：
+    // working = systemYellow、blocked = systemPink、done = systemTeal。
     match indicator {
-        Indicator::Done => theme.success,
-        Indicator::Blocked => theme.danger,
-        Indicator::Working => theme.accent,
+        Indicator::Done => theme.done,
+        Indicator::Blocked => theme.blocked,
+        Indicator::Working => theme.working,
         Indicator::Idle => theme.muted,
     }
 }

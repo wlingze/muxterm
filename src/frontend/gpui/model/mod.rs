@@ -20,6 +20,7 @@ pub mod layout_projection;
 pub mod menu;
 pub mod pane_dimming;
 pub mod pane_navigation;
+pub mod pane_title;
 pub mod panel;
 pub mod query_detector;
 pub mod query_reply;

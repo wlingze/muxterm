@@ -2553,7 +2553,7 @@ fn cmd_brackets_walk_the_panes_of_the_current_tab(cx: &mut TestAppContext) {
     // Core 确认后焦点跟着走，下一次 Cmd-] 从 11 继续。
     cx.update(|_, cx| {
         view.update(cx, |app, cx| {
-            app.replace_store_for_tests(three_pane_store(11));
+            app.replace_store_for_tests(three_pane_store(11), cx);
             app.pump_once(cx);
         })
     });
@@ -2576,7 +2576,7 @@ fn cmd_brackets_walk_the_panes_of_the_current_tab(cx: &mut TestAppContext) {
 
     cx.update(|_, cx| {
         view.update(cx, |app, cx| {
-            app.replace_store_for_tests(three_pane_store(12));
+            app.replace_store_for_tests(three_pane_store(12), cx);
             app.pump_once(cx);
         })
     });
@@ -2694,7 +2694,7 @@ fn switching_tab_moves_the_focus_and_the_cursor(cx: &mut TestAppContext) {
     );
     cx.update(|_, cx| {
         view.update(cx, |app, cx| {
-            app.replace_store_for_tests(store);
+            app.replace_store_for_tests(store, cx);
             app.pump_once(cx);
         })
     });
@@ -2762,7 +2762,7 @@ fn a_new_pane_takes_the_focus(cx: &mut TestAppContext) {
     );
     cx.update(|_, cx| {
         view.update(cx, |app, cx| {
-            app.replace_store_for_tests(store);
+            app.replace_store_for_tests(store, cx);
             app.feed_pane_for_tests("local@@dev@tmux@dev", 12, 40, 24, b"new", cx);
             app.pump_once(cx);
         })
@@ -3649,5 +3649,190 @@ fn panel_query_supports_selection_and_caret(cx: &mut TestAppContext) {
         cx.update(|_, cx| view.update(cx, |app, _| app.panel_query())),
         "",
         "有选区时退格删掉整个选区"
+    );
+}
+
+/// IME 提交要落到当前吃文字的那个输入框，而不是永远当成终端输入。
+///
+/// 回归：`commit_text` 只判断 `panel.open`，命令面板 / 设置里用中文输入法
+/// 提交的字会直接写进 PTY。
+#[gpui::test]
+fn ime_commit_follows_the_focused_input(cx: &mut TestAppContext) {
+    let (view, cx) = mount(two_tab_store(), cx);
+    cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+
+    // 命令面板打开：提交的中文进查询串，不落 PTY。
+    cx.simulate_keystrokes("cmd-shift-p");
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.set_marked_text("zhong", cx);
+            app.commit_text("中文", cx);
+        })
+    });
+    let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    assert!(
+        !commands
+            .iter()
+            .any(|command| matches!(command, ClientCommand::Input { .. })),
+        "命令面板里的 IME 提交不能写进终端：{commands:?}"
+    );
+    assert_eq!(
+        cx.update(|_, cx| view.update(cx, |app, _| app.palette_query_for_tests())),
+        "中文"
+    );
+
+    // 关掉面板：同样的提交回到终端。
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    cx.update(|_, cx| view.update(cx, |app, cx| app.commit_text("中文", cx)));
+    let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            ClientCommand::Input { data, .. } if data == "中文".as_bytes()
+        )),
+        "终端里的 IME 提交必须写进 PTY：{commands:?}"
+    );
+}
+
+/// Cmd-D / Cmd-S 各分一次屏；两次按键 = 两次分割（不是一次按键分两个）。
+#[gpui::test]
+fn cmd_d_and_cmd_s_split_once_each(cx: &mut TestAppContext) {
+    use muxterm::frontend::command_queue::ClientCommand;
+    use muxterm::frontend::utils::corebridge::ClientTask;
+    let (view, cx) = mount(two_tab_store(), cx);
+    let take_splits =
+        |view: &gpui::Entity<GpuiApp>, cx: &mut gpui::VisualTestContext| -> Vec<bool> {
+            cx.update(|_, cx| {
+                view.update(cx, |app, _| {
+                    app.take_commands_for_tests()
+                        .iter()
+                        .filter_map(|command| match command {
+                            ClientCommand::Task {
+                                task: ClientTask::SplitPane { horizontal, .. },
+                                ..
+                            } => Some(*horizontal),
+                            _ => None,
+                        })
+                        .collect()
+                })
+            })
+        };
+    cx.simulate_keystrokes("cmd-d");
+    assert_eq!(
+        take_splits(&view, cx),
+        vec![true],
+        "Cmd-D 一次只分一次（左右）"
+    );
+    cx.simulate_keystrokes("cmd-s");
+    assert_eq!(
+        take_splits(&view, cx),
+        vec![false],
+        "Cmd-S 一次只分一次（上下）"
+    );
+}
+
+/// 分屏后每个 pane 上方出现标题条；单 pane 时不占位（Swift
+/// `PaneTitleLayoutPolicy.showsTitleBar`）。
+#[gpui::test]
+fn pane_title_bar_appears_only_when_split(cx: &mut TestAppContext) {
+    use muxterm::frontend::utils::corebridge::ClientLayout;
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("pane-title-10").is_none(),
+        "单 pane 不画标题条"
+    );
+
+    let mut store = store_with_two_workspaces();
+    store.replace_topology(
+        workspace("local@@dev@tmux@dev", "dev", true),
+        vec![ClientTab {
+            id: 1,
+            name: "dev".to_string(),
+            is_active: true,
+        }],
+        vec![
+            (
+                1,
+                vec![ClientPane {
+                    id: 10,
+                    cols: 80,
+                    rows: 24,
+                    is_active: true,
+                    title: "zsh".to_string(),
+                }],
+            ),
+            (
+                1,
+                vec![ClientPane {
+                    id: 11,
+                    cols: 80,
+                    rows: 24,
+                    is_active: false,
+                    title: "server".to_string(),
+                }],
+            ),
+        ],
+    );
+    store.replace_layouts(
+        "local@@dev@tmux@dev",
+        vec![(
+            1,
+            ClientLayout::Split {
+                horizontal: true,
+                ratio: 5,
+                first: Box::new(ClientLayout::Leaf { pane_id: 10 }),
+                second: Box::new(ClientLayout::Leaf { pane_id: 11 }),
+            },
+        )],
+    );
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.replace_store_for_tests(store, cx);
+        })
+    });
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("pane-title-10").is_some(),
+        "分屏后每个 pane 都要有标题条"
+    );
+    assert!(cx.debug_bounds("pane-title-11").is_some());
+}
+
+/// 图片粘贴走 Core：前端只渲染阶段横幅，失败/成功都由 Core 的结果驱动。
+#[gpui::test]
+fn image_paste_banner_follows_the_core_stage(cx: &mut TestAppContext) {
+    use muxterm::frontend::gpui::model::image_paste::ImagePasteStage;
+    let (view, cx) = mount(two_tab_store(), cx);
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("image-paste-banner").is_none(),
+        "空闲时不画横幅"
+    );
+
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.set_image_paste_stage_for_tests(ImagePasteStage::Uploading);
+            cx.notify();
+        })
+    });
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("image-paste-banner").is_some(),
+        "上传中要有横幅"
+    );
+
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.set_image_paste_stage_for_tests(ImagePasteStage::Failed("boom".into()));
+            cx.notify();
+        })
+    });
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("image-paste-banner").is_some(),
+        "失败也要留着"
     );
 }

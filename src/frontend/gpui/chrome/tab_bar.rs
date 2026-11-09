@@ -43,10 +43,11 @@ pub(crate) fn render_tab(
     let tab_id = item.tab_id;
     let active = item.active;
     let mark = item.activity.and_then(Indicator::activity_mark);
+    // 对照 `TabActivityIndicatorView`：working 蓝环、blocked 粉、done 青。
     let activity_color = match item.activity {
-        Some(Indicator::Working) => theme.warning,
-        Some(Indicator::Blocked) => theme.danger,
-        Some(Indicator::Done) => theme.success,
+        Some(Indicator::Working) => theme.accent,
+        Some(Indicator::Blocked) => theme.blocked,
+        Some(Indicator::Done) => theme.done,
         _ => theme.muted,
     };
 

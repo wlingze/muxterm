@@ -121,6 +121,10 @@ pub struct GpuiApp {
     pub(crate) settings_discard_pending: bool,
     /// 刚写过配置，下一轮事件泵要重读主题 / 语言 / 状态栏模式。
     config_reload_pending: bool,
+    /// 刚给 PTY 写过输入：这段时间泵要保持快轮询，否则回显要等空闲退避。
+    input_urgent_until: Option<std::time::Instant>,
+    /// 图片粘贴的阶段与横幅（编码 → Core 上传 → 路径写回 pane）。
+    image_paste: crate::frontend::gpui::model::image_paste::ImagePasteTimeline,
     status: String,
     /// IME 组合中的文本（尚未提交）。只在聚焦 pane 的光标处画。
     marked_text: String,
@@ -289,6 +293,8 @@ impl GpuiApp {
             status_snapshot_at: None,
             attention_at: None,
             config_reload_pending: false,
+            input_urgent_until: None,
+            image_paste: crate::frontend::gpui::model::image_paste::ImagePasteTimeline::new(),
             theme,
             cell,
             last_client_size: None,
@@ -362,6 +368,23 @@ impl GpuiApp {
         self.cell
     }
 
+    /// 最近是否刚写过输入（决定事件泵要不要保持快轮询）。
+    pub fn input_is_pending(&mut self) -> bool {
+        match self.input_urgent_until {
+            Some(deadline) if std::time::Instant::now() < deadline => true,
+            Some(_) => {
+                self.input_urgent_until = None;
+                false
+            }
+            None => false,
+        }
+    }
+
+    /// 记一笔「刚写过输入」：从现在起一个短窗口内保持快轮询。
+    fn note_input_sent(&mut self) {
+        self.input_urgent_until = Some(std::time::Instant::now() + INPUT_URGENT_WINDOW);
+    }
+
     /// 把原生菜单栏的点击接回来：菜单只发 `KeyAction`，执行仍走 `run_action`。
     pub fn watch_menu(
         &mut self,
@@ -401,12 +424,12 @@ impl GpuiApp {
                     if dirty {
                         cx.notify();
                     }
-                    dirty
+                    (dirty, app.input_is_pending())
                 });
-                let Ok(dirty) = outcome else {
+                let Ok((dirty, pending)) = outcome else {
                     break;
                 };
-                delay = pump_delay(delay, dirty);
+                delay = next_pump_delay(delay, dirty, pending);
             }
         })
         .detach();
@@ -448,6 +471,101 @@ impl GpuiApp {
             .unwrap_or(0)
     }
 
+    /// 剪贴板里是图片就交给 Core 上传，返回是否已经接管这次粘贴。
+    ///
+    /// 对照 Swift `ImagePasteController`：前端只负责读剪贴板、编码成 PNG、
+    /// 显示阶段横幅；真正把文件送到目标机器的是 Core（`start_image_paste`），
+    /// 前端不拼 `scp`、不自己起进程。
+    pub fn paste_clipboard_image(&mut self, cx: &mut Context<Self>) -> bool {
+        use crate::frontend::gpui::model::image_paste::{ImagePasteStage, ImagePasteTimeline};
+        let Some(item) = cx.read_from_clipboard() else {
+            return false;
+        };
+        let Some(image) = item.entries().iter().find_map(|entry| match entry {
+            gpui::ClipboardEntry::Image(image) => Some(image),
+            gpui::ClipboardEntry::String(_) => None,
+        }) else {
+            return false;
+        };
+        let now = std::time::Instant::now();
+        // 已经有一张在传：Swift 在这个窗口里回 `ImagePasteBusy`，这里同样不排队。
+        if self.image_paste.is_busy() {
+            return true;
+        }
+        if image.format != gpui::ImageFormat::Png {
+            let mut timeline = ImagePasteTimeline::new();
+            timeline.advance(
+                ImagePasteStage::Failed("only PNG clipboard images are supported".into()),
+                now,
+            );
+            self.image_paste = timeline;
+            cx.notify();
+            return true;
+        }
+        let (Some(workspace), Some(pane)) = (self.visible.clone(), self.focused_pane) else {
+            return false;
+        };
+        let Some(pump) = self.pump.as_ref() else {
+            return false;
+        };
+        let mut timeline = ImagePasteTimeline::new();
+        timeline.advance(ImagePasteStage::Encoding, now);
+        match pump
+            .client()
+            .start_image_paste(&workspace, pane, image.bytes.as_slice())
+        {
+            Ok(()) => {
+                timeline.advance(ImagePasteStage::Uploading, now);
+                self.image_paste = timeline;
+            }
+            Err(error) => {
+                timeline.advance(ImagePasteStage::Failed(error.to_string()), now);
+                self.image_paste = timeline;
+            }
+        }
+        cx.notify();
+        true
+    }
+
+    /// 每个 tick 拉一次上传结果：Core 拿到路径才算完成。
+    pub fn poll_image_paste(&mut self) -> bool {
+        use crate::frontend::gpui::model::image_paste::ImagePasteStage;
+        let now = std::time::Instant::now();
+        let before = self.image_paste.visible_stage(now);
+        self.image_paste.tick(now);
+        if !before.is_progress() {
+            return before != self.image_paste.visible_stage(now);
+        }
+        let Some(pump) = self.pump.as_ref() else {
+            return false;
+        };
+        match pump.client().poll_image_paste() {
+            Ok(Some(path)) => self.image_paste.advance(ImagePasteStage::Done(path), now),
+            Ok(None) => {}
+            Err(error) => self
+                .image_paste
+                .advance(ImagePasteStage::Failed(error.to_string()), now),
+        }
+        before != self.image_paste.visible_stage(now)
+    }
+
+    /// 无头测试用：直接设定横幅阶段，避免依赖真实剪贴板与上传。
+    pub fn set_image_paste_stage_for_tests(
+        &mut self,
+        stage: crate::frontend::gpui::model::image_paste::ImagePasteStage,
+    ) {
+        self.image_paste.advance(stage, std::time::Instant::now());
+    }
+
+    /// 横幅内容（`Idle` 时 None）。
+    pub fn image_paste_feedback(
+        &self,
+    ) -> Option<crate::frontend::gpui::model::image_paste::ImagePasteFeedback> {
+        use crate::frontend::gpui::model::image_paste::ImagePasteFeedback;
+        let stage = self.image_paste.visible_stage(std::time::Instant::now());
+        ImagePasteFeedback::make(&stage)
+    }
+
     pub fn pump_once(&mut self, cx: &mut Context<Self>) -> bool {
         let mut dirty = false;
         if let Some(pump) = self.pump.as_ref() {
@@ -474,6 +592,7 @@ impl GpuiApp {
         dirty |= self.apply_pending_config();
         dirty |= self.refresh_status_snapshot_if_due();
         dirty |= self.refresh_attention_if_due();
+        dirty |= self.poll_image_paste();
         // 焦点跟着 Core 的 active pane 走：切 tab、分屏、Cmd-[ / Cmd-] 之后
         // 键盘输入必须落在屏幕上真正活动的那个 pane 里，否则用户看到的是
         // 「切了 / 分了但光标不见了、打字没反应」。
@@ -716,6 +835,8 @@ impl GpuiApp {
             status_snapshot: None,
             status_snapshot_at: None,
             config_reload_pending: false,
+            input_urgent_until: None,
+            image_paste: crate::frontend::gpui::model::image_paste::ImagePasteTimeline::new(),
             theme: Theme::default(),
             cell: (
                 Theme::default().cell_width(),
@@ -839,8 +960,16 @@ impl GpuiApp {
 
     /// 无头测试用：替换整个 ViewStore（模拟 Core 回了新拓扑）。
     #[doc(hidden)]
-    pub fn replace_store_for_tests(&mut self, store: crate::frontend::view_store::ViewStore) {
+    pub fn replace_store_for_tests(
+        &mut self,
+        store: crate::frontend::view_store::ViewStore,
+        cx: &mut Context<Self>,
+    ) {
         self.store = store;
+        self.last_sizes.clear();
+        self.focused_pane = None;
+        self.focus_default_pane();
+        cx.notify();
     }
 
     /// 无头测试用：取走待发送给 Core 的命令。
@@ -936,6 +1065,17 @@ impl GpuiApp {
         let view = self.store.workspace(self.visible.as_deref()?)?;
         let tab = view.active_tab_id()?;
         view.layouts.get(&tab).cloned()
+    }
+
+    /// 某个 pane 的标题（Core 拓扑快照里的名字）。
+    pub fn pane_title(&self, pane_id: u32) -> Option<String> {
+        let workspace = self.store.workspace(self.visible.as_deref()?)?;
+        let tab = workspace.active_tab_id()?;
+        workspace
+            .panes_for_tab(tab)
+            .iter()
+            .find(|pane| pane.id == pane_id)
+            .map(|pane| pane.title.clone())
     }
 
     pub fn pane_geometry(&self, pane_id: u32) -> Option<(u16, u16)> {
@@ -1053,6 +1193,11 @@ impl GpuiApp {
                 true
             }
             KeyAction::Paste => {
+                // 剪贴板里是图片时交给 Core：它自己把 PNG 传到目标机器并把路径
+                // 写进 pane。前端只做 PNG 编码与横幅，绝不自己拼 scp 命令。
+                if self.paste_clipboard_image(cx) {
+                    return true;
+                }
                 // 菜单 Edit → Paste：与 Cmd-V 走同一条粘贴路径。
                 let text = cx.read_from_clipboard().and_then(|item| {
                     item.entries().iter().find_map(|entry| match entry {
@@ -2597,8 +2742,26 @@ impl GpuiApp {
     ///
     /// 对照 macOS `MuxTerminalView.insertText`。
     pub fn commit_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        // IME 提交要落到**当前真正吃文字的地方**：面板 / 命令面板 / 设置 / 改名。
+        // 以前只判断 `panel.open`，于是命令面板与设置里提交的中文被当成终端输入。
         if self.panel.open {
             self.panel_push_query(text, cx);
+            return;
+        }
+        if self.palette.open {
+            self.palette_push(text, cx);
+            return;
+        }
+        if self.settings_open {
+            self.settings_type(text, cx);
+            return;
+        }
+        if self.prompt.is_some() {
+            self.prompt_push(text, cx);
+            return;
+        }
+        if self.composer_open {
+            self.composer_insert(text, cx);
             return;
         }
         let Some(bytes) = crate::frontend::gpui::model::ime::commit_bytes(text) else {
@@ -2613,6 +2776,7 @@ impl GpuiApp {
             data: bytes,
             quiet: false,
         });
+        self.note_input_sent();
         cx.notify();
     }
 
@@ -2642,10 +2806,19 @@ impl GpuiApp {
                 quiet: false,
             });
         }
+        self.note_input_sent();
         cx.notify();
     }
 
     /// 更新 IME 组合文本（空字符串表示组合结束）。
+    /// 输入法提交后的收尾：组合态必须清空，否则下一次按键会被当成继续组合。
+    fn finish_ime_commit(&mut self, cx: &mut Context<Self>) {
+        if !self.marked_text.is_empty() {
+            self.marked_text.clear();
+            cx.notify();
+        }
+    }
+
     pub fn set_marked_text(&mut self, text: &str, cx: &mut Context<Self>) {
         let next = crate::frontend::gpui::model::ime::strip_placeholders(text);
         if next == self.marked_text {
@@ -2802,6 +2975,7 @@ impl GpuiApp {
                 data,
                 quiet: false,
             });
+            self.note_input_sent();
             cx.notify();
         }
     }
@@ -3130,6 +3304,9 @@ impl GpuiApp {
                 if let Some(text) = keystroke.key_char.as_deref() {
                     if !text.is_empty() && text.chars().all(|ch| !ch.is_control()) {
                         self.palette_push(text, cx);
+                        // 消费掉：否则同一个按键还会经 IME 的 `replace_text_in_range`
+                        // 再提交一遍（查询串变成 "aabbcc"）。
+                        cx.stop_propagation();
                         return;
                     }
                 }
@@ -3302,6 +3479,7 @@ impl GpuiApp {
                 data: bytes,
                 quiet: false,
             });
+            self.note_input_sent();
             if forwarded {
                 // 已经按原始按键发过了：别再让平台把同一段文本当成 IME 提交送一遍。
                 cx.stop_propagation();
@@ -3363,8 +3541,9 @@ impl EntityInputHandler for GpuiApp {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.set_marked_text("", cx);
+        // 先提交再清组合态：`commit_text` 里要判断当前有没有组合文本。
         self.commit_text(text, cx);
+        self.finish_ime_commit(cx);
     }
 
     fn replace_and_mark_text_in_range(
@@ -3489,6 +3668,20 @@ pub(crate) fn theme_from_snapshot(
 ///
 /// 有事件就回到 [`PUMP_INTERVAL`]：打字 / 输出时不牺牲延迟；空闲时不空转
 /// （每次轮询都是一次 FFI + JSON 解析，125Hz 空转会明显吃 CPU）。
+/// 输入之后的快轮询窗口：按键回显必须立刻看得见。
+pub const INPUT_URGENT_WINDOW: Duration = Duration::from_millis(400);
+
+/// 这一拍该等多久。
+///
+/// 有变化 → `PUMP_INTERVAL`；刚有输入 → 也保持 `PUMP_INTERVAL`（否则空闲退避
+/// 到 64ms，敲一个字要等两三帧才看到回显）；都没有 → 指数退避。
+pub fn next_pump_delay(current: Duration, dirty: bool, input_pending: bool) -> Duration {
+    if dirty || input_pending {
+        return PUMP_INTERVAL;
+    }
+    (current * 2).min(IDLE_PUMP_INTERVAL)
+}
+
 pub fn pump_delay(current: Duration, dirty: bool) -> Duration {
     if dirty {
         return PUMP_INTERVAL;
@@ -3576,6 +3769,20 @@ mod pump_tests {
 
     /// 空闲时退避、有事件时立刻回到最快节奏。
     #[test]
+    /// 刚写过输入的那几百毫秒必须保持快轮询：否则回显要等空闲退避的 64ms。
+    #[test]
+    fn input_keeps_the_pump_fast_until_the_echo_lands() {
+        let mut delay = IDLE_PUMP_INTERVAL;
+        assert_eq!(
+            next_pump_delay(delay, false, true),
+            PUMP_INTERVAL,
+            "有输入就要立刻回到快轮询"
+        );
+        // 没有输入也没有变化：继续按空闲上限。
+        delay = IDLE_PUMP_INTERVAL;
+        assert_eq!(next_pump_delay(delay, false, false), IDLE_PUMP_INTERVAL);
+    }
+
     fn pump_delay_backs_off_when_idle_and_resets_on_activity() {
         assert_eq!(pump_delay(PUMP_INTERVAL, true), PUMP_INTERVAL);
         let mut delay = PUMP_INTERVAL;

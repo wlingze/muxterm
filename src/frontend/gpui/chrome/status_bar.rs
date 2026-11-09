@@ -158,10 +158,12 @@ impl GpuiApp {
 }
 
 fn indicator_color(indicator: Indicator, theme: &Theme) -> gpui::Rgba {
+    // 与 macOS `WorkspaceSidebar.indicatorColor` 完全一致：
+    // working = systemYellow、blocked = systemPink、done = systemTeal。
     match indicator {
-        Indicator::Done => theme.success,
-        Indicator::Blocked => theme.danger,
-        Indicator::Working => theme.warning,
+        Indicator::Done => theme.done,
+        Indicator::Blocked => theme.blocked,
+        Indicator::Working => theme.working,
         Indicator::Idle => theme.muted,
     }
 }
