@@ -235,6 +235,18 @@ fn boxed_handle(
         }
     };
     let update_config = settings.document().config.update.clone();
+    let usage_path = crate::projects::AttachHistory::default_path();
+    let mut usage = usage_path
+        .as_deref()
+        .map(crate::projects::AttachHistory::load)
+        .unwrap_or_default();
+    usage.prune(
+        settings.document().config.quick_panel.attach_history_days,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs() as i64)
+            .unwrap_or(0),
+    );
     Box::into_raw(Box::new(MuxtermHandle {
         catalog,
         runtime_registry,
@@ -254,6 +266,8 @@ fn boxed_handle(
         callbacks: FfiCallbacks::default(),
         activity: ActivityState::new(attention_config),
         settings,
+        usage,
+        usage_path,
         event_data: Vec::new(),
         event_names: Vec::new(),
         tab_names: Vec::new(),

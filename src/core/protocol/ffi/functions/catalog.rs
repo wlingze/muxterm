@@ -111,6 +111,9 @@ pub unsafe extern "C" fn muxterm_open_json(
             if let Some(previous_active) = previous_active {
                 handle.pool_mut().activate(&previous_active);
             }
+        } else {
+            // 打开后就是当前 workspace：记一次 attach。
+            handle.record_attach(&workspace_id);
         }
         if let CandidateRef::Worktree {
             project_id,

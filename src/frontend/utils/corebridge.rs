@@ -566,6 +566,23 @@ pub struct ClientCandidate {
     pub reference: ClientCandidateRef,
 }
 
+/// Core 记账的一条 attach 记录（面板排序用）。
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+pub struct ClientUsageEntry {
+    #[serde(default)]
+    pub identity: String,
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    #[serde(default)]
+    pub target_workspace_id: Option<String>,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub count: u32,
+    #[serde(default)]
+    pub last_used_at: i64,
+}
+
 /// Owned product-level open request. Frontends send this product request;
 /// Core resolves it through Catalog without exposing its internal workspace
 /// specification.
@@ -1918,6 +1935,14 @@ impl CoreBridge {
                 "Core workspace close failed with code {rc}"
             ))
         }
+    }
+
+    /// Workspace attach 频率快照；排序由 Core 给定（次数、最近使用）。
+    pub fn workspace_usage(&self) -> anyhow::Result<Vec<ClientUsageEntry>> {
+        let value = Self::discovery_json(|| unsafe {
+            ffi::muxterm_workspace_usage_json(self.handle.as_ptr())
+        })?;
+        Ok(serde_json::from_value(value["entries"].clone())?)
     }
 
     /// List the unified Project/Worktree/Existing/Recent Catalog candidates.

@@ -210,11 +210,34 @@ pub unsafe extern "C" fn muxterm_workspace_activate(
         let wid = parse_workspace_id(&id);
         let handle = &mut *h;
         match handle.pool_mut().activate(&wid) {
-            Some(_) => 0,
+            Some(_) => {
+                // attach 记账：面板「最近使用」排序由 Core 统一维护。
+                handle.record_attach(&wid);
+                0
+            }
             None => -1,
         }
     }))
     .unwrap_or(-1)
+}
+
+/// Workspace attach 频率快照，按面板排序返回。
+///
+/// `{"entries":[{"identity","workspace_id","target_workspace_id","project_id",
+/// "count","last_used_at"}]}` —— 顺序即排序结果（次数降序、最近使用降序）。
+///
+/// # Safety
+/// `h` is a live exclusively accessed handle.
+#[no_mangle]
+pub unsafe extern "C" fn muxterm_workspace_usage_json(h: *mut MuxtermHandle) -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| {
+        if h.is_null() {
+            return json_error("handle is null");
+        }
+        let handle = &*h;
+        json_string(handle.workspace_usage_json())
+    }))
+    .unwrap_or_else(|_| json_error("workspace_usage_json panic"))
 }
 
 /// Reconnect one Core-owned workspace by its stable product identity.

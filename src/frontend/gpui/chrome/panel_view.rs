@@ -200,6 +200,8 @@ pub struct PanelState {
     pub selected: usize,
     pub picker: WorkspacePicker,
     pub actions: Option<ActionMenu>,
+    /// Core 记账的 attach 频率（面板排序唯一数据源；空 = 保持目录顺序）。
+    pub usage: Vec<crate::frontend::gpui::model::usage::UsageEntry>,
 }
 
 impl PanelState {
@@ -272,23 +274,29 @@ impl PanelState {
                     .filter(|workspace| workspace.runtime != "shell" && !workspace.is_aggregate())
                     .cloned()
                     .collect();
-                rows.extend(workspace_rows(&regular, ""));
-                rows.extend(
-                    projects
-                        .iter()
-                        .cloned()
-                        .map(|config| PanelRow::Target { config }),
-                );
-                rows.extend(
-                    annotate(existing_rows(existing, ""))
-                        .into_iter()
-                        .filter(|row| {
-                            let PanelRow::Existing { config, .. } = row else {
-                                return true;
-                            };
-                            !projects.iter().any(|project| same_target(project, config))
-                        }),
-                );
+                // 每组内按 Core 的 attach 频率排序（活跃项固定第一）；
+                // 组与组之间的顺序不变：Shells/Agents → Open → 现有 → Project → discovery。
+                let mut live = workspace_rows(&regular, "");
+                self.sort_by_usage(&mut live);
+                rows.extend(live);
+                let mut project_rows: Vec<_> = projects
+                    .iter()
+                    .cloned()
+                    .map(|config| PanelRow::Target { config })
+                    .collect();
+                self.sort_by_usage(&mut project_rows);
+                rows.extend(project_rows);
+                let mut discovered: Vec<_> = annotate(existing_rows(existing, ""))
+                    .into_iter()
+                    .filter(|row| {
+                        let PanelRow::Existing { config, .. } = row else {
+                            return true;
+                        };
+                        !projects.iter().any(|project| same_target(project, config))
+                    })
+                    .collect();
+                self.sort_by_usage(&mut discovered);
+                rows.extend(discovered);
                 // 开启搜索后，各来源共用 WorkspaceQuery；空串保持截图中的分区顺序。
                 if query.trim().is_empty() {
                     rows
@@ -384,6 +392,45 @@ impl PanelState {
             result.push(PanelRow::Status(error.clone()));
         }
         result
+    }
+
+    /// 一行的排序键：活跃优先 + Core 的 attach 频率。
+    fn rank_of(&self, row: &PanelRow) -> (bool, Option<(u32, i64)>) {
+        use crate::frontend::gpui::model::usage::best_rank;
+        match row {
+            PanelRow::Workspace {
+                workspace_id,
+                active,
+                ..
+            } => (
+                *active,
+                best_rank(&self.usage, Some(workspace_id), None, None),
+            ),
+            PanelRow::Target { config } | PanelRow::Existing { config, .. } => (
+                false,
+                best_rank(
+                    &self.usage,
+                    config.workspace_id.as_deref(),
+                    config.workspace_id.as_deref(),
+                    config.persisted_id.as_deref(),
+                ),
+            ),
+            _ => (false, None),
+        }
+    }
+
+    /// 稳定排序：同分（或都没记录）保持原顺序。
+    fn sort_by_usage(&self, rows: &mut [PanelRow]) {
+        rows.sort_by(|left, right| {
+            let (left_active, left_rank) = self.rank_of(left);
+            let (right_active, right_rank) = self.rank_of(right);
+            crate::frontend::gpui::model::usage::compare_rows(
+                left_active,
+                left_rank,
+                right_active,
+                right_rank,
+            )
+        });
     }
 
     /// 按当前 tab 生成行。
@@ -525,6 +572,92 @@ mod tests {
             item.transport = "local".into();
             item.is_active = active;
         })
+    }
+
+    fn usage(
+        workspace_id: Option<&str>,
+        project_id: Option<&str>,
+        count: u32,
+        last: i64,
+    ) -> crate::frontend::gpui::model::usage::UsageEntry {
+        crate::frontend::gpui::model::usage::UsageEntry {
+            identity: format!("{workspace_id:?}{project_id:?}"),
+            workspace_id: workspace_id.map(str::to_string),
+            target_workspace_id: None,
+            project_id: project_id.map(str::to_string),
+            count,
+            last_used_at: last,
+        }
+    }
+
+    /// 现有 workspace 行按 Core 的 attach 频率排序，活跃项固定第一。
+    #[test]
+    fn existing_workspace_rows_follow_the_core_attach_frequency() {
+        let state = PanelState {
+            open: true,
+            model: PanelModel {
+                tab: PanelTab::Workspaces,
+                ..PanelModel::default()
+            },
+            usage: vec![
+                usage(Some("ws-c"), None, 9, 100),
+                usage(Some("ws-b"), None, 2, 10),
+            ],
+            ..PanelState::default()
+        };
+        let workspaces = [
+            workspace("ws-a", "a", false),
+            workspace("ws-b", "b", false),
+            workspace("ws-c", "c", false),
+            workspace("ws-d", "d", true),
+        ];
+        let rows = state.rows(&workspaces, None, None, &[]);
+        let titles: Vec<String> = rows
+            .iter()
+            .skip(3) // Shells / Agents / Open
+            .map(|row| row.title())
+            .collect();
+        assert_eq!(
+            titles,
+            vec!["d · local", "c · local", "b · local", "a · local"],
+            "活跃第一，然后按次数：{titles:?}"
+        );
+    }
+
+    /// 保存的 Project 也按 Core 的 attach 频率排；没记录的保持配置顺序。
+    #[test]
+    fn saved_projects_follow_the_core_attach_frequency() {
+        let projects =
+            crate::frontend::gpui::model::workspace_picker::ProjectList::new(&serde_json::json!([
+                {"id": "p-alpha", "name": "alpha", "path": "/srv/alpha",
+                 "runtime": {"id": "tmux"}, "transport": {"id": "local"}},
+                {"id": "p-beta", "name": "beta", "path": "/srv/beta",
+                 "runtime": {"id": "tmux"}, "transport": {"id": "local"}},
+                {"id": "p-gamma", "name": "gamma", "path": "/srv/gamma",
+                 "runtime": {"id": "tmux"}, "transport": {"id": "local"}},
+            ]));
+        let mut picker = crate::frontend::gpui::model::workspace_picker::WorkspacePicker::default();
+        picker.projects = projects;
+        let state = PanelState {
+            open: true,
+            model: PanelModel {
+                tab: PanelTab::Workspaces,
+                ..PanelModel::default()
+            },
+            picker,
+            usage: vec![
+                usage(None, Some("p-gamma"), 7, 50),
+                usage(None, Some("p-beta"), 3, 90),
+            ],
+            ..PanelState::default()
+        };
+        let rows = state.rows(&[], None, None, &[]);
+        let titles: Vec<String> = rows
+            .iter()
+            .filter(|row| matches!(row, PanelRow::Target { .. }))
+            .map(|row| row.title())
+            .collect();
+        assert_eq!(titles, vec!["gamma", "beta", "alpha"], "{titles:?}");
     }
 
     /// 对照 `UnifiedPanelController`: 打开时指定 tab，Tab 循环，query 保留。

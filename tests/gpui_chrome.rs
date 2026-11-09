@@ -973,6 +973,78 @@ fn settings_search_filters_without_losing_the_draft(cx: &mut TestAppContext) {
     assert_eq!(value, Some(serde_json::json!(17.0)), "草稿不因搜索丢");
 }
 
+/// 面板的「最近使用」排序来自 Core 的 attach 频率快照：次数多的在活跃项之后。
+#[gpui::test]
+fn panel_orders_rows_with_the_core_usage_snapshot(cx: &mut TestAppContext) {
+    let mut store = store_with_two_workspaces();
+    // 第三个（非活跃）workspace：用来证明顺序真的由 Core 的次数决定。
+    store.replace_topology(
+        workspace("local@@web@tmux@web", "web", false),
+        vec![ClientTab {
+            id: 3,
+            name: "web".to_string(),
+            is_active: true,
+        }],
+        vec![(
+            3,
+            vec![ClientPane {
+                id: 30,
+                cols: 80,
+                rows: 24,
+                is_active: true,
+                title: "web".to_string(),
+            }],
+        )],
+    );
+    store.ensure_workspace("local@@web@tmux@web").backend_status = Some(backend_status::CONNECTED);
+    let (view, cx) = mount(store, cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.set_usage_for_tests(vec![
+                muxterm::frontend::gpui::model::usage::UsageEntry {
+                    identity: "local@@ops@tmux@ops".into(),
+                    workspace_id: Some("local@@ops@tmux@ops".into()),
+                    target_workspace_id: None,
+                    project_id: None,
+                    count: 9,
+                    last_used_at: 100,
+                },
+                muxterm::frontend::gpui::model::usage::UsageEntry {
+                    identity: "local@@web@tmux@web".into(),
+                    workspace_id: Some("local@@web@tmux@web".into()),
+                    target_workspace_id: None,
+                    project_id: None,
+                    count: 4,
+                    last_used_at: 10,
+                },
+            ]);
+            app.show_panel(
+                muxterm::frontend::gpui::model::panel::PanelTab::Workspaces,
+                cx,
+            );
+        })
+    });
+    let titles: Vec<String> = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            app.panel_rows()
+                .iter()
+                .filter(|row| {
+                    matches!(
+                        row,
+                        muxterm::frontend::gpui::chrome::panel_view::PanelRow::Workspace { .. }
+                    )
+                })
+                .map(|row| row.title())
+                .collect()
+        })
+    });
+    assert_eq!(
+        titles,
+        vec!["dev · local", "ops · local", "web · local"],
+        "活跃的 dev 固定第一，其余按 Core 的次数降序（ops=9、web=4）：{titles:?}"
+    );
+}
+
 /// Esc 关设置。以前浮层没有按键分支：Esc 既关不掉，还会漏进终端。
 #[gpui::test]
 fn escape_closes_the_settings_overlay(cx: &mut TestAppContext) {

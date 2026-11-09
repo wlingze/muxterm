@@ -34,5 +34,6 @@ pub mod status_bar;
 pub mod surface_feed;
 pub mod target;
 pub mod target_editor;
+pub mod usage;
 pub mod word_selection;
 pub mod workspace_picker;

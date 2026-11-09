@@ -1045,6 +1045,32 @@ fn ffi_workspace_open_list_activate_close() {
     }
 }
 
+/// 使用频率快照：空 handle 报错，新 handle 给出可解析的 entries。
+#[test]
+fn ffi_workspace_usage_json_snapshot() {
+    unsafe {
+        let out = muxterm_workspace_usage_json(ptr::null_mut());
+        assert!(!out.is_null());
+        let text = CStr::from_ptr(out).to_string_lossy().into_owned();
+        muxterm_free_string(out);
+        assert!(text.contains("handle is null"), "{text}");
+    }
+    let h = muxterm_catalog_new();
+    assert!(!h.is_null());
+    unsafe {
+        let out = muxterm_workspace_usage_json(h);
+        assert!(!out.is_null());
+        let text = CStr::from_ptr(out).to_string_lossy().into_owned();
+        muxterm_free_string(out);
+        let value: serde_json::Value = serde_json::from_str(&text).expect("usage json");
+        assert!(
+            value["entries"].is_array(),
+            "面板排序要拿到 entries 数组: {text}"
+        );
+        muxterm_free(h);
+    }
+}
+
 #[test]
 fn ffi_workspace_task_targets_background_workspace_without_activation() {
     let h = muxterm_catalog_new();
