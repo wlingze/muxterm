@@ -13,6 +13,10 @@
 它**不替换**现有的 Swift（AppKit + SwiftTerm）与 GTK4（vte4）前端，作为并存实现，
 先用起来，再按实测决定是否合并。
 
+> **2026-11-09 决策：gpui 成为发布前端。** 对外发布只构建这条线
+> （`scripts/build-gpui-macos.sh` → `build/macos/MuxtermGpui.app`）；Swift / GTK4
+> 保留为历史参照与兼容实现，不再作为发布目标，也不再要求把 gpui 的行为回接过去。
+
 它把 [`FRONTEND-PLATFORM.md`](FRONTEND-PLATFORM.md) §6 阶段 2 的两个硬门当成设计前提接受下来，
 而不是先去证伪：
 

@@ -17,6 +17,10 @@
 TUI、CLI 都是 frontend。Core 是库；frontend 只经 C FFI + 统一 `ffi_client`。
 长期目标是跨平台统一体验，并让 Activity lane 感知 commands / agents。
 
+**发布前端 = gpui**（2026-11-09 起）：对外发布只出 `src/frontend/gpui/` 这一条线，
+macOS Swift / Linux GTK4 保留为历史参照与兼容实现，不再作为发布目标，也不用再把
+gpui 的行为回接到 Swift。新功能优先在 gpui 落地。
+
 ## 环境
 
 - 先 `pwd` / `git status` 确认当前 worktree 与分支，不要假设路径。
