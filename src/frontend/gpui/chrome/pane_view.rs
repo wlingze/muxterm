@@ -1,10 +1,22 @@
 //! PaneSurface 绘制：CellGrid → 行 → 同色 run。
 //!
 //! 一个 pane 一个常驻 Surface；隐藏时只跳过绘制，不销毁、不 reset。
+//!
+//! 文字**不能**交给普通文本流排版：终端每一列都是一个固定的格子，而字形
+//! 的自然 advance 由字体决定（Menlo 的 `M`、CJK 的回退字体、粗斜体变体
+//! 各不一样）。一旦整行交给 flex 拼接，中文/全角字符后面的竖线就会逐格
+//! 漂移，表格边框对不齐。所以这里分两层画：
+//!
+//! * 背景 / 光标 / debug selector 用宽度写死的 div（一列 = 一个格子宽）；
+//! * 字形用一层 canvas 按 `列号 × 格子宽` 显式定位，只取 `shape_line` 的
+//!   glyph id 与字体，位置完全不用它给的 advance。
+
+use std::sync::Arc;
 
 use gpui::{
-    canvas, div, prelude::*, px, AnyElement, ElementInputHandler, MouseButton, ScrollDelta,
-    ScrollWheelEvent, SharedString,
+    canvas, div, point, prelude::*, px, AnyElement, ElementInputHandler, FontStyle, FontWeight,
+    Hsla, MouseButton, ScrollDelta, ScrollWheelEvent, SharedString, StrikethroughStyle, TextRun,
+    UnderlineStyle,
 };
 
 use crate::frontend::gpui::chrome::pane_grid::Rect;
@@ -16,10 +28,22 @@ use crate::frontend::gpui::terminal::grid::{Cell, Color, FILLER};
 pub(crate) struct RowRun {
     pub start: usize,
     pub end: usize,
+    /// 与 `text` 逐字符对应的终端列号。
+    ///
+    /// 不能靠 `start + 字符序号` 推出来：双宽字形占两列、隐藏格会把字形
+    /// 换成空格但**不**改变列宽，序号和列号不是一回事。
+    pub cols: Vec<usize>,
     pub text: String,
     pub fg: gpui::Rgba,
     pub bg: gpui::Rgba,
     pub style: RunStyle,
+}
+
+/// 一行待绘制的字形计划（字体与位置在 paint 阶段解析）。
+#[derive(Debug, Clone)]
+struct RowText {
+    row: usize,
+    runs: Vec<RowRun>,
 }
 
 /// 一个格子的字体变体（颜色之外要画出来的 SGR 属性）。
@@ -59,6 +83,7 @@ impl GpuiApp {
         let focused = self.focused_pane() == Some(pane_id);
 
         let mut row_elements: Vec<AnyElement> = Vec::new();
+        let mut row_texts: Vec<RowText> = Vec::new();
         match self.surface(&workspace, pane_id) {
             Some(surface) => {
                 let grid = surface.grid();
@@ -71,15 +96,18 @@ impl GpuiApp {
                     let Some(cells) = surface.visible_row(row) else {
                         break;
                     };
+                    let runs = Self::row_runs(&theme, cells, row, draw_cols, cursor, show_cursor);
                     row_elements.push(Self::render_row(
-                        &theme,
-                        cells,
+                        &runs,
                         row,
-                        draw_cols,
-                        cell_height,
                         cursor,
                         show_cursor,
+                        cell_width,
+                        cell_height,
                     ));
+                    if runs.iter().any(|run| !run.text.is_empty()) {
+                        row_texts.push(RowText { row, runs });
+                    }
                 }
             }
             None => {
@@ -92,6 +120,34 @@ impl GpuiApp {
                 );
             }
         }
+
+        // 字形的唯一绘制入口：按列号定位（见文件头）。
+        let text_layer = {
+            let rows = Arc::new(row_texts);
+            let family = theme.font_family.clone();
+            let font_size = theme.font_size;
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .w_full()
+                .h_full()
+                .child(canvas(
+                    |_, _, _| (),
+                    move |bounds, _, window, _cx| {
+                        paint_text(
+                            bounds,
+                            &rows,
+                            &family,
+                            font_size,
+                            cell_width,
+                            cell_height,
+                            window,
+                        );
+                    },
+                ))
+                .into_any_element()
+        };
 
         // IME：组合文本画在光标处，输入处理器负责候选窗锚定与提交。
         let marked = self.marked_text().to_string();
@@ -180,39 +236,31 @@ impl GpuiApp {
                 }),
             )
             .children(row_elements)
+            .child(text_layer)
             .child(input_handler)
             .into_any_element()
     }
 
     fn render_row(
-        theme: &crate::frontend::gpui::theme::Theme,
-        cells: &[Cell],
+        runs: &[RowRun],
         row: usize,
-        cols: usize,
-        cell_height: f32,
         cursor: (usize, usize),
         show_cursor: bool,
+        cell_width: f32,
+        cell_height: f32,
     ) -> AnyElement {
-        let mut runs: Vec<AnyElement> = Vec::new();
-        for run in Self::row_runs(theme, cells, row, cols, cursor, show_cursor) {
+        let mut elements: Vec<AnyElement> = Vec::new();
+        for run in runs {
             let holds_cursor =
                 show_cursor && cursor.0 == row && (run.start..run.end).contains(&cursor.1);
-            runs.push(
+            // 宽度必须写死成「列数 × 格宽」：交给内容撑宽就会被字形 advance 带走。
+            let width = px((run.end - run.start) as f32 * cell_width);
+            elements.push(
                 div()
                     .h(px(cell_height))
-                    // 文本行高必须等于格子高度：gpui 默认行高是 1.618em，
-                    // 18pt 字会排成 29px 的行，在 20px 的格子里被裁掉下半截。
-                    .line_height(px(cell_height))
+                    .w(width)
+                    .flex_none()
                     .bg(run.bg)
-                    .text_color(run.fg)
-                    // SGR 属性必须真的画出来：markdown/agent 输出的标题、强调、
-                    // 链接都是靠粗体/斜体/下划线区分的，只变色会和正文糊成一片。
-                    .when(run.style.bold, |this| {
-                        this.font_weight(gpui::FontWeight::BOLD)
-                    })
-                    .when(run.style.italic, |this| this.italic())
-                    .when(run.style.underline, |this| this.underline())
-                    .when(run.style.strike, |this| this.line_through())
                     .when(holds_cursor, |this| {
                         this.debug_selector(|| "pane-cursor".into())
                     })
@@ -239,7 +287,6 @@ impl GpuiApp {
                             && run.style.strike,
                         |this| this.debug_selector(|| "pane-strike".into()),
                     )
-                    .child(SharedString::from(run.text))
                     .into_any_element(),
             );
         }
@@ -250,7 +297,7 @@ impl GpuiApp {
             .flex_none()
             .h(px(cell_height))
             .w_full()
-            .children(runs)
+            .children(elements)
             .into_any_element()
     }
 
@@ -266,6 +313,7 @@ impl GpuiApp {
         show_cursor: bool,
     ) -> Vec<RowRun> {
         let last = Self::last_visible_cell(cells, cols, row, cursor, show_cursor);
+        let cursor_col = (show_cursor && cursor.0 == row).then_some(cursor.1);
         let mut runs: Vec<RowRun> = Vec::new();
         let mut index = 0;
         while index < last {
@@ -273,7 +321,12 @@ impl GpuiApp {
             let style = RunStyle::of(&cells[index]);
             let (fg, bg) = Self::cell_colors(&cells[index], theme, row, index, cursor, show_cursor);
             let mut text = String::new();
+            let mut cols: Vec<usize> = Vec::new();
             while index < last {
+                // 光标格单独成段：反色后宽度必须正好一格，测试也按它定位。
+                if Some(index) == cursor_col && index > start {
+                    break;
+                }
                 let (next_fg, next_bg) =
                     Self::cell_colors(&cells[index], theme, row, index, cursor, show_cursor);
                 if (next_fg, next_bg) != (fg, bg) || RunStyle::of(&cells[index]) != style {
@@ -282,15 +335,18 @@ impl GpuiApp {
                 // SGR 8（隐藏）：保留格子宽度与背景，只把字形换成空格。
                 if cells[index].attrs.hidden {
                     text.push(' ');
+                    cols.push(index);
                 } else if cells[index].ch != FILLER {
                     // 双宽字形的第二格是占位：字形本身已经占了两格列宽。
                     text.push(cells[index].ch);
+                    cols.push(index);
                 }
                 index += 1;
             }
             runs.push(RowRun {
                 start,
                 end: index,
+                cols,
                 text,
                 fg,
                 bg,
@@ -346,6 +402,111 @@ impl GpuiApp {
             std::mem::swap(&mut fg, &mut bg);
         }
         (fg, bg)
+    }
+}
+
+/// 按终端列坐标逐字形绘制一整屏。
+///
+/// 只借用 `shape_line` 的 glyph id / font id：位置由 `列号 × 格子宽` 决定。
+/// 这样中文回退字体、粗斜体、emoji 都不会改变列对齐。
+fn paint_text(
+    bounds: gpui::Bounds<gpui::Pixels>,
+    rows: &[RowText],
+    family: &SharedString,
+    font_size: f32,
+    cell_width: f32,
+    cell_height: f32,
+    window: &mut gpui::Window,
+) {
+    let text_system = window.text_system().clone();
+    let size = px(font_size);
+    // 基线只按主字体算一次：回退字体（CJK）自己的 ascent 不同，
+    // 逐 run 取会让中英文基线错开。
+    let base_id = text_system.resolve_font(&gpui::font(family.clone()));
+    let ascent = text_system.ascent(base_id, size);
+    // gpui 的 descent 是负值：行内内容高度 = ascent + |descent|。
+    let descent = text_system.descent(base_id, size);
+    let cell = px(cell_height);
+    let top = ((cell - (ascent - descent)) / 2.0).max(px(0.0));
+    let baseline = top + ascent;
+
+    for row in rows {
+        let row_top = bounds.origin.y + px(row.row as f32 * cell_height);
+        for run in &row.runs {
+            if run.text.is_empty() {
+                continue;
+            }
+            let mut font = gpui::font(family.clone());
+            if run.style.bold {
+                font.weight = FontWeight::BOLD;
+            }
+            if run.style.italic {
+                font.style = FontStyle::Italic;
+            }
+            let color = Hsla::from(run.fg);
+            let shaped = text_system.shape_line(
+                run.text.clone().into(),
+                size,
+                &[TextRun {
+                    len: run.text.len(),
+                    font,
+                    color,
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                }],
+                None,
+            );
+
+            let char_starts: Vec<usize> = run.text.char_indices().map(|(index, _)| index).collect();
+            let mut char_index = 0usize;
+            for shaped_run in &shaped.runs {
+                for glyph in &shaped_run.glyphs {
+                    while char_index + 1 < char_starts.len()
+                        && char_starts[char_index + 1] <= glyph.index
+                    {
+                        char_index += 1;
+                    }
+                    let Some(column) = run.cols.get(char_index) else {
+                        continue;
+                    };
+                    let origin = point(
+                        bounds.origin.x + px(*column as f32 * cell_width),
+                        row_top + baseline,
+                    );
+                    if glyph.is_emoji {
+                        let _ = window.paint_emoji(origin, shaped_run.font_id, glyph.id, size);
+                    } else {
+                        let _ =
+                            window.paint_glyph(origin, shaped_run.font_id, glyph.id, size, color);
+                    }
+                }
+            }
+
+            let left = bounds.origin.x + px(run.start as f32 * cell_width);
+            let width = px((run.end - run.start) as f32 * cell_width);
+            if run.style.underline {
+                window.paint_underline(
+                    point(left, row_top + baseline + descent * 0.618),
+                    width,
+                    &UnderlineStyle {
+                        thickness: px(1.0),
+                        color: Some(color),
+                        wavy: false,
+                    },
+                );
+            }
+            if run.style.strike {
+                window.paint_strikethrough(
+                    point(left, row_top + (ascent * 0.5 + baseline) * 0.5),
+                    width,
+                    &StrikethroughStyle {
+                        thickness: px(1.0),
+                        color: Some(color),
+                    },
+                );
+            }
+        }
     }
 }
 

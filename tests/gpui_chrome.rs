@@ -3193,3 +3193,70 @@ fn idle_pump_is_not_dirty(cx: &mut TestAppContext) {
     let dirty = cx.update(|_, cx| view.update(cx, |app, cx| app.pump_once(cx)));
     assert!(!dirty, "没有事件时 pump_once 不能要求重绘");
 }
+/// 中英文占相同终端列时，后面的 SGR run 必须落在同一个 x。
+/// 回归用户截图：`中` 的 fallback 字宽不能把同一列的竖线推歪。
+///
+/// 容差 0.75px：gpui 布局会按设备像素对齐（2x 屏上 0.5 逻辑像素），
+/// 但一个字形宽度差就有 2px 级别，所以这个容差不会放过真正的错位。
+const GRID_TOL: f32 = 0.75;
+
+#[gpui::test]
+fn terminal_mixed_width_runs_use_terminal_columns(cx: &mut TestAppContext) {
+    let (view, cx) = mount(two_tab_store(), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.feed_pane_for_tests(
+                "local@@dev@tmux@dev",
+                10,
+                80,
+                24,
+                "中\u{1b}[1m│\u{1b}[0m\r\nAA\u{1b}[3m│\u{1b}[0m".as_bytes(),
+                cx,
+            );
+        })
+    });
+    cx.run_until_parked();
+    let after_cjk = cx.debug_bounds("pane-bold").expect("中文之后的粗体格");
+    let after_ascii = cx.debug_bounds("pane-italic").expect("ASCII 之后的斜体格");
+    let (cell_width, _) = cx.update(|_, cx| view.update(cx, |app, _| app.cell()));
+    assert!(
+        (f32::from(after_cjk.origin.x - after_ascii.origin.x)).abs() < GRID_TOL,
+        "中文两格与 ASCII 两格后的竖线必须对齐：{after_cjk:?} / {after_ascii:?}"
+    );
+    assert!(
+        (f32::from(after_cjk.size.width) - cell_width).abs() < GRID_TOL,
+        "单格 run 宽度必须严格等于一列，不能由字形自然 advance 决定"
+    );
+}
+
+/// 光标、背景与字形共用一套列坐标，不能各自计算自然字宽。
+#[gpui::test]
+fn terminal_cursor_after_cjk_uses_the_same_grid(cx: &mut TestAppContext) {
+    let (view, cx) = mount(two_tab_store(), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.feed_pane_for_tests(
+                "local@@dev@tmux@dev",
+                10,
+                80,
+                24,
+                "\u{1b}[1mX\u{1b}[0m中文ab".as_bytes(),
+                cx,
+            );
+        })
+    });
+    cx.run_until_parked();
+    let first = cx.debug_bounds("pane-bold").expect("第一列基准");
+    let cursor = cx.debug_bounds("pane-cursor").expect("尾部光标");
+    let (cell_width, _) = cx.update(|_, cx| view.update(cx, |app, _| app.cell()));
+    let actual = f32::from(cursor.origin.x - first.origin.x);
+    assert!(
+        (actual - 7.0 * cell_width).abs() < GRID_TOL,
+        "X(1列)+中文(4列)+ab(2列)后的光标应在第7列：实际 {actual}, cell={cell_width}"
+    );
+    assert!(
+        (f32::from(cursor.size.width) - cell_width).abs() < GRID_TOL,
+        "空格光标必须填满一格"
+    );
+}
+
