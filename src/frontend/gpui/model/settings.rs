@@ -18,6 +18,7 @@ pub enum ControlKind {
     Text,
     Multiline,
     Switch,
+    Select,
     ThemePicker,
     Directory,
     /// manifest 里出现但前端还不认识的控件：退化成文本框，不丢字段。
@@ -33,6 +34,7 @@ impl ControlKind {
             "text" => Self::Text,
             "multiline" => Self::Multiline,
             "switch" => Self::Switch,
+            "select" => Self::Select,
             "theme_picker" => Self::ThemePicker,
             "directory" => Self::Directory,
             other => Self::Other(other.to_string()),
@@ -42,6 +44,24 @@ impl ControlKind {
     /// 能不能直接点选（true 时渲染成一组选项）。
     pub fn is_switch(&self) -> bool {
         matches!(self, Self::Switch)
+    }
+
+    /// 枚举型控件：点击/左右键在 `options` 里循环。
+    pub fn is_select(&self) -> bool {
+        matches!(self, Self::Select | Self::ThemePicker)
+    }
+
+    /// 文本型控件：键盘直接改值。
+    pub fn is_text_like(&self) -> bool {
+        matches!(
+            self,
+            Self::FontPicker
+                | Self::FontFallback
+                | Self::Number
+                | Self::Text
+                | Self::Multiline
+                | Self::Directory
+        )
     }
 }
 
@@ -93,6 +113,26 @@ impl SettingsField {
 
     pub fn description(&self) -> String {
         field_description(&self.path, &self.title_key)
+    }
+
+    /// 枚举控件的下一个取值：越界回绕，没有选项时返回 `None`。
+    pub fn next_option(&self, current: Option<&str>) -> Option<String> {
+        let options = &self.options;
+        if options.is_empty() {
+            return None;
+        }
+        let index = current
+            .and_then(|current| options.iter().position(|option| option == current))
+            .map(|index| index + 1)
+            .unwrap_or(0);
+        options.get(index % options.len()).cloned()
+    }
+
+    /// 枚举控件显示当前值的文案（`system` → `System`，主题等走同一套）。
+    pub fn option_text(&self, value: Option<&str>) -> String {
+        value
+            .map(|value| option_label(&self.path, value))
+            .unwrap_or_default()
     }
 }
 
@@ -259,6 +299,17 @@ pub fn field_description(path: &str, _title_key: &str) -> String {
 }
 
 /// 选项文案。只有这些组合有专文，其余按 `humanize` 显示原始值。
+/// 字段值的一行文本；数组与对象按 JSON 展开，避免吞掉内容。
+pub fn display_value(value: Option<&Value>) -> String {
+    match value {
+        None | Some(Value::Null) => "—".to_string(),
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Bool(flag)) => flag.to_string(),
+        Some(Value::Number(number)) => number.to_string(),
+        Some(other) => other.to_string(),
+    }
+}
+
 pub fn option_label(path: &str, value: &str) -> String {
     let label = match (path, value) {
         ("/theme/name", "system") => "Follow system",

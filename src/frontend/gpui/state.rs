@@ -54,6 +54,21 @@ mod palette_actions;
 
 pub use palette_actions::{PaletteMenu, PromptState, PromptTarget, StatusBarMode};
 
+/// 设置浮层的键盘落点：搜索框或第 n 个字段。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SettingsFocus {
+    #[default]
+    Search,
+    Field(usize),
+}
+
+/// 正在编辑的文本字段。值先写进 `buffer`，再按控件类型解析进草稿。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettingsEdit {
+    pub path: String,
+    pub buffer: String,
+}
+
 /// 窗口级状态。一个窗口一份。
 pub struct GpuiApp {
     pump: Option<EventPump>,
@@ -98,6 +113,12 @@ pub struct GpuiApp {
     status_snapshot_at: Option<std::time::Instant>,
     /// 上一次拉活动/注意力快照的时间。
     attention_at: Option<std::time::Instant>,
+    /// 设置浮层的键盘落点（搜索框 / 字段）。
+    pub(crate) settings_focus: SettingsFocus,
+    /// 正在输入的文本字段；`None` 表示没有编辑中的值。
+    pub(crate) settings_edit: Option<SettingsEdit>,
+    /// 有未保存修改时按 Esc / 取消：等用户确认「放弃修改」。
+    pub(crate) settings_discard_pending: bool,
     /// 刚写过配置，下一轮事件泵要重读主题 / 语言 / 状态栏模式。
     config_reload_pending: bool,
     status: String,
@@ -229,6 +250,9 @@ impl GpuiApp {
             settings_open: false,
             settings_manifest: crate::frontend::gpui::model::settings::SettingsManifest::default(),
             settings_draft: crate::frontend::gpui::model::settings::SettingsDraft::default(),
+            settings_focus: SettingsFocus::default(),
+            settings_edit: None,
+            settings_discard_pending: false,
             composer: crate::frontend::gpui::model::composer::ComposerDraftStore::new(),
             composer_open: false,
             composer_selection: crate::frontend::gpui::model::composer::TextRange::default(),
@@ -651,6 +675,9 @@ impl GpuiApp {
             settings_open: false,
             settings_manifest: crate::frontend::gpui::model::settings::SettingsManifest::default(),
             settings_draft: crate::frontend::gpui::model::settings::SettingsDraft::default(),
+            settings_focus: SettingsFocus::default(),
+            settings_edit: None,
+            settings_discard_pending: false,
             composer: crate::frontend::gpui::model::composer::ComposerDraftStore::new(),
             composer_open: false,
             composer_selection: crate::frontend::gpui::model::composer::TextRange::default(),
@@ -1186,6 +1213,11 @@ impl GpuiApp {
                 true
             }
             KeyAction::OpenSettings => {
+                // Swift：Cmd-, 打开/聚焦设置。已经开着就按取消处理（有改动先确认）。
+                if self.settings_open {
+                    self.settings_cancel(cx);
+                    return true;
+                }
                 // manifest 与当前值都来自 Core 的一次 describe；拿不到就开空窗口，
                 // 不编造一份配置树。无头测试用 `open_settings` 直接注入。
                 let snapshot = self
@@ -1655,6 +1687,10 @@ impl GpuiApp {
             .first()
             .map(|category| category.id.clone());
         self.settings_draft.set_selected(first);
+        // 与 Swift 一致：打开时键盘在搜索框，⭣ 才落到字段。
+        self.settings_focus = SettingsFocus::Search;
+        self.settings_edit = None;
+        self.settings_discard_pending = false;
         self.settings_open = true;
         cx.notify();
     }
@@ -1665,6 +1701,9 @@ impl GpuiApp {
             return;
         }
         self.settings_open = false;
+        self.settings_focus = SettingsFocus::Field(0);
+        self.settings_edit = None;
+        self.settings_discard_pending = false;
         cx.notify();
     }
 
@@ -1742,8 +1781,339 @@ impl GpuiApp {
 
     /// 丢弃修改，回到打开设置时的值。
     pub fn settings_discard(&mut self, cx: &mut Context<Self>) {
+        self.settings_edit = None;
+        self.settings_discard_pending = false;
         self.settings_draft.revert();
         cx.notify();
+    }
+
+    /// 键盘落点（搜索框 / 第几个字段）。
+    pub fn settings_focus(&self) -> SettingsFocus {
+        self.settings_focus
+    }
+
+    /// 正在编辑的字段与缓冲；渲染时优先显示缓冲。
+    pub fn settings_edit(&self) -> Option<&SettingsEdit> {
+        self.settings_edit.as_ref()
+    }
+
+    /// 有未保存修改、正在等用户确认放弃。
+    pub fn settings_discard_pending(&self) -> bool {
+        self.settings_discard_pending
+    }
+
+    /// 当前分类的字段列表。
+    pub fn settings_fields(&self) -> Vec<crate::frontend::gpui::model::settings::SettingsField> {
+        self.settings_selected()
+            .map(|category| category.fields)
+            .unwrap_or_default()
+    }
+
+    pub fn settings_focused_field(
+        &self,
+    ) -> Option<crate::frontend::gpui::model::settings::SettingsField> {
+        match self.settings_focus {
+            SettingsFocus::Field(index) => self.settings_fields().into_iter().nth(index),
+            SettingsFocus::Search => None,
+        }
+    }
+
+    /// 切换分类并把键盘落点放回字段列表。
+    fn settings_step_category(&mut self, delta: i32, cx: &mut Context<Self>) {
+        let categories = self.settings_categories();
+        if categories.is_empty() {
+            return;
+        }
+        let current = self
+            .settings_draft
+            .selected()
+            .and_then(|selected| {
+                categories
+                    .iter()
+                    .position(|category| category.id == selected)
+            })
+            .unwrap_or(0) as i32;
+        let count = categories.len() as i32;
+        let next = ((current + delta) % count + count) % count;
+        let id = categories[next as usize].id.clone();
+        self.settings_draft.set_selected(Some(id));
+        self.settings_edit = None;
+        self.settings_focus = if self.settings_fields().is_empty() {
+            SettingsFocus::Search
+        } else {
+            SettingsFocus::Field(0)
+        };
+        cx.notify();
+    }
+
+    /// 在字段之间移动键盘落点。
+    fn settings_step_field(&mut self, delta: i32, cx: &mut Context<Self>) {
+        let fields = self.settings_fields();
+        if fields.is_empty() {
+            self.settings_focus = SettingsFocus::Search;
+            cx.notify();
+            return;
+        }
+        let next = match self.settings_focus {
+            SettingsFocus::Search => 0,
+            SettingsFocus::Field(index) => {
+                let count = fields.len() as i32;
+                (((index as i32 + delta) % count + count) % count) as usize
+            }
+        };
+        self.settings_focus = SettingsFocus::Field(next.min(fields.len() - 1));
+        self.settings_edit = None;
+        cx.notify();
+    }
+
+    /// 点击某个字段：把键盘落点移过去。
+    pub fn settings_focus_field(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.settings_focus = SettingsFocus::Field(index);
+        self.settings_edit = None;
+        cx.notify();
+    }
+
+    pub fn settings_focus_search(&mut self, cx: &mut Context<Self>) {
+        self.settings_focus = SettingsFocus::Search;
+        self.settings_edit = None;
+        cx.notify();
+    }
+
+    /// 点控件：把落点移过去再按方向改一格（开关翻转、枚举循环）。
+    pub fn settings_cycle_field(&mut self, index: usize, delta: i32, cx: &mut Context<Self>) {
+        self.settings_focus_field(index, cx);
+        self.settings_adjust_field(delta, cx);
+    }
+
+    /// 左右键 / 空格：开关取反、枚举循环、数字按方向加减。
+    fn settings_adjust_field(&mut self, delta: i32, cx: &mut Context<Self>) {
+        use crate::frontend::gpui::model::settings::ControlKind;
+        let Some(field) = self.settings_focused_field() else {
+            return;
+        };
+        let current = self.settings_draft.get(&field.path).cloned();
+        let value = match &field.control {
+            ControlKind::Switch => {
+                let on = current.and_then(|value| value.as_bool()).unwrap_or(false);
+                serde_json::Value::Bool(!on)
+            }
+            ControlKind::Select | ControlKind::ThemePicker => {
+                let current_text = current.as_ref().and_then(serde_json::Value::as_str);
+                let next = if delta < 0 {
+                    // 反向循环：取「当前项的前一项」。
+                    let mut target: Option<String> = None;
+                    for option in &field.options {
+                        target = Some(option.clone());
+                        if Some(option.as_str()) == current_text {
+                            break;
+                        }
+                    }
+                    target
+                } else {
+                    field.next_option(current_text)
+                };
+                match next {
+                    Some(next) => serde_json::Value::String(next),
+                    None => return,
+                }
+            }
+            ControlKind::Number => {
+                let number = current
+                    .as_ref()
+                    .and_then(serde_json::Value::as_f64)
+                    .unwrap_or(0.0);
+                let step = if delta < 0 { -1.0 } else { 1.0 };
+                let next = (number + step).max(0.0);
+                serde_json::json!(next)
+            }
+            _ => return,
+        };
+        self.settings_set(&field.path, value, cx);
+    }
+
+    /// 键盘输入：搜索框追加查询词；文本字段进去编辑缓冲。
+    fn settings_type(&mut self, text: &str, cx: &mut Context<Self>) {
+        match self.settings_focus {
+            SettingsFocus::Search => {
+                let query = format!("{}{}", self.settings_draft.query(), text);
+                self.settings_set_query(query, cx);
+            }
+            SettingsFocus::Field(index) => {
+                let Some(field) = self.settings_fields().into_iter().nth(index) else {
+                    return;
+                };
+                if !field.control.is_text_like() {
+                    return;
+                }
+                let mut buffer = self
+                    .settings_edit
+                    .as_ref()
+                    .map(|edit| edit.buffer.clone())
+                    .unwrap_or_else(|| {
+                        crate::frontend::gpui::model::settings::display_value(
+                            self.settings_value(&field.path).as_ref(),
+                        )
+                    });
+                buffer.push_str(text);
+                self.settings_edit = Some(SettingsEdit {
+                    path: field.path.clone(),
+                    buffer: buffer.clone(),
+                });
+                self.settings_commit_buffer(&field, &buffer, cx);
+            }
+        }
+    }
+
+    /// 退格：查询词或编辑缓冲各删一个字符。
+    fn settings_backspace(&mut self, cx: &mut Context<Self>) {
+        match self.settings_focus {
+            SettingsFocus::Search => {
+                let mut query = self.settings_draft.query().to_string();
+                query.pop();
+                self.settings_set_query(query, cx);
+            }
+            SettingsFocus::Field(index) => {
+                let Some(field) = self.settings_fields().into_iter().nth(index) else {
+                    return;
+                };
+                if !field.control.is_text_like() {
+                    return;
+                }
+                let mut buffer = self
+                    .settings_edit
+                    .as_ref()
+                    .map(|edit| edit.buffer.clone())
+                    .unwrap_or_else(|| {
+                        crate::frontend::gpui::model::settings::display_value(
+                            self.settings_value(&field.path).as_ref(),
+                        )
+                    });
+                buffer.pop();
+                self.settings_edit = Some(SettingsEdit {
+                    path: field.path.clone(),
+                    buffer: buffer.clone(),
+                });
+                self.settings_commit_buffer(&field, &buffer, cx);
+            }
+        }
+    }
+
+    /// 解析编辑缓冲：数字解析失败就保留原值（缓冲继续留在界面上）。
+    fn settings_commit_buffer(
+        &mut self,
+        field: &crate::frontend::gpui::model::settings::SettingsField,
+        buffer: &str,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::frontend::gpui::model::settings::ControlKind;
+        let value = match &field.control {
+            ControlKind::Number => match buffer.trim().parse::<f64>() {
+                Ok(number) => serde_json::json!(number),
+                Err(_) => return,
+            },
+            ControlKind::Multiline => serde_json::Value::Array(
+                buffer
+                    .split('\n')
+                    .map(str::trim)
+                    .filter(|line| !line.is_empty())
+                    .map(|line| serde_json::Value::String(line.to_string()))
+                    .collect(),
+            ),
+            ControlKind::FontFallback => serde_json::Value::Array(
+                buffer
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|item| !item.is_empty())
+                    .map(|item| serde_json::Value::String(item.to_string()))
+                    .collect(),
+            ),
+            _ => serde_json::Value::String(buffer.to_string()),
+        };
+        self.settings_set(&field.path, value, cx);
+    }
+
+    /// 结束编辑：把缓冲提交进草稿。
+    fn settings_finish_edit(&mut self) {
+        self.settings_edit = None;
+    }
+
+    /// 设置浮层的 Esc / 取消：有改动先确认，否则直接关。
+    pub fn settings_cancel(&mut self, cx: &mut Context<Self>) {
+        if self.settings_draft.is_dirty() && !self.settings_discard_pending {
+            self.settings_discard_pending = true;
+            cx.notify();
+            return;
+        }
+        self.settings_confirm_discard(cx);
+    }
+
+    /// 确认放弃修改并关闭。
+    pub fn settings_confirm_discard(&mut self, cx: &mut Context<Self>) {
+        self.settings_discard(cx);
+        self.close_settings(cx);
+    }
+
+    /// 继续编辑：退回未保存修改。
+    pub fn settings_keep_editing(&mut self, cx: &mut Context<Self>) {
+        self.settings_discard_pending = false;
+        cx.notify();
+    }
+
+    /// Apply 并关闭；没有改动时只关闭。
+    pub fn settings_apply_and_close(&mut self, cx: &mut Context<Self>) {
+        self.settings_finish_edit();
+        if self.settings_draft.is_dirty() {
+            self.settings_apply(cx);
+        }
+        self.settings_discard_pending = false;
+        self.close_settings(cx);
+    }
+
+    /// 设置浮层独占键盘：Esc 取消、Enter 应用、Tab 换分类、上下换字段、
+    /// 左右/空格改控件；其余（包括可打印字符）都留在浮层里，绝不漏进终端。
+    fn route_settings_key(&mut self, keystroke: &gpui::Keystroke, cx: &mut Context<Self>) {
+        let plain = !keystroke.modifiers.platform
+            && !keystroke.modifiers.control
+            && !keystroke.modifiers.alt;
+        if self.settings_discard_pending {
+            match keystroke.key.as_str() {
+                "escape" => self.settings_keep_editing(cx),
+                "enter" => self.settings_confirm_discard(cx),
+                _ => {}
+            }
+            return;
+        }
+        match keystroke.key.as_str() {
+            "escape" => self.settings_cancel(cx),
+            "enter" => self.settings_apply_and_close(cx),
+            "tab" => {
+                let delta = if keystroke.modifiers.shift { -1 } else { 1 };
+                self.settings_step_category(delta, cx);
+            }
+            "up" => self.settings_step_field(-1, cx),
+            "down" => self.settings_step_field(1, cx),
+            "left" => self.settings_adjust_field(-1, cx),
+            "right" => self.settings_adjust_field(1, cx),
+            "space" if plain => {
+                if self.settings_focus == SettingsFocus::Search {
+                    self.settings_type(" ", cx);
+                } else {
+                    self.settings_adjust_field(1, cx);
+                }
+            }
+            "backspace" => self.settings_backspace(cx),
+            _ => {
+                if plain {
+                    if let Some(text) = keystroke
+                        .key_char
+                        .as_deref()
+                        .filter(|text| !text.is_empty() && text.chars().all(|ch| !ch.is_control()))
+                    {
+                        self.settings_type(text, cx);
+                    }
+                }
+            }
+        }
     }
 
     /// Apply：每个改动一条 ConfigApply，再以当前值为新 baseline。
@@ -2572,6 +2942,27 @@ impl GpuiApp {
             if keystroke.key == "escape" {
                 self.close_info(cx);
             }
+            cx.stop_propagation();
+            return;
+        }
+
+        // 设置浮层独占按键：Esc 取消、Enter 应用、Tab 换分类、上下换字段。
+        // 之前这里没有分支，Esc 和所有可打印键都会漏到终端 —— 设置关不掉。
+        if self.settings_open {
+            if keystroke.modifiers.platform {
+                // Cmd-, / Cmd-Q 等继续走动作表；其余 Cmd 组合留在浮层里。
+                if let Some(action) =
+                    crate::frontend::gpui::model::shortcuts::builtin_action(&chord)
+                {
+                    if self.run_action(action, window, cx) {
+                        cx.stop_propagation();
+                        return;
+                    }
+                }
+                cx.stop_propagation();
+                return;
+            }
+            self.route_settings_key(keystroke, cx);
             cx.stop_propagation();
             return;
         }

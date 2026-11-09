@@ -141,7 +141,7 @@ impl Render for GpuiApp {
                             .children(panes)
                             .children(self.render_panel(cx))
                             .children(self.render_composer(cx))
-                            .children(self.render_settings(cx))
+                            .children(self.render_settings(window, cx))
                             .children(self.render_target_editor(cx))
                             .children(self.render_palette(cx))
                             .children(self.render_info(cx))
