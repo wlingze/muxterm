@@ -41,6 +41,8 @@ pub struct MenuKey {
     pub command: bool,
     pub shift: bool,
     pub option: bool,
+    /// Ctrl：`Shells` / `Agents` 两个聚合槽用它，避开 1..9。
+    pub control: bool,
 }
 
 impl MenuKey {
@@ -50,6 +52,17 @@ impl MenuKey {
             command: true,
             shift: false,
             option: false,
+            control: false,
+        }
+    }
+
+    fn command_control(key: &str) -> Self {
+        Self {
+            key: key.to_string(),
+            command: true,
+            shift: false,
+            option: false,
+            control: true,
         }
     }
 
@@ -59,6 +72,7 @@ impl MenuKey {
             command: true,
             shift: true,
             option: false,
+            control: false,
         }
     }
 
@@ -68,6 +82,7 @@ impl MenuKey {
             command: true,
             shift: false,
             option: true,
+            control: false,
         }
     }
 }
@@ -245,7 +260,12 @@ fn view_menu() -> Menu {
             item(
                 "Shells",
                 Some(KeyAction::OpenShells),
-                Some(MenuKey::command("k")),
+                Some(MenuKey::command_control("s")),
+            ),
+            item(
+                "Agents",
+                Some(KeyAction::OpenAgents),
+                Some(MenuKey::command_control("a")),
             ),
             item(
                 "Command Palette…",
@@ -400,7 +420,7 @@ mod tests {
             if !key.command {
                 continue;
             }
-            let chord = KeyChord::new(key.command, key.shift, key.option, false, &key.key);
+            let chord = KeyChord::new(key.command, key.shift, key.option, key.control, &key.key);
             assert_eq!(
                 builtin_action(&chord),
                 Some(action),

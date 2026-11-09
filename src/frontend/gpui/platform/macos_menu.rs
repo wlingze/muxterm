@@ -36,6 +36,7 @@ fn sender() -> &'static Mutex<Option<UnboundedSender<KeyAction>>> {
 const MOD_COMMAND: u64 = 1 << 20;
 const MOD_SHIFT: u64 = 1 << 17;
 const MOD_OPTION: u64 = 1 << 19;
+const MOD_CONTROL: u64 = 1 << 18;
 
 /// 方向键在 `keyEquivalent` 里的私有区字符。
 fn key_equivalent(key: &MenuKey) -> Option<String> {
@@ -146,6 +147,9 @@ fn build_submenu(spec: &Menu, target: *mut Object, actions: &mut Vec<KeyAction>)
                                     if key.option {
                                         mask |= MOD_OPTION;
                                     }
+                                    if key.control {
+                                        mask |= MOD_CONTROL;
+                                    }
                                     let _: () = msg_send![
                                         menu_item,
                                         setKeyEquivalentModifierMask: mask
@@ -210,6 +214,7 @@ mod tests {
             command: true,
             shift: false,
             option: true,
+            control: false,
         };
         assert_eq!(key_equivalent(&up).as_deref(), Some("\u{F700}"));
         let letter = MenuKey {
@@ -217,6 +222,7 @@ mod tests {
             command: true,
             shift: false,
             option: false,
+            control: false,
         };
         assert_eq!(key_equivalent(&letter).as_deref(), Some("t"));
         let empty = MenuKey {
@@ -224,6 +230,7 @@ mod tests {
             command: true,
             shift: false,
             option: false,
+            control: false,
         };
         assert_eq!(key_equivalent(&empty), None);
     }

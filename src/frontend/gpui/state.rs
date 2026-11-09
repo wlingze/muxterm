@@ -886,6 +886,17 @@ impl GpuiApp {
         self.store.workspace_ids().map(str::to_string).collect()
     }
 
+    /// 参与编号的 workspace：按打开顺序，剔除本机 shell 的原始 workspace。
+    ///
+    /// 侧栏、面板行首数字与 `Cmd-Ctrl-1..9` 都必须用**同一份**列表，
+    /// 否则本机 shell 占着第 1 位，用户按 1 却跳到侧栏里显示为 2 的行。
+    pub fn numbered_workspace_ids(&self) -> Vec<String> {
+        self.workspace_ids()
+            .into_iter()
+            .filter(|id| self.workspace_runtime(id) != "shell")
+            .collect()
+    }
+
     pub fn workspace_runtime(&self, id: &str) -> String {
         self.store
             .workspace(id)
@@ -939,11 +950,7 @@ impl GpuiApp {
         use crate::frontend::gpui::model::sidebar::{
             shortcut_index_by_workspace_id, SidebarItem, AGGREGATE_AGENTS, AGGREGATE_SHELLS,
         };
-        let ids: Vec<String> = self
-            .workspace_ids()
-            .into_iter()
-            .filter(|id| self.workspace_runtime(id) != "shell")
-            .collect();
+        let ids = self.numbered_workspace_ids();
         let shortcuts =
             shortcut_index_by_workspace_id(&ids.iter().map(String::as_str).collect::<Vec<_>>());
         let mut items = vec![
@@ -1200,7 +1207,7 @@ impl GpuiApp {
                 true
             }
             KeyAction::SwitchWorkspace(index) => {
-                let ids = self.workspace_ids();
+                let ids = self.numbered_workspace_ids();
                 let target = if index == 0 {
                     ids.last().cloned()
                 } else {
