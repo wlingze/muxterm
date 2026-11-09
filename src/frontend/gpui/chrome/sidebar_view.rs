@@ -7,7 +7,7 @@
 
 use std::collections::HashSet;
 
-use crate::frontend::gpui::model::aggregate::{AGENTS_IDENTITY, SHELLS_IDENTITY};
+use crate::frontend::gpui::model::aggregate::AggregateIdentity;
 use crate::frontend::gpui::model::attention::AttentionSnapshot;
 use crate::frontend::gpui::model::sidebar::{
     self, backend_status, AgentItem, CommandItem, Indicator, SidebarItem,
@@ -119,6 +119,8 @@ pub struct SidebarRow {
     /// 尾部按钮：命令行为 `eye.slash`/`eye`，工作区行为 `xmark`。
     pub trailing: Option<&'static str>,
     pub target: RowTarget,
+    /// 聚合槽的专属身份色；普通行是 None（走 `indicator`）。
+    pub identity: Option<AggregateIdentity>,
 }
 
 /// 一段的内容。
@@ -176,10 +178,8 @@ pub fn build(inputs: &SidebarInputs<'_>) -> Vec<SidebarSectionModel> {
 
 /// 工作区行：标记、详情与快捷键照抄 `configureWorkspaceCell`。
 fn workspace_row(item: &SidebarItem) -> SidebarRow {
-    let aggregate = matches!(
-        item.workspace_id.as_str(),
-        SHELLS_IDENTITY | AGENTS_IDENTITY
-    );
+    let identity = AggregateIdentity::from_identity(item.workspace_id.as_str());
+    let aggregate = identity.is_some();
     let opening = item.opening_stage.is_some();
     // 断开 / 错误 / 已退出 三种都算「连接丢了」，标记与详情都要变红。
     let connection_lost = matches!(
@@ -235,6 +235,7 @@ fn workspace_row(item: &SidebarItem) -> SidebarRow {
     SidebarRow {
         marker,
         indicator,
+        identity,
         title: item.name.clone(),
         detail,
         shortcut: item.shortcut_text(),
@@ -249,6 +250,7 @@ fn workspace_row(item: &SidebarItem) -> SidebarRow {
 /// Agent 行：标记取 indicator，标题与详情来自投影。
 fn agent_row(item: &AgentItem) -> SidebarRow {
     SidebarRow {
+        identity: None,
         marker: item.indicator.marker(),
         indicator: item.indicator,
         title: item.title.clone(),
@@ -269,6 +271,7 @@ fn agent_row(item: &AgentItem) -> SidebarRow {
 /// 命令行：尾部按钮在两段之间切换可见性。
 fn command_row(item: &CommandItem, hidden: bool) -> SidebarRow {
     SidebarRow {
+        identity: None,
         marker: item.indicator.marker(),
         indicator: item.indicator,
         title: item.title.clone(),
@@ -289,6 +292,7 @@ fn command_row(item: &CommandItem, hidden: bool) -> SidebarRow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::frontend::gpui::model::aggregate::{AGENTS_IDENTITY, SHELLS_IDENTITY};
     use crate::frontend::gpui::model::attention::{
         AttentionSnapshot, PaneAttention, PaneAttentionStatus, WorkspaceAttention,
     };

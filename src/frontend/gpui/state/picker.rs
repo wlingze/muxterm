@@ -836,6 +836,14 @@ impl GpuiApp {
                             .map(|view| view.panes_for_tab(*tab).len())
                             .unwrap_or(0),
                         activity: None,
+                        identity: self.aggregate.map(|kind| match kind {
+                            crate::frontend::gpui::chrome::panel_view::AggregateKind::Shells => {
+                                crate::frontend::gpui::model::aggregate::AggregateIdentity::Shells
+                            }
+                            crate::frontend::gpui::chrome::panel_view::AggregateKind::Agents => {
+                                crate::frontend::gpui::model::aggregate::AggregateIdentity::Agents
+                            }
+                        }),
                     }
                 })
                 .collect(),

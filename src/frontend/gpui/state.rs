@@ -3767,8 +3767,6 @@ fn discover_existing_rows(
 mod pump_tests {
     use super::*;
 
-    /// 空闲时退避、有事件时立刻回到最快节奏。
-    #[test]
     /// 刚写过输入的那几百毫秒必须保持快轮询：否则回显要等空闲退避的 64ms。
     #[test]
     fn input_keeps_the_pump_fast_until_the_echo_lands() {
@@ -3783,6 +3781,8 @@ mod pump_tests {
         assert_eq!(next_pump_delay(delay, false, false), IDLE_PUMP_INTERVAL);
     }
 
+    /// 空闲时退避、有事件时立刻回到最快节奏。
+    #[test]
     fn pump_delay_backs_off_when_idle_and_resets_on_activity() {
         assert_eq!(pump_delay(PUMP_INTERVAL, true), PUMP_INTERVAL);
         let mut delay = PUMP_INTERVAL;

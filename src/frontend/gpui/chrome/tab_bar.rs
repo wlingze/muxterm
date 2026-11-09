@@ -51,17 +51,16 @@ pub(crate) fn render_tab(
         _ => theme.muted,
     };
 
+    // 聚合页的 tab 用槽的身份色（Shells 青 / Agents 紫），普通 tab 用强调色。
+    let accent = match item.identity {
+        Some(identity) => crate::frontend::gpui::chrome::sidebar::identity_color(identity, theme),
+        None => theme.accent,
+    };
     // 活动 tab：强调色 14% 底 + 2pt 下划线；非活动：透明底。
     let background = if active {
-        Rgba {
-            a: 0.14,
-            ..theme.accent
-        }
+        Rgba { a: 0.14, ..accent }
     } else {
-        Rgba {
-            a: 0.0,
-            ..theme.accent
-        }
+        Rgba { a: 0.0, ..accent }
     };
     let label_color = if active { theme.label() } else { theme.muted };
 
@@ -139,7 +138,7 @@ pub(crate) fn render_tab(
                     .right_0()
                     .bottom_0()
                     .h(px(ACTIVE_UNDERLINE))
-                    .bg(theme.accent),
+                    .bg(accent),
             )
         })
         .into_any_element()
