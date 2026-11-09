@@ -179,8 +179,7 @@ impl AttachHistory {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let raw = serde_json::to_string_pretty(self)
-            .map_err(std::io::Error::other)?;
+        let raw = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
         let temp = path.with_extension("json.tmp");
         std::fs::write(&temp, format!("{raw}\n"))?;
         std::fs::rename(&temp, path)
