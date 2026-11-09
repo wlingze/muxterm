@@ -3836,3 +3836,34 @@ fn image_paste_banner_follows_the_core_stage(cx: &mut TestAppContext) {
         "失败也要留着"
     );
 }
+
+/// 聚合槽是固定入口：颜色用专属身份色，不借用 blocked（粉）/ done（青绿）。
+#[gpui::test]
+fn aggregate_rows_use_their_identity_colors(cx: &mut TestAppContext) {
+    use muxterm::frontend::gpui::model::aggregate::AggregateIdentity;
+    let (view, _cx) = mount(two_tab_store(), cx);
+    cx.update(|cx| {
+        view.update(cx, |app, _| {
+            let rows = app.sidebar_model();
+            let workspaces = rows
+                .iter()
+                .find(|section| format!("{:?}", section.section) == "Workspaces")
+                .expect("workspaces section");
+            let shells = workspaces
+                .rows
+                .iter()
+                .find(|row| row.identity == Some(AggregateIdentity::Shells))
+                .expect("shells aggregate row");
+            let agents = workspaces
+                .rows
+                .iter()
+                .find(|row| row.identity == Some(AggregateIdentity::Agents))
+                .expect("agents aggregate row");
+            assert_eq!(shells.identity.unwrap().token(), "teal");
+            assert_eq!(agents.identity.unwrap().token(), "purple");
+            // 聚合行不是连接：永远不应被标成 blocked 的粉。
+            assert_eq!(shells.detail_alert, false);
+            assert_eq!(agents.detail_alert, false);
+        })
+    });
+}

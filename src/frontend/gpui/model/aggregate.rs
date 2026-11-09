@@ -13,6 +13,35 @@ use super::sidebar::AgentItem;
 pub const SHELLS_IDENTITY: &str = "muxterm.frontend.aggregate.shells";
 pub const AGENTS_IDENTITY: &str = "muxterm.frontend.aggregate.agents";
 
+/// 聚合槽的视觉身份色。
+///
+/// 聚合行是**固定入口**，不是连接状态：它的颜色不能借用 blocked/done，
+/// 否则用户会把「入口」读成「出错」或「已完成」。所以两个槽各有一个专属色。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AggregateIdentity {
+    Shells,
+    Agents,
+}
+
+impl AggregateIdentity {
+    /// 由稳定身份字符串反查。
+    pub fn from_identity(identity: &str) -> Option<Self> {
+        match identity {
+            SHELLS_IDENTITY => Some(Self::Shells),
+            AGENTS_IDENTITY => Some(Self::Agents),
+            _ => None,
+        }
+    }
+
+    /// 色板里的名字（`theme.rs` 侧按名字取 token）。
+    pub fn token(self) -> &'static str {
+        match self {
+            Self::Shells => "teal",
+            Self::Agents => "purple",
+        }
+    }
+}
+
 /// 聚合源里的一个 tab。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AggregateSourceTab {

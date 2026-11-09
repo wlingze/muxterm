@@ -221,6 +221,9 @@ ANSI 0–6，dim 与背景对半混合）
   `model/image_paste::ImagePasteTimeline` 驱动横幅（进度 / 成功 / 失败）。
 - 指示色对齐 Swift 语义色：`working` = systemYellow、`blocked` = systemPink、
   `done` = systemTeal（之前借用 success/danger/warning，侧栏与 tab 看起来偏红偏绿）。
+- 两个固定聚合槽另有**专属身份色**：Shells = teal、Agents = systemPurple
+  （`model::aggregate::AggregateIdentity`）。聚合行是入口，不是连接状态，
+  所以永远不借用 blocked/done 的粉与青绿，侧栏行与聚合页 tab 用同一个色。
 、终端字形按**列坐标**绘制（`paint_text` 只借用
 `shape_line` 的 glyph / font id，位置由 `列号 × 格子宽` 决定；中文回退字体、粗斜体、
 emoji 都不会推开同一行后面的竖线）、设置浮层与 Swift 同构（680×680、200pt 左栏、

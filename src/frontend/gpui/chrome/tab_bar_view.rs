@@ -6,6 +6,7 @@
 
 use std::collections::HashSet;
 
+use crate::frontend::gpui::model::aggregate::AggregateIdentity;
 use crate::frontend::gpui::model::attention::{AttentionSnapshot, AttentionVisibilityKey};
 use crate::frontend::gpui::model::sidebar::{self, Indicator, SidebarItem};
 use crate::frontend::utils::corebridge::ClientTab;
@@ -83,6 +84,8 @@ pub struct TabBarItem {
     pub pane_count: usize,
     /// 活动指示灯；idle 不点亮，所以 `None`。
     pub activity: Option<Indicator>,
+    /// 聚合页的 tab 带槽的身份色；普通 tab 是 None。
+    pub identity: Option<AggregateIdentity>,
 }
 
 impl TabBarItem {
@@ -127,6 +130,7 @@ pub fn build(
                     tab_id: tab.id,
                 })
                 .copied(),
+            identity: None,
         })
         .collect()
 }
@@ -228,6 +232,7 @@ mod tests {
             active: true,
             pane_count: 1,
             activity: None,
+            identity: None,
         };
         assert_eq!(item.label(), "1  zsh");
         let blank = TabBarItem {

@@ -132,7 +132,11 @@ impl GpuiApp {
         theme: &Theme,
         cx: &mut gpui::Context<Self>,
     ) -> AnyElement {
-        let marker_color = indicator_color(row.indicator, theme);
+        // 聚合槽是固定入口，用专属身份色；普通行才跟连接/活动状态走。
+        let marker_color = match row.identity {
+            Some(identity) => identity_color(identity, theme),
+            None => indicator_color(row.indicator, theme),
+        };
         let detail_color = if row.detail_alert {
             theme.danger
         } else {
@@ -288,6 +292,18 @@ fn section_header_title(section: &SidebarSectionModel) -> String {
 }
 
 /// 指示标记的颜色：done 用成功色、blocked 用危险色、working 用强调色。
+/// 聚合槽身份色：Shells = teal、Agents = purple（不用状态色，避免误读）。
+pub(crate) fn identity_color(
+    identity: crate::frontend::gpui::model::aggregate::AggregateIdentity,
+    theme: &Theme,
+) -> gpui::Rgba {
+    use crate::frontend::gpui::model::aggregate::AggregateIdentity;
+    match identity {
+        AggregateIdentity::Shells => theme.done,
+        AggregateIdentity::Agents => theme.purple,
+    }
+}
+
 fn indicator_color(indicator: Indicator, theme: &Theme) -> gpui::Rgba {
     // 与 macOS `WorkspaceSidebar.indicatorColor` 完全一致：
     // working = systemYellow、blocked = systemPink、done = systemTeal。

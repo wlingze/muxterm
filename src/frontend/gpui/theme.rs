@@ -65,6 +65,8 @@ pub struct Theme {
     pub blocked: Rgba,
     /// Swift `NSColor.systemTeal`：done 标记（不是绿色 success）。
     pub done: Rgba,
+    /// Swift `NSColor.systemPurple`：Agents 聚合槽的身份色。
+    pub purple: Rgba,
     /// 终端字体家族（`[font] family`）。
     pub font_family: SharedString,
     /// 终端字号（`[font] size`）。
@@ -99,6 +101,7 @@ impl Default for Theme {
             working: rgb(0xffcc00),
             blocked: rgb(0xff2d55),
             done: rgb(0x30b0c7),
+            purple: rgb(0xaf52de),
             font_family: SharedString::from(DEFAULT_FONT_FAMILY),
             font_size: DEFAULT_FONT_SIZE,
             line_spacing: DEFAULT_FONT_SPACING,
@@ -179,6 +182,7 @@ impl Theme {
             working: rgb(0xffd60a),
             blocked: rgb(0xff375f),
             done: rgb(0x40c8e0),
+            purple: rgb(0xbf5af2),
             font_family: SharedString::from(DEFAULT_FONT_FAMILY),
             font_size: DEFAULT_FONT_SIZE,
             line_spacing: DEFAULT_FONT_SPACING,
