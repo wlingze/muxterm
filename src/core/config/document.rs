@@ -381,7 +381,7 @@ impl ConfigDocument {
                     {"path":"/ui/tab_bar_style","control":"select","options":["equal_width","fixed","compact"],"apply":"immediate","title_key":"settings.ui.tab_bar_style"},
                     {"path":"/statusbar/mode","control":"select","options":["tmux","theme"],"apply":"immediate","title_key":"settings.statusbar"},
                     {"path":"/ui/tab_bar_height","control":"number","platforms":["linux"],"apply":"next_workspace","title_key":"settings.ui.tab_bar_height"},
-                    {"path":"/ui/show_title_bar","control":"switch","platforms":["linux"],"apply":"next_workspace","title_key":"settings.ui.show_title_bar"},
+                    {"path":"/ui/show_title_bar","control":"switch","apply":"next_workspace","title_key":"settings.ui.show_title_bar"},
                     {"path":"/ui/borderless","control":"switch","platforms":["linux"],"apply":"next_workspace","title_key":"settings.ui.borderless"}
                 ]},
                 {"id":"ssh","title_key":"settings.ssh","fields":[

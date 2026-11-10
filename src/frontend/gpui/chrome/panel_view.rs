@@ -127,6 +127,8 @@ pub enum PanelRow {
         pane_id: u32,
         title: String,
         detail: String,
+        /// 行的状态色：working/done/blocked 由它决定，不靠详情文字猜。
+        status: crate::frontend::gpui::model::attention::PaneAttentionStatus,
     },
     Search(SearchHit),
     /// 现有 runtime：选中后走 Catalog 的 attach。
@@ -549,6 +551,7 @@ fn attention_row(row: AttentionRow) -> PanelRow {
         row.tab_number,
     );
     PanelRow::Attention {
+        status: row.pane.status,
         workspace_id: row.workspace_id,
         pane_id: row.pane.pane_id,
         title: crate::frontend::gpui::model::attention::AttentionRowLabel::sidebar_aligned(

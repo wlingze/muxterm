@@ -72,6 +72,15 @@ impl Render for GpuiApp {
         let width = f32::from(viewport.width);
         let height = f32::from(viewport.height);
         self.measure_cell(window);
+        // 窗口标题：关掉 `[ui] show_title_bar` 就写空串（只剩 traffic lights）。
+        let title = crate::frontend::gpui::state::window_title_text(
+            self.show_title_bar(),
+            &self.visible_workspace_name(),
+        );
+        if title != self.applied_window_title() {
+            window.set_window_title(&title);
+            self.set_applied_window_title(title);
+        }
         let theme = self.theme().clone();
         let (cell_width, cell_height) = self.cell();
 
