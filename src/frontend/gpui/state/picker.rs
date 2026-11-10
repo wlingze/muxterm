@@ -130,8 +130,14 @@ impl GpuiApp {
         if self.panel.actions.is_some() {
             return "Type an action or command…";
         }
+        // Root 阶段的占位文字跟着 tab 走：三个 tab 的输入框含义不同，
+        // 一律写 "Quick Connect" 会让人以为在找机器。
         match self.panel.picker.stage {
-            PickerStage::Root => "Quick Connect",
+            PickerStage::Root => match self.panel.model.tab {
+                crate::frontend::gpui::model::panel::PanelTab::Workspaces => "Quick Connect",
+                crate::frontend::gpui::model::panel::PanelTab::Attention => "Filter attention",
+                crate::frontend::gpui::model::panel::PanelTab::Search => "Search terminal history",
+            },
             PickerStage::Hosts => "Filter machines",
             PickerStage::Sessions(_) => "Filter tmux and herdr",
             PickerStage::Path(_) => "Filter path",
@@ -161,6 +167,10 @@ impl GpuiApp {
                     .path
                     .update_input(&self.panel.model.query());
                 self.refresh_picker_directories(cx);
+            }
+            // Search tab 的查询要打到 Core 索引上；改动一格就重跑，结果立刻可见。
+            if self.panel.model.tab == crate::frontend::gpui::model::panel::PanelTab::Search {
+                self.refresh_search();
             }
             self.reset_panel_selection();
         }

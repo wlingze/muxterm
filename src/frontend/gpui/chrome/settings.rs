@@ -168,14 +168,26 @@ fn settings_search_box(
         .id("settings-search")
         .debug_selector(|| "settings-search".into())
         .mx_3()
+        .h(px(28.0))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_1p5()
         .px_2()
-        .py_1()
-        .rounded_sm()
+        .rounded(px(6.0))
         .border_1()
         .border_color(if focused { theme.accent } else { theme.border })
         .bg(theme.bg)
-        .text_xs()
+        .text_size(px(11.5))
         .text_color(color)
+        .overflow_hidden()
+        .child(
+            div()
+                .flex_none()
+                .text_size(px(11.0))
+                .text_color(theme.muted)
+                .child("⌕"),
+        )
         .cursor_pointer()
         .on_mouse_down(
             MouseButton::Left,
@@ -209,11 +221,15 @@ fn category_row(
         .flex_col()
         .gap_0p5()
         .px_2()
-        .py_1()
-        .rounded_sm()
+        .py(px(7.0))
+        .rounded(px(6.0))
         .cursor_pointer()
+        // 选中项用强调色淡底 + 强调色标题（Swift 的 source list 选中态）。
         .bg(if active {
-            theme.active_bg
+            gpui::Rgba {
+                a: 0.14,
+                ..theme.accent
+            }
         } else {
             theme.chrome_bg
         })
@@ -227,13 +243,18 @@ fn category_row(
         )
         .child(
             div()
-                .text_sm()
-                .text_color(theme.fg)
+                .text_size(px(13.0))
+                .text_color(if active { theme.accent } else { theme.label() })
+                .font_weight(if active {
+                    gpui::FontWeight::MEDIUM
+                } else {
+                    gpui::FontWeight::NORMAL
+                })
                 .child(SharedString::from(category.title)),
         )
         .child(
             div()
-                .text_xs()
+                .text_size(px(11.0))
                 .text_color(theme.muted)
                 .child(SharedString::from(category.hint)),
         )
@@ -256,35 +277,52 @@ fn category_page(
         .enumerate()
         .map(|(index, field)| field_row(field, index, focused_field == Some(index), app, theme, cx))
         .collect();
+    // 对照 Swift：一页 = 标题 + 说明 + 一整张分组的卡片（行之间用分隔线，不再
+    // 每行套一个独立边框盒子）。卡片底是 controlBackgroundColor 的白。
     div()
         .id("settings-page")
         .debug_selector(|| "settings-page".into())
         .flex()
         .flex_col()
-        .gap_3()
+        .gap(px(14.0))
         .flex_1()
         .min_w(px(0.0))
-        .p_6()
+        .px(px(16.0))
+        .py(px(18.0))
         .overflow_hidden()
         .child(
             div()
                 .flex()
                 .flex_col()
-                .gap_1()
+                .gap(px(4.0))
                 .child(
                     div()
-                        .text_lg()
-                        .text_color(theme.fg)
+                        .text_size(px(20.0))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(theme.label())
                         .child(SharedString::from(category.section.to_string())),
                 )
                 .child(
                     div()
-                        .text_sm()
+                        .text_size(px(12.0))
+                        .line_height(px(16.0))
                         .text_color(theme.muted)
                         .child(SharedString::from(category.description.to_string())),
                 ),
         )
-        .children(rows)
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_h(px(0.0))
+                .rounded(px(8.0))
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.sidebar_bg)
+                .overflow_hidden()
+                .children(rows),
+        )
         .into_any_element()
 }
 
@@ -297,6 +335,9 @@ fn field_row(
     cx: &mut gpui::Context<GpuiApp>,
 ) -> AnyElement {
     let control = field_control(field, index, app, theme, cx);
+    // 对照 `SettingsWindow.makeRow`：左侧文案 18pt 起点、右侧控件固定 200pt、
+    // 控件右对齐到 18pt 内边距。之前左侧没有 `min_w(0)`，长描述把控件挤出
+    // 卡片外，Apply 状态文字和下拉框整个跑到面板外面。
     div()
         .id(SharedString::from(format!("settings-field-{}", field.path)))
         .debug_selector({
@@ -304,14 +345,19 @@ fn field_row(
             move || format!("settings-field-{path}")
         })
         .flex()
-        .flex_col()
-        .gap_1()
-        .px_3()
-        .py_2()
-        .rounded_md()
-        .border_1()
-        .border_color(if focused { theme.accent } else { theme.border })
-        .bg(theme.chrome_bg)
+        .flex_row()
+        .items_center()
+        .gap(px(14.0))
+        .px(px(16.0))
+        .py(px(12.0))
+        .border_b_1()
+        .border_color(theme.border)
+        .when(focused, |element| {
+            element.bg(gpui::Rgba {
+                a: 0.06,
+                ..theme.accent
+            })
+        })
         .cursor_pointer()
         .on_mouse_down(
             MouseButton::Left,
@@ -323,37 +369,34 @@ fn field_row(
         .child(
             div()
                 .flex()
-                .flex_row()
-                .items_center()
-                .gap_3()
+                .flex_col()
+                .gap(px(3.0))
+                .flex_1()
+                .min_w(px(0.0))
                 .child(
                     div()
-                        .flex()
-                        .flex_col()
-                        .gap_0p5()
-                        .flex_1()
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(theme.fg)
-                                .child(SharedString::from(field.title())),
-                        )
-                        .when(!field.description().is_empty(), |element| {
-                            element.child(
-                                div()
-                                    .text_xs()
-                                    .text_color(theme.muted)
-                                    .child(SharedString::from(field.description())),
-                            )
-                        }),
+                        .text_size(px(13.0))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(theme.label())
+                        .child(SharedString::from(field.title())),
                 )
-                .child(
-                    div()
-                        .flex_none()
-                        .text_xs()
-                        .text_color(theme.muted)
-                        .child(SharedString::from(field.apply.label())),
-                )
+                .when(!field.description().is_empty(), |element| {
+                    element.child(
+                        div()
+                            .text_size(px(12.0))
+                            .line_height(px(16.0))
+                            .text_color(theme.muted)
+                            .child(SharedString::from(field.description())),
+                    )
+                }),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .items_end()
+                .flex_none()
+                .w(px(180.0))
                 .child(control),
         )
         .into_any_element()
@@ -379,25 +422,8 @@ fn field_control(
         return projects_control(value.as_ref(), theme);
     }
 
-    let text = match &field.control {
-        ControlKind::Switch => {
-            let on = value
-                .as_ref()
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false);
-            if on { "On" } else { "Off" }.to_string()
-        }
-        ControlKind::Select | ControlKind::ThemePicker => {
-            let current = value.as_ref().and_then(serde_json::Value::as_str);
-            format!("{} ⌄", field.option_text(current))
-        }
-        _ => editing
-            .or_else(|| Some(settings::display_value(value.as_ref())))
-            .unwrap_or_default(),
-    };
     let clickable = field.control.is_switch() || field.control.is_select();
-    let muted = matches!(field.control, ControlKind::Other(_));
-    div()
+    let base = div()
         .id(SharedString::from(format!(
             "settings-control-{}",
             field.path
@@ -407,15 +433,6 @@ fn field_control(
             move || format!("settings-control-{path}")
         })
         .flex_none()
-        .min_w(px(120.0))
-        .px_2()
-        .py_0p5()
-        .rounded_sm()
-        .border_1()
-        .border_color(theme.border)
-        .bg(theme.bg)
-        .text_sm()
-        .text_color(if muted { theme.muted } else { theme.fg })
         .when(clickable, |element| {
             element.cursor_pointer().on_mouse_down(
                 MouseButton::Left,
@@ -425,9 +442,97 @@ fn field_control(
                     this.settings_cycle_field(index, 1, cx);
                 }),
             )
-        })
-        .child(SharedString::from(text))
-        .into_any_element()
+        });
+
+    match &field.control {
+        // 开关 = 圆角胶囊 + 滑块（Swift 是 `NSSwitch`）；纯文字 On/Off
+        // 既看不出当前状态，也没法一眼判断能不能点。
+        ControlKind::Switch => {
+            let on = value
+                .as_ref()
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            base.w(px(38.0))
+                .h(px(22.0))
+                .p(px(2.0))
+                .flex()
+                .items_center()
+                .when(on, |element| element.justify_end())
+                .rounded_full()
+                .bg(if on { theme.accent } else { theme.active_bg })
+                .border_1()
+                .border_color(if on { theme.accent } else { theme.border })
+                .child(
+                    div()
+                        .w(px(16.0))
+                        .h(px(16.0))
+                        .rounded_full()
+                        .bg(if on { theme.bg } else { theme.muted })
+                        .shadow_sm(),
+                )
+                .into_any_element()
+        }
+        // 下拉 = 控件样式的按钮：左边当前值，右边 chevron（Swift `NSPopUpButton`）。
+        ControlKind::Select | ControlKind::ThemePicker => {
+            let current = value.as_ref().and_then(serde_json::Value::as_str);
+            base.w(px(180.0))
+                .h(px(26.0))
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .px(px(8.0))
+                .rounded(px(6.0))
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.bg)
+                .text_size(px(12.0))
+                .text_color(theme.label())
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .overflow_hidden()
+                        .child(SharedString::from(field.option_text(current))),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .text_size(px(10.0))
+                        .text_color(theme.muted)
+                        .child("⌄"),
+                )
+                .into_any_element()
+        }
+        // 其余（文本 / 数字 / 文件 / 多行）= 输入框外观，正在编辑时显示缓冲。
+        _ => {
+            let is_editing = editing.is_some();
+            let text = editing
+                .or_else(|| Some(settings::display_value(value.as_ref())))
+                .unwrap_or_default();
+            let muted = matches!(field.control, ControlKind::Other(_));
+            base.w(px(180.0))
+                .min_h(px(26.0))
+                .flex()
+                .items_center()
+                .px(px(8.0))
+                .py(px(3.0))
+                .rounded(px(6.0))
+                .border_1()
+                .border_color(if is_editing {
+                    theme.accent
+                } else {
+                    theme.border
+                })
+                .bg(theme.bg)
+                .text_size(px(12.0))
+                .text_color(if muted { theme.muted } else { theme.label() })
+                .overflow_hidden()
+                .child(SharedString::from(text))
+                .into_any_element()
+        }
+    }
 }
 
 /// `/projects`：列出名字与路径，原始 JSON 留在草稿里不动。

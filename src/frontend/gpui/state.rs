@@ -125,6 +125,10 @@ pub struct GpuiApp {
     input_urgent_until: Option<std::time::Instant>,
     /// 图片粘贴的阶段与横幅（编码 → Core 上传 → 路径写回 pane）。
     image_paste: crate::frontend::gpui::model::image_paste::ImagePasteTimeline,
+    /// `[ui] show_title_bar`：关掉后窗口标题栏不显示任何文字。
+    show_title_bar: bool,
+    /// 已经写到原生窗口上的标题，避免每帧重复设置。
+    applied_window_title: String,
     status: String,
     /// IME 组合中的文本（尚未提交）。只在聚焦 pane 的光标处画。
     marked_text: String,
@@ -295,6 +299,8 @@ impl GpuiApp {
             config_reload_pending: false,
             input_urgent_until: None,
             image_paste: crate::frontend::gpui::model::image_paste::ImagePasteTimeline::new(),
+            show_title_bar: true,
+            applied_window_title: String::new(),
             theme,
             cell,
             last_client_size: None,
@@ -334,6 +340,7 @@ impl GpuiApp {
         cx: &mut Context<Self>,
     ) {
         let theme = theme_from_snapshot(snapshot);
+        self.show_title_bar = ui_config_from_snapshot(snapshot).show_title_bar;
         self.cell = (theme.cell_width(), theme.cell_height());
         self.configured_font_size = theme.font_size;
         self.theme = theme;
@@ -837,6 +844,8 @@ impl GpuiApp {
             config_reload_pending: false,
             input_urgent_until: None,
             image_paste: crate::frontend::gpui::model::image_paste::ImagePasteTimeline::new(),
+            show_title_bar: true,
+            applied_window_title: String::new(),
             theme: Theme::default(),
             cell: (
                 Theme::default().cell_width(),
@@ -1012,6 +1021,33 @@ impl GpuiApp {
 
     pub fn visible_workspace(&self) -> Option<&str> {
         self.visible.as_deref()
+    }
+
+    /// 是否显示窗口标题（`[ui] show_title_bar`）。
+    pub fn show_title_bar(&self) -> bool {
+        self.show_title_bar
+    }
+
+    /// 设置窗口标题开关（`[ui] show_title_bar`）。
+    pub fn set_show_title_bar(&mut self, show: bool) {
+        self.show_title_bar = show;
+    }
+
+    /// 已写到原生窗口上的标题。
+    pub fn applied_window_title(&self) -> &str {
+        &self.applied_window_title
+    }
+
+    pub fn set_applied_window_title(&mut self, title: String) {
+        self.applied_window_title = title;
+    }
+
+    /// 当前 workspace 的显示名（窗口标题用）。
+    pub fn visible_workspace_name(&self) -> String {
+        let Some(workspace) = self.visible.clone() else {
+            return String::new();
+        };
+        self.workspace_name(&workspace)
     }
 
     pub fn workspace_name(&self, id: &str) -> String {
@@ -2639,8 +2675,48 @@ impl GpuiApp {
         if tab == crate::frontend::gpui::model::panel::PanelTab::Workspaces {
             self.refresh_existing(cx);
         }
+        if tab == crate::frontend::gpui::model::panel::PanelTab::Search {
+            self.refresh_search();
+        }
         self.reset_panel_selection();
         cx.notify();
+    }
+
+    /// 跑一次 Core 索引搜索并更新快照。
+    ///
+    /// Core 的 `search_all` 是同步 FFI（本地索引，无网络），所以这里直接调，
+    /// 不需要像 Swift 那样排队 + requestID 去丢过期结果。空查询清空快照，
+    /// 避免 Search tab 一打开就列出整个库。
+    pub fn refresh_search(&mut self) -> bool {
+        use crate::frontend::gpui::model::search::{SearchHit, SearchSnapshot};
+        let query = self.panel.model.query();
+        if query.trim().is_empty() {
+            // 空查询不去打扰 Core，也不清掉上一轮的结果：打开 Search tab 时
+            // 先看见上次搜到的东西，比一片空白更有用。
+            return false;
+        }
+        // 没有 Core（无头测试 / 泵还没起来）时保留已有快照：注入的命中不该
+        // 因为一次按键就被清空，实机上也只是暂时沿用上一次结果。
+        let Some(client) = self.pump.as_ref().map(|pump| pump.client()) else {
+            return false;
+        };
+        let hits = client.search_all(query.trim()).ok();
+        let snapshot = SearchSnapshot {
+            hits: hits
+                .unwrap_or_default()
+                .into_iter()
+                .map(|hit| SearchHit {
+                    workspace_id: hit.workspace_id,
+                    tab_id: hit.tab_id,
+                    pane_id: hit.pane_id,
+                    seq: hit.seq,
+                    line: hit.line,
+                })
+                .collect(),
+        };
+        let changed = self.search_snapshot.as_ref() != Some(&snapshot);
+        self.search_snapshot = Some(snapshot);
+        changed
     }
 
     /// 关闭面板。
@@ -3638,6 +3714,34 @@ fn client_target_for(config: &TargetConfig) -> crate::frontend::utils::corebridg
         session: config.session.clone(),
         socket: config.socket.clone(),
         workspace_id: config.workspace_id.clone(),
+    }
+}
+
+/// Core 配置快照 → `[ui]` 段。
+pub(crate) fn ui_config_from_snapshot(
+    snapshot: &crate::frontend::utils::corebridge::ClientConfigSnapshot,
+) -> crate::frontend::utils::corebridge::ClientUiConfig {
+    serde_json::from_value::<crate::frontend::utils::corebridge::ClientConfig>(
+        snapshot.values.clone(),
+    )
+    .map(|config| config.ui)
+    .unwrap_or_default()
+}
+
+/// 窗口标题文字。
+///
+/// `[ui] show_title_bar = false` 时返回空串：macOS 上就是「没有窗口 title」，
+/// 只剩 traffic lights —— 与 Swift 版默认观感一致。打开时按
+/// `workspace — Muxterm` 显示，方便在 Mission Control 里辨认窗口。
+pub fn window_title_text(show_title_bar: bool, workspace: &str) -> String {
+    if !show_title_bar {
+        return String::new();
+    }
+    let workspace = workspace.trim();
+    if workspace.is_empty() {
+        "Muxterm".to_string()
+    } else {
+        format!("{workspace} — Muxterm")
     }
 }
 

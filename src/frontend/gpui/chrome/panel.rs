@@ -300,14 +300,29 @@ fn render_row(
 ) -> AnyElement {
     let title = row.title();
     let detail = row.detail();
+    // 状态色一律走主题 token：Attention 行必须能一眼看出 working / done / blocked，
+    // 聚合槽用身份色（Shells 青 / Agents 紫），不借用状态色。
     let (symbol, color) = match &row {
-        PanelRow::Aggregate(AggregateKind::Shells) => ("S".into(), gpui::rgb(0x2aabc1)),
-        PanelRow::Aggregate(AggregateKind::Agents) => ("A".into(), gpui::rgb(0xa24dd4)),
-        PanelRow::Action(PickerAction::Open) => ("+".into(), gpui::rgb(0xff8a00)),
+        PanelRow::Aggregate(AggregateKind::Shells) => (
+            "◆".into(),
+            crate::frontend::gpui::chrome::sidebar::identity_color(
+                crate::frontend::gpui::model::aggregate::AggregateIdentity::Shells,
+                theme,
+            ),
+        ),
+        PanelRow::Aggregate(AggregateKind::Agents) => (
+            "◆".into(),
+            crate::frontend::gpui::chrome::sidebar::identity_color(
+                crate::frontend::gpui::model::aggregate::AggregateIdentity::Agents,
+                theme,
+            ),
+        ),
+        PanelRow::Action(PickerAction::Open) => ("+".into(), theme.accent),
         PanelRow::Workspace { shortcut, .. } => (
             shortcut.map(|n| n.to_string()).unwrap_or_default(),
             theme.muted,
         ),
+        PanelRow::Attention { status, .. } => ("●".into(), attention_color(*status, theme)),
         _ => (String::new(), theme.muted),
     };
     let is_project = matches!(
@@ -315,6 +330,10 @@ fn render_row(
         PanelRow::Target { .. } | PanelRow::Existing { saved: true, .. }
     );
     let can_save = matches!(&row, PanelRow::Existing { saved: false, .. });
+    let attention_label = match &row {
+        PanelRow::Attention { status, .. } => Some((status.as_str().to_string(), color)),
+        _ => None,
+    };
     let closable = match &row {
         PanelRow::Workspace { workspace_id, .. } => Some(workspace_id.clone()),
         _ => None,
@@ -396,6 +415,21 @@ fn render_row(
                     )
                 }),
         )
+        .when_some(attention_label, |element, (label, color)| {
+            element.child(
+                div()
+                    .id(SharedString::from(format!("panel-status-{index}")))
+                    .debug_selector(|| format!("panel-status-{index}"))
+                    .flex_none()
+                    .px(px(6.))
+                    .py(px(1.))
+                    .rounded(px(4.))
+                    .text_size(px(10.))
+                    .text_color(color)
+                    .bg(gpui::Rgba { a: 0.12, ..color })
+                    .child(SharedString::from(label)),
+            )
+        })
         .when(can_save, |element| {
             element.child(
                 div()
@@ -433,6 +467,20 @@ fn render_row(
         })
         .into_any_element()
 }
+/// Attention 行的状态色，与侧栏 `indicatorColor` 同一套 token。
+fn attention_color(
+    status: crate::frontend::gpui::model::attention::PaneAttentionStatus,
+    theme: &Theme,
+) -> gpui::Rgba {
+    use crate::frontend::gpui::model::attention::PaneAttentionStatus as Status;
+    match status {
+        Status::Working => theme.working,
+        Status::Done => theme.done,
+        Status::Blocked => theme.blocked,
+        Status::Idle | Status::Unknown => theme.muted,
+    }
+}
+
 fn panel_tab_title(tab: PanelTab) -> &'static str {
     match tab {
         PanelTab::Workspaces => "Workspaces",

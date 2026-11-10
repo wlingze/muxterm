@@ -160,6 +160,9 @@ impl GpuiApp {
             _ => None,
         };
 
+        // Swift 的尾部按钮（runtime 更新 / 关闭）只在 hover 时才出现
+        // （`trailingShowsOnHover`）；一直挂着会把每行都画得很吵。
+        let hover_group = SharedString::from(format!("sidebar-row-{:?}-{}", section, row.title));
         let mut trailing_buttons: Vec<AnyElement> = Vec::new();
         if let Some(symbol) = trailing {
             let label = match symbol {
@@ -182,6 +185,8 @@ impl GpuiApp {
                         "trailing-{:?}-{}-{}",
                         section, row.title, symbol
                     )))
+                    .group_hover(hover_group.clone(), |style| style.opacity(1.0))
+                    .opacity(if row.active { 1.0 } else { 0.0 })
                     .flex_none()
                     .px(px(4.0))
                     .cursor_pointer()
@@ -209,6 +214,7 @@ impl GpuiApp {
                 "row-{:?}-{}",
                 section, row.title
             )))
+            .group(hover_group.clone())
             .flex()
             .flex_row()
             .items_center()
@@ -239,8 +245,29 @@ impl GpuiApp {
                     .text_color(marker_color)
                     .child(SharedString::from(row.marker)),
             )
+            // 编号 / 字母紧跟标记列（Swift `shortcutLabel` 在 marker 右侧 6pt，
+            // 宽 13pt 居中）。放在行尾会让数字离标题很远，扫视时对不上。
+            .when_some(shortcut, |element, shortcut| {
+                element.child(
+                    div()
+                        .debug_selector({
+                            let title = row.title.clone();
+                            move || format!("sidebar-shortcut-{title}")
+                        })
+                        .flex_none()
+                        .w(px(13.0))
+                        .text_size(px(crate::frontend::gpui::theme::SIDEBAR_SHORTCUT_FONT_SIZE))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(theme.muted)
+                        .child(SharedString::from(shortcut)),
+                )
+            })
             .child(
                 div()
+                    .debug_selector({
+                        let title = row.title.clone();
+                        move || format!("sidebar-title-{title}")
+                    })
                     .flex()
                     .flex_col()
                     .flex_1()
@@ -249,8 +276,10 @@ impl GpuiApp {
                         div()
                             .text_size(px(crate::frontend::gpui::theme::SIDEBAR_TITLE_FONT_SIZE))
                             .line_height(px(15.0))
-                            .when(row.emphasized, |element| {
-                                element.font_weight(gpui::FontWeight::SEMIBOLD)
+                            .font_weight(if row.emphasized || row.active {
+                                gpui::FontWeight::SEMIBOLD
+                            } else {
+                                gpui::FontWeight::MEDIUM
                             })
                             .text_color(theme.label())
                             .overflow_hidden()
@@ -265,16 +294,6 @@ impl GpuiApp {
                             .child(SharedString::from(row.detail)),
                     ),
             )
-            .when_some(shortcut, |element, shortcut| {
-                element.child(
-                    div()
-                        .flex_none()
-                        .text_size(px(crate::frontend::gpui::theme::SIDEBAR_SHORTCUT_FONT_SIZE))
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(theme.muted)
-                        .child(SharedString::from(shortcut)),
-                )
-            })
             .children(trailing_buttons)
             .into_any_element()
     }

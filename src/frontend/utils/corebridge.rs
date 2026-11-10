@@ -690,12 +690,20 @@ pub struct ClientConfig {
 #[serde(default)]
 pub struct ClientUiConfig {
     pub tab_bar_style: String,
+    /// 是否在窗口标题栏里显示标题文字（`[ui] show_title_bar`）。
+    #[serde(default = "default_true")]
+    pub show_title_bar: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for ClientUiConfig {
     fn default() -> Self {
         Self {
             tab_bar_style: "equal_width".into(),
+            show_title_bar: true,
         }
     }
 }

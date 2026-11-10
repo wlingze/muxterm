@@ -3867,3 +3867,192 @@ fn aggregate_rows_use_their_identity_colors(cx: &mut TestAppContext) {
         })
     });
 }
+
+/// 设置行不能把控件挤出卡片：右侧控件的右边缘必须落在面板内。
+///
+/// 之前左侧描述没有 `min_w(0)`，长文案把 200pt 的控件推到面板外，
+/// 下拉框与 Apply 状态整个跑到卡片右边（截图上直接被裁掉）。
+#[gpui::test]
+fn settings_controls_stay_inside_the_panel(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.simulate_keystrokes("cmd-,");
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.open_settings(
+                &settings_manifest(),
+                &serde_json::json!({ "font": { "size": 18.0 } }),
+                cx,
+            );
+            app.settings_select("ui", cx);
+        })
+    });
+    cx.run_until_parked();
+
+    let panel = cx.debug_bounds("settings-panel").expect("settings panel");
+    let panel_right = f32::from(panel.origin.x) + f32::from(panel.size.width);
+    let control = cx
+        .debug_bounds("settings-control-/ui/show_title_bar")
+        .expect("show_title_bar control");
+    let control_right = f32::from(control.origin.x) + f32::from(control.size.width);
+    assert!(
+        control_right <= panel_right,
+        "控件右边缘 {control_right} 落在面板 {panel_right} 外面"
+    );
+    // 描述最长的几行也要检查：之前正是它们把控件推出面板。
+    for selector in [
+        "settings-control-/ui/show_title_bar",
+        "settings-control-/ui/language",
+        "settings-control-/ui/tab_bar_position",
+    ] {
+        let bounds = cx.debug_bounds(selector).expect(selector);
+        let right = f32::from(bounds.origin.x) + f32::from(bounds.size.width);
+        assert!(
+            right <= panel_right,
+            "{selector} 的控件越界：{right} > {panel_right}"
+        );
+    }
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.settings_select("appearance", cx);
+        })
+    });
+    cx.run_until_parked();
+    let control = cx
+        .debug_bounds("settings-control-/font/family")
+        .expect("family control");
+    let right = f32::from(control.origin.x) + f32::from(control.size.width);
+    assert!(
+        right <= panel_right,
+        "长描述把字体控件推到了面板外：{right}"
+    );
+}
+
+/// 面板查询必须真的过滤：输入 "dev" 后只剩名字/路径匹配的行。
+#[gpui::test]
+fn panel_query_filters_every_row(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.simulate_keystrokes("cmd-p");
+    cx.run_until_parked();
+    let before = cx.update(|_, cx| view.update(cx, |app, _| app.panel_rows().len()));
+    assert!(before > 0);
+
+    cx.simulate_keystrokes("z z z z");
+    cx.run_until_parked();
+    let rows = cx.update(|_, cx| view.update(cx, |app, _| app.panel_rows()));
+    for row in &rows {
+        let text = format!("{} {:?}", row.title(), row.detail());
+        assert!(
+            text.to_lowercase().contains("zzzz"),
+            "不匹配的行没被过滤掉：{text}"
+        );
+    }
+}
+
+/// Search tab 的查询要打到 Core：注入快照后输入关键字只剩匹配的命中行。
+#[gpui::test]
+fn search_tab_filters_core_hits(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            app.set_search_snapshot(Some(
+                muxterm::frontend::gpui::model::search::SearchSnapshot::decode(
+                    br#"{"ok":true,"hits":[
+                        {"workspace_id":"local@@dev@tmux@dev","tab_id":1,"pane_id":10,"seq":4,"line":"cargo test ok"},
+                        {"workspace_id":"local@@dev@tmux@dev","tab_id":1,"pane_id":11,"seq":5,"line":"vim notes"}
+                    ]}"#,
+                )
+                .unwrap(),
+            ));
+        })
+    });
+    cx.simulate_keystrokes("cmd-f");
+    cx.simulate_keystrokes("v i m");
+    cx.run_until_parked();
+    let rows = cx.update(|_, cx| view.update(cx, |app, _| app.panel_rows()));
+    assert_eq!(rows.len(), 1, "只剩含 vim 的那条命中");
+}
+
+/// 编号 / 字母必须紧挨标记列，而不是飘在行尾（Swift `shortcutLabel` 的位置）。
+#[gpui::test]
+fn sidebar_shortcuts_sit_next_to_the_marker(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.run_until_parked();
+    let shortcut = cx
+        .debug_bounds("sidebar-shortcut-dev")
+        .expect("workspace 1 的编号");
+    let title = cx
+        .debug_bounds("sidebar-title-dev")
+        .expect("workspace 1 的标题");
+    let shortcut_right = f32::from(shortcut.origin.x) + f32::from(shortcut.size.width);
+    assert!(
+        shortcut_right <= f32::from(title.origin.x) + 1.0,
+        "编号必须在标题左边：{shortcut_right} > {}",
+        f32::from(title.origin.x)
+    );
+    let _ = view;
+}
+
+/// `[ui] show_title_bar` 关掉后窗口标题为空串（只剩 traffic lights）。
+#[gpui::test]
+fn window_title_follows_the_ui_toggle(cx: &mut TestAppContext) {
+    use muxterm::frontend::gpui::state::window_title_text;
+    assert_eq!(window_title_text(true, "dev"), "dev — Muxterm");
+    assert_eq!(window_title_text(false, "dev"), "");
+    assert_eq!(window_title_text(true, "  "), "Muxterm");
+
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.simulate_keystrokes("cmd-,");
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.open_settings(
+                &settings_manifest(),
+                &serde_json::json!({ "ui": { "show_title_bar": false } }),
+                cx,
+            );
+            app.set_show_title_bar(false);
+            cx.notify();
+        })
+    });
+    cx.run_until_parked();
+    let (show, applied) = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            (app.show_title_bar(), app.applied_window_title().to_string())
+        })
+    });
+    assert!(!show, "开关要反映到状态");
+    assert_eq!(applied, "", "关掉后原生窗口标题必须被清空");
+}
+
+/// Attention 行必须带状态色与状态徽标（之前整行全灰，看不出 working/blocked）。
+#[gpui::test]
+fn attention_rows_show_a_status_color(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            app.set_attention(Some(
+                muxterm::frontend::gpui::model::attention::AttentionSnapshot::decode(
+                    br#"{"ok":true,"workspaces":[
+                        {"workspace_id":"local@@dev@tmux@dev","name":"dev","panes":[
+                            {"pane_id":10,"status":"working","agent":"pi","tab_id":1,"tab_index":1,"read":false}
+                        ]}
+                    ]}"#,
+                )
+                .expect("attention snapshot"),
+            ));
+        })
+    });
+    cx.simulate_keystrokes("cmd-p");
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.show_panel(
+                muxterm::frontend::gpui::model::panel::PanelTab::Attention,
+                cx,
+            );
+        })
+    });
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("panel-status-0").is_some(),
+        "Attention 行要有状态徽标"
+    );
+}
