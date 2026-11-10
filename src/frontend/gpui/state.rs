@@ -70,6 +70,13 @@ pub struct SettingsEdit {
 }
 
 /// 窗口级状态。一个窗口一份。
+/// 选区归属：一个 pane + 一份选区。切 pane / 滚动时整体清掉。
+#[derive(Debug, Clone, Copy)]
+struct PaneSelection {
+    pane_id: u32,
+    selection: crate::frontend::gpui::model::selection::Selection,
+}
+
 pub struct GpuiApp {
     pump: Option<EventPump>,
     store: ViewStore,
@@ -133,6 +140,10 @@ pub struct GpuiApp {
     pane_title_hover: Option<u32>,
     /// 已打开的 pane `⋯` 菜单（绑定到具体 pane）。
     pub(crate) pane_menu: Option<crate::frontend::gpui::model::pane_menu::PaneMenu>,
+    /// 鼠标选区（只属于一个 pane；切 pane 时清掉）。
+    selection: Option<PaneSelection>,
+    /// 正在拖选。
+    dragging_selection: bool,
     status: String,
     /// IME 组合中的文本（尚未提交）。只在聚焦 pane 的光标处画。
     marked_text: String,
@@ -307,6 +318,8 @@ impl GpuiApp {
             applied_window_title: String::new(),
             pane_title_hover: None,
             pane_menu: None,
+            selection: None,
+            dragging_selection: false,
             theme,
             cell,
             last_client_size: None,
@@ -891,6 +904,8 @@ impl GpuiApp {
             applied_window_title: String::new(),
             pane_title_hover: None,
             pane_menu: None,
+            selection: None,
+            dragging_selection: false,
             theme: Theme::default(),
             cell: (
                 Theme::default().cell_width(),
@@ -1282,6 +1297,118 @@ impl GpuiApp {
         }
     }
 
+    /// 某个 pane 的选区（渲染用）。
+    pub fn selection_for(
+        &self,
+        pane_id: u32,
+    ) -> Option<crate::frontend::gpui::model::selection::Selection> {
+        self.selection
+            .filter(|selection| selection.pane_id == pane_id)
+            .map(|selection| selection.selection)
+    }
+
+    /// 按下鼠标：按点击次数决定普通拖选 / 选词 / 整行。
+    pub fn begin_selection(
+        &mut self,
+        pane_id: u32,
+        row: usize,
+        col: usize,
+        click_count: usize,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::frontend::gpui::model::selection as model;
+        let Some(workspace) = self.visible.clone() else {
+            return;
+        };
+        let cells: Vec<char> = self
+            .surface(&workspace, pane_id)
+            .and_then(|surface| surface.visible_row(row))
+            .map(|cells| cells.iter().map(|cell| cell.ch).collect())
+            .unwrap_or_default();
+        let cols = self
+            .surface(&workspace, pane_id)
+            .map(|surface| surface.grid().cols())
+            .unwrap_or(80);
+        let pos = model::CellPos::new(row, col);
+        let selection = match click_count {
+            2 => model::word_selection(&cells, pos),
+            3.. => model::line_selection(row, cols),
+            _ => model::Selection::new(pos, pos, model::Kind::Simple),
+        };
+        self.selection = Some(PaneSelection { pane_id, selection });
+        self.dragging_selection = click_count < 2;
+        cx.notify();
+    }
+
+    /// 拖拽：把焦点移到新格子。
+    ///
+    /// 双击选词后再拖，按字符扩展（与 SwiftTerm 一致：只有双击那一下按词）。
+    pub fn extend_selection(
+        &mut self,
+        pane_id: u32,
+        row: usize,
+        col: usize,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::frontend::gpui::model::selection as model;
+        if !self.dragging_selection {
+            return;
+        }
+        let Some(current) = self.selection.filter(|current| current.pane_id == pane_id) else {
+            return;
+        };
+        let focus = model::CellPos::new(row, col);
+        if current.selection.focus == focus {
+            return;
+        }
+        self.selection = Some(PaneSelection {
+            pane_id,
+            selection: current.selection.with_focus(focus),
+        });
+        cx.notify();
+    }
+
+    /// 松开鼠标：单格点击不算选区（否则 Cmd-C 会复制一个字符）。
+    pub fn finish_drag(&mut self, cx: &mut Context<Self>) {
+        self.dragging_selection = false;
+        if self
+            .selection
+            .is_some_and(|current| current.selection.is_single_cell())
+        {
+            self.selection = None;
+            cx.notify();
+        }
+    }
+
+    pub fn clear_selection(&mut self, cx: &mut Context<Self>) {
+        if self.selection.take().is_some() {
+            cx.notify();
+        }
+        self.dragging_selection = false;
+    }
+
+    /// 选区文本（宽字符占位格跳过，行尾空白去掉）。
+    pub fn selected_text(&self) -> Option<String> {
+        let current = self.selection?;
+        let workspace = self.visible.clone()?;
+        let surface = self.surface(&workspace, current.pane_id)?;
+        let text = current.selection.text(|row| {
+            surface
+                .visible_row(row)
+                .map(|cells| cells.iter().map(|cell| cell.ch).collect())
+        });
+        (!text.is_empty()).then_some(text)
+    }
+
+    /// Cmd-C / Edit → Copy：把选区写进系统剪贴板。
+    pub fn copy_selection(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(text) = self.selected_text() else {
+            return false;
+        };
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+        true
+    }
+
     /// 某个 pane 的标题（Core 拓扑快照里的名字）。
     pub fn pane_title(&self, pane_id: u32) -> Option<String> {
         let workspace = self.store.workspace(self.visible.as_deref()?)?;
@@ -1395,6 +1522,7 @@ impl GpuiApp {
                 window.zoom_window();
                 true
             }
+            KeyAction::Copy => self.copy_selection(cx),
             KeyAction::Paste => {
                 // 剪贴板里是图片时交给 Core：它自己把 PNG 传到目标机器并把路径
                 // 写进 pane。前端只做 PNG 编码与横幅，绝不自己拼 scp 命令。
@@ -3227,6 +3355,9 @@ impl GpuiApp {
             Some(WheelOutcome::History(count)) => {
                 if let Some(surface) = self.surfaces.get_mut(&key) {
                     if surface.scroll_by(count) {
+                        // 选区是视口坐标：滚走以后高亮会盖到别的内容上。
+                        self.selection = None;
+                        self.dragging_selection = false;
                         cx.notify();
                     }
                 }
@@ -3378,6 +3509,9 @@ impl GpuiApp {
         if self.focused_pane == Some(pane_id) {
             return;
         }
+        // 选区只属于一个 pane。
+        self.selection = None;
+        self.dragging_selection = false;
         self.focused_pane = Some(pane_id);
         self.pending_focus = Some(pane_id);
         self.commands.push(ClientCommand::Task {

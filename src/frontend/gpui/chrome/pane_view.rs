@@ -23,6 +23,9 @@ use crate::frontend::gpui::chrome::pane_grid::Rect;
 use crate::frontend::gpui::state::{GpuiApp, WheelInput};
 use crate::frontend::gpui::terminal::grid::{Cell, Color, FILLER};
 
+/// 选区背景混色比例（强调色叠在格子背景上的 alpha）。
+pub const SELECTION_ALPHA: f32 = 0.3;
+
 /// 一段样式相同的文本（同一行的连续格子）。
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct RowRun {
@@ -67,12 +70,13 @@ impl RunStyle {
 }
 
 impl GpuiApp {
-    /// 内容区在窗口里的 y 原点（顶部 bar 高度）；鼠标悬停要用窗口坐标换算。
+    /// 内容区在窗口里的左上原点（侧栏宽度 / 顶部 bar 高度）。
+    /// 鼠标事件是窗口坐标，换算格子必须减掉它。
     pub(crate) fn render_pane(
         &self,
         pane_id: u32,
         rect: Rect,
-        origin_y: f32,
+        origin: (f32, f32),
         cx: &mut gpui::Context<Self>,
     ) -> AnyElement {
         let theme = self.theme().clone();
@@ -86,6 +90,7 @@ impl GpuiApp {
         // 未聚焦 pane 压暗（对齐 iTerm2 `SplitPaneDimmingAmount`）。
         let visible_panes = self.visible_pane_count();
         let dimmed = crate::frontend::gpui::model::pane_dimming::should_dim(focused, visible_panes);
+        let selection = self.selection_for(pane_id);
 
         let mut row_elements: Vec<AnyElement> = Vec::new();
         let mut row_texts: Vec<RowText> = Vec::new();
@@ -101,8 +106,16 @@ impl GpuiApp {
                     let Some(cells) = surface.visible_row(row) else {
                         break;
                     };
-                    let runs =
-                        Self::row_runs(&theme, cells, row, draw_cols, cursor, show_cursor, dimmed);
+                    let runs = Self::row_runs(
+                        &theme,
+                        cells,
+                        row,
+                        draw_cols,
+                        cursor,
+                        show_cursor,
+                        dimmed,
+                        selection,
+                    );
                     row_elements.push(Self::render_row(
                         &runs,
                         row,
@@ -269,20 +282,35 @@ impl GpuiApp {
             .line_height(px(cell_height))
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |this, _, window, cx| {
+                cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
                     window.focus(&this.focus_handle());
                     this.focus_pane(pane_id, cx);
                     // 点终端任意处都关掉 pane 菜单（NSMenu 点外面即消）。
                     this.close_pane_menu(cx);
+                    let (col, row) =
+                        pane_cell_at(rect, origin, cell_width, cell_height, event.position);
+                    this.begin_selection(pane_id, row, col, event.click_count, cx);
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(move |this, _: &gpui::MouseUpEvent, _, cx| {
+                    // 松手后选区留着（可以继续 Cmd-C）；只结束拖拽状态。
+                    this.finish_drag(cx);
                 }),
             )
             // 悬停只观察、不拦截：标题条默认隐藏，鼠标移到顶部 22pt 才出现。
             // 不能用一条透明 div 做“感应条”，那会吞掉终端首行的点击。
             .on_mouse_move(
                 cx.listener(move |this, event: &MouseMoveEvent, _window, cx| {
-                    let in_title_strip = f32::from(event.position.y) - origin_y
+                    let in_title_strip = f32::from(event.position.y) - origin.1
                         <= crate::frontend::gpui::model::pane_title::TITLE_BAR_HEIGHT;
                     this.note_pane_hover(pane_id, in_title_strip, cx);
+                    if event.pressed_button == Some(MouseButton::Left) {
+                        let (col, row) =
+                            pane_cell_at(rect, origin, cell_width, cell_height, event.position);
+                        this.extend_selection(pane_id, row, col, cx);
+                    }
                 }),
             )
             .on_hover(cx.listener(move |this, hovered: &bool, _window, cx| {
@@ -384,6 +412,7 @@ impl GpuiApp {
     /// 一行按「同样的颜色 + 同样的字体属性」切段。
     ///
     /// 纯函数：chore 绘制前就能单测粗体/斜体/隐藏格的切段与提亮结果。
+    #[allow(clippy::too_many_arguments)]
     fn row_runs(
         theme: &crate::frontend::gpui::theme::Theme,
         cells: &[Cell],
@@ -392,8 +421,13 @@ impl GpuiApp {
         cursor: (usize, usize),
         show_cursor: bool,
         dimmed: bool,
+        selection: Option<crate::frontend::gpui::model::selection::Selection>,
     ) -> Vec<RowRun> {
-        let last = Self::last_visible_cell(cells, cols, row, cursor, show_cursor);
+        let selection_end = selection.and_then(|selection| {
+            let (start, end) = selection.normalized();
+            (row >= start.row && row <= end.row).then_some(end.col)
+        });
+        let last = Self::last_visible_cell(cells, cols, row, cursor, show_cursor, selection_end);
         let cursor_col = (show_cursor && cursor.0 == row).then_some(cursor.1);
         let mut runs: Vec<RowRun> = Vec::new();
         let mut index = 0;
@@ -408,6 +442,7 @@ impl GpuiApp {
                 cursor,
                 show_cursor,
                 dimmed,
+                selection.is_some_and(|selection| selection.contains(row, index)),
             );
             let mut text = String::new();
             let mut cols: Vec<usize> = Vec::new();
@@ -424,6 +459,7 @@ impl GpuiApp {
                     cursor,
                     show_cursor,
                     dimmed,
+                    selection.is_some_and(|selection| selection.contains(row, index)),
                 );
                 if (next_fg, next_bg) != (fg, bg) || RunStyle::of(&cells[index]) != style {
                     break;
@@ -463,6 +499,7 @@ impl GpuiApp {
         row: usize,
         cursor: (usize, usize),
         show_cursor: bool,
+        selection_end: Option<usize>,
     ) -> usize {
         let mut last = cols.min(cells.len());
         while last > 0 {
@@ -474,6 +511,10 @@ impl GpuiApp {
         }
         if show_cursor && cursor.0 == row {
             last = last.max(cursor.1 + 1).min(cells.len());
+        }
+        // 选区里的尾随空格也要画（否则选中一片空白看不到高亮）。
+        if let Some(end) = selection_end {
+            last = last.max(end + 1).min(cells.len());
         }
         last
     }
@@ -487,6 +528,7 @@ impl GpuiApp {
         cursor: (usize, usize),
         show_cursor: bool,
         dimmed: bool,
+        selected: bool,
     ) -> (gpui::Rgba, gpui::Rgba) {
         let (fg, bg) = cell.resolved();
         // 反显已经换过前景/背景：提亮必须作用在真正当前景的那个颜色上
@@ -503,6 +545,10 @@ impl GpuiApp {
             let cell_bg = bg;
             fg = cell_bg;
             bg = theme.cursor;
+        }
+        if selected {
+            // iTerm2 / Ghostty 的默认观感：前景不动，背景按强调色 30% 叠一层。
+            bg = blend(bg, theme.accent, SELECTION_ALPHA);
         }
         if dimmed {
             use crate::frontend::gpui::model::pane_dimming;
@@ -631,6 +677,21 @@ fn paint_text(
     }
 }
 
+/// 窗口坐标 → 视口内的格子坐标（越界夹到网格内）。
+fn pane_cell_at(
+    rect: Rect,
+    origin: (f32, f32),
+    cell_width: f32,
+    cell_height: f32,
+    position: gpui::Point<gpui::Pixels>,
+) -> (usize, usize) {
+    let x = f32::from(position.x) - origin.0 - rect.x;
+    let y = f32::from(position.y) - origin.1 - rect.y;
+    let col = (x / cell_width).floor().max(0.0) as usize;
+    let row = (y / cell_height).floor().max(0.0) as usize;
+    (col, row)
+}
+
 /// 制表符 / 方块元素：按格子几何画矩形（iTerm2 `iTermBoxDrawingRenderer` 同思路）。
 ///
 /// 位置完全由「列号 × 格宽」决定，端点贴格边，所以相邻格一定接得上；
@@ -717,22 +778,34 @@ mod tests {
     #[test]
     fn trailing_blank_trim_keeps_the_cursor_cell() {
         let line = cells("❯ ");
-        assert_eq!(GpuiApp::last_visible_cell(&line, 80, 0, (0, 5), false), 1);
         assert_eq!(
-            GpuiApp::last_visible_cell(&line, 80, 0, (0, 1), true),
+            GpuiApp::last_visible_cell(&line, 80, 0, (0, 5), false, None),
+            1
+        );
+        assert_eq!(
+            GpuiApp::last_visible_cell(&line, 80, 0, (0, 1), true, None),
             2,
             "光标在最后的空格上时这一格必须留着"
         );
         // 光标在别的行时不影响该行的裁剪。
-        assert_eq!(GpuiApp::last_visible_cell(&line, 80, 3, (0, 1), true), 1);
+        assert_eq!(
+            GpuiApp::last_visible_cell(&line, 80, 3, (0, 1), true, None),
+            1
+        );
     }
 
     /// 整行空白且没有光标：不画任何 run（省一次布局）。
     #[test]
     fn blank_rows_stay_empty_without_a_cursor() {
         let blank = cells("    ");
-        assert_eq!(GpuiApp::last_visible_cell(&blank, 80, 0, (0, 0), false), 0);
-        assert_eq!(GpuiApp::last_visible_cell(&blank, 80, 0, (0, 0), true), 1);
+        assert_eq!(
+            GpuiApp::last_visible_cell(&blank, 80, 0, (0, 0), false, None),
+            0
+        );
+        assert_eq!(
+            GpuiApp::last_visible_cell(&blank, 80, 0, (0, 0), true, None),
+            1
+        );
     }
 
     /// 带一个 SGR 属性的格子。
@@ -753,6 +826,7 @@ mod tests {
             (usize::MAX, usize::MAX),
             false,
             false,
+            None,
         )
     }
 
@@ -764,7 +838,7 @@ mod tests {
     fn the_cursor_cell_uses_the_theme_cursor_color() {
         let theme = crate::frontend::gpui::theme::Theme::default();
         let cell = Cell::default();
-        let (fg, bg) = GpuiApp::cell_colors(&cell, &theme, 0, 3, (0, 3), true, false);
+        let (fg, bg) = GpuiApp::cell_colors(&cell, &theme, 0, 3, (0, 3), true, false, false);
         assert_eq!(bg, theme.cursor, "光标格背景 = 主题 cursor 色");
         assert_eq!(fg, theme.bg, "字形用格子背景色，才看得见");
     }
@@ -774,7 +848,7 @@ mod tests {
     fn ordinary_cells_keep_their_own_colors() {
         let theme = crate::frontend::gpui::theme::Theme::default();
         let cell = Cell::default();
-        let (fg, bg) = GpuiApp::cell_colors(&cell, &theme, 0, 3, (0, 4), true, false);
+        let (fg, bg) = GpuiApp::cell_colors(&cell, &theme, 0, 3, (0, 4), true, false, false);
         assert_eq!(bg, theme.bg);
         assert_eq!(fg, theme.fg);
     }
@@ -933,11 +1007,31 @@ mod tests {
                 ..Attributes::default()
             },
         )];
-        let runs = GpuiApp::row_runs(&theme, &line, 0, 1, (0, 0), true, false);
+        let runs = GpuiApp::row_runs(&theme, &line, 0, 1, (0, 0), true, false, None);
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].fg, theme.bg, "字号用格子背景色");
         assert_eq!(runs[0].bg, theme.cursor, "整格填 cursor 色");
         assert!(runs[0].style.bold, "反色不能丢掉粗体");
+    }
+
+    /// 选区必须真的改变格子背景（不是只记状态不画）。
+    #[test]
+    fn selected_cells_get_a_highlight_background() {
+        use crate::frontend::gpui::model::selection::{CellPos, Kind, Selection};
+        let theme = crate::frontend::gpui::theme::Theme::default();
+        let cell = Cell::default();
+        let plain = GpuiApp::cell_colors(&cell, &theme, 0, 3, (9, 9), false, false, false);
+        let selected = GpuiApp::cell_colors(&cell, &theme, 0, 3, (9, 9), false, false, true);
+        assert_eq!(plain.0, selected.0, "前景不变");
+        assert_ne!(plain.1, selected.1, "背景要叠强调色");
+
+        let selection = Selection::new(CellPos::new(1, 2), CellPos::new(1, 8), Kind::Simple);
+        let cells = vec![Cell::default(); 12];
+        let runs = GpuiApp::row_runs(&theme, &cells, 1, 12, (0, 0), false, false, Some(selection));
+        assert!(
+            runs.iter().any(|run| run.bg == selected.1),
+            "选区覆盖的 run 用高亮背景"
+        );
     }
 }
 

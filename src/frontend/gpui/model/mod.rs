@@ -31,6 +31,7 @@ pub mod replica_id;
 pub mod resize_math;
 pub mod scroll;
 pub mod search;
+pub mod selection;
 pub mod settings;
 pub mod shortcuts;
 pub mod sidebar;

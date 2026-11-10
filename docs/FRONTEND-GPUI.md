@@ -172,6 +172,29 @@ SGR 属性不是只解析、不画：绘制 run 的 key 是「颜色 + 字体变
 `model/word_selection.rs` 移植了 macOS `ProgressiveWordSelection` 的三级双击扩展
 （Identifier → Word → Path），`WORD_EXTRAS = -.*?+%#@=`，`PATH_EXTRAS = /\~:`。
 
+### 5.2.1 终端选区与复制
+
+`model/selection.rs` 是网格选区：`CellPos`（视口坐标）+ `Kind`（Simple / Word / Line）。
+语义对齐 iTerm2 / Ghostty 的默认行为：
+
+| 操作 | 行为 |
+| --- | --- |
+| 拖选 | 按阅读顺序取区间；跨行时中间行整行选中 |
+| 双击 | 走 `word_selection` 三级扩展（Identifier → Word → Path） |
+| 三击 | 整行 |
+| 单击不拖 | 不算选区（松手即清，`Cmd-C` 不写剪贴板） |
+| `Cmd-C` / Edit → Copy | 选区文本进系统剪贴板 |
+
+渲染：选中的格子背景按 `SELECTION_ALPHA = 0.3` 叠一层 `theme.accent`，前景不变（反显与
+光标格仍然是光标语义优先）。选区里的**尾随空格也要画**，否则选中一片空白看不到高亮。
+坐标换算用 `pane_cell_at(rect, origin, cell_width, cell_height, position)`：鼠标事件是
+窗口坐标，必须先减掉侧栏宽度与顶部 bar 高度。
+
+生命周期：滚轮进历史、切 pane、切 workspace 都会清掉选区 —— 选区是视口坐标，滚走以后
+高亮会盖到别的内容上。松开鼠标不清，方便接着 `Cmd-C`。
+
+复制文本：逐行去掉尾部空白，行之间 `\n` 连接；宽字符占位格（`\0`）跳过。
+
 ### 5.3 输入法
 
 `GpuiApp` 实现 `EntityInputHandler`：`set_marked_text` 存组合串、`commit_text` 剥占位符后写 PTY、
@@ -218,7 +241,7 @@ cargo build --no-default-features --features gpui --release
 | 逐 pane 颜色上报 | Core 的 pane colours 仍取默认 | 接 `ClientCommand::PaneColours` |
 | 无障碍树 | 与现状持平（现状也没有） | gpui 已依赖 accesskit，接上即净增 |
 | sixel / 图片协议 | 无 | 按需 |
-| clipboard 图片读取 | 只移植了阶段横幅，PNG 读取未接 | 平台层读 clipboard image 后走 `start_image_paste` |
+| Select All | Edit → Select All 还没有全选实现（菜单项置灰、不带快捷键） | 接 `Selection::all` 再走同一条复制路径 |
 | `.app` 里没有菜单栏 | Cmd 快捷键靠 window key handler | 接 gpui 菜单，或继续走 handler |
 
 已完成（v1 缺口表里曾经列过的）：输入法 marked text 与候选窗定位、滚轮历史滚动、
