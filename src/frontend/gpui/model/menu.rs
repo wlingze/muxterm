@@ -186,10 +186,10 @@ fn edit_menu() -> Menu {
     Menu {
         title: "Edit".to_string(),
         entries: vec![
-            // 复制与全选需要终端选区写进系统剪贴板，gpui 还没接。
-            item("Copy", None, Some(MenuKey::command("c"))),
+            // Copy 走终端选区；Select All 还没有全选实现（不带快捷键，菜单里置灰）。
+            item("Copy", Some(KeyAction::Copy), Some(MenuKey::command("c"))),
             item("Paste", Some(KeyAction::Paste), Some(MenuKey::command("v"))),
-            item("Select All", None, Some(MenuKey::command("a"))),
+            item("Select All", None, None),
         ],
     }
 }
@@ -364,14 +364,11 @@ mod tests {
         for menu in main_menu() {
             for entry in menu.entries {
                 if let MenuEntry::Item(item) = entry {
-                    if item.key.is_some() && item.action.is_none() {
-                        // 已知缺口：Copy / Select All 需要选区写剪贴板。
-                        assert!(
-                            item.label == "Copy" || item.label == "Select All",
-                            "{} 有快捷键但没有动作",
-                            item.label
-                        );
-                    }
+                    assert!(
+                        item.key.is_none() || item.action.is_some(),
+                        "{} 有快捷键但没有动作",
+                        item.label
+                    );
                 }
             }
         }

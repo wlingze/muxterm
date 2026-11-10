@@ -52,6 +52,8 @@ pub enum KeyAction {
     OpenComposer,
     /// Cmd-V：读系统剪贴板写进当前 pane（菜单 Edit → Paste 也用它）。
     Paste,
+    /// Cmd-C：把终端选区写进系统剪贴板（菜单 Edit → Copy）。
+    Copy,
     CycleLayout,
     ToggleSidebar,
     /// 进入前端 Shells 聚合槽；不会向终端发送清屏字符。
@@ -117,6 +119,10 @@ impl KeyChord {
 pub fn builtin_action(chord: &KeyChord) -> Option<KeyAction> {
     let key = chord.key.as_str();
 
+    // Cmd-C 复制选区（不发 ^C 进 PTY）。
+    if chord.command && !chord.shift && !chord.option && !chord.control && key == "c" {
+        return Some(KeyAction::Copy);
+    }
     // Cmd+T 新建 tab
     if chord.command && !chord.shift && !chord.option && key == "t" {
         return Some(KeyAction::NewTab);
@@ -440,6 +446,7 @@ pub fn action_name(action: KeyAction) -> Option<String> {
         KeyAction::OpenSettings => "open_settings",
         KeyAction::OpenComposer => "open_composer",
         KeyAction::Paste => "paste",
+        KeyAction::Copy => "copy",
         KeyAction::CycleLayout => "cycle_layout",
         KeyAction::ToggleSidebar => "toggle_sidebar",
         KeyAction::OpenShells => "open_shells",

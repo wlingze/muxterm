@@ -4606,3 +4606,87 @@ fn status_dot_follows_the_backend_status(cx: &mut TestAppContext) {
     let status = cx.update(|_, cx| view.update(cx, |app, _| app.visible_backend_status()));
     assert_eq!(status, backend_status::CONNECTED);
 }
+
+/// 拖选 + Cmd-C：选区文本必须进系统剪贴板（对照 iTerm2 / Ghostty 的默认复制）。
+#[gpui::test]
+fn dragging_selects_text_and_cmd_c_copies_it(cx: &mut TestAppContext) {
+    let (view, cx) = mount(two_tab_store(), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.feed_pane_for_tests(
+                "local@@dev@tmux@dev",
+                10,
+                40,
+                10,
+                b"hello world\r\nsecond line",
+                cx,
+            );
+        })
+    });
+    cx.run_until_parked();
+    let (cw, ch) = cx.update(|_, cx| view.update(cx, |app, _| app.cell()));
+    // 侧栏 240pt；内容区 y 从 0 开始。
+    let start = gpui::point(px(240.0 + cw * 0.5), px(ch * 0.5));
+    let end = gpui::point(px(240.0 + cw * 20.5), px(ch * 1.5));
+    cx.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::none());
+    cx.simulate_mouse_move(end, Some(gpui::MouseButton::Left), gpui::Modifiers::none());
+    cx.simulate_mouse_up(end, gpui::MouseButton::Left, gpui::Modifiers::none());
+    cx.run_until_parked();
+
+    let selection = cx.update(|_, cx| view.update(cx, |app, _| app.selection_for(10)));
+    assert!(selection.is_some(), "拖拽后必须有选区");
+
+    cx.simulate_keystrokes("cmd-c");
+    let copied = cx.update(|_, cx| {
+        cx.read_from_clipboard()
+            .and_then(|item| item.text())
+            .unwrap_or_default()
+    });
+    assert!(
+        copied.contains("hello world") && copied.contains("second"),
+        "Cmd-C 必须复制选区：{copied:?}"
+    );
+}
+
+/// 双击选词走 `word_selection`，三击整行；单击不算选区。
+#[gpui::test]
+fn click_counts_pick_words_lines_and_nothing(cx: &mut TestAppContext) {
+    let (view, cx) = mount(two_tab_store(), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.feed_pane_for_tests(
+                "local@@dev@tmux@dev",
+                10,
+                40,
+                10,
+                b"git checkout feature/x\r\nnext",
+                cx,
+            );
+        })
+    });
+    cx.run_until_parked();
+
+    // 双击 `checkout`（列 5）。
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| app.begin_selection(10, 0, 5, 2, cx));
+    });
+    let word = cx.update(|_, cx| view.update(cx, |app, _| app.selected_text()));
+    assert_eq!(word.as_deref(), Some("checkout"), "双击选一整词");
+
+    // 三击整行。
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| app.begin_selection(10, 0, 5, 3, cx));
+    });
+    let line = cx.update(|_, cx| view.update(cx, |app, _| app.selected_text()));
+    assert_eq!(line.as_deref(), Some("git checkout feature/x"));
+
+    // 单击然后松手：选区清掉，Cmd-C 不复制任何东西。
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.begin_selection(10, 0, 5, 1, cx);
+            app.finish_drag(cx);
+            assert!(app.selection_for(10).is_none(), "单击不是选区");
+            assert!(!app.copy_selection(cx), "没有选区时 Cmd-C 不写剪贴板");
+        });
+    });
+}
