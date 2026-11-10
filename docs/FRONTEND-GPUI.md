@@ -125,6 +125,35 @@ SGR 属性不是只解析、不画：绘制 run 的 key 是「颜色 + 字体变
 模块单测覆盖切段与颜色（`chrome/pane_view.rs`）、提亮/dim 数学（`theme.rs`）；
 `gpui_chrome` 另外断言这些属性真的进了渲染树（`pane-bold` / `pane-italic` /
 `pane-underline` / `pane-strike`），普通文本不会误带样式。
+
+### 5.0 制表符与方块：按格子几何绘制
+
+字体里的 `─│┌┐└┘` 各自带留白，按「列号 × 格宽」摆出去必然断线、与宽字符错位；
+`█▀▄▌▐` 与八分块在多数等宽字体里宽度也不一致。iTerm2
+（`iTermBoxDrawingRenderer`）与 Ghostty 都把这些码点换成几何图形，gpui 走同一条路
+（`model/box_drawing.rs`）：
+
+| 范围 | 处理 |
+|---|---|
+| `U+2500–U+257F` | 四条臂（无/细/粗/双线）画成矩形，端点贴格边，相邻格自然接上；粗细 = 行高 8%（≥1px），粗线翻倍，双线两条细线夹缝 |
+| `U+2580–U+259F` | 半块、1/8 块、左/右八分块、四象限：按 1/8 网格填矩形 |
+| `U+2591–U+2593` | `░▒▓` 用 25/50/75% 透明度把前景色叠在格子背景上 |
+
+`shapes(ch, cell)` 是纯函数，单测逐条断言「横线左右都贴格边」「竖线到中线」
+「双线有缝」「1/8 块底边对齐格底」「四象限拼起来等于整格」。
+绘制入口在 `pane_view::paint_box_glyphs`，字形层跳过这些码点（`is_custom`），
+所以表格边框在中文/日文/emoji 旁边也不会漂。
+
+光标也按 iTerm2 的观感画：整格填主题 `cursor` 色，字形用格子背景色
+（只做前景/背景交换的话，彩色格子上光标会和文字同色）。
+
+### 5.1.1 启动早期的 PaneOutput 不能丢
+
+本地 shell 可能在 `workspace_list` 回来之前就开始输出。`drain_render_events`
+过去只按 `view.panes` 遍历，这段输出永远没人取 —— 表现就是「终端一片空白，
+进程明明在跑」。现在 drain 的范围是「拓扑里的 pane ∪ 有排队事件的 pane」
+（`ViewStore::render_mailbox_pane_ids`），`gpui_chrome` 的
+`early_pane_output_reaches_the_surface` 固定这条回归。
 - ESC：`7 8 M c D E`
 - OSC：`0 / 2` 标题，其余忽略（133 标记由 Core 处理，前端不消费）
 
@@ -214,20 +243,36 @@ ANSI 0–6，dim 与背景对半混合）
   露出的底色是 `chrome_bg`（= `NSColor.windowBackgroundColor`）。之前 pane 直接相邻，
   比 Swift 挤。
 - pane 标题条：`model::pane_title` 移植 `PaneTitleLayoutPolicy` / `PaneTitleBarGeometry` —
-  只在可见 pane > 1 时出现，`reservedHeight` 恒 0（浮在 Surface 上，不改变 cols/rows），
-  空标题退回 `Pane @<id>`。
-- 图片粘贴**只调 Core**：前端读剪贴板 → 只接受 PNG → `start_image_paste` →
+  只在可见 pane > 1 且鼠标停在 pane 顶部 22pt 时出现（Swift `updateTitleHover`），
+  `reservedHeight` 恒 0（浮在 Surface 上，不改变 cols/rows），空标题退回 `Pane @<id>`。
+- pane `⋯` 菜单：`model::pane_menu` 照 `PaneTitleBarView.configureActionMenu()` 铺条目
+  （两个分割 / 移动 / 全屏 / 循环布局 / 关闭）；菜单**绑定到被点的 pane**，
+  执行前先 `focus_pane` 再 `run_action`（Swift 的 `onActivate?()`），
+  所以不会出现「点 A 的分屏、结果 B 被切开」。键盘 ↑↓ / ⏎ / Esc 也走这条路。
+- 图片粘贴**只调 Core**：前端读剪贴板 → 转 PNG → `start_image_paste` →
   每个 tick `poll_image_paste` 取路径。前端不拼 `scp`、不起进程；阶段由
-  `model/image_paste::ImagePasteTimeline` 驱动横幅（进度 / 成功 / 失败）。
+  `model/image_paste::ImagePasteTimeline` 驱动横幅（编码 / 上传 / 成功 / 失败）。
+  macOS 剪贴板几乎都是 TIFF（截图、Preview、浏览器），所以
+  `platform::clipboard_image::to_png` 用 AppKit 的 `NSBitmapImageRep` 先转码；
+  转不了码、没有焦点 pane、没有 Core 连接**都会**出失败横幅 —— 静默失败是 bug。
 - 指示色对齐 Swift 语义色：`working` = systemYellow、`blocked` = systemPink、
   `done` = systemTeal（之前借用 success/danger/warning，侧栏与 tab 看起来偏红偏绿）。
-- 普通查询词只匹配「内容」字段（名字 / 传输 / 路径 / session / workspace id）；
-  runtime 名与 socket 路径固定带 `tmux`，不参与子串匹配（否则搜 `mux` 会列出
-  全部 tmux 目标），runtime 只认前缀，`@tmux` 仍是显式过滤。
+- 普通查询词匹配**所有**字段（名字 / runtime / 传输 / 路径 / session / socket /
+  workspace id）—— 与 Swift 的 `QuickConnectStore` 一致；命中名字的加权更高，
+  所以搜 `muxterm` 时本机 tmux session 排在第一，不会被泛 `tmux` 命中淹掉。
+  `@tmux` / `@local` / `@<alias>` 仍是显式过滤。
 - Search tab 直接调 Core 的 `search_all`（同步 FFI），打开 tab 或改动查询就重跑；
   没有 Core 时保留上一份快照，不会因为一次按键清空。
 - 窗口标题由 `[ui] show_title_bar` 控制：开 = `workspace — Muxterm`，
   关 = 空串（只剩 traffic lights，与 Swift 版观感一致）。
+- Attention / Search 的跳转是**完整身份**：workspace → tab（按 pane 反查）→
+  显式 `SwitchPane`。只切 workspace + pane 的话，pane 在别的 tab 时屏幕还停在
+  原 tab —— 用户看到的就是「跳不到位」（对照 `MainWindow.jumpToPane`）。
+- 状态栏右侧读 **Surface 的实时网格**（`pane_grid_size`），不读 store 里等 Core
+  回包才更新的 `cols/rows`；窗口一变大，状态栏立刻跟着变。
+- 本机 tmux 去重先核对 runtime / transport / socket：同名的 shell workspace 或
+  同名 SSH session 不会把本机 tmux session 当成「已打开」过滤掉。
+  面板打开时会重新 discovery，先发本机结果再补远端。
 - 两个固定聚合槽另有**专属身份色**：Shells = teal、Agents = systemPurple
   （`model::aggregate::AggregateIdentity`）。聚合行是入口，不是连接状态，
   所以永远不借用 blocked/done 的粉与青绿，侧栏行与聚合页 tab 用同一个色。

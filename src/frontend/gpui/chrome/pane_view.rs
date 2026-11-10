@@ -239,7 +239,9 @@ impl GpuiApp {
             None
         };
 
-        let border = if focused { theme.accent } else { theme.border };
+        // 对照 Swift `PaneHostView`：只有活动 pane 画 1pt 强调色边框，
+        // 非活动 pane 完全没有边框（相邻 pane 之间只剩 6pt 拖拽带）。
+        // 之前每个 pane 都描一条灰边，看起来像格子表格，比 Swift 脏。
         div()
             .id(SharedString::from(format!("pane-{pane_id}")))
             .absolute()
@@ -261,8 +263,7 @@ impl GpuiApp {
                 theme.bg
             })
             .when(dimmed, |this| this.debug_selector(|| "pane-dimmed".into()))
-            .border_1()
-            .border_color(border)
+            .when(focused, |this| this.border_1().border_color(theme.accent))
             .font_family(theme.font_family)
             .text_size(px(theme.font_size))
             .line_height(px(cell_height))
@@ -496,7 +497,12 @@ impl GpuiApp {
             fg = crate::frontend::gpui::theme::Theme::dimmed(fg, bg);
         }
         if show_cursor && cursor == (row, col) {
-            std::mem::swap(&mut fg, &mut bg);
+            // iTerm2 / Ghostty 的块光标：整格填主题 cursor 色，字形用原背景色。
+            // 只做 fg/bg 交换的话，彩色格子上光标会被前景色染成一块同色，
+            // 看起来像「没画光标」。
+            let cell_bg = bg;
+            fg = cell_bg;
+            bg = theme.cursor;
         }
         if dimmed {
             use crate::frontend::gpui::model::pane_dimming;
@@ -750,6 +756,29 @@ mod tests {
         )
     }
 
+    /// 光标格：整格用主题 cursor 色，字形颜色退回格子背景色。
+    ///
+    /// 对照 iTerm2 `iTermCursorRenderer`：光标是实心块，不是「颜色互换」；
+    /// 互换会让彩色格子的光标和文字同色，看起来像没画。
+    #[test]
+    fn the_cursor_cell_uses_the_theme_cursor_color() {
+        let theme = crate::frontend::gpui::theme::Theme::default();
+        let cell = Cell::default();
+        let (fg, bg) = GpuiApp::cell_colors(&cell, &theme, 0, 3, (0, 3), true, false);
+        assert_eq!(bg, theme.cursor, "光标格背景 = 主题 cursor 色");
+        assert_eq!(fg, theme.bg, "字形用格子背景色，才看得见");
+    }
+
+    /// 非光标格不受影响。
+    #[test]
+    fn ordinary_cells_keep_their_own_colors() {
+        let theme = crate::frontend::gpui::theme::Theme::default();
+        let cell = Cell::default();
+        let (fg, bg) = GpuiApp::cell_colors(&cell, &theme, 0, 3, (0, 4), true, false);
+        assert_eq!(bg, theme.bg);
+        assert_eq!(fg, theme.fg);
+    }
+
     /// 粗体必须切开 run，并按 SwiftTerm 的规则把 ANSI 0–6 提亮到 8–14。
     #[test]
     fn bold_splits_the_run_and_brightens_the_ansi_color() {
@@ -895,7 +924,7 @@ mod tests {
 
     /// 光标格反转颜色，但字体属性仍然保留。
     #[test]
-    fn the_cursor_inverts_colors_and_keeps_the_style() {
+    fn the_cursor_block_keeps_the_run_style() {
         let theme = crate::frontend::gpui::theme::Theme::default();
         let line = [styled(
             'c',
@@ -906,8 +935,8 @@ mod tests {
         )];
         let runs = GpuiApp::row_runs(&theme, &line, 0, 1, (0, 0), true, false);
         assert_eq!(runs.len(), 1);
-        assert_eq!(runs[0].fg, theme.bg, "光标格前景变背景色");
-        assert_eq!(runs[0].bg, theme.fg, "光标格背景变前景色");
+        assert_eq!(runs[0].fg, theme.bg, "字号用格子背景色");
+        assert_eq!(runs[0].bg, theme.cursor, "整格填 cursor 色");
         assert!(runs[0].style.bold, "反色不能丢掉粗体");
     }
 }

@@ -4430,3 +4430,73 @@ fn an_unreadable_clipboard_image_reports_a_banner(cx: &mut TestAppContext) {
         "失败必须在横幅上写出来（用户看不到就等于没提示）"
     );
 }
+
+/// 用户报障「终端一片空白」的真根因：本地 shell 可能在拓扑快照回来之前就
+/// 开始输出。drain 不能只看 `view.panes`，否则这段输出永远没人取。
+#[gpui::test]
+fn early_pane_output_reaches_the_surface(cx: &mut TestAppContext) {
+    use muxterm::frontend::utils::corebridge::{ClientEvent, ClientWorkspaceEvent};
+    let mut store = ViewStore::default();
+    // 只有 workspace 行，没有 pane 列表（模拟 workspace_list 还没回来）。
+    store.replace_topology(workspace("local///shell/", "local", true), vec![], vec![]);
+    let (view, cx) = mount(store, cx);
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.store_for_tests_event(ClientWorkspaceEvent {
+                workspace_id: "local///shell/".into(),
+                event: ClientEvent {
+                    type_: 0, // STATE_PANE_OUTPUT
+                    pane_id: 1,
+                    tab_id: 1,
+                    window_id: 0,
+                    data: b"early output\r\n".to_vec(),
+                    name: String::new(),
+                },
+            });
+            let dirty = app.drain_render_events();
+            assert!(dirty, "有输出就必须重绘");
+            cx.notify();
+        })
+    });
+    let text = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            app.surface("local///shell/", 1)
+                .map(|surface| surface.grid().screen_lines().join("\n"))
+                .unwrap_or_default()
+        })
+    });
+    assert!(
+        text.contains("early output"),
+        "拓扑缺失时输出也不能丢：{text:?}"
+    );
+}
+
+/// 光标块必须正好一格：iTerm2 / Ghostty 的块光标是一个完整格子。
+#[gpui::test]
+fn the_cursor_block_covers_a_full_cell(cx: &mut TestAppContext) {
+    let (view, cx) = mount(two_tab_store(), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.feed_pane_for_tests("local@@dev@tmux@dev", 10, 40, 10, b"hi", cx);
+        })
+    });
+    cx.run_until_parked();
+    let cell = cx.update(|_, cx| view.update(cx, |app, _| app.cell()));
+    let bounds = cx.debug_bounds("pane-cursor");
+    let Some(bounds) = bounds else {
+        panic!("光标格必须有 pane-cursor 选择器");
+    };
+    assert!(
+        (f32::from(bounds.size.height) - cell.1).abs() < 0.6,
+        "光标块高度 = 格高：{} vs {}",
+        f32::from(bounds.size.height),
+        cell.1
+    );
+    assert!(
+        (f32::from(bounds.size.width) - cell.0).abs() < 0.6,
+        "光标块宽度 = 格宽：{} vs {}",
+        f32::from(bounds.size.width),
+        cell.0
+    );
+}

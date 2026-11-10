@@ -747,7 +747,9 @@ impl GpuiApp {
         let mut dirty = false;
         let workspaces: Vec<String> = self.store.workspace_ids().map(str::to_string).collect();
         for workspace in workspaces {
-            let pane_ids: Vec<(u32, u16, u16)> = self
+            // 拓扑里列出的 pane + 已经有输出排队的 pane：后者可能还没进
+            // `view.panes`（本地 shell 抢在 `workspace_list` 前面输出）。
+            let mut pane_ids: Vec<(u32, u16, u16)> = self
                 .store
                 .workspace(&workspace)
                 .map(|view| {
@@ -758,6 +760,18 @@ impl GpuiApp {
                         .collect()
                 })
                 .unwrap_or_default();
+            for pane_id in self.store.render_mailbox_pane_ids(&workspace) {
+                if pane_ids.iter().any(|(id, _, _)| *id == pane_id) {
+                    continue;
+                }
+                // 尺寸未知时用已有 Surface 的，最后退回 80x24。
+                let size = self
+                    .surfaces
+                    .get(&(workspace.clone(), pane_id))
+                    .map(|surface| (surface.grid().cols() as u16, surface.grid().rows() as u16))
+                    .unwrap_or((80, 24));
+                pane_ids.push((pane_id, size.0, size.1));
+            }
             for (pane_id, cols, rows) in pane_ids {
                 let pending = self.store.take_pane_render_events(&workspace, pane_id);
                 if pending.is_empty() {
@@ -1019,6 +1033,15 @@ impl GpuiApp {
         self.focused_pane = None;
         self.focus_default_pane();
         cx.notify();
+    }
+
+    /// 无头测试用：把一条 Core 事件塞进 ViewStore（走生产的 mailbox 路径）。
+    #[doc(hidden)]
+    pub fn store_for_tests_event(
+        &mut self,
+        event: crate::frontend::utils::corebridge::ClientWorkspaceEvent,
+    ) {
+        self.store.apply_workspace_event(event);
     }
 
     /// 无头测试用：取走待发送给 Core 的命令。

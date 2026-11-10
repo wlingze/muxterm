@@ -257,6 +257,25 @@ impl ViewStore {
         self.push_render_event(&workspace_id, event.event);
     }
 
+    /// 有排队渲染事件的 pane id（不依赖拓扑快照）。
+    ///
+    /// 本地 shell 可能在 `workspace_list` 回来之前就开始输出；如果 drain
+    /// 只按 `view.panes` 遍历，这段输出永远没人取 —— 用户看到的就是
+    /// 「终端一片空白，但进程明明在跑」。
+    pub fn render_mailbox_pane_ids(&self, workspace_id: &str) -> Vec<u32> {
+        self.workspaces
+            .get(workspace_id)
+            .map(|workspace| {
+                workspace
+                    .render_mailboxes
+                    .iter()
+                    .filter(|(_, mailbox)| !mailbox.is_empty())
+                    .map(|(pane_id, _)| *pane_id)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     pub fn take_pane_render_events(
         &mut self,
         workspace_id: &str,
