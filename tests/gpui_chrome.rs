@@ -2750,7 +2750,7 @@ fn a_new_pane_takes_the_focus(cx: &mut TestAppContext) {
             1,
             muxterm::frontend::utils::corebridge::ClientLayout::Split {
                 horizontal: true,
-                ratio: 500,
+                ratio: 400,
                 first: Box::new(muxterm::frontend::utils::corebridge::ClientLayout::Leaf {
                     pane_id: 10,
                 }),
@@ -3753,28 +3753,27 @@ fn pane_title_bar_appears_only_when_split(cx: &mut TestAppContext) {
             name: "dev".to_string(),
             is_active: true,
         }],
-        vec![
-            (
-                1,
-                vec![ClientPane {
+        // 同一个 tab 的 pane 必须放在一条记录里：重复的 tab id 会覆盖前一条，
+        // pane 10 就不见了（旧夹具的坑）。
+        vec![(
+            1,
+            vec![
+                ClientPane {
                     id: 10,
                     cols: 80,
                     rows: 24,
                     is_active: true,
                     title: "zsh".to_string(),
-                }],
-            ),
-            (
-                1,
-                vec![ClientPane {
+                },
+                ClientPane {
                     id: 11,
                     cols: 80,
                     rows: 24,
                     is_active: false,
                     title: "server".to_string(),
-                }],
-            ),
-        ],
+                },
+            ],
+        )],
     );
     store.replace_layouts(
         "local@@dev@tmux@dev",
@@ -3782,7 +3781,8 @@ fn pane_title_bar_appears_only_when_split(cx: &mut TestAppContext) {
             1,
             ClientLayout::Split {
                 horizontal: true,
-                ratio: 5,
+                // 千分比：一半一半。旧夹具写 5（=0.5%），左 pane 只有 5px 宽。
+                ratio: 500,
                 first: Box::new(ClientLayout::Leaf { pane_id: 10 }),
                 second: Box::new(ClientLayout::Leaf { pane_id: 11 }),
             },
@@ -3794,11 +3794,163 @@ fn pane_title_bar_appears_only_when_split(cx: &mut TestAppContext) {
         })
     });
     cx.run_until_parked();
+    // 对照 Swift `updateTitleHover`：分屏后标题条仍然默认隐藏，
+    // 鼠标停在 pane 顶部 22pt 才出现。
+    assert!(
+        cx.debug_bounds("pane-title-10").is_none(),
+        "鼠标不在顶部时标题条隐藏"
+    );
+    // 侧栏 240pt，内容区从 x=240 开始；第一个 pane 的标题条带在 y<22。
+    cx.simulate_mouse_move(
+        gpui::point(px(300.0), px(6.0)),
+        None,
+        gpui::Modifiers::none(),
+    );
+    cx.run_until_parked();
     assert!(
         cx.debug_bounds("pane-title-10").is_some(),
-        "分屏后每个 pane 都要有标题条"
+        "分屏后悬停顶部就要有标题条"
     );
-    assert!(cx.debug_bounds("pane-title-11").is_some());
+    assert!(
+        cx.debug_bounds("pane-title-11").is_none(),
+        "只显示鼠标所在 pane 的标题条"
+    );
+}
+
+/// 用户报障：点 `⋯` 却新建了 pane。入口必须打开**该 pane** 的菜单，
+/// 且菜单动作作用在这个 pane 上（即使焦点原本在另一个 pane）。
+#[gpui::test]
+fn the_pane_menu_opens_on_the_clicked_pane(cx: &mut TestAppContext) {
+    use muxterm::frontend::utils::corebridge::ClientLayout;
+    let (view, cx) = mount(split_store(), cx);
+    cx.run_until_parked();
+    cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+
+    // 让 pane 11 的标题条出现（鼠标路径已在上一条测试里覆盖）。
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| app.note_pane_hover(11, true, cx));
+    });
+    cx.run_until_parked();
+    let actions = cx
+        .debug_bounds("pane-actions-11")
+        .expect("pane 11 action button");
+    cx.simulate_mouse_down(
+        actions.center(),
+        gpui::MouseButton::Left,
+        gpui::Modifiers::none(),
+    );
+    cx.run_until_parked();
+
+    assert!(cx.debug_bounds("pane-menu").is_some(), "点 `⋯` 要打开菜单");
+    let opened = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    assert!(
+        !opened.iter().any(|command| matches!(
+            command,
+            ClientCommand::Task {
+                task: ClientTask::SplitPane { .. },
+                ..
+            }
+        )),
+        "打开菜单不能直接分屏：{opened:?}"
+    );
+
+    // 菜单里的 Split Horizontal 作用在 pane 11，而不是当前焦点的 pane 10。
+    let split = cx
+        .debug_bounds("pane-menu-split-horizontal")
+        .expect("split horizontal row");
+    cx.simulate_mouse_down(
+        split.center(),
+        gpui::MouseButton::Left,
+        gpui::Modifiers::none(),
+    );
+    cx.run_until_parked();
+    let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    let split_target = commands.iter().find_map(|command| match command {
+        ClientCommand::Task {
+            task:
+                ClientTask::SplitPane {
+                    pane_id,
+                    horizontal,
+                },
+            ..
+        } => Some((*pane_id, *horizontal)),
+        _ => None,
+    });
+    assert_eq!(split_target, Some((11, true)), "命令：{commands:?}");
+    assert!(cx.debug_bounds("pane-menu").is_none(), "点完动作要关菜单");
+}
+
+/// Esc 关菜单，且菜单开着时不把按键漏进终端。
+#[gpui::test]
+fn escape_closes_the_pane_menu(cx: &mut TestAppContext) {
+    let (view, cx) = mount(split_store(), cx);
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| app.note_pane_hover(10, true, cx));
+    });
+    cx.run_until_parked();
+    let actions = cx
+        .debug_bounds("pane-actions-10")
+        .expect("pane 10 action button");
+    cx.simulate_mouse_down(
+        actions.center(),
+        gpui::MouseButton::Left,
+        gpui::Modifiers::none(),
+    );
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("pane-menu").is_some());
+    cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("pane-menu").is_none(), "Esc 关闭 pane 菜单");
+    let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    assert!(commands.is_empty(), "Esc 不能分发动作：{commands:?}");
+}
+
+/// 两个 pane（10 = active、11 = inactive）的水平分割工作区。
+fn split_store() -> ViewStore {
+    use muxterm::frontend::utils::corebridge::ClientLayout;
+    let mut store = store_with_two_workspaces();
+    store.replace_topology(
+        workspace("local@@dev@tmux@dev", "dev", true),
+        vec![ClientTab {
+            id: 1,
+            name: "dev".to_string(),
+            is_active: true,
+        }],
+        vec![(
+            1,
+            vec![
+                ClientPane {
+                    id: 10,
+                    cols: 80,
+                    rows: 24,
+                    is_active: true,
+                    title: "zsh".to_string(),
+                },
+                ClientPane {
+                    id: 11,
+                    cols: 80,
+                    rows: 24,
+                    is_active: false,
+                    title: "server".to_string(),
+                },
+            ],
+        )],
+    );
+    store.replace_layouts(
+        "local@@dev@tmux@dev",
+        vec![(
+            1,
+            ClientLayout::Split {
+                horizontal: true,
+                ratio: 400,
+                first: Box::new(ClientLayout::Leaf { pane_id: 10 }),
+                second: Box::new(ClientLayout::Leaf { pane_id: 11 }),
+            },
+        )],
+    );
+    store
 }
 
 /// 图片粘贴走 Core：前端只渲染阶段横幅，失败/成功都由 Core 的结果驱动。

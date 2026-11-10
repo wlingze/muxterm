@@ -15,8 +15,8 @@ use std::sync::Arc;
 
 use gpui::{
     canvas, div, point, prelude::*, px, AnyElement, ElementInputHandler, FontStyle, FontWeight,
-    Hsla, MouseButton, Pixels, ScrollDelta, ScrollWheelEvent, SharedString, StrikethroughStyle,
-    TextRun, UnderlineStyle,
+    Hsla, MouseButton, MouseMoveEvent, Pixels, ScrollDelta, ScrollWheelEvent, SharedString,
+    StrikethroughStyle, TextRun, UnderlineStyle,
 };
 
 use crate::frontend::gpui::chrome::pane_grid::Rect;
@@ -67,10 +67,12 @@ impl RunStyle {
 }
 
 impl GpuiApp {
+    /// 内容区在窗口里的 y 原点（顶部 bar 高度）；鼠标悬停要用窗口坐标换算。
     pub(crate) fn render_pane(
         &self,
         pane_id: u32,
         rect: Rect,
+        origin_y: f32,
         cx: &mut gpui::Context<Self>,
     ) -> AnyElement {
         let theme = self.theme().clone();
@@ -82,12 +84,7 @@ impl GpuiApp {
         let rows = (rect.max_height() / cell_height).floor().max(1.0) as usize;
         let focused = self.focused_pane() == Some(pane_id);
         // 未聚焦 pane 压暗（对齐 iTerm2 `SplitPaneDimmingAmount`）。
-        let visible_panes = self
-            .layout()
-            .map(|layout| {
-                crate::frontend::gpui::model::pane_navigation::layout_leaf_ids(&layout).len()
-            })
-            .unwrap_or(1);
+        let visible_panes = self.visible_pane_count();
         let dimmed = crate::frontend::gpui::model::pane_dimming::should_dim(focused, visible_panes);
 
         let mut row_elements: Vec<AnyElement> = Vec::new();
@@ -195,8 +192,9 @@ impl GpuiApp {
             ));
 
         // 多 pane 时浮一条标题条（不占终端格子，见 `model::pane_title`）。
-        let title_bar = if crate::frontend::gpui::model::pane_title::shows_title_bar(visible_panes)
-        {
+        // 默认**隐藏**，只有鼠标停在 pane 顶部 22pt 或这个 pane 的菜单开着时
+        // 才出现 —— 对照 Swift `updateTitleHover` / `showActionMenu`。
+        let title_bar = if self.shows_pane_title(pane_id) {
             let title = crate::frontend::gpui::model::pane_title::display_title(
                 &self.pane_title(pane_id).unwrap_or_default(),
                 pane_id,
@@ -209,7 +207,9 @@ impl GpuiApp {
                     .top_0()
                     .left_0()
                     .w_full()
-                    .h(px(crate::frontend::gpui::model::pane_title::TITLE_BAR_HEIGHT))
+                    .h(px(
+                        crate::frontend::gpui::model::pane_title::TITLE_BAR_HEIGHT,
+                    ))
                     .flex()
                     .flex_row()
                     .items_center()
@@ -221,11 +221,7 @@ impl GpuiApp {
                     .text_size(px(11.0))
                     .when(focused, |this| this.text_color(theme.accent))
                     .when(!focused, |this| this.text_color(theme.muted))
-                    .child(
-                        div()
-                            .overflow_hidden()
-                            .child(SharedString::from(title)),
-                    )
+                    .child(div().overflow_hidden().child(SharedString::from(title)))
                     .child(
                         div()
                             .id(SharedString::from(format!("pane-actions-{pane_id}")))
@@ -235,15 +231,11 @@ impl GpuiApp {
                             .px(px(4.0))
                             .on_mouse_down(
                                 MouseButton::Left,
-                                cx.listener(move |this, _, window, cx| {
+                                cx.listener(move |this, _, _, cx| {
                                     cx.stop_propagation();
-                                    // `⋯` 就是动作集本身：先切成水平分割的那一条，
-                                    // 其余动作在菜单栏与快捷键里都在。
-                                    this.run_action(
-                                        crate::frontend::gpui::model::shortcuts::KeyAction::SplitHorizontal,
-                                        window,
-                                        cx,
-                                    );
+                                    // `⋯` 打开**这个 pane** 的动作菜单；以前这里直接
+                                    // 切成水平分割，看起来就是「点菜单却新建了 pane」。
+                                    this.open_pane_menu(pane_id, cx);
                                 }),
                             )
                             .child(SharedString::from("⋯")),
@@ -286,8 +278,24 @@ impl GpuiApp {
                 cx.listener(move |this, _, window, cx| {
                     window.focus(&this.focus_handle());
                     this.focus_pane(pane_id, cx);
+                    // 点终端任意处都关掉 pane 菜单（NSMenu 点外面即消）。
+                    this.close_pane_menu(cx);
                 }),
             )
+            // 悬停只观察、不拦截：标题条默认隐藏，鼠标移到顶部 22pt 才出现。
+            // 不能用一条透明 div 做“感应条”，那会吞掉终端首行的点击。
+            .on_mouse_move(
+                cx.listener(move |this, event: &MouseMoveEvent, _window, cx| {
+                    let in_title_strip = f32::from(event.position.y) - origin_y
+                        <= crate::frontend::gpui::model::pane_title::TITLE_BAR_HEIGHT;
+                    this.note_pane_hover(pane_id, in_title_strip, cx);
+                }),
+            )
+            .on_hover(cx.listener(move |this, hovered: &bool, _window, cx| {
+                if !*hovered {
+                    this.clear_pane_hover(pane_id, cx);
+                }
+            }))
             .on_scroll_wheel(
                 cx.listener(move |this, event: &ScrollWheelEvent, _window, cx| {
                     // 像素 delta 走触控板路径（先攒整格），行 delta 直接当格数。

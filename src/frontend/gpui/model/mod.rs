@@ -19,6 +19,7 @@ pub mod input_encoding;
 pub mod layout_projection;
 pub mod menu;
 pub mod pane_dimming;
+pub mod pane_menu;
 pub mod pane_navigation;
 pub mod pane_title;
 pub mod panel;

@@ -40,6 +40,8 @@ pub fn display_title(title: &str, pane_id: u32) -> String {
 pub enum PaneTitleAction {
     SplitHorizontal,
     SplitVertical,
+    /// 把该 pane 抽成新 tab（Swift `.moveToNewTab`，Core `Task::BreakPane`）。
+    MoveToNewTab,
     Fullscreen,
     CycleLayout,
     Close,
@@ -51,6 +53,7 @@ impl PaneTitleAction {
         match self {
             Self::SplitHorizontal => "Split Horizontal",
             Self::SplitVertical => "Split Vertical",
+            Self::MoveToNewTab => "Move Pane to New Tab",
             Self::Fullscreen => "Toggle Pane Fullscreen",
             Self::CycleLayout => "Cycle Layout",
             Self::Close => "Close Pane",
@@ -58,13 +61,27 @@ impl PaneTitleAction {
     }
 
     /// 动作顺序固定，`⋯` 菜单直接照它铺。
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::SplitHorizontal,
         Self::SplitVertical,
+        Self::MoveToNewTab,
         Self::Fullscreen,
         Self::CycleLayout,
         Self::Close,
     ];
+
+    /// 菜单动作 → 快捷键动作。`MoveToNewTab` 没有快捷键（Swift 也只有菜单）。
+    pub fn key_action(self) -> Option<crate::frontend::gpui::model::shortcuts::KeyAction> {
+        use crate::frontend::gpui::model::shortcuts::KeyAction;
+        match self {
+            Self::SplitHorizontal => Some(KeyAction::SplitHorizontal),
+            Self::SplitVertical => Some(KeyAction::SplitVertical),
+            Self::Fullscreen => Some(KeyAction::TogglePaneFullscreen),
+            Self::CycleLayout => Some(KeyAction::CycleLayout),
+            Self::Close => Some(KeyAction::ClosePane),
+            Self::MoveToNewTab => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -100,10 +117,26 @@ mod tests {
             [
                 "Split Horizontal",
                 "Split Vertical",
+                "Move Pane to New Tab",
                 "Toggle Pane Fullscreen",
                 "Cycle Layout",
                 "Close Pane",
             ]
         );
+    }
+
+    /// 菜单动作必须落到具体的快捷键动作，否则点了什么都不发生。
+    #[test]
+    fn actions_map_to_key_actions() {
+        use crate::frontend::gpui::model::shortcuts::KeyAction;
+        assert_eq!(
+            PaneTitleAction::SplitHorizontal.key_action(),
+            Some(KeyAction::SplitHorizontal)
+        );
+        assert_eq!(
+            PaneTitleAction::Fullscreen.key_action(),
+            Some(KeyAction::TogglePaneFullscreen)
+        );
+        assert_eq!(PaneTitleAction::MoveToNewTab.key_action(), None);
     }
 }
