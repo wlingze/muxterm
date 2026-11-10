@@ -4500,3 +4500,109 @@ fn the_cursor_block_covers_a_full_cell(cx: &mut TestAppContext) {
         cell.0
     );
 }
+
+/// 用户要求：状态栏按钮要和 Swift 一样齐（侧栏开关、状态点、铃铛、全屏、设置、新建）。
+#[gpui::test]
+fn status_bar_carries_the_swift_controls(cx: &mut TestAppContext) {
+    let (view, cx) = mount(two_tab_store_with_pane_20(), cx);
+    cx.run_until_parked();
+    for selector in [
+        "sidebar-toggle",
+        "status-dot",
+        "status-attention",
+        "status-fullscreen",
+        "status-settings",
+        "new-tab",
+    ] {
+        assert!(cx.debug_bounds(selector).is_some(), "状态栏缺少 {selector}");
+    }
+}
+
+/// 铃铛点开 Attention 面板（Swift `onAttentionClick`）。
+#[gpui::test]
+fn status_bar_bell_opens_the_attention_panel(cx: &mut TestAppContext) {
+    let (view, cx) = mount(two_tab_store_with_pane_20(), cx);
+    cx.run_until_parked();
+    let bell = cx.debug_bounds("status-attention").expect("bell");
+    cx.simulate_mouse_down(
+        bell.center(),
+        gpui::MouseButton::Left,
+        gpui::Modifiers::none(),
+    );
+    cx.run_until_parked();
+    let (open, tab) =
+        cx.update(|_, cx| view.update(cx, |app, _| (app.panel_open(), app.panel_tab())));
+    assert!(open, "铃铛必须打开面板");
+    assert_eq!(tab, PanelTab::Attention);
+}
+
+/// 齿轮打开设置浮层（Swift `settingsButton`）。
+#[gpui::test]
+fn status_bar_settings_button_opens_settings(cx: &mut TestAppContext) {
+    let (view, cx) = mount(two_tab_store_with_pane_20(), cx);
+    cx.run_until_parked();
+    let gear = cx.debug_bounds("status-settings").expect("settings");
+    cx.simulate_mouse_down(
+        gear.center(),
+        gpui::MouseButton::Left,
+        gpui::Modifiers::none(),
+    );
+    cx.run_until_parked();
+    assert!(
+        cx.update(|_, cx| view.update(cx, |app, _| app.settings_open)),
+        "齿轮必须打开设置"
+    );
+}
+
+/// 侧栏开关与 `Cmd-B` 同一条路径。
+#[gpui::test]
+fn status_bar_sidebar_toggle_hides_the_sidebar(cx: &mut TestAppContext) {
+    let (view, cx) = mount(two_tab_store_with_pane_20(), cx);
+    cx.run_until_parked();
+    let before = cx.update(|_, cx| view.update(cx, |app, _| app.sidebar_visible()));
+    let toggle = cx.debug_bounds("sidebar-toggle").expect("sidebar toggle");
+    cx.simulate_mouse_down(
+        toggle.center(),
+        gpui::MouseButton::Left,
+        gpui::Modifiers::none(),
+    );
+    cx.run_until_parked();
+    let after = cx.update(|_, cx| view.update(cx, |app, _| app.sidebar_visible()));
+    assert_ne!(before, after, "侧栏开关必须真的切换");
+}
+
+/// 状态点颜色跟随连接状态（Swift `StatusDotButton`）。
+#[gpui::test]
+fn status_dot_follows_the_backend_status(cx: &mut TestAppContext) {
+    use muxterm::frontend::gpui::chrome::status_bar::connection_color;
+    use muxterm::frontend::gpui::model::sidebar::backend_status;
+    use muxterm::frontend::gpui::theme::Theme;
+    let theme = Theme::default();
+    assert_eq!(
+        connection_color(backend_status::CONNECTED, &theme),
+        theme.success
+    );
+    assert_eq!(
+        connection_color(backend_status::CONNECTING, &theme),
+        theme.warning
+    );
+    assert_eq!(
+        connection_color(backend_status::ERROR, &theme),
+        theme.danger
+    );
+    assert_eq!(
+        connection_color(backend_status::EXITED, &theme),
+        theme.danger
+    );
+    assert_eq!(
+        connection_color(backend_status::DISCONNECTED, &theme),
+        theme.muted
+    );
+
+    // 视图里的状态点读的是当前 workspace 的后端状态。
+    let (view, cx) = mount(two_tab_store_with_pane_20(), cx);
+    let _ = &view;
+    cx.run_until_parked();
+    let status = cx.update(|_, cx| view.update(cx, |app, _| app.visible_backend_status()));
+    assert_eq!(status, backend_status::CONNECTED);
+}

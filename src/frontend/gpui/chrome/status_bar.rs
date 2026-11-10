@@ -19,6 +19,61 @@ use crate::frontend::gpui::theme::{Theme, TAB_BAR_FONT_SIZE};
 /// 状态栏高度 = tab 栏高度：一条 bar 承担两者。
 pub const STATUS_BAR_HEIGHT: f32 = TAB_BAR_HEIGHT;
 
+/// 右侧控制按钮尺寸（对照 Swift `StatusBarView.updateTrailingButtonsVisibility`）：
+/// 状态点 18、铃铛 / 全屏 / 设置各 24、新建 28。
+pub const STATUS_DOT_WIDTH: f32 = 18.0;
+pub const STATUS_BUTTON_WIDTH: f32 = 24.0;
+pub const NEW_TAB_BUTTON_WIDTH: f32 = 28.0;
+/// 左侧侧栏开关（Swift `sidebarToggleButton`：24×20）。
+pub const SIDEBAR_TOGGLE_WIDTH: f32 = 24.0;
+
+/// 连接状态点的颜色：Swift `StatusDotButton` 用系统语义色
+///（connected 绿、connecting 黄、error / exited 红、其余灰）。
+pub fn connection_color(status: u32, theme: &Theme) -> gpui::Rgba {
+    use crate::frontend::gpui::model::sidebar::backend_status;
+    match status {
+        backend_status::CONNECTED => theme.success,
+        backend_status::CONNECTING => theme.warning,
+        backend_status::ERROR | backend_status::EXITED => theme.danger,
+        _ => theme.muted,
+    }
+}
+
+/// 一个右侧图标按钮。`id` 同时是 debug selector，测试按它点击。
+fn status_button(
+    id: &'static str,
+    glyph: impl Into<gpui::SharedString>,
+    color: gpui::Rgba,
+    width: f32,
+    theme: &Theme,
+    cx: &mut gpui::Context<GpuiApp>,
+    on_click: impl Fn(&mut GpuiApp, &mut gpui::Window, &mut gpui::Context<GpuiApp>) + 'static,
+) -> AnyElement {
+    div()
+        .id(SharedString::from(id))
+        .debug_selector(move || id.to_string())
+        .flex_none()
+        .w(px(width))
+        .h(px(STATUS_BAR_HEIGHT - 4.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(4.0))
+        .cursor_pointer()
+        .text_size(px(TAB_BAR_FONT_SIZE + 1.0))
+        .text_color(color)
+        .hover(|style| style.bg(theme.active_bg))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |app, _, window, cx| {
+                cx.stop_propagation();
+                on_click(app, window, cx);
+            }),
+        )
+        .child(glyph.into())
+        .into_any_element()
+}
+
 impl GpuiApp {
     /// 唯一的窗口底（或顶）栏杆：workspace 名 + tab 单元 + 右侧状态。
     pub(crate) fn render_status_bar(&self, cx: &mut gpui::Context<Self>) -> AnyElement {
@@ -44,18 +99,69 @@ impl GpuiApp {
         let tmux_left_text = tmux_left.filter(|text| !text.trim().is_empty());
 
         let attention = self.status_attention();
-        let attention_badge = attention.is_active().then(|| {
-            let color = attention
-                .indicator
-                .map(|indicator| indicator_color(indicator, &theme))
-                .unwrap_or(theme.muted);
-            div()
-                .flex_none()
-                .text_size(px(TAB_BAR_FONT_SIZE))
-                .text_color(color)
-                .child(SharedString::from(format!("◔ {}", attention.count)))
-                .into_any_element()
-        });
+        let attention_color = attention
+            .indicator
+            .map(|indicator| indicator_color(indicator, &theme))
+            .unwrap_or(theme.muted);
+        // 铃铛：没有未读时是灰色空铃；有未读显示数量并按主导色着色。
+        let attention_glyph = if attention.is_active() {
+            format!("◔{}", attention.count)
+        } else {
+            String::from("◔")
+        };
+        let attention_button = status_button(
+            "status-attention",
+            SharedString::from(attention_glyph),
+            attention_color,
+            STATUS_BUTTON_WIDTH,
+            &theme,
+            cx,
+            |app, _, cx| {
+                app.show_panel(crate::frontend::gpui::model::panel::PanelTab::Attention, cx);
+            },
+        );
+        let connection = connection_color(self.visible_backend_status(), &theme);
+        let status_dot = status_button(
+            "status-dot",
+            "●",
+            connection,
+            STATUS_DOT_WIDTH,
+            &theme,
+            cx,
+            |app, _, cx| {
+                app.open_info(cx);
+            },
+        );
+        let fullscreen_button = status_button(
+            "status-fullscreen",
+            "⛶",
+            theme.muted,
+            STATUS_BUTTON_WIDTH,
+            &theme,
+            cx,
+            |app, window, cx| {
+                app.run_action(
+                    crate::frontend::gpui::model::shortcuts::KeyAction::ToggleWindowFullscreen,
+                    window,
+                    cx,
+                );
+            },
+        );
+        let settings_button = status_button(
+            "status-settings",
+            "⚙",
+            theme.muted,
+            STATUS_BUTTON_WIDTH,
+            &theme,
+            cx,
+            |app, window, cx| {
+                app.run_action(
+                    crate::frontend::gpui::model::shortcuts::KeyAction::OpenSettings,
+                    window,
+                    cx,
+                );
+            },
+        );
 
         div()
             .flex()
@@ -78,6 +184,21 @@ impl GpuiApp {
                     == crate::frontend::gpui::chrome::tab_bar_view::TabBarPosition::Bottom,
                 |element| element.border_t_1(),
             )
+            .child(status_button(
+                "sidebar-toggle",
+                if self.sidebar_visible() { "◧" } else { "▭" },
+                theme.muted,
+                SIDEBAR_TOGGLE_WIDTH,
+                &theme,
+                cx,
+                |app, window, cx| {
+                    app.run_action(
+                        crate::frontend::gpui::model::shortcuts::KeyAction::ToggleSidebar,
+                        window,
+                        cx,
+                    );
+                },
+            ))
             .child(
                 div()
                     .flex_none()
@@ -98,12 +219,43 @@ impl GpuiApp {
                     .flex_none()
                     .children(self.render_tabs(cx)),
             )
+            .when_some(tmux_left_text, |element, text| {
+                element.child(
+                    div()
+                        .id("tmux-status-left")
+                        .debug_selector(|| "tmux-status-left".into())
+                        .flex_none()
+                        .max_w(px(240.0))
+                        .overflow_hidden()
+                        .text_size(px(TAB_BAR_FONT_SIZE))
+                        .line_height(px(14.0))
+                        .text_color(theme.muted)
+                        .child(SharedString::from(text)),
+                )
+            })
+            .child(div().flex_1())
             .child(
-                // `FlatChrome.newTabButtonWidth`：+ 按钮 28pt。
+                div()
+                    .flex_none()
+                    .max_w(px(200.0))
+                    .overflow_hidden()
+                    .text_size(px(TAB_BAR_FONT_SIZE))
+                    .line_height(px(14.0))
+                    .text_color(theme.muted)
+                    .child(SharedString::from(tmux_right_text.unwrap_or(right_text))),
+            )
+            // 右端顺序照 Swift：状态点 → 铃铛 → 全屏 → 设置 → 新建。
+            .child(status_dot)
+            .child(attention_button)
+            .child(fullscreen_button)
+            .child(settings_button)
+            .child({
+                let theme = theme.clone();
                 div()
                     .id("new-tab")
+                    .debug_selector(|| "new-tab".into())
                     .flex_none()
-                    .w(px(28.0))
+                    .w(px(NEW_TAB_BUTTON_WIDTH))
                     .h(px(STATUS_BAR_HEIGHT - 6.0))
                     .flex()
                     .items_center()
@@ -123,32 +275,9 @@ impl GpuiApp {
                             );
                         }),
                     )
-                    .child(SharedString::from("+")),
-            )
-            .when_some(tmux_left_text, |element, text| {
-                element.child(
-                    div()
-                        .id("tmux-status-left")
-                        .debug_selector(|| "tmux-status-left".into())
-                        .flex_none()
-                        .max_w(px(240.0))
-                        .overflow_hidden()
-                        .text_size(px(TAB_BAR_FONT_SIZE))
-                        .line_height(px(14.0))
-                        .text_color(theme.muted)
-                        .child(SharedString::from(text)),
-                )
+                    .child(SharedString::from("+"))
+                    .into_any_element()
             })
-            .child(div().flex_1())
-            .when_some(attention_badge, |element, badge| element.child(badge))
-            .child(
-                div()
-                    .flex_none()
-                    .text_size(px(TAB_BAR_FONT_SIZE))
-                    .line_height(px(14.0))
-                    .text_color(theme.muted)
-                    .child(SharedString::from(tmux_right_text.unwrap_or(right_text))),
-            )
             .into_any_element()
     }
 }
