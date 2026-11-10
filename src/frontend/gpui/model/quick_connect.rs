@@ -55,27 +55,6 @@ impl TargetConfig {
             self.workspace_id.clone().unwrap_or_default(),
         ]
     }
-
-    /// 普通查询词参与匹配的字段。
-    ///
-    /// 刻意**不含** runtime 名与 socket 路径：两者都固定带 `tmux` 字样
-    /// （runtime 标签、`/tmp/tmux-501/default`），算进子串匹配会让搜 `mux`
-    /// 命中全部 tmux 目标 —— 用户看到的就是「搜索没用，结果全是无关项」。
-    /// runtime 只在查询是它的**前缀**时才算命中（`tm` → tmux、`her` → herdr），
-    /// 所以打 `mux` 不会把 tmux 全捞出来；想筛 runtime 也可以直接写 `@tmux`。
-    pub fn text_fields(&self) -> Vec<String> {
-        let transport = match &self.transport {
-            TargetTransport::Local => "local".to_string(),
-            TargetTransport::Ssh { name } => format!("ssh {name}"),
-        };
-        vec![
-            self.name.clone(),
-            transport,
-            self.path.clone(),
-            self.session.clone().unwrap_or_default(),
-            self.workspace_id.clone().unwrap_or_default(),
-        ]
-    }
 }
 
 /// Workspaces tab 的查询规则。
@@ -148,8 +127,16 @@ impl WorkspaceQuery {
 
         let mut score = 10_000i64;
         for term in &self.terms {
-            let best = term_score(config, term)?;
+            // 保持 Swift 的全字段子串/模糊搜索；名字命中额外加权，不缩小范围。
+            let best = config
+                .search_fields()
+                .iter()
+                .filter_map(|field| field_score(field, term))
+                .max()?;
             score += best;
+            if config.name.to_lowercase().contains(term) {
+                score += 2_000;
+            }
         }
         score += self.runtime_filters.len() as i64 * 2_000;
         if self.local_only || !self.ssh_alias_filters.is_empty() {
@@ -241,56 +228,6 @@ fn field_score(field: &str, query: &str) -> Option<i64> {
     }
     let gaps = fuzzy_gap_score(&field, &query)?;
     Some((1_000 - gaps - chars / 4).max(0))
-}
-
-/// 一个查询词对一条目标的匹配得分；不匹配返回 `None`。
-///
-/// 分四档，按「命中的字段有多重要」排序：
-/// 1. 名字里出现子串（最可信）；
-/// 2. 名字里能按顺序凑出来（模糊，`yws` → `yaklang-workspace`）；
-/// 3. 其它字段（runtime / transport / path / session / socket / id）里出现子串；
-/// 4. 其它字段里模糊命中。
-///
-/// 关键点：**其它字段的模糊命中不算命中**。之前每个字段都允许模糊，
-/// 于是查 `x` 会把所有 tmux 目标都列出来（transport 字段里有 `tmux`），
-/// 用户看到的就是「搜索没反应、结果完全不相关」。
-fn term_score(config: &TargetConfig, term: &str) -> Option<i64> {
-    let query = term.to_lowercase();
-    if query.is_empty() {
-        return Some(0);
-    }
-    let name = config.name.to_lowercase();
-    let name_score = if name.contains(&query) {
-        (3_000 - name.chars().count() as i64).max(2_000)
-    } else if let Some(gaps) = fuzzy_gap_score(&name, &query) {
-        (1_500 - gaps).max(500)
-    } else {
-        0
-    };
-    let other_score = config
-        .text_fields()
-        .iter()
-        .filter_map(|field| {
-            let field = field.to_lowercase();
-            if field.contains(&query) {
-                Some((2_000 - field.chars().count() as i64 / 4).max(200))
-            } else {
-                None
-            }
-        })
-        .max()
-        .unwrap_or(0);
-    // runtime 只认前缀：`mux` 不该因为 `tmux` 而命中所有 tmux 目标。
-    let runtime_score = {
-        let label = config.runtime.label().to_lowercase();
-        if !query.is_empty() && label.starts_with(&query) {
-            (2_500 - label.chars().count() as i64).max(300)
-        } else {
-            0
-        }
-    };
-    let best = name_score.max(other_score).max(runtime_score);
-    (best > 0).then_some(best)
 }
 
 /// 返回匹配字符间的 gap 数。
@@ -781,27 +718,18 @@ mod tests {
         }
     }
 
-    /// 搜索 "mux" 不能因为 transport 写着 "tmux" 就把整库列出来（用户报的
-    /// 「搜索失败」：输什么都是全量结果）。
+    /// 对照 `UnifiedPanelExistingConnectionsE2ETests.testConnectedWorkspaceSearchCoversPathRuntimeAliasSessionAndIdentity`。
+    /// 普通查询仍涵盖 runtime/socket；名字真正匹配的 muxterm 排在泛 tmux 命中前面。
     #[test]
-    fn a_query_never_matches_every_tmux_target() {
-        let yaklang = tmux(
-            "yaklang-workspace",
-            "yaklang",
-            "~/Developer/yaklang-workspace",
-        );
+    fn query_keeps_runtime_and_socket_matches_and_prefers_names() {
+        let muxterm = tmux("muxterm", "muxterm", "~/Developer/muxterm");
         let other = tmux("ubuntu-home", "ubuntu", "~");
         let query = WorkspaceQuery::new("mux");
-        assert!(
-            query.score(&other).is_none(),
-            "transport 里的 tmux 不算命中"
-        );
-        assert!(WorkspaceQuery::new("yak").score(&yaklang).is_some());
-        assert!(WorkspaceQuery::new("yak").score(&other).is_none());
-        // 名字的模糊命中仍然可用：yws → yaklang-workspace。
-        assert!(WorkspaceQuery::new("yws").score(&yaklang).is_some());
-        // 路径 / session 里的精确子串也算命中。
-        assert!(WorkspaceQuery::new("Developer").score(&yaklang).is_some());
+        assert!(query.matches(&other), "tmux 仍属于普通搜索字段");
+        assert!(query.score(&muxterm).unwrap() > query.score(&other).unwrap());
+        assert!(WorkspaceQuery::new("501/default").matches(&other));
+        assert!(WorkspaceQuery::new("@local @tmux muxterm").matches(&muxterm));
+        assert!(!WorkspaceQuery::new("@local @tmux muxterm").matches(&other));
     }
 
     /// 对照 `QuickConnectE2ETests.testStartupLocalWorkspaceAppearsThroughFixedShellsItem`。

@@ -48,8 +48,8 @@ impl GpuiApp {
     ///    worktree 时 Core 自己写的来源，最权威；
     /// 2. canonical target 完全一致（含 SSH 主机、session、socket、Herdr id）；
     /// 3. workspace id 一致（`canonical.workspace_id` 或产品 id）；
-    /// 4. 名字 + runtime + session 一致——Core 还没回 canonical 时也要拦住
-    ///    「同名 Project / 现有 session」的重复行。
+    /// 4. canonical 缺失时只在 runtime 一致时用同名兜底；不同 runtime 绝不合并。
+    ///    canonical 存在时必须先核对 transport 与 socket，不能跨主机吞掉候选。
     pub(super) fn is_workspace_open(&self, config: &TargetConfig) -> bool {
         let ids = self
             .store
@@ -68,6 +68,12 @@ impl GpuiApp {
                 return true;
             }
             if let Some(open) = self.workspace_target(id) {
+                if open.runtime != config.runtime || open.transport != config.transport {
+                    continue;
+                }
+                if matches!((&open.socket, &config.socket), (Some(a), Some(b)) if a != b) {
+                    continue;
+                }
                 if same_target(&open, config) {
                     return true;
                 }
@@ -88,8 +94,12 @@ impl GpuiApp {
                 }
                 continue;
             }
-            // 没有 canonical：按名字兜底（用户看到的就是同名重复）。
-            if self.workspace_name(id).eq_ignore_ascii_case(&config.name) {
+            // shell 的默认名也可能叫 muxterm，但它不是同名 tmux session。
+            if self
+                .workspace_runtime(id)
+                .eq_ignore_ascii_case(config.runtime.label())
+                && self.workspace_name(id).eq_ignore_ascii_case(&config.name)
+            {
                 return true;
             }
         }
@@ -594,12 +604,28 @@ impl GpuiApp {
     }
 
     pub(super) fn discover_picker_root(&mut self, cx: &mut Context<Self>) {
-        if self.existing_loading || self.existing_loaded || self.pump.is_none() {
+        if self.existing_loading || self.pump.is_none() {
             return;
         }
         self.existing_loading = true;
         let socket = self.socket.clone();
         cx.spawn(async move |this, cx| {
+            // 先发布本机结果：慢速或失联的 SSH 主机不能挡住 local muxterm。
+            let local_socket = socket.clone();
+            let local = cx
+                .background_executor()
+                .spawn(async move {
+                    discover_rows(Some(&TargetTransport::Local), local_socket.as_deref())
+                })
+                .await;
+            let _ = this.update(cx, |app, cx| {
+                if let Ok(rows) = local {
+                    app.existing = rows;
+                    app.existing_loaded = true;
+                    app.reset_panel_selection();
+                    cx.notify();
+                }
+            });
             let result = cx
                 .background_executor()
                 .spawn(async move { discover_rows(None, socket.as_deref()) })
@@ -610,6 +636,7 @@ impl GpuiApp {
                 match result {
                     Ok(rows) => app.existing = rows,
                     Err(error) => {
+                        // 本机结果继续可用，不能因远端 discovery 失败一起消失。
                         app.panel.picker.error = Some(format!("Discovery failed: {error}"))
                     }
                 }
