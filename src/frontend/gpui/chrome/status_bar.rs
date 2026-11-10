@@ -31,13 +31,9 @@ impl GpuiApp {
         } else {
             format!("{name} · {runtime}")
         };
-        let geometry = self
-            .focused_pane()
-            .and_then(|pane| self.pane_geometry(pane))
-            .map(|(cols, rows)| format!("{cols}x{rows}"))
-            .unwrap_or_else(|| String::from("-"));
-        let active_pane = self.focused_pane().unwrap_or(0);
-        let right_text = format!("pane {active_pane} · {geometry}");
+        // 直接读 Surface 的实时网格：store 里的 cols/rows 要等 Core 下一个快照，
+        // 窗口刚变大时会停在旧值（状态栏看起来「不更新」）。
+        let right_text = self.pane_geometry_label();
         // `statusbar.mode = tmux` 时右侧换成 tmux 自己的 status-right；
         // `theme` 模式用前端主题文案（下面 right_text）。
         let (tmux_left, tmux_right) = self

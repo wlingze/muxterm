@@ -10,6 +10,7 @@
 
 pub mod aggregate;
 pub mod attention;
+pub mod box_drawing;
 pub mod composer;
 pub mod directory;
 pub mod existing;

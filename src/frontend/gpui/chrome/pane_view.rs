@@ -89,8 +89,8 @@ impl GpuiApp {
 
         let mut row_elements: Vec<AnyElement> = Vec::new();
         let mut row_texts: Vec<RowText> = Vec::new();
-        match self.surface(&workspace, pane_id) {
-            Some(surface) => {
+        if let Some(surface) = self.surface(&workspace, pane_id) {
+            {
                 let grid = surface.grid();
                 let draw_rows = rows.min(grid.rows());
                 let draw_cols = cols.min(grid.cols());
@@ -116,16 +116,9 @@ impl GpuiApp {
                     }
                 }
             }
-            None => {
-                row_elements.push(
-                    div()
-                        .text_sm()
-                        .text_color(theme.muted)
-                        .child(SharedString::from(format!("pane {pane_id}")))
-                        .into_any_element(),
-                );
-            }
         }
+        // 还没有 Surface（首帧）：保持空白底色，别往终端里塞
+        // 「pane N」这种调试文字，用户看到会以为渲染坏了。
 
         // 字形的唯一绘制入口：按列号定位（见文件头）。
         let text_layer = {
@@ -546,6 +539,8 @@ fn paint_text(
             if run.text.is_empty() {
                 continue;
             }
+            // 先画制表符 / 方块：它们不用字体字形，按格子几何对齐。
+            paint_box_glyphs(bounds, row, run, cell_width, cell_height, window);
             let mut font = gpui::font(family.clone());
             if run.style.bold {
                 font.weight = FontWeight::BOLD;
@@ -569,6 +564,7 @@ fn paint_text(
             );
 
             let char_starts: Vec<usize> = run.text.char_indices().map(|(index, _)| index).collect();
+            let chars: Vec<char> = run.text.chars().collect();
             let mut char_index = 0usize;
             for shaped_run in &shaped.runs {
                 for glyph in &shaped_run.glyphs {
@@ -580,6 +576,14 @@ fn paint_text(
                     let Some(column) = run.cols.get(char_index) else {
                         continue;
                     };
+                    // 制表 / 方块字符已由 `paint_box_glyphs` 画完，字体字形会
+                    // 多画一层（错位、断线、方块锯齿都来自这里）。
+                    if chars
+                        .get(char_index)
+                        .is_some_and(|ch| crate::frontend::gpui::model::box_drawing::is_custom(*ch))
+                    {
+                        continue;
+                    }
                     let origin = point(
                         bounds.origin.x + px(*column as f32 * cell_width),
                         row_top + baseline,
@@ -618,6 +622,61 @@ fn paint_text(
                 );
             }
         }
+    }
+}
+
+/// 制表符 / 方块元素：按格子几何画矩形（iTerm2 `iTermBoxDrawingRenderer` 同思路）。
+///
+/// 位置完全由「列号 × 格宽」决定，端点贴格边，所以相邻格一定接得上；
+/// 中文 / 双宽字符夹在表格里也不会把边框推歪。
+fn paint_box_glyphs(
+    bounds: gpui::Bounds<gpui::Pixels>,
+    row: &RowText,
+    run: &RowRun,
+    cell_width: f32,
+    cell_height: f32,
+    window: &mut gpui::Window,
+) {
+    use crate::frontend::gpui::model::box_drawing::{shapes, Cell};
+    let cell = Cell {
+        width: cell_width,
+        height: cell_height,
+    };
+    let row_top = bounds.origin.y + px(row.row as f32 * cell_height);
+    for (text_index, ch) in run.text.chars().enumerate() {
+        let Some(rects) = shapes(ch, cell) else {
+            continue;
+        };
+        let Some(column) = run.cols.get(text_index) else {
+            continue;
+        };
+        let cell_left = bounds.origin.x + px(*column as f32 * cell_width);
+        for rect in rects {
+            let color = if rect.alpha >= 1.0 {
+                run.fg
+            } else {
+                // `░▒▓`：前景按透明度叠在格子背景上。
+                blend(run.bg, run.fg, rect.alpha)
+            };
+            window.paint_quad(gpui::fill(
+                gpui::Bounds::new(
+                    gpui::point(cell_left + px(rect.x), row_top + px(rect.y)),
+                    gpui::size(px(rect.w), px(rect.h)),
+                ),
+                color,
+            ));
+        }
+    }
+}
+
+/// 线性混色：`t=0` 取 `from`，`t=1` 取 `to`。
+fn blend(from: gpui::Rgba, to: gpui::Rgba, t: f32) -> gpui::Rgba {
+    let t = t.clamp(0.0, 1.0);
+    gpui::Rgba {
+        r: from.r + (to.r - from.r) * t,
+        g: from.g + (to.g - from.g) * t,
+        b: from.b + (to.b - from.b) * t,
+        a: 1.0,
     }
 }
 
