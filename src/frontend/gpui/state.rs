@@ -1057,6 +1057,15 @@ impl GpuiApp {
     }
 
     /// 侧栏是否显示。
+    /// 当前 workspace 的后端状态（状态栏状态点用）。
+    pub fn visible_backend_status(&self) -> u32 {
+        self.visible
+            .as_deref()
+            .and_then(|id| self.store.workspace(id))
+            .and_then(|view| view.backend_status)
+            .unwrap_or(crate::frontend::gpui::model::sidebar::backend_status::DISCONNECTED)
+    }
+
     pub fn sidebar_visible(&self) -> bool {
         self.sidebar_visible
     }
