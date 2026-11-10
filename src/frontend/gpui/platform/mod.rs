@@ -1,7 +1,9 @@
 //! 平台相关的接线。纯逻辑一律放在 `model/`，这里只做「gpui ↔ 操作系统」。
 //!
-//! 目前只有 macOS 原生菜单栏；Linux / Windows 的自绘菜单条还没做，见
-//! `docs/FRONTEND-GPUI.md` §8.1 的 TODO。
+//! 目前有 macOS 原生菜单栏与剪贴板图片转码；Linux / Windows 的自绘菜单条
+//! 还没做，见 `docs/FRONTEND-GPUI.md` §8.1 的 TODO。
+
+pub mod clipboard_image;
 
 // objc 的 `msg_send!` / `class!` 宏内部会引用 `cargo-clippy` 等 cfg，
 // 在 2021 edition 下触发 `unexpected_cfgs`。这是依赖宏的噪音，与本 crate 无关。

@@ -4208,3 +4208,225 @@ fn attention_rows_show_a_status_color(cx: &mut TestAppContext) {
         "Attention 行要有状态徽标"
     );
 }
+
+/// 两 tab 的工作区：tab 1 有 pane 10，tab 2 有 pane 20（默认停 tab 1）。
+fn two_tab_store_with_pane_20() -> ViewStore {
+    let mut store = ViewStore::default();
+    store.replace_topology(
+        workspace("local@@dev@tmux@dev", "dev", true),
+        vec![
+            ClientTab {
+                id: 1,
+                name: "main".to_string(),
+                is_active: true,
+            },
+            ClientTab {
+                id: 2,
+                name: "ops".to_string(),
+                is_active: false,
+            },
+        ],
+        vec![
+            (
+                1,
+                vec![ClientPane {
+                    id: 10,
+                    cols: 80,
+                    rows: 24,
+                    is_active: true,
+                    title: "zsh".to_string(),
+                }],
+            ),
+            (
+                2,
+                vec![ClientPane {
+                    id: 20,
+                    cols: 100,
+                    rows: 30,
+                    is_active: true,
+                    title: "server".to_string(),
+                }],
+            ),
+        ],
+    );
+    store.ensure_workspace("local@@dev@tmux@dev").backend_status = Some(backend_status::CONNECTED);
+    store
+}
+
+/// 用户报障：点 Attention 行要跳到那个 pane 的**完整身份**（workspace+tab+pane），
+/// 不能停在当前 tab 上。
+#[gpui::test]
+fn attention_rows_reveal_the_exact_tab_and_pane(cx: &mut TestAppContext) {
+    use muxterm::frontend::gpui::model::attention::{PaneAttention, WorkspaceAttention};
+    use muxterm::frontend::gpui::model::panel::PanelTab;
+    let (view, cx) = mount(two_tab_store_with_pane_20(), cx);
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.set_attention(Some(AttentionSnapshot {
+                blocked_count: 1,
+                workspaces: vec![WorkspaceAttention {
+                    workspace_id: "local@@dev@tmux@dev".into(),
+                    name: "dev".into(),
+                    transport: "local".into(),
+                    ..WorkspaceAttention::new(
+                        "local@@dev@tmux@dev",
+                        vec![PaneAttention {
+                            pane_id: 20,
+                            status: PaneAttentionStatus::Blocked,
+                            last_line: "waiting on tests".into(),
+                            seq: 9,
+                            ..PaneAttention::default()
+                        }],
+                    )
+                }],
+            }));
+            app.show_panel(PanelTab::Attention, cx);
+            app.take_commands_for_tests();
+        })
+    });
+    let index = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            app.panel_rows()
+                .iter()
+                .position(|row| {
+                    matches!(
+                        row,
+                        muxterm::frontend::gpui::chrome::panel_view::PanelRow::Attention {
+                            pane_id: 20,
+                            ..
+                        }
+                    )
+                })
+                .expect("pane 20 attention row")
+        })
+    });
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| app.select_panel_row(index, cx));
+    });
+    let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    let switched_tab = commands.iter().find_map(|command| match command {
+        ClientCommand::Task {
+            task: ClientTask::SwitchTab { tab_id },
+            ..
+        } => Some(*tab_id),
+        _ => None,
+    });
+    let switched_pane = commands.iter().find_map(|command| match command {
+        ClientCommand::Task {
+            task: ClientTask::SwitchPane { pane_id },
+            ..
+        } => Some(*pane_id),
+        _ => None,
+    });
+    assert_eq!(
+        switched_tab,
+        Some(2),
+        "必须先切到 pane 20 所在的 tab：{commands:?}"
+    );
+    assert_eq!(switched_pane, Some(20), "命令：{commands:?}");
+    assert!(
+        cx.update(|_, cx| view.update(cx, |app, _| app.panel_open())) == false,
+        "跳转后面板关闭"
+    );
+}
+
+/// 搜索命中同理：跳到命中所在的 tab + pane。
+#[gpui::test]
+fn search_hits_reveal_the_exact_tab_and_pane(cx: &mut TestAppContext) {
+    use muxterm::frontend::gpui::model::panel::PanelTab;
+    use muxterm::frontend::gpui::model::search::SearchHit;
+    let (view, cx) = mount(two_tab_store_with_pane_20(), cx);
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.set_search_for_tests(SearchSnapshot {
+                hits: vec![SearchHit {
+                    workspace_id: "local@@dev@tmux@dev".into(),
+                    tab_id: 2,
+                    pane_id: 20,
+                    seq: 3,
+                    line: "cargo test".into(),
+                }],
+            });
+            app.show_panel(PanelTab::Search, cx);
+            app.take_commands_for_tests();
+        })
+    });
+    let index = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            app.panel_rows()
+                .iter()
+                .position(|row| {
+                    matches!(
+                        row,
+                        muxterm::frontend::gpui::chrome::panel_view::PanelRow::Search(_)
+                    )
+                })
+                .expect("search row")
+        })
+    });
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| app.select_panel_row(index, cx));
+    });
+    let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            ClientCommand::Task {
+                task: ClientTask::SwitchTab { tab_id: 2 },
+                ..
+            }
+        )),
+        "搜索命中要切到 tab 2：{commands:?}"
+    );
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            ClientCommand::Task {
+                task: ClientTask::SwitchPane { pane_id: 20 },
+                ..
+            }
+        )),
+        "搜索命中要切到 pane 20：{commands:?}"
+    );
+}
+
+/// 用户报障：状态栏一直显示打开时的 80x24。它必须读 Surface 的实时网格。
+#[gpui::test]
+fn status_bar_follows_the_live_pane_grid(cx: &mut TestAppContext) {
+    let (view, cx) = mount(two_tab_store_with_pane_20(), cx);
+    cx.run_until_parked();
+    let before = cx.update(|_, cx| view.update(cx, |app, _| app.pane_geometry_label()));
+    assert!(before.contains("80x24"), "初始来自快照：{before}");
+
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.feed_pane_for_tests("local@@dev@tmux@dev", 10, 132, 40, b"live\r\n", cx);
+        })
+    });
+    cx.run_until_parked();
+    let after = cx.update(|_, cx| view.update(cx, |app, _| app.pane_geometry_label()));
+    assert!(
+        after.contains("132x40"),
+        "窗口变大后状态栏必须跟着 Surface：{after}"
+    );
+}
+
+/// 用户报障：复制图片粘贴失败时**什么提示都没有**。转不了码必须出横幅。
+#[gpui::test]
+fn an_unreadable_clipboard_image_reports_a_banner(cx: &mut TestAppContext) {
+    use gpui::{ClipboardItem, Image, ImageFormat};
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.run_until_parked();
+    let image = Image::from_bytes(ImageFormat::Jpeg, vec![0xff, 0xd8, 0x00, 0x01]);
+    let item = ClipboardItem::new_image(&image);
+    cx.update(|_, cx| cx.write_to_clipboard(item));
+    let handled = cx.update(|_, cx| view.update(cx, |app, cx| app.paste_clipboard_image(cx)));
+    assert!(handled, "图片粘贴要吃掉这次 Cmd-V");
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("image-paste-banner").is_some(),
+        "失败必须在横幅上写出来（用户看不到就等于没提示）"
+    );
+}

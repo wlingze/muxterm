@@ -505,27 +505,34 @@ impl GpuiApp {
         if self.image_paste.is_busy() {
             return true;
         }
-        if image.format != gpui::ImageFormat::Png {
-            let mut timeline = ImagePasteTimeline::new();
-            timeline.advance(
-                ImagePasteStage::Failed("only PNG clipboard images are supported".into()),
+        // 剪贴板给的是 TIFF/JPEG 也要转成 PNG（Core 只收 PNG）。转不了就
+        // 明确告诉用户，而不是悄悄当文本粘贴、什么都不发生。
+        let Some(png) =
+            crate::frontend::gpui::platform::clipboard_image::to_png(image.format, &image.bytes)
+        else {
+            self.fail_image_paste(
+                format!(
+                    "unsupported clipboard image ({:?}); copy it as PNG",
+                    image.format
+                ),
                 now,
+                cx,
             );
-            self.image_paste = timeline;
-            cx.notify();
             return true;
-        }
+        };
         let (Some(workspace), Some(pane)) = (self.visible.clone(), self.focused_pane) else {
-            return false;
+            self.fail_image_paste("no active pane for the image".into(), now, cx);
+            return true;
         };
         let Some(pump) = self.pump.as_ref() else {
-            return false;
+            self.fail_image_paste("not connected to Core".into(), now, cx);
+            return true;
         };
         let mut timeline = ImagePasteTimeline::new();
         timeline.advance(ImagePasteStage::Encoding, now);
         match pump
             .client()
-            .start_image_paste(&workspace, pane, image.bytes.as_slice())
+            .start_image_paste(&workspace, pane, png.as_slice())
         {
             Ok(()) => {
                 timeline.advance(ImagePasteStage::Uploading, now);
@@ -538,6 +545,22 @@ impl GpuiApp {
         }
         cx.notify();
         true
+    }
+
+    /// 图片粘贴失败：左侧阶段 + 横幅同时更新（用户永远能看到发生什么）。
+    fn fail_image_paste(
+        &mut self,
+        reason: String,
+        now: std::time::Instant,
+        cx: &mut Context<Self>,
+    ) {
+        let mut timeline = crate::frontend::gpui::model::image_paste::ImagePasteTimeline::new();
+        timeline.advance(
+            crate::frontend::gpui::model::image_paste::ImagePasteStage::Failed(reason),
+            now,
+        );
+        self.image_paste = timeline;
+        cx.notify();
     }
 
     /// 每个 tick 拉一次上传结果：Core 拿到路径才算完成。
@@ -875,6 +898,15 @@ impl GpuiApp {
         attention: Option<crate::frontend::gpui::model::attention::AttentionSnapshot>,
     ) {
         self.attention = attention;
+    }
+
+    /// 无头测试用：注入一份 Core 搜索快照。
+    #[doc(hidden)]
+    pub fn set_search_for_tests(
+        &mut self,
+        snapshot: crate::frontend::gpui::model::search::SearchSnapshot,
+    ) {
+        self.search_snapshot = Some(snapshot);
     }
 
     /// 无头测试用：注入一份 Core 活动快照，走与生产同一条映射。
@@ -1227,18 +1259,6 @@ impl GpuiApp {
             .iter()
             .find(|pane| pane.id == pane_id)
             .map(|pane| pane.title.clone())
-    }
-
-    pub fn pane_geometry(&self, pane_id: u32) -> Option<(u16, u16)> {
-        self.store
-            .workspace(self.visible.as_deref()?)
-            .and_then(|view| {
-                view.panes
-                    .values()
-                    .flatten()
-                    .find(|pane| pane.id == pane_id)
-                    .map(|pane| (pane.cols, pane.rows))
-            })
     }
 
     /// 侧栏工作区行的输入：顺序、快捷键、连接状态都来自 ViewStore。
@@ -1846,16 +1866,38 @@ impl GpuiApp {
         cx.notify();
     }
 
-    /// 聚焦 pane 的 cols/rows（`split_auto` 判断方向用）。
-    pub fn focused_pane_grid_size(&self) -> Option<(u16, u16)> {
+    /// pane 的 cols/rows。
+    ///
+    /// 优先取 Surface 的实时网格：Core 的拓扑快照要等下一个事件才回来，
+    /// 状态栏如果只读 store，窗口一变大就一直显示打开时的 80x24
+    ///（用户报的「状态栏不更新」就是这个）。GC 快照只做兜底。
+    pub fn pane_grid_size(&self, pane_id: u32) -> Option<(u16, u16)> {
         let workspace = self.visible.as_deref()?;
-        let pane_id = self.focused_pane?;
+        if let Some(surface) = self.surface(workspace, pane_id) {
+            let grid = surface.grid();
+            return Some((grid.cols() as u16, grid.rows() as u16));
+        }
         let view = self.store.workspace(workspace)?;
         view.panes
             .values()
             .flatten()
             .find(|pane| pane.id == pane_id)
             .map(|pane| (pane.cols, pane.rows))
+    }
+
+    /// 聚焦 pane 的 cols/rows（`split_auto` 判断方向用）。
+    pub fn focused_pane_grid_size(&self) -> Option<(u16, u16)> {
+        self.pane_grid_size(self.focused_pane?)
+    }
+
+    /// 状态栏右侧文案：`pane <id> · <cols>x<rows>`。
+    pub fn pane_geometry_label(&self) -> String {
+        let pane_id = self.focused_pane.unwrap_or(0);
+        let geometry = self
+            .pane_grid_size(pane_id)
+            .map(|(cols, rows)| format!("{cols}x{rows}"))
+            .unwrap_or_else(|| String::from("-"));
+        format!("pane {pane_id} · {geometry}")
     }
 
     /// tab 栏投影：活动指示来自 attention，数量后缀来自 pane 数。
@@ -3187,6 +3229,39 @@ impl GpuiApp {
         self.commands
             .push(ClientCommand::ActivateWorkspace(workspace));
         self.focus_default_pane();
+        cx.notify();
+    }
+
+    /// 含这个 pane 的 tab id（对照 Swift `cachedTabID(containingPane:)`）。
+    pub fn tab_containing_pane(&self, workspace_id: &str, pane_id: u32) -> Option<u32> {
+        let view = self.store.workspace(workspace_id)?;
+        view.panes.iter().find_map(|(tab_id, panes)| {
+            panes
+                .iter()
+                .any(|pane| pane.id == pane_id)
+                .then_some(*tab_id)
+        })
+    }
+
+    /// 跳到某个 pane 的**完整身份**：workspace → tab → pane。
+    ///
+    /// 对照 Swift `MainWindow.jumpToPane(tabId:paneId:...)`：
+    /// 1. 切 workspace；2. 按 pane 反查 tab 并 `SwitchTab`；3. 显式 `SwitchPane`
+    ///    （即使焦点已经在这个 pane 上也要发：刚从别的 tab 过来时 Core 的活动
+    ///    pane 可能还是旧 tab 的）。
+    pub fn reveal_pane(&mut self, workspace_id: &str, pane_id: u32, cx: &mut Context<Self>) {
+        self.select_workspace(workspace_id.to_string(), cx);
+        if let Some(tab_id) = self.tab_containing_pane(workspace_id, pane_id) {
+            if self.active_tab_id() != Some(tab_id) {
+                self.select_tab(tab_id, cx);
+            }
+        }
+        self.focused_pane = Some(pane_id);
+        self.pending_focus = Some(pane_id);
+        self.commands.push(ClientCommand::Task {
+            workspace_id: Some(workspace_id.to_string()),
+            task: crate::frontend::utils::corebridge::ClientTask::SwitchPane { pane_id },
+        });
         cx.notify();
     }
 

@@ -305,18 +305,19 @@ impl GpuiApp {
                 self.select_workspace(workspace_id, cx);
                 self.close_panel(cx);
             }
+            // 注意力 / 搜索命中都是「完整身份」：workspace → tab → pane。
+            // 只切 workspace + pane 的话，pane 在另一个 tab 时屏幕还停在旧 tab，
+            // 用户看到的就是「跳不到位」。
             PanelRow::Attention {
                 workspace_id,
                 pane_id,
                 ..
             } => {
-                self.select_workspace(workspace_id, cx);
-                self.focus_pane(pane_id, cx);
+                self.reveal_pane(&workspace_id, pane_id, cx);
                 self.close_panel(cx);
             }
             PanelRow::Search(hit) => {
-                self.select_workspace(hit.workspace_id, cx);
-                self.focus_pane(hit.pane_id, cx);
+                self.reveal_pane(&hit.workspace_id, hit.pane_id, cx);
                 self.close_panel(cx);
             }
             PanelRow::Target { config } => {
