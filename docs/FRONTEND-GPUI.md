@@ -221,6 +221,13 @@ ANSI 0–6，dim 与背景对半混合）
   `model/image_paste::ImagePasteTimeline` 驱动横幅（进度 / 成功 / 失败）。
 - 指示色对齐 Swift 语义色：`working` = systemYellow、`blocked` = systemPink、
   `done` = systemTeal（之前借用 success/danger/warning，侧栏与 tab 看起来偏红偏绿）。
+- 普通查询词只匹配「内容」字段（名字 / 传输 / 路径 / session / workspace id）；
+  runtime 名与 socket 路径固定带 `tmux`，不参与子串匹配（否则搜 `mux` 会列出
+  全部 tmux 目标），runtime 只认前缀，`@tmux` 仍是显式过滤。
+- Search tab 直接调 Core 的 `search_all`（同步 FFI），打开 tab 或改动查询就重跑；
+  没有 Core 时保留上一份快照，不会因为一次按键清空。
+- 窗口标题由 `[ui] show_title_bar` 控制：开 = `workspace — Muxterm`，
+  关 = 空串（只剩 traffic lights，与 Swift 版观感一致）。
 - 两个固定聚合槽另有**专属身份色**：Shells = teal、Agents = systemPurple
   （`model::aggregate::AggregateIdentity`）。聚合行是入口，不是连接状态，
   所以永远不借用 blocked/done 的粉与青绿，侧栏行与聚合页 tab 用同一个色。
@@ -273,7 +280,7 @@ Project / discovery 行用 Core 记账的 attach 频率排序（`attach-history.
 ## 9. 验收
 
 - `cargo check --no-default-features --features gpui` 通过。
-- `cargo test --no-default-features --features gpui --lib` 通过（2026-11-09 实测 **1948 passed**）。
+- `cargo test --no-default-features --features gpui --lib` 通过（2026-11-09 实测 **1949 passed**）。
 - 集成测试（每个都实测通过）：
   - `--test gpui_chrome`（81，含命令面板每条命令的动作、改名浮层、tab 重排、语言/主题/状态栏、
     设置浮层的 Esc / ⏎ / Cancel / Apply 与放弃修改确认（有改动先问、点遮罩也走同一条路）、
