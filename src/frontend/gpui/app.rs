@@ -96,12 +96,16 @@ impl Render for GpuiApp {
 
         let mut sizes: Vec<(u32, u16, u16)> = Vec::new();
         let mut panes: Vec<AnyElement> = Vec::new();
+        let bar_on_top = self.tab_bar_position()
+            == crate::frontend::gpui::chrome::tab_bar_view::TabBarPosition::Top;
+        // 鼠标事件是窗口坐标：内容区原点是侧栏宽度 + 顶部 bar 高度。
+        let content_origin_y = if bar_on_top { STATUS_BAR_HEIGHT } else { 0.0 };
         if let Some(layout) = self.layout() {
             for (pane_id, rect) in pane_grid::pane_rects(&layout, area) {
                 let cols = (rect.max_width() / cell_width).floor().max(1.0) as u16;
                 let rows = (rect.max_height() / cell_height).floor().max(1.0) as u16;
                 sizes.push((pane_id, cols, rows));
-                panes.push(self.render_pane(pane_id, rect, cx));
+                panes.push(self.render_pane(pane_id, rect, content_origin_y, cx));
             }
         }
         self.apply_sizes(&sizes);
@@ -116,8 +120,6 @@ impl Render for GpuiApp {
         } else {
             div().w(px(0.0)).into_any_element()
         };
-        let bar_on_top = self.tab_bar_position()
-            == crate::frontend::gpui::chrome::tab_bar_view::TabBarPosition::Top;
         let bar = self.render_status_bar(cx);
         let (bar_top, bar_bottom) = if bar_on_top {
             (bar, div().into_any_element())
@@ -150,6 +152,7 @@ impl Render for GpuiApp {
                             // 所以 pane 之间看得到一条 chrome 色，而不是连成一片。
                             .bg(theme.chrome_bg)
                             .children(panes)
+                            .children(self.render_pane_menu(area, cx))
                             .children(self.render_panel(cx))
                             .children(self.render_composer(cx))
                             .children(self.render_settings(window, cx))

@@ -129,6 +129,10 @@ pub struct GpuiApp {
     show_title_bar: bool,
     /// 已经写到原生窗口上的标题，避免每帧重复设置。
     applied_window_title: String,
+    /// 鼠标是否停在某个 pane 的标题条带（顶部 22pt）。
+    pane_title_hover: Option<u32>,
+    /// 已打开的 pane `⋯` 菜单（绑定到具体 pane）。
+    pub(crate) pane_menu: Option<crate::frontend::gpui::model::pane_menu::PaneMenu>,
     status: String,
     /// IME 组合中的文本（尚未提交）。只在聚焦 pane 的光标处画。
     marked_text: String,
@@ -301,6 +305,8 @@ impl GpuiApp {
             image_paste: crate::frontend::gpui::model::image_paste::ImagePasteTimeline::new(),
             show_title_bar: true,
             applied_window_title: String::new(),
+            pane_title_hover: None,
+            pane_menu: None,
             theme,
             cell,
             last_client_size: None,
@@ -846,6 +852,8 @@ impl GpuiApp {
             image_paste: crate::frontend::gpui::model::image_paste::ImagePasteTimeline::new(),
             show_title_bar: true,
             applied_window_title: String::new(),
+            pane_title_hover: None,
+            pane_menu: None,
             theme: Theme::default(),
             cell: (
                 Theme::default().cell_width(),
@@ -1101,6 +1109,113 @@ impl GpuiApp {
         let view = self.store.workspace(self.visible.as_deref()?)?;
         let tab = view.active_tab_id()?;
         view.layouts.get(&tab).cloned()
+    }
+
+    /// 当前 tab 可见的 pane 数量（标题条只在 > 1 时允许出现）。
+    pub fn visible_pane_count(&self) -> usize {
+        self.layout()
+            .map(|layout| {
+                crate::frontend::gpui::model::pane_navigation::layout_leaf_ids(&layout).len()
+            })
+            .unwrap_or(1)
+    }
+
+    /// 标题条当前是否显示：多 pane、鼠标停在顶部，或这个 pane 的菜单开着。
+    ///
+    /// 对照 Swift `PaneHostView.updateTitleHover`（只在鼠标进入顶部 22pt 时显示）
+    /// 与 `showActionMenu`（菜单打开时标题条保持可见）。
+    pub fn shows_pane_title(&self, pane_id: u32) -> bool {
+        crate::frontend::gpui::model::pane_title::shows_title_bar(self.visible_pane_count())
+            && (self.pane_title_hover == Some(pane_id)
+                || self
+                    .pane_menu
+                    .as_ref()
+                    .is_some_and(|menu| menu.pane_id == pane_id))
+    }
+
+    /// 鼠标当前悬停的标题条 pane（测试与渲染共用）。
+    pub fn hovered_pane_title(&self) -> Option<u32> {
+        self.pane_title_hover
+    }
+
+    /// 鼠标移动后的悬停状态：只有 pane 顶部 `TITLE_BAR_HEIGHT` 内才算。
+    pub fn note_pane_hover(&mut self, pane_id: u32, hovered: bool, cx: &mut Context<Self>) {
+        let next = hovered.then_some(pane_id);
+        if self.pane_title_hover != next {
+            self.pane_title_hover = next;
+            cx.notify();
+        }
+    }
+
+    /// 鼠标离开 pane：清掉悬停（菜单开着时保持标题条可见）。
+    pub fn clear_pane_hover(&mut self, pane_id: u32, cx: &mut Context<Self>) {
+        if self.pane_title_hover == Some(pane_id) {
+            self.pane_title_hover = None;
+            cx.notify();
+        }
+    }
+
+    /// 点 `⋯`：先把焦点交给这个 pane，再开菜单。
+    ///
+    /// 先后顺序不能反：Swift `showActionMenu` 也是先 `onActivate?()`；
+    /// 否则菜单动作会落到另外那个 pane 上。
+    pub fn open_pane_menu(&mut self, pane_id: u32, cx: &mut Context<Self>) {
+        self.focus_pane(pane_id, cx);
+        self.pane_menu = Some(crate::frontend::gpui::model::pane_menu::PaneMenu::new(
+            pane_id,
+        ));
+        cx.notify();
+    }
+
+    pub fn close_pane_menu(&mut self, cx: &mut Context<Self>) {
+        if self.pane_menu.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// 菜单条目（含分隔线），渲染与测试共用。
+    pub fn pane_menu_items(
+        &self,
+    ) -> Option<Vec<crate::frontend::gpui::model::pane_menu::PaneMenuItem>> {
+        self.pane_menu
+            .as_ref()
+            .map(|_| crate::frontend::gpui::model::pane_menu::MENU_ITEMS.to_vec())
+    }
+
+    /// 菜单键盘选择上/下移。
+    pub fn move_pane_menu(&mut self, delta: i32, cx: &mut Context<Self>) {
+        if let Some(menu) = self.pane_menu.as_mut() {
+            menu.move_selection(delta);
+            cx.notify();
+        }
+    }
+
+    /// 执行菜单动作：先确保焦点在这个 pane，再走统一的 `run_action`。
+    ///
+    /// `MoveToNewTab` 没有快捷键（Swift 也只有菜单），直接发 Core 的
+    /// `Task::BreakPane`。
+    pub fn run_pane_title_action(
+        &mut self,
+        pane_id: u32,
+        action: crate::frontend::gpui::model::pane_title::PaneTitleAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        use crate::frontend::gpui::model::pane_title::PaneTitleAction;
+        self.pane_menu = None;
+        self.focus_pane(pane_id, cx);
+        if action == PaneTitleAction::MoveToNewTab {
+            self.commands.push(ClientCommand::Task {
+                workspace_id: self.visible.clone(),
+                task: crate::frontend::utils::corebridge::ClientTask::BreakPane { pane_id },
+            });
+            cx.notify();
+            return true;
+        }
+        match action.key_action() {
+            Some(key_action) => self.run_action(key_action, window, cx),
+            None => false,
+        }
     }
 
     /// 某个 pane 的标题（Core 拓扑快照里的名字）。
@@ -3252,6 +3367,41 @@ impl GpuiApp {
             }
             cx.stop_propagation();
             return;
+        }
+
+        // pane `⋯` 菜单打开时独占单击：上下选择、回车执行、Esc 关闭。
+        // 其它键先关菜单再继续 —— 菜单不是模态窗口，用户可以直接接着敲终端。
+        if self.pane_menu.is_some() {
+            match keystroke.key.as_str() {
+                "escape" => {
+                    self.close_pane_menu(cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                "enter" => {
+                    let action = self
+                        .pane_menu
+                        .as_ref()
+                        .and_then(|menu| menu.selected_action());
+                    let pane_id = self.pane_menu.as_ref().map(|menu| menu.pane_id);
+                    if let (Some(action), Some(pane_id)) = (action, pane_id) {
+                        self.run_pane_title_action(pane_id, action, window, cx);
+                    }
+                    cx.stop_propagation();
+                    return;
+                }
+                "up" => {
+                    self.move_pane_menu(-1, cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                "down" => {
+                    self.move_pane_menu(1, cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                _ => self.close_pane_menu(cx),
+            }
         }
 
         // Muxterm Info 浮层：Esc 关闭，其余无修饰键不落到终端。

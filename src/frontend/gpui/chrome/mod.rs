@@ -6,6 +6,7 @@ pub mod input_line;
 pub mod palette;
 pub mod palette_view;
 pub mod pane_grid;
+pub mod pane_menu_view;
 pub mod pane_view;
 pub mod panel;
 pub mod panel_view;
