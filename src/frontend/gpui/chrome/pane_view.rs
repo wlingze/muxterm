@@ -425,7 +425,15 @@ impl GpuiApp {
     ) -> Vec<RowRun> {
         let selection_end = selection.and_then(|selection| {
             let (start, end) = selection.normalized();
-            (row >= start.row && row <= end.row).then_some(end.col)
+            if row < start.row || row > end.row {
+                return None;
+            }
+            // 中间行整行都有选区，不能只看 end.col。
+            Some(if row < end.row {
+                cols.saturating_sub(1)
+            } else {
+                end.col
+            })
         });
         let last = Self::last_visible_cell(cells, cols, row, cursor, show_cursor, selection_end);
         let cursor_col = (show_cursor && cursor.0 == row).then_some(cursor.1);
@@ -1012,6 +1020,21 @@ mod tests {
         assert_eq!(runs[0].fg, theme.bg, "字号用格子背景色");
         assert_eq!(runs[0].bg, theme.cursor, "整格填 cursor 色");
         assert!(runs[0].style.bold, "反色不能丢掉粗体");
+    }
+
+    /// 跨行选区的**中间行**整行高亮：run 必须延伸到最后一列。
+    ///
+    /// 回归：曾经只用 `end.col` 算可见范围，跨行选区中间行只画到末行的列号，
+    /// 看起来像高亮被截断。
+    #[test]
+    fn middle_rows_of_a_selection_cover_every_column() {
+        use crate::frontend::gpui::model::selection::{CellPos, Kind, Selection};
+        let theme = crate::frontend::gpui::theme::Theme::default();
+        let cells = vec![Cell::default(); 12];
+        let selection = Selection::new(CellPos::new(0, 8), CellPos::new(2, 2), Kind::Simple);
+        let runs = GpuiApp::row_runs(&theme, &cells, 1, 12, (0, 0), false, false, Some(selection));
+        // `end` 是开区间：12 表示画到第 11 列。
+        assert_eq!(runs.last().map(|run| run.end), Some(12), "中间行整行都要画");
     }
 
     /// 选区必须真的改变格子背景（不是只记状态不画）。
