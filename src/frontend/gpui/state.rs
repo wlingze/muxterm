@@ -160,6 +160,8 @@ pub struct GpuiApp {
     /// 上次按键是否已被前端消费（不再交给原生菜单再执行一遍）。
     /// 测试用：回归「按一次 Cmd-D 只能分一次屏」。
     key_consumed: bool,
+    /// 上一个按键是否让给了平台输入法（中文组词需要先看到首字母）。
+    ime_deferred: bool,
     /// Core manifest 解析出来的分类与字段。
     pub(crate) settings_manifest: crate::frontend::gpui::model::settings::SettingsManifest,
     /// 设置草稿：值与 baseline 的差就是 Apply 要提交的 patch。
@@ -280,6 +282,7 @@ impl GpuiApp {
             settings_edit: None,
             settings_discard_pending: false,
             key_consumed: false,
+            ime_deferred: false,
             composer: crate::frontend::gpui::model::composer::ComposerDraftStore::new(),
             composer_open: false,
             composer_selection: crate::frontend::gpui::model::composer::TextRange::default(),
@@ -865,6 +868,7 @@ impl GpuiApp {
             settings_edit: None,
             settings_discard_pending: false,
             key_consumed: false,
+            ime_deferred: false,
             composer: crate::frontend::gpui::model::composer::ComposerDraftStore::new(),
             composer_open: false,
             composer_selection: crate::frontend::gpui::model::composer::TextRange::default(),
@@ -1069,6 +1073,12 @@ impl GpuiApp {
     #[doc(hidden)]
     pub fn take_key_consumed_for_tests(&mut self) -> bool {
         std::mem::take(&mut self.key_consumed)
+    }
+
+    /// 无头测试用：上一个按键有没有让给平台输入法（中文组词的入口）。
+    #[doc(hidden)]
+    pub fn take_ime_deferred_for_tests(&mut self) -> bool {
+        std::mem::take(&mut self.ime_deferred)
     }
 
     /// 侧栏是否显示。
@@ -3938,6 +3948,25 @@ impl GpuiApp {
             shift: keystroke.modifiers.shift,
             cmd: false,
         };
+        // 无修饰键的可打印文本先让给平台输入法：中文/日文组词必须先看到
+        // 首字母 `n`、`i`。文本会经 `insertText` → `replace_text_in_range`
+        // → `commit_text` 回到这里；直接编码 + 消费会让 macOS 的
+        // `inputContext` 收不到这次 keyDown，输入法永远起不来。
+        // 对照 macOS `MuxTerminalView.keyDown` 的 `interpretKeyEvents`。
+        if crate::frontend::gpui::terminal::keymap::defers_to_ime(&press) {
+            self.ime_deferred = true;
+            return;
+        }
+        // IME 占位符按键：一个字节都不发，也不交给平台（否则远端会显示 <ffff>）。
+        use crate::frontend::gpui::model::ime::{key_dispatch, KeyDispatch};
+        if press
+            .key_char
+            .as_deref()
+            .is_some_and(|text| key_dispatch(Some(text)) == KeyDispatch::Ignore)
+        {
+            cx.stop_propagation();
+            return;
+        }
         if let Some(bytes) = encode(&press, app_cursor) {
             let forwarded = !bytes.is_empty();
             self.commands.push(ClientCommand::Input {
