@@ -199,7 +199,35 @@ SGR 属性不是只解析、不画：绘制 run 的 key 是「颜色 + 字体变
 
 `GpuiApp` 实现 `EntityInputHandler`：`set_marked_text` 存组合串、`commit_text` 剥占位符后写 PTY、
 `caret_rect` 用 `model/ime.rs` 的 `candidate_anchor` 把格坐标换成屏幕矩形（末列换行到上一行末尾）。
-组合中的文本画在光标处；带字节的按键会 `stop_propagation()`，避免同一字符走两遍平台路径。
+组合中的文本画在光标处。
+
+按键路由（对照 macOS `MuxTerminalView.keyDown`）：
+
+| 按键 | 去向 |
+| --- | --- |
+| 无修饰键的可打印文本（`n` / `i` / 空格 / 已提交中文） | **让给平台输入法**，不编码、不消费；文本经 `insertText` → `replace_text_in_range` → `commit_text` 回来 |
+| 控制键 / 功能键 / Alt、Ctrl 组合 | 直接 `encode` 后消费 |
+| IME 占位符（U+FFFF/U+FFFE） | 丢弃并消费，一个字节都不发 |
+
+为什么不能先编码再消费：拼音首字母也是普通可打印字符，一旦前端把它写进 PTY 并
+`stop_propagation()`，macOS 的 `inputContext` 收不到这次 keyDown，组词永远起不来。
+判定在 `terminal/keymap.rs::defers_to_ime`，纯函数有单测。
+
+只有**聚焦的 pane** 注册 `ElementInputHandler`：所有 pane 共用一个 focus handle，
+若每个 pane 都注册，平台只保留最后绘制的那个，候选窗会锚到错误的 pane。
+
+### 5.4 pane / workspace 退出
+
+Core 的 `PaneClosed` / `TabClosed` / `BackendStatusChanged` 到达后，前端按下面的顺序收敛：
+
+1. `reconcile_closed_panes`：拓扑与渲染队列里都没有的 pane，丢掉它的 Surface、选区、`⋯` 菜单。
+2. `reconcile_workspace_lifecycle`（对照 Swift `maybeCloseIfSessionEnded()`）：
+   - 本机 shell 空（最后一个 pane 退出）→ 只发一次 `NewTab`，窗口不留空白；
+   - 其他 runtime（tmux / herdr / ssh）后端 `Exited` → 收起这个 workspace（侧栏行、tab、Surface 一起走），
+     切到邻近还有 pane 的 workspace；
+   - 一个活的 workspace 都没有 → 请求关窗口（`start_pump` 里 `cx.quit()`），不能停在冻住的一帧。
+
+首帧还没回来（`visible == None`）时不触发退出，否则 tmux socket 连不上会一启动就关窗。
 
 ## 6. 数据流与线程
 
@@ -348,13 +376,15 @@ Project / discovery 行用 Core 记账的 attach 频率排序（`attach-history.
 ## 9. 验收
 
 - `cargo check --no-default-features --features gpui` 通过。
-- `cargo test --no-default-features --features gpui --lib` 通过（2026-11-09 实测 **1949 passed**）。
+- `cargo test --no-default-features --features gpui --lib` 通过（2026-11-11 实测 **1979 passed**，3 ignored）。
 - 集成测试（每个都实测通过）：
-  - `--test gpui_chrome`（81，含命令面板每条命令的动作、改名浮层、tab 重排、语言/主题/状态栏、
+  - `--test gpui_chrome`（121，含命令面板每条命令的动作、改名浮层、tab 重排、语言/主题/状态栏、
     设置浮层的 Esc / ⏎ / Cancel / Apply 与放弃修改确认（有改动先问、点遮罩也走同一条路）、
     面板按 Core attach 频率排序（活跃项第一）、
     SGR 粗体/斜体/下划线/删除线真的进渲染树、
     侧栏两个固定聚合槽与 `shell` 行隐藏、空本机 shell 只补一次 `NewTab`、
+    拼音首字母让给输入法且提交只进一次 PTY、结束的 workspace 收起并切走 / 最后一个结束时请求关窗、
+    关掉的 pane 丢掉 Surface 与选区、
     `Cmd-[` / `Cmd-]` 按当前 tab 布局选目标（含 zoom）、面板三条身份去重
     （provenance / canonical target / 名字）、活动快照填充 Agents/Commands、Info 复制按钮、
     空闲 pump 不重绘）：侧栏 / tab / 状态栏 / Cmd-P 面板（含 discovery 到的现有 runtime）/
@@ -366,9 +396,10 @@ Project / discovery 行用 Core 记账的 attach 频率排序（`attach-history.
     已保存/未保存两套动作、Herdr attach 带 `workspace_id`、面板吞键不落 PTY。
   - `--test gpui_surface_events`（6）：滚轮、宽字符、鼠标报告、IME 提交、候选窗锚定。
   - `--test gpui_surface_e2e`（1）：隔离 tmux 里真实 shell 输出落到格子上。
-  - `--test gpui_acceptance`（11）：启动 workspace、本机 shell 启动即显示 Shells 聚合
+  - `--test gpui_acceptance`（13）：启动 workspace、本机 shell 启动即显示 Shells 聚合
     （侧栏只有两个聚合槽、聚合 tab 带来源）、按键进 shell、Cmd-T 加 tab、Cmd-D 分屏与
-    Cmd-[ / Cmd-] 换 pane（焦点跟随）、Rename Tab / Move Tab 走 Core 往返、活动快照 join 到
+    Cmd-[ / Cmd-] 换 pane（焦点跟随）、本机 shell 退出只关自己的 pane、隔离 tmux 会话结束
+    收起 workspace 并请求关窗、Rename Tab / Move Tab 走 Core 往返、活动快照 join 到
     前端 workspace id、面板 Open 全流程真的建出 workspace、第二个 workspace 经 Catalog 打开。
   - `--test gpui_acceptance_herdr`（2）：named Herdr session 出现在侧栏，输入有回显。
   - `--test gpui_harness_smoke`（1）：无头 harness 自身可用。
