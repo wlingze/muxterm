@@ -90,6 +90,8 @@ pub struct GpuiApp {
     pending_focus: Option<u32>,
     /// 本机 shell 工作区空了之后已经要过新 tab，避免每拍都发一遍。
     shell_restart_requested: bool,
+    /// 所有 workspace 都已结束：下一次泵让窗口退出（对照 Swift `closeSessionWindow`）。
+    quit_requested: bool,
     last_sizes: HashMap<SurfaceKey, (u16, u16)>,
     /// 触控板的零头：不足一格的部分留到下一次事件，见 `wheel_lines`。
     wheel_accumulators: HashMap<SurfaceKey, f32>,
@@ -266,6 +268,7 @@ impl GpuiApp {
             cell_metrics_key: None,
             pending_focus: None,
             shell_restart_requested: false,
+            quit_requested: false,
             last_sizes: HashMap::new(),
             wheel_accumulators: HashMap::new(),
             focus_handle: cx.focus_handle(),
@@ -453,11 +456,16 @@ impl GpuiApp {
                     if dirty {
                         cx.notify();
                     }
-                    (dirty, app.input_is_pending())
+                    let quit = app.quit_requested();
+                    (dirty, app.input_is_pending(), quit)
                 });
-                let Ok((dirty, pending)) = outcome else {
+                let Ok((dirty, pending, quit)) = outcome else {
                     break;
                 };
+                if quit {
+                    let _ = cx.update(|cx| cx.quit());
+                    break;
+                }
                 delay = next_pump_delay(delay, dirty, pending);
             }
         })
@@ -639,7 +647,8 @@ impl GpuiApp {
             self.visible = active;
             dirty |= self.sync_aggregate_presentation();
         }
-        dirty |= self.restart_local_shell_if_empty();
+        dirty |= self.reconcile_closed_panes();
+        dirty |= self.reconcile_workspace_lifecycle(cx);
         dirty |= self.poll_panel_operations(cx);
         dirty |= self.apply_pending_config();
         dirty |= self.refresh_status_snapshot_if_due();
@@ -714,45 +723,199 @@ impl GpuiApp {
         true
     }
 
-    /// 本机 shell 工作区空了（shell 退出）就补一个新 tab。
+    /// 本机 shell 补 tab / 已结束的 workspace 退出 / 焦点回到活着的 workspace。
     ///
-    /// 对照 Swift `maybeCloseIfSessionEnded()`：`shell` + `local` 且没有
-    /// tab/pane 时发 `NewTab`，窗口始终有一个活着的本机 shell；其它
-    /// runtime 的空工作区保持原样，由用户自己决定。
-    fn restart_local_shell_if_empty(&mut self) -> bool {
+    /// 对照 Swift `maybeCloseIfSessionEnded()`：
+    /// - 本机 shell 空（最后一个 pane 退出）→ 补一个新 tab，窗口不留空白；
+    /// - 其他 runtime（tmux / herdr / ssh）后端已 `Exited` → 这个 workspace
+    ///   的 pane 全是僵尸，收起它并切到邻近 workspace；没有别的就退出窗口。
+    ///
+    /// 旧实现只处理了本机 shell：远端 shell 退出（`%exit`）后页面停在最后
+    /// 一帧，键盘没有任何反应，看起来就是「卡住」。
+    fn reconcile_workspace_lifecycle(&mut self, cx: &mut Context<Self>) -> bool {
+        let mut dirty = false;
+        // 先收起所有已结束的非本机 shell workspace；可见的那个要切走。
+        let ended: Vec<String> = self
+            .store
+            .workspace_ids()
+            .filter(|workspace_id| self.workspace_has_ended(workspace_id))
+            .map(str::to_string)
+            .collect();
+        for workspace_id in ended {
+            let visible = self.visible.as_deref() == Some(workspace_id.as_str());
+            self.drop_workspace(&workspace_id);
+            dirty = true;
+            if visible {
+                dirty |= self.switch_to_next_live_workspace(cx);
+            }
+        }
+
         let Some(workspace) = self.visible.clone() else {
-            return false;
+            return dirty;
         };
         let Some(view) = self.store.workspace(&workspace) else {
-            return false;
+            // Core 已经把 workspace 删除（会话结束）：换到邻近 workspace。
+            return self.switch_to_next_live_workspace(cx) || dirty;
         };
         let Some(client) = view.workspace.as_ref() else {
-            return false;
+            return dirty;
         };
-        if client.runtime != "shell" || transport_label(client) != "local" {
-            return false;
+        let empty = view.tabs.is_empty() && view.panes.values().all(Vec::is_empty);
+        if !empty {
+            self.shell_restart_requested = false;
+            return dirty;
+        }
+        if !(client.runtime == "shell" && transport_label(client) == "local") {
+            // 其他 runtime 的空 workspace 没有东西可显示，按同一个规则换走。
+            return self.switch_to_next_live_workspace(cx) || dirty;
         }
         // 只补「shell 已经退出了」的空工作区：启动中的空快照不需要抢 tab。
         if view.backend_status
             != Some(crate::frontend::gpui::model::sidebar::backend_status::EXITED)
         {
-            return false;
-        }
-        let empty = view.tabs.is_empty() && view.panes.values().all(Vec::is_empty);
-        if !empty {
-            self.shell_restart_requested = false;
-            return false;
+            return dirty;
         }
         // Core 回包前不要每拍都重发；新 tab 出现后自动复位。
         if self.shell_restart_requested {
-            return false;
+            return dirty;
         }
         self.shell_restart_requested = true;
         self.commands.push(ClientCommand::Task {
             workspace_id: Some(workspace),
             task: crate::frontend::utils::corebridge::ClientTask::NewTab,
         });
+        dirty
+    }
+
+    /// 后端已经退出、且不是会自动补 tab 的本机 shell。
+    fn workspace_has_ended(&self, workspace_id: &str) -> bool {
+        use crate::frontend::gpui::model::sidebar::backend_status;
+        let Some(view) = self.store.workspace(workspace_id) else {
+            return false;
+        };
+        let Some(client) = view.workspace.as_ref() else {
+            return false;
+        };
+        if client.runtime == "shell" && transport_label(client) == "local" {
+            return false;
+        }
+        view.backend_status == Some(backend_status::EXITED)
+    }
+
+    /// 把结束的 workspace 从**前端**收起：Core 的 DTO 可能还留着（重连），
+    /// 但 pane 已经不再产生画面，继续显示只会是一帧冻住的终端。
+    fn drop_workspace(&mut self, workspace_id: &str) {
+        self.store.remove_workspace(workspace_id);
+        self.surfaces
+            .retain(|(workspace, _), _| workspace != workspace_id);
+        if self
+            .selection
+            .is_some_and(|_| self.visible.as_deref() == Some(workspace_id))
+        {
+            self.selection = None;
+            self.dragging_selection = false;
+        }
+        if self.pane_menu.is_some() && self.visible.as_deref() == Some(workspace_id) {
+            self.pane_menu = None;
+        }
+        self.last_sizes
+            .retain(|(workspace, _), _| workspace != workspace_id);
+        self.wheel_accumulators
+            .retain(|(workspace, _), _| workspace != workspace_id);
+    }
+
+    /// 切到按 store 顺序的下一个还有 pane 的 workspace；都没有就退出窗口。
+    fn switch_to_next_live_workspace(&mut self, cx: &mut Context<Self>) -> bool {
+        let order: Vec<String> = self.store.workspace_ids().map(str::to_string).collect();
+        let current = self.visible.clone();
+        let start = current
+            .as_ref()
+            .and_then(|current| order.iter().position(|id| id == current))
+            .map(|index| index + 1)
+            .unwrap_or(0)
+            .min(order.len());
+        let target = order[start..]
+            .iter()
+            .chain(order[..start].iter())
+            .find(|workspace_id| {
+                Some(workspace_id.as_str()) != current.as_deref()
+                    && self.workspace_has_panes(workspace_id)
+            })
+            .cloned();
+        let Some(target) = target else {
+            // 没有活着的 workspace：按 Swift 关窗口，不能留一个无响应的空白页。
+            // 首帧还没回来（visible 为空）时不能退出，否则一启动就关窗。
+            if current.is_some() && !self.quit_requested {
+                self.visible = None;
+                self.focused_pane = None;
+                self.quit_requested = true;
+                return true;
+            }
+            return false;
+        };
+        self.visible = Some(target.clone());
+        self.selection = None;
+        self.dragging_selection = false;
+        self.pane_menu = None;
+        self.pending_focus = None;
+        self.focused_pane = None;
+        self.commands
+            .push(ClientCommand::ActivateWorkspace(target.clone()));
+        self.focus_default_pane();
+        self.last_sizes.clear();
+        let _ = self.sync_aggregate_presentation();
+        cx.notify();
         true
+    }
+
+    fn workspace_has_panes(&self, workspace_id: &str) -> bool {
+        self.store.workspace(workspace_id).is_some_and(|view| {
+            view.tabs
+                .iter()
+                .any(|tab| !view.panes_for_tab(tab.id).is_empty())
+        })
+    }
+
+    /// 拓扑里已经不存在的 pane：把前端缓存（Surface / 选区 / 菜单）一起丢掉。
+    ///
+    /// 只清「拓扑和渲染队列都没有」的 pane：本地 shell 可能在
+    /// `workspace_list` 回来之前就输出，不能把还没进拓扑的 pane 当死 pane。
+    fn reconcile_closed_panes(&mut self) -> bool {
+        let mut live: std::collections::HashSet<(String, u32)> = std::collections::HashSet::new();
+        for workspace_id in self
+            .store
+            .workspace_ids()
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+        {
+            if let Some(view) = self.store.workspace(&workspace_id) {
+                for pane in view.panes.values().flatten() {
+                    live.insert((workspace_id.clone(), pane.id));
+                }
+            }
+            for pane_id in self.store.render_mailbox_pane_ids(&workspace_id) {
+                live.insert((workspace_id.clone(), pane_id));
+            }
+        }
+        let before = self.surfaces.len();
+        self.surfaces.retain(|key, _| live.contains(key));
+        let mut dirty = self.surfaces.len() != before;
+        if let Some(selection) = self.selection {
+            let key = (self.visible.clone().unwrap_or_default(), selection.pane_id);
+            if !live.contains(&key) {
+                self.selection = None;
+                self.dragging_selection = false;
+                dirty = true;
+            }
+        }
+        if let Some(menu) = self.pane_menu {
+            let key = (self.visible.clone().unwrap_or_default(), menu.pane_id);
+            if !live.contains(&key) {
+                self.pane_menu = None;
+                dirty = true;
+            }
+        }
+        dirty
     }
 
     /// 把 store 里排队的渲染事件喂给各自的 Surface。
@@ -852,6 +1015,7 @@ impl GpuiApp {
             cell_metrics_key: None,
             pending_focus: None,
             shell_restart_requested: false,
+            quit_requested: false,
             last_sizes: HashMap::new(),
             wheel_accumulators: HashMap::new(),
             focus_handle: cx.focus_handle(),
@@ -1079,6 +1243,11 @@ impl GpuiApp {
     #[doc(hidden)]
     pub fn take_ime_deferred_for_tests(&mut self) -> bool {
         std::mem::take(&mut self.ime_deferred)
+    }
+
+    /// 是否应该关窗口（最后一个活着的 workspace 也结束了）。
+    pub fn quit_requested(&self) -> bool {
+        self.quit_requested
     }
 
     /// 侧栏是否显示。

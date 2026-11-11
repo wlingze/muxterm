@@ -3744,6 +3744,146 @@ fn pinyin_keys_defer_to_the_ime_and_commit_once(cx: &mut TestAppContext) {
     assert_eq!(take_inputs(&view, cx), vec![b"\r".to_vec()]);
 }
 
+/// 回归（shell 退出）：远端 workspace 的后端 `Exited` 后，冻住的 pane 必须收起，
+/// 并切到邻近还活着的 workspace；不能停在最后一帧让键盘「卡住」。
+///
+/// 对照 Swift `maybeCloseIfSessionEnded()`：其它 workspace 还有 pane 时关掉当前格。
+#[gpui::test]
+fn an_ended_remote_workspace_switches_to_the_next_live_one(cx: &mut TestAppContext) {
+    let mut store = store_with_two_workspaces();
+    store.ensure_workspace("local@@dev@tmux@dev").backend_status = Some(backend_status::EXITED);
+    let (view, cx) = mount(store, cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.take_commands_for_tests();
+            app.pump_once(cx);
+        })
+    });
+
+    let (visible, sidebar, quit) = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            (
+                app.visible_workspace().map(str::to_string),
+                app.sidebar_items(),
+                app.quit_requested(),
+            )
+        })
+    });
+    assert_eq!(
+        visible.as_deref(),
+        Some("local@@ops@tmux@ops"),
+        "必须切到邻近还活着的 workspace"
+    );
+    assert!(!quit, "还有活 workspace 时不能退出窗口");
+    assert_eq!(
+        sidebar.len(),
+        3,
+        "死掉的 workspace 不能再占侧栏行：{:?}",
+        sidebar.iter().map(|item| &item.name).collect::<Vec<_>>()
+    );
+    assert!(
+        sidebar.iter().all(|item| item.name != "dev"),
+        "结束的 workspace 必须从侧栏移除"
+    );
+    let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            ClientCommand::ActivateWorkspace(id) if id == "local@@ops@tmux@ops"
+        )),
+        "切 workspace 必须告诉 Core：{commands:?}"
+    );
+}
+
+/// 回归（shell 退出）：最后一个 workspace 也结束时，不能留一个空白、无响应的页；
+/// 按 Swift `closeSessionWindow` 请求关窗口。
+#[gpui::test]
+fn the_last_ended_workspace_asks_the_window_to_close(cx: &mut TestAppContext) {
+    let mut store = ViewStore::default();
+    store.replace_topology(
+        workspace("local@@only@tmux@only", "only", true),
+        vec![ClientTab {
+            id: 1,
+            name: "only".into(),
+            is_active: true,
+        }],
+        vec![(
+            1,
+            vec![ClientPane {
+                id: 10,
+                cols: 80,
+                rows: 24,
+                is_active: true,
+                title: "only".into(),
+            }],
+        )],
+    );
+    store
+        .ensure_workspace("local@@only@tmux@only")
+        .backend_status = Some(backend_status::EXITED);
+    let (view, cx) = mount(store, cx);
+    cx.update(|_, cx| view.update(cx, |app, cx| app.pump_once(cx)));
+    let (visible, tabs, quit) = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            (
+                app.visible_workspace().map(str::to_string),
+                app.tab_items().len(),
+                app.quit_requested(),
+            )
+        })
+    });
+    assert_eq!(visible, None, "死掉的 workspace 不能再当可见页");
+    assert_eq!(tabs, 0, "僵尸 tab 必须退出");
+    assert!(quit, "没有活 workspace 时要请求关窗口（不能卡在空白页）");
+}
+
+/// 回归（pane 关闭）：拓扑里没有的 pane，它的 Surface 与选区必须一起丢掉。
+///
+/// 否则关掉的 pane 还会拿着旧画面、旧选区，`Cmd-C` 也可能复制到已经不存在的 pane。
+#[gpui::test]
+fn closed_panes_drop_their_surface_and_selection(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.feed_pane_for_tests("local@@dev@tmux@dev", 10, 40, 6, b"hello", cx);
+            app.begin_selection(10, 0, 0, 1, cx);
+            app.extend_selection(10, 0, 4, cx);
+        })
+    });
+    assert!(cx.update(|_, cx| view.update(cx, |app, _| app.selection_for(10).is_some())));
+
+    // 拓扑更新：pane 10 被关掉，换成 pane 99。
+    let mut next = store_with_two_workspaces();
+    next.replace_topology(
+        workspace("local@@dev@tmux@dev", "dev", true),
+        vec![ClientTab {
+            id: 1,
+            name: "dev".into(),
+            is_active: true,
+        }],
+        vec![(
+            1,
+            vec![ClientPane {
+                id: 99,
+                cols: 80,
+                rows: 24,
+                is_active: true,
+                title: "dev".into(),
+            }],
+        )],
+    );
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.replace_store_for_tests(next, cx);
+            app.pump_once(cx);
+        })
+    });
+    let (selection, screen) =
+        cx.update(|_, cx| view.update(cx, |app, _| (app.selection_for(10), app.pane_screen(10))));
+    assert_eq!(selection, None, "关掉的 pane 不能留着选区");
+    assert_eq!(screen, None, "关掉的 pane 不能留着 Surface");
+}
+
 /// Cmd-D / Cmd-S 各分一次屏；两次按键 = 两次分割（不是一次按键分两个）。
 #[gpui::test]
 fn cmd_d_and_cmd_s_split_once_each(cx: &mut TestAppContext) {

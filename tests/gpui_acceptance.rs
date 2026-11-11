@@ -42,6 +42,13 @@ impl IsolatedTmux {
         Self { socket, session }
     }
 
+    /// 只杀自己的测试会话（必须带同一个 `-L`）。
+    fn kill_session(&self) {
+        let _ = std::process::Command::new("tmux")
+            .args(["-L", &self.socket, "kill-session", "-t", &self.session])
+            .status();
+    }
+
     fn connect(&self) -> EventPump {
         // tmux 是 control runtime：先报基准尺寸才会有首帧。
         let client = FfiClient::new_connect_sized(
@@ -684,4 +691,83 @@ fn move_tab_reorders_through_core(cx: &mut TestAppContext) {
         let tabs = app.tab_items();
         tabs.len() >= 2 && tabs[0].active
     });
+}
+
+/// 起一个连本机 shell 的 GpuiApp，泵到首帧出现。
+fn app_with_local_shell<'a>(
+    cx: &'a mut TestAppContext,
+) -> (gpui::Entity<GpuiApp>, &'a mut gpui::VisualTestContext) {
+    let client = FfiClient::new_connect("local", None, None, None, Some("")).expect("本机连接");
+    let pump = EventPump::new(client);
+    let mut store = ViewStore::default();
+    pump.sync_view_store(&mut store).expect("初始快照");
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let mut app = GpuiApp::new(pump, store, CommandQueue::default(), None, cx);
+        app.pump_once(cx);
+        window.focus(&app.focus_handle());
+        app
+    });
+    pump_until_true(&view, cx, "本机 shell 首帧", |app| {
+        app.focused_pane()
+            .and_then(|pane| app.pane_screen(pane))
+            .is_some_and(|screen| !screen.trim().is_empty())
+    });
+    (view, cx)
+}
+
+/// 回归（pane 关闭）：本机 shell 进程退出只移除它自己的 pane；
+/// 焦点回到剩下的 pane，tab 不能被误关。
+#[gpui::test]
+fn a_local_shell_exit_removes_only_its_pane(cx: &mut TestAppContext) {
+    let (view, cx) = app_with_local_shell(cx);
+    let first = cx.update(|_, cx| view.update(cx, |app, _| app.focused_pane()));
+    cx.simulate_keystrokes("cmd-d");
+    pump_until_true(&view, cx, "分屏出第二个 pane", |app| {
+        leaves(&app.layout()) == 2
+    });
+    let second = cx.update(|_, cx| view.update(cx, |app, _| app.focused_pane()));
+    assert_ne!(second, first, "分屏后焦点必须落在新 pane");
+
+    cx.simulate_keystrokes("e x i t");
+    cx.simulate_keystrokes("enter");
+    pump_until_true(&view, cx, "退出的 pane 被移除", |app| {
+        leaves(&app.layout()) == 1
+    });
+
+    let (focused, tabs, quit) = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            (
+                app.focused_pane(),
+                app.tab_items().len(),
+                app.quit_requested(),
+            )
+        })
+    });
+    assert_eq!(focused, first, "焦点必须回到剩下的 pane");
+    assert_eq!(tabs, 1, "只关一个 pane 时 tab 必须留下");
+    assert!(!quit, "还有 pane 时不能退出窗口");
+}
+
+/// 回归（shell 退出）：隔离 tmux 会话结束后，冻住的 workspace 必须收起并请求关窗口，
+/// 不能停在最后一帧（用户报的「卡住」）。
+#[gpui::test]
+fn a_tmux_session_that_ends_closes_the_workspace(cx: &mut TestAppContext) {
+    let tmux = IsolatedTmux::start();
+    let (view, cx) = app_with_isolated_tmux(cx, &tmux);
+    tmux.kill_session();
+    pump_until_true(&view, cx, "结束的 workspace 被收起", |app| {
+        app.visible_workspace().is_none()
+    });
+    let (sidebar, tabs, quit) = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            (
+                app.sidebar_items().len(),
+                app.tab_items().len(),
+                app.quit_requested(),
+            )
+        })
+    });
+    assert_eq!(sidebar, 2, "只剩 Shells / Agents 两个聚合槽");
+    assert_eq!(tabs, 0, "僵尸 tab 必须退出");
+    assert!(quit, "没有活 workspace 时按 Swift 关窗口");
 }
