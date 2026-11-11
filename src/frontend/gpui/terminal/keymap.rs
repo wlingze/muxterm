@@ -60,6 +60,28 @@ pub fn encode(press: &KeyPress, app_cursor_keys: bool) -> Option<Vec<u8>> {
     None
 }
 
+/// 这一下按键要不要交给平台输入法处理（可以开始/继续组词）。
+///
+/// 对照 macOS `MuxTerminalView.keyDown`：无修饰键的可打印文本走
+/// `interpretKeyEvents`，由 `insertText(_:replacementRange:)` 提交；控制键、
+/// 功能键、Alt/Ctrl 组合直接编码。
+///
+/// 为什么不能直接编码：中文输入法的首字母 `n`、`i` 也是普通可打印字符。
+/// 前端一旦把它编码进 PTY 并消费按键，macOS 的 `inputContext` 就收不到
+/// 这次 keyDown，组词根本起不来，用户只能打出字母（或什么都打不出）。
+pub fn defers_to_ime(press: &KeyPress) -> bool {
+    if press.cmd || press.ctrl || press.alt {
+        return false;
+    }
+    let Some(text) = press.key_char.as_deref() else {
+        return false;
+    };
+    use crate::frontend::gpui::model::ime::{key_dispatch, KeyDispatch};
+    !text.is_empty()
+        && text.chars().all(|ch| !ch.is_control())
+        && key_dispatch(Some(text)) != KeyDispatch::Ignore
+}
+
 fn prefix_alt(mut bytes: Vec<u8>, alt: bool) -> Vec<u8> {
     if alt {
         bytes.insert(0, 0x1b);
@@ -260,5 +282,63 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(encode(&keys, false), Some("你好".as_bytes().to_vec()));
+    }
+
+    /// 回归（中文输入）：拼音首字母必须留给平台输入法，不能直接编码。
+    ///
+    /// 对照 macOS `MuxTerminalView.keyDown` 的 `interpretKeyEvents` 分支。
+    #[test]
+    fn pinyin_letters_are_left_to_the_ime() {
+        assert!(defers_to_ime(&press("n")));
+        assert!(defers_to_ime(&press("i")));
+        // Shift+字母仍是可打印文本（大写），同样交给输入法。
+        let mut upper = press("n");
+        upper.shift = true;
+        upper.key_char = Some("N".into());
+        assert!(defers_to_ime(&upper));
+        // 空格是拼音选字的提交键，必须交给输入法。
+        let mut space = press("space");
+        space.key_char = Some(" ".into());
+        assert!(defers_to_ime(&space));
+        // 已提交的中文（含非 BMP）也应该走输入法边界。
+        let mut chinese = press("process");
+        chinese.key_char = Some("你好🦀".into());
+        assert!(defers_to_ime(&chinese));
+    }
+
+    /// 控制键、功能键、Alt/Ctrl 组合必须继续直接编码，不能依赖输入法。
+    #[test]
+    fn control_function_and_option_keys_bypass_the_ime() {
+        let mut enter = press("enter");
+        enter.key_char = None;
+        assert!(!defers_to_ime(&enter));
+        let mut tab = press("tab");
+        tab.key_char = None;
+        assert!(!defers_to_ime(&tab));
+        let mut escape = press("escape");
+        escape.key_char = None;
+        assert!(!defers_to_ime(&escape));
+        let mut arrow = press("up");
+        arrow.key_char = None;
+        assert!(!defers_to_ime(&arrow));
+
+        let mut ctrl_n = press("n");
+        ctrl_n.ctrl = true;
+        assert!(!defers_to_ime(&ctrl_n));
+        let mut alt_n = press("n");
+        alt_n.alt = true;
+        assert!(!defers_to_ime(&alt_n));
+        let mut cmd_n = press("n");
+        cmd_n.cmd = true;
+        assert!(!defers_to_ime(&cmd_n));
+
+        // 控制字符（回车在部分布局里带 `\r`）不能送进输入法。
+        let mut cr = press("enter");
+        cr.key_char = Some("\r".into());
+        assert!(!defers_to_ime(&cr));
+        // 占位符按键不能交给输入法（否则会插进 <ffff>），走 `encode` 的丢弃逻辑。
+        let mut placeholder = press("process");
+        placeholder.key_char = Some("\u{ffff}".into());
+        assert!(!defers_to_ime(&placeholder));
     }
 }

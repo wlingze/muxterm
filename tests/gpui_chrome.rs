@@ -3696,6 +3696,54 @@ fn ime_commit_follows_the_focused_input(cx: &mut TestAppContext) {
     );
 }
 
+/// 回归（中文输入）：拼音首字母必须先交给平台输入法，再由提交路径进 PTY。
+///
+/// 旧实现把 `n` 直接编码进 PTY 并 `stop_propagation()`，macOS 的
+/// `inputContext` 收不到这次 keyDown，输入法根本无法开始组词。
+/// 对照 macOS `MuxTerminalView.keyDown` 的 `interpretKeyEvents`。
+#[gpui::test]
+fn pinyin_keys_defer_to_the_ime_and_commit_once(cx: &mut TestAppContext) {
+    let (view, cx) = mount(two_tab_store(), cx);
+    let take_inputs = |view: &gpui::Entity<GpuiApp>, cx: &mut gpui::VisualTestContext| {
+        cx.update(|_, cx| {
+            view.update(cx, |app, _| {
+                app.take_commands_for_tests()
+                    .into_iter()
+                    .filter_map(|command| match command {
+                        ClientCommand::Input { data, .. } => Some(data),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            })
+        })
+    };
+    let _ = take_inputs(&view, cx);
+
+    // 未组词时的首字母：按键让给平台，但文本仍只提交一次。
+    cx.simulate_keystrokes("n");
+    let deferred = cx.update(|_, cx| view.update(cx, |app, _| app.take_ime_deferred_for_tests()));
+    assert!(deferred, "拼音首字母必须让给输入法，否则组词起不来");
+    assert_eq!(
+        take_inputs(&view, cx),
+        vec![b"n".to_vec()],
+        "让给输入法之后仍然要经 `insertText` 提交一次，不能丢字也不能重复"
+    );
+
+    // 输入法提交中文：`insertText` → `replace_text_in_range` 的同一路径。
+    cx.simulate_input("你");
+    assert!(
+        cx.update(|_, cx| view.update(cx, |app, _| app.take_ime_deferred_for_tests())),
+        "提交的中文同样要经过输入法边界"
+    );
+    assert_eq!(take_inputs(&view, cx), vec!["你".as_bytes().to_vec()]);
+
+    // 特殊键不能被让给输入法：回车直接编码。
+    cx.simulate_keystrokes("enter");
+    let deferred = cx.update(|_, cx| view.update(cx, |app, _| app.take_ime_deferred_for_tests()));
+    assert!(!deferred, "回车必须直接编码，不能送进输入法");
+    assert_eq!(take_inputs(&view, cx), vec![b"\r".to_vec()]);
+}
+
 /// Cmd-D / Cmd-S 各分一次屏；两次按键 = 两次分割（不是一次按键分两个）。
 #[gpui::test]
 fn cmd_d_and_cmd_s_split_once_each(cx: &mut TestAppContext) {

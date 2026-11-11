@@ -189,11 +189,16 @@ impl GpuiApp {
             .child(canvas(
                 |_, _, _| (),
                 move |bounds, _, window, cx| {
-                    window.handle_input(
-                        &input_handle,
-                        ElementInputHandler::new(bounds, entity.clone()),
-                        cx,
-                    );
+                    // 每个 pane 共用一个 focus handle；若所有 pane 都注册，
+                    // 平台只保留最后绘制的那个，候选窗会锚到错误的 pane，
+                    // 中文输入法看起来就是「候选窗跑掉 / 位置不对」。
+                    if focused {
+                        window.handle_input(
+                            &input_handle,
+                            ElementInputHandler::new(bounds, entity.clone()),
+                            cx,
+                        );
+                    }
                 },
             ));
 
