@@ -3884,6 +3884,184 @@ fn closed_panes_drop_their_surface_and_selection(cx: &mut TestAppContext) {
     assert_eq!(screen, None, "关掉的 pane 不能留着 Surface");
 }
 
+/// 回归（关闭 workspace）：Core 不会为 close 发 topology 事件，前端必须像
+/// Swift `closeWorkspace` 一样先本地收起并切到邻近 workspace，不能等一个永远
+/// 不来的回包（用户看到的就是「关闭 workspace 失败」）。
+#[gpui::test]
+fn closing_the_visible_workspace_switches_before_core_replies(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.take_commands_for_tests();
+            app.close_workspace("local@@dev@tmux@dev".into(), cx);
+        })
+    });
+    let (visible, sidebar, quit) = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            (
+                app.visible_workspace().map(str::to_string),
+                app.sidebar_items(),
+                app.quit_requested(),
+            )
+        })
+    });
+    assert_eq!(
+        visible.as_deref(),
+        Some("local@@ops@tmux@ops"),
+        "关掉可见 workspace 后必须立刻切到邻近那个"
+    );
+    assert!(!quit, "还有活 workspace 时不能退出窗口");
+    assert!(
+        sidebar.iter().all(|item| item.name != "dev"),
+        "关掉的 workspace 不能留在侧栏：{:?}",
+        sidebar.iter().map(|item| &item.name).collect::<Vec<_>>()
+    );
+    let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            ClientCommand::CloseWorkspace(id) if id == "local@@dev@tmux@dev"
+        )),
+        "本地收起后仍要告诉 Core 关掉它：{commands:?}"
+    );
+}
+
+/// 回归（关闭 workspace）：关最后一个 workspace 走关窗，不留空白页。
+#[gpui::test]
+fn closing_the_last_workspace_requests_the_window_to_close(cx: &mut TestAppContext) {
+    let mut store = ViewStore::default();
+    store.replace_topology(
+        workspace("local@@only@tmux@only", "only", true),
+        vec![ClientTab {
+            id: 1,
+            name: "only".into(),
+            is_active: true,
+        }],
+        vec![(
+            1,
+            vec![ClientPane {
+                id: 10,
+                cols: 80,
+                rows: 24,
+                is_active: true,
+                title: "only".into(),
+            }],
+        )],
+    );
+    store
+        .ensure_workspace("local@@only@tmux@only")
+        .backend_status = Some(backend_status::CONNECTED);
+    let (view, cx) = mount(store, cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.take_commands_for_tests();
+            app.close_workspace("local@@only@tmux@only".into(), cx);
+        })
+    });
+    let (visible, tabs, quit, commands) = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            (
+                app.visible_workspace().map(str::to_string),
+                app.tab_items().len(),
+                app.quit_requested(),
+                app.take_commands_for_tests(),
+            )
+        })
+    });
+    assert_eq!(visible, None, "关掉的 workspace 不能再是可见页");
+    assert_eq!(tabs, 0, "僵尸 tab 必须退出");
+    assert!(quit, "最后一个 workspace 关掉后要请求关窗");
+    assert!(
+        !commands
+            .iter()
+            .any(|command| matches!(command, ClientCommand::CloseWorkspace(_))),
+        "最后一个 workspace 走关窗路径，不再发 close：{commands:?}"
+    );
+}
+
+/// 关闭后台 workspace 不能动当前可见页。
+#[gpui::test]
+fn closing_a_background_workspace_keeps_the_visible_one(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.take_commands_for_tests();
+            app.close_workspace("local@@ops@tmux@ops".into(), cx);
+        })
+    });
+    let (visible, rows) = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            (
+                app.visible_workspace().map(str::to_string),
+                app.sidebar_items().len(),
+            )
+        })
+    });
+    assert_eq!(
+        visible.as_deref(),
+        Some("local@@dev@tmux@dev"),
+        "关后台 workspace 不能切走当前页"
+    );
+    assert_eq!(rows, 3, "只少一行：两个聚合槽 + dev");
+}
+
+/// 本机 shell 是聚合入口的锚点，永远不能被关闭。
+#[gpui::test]
+fn the_local_shell_workspace_is_not_closable(cx: &mut TestAppContext) {
+    let mut store = ViewStore::default();
+    for (id, name, runtime) in [("local///shell/", "Local Shell", "shell")] {
+        store.replace_topology(
+            ClientWorkspace {
+                id: id.into(),
+                name: name.into(),
+                runtime: runtime.into(),
+                active: true,
+                resolved_target: None,
+            },
+            vec![ClientTab {
+                id: 1,
+                name: name.into(),
+                is_active: true,
+            }],
+            vec![(
+                1,
+                vec![ClientPane {
+                    id: 10,
+                    cols: 80,
+                    rows: 24,
+                    is_active: true,
+                    title: name.into(),
+                }],
+            )],
+        );
+        store.ensure_workspace(id).backend_status = Some(backend_status::CONNECTED);
+    }
+    let (view, cx) = mount(store, cx);
+    let (visible, rows, commands) = cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.take_commands_for_tests();
+            app.close_workspace("local///shell/".into(), cx);
+            (
+                app.visible_workspace().map(str::to_string),
+                app.sidebar_items().len(),
+                app.take_commands_for_tests(),
+            )
+        })
+    });
+    assert_eq!(
+        visible.as_deref(),
+        Some("local///shell/"),
+        "本机 shell 不能关"
+    );
+    assert_eq!(rows, 2, "侧栏仍只有两个聚合槽");
+    assert!(
+        !commands
+            .iter()
+            .any(|command| matches!(command, ClientCommand::CloseWorkspace(_))),
+        "本机 shell 不能向 Core 发 close：{commands:?}"
+    );
+}
+
 /// Cmd-D / Cmd-S 各分一次屏；两次按键 = 两次分割（不是一次按键分两个）。
 #[gpui::test]
 fn cmd_d_and_cmd_s_split_once_each(cx: &mut TestAppContext) {

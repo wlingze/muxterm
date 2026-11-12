@@ -90,6 +90,9 @@ pub struct GpuiApp {
     pending_focus: Option<u32>,
     /// 本机 shell 工作区空了之后已经要过新 tab，避免每拍都发一遍。
     shell_restart_requested: bool,
+    /// 用户刚关掉的 workspace：Core 不发 topology 事件，Open 完成时的全量
+    /// 同步可能把它塞回来（同一拍里 close 还没落盘），用墓碑挡掉。
+    closed_workspaces: std::collections::HashSet<String>,
     /// 所有 workspace 都已结束：下一次泵让窗口退出（对照 Swift `closeSessionWindow`）。
     quit_requested: bool,
     last_sizes: HashMap<SurfaceKey, (u16, u16)>,
@@ -268,6 +271,7 @@ impl GpuiApp {
             cell_metrics_key: None,
             pending_focus: None,
             shell_restart_requested: false,
+            closed_workspaces: std::collections::HashSet::new(),
             quit_requested: false,
             last_sizes: HashMap::new(),
             wheel_accumulators: HashMap::new(),
@@ -514,7 +518,27 @@ impl GpuiApp {
     /// 显示阶段横幅；真正把文件送到目标机器的是 Core（`start_image_paste`），
     /// 前端不拼 `scp`、不自己起进程。
     pub fn paste_clipboard_image(&mut self, cx: &mut Context<Self>) -> bool {
-        use crate::frontend::gpui::model::image_paste::{ImagePasteStage, ImagePasteTimeline};
+        let now = std::time::Instant::now();
+
+        // 与 Swift `MuxTerminalView.paste(from:)` 同一优先级：系统剪贴板里
+        // 有 PNG/TIFF 就粘图，哪怕同一个 pasteboard 还带着文本（浏览器复制
+        // 图片、Keynote 等都会这样）。gpui 的 `read_from_clipboard` 先看文本，
+        // 只走它会把图片当 URL / 文件名粘进终端。
+        #[cfg(target_os = "macos")]
+        if let Some(result) =
+            crate::frontend::gpui::platform::clipboard_image::clipboard_image_png()
+        {
+            // 已经有一张在传：Swift 在这个窗口里回 `ImagePasteBusy`，这里同样不排队。
+            if self.image_paste.is_busy() {
+                return true;
+            }
+            match result {
+                Ok(png) => self.begin_image_paste(png, now, cx),
+                Err(reason) => self.fail_image_paste(reason, now, cx),
+            }
+            return true;
+        }
+
         let Some(item) = cx.read_from_clipboard() else {
             return false;
         };
@@ -524,8 +548,6 @@ impl GpuiApp {
         }) else {
             return false;
         };
-        let now = std::time::Instant::now();
-        // 已经有一张在传：Swift 在这个窗口里回 `ImagePasteBusy`，这里同样不排队。
         if self.image_paste.is_busy() {
             return true;
         }
@@ -544,13 +566,20 @@ impl GpuiApp {
             );
             return true;
         };
+        self.begin_image_paste(png, now, cx);
+        true
+    }
+
+    /// 把一张已经编码好的 PNG 交给 Core（前端只做横幅，不拼 scp）。
+    fn begin_image_paste(&mut self, png: Vec<u8>, now: std::time::Instant, cx: &mut Context<Self>) {
+        use crate::frontend::gpui::model::image_paste::{ImagePasteStage, ImagePasteTimeline};
         let (Some(workspace), Some(pane)) = (self.visible.clone(), self.focused_pane) else {
             self.fail_image_paste("no active pane for the image".into(), now, cx);
-            return true;
+            return;
         };
         let Some(pump) = self.pump.as_ref() else {
             self.fail_image_paste("not connected to Core".into(), now, cx);
-            return true;
+            return;
         };
         let mut timeline = ImagePasteTimeline::new();
         timeline.advance(ImagePasteStage::Encoding, now);
@@ -568,7 +597,6 @@ impl GpuiApp {
             }
         }
         cx.notify();
-        true
     }
 
     /// 图片粘贴失败：左侧阶段 + 横幅同时更新（用户永远能看到发生什么）。
@@ -650,6 +678,7 @@ impl GpuiApp {
         dirty |= self.reconcile_closed_panes();
         dirty |= self.reconcile_workspace_lifecycle(cx);
         dirty |= self.poll_panel_operations(cx);
+        dirty |= self.drop_tombstoned_workspaces(cx);
         dirty |= self.apply_pending_config();
         dirty |= self.refresh_status_snapshot_if_due();
         dirty |= self.refresh_attention_if_due();
@@ -1015,6 +1044,7 @@ impl GpuiApp {
             cell_metrics_key: None,
             pending_focus: None,
             shell_restart_requested: false,
+            closed_workspaces: std::collections::HashSet::new(),
             quit_requested: false,
             last_sizes: HashMap::new(),
             wheel_accumulators: HashMap::new(),
@@ -1965,11 +1995,68 @@ impl GpuiApp {
         }
     }
 
-    /// 关闭工作区：只发命令，回来后由 Core 事件删掉这一行。
+    /// 关闭工作区：先按 Swift `closeWorkspace` 在本地收起并切走，再让 Core 关。
+    ///
+    /// Core 不会为 close 发 topology 事件（`workspace_list` 之外什么都收不到），
+    /// 旧实现只把命令塞进队列，侧栏行和画面就永远留在那里 —— 用户看到的就是
+    /// 「关闭 workspace 失败」。这里改成和 Swift 一样的乐观路径：
+    /// 1. 本地移除这一格（行、tab、Surface、选区）；
+    /// 2. 可见的 workspace 被关时立刻切到邻近 workspace；
+    /// 3. 关的是最后一个可见 workspace 时走关窗（窗口退出会连带关闭 Core handle），
+    ///    不再发 close。
     pub fn close_workspace(&mut self, workspace_id: String, cx: &mut Context<Self>) {
-        self.commands
-            .push(ClientCommand::CloseWorkspace(workspace_id));
+        // 本机 shell 是聚合入口的锚点，侧栏里也不给它关闭按钮：防御性忽略。
+        let closeable = self.store.workspace(&workspace_id).is_some_and(|view| {
+            view.workspace.as_ref().is_some_and(|client| {
+                !(client.runtime == "shell" && transport_label(client) == "local")
+            })
+        });
+        if !closeable {
+            return;
+        }
+        let was_visible = self.visible.as_deref() == Some(workspace_id.as_str());
+        let has_fallback = self
+            .store
+            .workspace_ids()
+            .any(|id| id != workspace_id && self.workspace_has_panes(id));
+        // 最后一个可见 workspace：Swift 交给关窗路径，不发 close。
+        if !was_visible || has_fallback {
+            self.commands
+                .push(ClientCommand::CloseWorkspace(workspace_id.clone()));
+        }
+        self.closed_workspaces.insert(workspace_id.clone());
+        self.drop_workspace(&workspace_id);
+        if was_visible {
+            self.switch_to_next_live_workspace(cx);
+        }
         cx.notify();
+    }
+
+    /// 把被关掉的 workspace 从任何迟到的全量同步里再拿掉一次。
+    fn drop_tombstoned_workspaces(&mut self, cx: &mut Context<Self>) -> bool {
+        let stale: Vec<String> = self
+            .closed_workspaces
+            .iter()
+            .filter(|workspace_id| self.store.workspace(workspace_id).is_some())
+            .cloned()
+            .collect();
+        let mut dirty = false;
+        for workspace_id in stale {
+            let visible = self.visible.as_deref() == Some(workspace_id.as_str());
+            self.drop_workspace(&workspace_id);
+            dirty = true;
+            if visible {
+                dirty |= self.switch_to_next_live_workspace(cx);
+            }
+        }
+        dirty
+    }
+
+    /// 测试用：Core 当前 pool 里的 workspace 数量（没有 pump 时 None）。
+    #[doc(hidden)]
+    pub fn core_workspace_count_for_tests(&self) -> Option<usize> {
+        let pump = self.pump.as_ref()?;
+        pump.client().workspace_list().ok().map(|list| list.len())
     }
 
     // ------------------------------------------------------------------
