@@ -40,6 +40,10 @@ pub fn clipboard_image_png() -> Option<Result<Vec<u8>, String>> {
 #[cfg(target_os = "macos")]
 static PASTEBOARD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// AppKit 图片解码锁。与 `PASTEBOARD_LOCK` 互不嵌套（解码不再去读 pasteboard）。
+#[cfg(target_os = "macos")]
+static DECODE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// 从指定 pasteboard 读 PNG / TIFF（测试用独立 pasteboard，不动用户剪贴板）。
 #[cfg(target_os = "macos")]
 pub fn read_image_png_from(
@@ -77,6 +81,12 @@ fn convert(_format: ImageFormat, bytes: &[u8]) -> Option<Vec<u8>> {
     if bytes.is_empty() {
         return None;
     }
+    // `NSBitmapImageRep` 解码同样不能并行跑：AppKit 的 image rep 缓存不是
+    // 线程安全的。这里用**另一把**锁：`clipboard_image_png` 已经持有
+    // `PASTEBOARD_LOCK` 时还会走到这里转码，共用一把非重入锁会自死锁。
+    let _guard = DECODE_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     autoreleasepool(|_| {
         let data = NSData::with_bytes(bytes);
         let rep = NSBitmapImageRep::initWithData(NSBitmapImageRep::alloc(), &data)?;

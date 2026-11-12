@@ -252,6 +252,31 @@ tab 活动标记、panel 标记列、`⋯` 全部走同一套矢量图标；未�
   重建会换掉 `watch_menu` 的 channel，菜单点击就断了。
 - 文案走 i18n；测试断言每条菜单文案都有 key，且中文目录有翻译。
 
+### 5.6 侧栏几何与 tab 栏策略
+
+侧栏的可变部分全部是纯模型（`model/sidebar_layout.rs`），渲染不自己算：
+
+- 宽度：默认 240pt，`SIDEBAR_MIN_WIDTH=200` / `SIDEBAR_MAX_WIDTH=480`，
+  并且永远给正文留 320pt（对照 `MainWindow.swift` 的
+  `sidebarItem.minimumThickness/maximumThickness` 与 `setPosition(240)`）。
+  `clamp_sidebar_width` 是**唯一**入口：`app.rs` 算正文 origin 用它，
+  `chrome/sidebar.rs` 画侧栏也用它，两处口径不能分叉。
+- 分区：`SidebarSectionHeights::compute(available, hidden_height)` 按 3:2:1
+  分 Workspaces / Agents / Commands（Agents 恒为 Commands 的 2 倍）；Commands
+  被压到下限时从 Workspaces 补，Workspaces 也到下限就把下半区按 2:1 压回；
+  三段下限都放不下时返回 `None`，**不硬排**。Hidden Commands 固定贴整栏底部，
+  高度 = `26pt 折叠 + 行数 × 行高`，不参与比例分配。
+- 拖动：`sidebar-divider` 是右侧 5pt 的热区，按下记
+  `sidebar_drag_offset`；一旦开始拖，`sidebar-drag-overlay` 铺满窗口接管
+  move/up —— gpui 的 `on_mouse_move` 只在 hitbox 被 hover 时触发，鼠标离开
+  5pt 热区就会跟丢。
+
+tab 栏宽度策略来自 Core 配置 `[ui] tab_bar_style`（`equal_width` 缺省 /
+`fixed` / `compact`）。等宽时 tab 带自己 `flex_1` 吃掉中间所有空间、每个 tab
+再 `flex_1` 平分，对照 Swift `StatusBarView.fillsViewport` 的
+`distribution = .fillEqually` + trailing constraint。tab 的颜色跟着活动状态走
+（working / blocked / done 用状态色，idle 用 muted），不只在活动 tab 上画。
+
 ## 6. 数据流与线程
 
 ```text
@@ -399,9 +424,9 @@ Project / discovery 行用 Core 记账的 attach 频率排序（`attach-history.
 ## 9. 验收
 
 - `cargo check --no-default-features --features gpui` 通过。
-- `cargo test --no-default-features --features gpui --lib` 通过（2026-11-11 实测 **1979 passed**，3 ignored）。
+- `cargo test --no-default-features --features gpui --lib` 通过（2026-11-11 实测 **1998 passed**，3 ignored）。
 - 集成测试（每个都实测通过）：
-  - `--test gpui_chrome`（121，含命令面板每条命令的动作、改名浮层、tab 重排、语言/主题/状态栏、
+  - `--test gpui_chrome`（133，含命令面板每条命令的动作、改名浮层、tab 重排、语言/主题/状态栏、
     设置浮层的 Esc / ⏎ / Cancel / Apply 与放弃修改确认（有改动先问、点遮罩也走同一条路）、
     面板按 Core attach 频率排序（活跃项第一）、
     SGR 粗体/斜体/下划线/删除线真的进渲染树、
@@ -410,7 +435,8 @@ Project / discovery 行用 Core 记账的 attach 频率排序（`attach-history.
     关掉的 pane 丢掉 Surface 与选区、
     `Cmd-[` / `Cmd-]` 按当前 tab 布局选目标（含 zoom）、面板三条身份去重
     （provenance / canonical target / 名字）、活动快照填充 Agents/Commands、Info 复制按钮、
-    空闲 pump 不重绘）：侧栏 / tab / 状态栏 / Cmd-P 面板（含 discovery 到的现有 runtime）/
+    空闲 pump 不重绘、侧栏可拖宽度与三段分区、tab 等宽铺满与活动状态色、
+    Cmd-V 图片优先粘贴、空输入框光标在占位文案之前）：侧栏 / tab / 状态栏 / Cmd-P 面板（含 discovery 到的现有 runtime）/
     Cmd-Shift-P 命令面板 / 输入框 / 设置 / Open 入口 / 历史回填 / 菜单动作，并断言真实布局
     （侧栏 240pt、24pt 单条栏、命令面板 600×360），全部走真实 `GpuiApp`。
   - `--test gpui_workspace_picker`（13）：根列表四段顺序与编号、Open 三层导航、目录完成后

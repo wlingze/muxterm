@@ -185,6 +185,8 @@ pub struct GpuiApp {
     pub(crate) search_snapshot: Option<crate::frontend::gpui::model::search::SearchSnapshot>,
     /// tab 栏位置，默认顶部。
     pub(crate) tab_bar_position: crate::frontend::gpui::chrome::tab_bar_view::TabBarPosition,
+    /// tab 宽度策略（`[ui] tab_bar_style`）：缺省等宽铺满。
+    pub(crate) tab_bar_style: crate::frontend::gpui::chrome::tab_bar_view::TabBarStyle,
     /// 侧栏是否显示（Cmd-B 切换，与 Swift 一致）。
     pub(crate) sidebar_visible: bool,
     /// 侧栏宽度（可拖动，`SIDEBAR_MIN_WIDTH..=SIDEBAR_MAX_WIDTH`）。
@@ -249,6 +251,13 @@ impl GpuiApp {
             .config_describe()
             .ok()
             .map(|snapshot| tab_bar_position_from_snapshot(&snapshot))
+            .unwrap_or_default();
+        // `[ui] tab_bar_style`：缺省等宽铺满（用户报障截图 3 的默认期望）。
+        let tab_bar_style = pump
+            .client()
+            .config_describe()
+            .ok()
+            .map(|snapshot| tab_bar_style_from_snapshot(&snapshot))
             .unwrap_or_default();
         // 语言与状态栏来源同样来自 Core 配置；读不到就用进程默认。
         let (language, status_bar_mode) = pump
@@ -316,6 +325,7 @@ impl GpuiApp {
             window_width: 1_280.0,
             window_height: 800.0,
             system_pasteboard: true,
+            tab_bar_style,
             attention: None,
             existing: Vec::new(),
             existing_loaded: false,
@@ -1106,6 +1116,7 @@ impl GpuiApp {
             search_snapshot: None,
             tab_bar_position: crate::frontend::gpui::chrome::tab_bar_view::TabBarPosition::default(
             ),
+            tab_bar_style: crate::frontend::gpui::chrome::tab_bar_view::TabBarStyle::default(),
             sidebar_visible: true,
             sidebar_width: crate::frontend::gpui::model::sidebar_layout::SIDEBAR_WIDTH,
             sidebar_dragging: false,
@@ -2554,6 +2565,29 @@ impl GpuiApp {
     /// tab 栏位置（`[ui] tab_bar_position`）。
     pub fn tab_bar_position(&self) -> crate::frontend::gpui::chrome::tab_bar_view::TabBarPosition {
         self.tab_bar_position
+    }
+
+    /// tab 宽度策略（`[ui] tab_bar_style`）：缺省等宽铺满。
+    pub fn tab_bar_style(&self) -> crate::frontend::gpui::chrome::tab_bar_view::TabBarStyle {
+        self.tab_bar_style
+    }
+
+    /// tab 带能用的宽度：窗口宽减侧栏、减两侧状态栏按钮的固定占位。
+    ///
+    /// 数值取自状态栏布局（左右各一个 28pt 的按钮 + 8pt 间距 + 右端的固定
+    /// 徽标群），等宽样式靠它算每个 tab 的宽度。宁可与实际差几个点，也不能
+    /// 让 tab 溢出把后面的状态栏按钮挤出去。
+    pub fn tab_strip_width(&self) -> f32 {
+        let chrome = if self.sidebar_visible() {
+            crate::frontend::gpui::model::sidebar_layout::clamp_sidebar_width(
+                self.sidebar_width,
+                self.window_width,
+                320.0,
+            )
+        } else {
+            0.0
+        };
+        (self.window_width - chrome - TAB_STRIP_CHROME_WIDTH).max(120.0)
     }
 
     /// 打开目标配置窗口；`None` 表示新建。
@@ -4663,6 +4697,23 @@ fn measure_cell_size(theme: &Theme, text_system: &gpui::WindowTextSystem) -> (f3
         }
     } * theme.line_spacing;
     (width.max(1.0), height.max(1.0))
+}
+
+/// tab 带左右必须让出来的固定宽度（侧栏开关 + 状态栏右侧徽标群）。
+const TAB_STRIP_CHROME_WIDTH: f32 = 260.0;
+
+/// `[ui] tab_bar_style` → 宽度策略。缺省跟随 macOS：等宽铺满。
+pub(crate) fn tab_bar_style_from_snapshot(
+    snapshot: &crate::frontend::utils::corebridge::ClientConfigSnapshot,
+) -> crate::frontend::gpui::chrome::tab_bar_view::TabBarStyle {
+    use crate::frontend::gpui::chrome::tab_bar_view::TabBarStyle;
+    snapshot
+        .values
+        .get("ui")
+        .and_then(|ui| ui.get("tab_bar_style"))
+        .and_then(serde_json::Value::as_str)
+        .and_then(TabBarStyle::from_raw)
+        .unwrap_or_default()
 }
 
 /// `[ui] tab_bar_position` → tab 栏位置。缺省跟随 macOS：底部。
