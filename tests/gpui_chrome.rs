@@ -3652,6 +3652,32 @@ fn panel_query_supports_selection_and_caret(cx: &mut TestAppContext) {
     );
 }
 
+/// 用户报障（截图 2）：`Cmd-P` 的输入框光标跑到默认内容末尾。
+///
+/// 空输入框里光标必须在**行首**，占位文案浅色跟在它后面；光标不能跑到
+/// 占位文字右边（那样看着像已经输入了一段内容）。
+#[gpui::test]
+fn the_panel_caret_sits_before_the_placeholder(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.simulate_keystrokes("cmd-p");
+    cx.run_until_parked();
+    let caret = cx.debug_bounds("input-caret").expect("查询框必须有光标");
+    let placeholder = cx
+        .debug_bounds("input-placeholder")
+        .expect("空输入框必须有占位文案");
+    assert!(
+        f32::from(caret.origin.x) < f32::from(placeholder.origin.x),
+        "光标必须在占位文案前面（左），实际 caret.x={} placeholder.x={}",
+        f32::from(caret.origin.x),
+        f32::from(placeholder.origin.x)
+    );
+    assert!(
+        (f32::from(placeholder.origin.x) - f32::from(caret.origin.x) - 1.5).abs() < 2.0,
+        "光标和占位文案之间不能有肉眼可见的空隙"
+    );
+    let _ = view;
+}
+
 /// IME 提交要落到当前吃文字的那个输入框，而不是永远当成终端输入。
 ///
 /// 回归：`commit_text` 只判断 `panel.open`，命令面板 / 设置里用中文输入法
