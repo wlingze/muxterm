@@ -62,6 +62,23 @@ pub enum KeyAction {
     OpenAgents,
     /// 1-based 打开顺序；0 永远是最后一个。
     SwitchWorkspace(usize),
+    /// 菜单 File → Rename Workspace…：打开输入浮层。
+    RenameWorkspace,
+    /// 菜单 Window → Rename Tab…：打开输入浮层。
+    RenameTab,
+    /// 菜单 Window → Move Tab Left / Right。
+    MoveTabLeft,
+    MoveTabRight,
+    /// 菜单 View → Move Pane to New Tab（Core `Task::BreakPane`）。
+    MovePaneToNewTab,
+    /// 菜单 Edit → Select All：选中当前 pane 的整个屏幕 + 历史。
+    SelectAll,
+    /// 菜单 View → Tab Bar on Top / Bottom。
+    TabBarTop,
+    TabBarBottom,
+    /// 菜单 App → About Muxterm / Check for Updates…。
+    About,
+    CheckForUpdates,
 }
 
 impl KeyAction {
@@ -189,6 +206,11 @@ pub fn builtin_action(chord: &KeyChord) -> Option<KeyAction> {
         if key == "down" {
             return Some(KeyAction::NextCommand);
         }
+    }
+
+    // Cmd+A：选中当前 pane 的全部内容（菜单 Edit → Select All）。
+    if chord.command && !chord.shift && !chord.option && !chord.control && key == "a" {
+        return Some(KeyAction::SelectAll);
     }
 
     // Cmd+K：进入 Shells 聚合槽（菜单 `View → Shells`，与 Swift 一致）。
@@ -454,6 +476,17 @@ pub fn action_name(action: KeyAction) -> Option<String> {
         KeyAction::SwitchTab(n) => return Some(format!("switch_tab_{n}")),
         KeyAction::SwitchWorkspace(0) => "switch_workspace_last",
         KeyAction::SwitchWorkspace(n) => return Some(format!("switch_workspace_{n}")),
+        // 菜单专属动作：不参与配置文件的自定义键位（Swift 同样没有可配键）。
+        KeyAction::RenameWorkspace
+        | KeyAction::RenameTab
+        | KeyAction::MoveTabLeft
+        | KeyAction::MoveTabRight
+        | KeyAction::MovePaneToNewTab
+        | KeyAction::SelectAll
+        | KeyAction::TabBarTop
+        | KeyAction::TabBarBottom
+        | KeyAction::About
+        | KeyAction::CheckForUpdates => return None,
     };
     Some(fixed.to_string())
 }

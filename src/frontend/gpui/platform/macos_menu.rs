@@ -16,11 +16,15 @@ use objc::declare::ClassDecl;
 use objc::runtime::{Class, Object, Sel};
 use objc::{class, msg_send, sel, sel_impl};
 
-use crate::frontend::gpui::model::menu::{main_menu, Menu, MenuEntry, MenuKey};
+use crate::frontend::gpui::model::menu::{
+    localized_menu_with, Menu, MenuEntry, MenuKey, MenuState,
+};
 use crate::frontend::gpui::model::shortcuts::KeyAction;
 
 /// 动作表：菜单项的 `tag` 是这里的下标。
 static ACTIONS: OnceLock<Mutex<Vec<KeyAction>>> = OnceLock::new();
+/// 主菜单是否已经装到 `NSApp`：没有装时（无头测试）刷新是纯空操作。
+static INSTALLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// 点击回调 → gpui 的桥。只有一个窗口时也够用。
 static SENDER: OnceLock<Mutex<Option<UnboundedSender<KeyAction>>>> = OnceLock::new();
 
@@ -107,6 +111,8 @@ fn add_item(menu: *mut Object, item: *mut Object) {
 fn add_separator(menu: *mut Object) {
     unsafe {
         let separator: *mut Object = msg_send![class!(NSMenuItem), separatorItem];
+        // tag = -1：刷新状态时跳过所有分隔线（默认 0 会撞上第一项）。
+        let _: () = msg_send![separator, setTag: -1isize];
         add_item(menu, separator);
     }
 }
@@ -123,43 +129,36 @@ fn build_submenu(spec: &Menu, target: *mut Object, actions: &mut Vec<KeyAction>)
                 MenuEntry::Item(item) => {
                     let menu_item: *mut Object = msg_send![class!(NSMenuItem), alloc];
                     let menu_item: *mut Object = msg_send![menu_item, initWithTitle: ns_string(&item.label) action: std::ptr::null::<Object>() keyEquivalent: ns_string("")];
-                    match item.action {
-                        Some(action) => {
-                            // tag 指向动作表：回调只传 tag，不传指针。
-                            let tag = actions.len() as isize;
-                            actions.push(action);
-                            let _: () = msg_send![menu_item, setTag: tag];
-                            let _: () = msg_send![menu_item, setTarget: target];
-                            let _: () = msg_send![menu_item, setAction: sel!(menuAction:)];
-                            if let Some(key) = item.key.as_ref() {
-                                if let Some(equivalent) = key_equivalent(key) {
-                                    let _: () = msg_send![
-                                        menu_item,
-                                        setKeyEquivalent: ns_string(&equivalent)
-                                    ];
-                                    let mut mask = 0u64;
-                                    if key.command {
-                                        mask |= MOD_COMMAND;
-                                    }
-                                    if key.shift {
-                                        mask |= MOD_SHIFT;
-                                    }
-                                    if key.option {
-                                        mask |= MOD_OPTION;
-                                    }
-                                    if key.control {
-                                        mask |= MOD_CONTROL;
-                                    }
-                                    let _: () = msg_send![
-                                        menu_item,
-                                        setKeyEquivalentModifierMask: mask
-                                    ];
-                                }
+                    // tag 指向动作表：回调只传 tag，不传指针。
+                    let tag = actions.len() as isize;
+                    actions.push(item.action);
+                    let _: () = msg_send![menu_item, setTag: tag];
+                    let _: () = msg_send![menu_item, setTarget: target];
+                    let _: () = msg_send![menu_item, setAction: sel!(menuAction:)];
+                    // 勾选 / 置灰来自 model/menu.rs 的运行时状态。
+                    let _: () = msg_send![
+                        menu_item,
+                        setState: if item.checked { 1isize } else { 0isize }
+                    ];
+                    let _: () = msg_send![menu_item, setEnabled: item.enabled];
+                    if let Some(key) = item.key.as_ref() {
+                        if let Some(equivalent) = key_equivalent(key) {
+                            let _: () =
+                                msg_send![menu_item, setKeyEquivalent: ns_string(&equivalent)];
+                            let mut mask = 0u64;
+                            if key.command {
+                                mask |= MOD_COMMAND;
                             }
-                        }
-                        None => {
-                            // Swift 有、gpui 还没接的动作：列出但禁用。
-                            let _: () = msg_send![menu_item, setEnabled: false];
+                            if key.shift {
+                                mask |= MOD_SHIFT;
+                            }
+                            if key.option {
+                                mask |= MOD_OPTION;
+                            }
+                            if key.control {
+                                mask |= MOD_CONTROL;
+                            }
+                            let _: () = msg_send![menu_item, setKeyEquivalentModifierMask: mask];
                         }
                     }
                     add_item(menu, menu_item);
@@ -172,6 +171,14 @@ fn build_submenu(spec: &Menu, target: *mut Object, actions: &mut Vec<KeyAction>)
 
 /// 安装主菜单。返回菜单动作的接收端；没有 AppKit 时返回 `None`。
 pub fn install_menu() -> Option<UnboundedReceiver<KeyAction>> {
+    install_menu_with_state(MenuState::default())
+}
+
+/// 安装主菜单，并把运行时状态（勾选 / 置灰）带进菜单。
+///
+/// 只建一次：之后用 [`refresh_menu`] 原地改 item 的 state / enabled，
+/// 不重建 NSMenu（重建会把 `watch_menu` 的 channel 换掉，菜单点击就断了）。
+pub fn install_menu_with_state(state: MenuState) -> Option<UnboundedReceiver<KeyAction>> {
     let (tx, rx) = unbounded();
     if let Ok(mut guard) = sender().lock() {
         *guard = Some(tx);
@@ -186,20 +193,99 @@ pub fn install_menu() -> Option<UnboundedReceiver<KeyAction>> {
         }
         let main: *mut Object = msg_send![class!(NSMenu), alloc];
         let main: *mut Object = msg_send![main, init];
-        for spec in main_menu() {
+        // 自己管 enabled：默认的 autoenable 会用 validateMenuItem 覆盖我们
+        // 设的 enabled 状态，Copy 就会永远亮着。
+        let _: () = msg_send![main, setAutoenablesItems: false];
+        for spec in localized_menu_with(state) {
             let submenu = build_submenu(&spec, target, &mut table);
+            let _: () = msg_send![submenu, setAutoenablesItems: false];
+            // 顶层菜单项没有标题：菜单栏显示 submenu 的 title。
             let item: *mut Object = msg_send![class!(NSMenuItem), alloc];
             let item: *mut Object = msg_send![item, init];
             let _: () = msg_send![item, setSubmenu: submenu];
             add_item(main, item);
         }
         let _: () = msg_send![app, setMainMenu: main];
+        // 显式 retain：避免主菜单被当成临时对象回收成空菜单栏。
+        let _: () = msg_send![main, retain];
     }
 
     if let Ok(mut guard) = actions().lock() {
         *guard = table;
     }
+    INSTALLED.store(true, std::sync::atomic::Ordering::Relaxed);
     Some(rx)
+}
+
+/// 原地刷新菜单项状态（勾选 / 置灰）；状态没变时不碰 AppKit。
+pub fn refresh_menu(state: MenuState) -> bool {
+    // 无头测试没有 NSApp 主菜单：任何 AppKit 调用都会跨线程 panic。
+    if !INSTALLED.load(std::sync::atomic::Ordering::Relaxed) {
+        return false;
+    }
+    static LAST: Mutex<Option<MenuState>> = Mutex::new(None);
+    {
+        let Ok(mut last) = LAST.lock() else {
+            return false;
+        };
+        if *last == Some(state) {
+            return false;
+        }
+        *last = Some(state);
+    }
+
+    // 按与 `localized_menu_with` 完全一致的结构展开（结构不随状态变化，
+    // 只变 checked / enabled），再用 tag 找 item。
+    let mut flat = Vec::new();
+    for menu in localized_menu_with(state) {
+        for entry in menu.entries {
+            if let MenuEntry::Item(item) = entry {
+                flat.push(item);
+            }
+        }
+    }
+    let table_len = actions().lock().map(|table| table.len()).unwrap_or(0);
+    if flat.len() != table_len {
+        // 结构变了（代码升级），重建一次菜单最稳。
+        return install_menu_with_state(state).is_some();
+    }
+
+    unsafe {
+        let app: *mut Object = msg_send![class!(NSApplication), sharedApplication];
+        if app.is_null() {
+            return false;
+        }
+        let main: *mut Object = msg_send![app, mainMenu];
+        if main.is_null() {
+            return false;
+        }
+        let count: isize = msg_send![main, numberOfItems];
+        for menu_index in 0..count {
+            let top: *mut Object = msg_send![main, itemAtIndex: menu_index];
+            if top.is_null() {
+                continue;
+            }
+            let submenu: *mut Object = msg_send![top, submenu];
+            if submenu.is_null() {
+                continue;
+            }
+            let items: isize = msg_send![submenu, numberOfItems];
+            for item_index in 0..items {
+                let item: *mut Object = msg_send![submenu, itemAtIndex: item_index];
+                if item.is_null() {
+                    continue;
+                }
+                let tag: isize = msg_send![item, tag];
+                if tag < 0 || tag as usize >= flat.len() {
+                    continue;
+                }
+                let spec = &flat[tag as usize];
+                let _: () = msg_send![item, setEnabled: spec.enabled];
+                let _: () = msg_send![item, setState: if spec.checked { 1isize } else { 0isize }];
+            }
+        }
+    }
+    true
 }
 
 #[cfg(test)]

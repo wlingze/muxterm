@@ -74,6 +74,66 @@ fn status_button(
         .into_any_element()
 }
 
+/// 图标版状态栏按钮的规格。
+struct IconButtonSpec {
+    id: &'static str,
+    icon: crate::frontend::gpui::chrome::icons::Icon,
+    color: gpui::Rgba,
+    width: f32,
+    /// 数字徽标（Attention 未读数）。
+    badge: Option<String>,
+}
+
+/// 图标版状态栏按钮：矢量图标 + 可选数字徽标。
+fn icon_status_button(
+    spec: IconButtonSpec,
+    theme: &Theme,
+    cx: &mut gpui::Context<GpuiApp>,
+    on_click: impl Fn(&mut GpuiApp, &mut gpui::Window, &mut gpui::Context<GpuiApp>) + 'static,
+) -> AnyElement {
+    let IconButtonSpec {
+        id,
+        icon,
+        color,
+        width,
+        badge,
+    } = spec;
+    use crate::frontend::gpui::chrome::icons;
+    div()
+        .id(SharedString::from(id))
+        .debug_selector(move || id.to_string())
+        .flex_none()
+        .w(px(width))
+        .h(px(STATUS_BAR_HEIGHT - 4.0))
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_center()
+        .gap(px(2.0))
+        .rounded(px(4.0))
+        .cursor_pointer()
+        .hover(|style| style.bg(theme.active_bg))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |app, _, window, cx| {
+                cx.stop_propagation();
+                on_click(app, window, cx);
+            }),
+        )
+        .child(icons::status_icon(icon, color))
+        .when_some(badge, |element, badge| {
+            element.child(
+                div()
+                    .text_size(px(TAB_BAR_FONT_SIZE - 1.0))
+                    .line_height(px(10.0))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(color)
+                    .child(SharedString::from(badge)),
+            )
+        })
+        .into_any_element()
+}
+
 impl GpuiApp {
     /// 唯一的窗口底（或顶）栏杆：workspace 名 + tab 单元 + 右侧状态。
     pub(crate) fn render_status_bar(&self, cx: &mut gpui::Context<Self>) -> AnyElement {
@@ -103,17 +163,19 @@ impl GpuiApp {
             .indicator
             .map(|indicator| indicator_color(indicator, &theme))
             .unwrap_or(theme.muted);
-        // 铃铛：没有未读时是灰色空铃；有未读显示数量并按主导色着色。
-        let attention_glyph = if attention.is_active() {
-            format!("◔{}", attention.count)
-        } else {
-            String::from("◔")
-        };
-        let attention_button = status_button(
-            "status-attention",
-            SharedString::from(attention_glyph),
-            attention_color,
-            STATUS_BUTTON_WIDTH,
+        // 铃铛：没有未读时是灰色空心铃；有未读显示数量并按主导色着色。
+        let attention_button = icon_status_button(
+            IconButtonSpec {
+                id: "status-attention",
+                icon: crate::frontend::gpui::chrome::icons::Icon::Bell,
+                color: attention_color,
+                width: STATUS_BUTTON_WIDTH,
+                badge: if attention.is_active() {
+                    Some(attention.count.to_string())
+                } else {
+                    None
+                },
+            },
             &theme,
             cx,
             |app, _, cx| {
@@ -121,22 +183,28 @@ impl GpuiApp {
             },
         );
         let connection = connection_color(self.visible_backend_status(), &theme);
-        let status_dot = status_button(
-            "status-dot",
-            "●",
-            connection,
-            STATUS_DOT_WIDTH,
+        let status_dot = icon_status_button(
+            IconButtonSpec {
+                id: "status-dot",
+                icon: crate::frontend::gpui::chrome::icons::Icon::CircleFilled,
+                color: connection,
+                width: STATUS_DOT_WIDTH,
+                badge: None,
+            },
             &theme,
             cx,
             |app, _, cx| {
                 app.open_info(cx);
             },
         );
-        let fullscreen_button = status_button(
-            "status-fullscreen",
-            "⛶",
-            theme.muted,
-            STATUS_BUTTON_WIDTH,
+        let fullscreen_button = icon_status_button(
+            IconButtonSpec {
+                id: "status-fullscreen",
+                icon: crate::frontend::gpui::chrome::icons::Icon::Fullscreen,
+                color: theme.muted,
+                width: STATUS_BUTTON_WIDTH,
+                badge: None,
+            },
             &theme,
             cx,
             |app, window, cx| {
@@ -147,11 +215,14 @@ impl GpuiApp {
                 );
             },
         );
-        let settings_button = status_button(
-            "status-settings",
-            "⚙",
-            theme.muted,
-            STATUS_BUTTON_WIDTH,
+        let settings_button = icon_status_button(
+            IconButtonSpec {
+                id: "status-settings",
+                icon: crate::frontend::gpui::chrome::icons::Icon::Gear,
+                color: theme.muted,
+                width: STATUS_BUTTON_WIDTH,
+                badge: None,
+            },
             &theme,
             cx,
             |app, window, cx| {
@@ -184,11 +255,14 @@ impl GpuiApp {
                     == crate::frontend::gpui::chrome::tab_bar_view::TabBarPosition::Bottom,
                 |element| element.border_t_1(),
             )
-            .child(status_button(
-                "sidebar-toggle",
-                if self.sidebar_visible() { "◧" } else { "▭" },
-                theme.muted,
-                SIDEBAR_TOGGLE_WIDTH,
+            .child(icon_status_button(
+                IconButtonSpec {
+                    id: "sidebar-toggle",
+                    icon: crate::frontend::gpui::chrome::icons::Icon::Sidebar,
+                    color: theme.muted,
+                    width: SIDEBAR_TOGGLE_WIDTH,
+                    badge: None,
+                },
                 &theme,
                 cx,
                 |app, window, cx| {

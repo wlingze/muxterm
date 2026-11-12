@@ -229,6 +229,29 @@ Core 的 `PaneClosed` / `TabClosed` / `BackendStatusChanged` 到达后，前端�
 
 首帧还没回来（`visible == None`）时不触发退出，否则 tmux socket 连不上会一启动就关窗。
 
+### 5.5 图标与菜单栏
+
+图标统一在 `chrome/icons.rs`：24×24 设计网格 + `PathBuilder` 描边/填充，
+按目标尺寸等比缩放。
+
+为什么不用 emoji / 字体字形：`👁`、`🚫`、`⚙` 是彩色字体，字号一变就跳基线，
+而且各家 fallback 字体粗细不一，看起来像贴纸。也不走 `NSImage(systemSymbolName:)`：
+那是 macOS 独占，Linux / Windows 没有。侧栏 marker、尾部按钮、状态栏按钮、
+tab 活动标记、panel 标记列、`⋯` 全部走同一套矢量图标；未知 symbol 也映射到
+可画图形，绝不回退成 emoji。
+
+菜单栏（`model/menu.rs` → `platform/macos_menu.rs`）：
+
+- **每一项都有动作**。早期版本里有 `action == None` 的灰条（About / Check for
+  Updates / Select All / Rename Tab…），用户点了没反应；现在这些全部接上
+  （`open_info`、Core `update_check`、`select_all`、改名浮层、`BreakPane`、
+  tab 栏位置等）。
+- 条目携带 `checked` / `enabled`：`Tab Bar on Top/Bottom` 打勾互斥，没有选区
+  时 Copy 置灰。原生菜单 `setAutoenablesItems(false)`，否则 AppKit 会覆盖状态。
+- 状态变化用 `refresh_menu` **原地**改 item 的 state / enabled，不重建 NSMenu ——
+  重建会换掉 `watch_menu` 的 channel，菜单点击就断了。
+- 文案走 i18n；测试断言每条菜单文案都有 key，且中文目录有翻译。
+
 ## 6. 数据流与线程
 
 ```text

@@ -249,7 +249,14 @@ impl GpuiApp {
                                     this.open_pane_menu(pane_id, cx);
                                 }),
                             )
-                            .child(SharedString::from("⋯")),
+                            .child(crate::frontend::gpui::chrome::icons::icon_element(
+                                crate::frontend::gpui::chrome::icons::IconSpec::with_size(
+                                    crate::frontend::gpui::chrome::icons::Icon::Ellipsis,
+                                    theme.muted,
+                                    12.0,
+                                ),
+                                12.0,
+                            )),
                     )
                     .into_any_element(),
             )

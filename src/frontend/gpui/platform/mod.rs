@@ -12,7 +12,13 @@ pub mod clipboard_image;
 pub mod macos_menu;
 
 #[cfg(target_os = "macos")]
-pub use macos_menu::install_menu;
+pub use macos_menu::{install_menu, refresh_menu};
+
+/// 非 macOS 没有原生菜单，刷新是空操作。
+#[cfg(not(target_os = "macos"))]
+pub fn refresh_menu(_state: crate::frontend::gpui::model::menu::MenuState) -> bool {
+    false
+}
 
 /// 安装窗口菜单栏，返回菜单动作的接收端。
 ///

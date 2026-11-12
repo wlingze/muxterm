@@ -782,6 +782,8 @@ impl GpuiApp {
             Ok(Some(workspace)) => {
                 self.open_pending = false;
                 self.open_started = None;
+                // 用户主动重新打开同一个 target：撤销关闭墓碑。
+                self.closed_workspaces.remove(&workspace.id);
                 if let Err(error) = pump.sync_view_store(&mut self.store) {
                     tracing::warn!(%error, "sync after open");
                 }

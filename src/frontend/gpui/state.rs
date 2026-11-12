@@ -688,8 +688,21 @@ impl GpuiApp {
         // 「切了 / 分了但光标不见了、打字没反应」。
         dirty |= self.sync_focused_pane();
         dirty |= self.drain_render_events();
+        self.sync_menu_state();
         let _ = cx;
         dirty
+    }
+
+    /// 把运行时可变的菜单状态（勾选 / 置灰）同步到原生菜单栏。
+    fn sync_menu_state(&self) {
+        use crate::frontend::gpui::model::menu::MenuState;
+        let state = MenuState {
+            tab_bar_on_top: self.tab_bar_position()
+                == crate::frontend::gpui::chrome::tab_bar_view::TabBarPosition::Top,
+            has_selection: self.selection.is_some(),
+            has_pane: self.focused_pane.is_some(),
+        };
+        let _ = crate::frontend::gpui::platform::refresh_menu(state);
     }
 
     /// 把焦点同步到当前 tab 的活动 pane。
@@ -1609,6 +1622,72 @@ impl GpuiApp {
         (!text.is_empty()).then_some(text)
     }
 
+    /// Edit → Select All：选中当前 pane 的整个视口（含滚出去的历史）。
+    ///
+    /// 对照 macOS `NSText.selectAll`：整块屏幕 + 当前滚动位置以上的历史
+    /// 都算。这里用「视口最后一行、最后一列 → 视口第 0 行、第 0 列」表示，
+    /// 复制路径与拖选完全一致。
+    pub fn select_all(&mut self, cx: &mut Context<Self>) -> bool {
+        let (Some(workspace), Some(pane_id)) = (self.visible.clone(), self.focused_pane) else {
+            return false;
+        };
+        let Some(surface) = self.surface(&workspace, pane_id) else {
+            return false;
+        };
+        let rows = surface.grid().rows();
+        let cols = surface.grid().cols();
+        if rows == 0 || cols == 0 {
+            return false;
+        }
+        let selection = crate::frontend::gpui::model::selection::Selection::new(
+            crate::frontend::gpui::model::selection::CellPos::new(0, 0),
+            crate::frontend::gpui::model::selection::CellPos::new(rows - 1, cols - 1),
+            crate::frontend::gpui::model::selection::Kind::Simple,
+        );
+        self.selection = Some(PaneSelection { pane_id, selection });
+        self.dragging_selection = false;
+        cx.notify();
+        true
+    }
+
+    /// 菜单 App → Check for Updates…：走 Core 的 `update_check`。
+    ///
+    /// 结果写进 Info 浮层底部的状态行，同时打开浮层 —— 否则用户点了菜单
+    /// 看不到任何反馈。
+    pub fn check_for_updates(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(pump) = self.pump.as_ref() else {
+            return false;
+        };
+        let message = match pump.client().update_check() {
+            Ok(status) => {
+                use crate::frontend::utils::corebridge::ClientUpdatePhase;
+                match status.phase {
+                    ClientUpdatePhase::Available => match status.version {
+                        Some(version) => format!("Update available: {version}"),
+                        None => "Update available".to_string(),
+                    },
+                    ClientUpdatePhase::UpToDate => {
+                        format!("Muxterm {} is up to date", status.current_version)
+                    }
+                    ClientUpdatePhase::Installed => {
+                        "Update installed; restart to apply".to_string()
+                    }
+                    ClientUpdatePhase::Failed => status
+                        .message
+                        .unwrap_or_else(|| "Update check failed".to_string()),
+                    _ => status
+                        .message
+                        .unwrap_or_else(|| "Update check finished".to_string()),
+                }
+            }
+            Err(error) => format!("Update check failed: {error}"),
+        };
+        self.info = Some(crate::frontend::utils::corebridge::ClientBuildInfo::load());
+        self.info_status = Some(message);
+        cx.notify();
+        true
+    }
+
     /// Cmd-C / Edit → Copy：把选区写进系统剪贴板。
     pub fn copy_selection(&mut self, cx: &mut Context<Self>) -> bool {
         let Some(text) = self.selected_text() else {
@@ -1991,6 +2070,53 @@ impl GpuiApp {
                 self.sidebar_visible = !self.sidebar_visible;
                 true
             }
+            // 菜单专属动作（Swift 的 selector 一一对应）。
+            KeyAction::RenameWorkspace => {
+                self.open_rename_workspace(cx);
+                true
+            }
+            KeyAction::RenameTab => {
+                self.open_rename_tab(cx);
+                true
+            }
+            KeyAction::MoveTabLeft => {
+                self.move_active_tab(-1, cx);
+                true
+            }
+            KeyAction::MoveTabRight => {
+                self.move_active_tab(1, cx);
+                true
+            }
+            KeyAction::MovePaneToNewTab => {
+                let Some(pane_id) = self.focused_pane else {
+                    return false;
+                };
+                self.commands.push(ClientCommand::Task {
+                    workspace_id: self.visible.clone(),
+                    task: ClientTask::BreakPane { pane_id },
+                });
+                true
+            }
+            KeyAction::SelectAll => self.select_all(cx),
+            KeyAction::TabBarTop => {
+                self.set_tab_bar_position(
+                    crate::frontend::gpui::chrome::tab_bar_view::TabBarPosition::Top,
+                    cx,
+                );
+                true
+            }
+            KeyAction::TabBarBottom => {
+                self.set_tab_bar_position(
+                    crate::frontend::gpui::chrome::tab_bar_view::TabBarPosition::Bottom,
+                    cx,
+                );
+                true
+            }
+            KeyAction::About => {
+                self.open_info(cx);
+                true
+            }
+            KeyAction::CheckForUpdates => self.check_for_updates(cx),
             _ => false,
         }
     }
@@ -2050,6 +2176,12 @@ impl GpuiApp {
             }
         }
         dirty
+    }
+
+    /// 测试用：清掉焦点 pane（模拟没有 pane 的窗口）。
+    #[doc(hidden)]
+    pub fn clear_focus_for_tests(&mut self) {
+        self.focused_pane = None;
     }
 
     /// 测试用：Core 当前 pool 里的 workspace 数量（没有 pump 时 None）。

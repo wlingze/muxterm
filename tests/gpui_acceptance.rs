@@ -771,3 +771,73 @@ fn a_tmux_session_that_ends_closes_the_workspace(cx: &mut TestAppContext) {
     assert_eq!(tabs, 0, "僵尸 tab 必须退出");
     assert!(quit, "没有活 workspace 时按 Swift 关窗口");
 }
+
+/// 回归（关闭 workspace）：关掉可见 workspace 要真的让 Core 收起它，
+/// 前端立刻切到剩下的那个，画面不能空。
+///
+/// 旧实现只把 `CloseWorkspace` 塞进队列；Core 不会为此发 topology 事件，
+/// 于是侧栏行和冻住的画面永远留着，用户看到的就是「关闭 workspace 失败」。
+#[gpui::test]
+fn closing_a_workspace_reaches_core_and_falls_back(cx: &mut TestAppContext) {
+    let tmux = IsolatedTmux::start();
+    let (view, cx) = app_with_isolated_tmux(cx, &tmux);
+
+    // 通过面板开第二个 workspace（与上一个测试同一条真实路径）。
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.open_target_editor(None, cx);
+            app.update_target_editor(
+                |editor| {
+                    editor.set_name("second");
+                    editor.set_path("/tmp");
+                },
+                cx,
+            );
+            app.save_target_editor(cx);
+        })
+    });
+    pump_until_true(&view, cx, "第二个 workspace 出现", |app| {
+        app.sidebar_items()
+            .iter()
+            .filter(|item| !item.is_aggregate())
+            .count()
+            >= 2
+    });
+    let before = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            (
+                app.core_workspace_count_for_tests(),
+                app.visible_workspace().map(str::to_string),
+            )
+        })
+    });
+    assert_eq!(before.0, Some(2), "Core 里应该有两个 workspace");
+    let closing = before.1.expect("可见 workspace");
+
+    cx.update(|_, cx| view.update(cx, |app, cx| app.close_workspace(closing.clone(), cx)));
+    pump_until_true(&view, cx, "Core 收起被关的 workspace", |app| {
+        app.core_workspace_count_for_tests() == Some(1)
+    });
+    pump_until_true(&view, cx, "切到剩下的 workspace", |app| {
+        app.visible_workspace().is_some_and(|id| id != closing)
+    });
+
+    let (sidebar, quit, screen) = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            (
+                app.sidebar_items()
+                    .iter()
+                    .filter(|item| !item.is_aggregate())
+                    .count(),
+                app.quit_requested(),
+                app.focused_pane().and_then(|pane| app.pane_screen(pane)),
+            )
+        })
+    });
+    assert_eq!(sidebar, 1, "侧栏只剩没被关的那个 workspace");
+    assert!(!quit, "还有 workspace 时不能退出窗口");
+    assert!(
+        screen.is_some_and(|screen| !screen.trim().is_empty()),
+        "剩下的 workspace 必须还有画面"
+    );
+}
