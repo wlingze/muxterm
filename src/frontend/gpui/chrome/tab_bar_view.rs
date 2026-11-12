@@ -53,6 +53,30 @@ pub enum TabBarStyle {
 impl TabBarStyle {
     pub const FIXED_TAB_WIDTH: f32 = 128.0;
     pub const MAXIMUM_FITTED_TAB_WIDTH: f32 = 280.0;
+    /// 等宽铺满时单 tab 的最小宽度：再多 tab 也不压到字看不清。
+    pub const MINIMUM_EQUAL_TAB_WIDTH: f32 = 96.0;
+
+    /// 这个 tab 应该多宽（`viewport` 是可分配给 tab 整条带的宽度）。
+    ///
+    /// 对照 macOS `StatusBarView.swift` 的 `fillsViewport`：只有等宽样式把
+    /// `tabStackTrailingConstraint` 激活并铺满视口；fixed / compact 保持自然
+    /// 宽度从左排。
+    pub fn tab_width(self, viewport: f32, count: usize) -> Option<f32> {
+        match self {
+            // `None` = 交给 flex 平分（`flex_1`），不再写死像素。
+            Self::EqualWidth => None,
+            Self::Fixed => Some(Self::FIXED_TAB_WIDTH),
+            Self::Compact => {
+                Some((viewport / count.max(1) as f32).min(Self::MAXIMUM_FITTED_TAB_WIDTH))
+            }
+        }
+    }
+
+    /// 等宽样式下每个 tab 实际拿到的宽度（测试与 tooltip 用）。
+    pub fn equal_width_for(viewport: f32, count: usize) -> f32 {
+        let count = count.max(1) as f32;
+        (viewport / count).max(Self::MINIMUM_EQUAL_TAB_WIDTH)
+    }
 
     pub fn from_raw(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {

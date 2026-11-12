@@ -284,15 +284,9 @@ impl GpuiApp {
                     .child(SharedString::from(left)),
             )
             .child(div().flex_none().w(px(1.0)).h(px(12.0)).bg(theme.border))
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(2.0))
-                    .flex_none()
-                    .children(self.render_tabs(cx)),
-            )
+            // tab 带：等宽样式要铺满中间所有空间，所以自己带 `flex`，
+            // 不再由外面套一层 `flex_none`（那会把等宽压回自然宽度）。
+            .child(self.render_tabs(cx))
             .when_some(tmux_left_text, |element, text| {
                 element.child(
                     div()

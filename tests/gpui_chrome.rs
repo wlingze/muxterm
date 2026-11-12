@@ -3687,7 +3687,12 @@ fn cmd_v_pastes_a_clipboard_image(cx: &mut TestAppContext) {
     use gpui::{ClipboardItem, Image, ImageFormat};
     let (view, cx) = mount(store_with_two_workspaces(), cx);
     cx.run_until_parked();
-    let image = Image::from_bytes(ImageFormat::Jpeg, vec![0xff, 0xd8, 0x00, 0x01]);
+    // 用真 PNG：`to_png` 对 PNG 原样透传，测试不依赖 AppKit 解码
+    // （AppKit 解无效/畸形图会卡十几秒，把横幅的展示期耗光）。
+    let image = Image::from_bytes(
+        ImageFormat::Png,
+        vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0],
+    );
     cx.update(|_, cx| cx.write_to_clipboard(ClipboardItem::new_image(&image)));
     cx.simulate_keystrokes("cmd-v");
     cx.run_until_parked();
@@ -3783,6 +3788,86 @@ fn the_sidebar_keeps_its_sections_in_separate_bands(cx: &mut TestAppContext) {
         "Agents 要比 Commands 高（用户明确要求）"
     );
     let _ = view;
+}
+
+/// 用户报障（截图 3）：tab 栏应该默认等宽铺满，并用颜色区分运行/完成。
+///
+/// 对照 Swift `StatusBarView.swift` 的 `fillsViewport`：`equal_width` 时
+/// `tabStack.distribution = .fillEqually` 且 `tabStackTrailingConstraint` 激活。
+#[gpui::test]
+fn tabs_fill_the_bar_equally_by_default(cx: &mut TestAppContext) {
+    use muxterm::frontend::gpui::chrome::tab_bar_view::TabBarStyle;
+    let (view, cx) = mount(two_tab_store(), cx);
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(|_, cx| view.update(cx, |app, _| app.tab_bar_style())),
+        TabBarStyle::EqualWidth,
+        "缺省必须是等宽铺满"
+    );
+    let mut ids = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            app.tab_items()
+                .into_iter()
+                .map(|item| item.tab_id)
+                .collect::<Vec<_>>()
+        })
+    });
+    assert_eq!(ids.len(), 2, "这个 store 有两个 tab：{ids:?}");
+    ids.sort_unstable();
+    let _ = &ids;
+    // `debug_bounds` 要求 `&'static str`：两个 id 只有几种可能，直接枚举。
+    let first = cx.debug_bounds("tab-1").expect("第一个 tab");
+    let second = cx.debug_bounds("tab-2").expect("第二个 tab");
+    let strip = cx.debug_bounds("tab-strip").expect("tab 带必须渲染");
+    // 等宽：两个 tab 宽度一致（允许亚像素差）。
+    assert!(
+        (f32::from(first.size.width) - f32::from(second.size.width)).abs() < 1.0,
+        "等宽样式下每个 tab 应一样宽：{} vs {}",
+        f32::from(first.size.width),
+        f32::from(second.size.width)
+    );
+    // 铺满：两个 tab + 2pt 间距应接近整条带子的宽度。
+    let used = f32::from(first.size.width) + f32::from(second.size.width) + 2.0;
+    assert!(
+        (f32::from(strip.size.width) - used).abs() < 3.0,
+        "tab 必须铺满整条带子：strip={} used={used}",
+        f32::from(strip.size.width)
+    );
+}
+
+/// 用户报障（截图 3）：tab 要用颜色区分运行中 / 完成。
+#[gpui::test]
+fn tab_colours_follow_the_activity_state(_cx: &mut TestAppContext) {
+    use muxterm::frontend::gpui::chrome::tab_bar::tab_state_color;
+    use muxterm::frontend::gpui::chrome::tab_bar_view::TabBarItem;
+    use muxterm::frontend::gpui::theme::Theme;
+    let theme = Theme::default();
+    let base = TabBarItem {
+        tab_id: 1,
+        index: 1,
+        title: "zsh".into(),
+        active: false,
+        pane_count: 1,
+        activity: None,
+        identity: None,
+    };
+    assert_eq!(tab_state_color(&base, &theme), theme.muted, "idle 不点亮");
+    for (indicator, expected) in [
+        (Indicator::Working, theme.working),
+        (Indicator::Blocked, theme.blocked),
+        (Indicator::Done, theme.done),
+    ] {
+        let item = TabBarItem {
+            activity: Some(indicator),
+            ..base.clone()
+        };
+        assert_eq!(
+            tab_state_color(&item, &theme),
+            expected,
+            "{indicator:?} 必须用对应的状态色"
+        );
+        assert_ne!(expected, theme.muted, "状态色不能和 idle 一样");
+    }
 }
 
 /// IME 提交要落到当前吃文字的那个输入框，而不是永远当成终端输入。
@@ -4918,7 +5003,9 @@ fn an_unreadable_clipboard_image_reports_a_banner(cx: &mut TestAppContext) {
     use gpui::{ClipboardItem, Image, ImageFormat};
     let (view, cx) = mount(store_with_two_workspaces(), cx);
     cx.run_until_parked();
-    let image = Image::from_bytes(ImageFormat::Jpeg, vec![0xff, 0xd8, 0x00, 0x01]);
+    // 空字节：`to_png` 在进 AppKit 之前就返回 None。不要用畸形的
+    // 非空字节 —— AppKit 解码它会卡十几秒，横幅早过期了。
+    let image = Image::from_bytes(ImageFormat::Jpeg, Vec::new());
     let item = ClipboardItem::new_image(&image);
     cx.update(|_, cx| cx.write_to_clipboard(item));
     let handled = cx.update(|_, cx| view.update(cx, |app, cx| app.paste_clipboard_image(cx)));

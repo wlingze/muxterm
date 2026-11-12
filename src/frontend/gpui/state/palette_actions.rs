@@ -369,6 +369,7 @@ impl GpuiApp {
         i18n::set_language(self.language);
         // 窗口标题开关同样来自 Core：关掉后下一帧就把标题写成空串。
         self.set_show_title_bar(super::ui_config_from_snapshot(snapshot).show_title_bar);
+        self.tab_bar_style = super::tab_bar_style_from_snapshot(snapshot);
         self.status_bar_mode = StatusBarMode::from_config(
             snapshot.values["statusbar"]["mode"]
                 .as_str()
