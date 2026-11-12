@@ -14,8 +14,7 @@ use crate::frontend::gpui::state::GpuiApp;
 use crate::frontend::utils::corebridge::FfiClient;
 use crate::frontend::view_store::ViewStore;
 
-/// 侧栏宽度：与 macOS `mainSplitController.setPosition(240)` 一致。
-const SIDEBAR_WIDTH: f32 = 240.0;
+/// 侧栏宽度默认值与拖动范围见 `model/sidebar_layout`。
 /// tab 栏 / 状态栏高度统一从 chrome 常量取，避免两处漂移。
 use crate::frontend::gpui::chrome::status_bar::STATUS_BAR_HEIGHT;
 
@@ -71,6 +70,9 @@ impl Render for GpuiApp {
         let viewport = window.viewport_size();
         let width = f32::from(viewport.width);
         let height = f32::from(viewport.height);
+        // 侧栏分区与拖动夹取都读窗口尺寸：每帧写一次，比到处传参数简单。
+        self.window_width = width;
+        self.window_height = height;
         self.measure_cell(window);
         // 窗口标题：关掉 `[ui] show_title_bar` 就写空串（只剩 traffic lights）。
         let title = crate::frontend::gpui::state::window_title_text(
@@ -85,7 +87,12 @@ impl Render for GpuiApp {
         let (cell_width, cell_height) = self.cell();
 
         let sidebar_width = if self.sidebar_visible() {
-            SIDEBAR_WIDTH
+            // 与侧栏渲染用同一个夹取函数，正文 origin 不能和实际宽度错位。
+            crate::frontend::gpui::model::sidebar_layout::clamp_sidebar_width(
+                self.sidebar_width,
+                width,
+                320.0,
+            )
         } else {
             0.0
         };
@@ -155,6 +162,7 @@ impl Render for GpuiApp {
                             // 所以 pane 之间看得到一条 chrome 色，而不是连成一片。
                             .bg(theme.chrome_bg)
                             .children(panes)
+                            .child(self.render_sidebar_drag_overlay(cx))
                             .children(self.render_pane_menu(area, cx))
                             .children(self.render_panel(cx))
                             .children(self.render_composer(cx))
