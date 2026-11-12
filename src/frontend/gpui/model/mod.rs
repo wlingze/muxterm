@@ -35,6 +35,7 @@ pub mod selection;
 pub mod settings;
 pub mod shortcuts;
 pub mod sidebar;
+pub mod sidebar_layout;
 pub mod status_bar;
 pub mod surface_feed;
 pub mod target;

@@ -3704,6 +3704,87 @@ fn cmd_v_pastes_a_clipboard_image(cx: &mut TestAppContext) {
     );
 }
 
+/// 用户报障（截图 1）：侧栏宽度写死不能拖。
+///
+/// 分隔条必须存在、可拖、并有上下限；拖动后正文 origin 跟着变（否则点击
+/// 命中和画出来的位置会错位）。
+#[gpui::test]
+fn dragging_the_sidebar_divider_resizes_the_sidebar(cx: &mut TestAppContext) {
+    use muxterm::frontend::gpui::model::sidebar_layout::{SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH};
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.run_until_parked();
+    let divider = cx.debug_bounds("sidebar-divider").expect("分隔条必须存在");
+    let grab = divider.center();
+    cx.simulate_mouse_down(grab, gpui::MouseButton::Left, gpui::Modifiers::none());
+    cx.simulate_mouse_move(
+        gpui::point(px(360.0), grab.y),
+        gpui::MouseButton::Left,
+        gpui::Modifiers::none(),
+    );
+    cx.run_until_parked();
+    let width = cx.update(|_, cx| view.update(cx, |app, _| app.sidebar_width_for_tests()));
+    assert!(
+        (width - 360.0).abs() < 2.0,
+        "拖到 360pt 时侧栏就该是 360pt，实际 {width}"
+    );
+    // 拖过上限也不能超出 Swift 的 480pt。
+    cx.simulate_mouse_move(
+        gpui::point(px(900.0), grab.y),
+        gpui::MouseButton::Left,
+        gpui::Modifiers::none(),
+    );
+    cx.run_until_parked();
+    let width = cx.update(|_, cx| view.update(cx, |app, _| app.sidebar_width_for_tests()));
+    assert_eq!(width, SIDEBAR_MAX_WIDTH);
+    cx.simulate_mouse_up(
+        gpui::point(px(900.0), grab.y),
+        gpui::MouseButton::Left,
+        gpui::Modifiers::none(),
+    );
+    cx.run_until_parked();
+    let dragging = cx.update(|_, cx| view.update(cx, |app, _| app.sidebar_dragging_for_tests()));
+    assert!(!dragging, "松手后必须结束拖拽");
+    // 侧栏真的变宽了（正文 origin 跟着走）。
+    let sidebar = cx.debug_bounds("sidebar").expect("侧栏必须渲染");
+    assert_eq!(f32::from(sidebar.size.width), SIDEBAR_MAX_WIDTH);
+    assert!(SIDEBAR_MIN_WIDTH < SIDEBAR_MAX_WIDTH);
+}
+
+/// 用户报障（截图 1）：四段挤在同一个滚动区。
+///
+/// 现在 Workspaces / Agents / Commands 各自成区，Hidden Commands 固定贴底。
+#[gpui::test]
+fn the_sidebar_keeps_its_sections_in_separate_bands(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.run_until_parked();
+    let workspaces = cx
+        .debug_bounds("sidebar-scroll-Workspaces")
+        .expect("上半区必须渲染");
+    let agents = cx
+        .debug_bounds("sidebar-scroll-Agents")
+        .expect("Agents 区必须渲染");
+    let commands = cx
+        .debug_bounds("sidebar-scroll-Commands")
+        .expect("Commands 区必须渲染");
+    assert!(
+        f32::from(workspaces.origin.y) < f32::from(agents.origin.y),
+        "Workspaces 在上半区"
+    );
+    assert!(
+        f32::from(agents.origin.y) < f32::from(commands.origin.y),
+        "Agents 在 Commands 之上"
+    );
+    assert!(
+        f32::from(workspaces.size.height) > f32::from(agents.size.height),
+        "Workspaces 要比 Agents 高"
+    );
+    assert!(
+        f32::from(agents.size.height) > f32::from(commands.size.height),
+        "Agents 要比 Commands 高（用户明确要求）"
+    );
+    let _ = view;
+}
+
 /// IME 提交要落到当前吃文字的那个输入框，而不是永远当成终端输入。
 ///
 /// 回归：`commit_text` 只判断 `panel.open`，命令面板 / 设置里用中文输入法

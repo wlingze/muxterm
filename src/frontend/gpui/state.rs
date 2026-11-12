@@ -187,6 +187,15 @@ pub struct GpuiApp {
     pub(crate) tab_bar_position: crate::frontend::gpui::chrome::tab_bar_view::TabBarPosition,
     /// 侧栏是否显示（Cmd-B 切换，与 Swift 一致）。
     pub(crate) sidebar_visible: bool,
+    /// 侧栏宽度（可拖动，`SIDEBAR_MIN_WIDTH..=SIDEBAR_MAX_WIDTH`）。
+    pub(crate) sidebar_width: f32,
+    /// 正在拖侧栏分隔条。
+    pub(crate) sidebar_dragging: bool,
+    /// 按下分隔条时鼠标到侧栏左边界的距离（拖动时保持这个偏移）。
+    pub(crate) sidebar_drag_offset: f32,
+    /// 上一帧的窗口尺寸：侧栏分区 / 拖动夹取都要用它。
+    pub(crate) window_width: f32,
+    pub(crate) window_height: f32,
     /// 是否直读系统剪贴板（`NSPasteboard`）。无头测试关掉它：并行测试读真实
     /// 剪贴板既不确定（取决于用户此刻复制了什么），也不是线程安全的。
     system_pasteboard: bool,
@@ -301,6 +310,11 @@ impl GpuiApp {
             search_snapshot: None,
             tab_bar_position,
             sidebar_visible: true,
+            sidebar_width: crate::frontend::gpui::model::sidebar_layout::SIDEBAR_WIDTH,
+            sidebar_dragging: false,
+            sidebar_drag_offset: 0.0,
+            window_width: 1_280.0,
+            window_height: 800.0,
             system_pasteboard: true,
             attention: None,
             existing: Vec::new(),
@@ -1093,6 +1107,11 @@ impl GpuiApp {
             tab_bar_position: crate::frontend::gpui::chrome::tab_bar_view::TabBarPosition::default(
             ),
             sidebar_visible: true,
+            sidebar_width: crate::frontend::gpui::model::sidebar_layout::SIDEBAR_WIDTH,
+            sidebar_dragging: false,
+            sidebar_drag_offset: 0.0,
+            window_width: 1_280.0,
+            window_height: 800.0,
             attention: None,
             attention_at: None,
             existing: Vec::new(),
@@ -1313,6 +1332,16 @@ impl GpuiApp {
 
     pub fn sidebar_visible(&self) -> bool {
         self.sidebar_visible
+    }
+
+    /// 测试用：侧栏当前宽度（拖动后要能读到）。
+    pub fn sidebar_width_for_tests(&self) -> f32 {
+        self.sidebar_width
+    }
+
+    /// 测试用：是否还在拖侧栏分隔条。
+    pub fn sidebar_dragging_for_tests(&self) -> bool {
+        self.sidebar_dragging
     }
 
     pub fn theme(&self) -> &Theme {
