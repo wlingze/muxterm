@@ -75,11 +75,13 @@ objc2-app-kit = { version = "0.3", optional = true, default-features = false, fe
     "std",
     "NSBitmapImageRep",
     "NSImageRep",
+    "NSPasteboard",
 ] }
 objc2-foundation = { version = "0.3", optional = true, default-features = false, features = [
     "std",
     "NSData",
     "NSDictionary",
+    "NSString",
 ] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
