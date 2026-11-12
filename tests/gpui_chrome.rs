@@ -5014,6 +5014,64 @@ fn dragging_selects_text_and_cmd_c_copies_it(cx: &mut TestAppContext) {
     );
 }
 
+/// Cmd-A / Edit → Select All：整屏（含滚动历史）都进选区，Cmd-C 复制全文。
+#[gpui::test]
+fn select_all_takes_the_whole_screen(cx: &mut TestAppContext) {
+    let (view, cx) = mount(two_tab_store(), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.feed_pane_for_tests(
+                "local@@dev@tmux@dev",
+                10,
+                20,
+                4,
+                b"first line\r\nsecond line\r\nthird",
+                cx,
+            );
+        })
+    });
+    cx.run_until_parked();
+
+    cx.simulate_keystrokes("cmd-a");
+    let (selection, text) = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            (
+                app.selection_for(10),
+                app.selected_text().unwrap_or_default(),
+            )
+        })
+    });
+    let selection = selection.expect("Cmd-A 必须建出选区");
+    assert_eq!(
+        (selection.anchor.row, selection.anchor.col),
+        (0, 0),
+        "选区从第 0 行第 0 列开始"
+    );
+    assert!(text.contains("first line"), "整屏都要选中：{text:?}");
+    assert!(text.contains("third"), "最后一行也要选中：{text:?}");
+
+    cx.simulate_keystrokes("cmd-c");
+    let copied = cx.update(|_, cx| {
+        cx.read_from_clipboard()
+            .and_then(|item| item.text())
+            .unwrap_or_default()
+    });
+    assert!(copied.contains("first line") && copied.contains("third"));
+}
+
+/// 没有 pane 时 Cmd-A 不能 panic，也不能凭空造选区。
+#[gpui::test]
+fn select_all_without_a_pane_is_a_no_op(cx: &mut TestAppContext) {
+    let (view, cx) = mount(two_tab_store(), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.clear_focus_for_tests();
+            assert!(!app.select_all(cx));
+            assert!(app.selection_for(10).is_none());
+        })
+    });
+}
+
 /// 双击选词走 `word_selection`，三击整行；单击不算选区。
 #[gpui::test]
 fn click_counts_pick_words_lines_and_nothing(cx: &mut TestAppContext) {

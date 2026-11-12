@@ -6,6 +6,7 @@
 
 use gpui::{div, prelude::*, px, AnyElement, MouseButton, SharedString};
 
+use crate::frontend::gpui::chrome::icons::{self, Icon};
 use crate::frontend::gpui::chrome::sidebar_view::{
     CommandKey, RowTarget, Section, SidebarRow, SidebarSectionModel,
 };
@@ -17,12 +18,24 @@ use crate::frontend::gpui::theme::Theme;
 const ROW_HEIGHT: f32 = 36.0;
 /// 侧栏宽度：与 macOS `mainSplitController.setPosition(240)` 一致。
 pub const SIDEBAR_WIDTH: f32 = 240.0;
-/// 段头高度：Swift 的 `NSButton` 段头 + 上下留白。
-const SECTION_HEIGHT: f32 = 22.0;
-/// 段头左右内边距。
-const SECTION_INSET: f32 = 12.0;
-/// 行左右内边距（Swift cell 的 leading/trailing）。
-const ROW_INSET: f32 = 8.0;
+/// 段头高度：Swift 的 `NSButton` 段头（26pt）+ 上下留白。
+const SECTION_HEIGHT: f32 = 26.0;
+/// 段头左右内边距：与 Swift `header.leading = 6` 一致。
+const SECTION_INSET: f32 = 6.0;
+/// 行左右内边距：Swift cell 的 marker 从 9pt 起（`leadingAnchor + 9`）。
+const ROW_INSET: f32 = 9.0;
+/// 行间距：Swift `table.intercellSpacing.height = 1`。
+const ROW_SPACING: f32 = 1.0;
+/// marker 列宽（Swift `marker.width = 11`）。
+const MARKER_WIDTH: f32 = 11.0;
+/// marker 与编号之间的间距（Swift `shortcutLabel.leading = marker.trailing + 6`）。
+const MARKER_TO_SHORTCUT: f32 = 6.0;
+/// 编号列宽（Swift `shortcutLabel.width = 13`）。
+const SHORTCUT_WIDTH: f32 = 13.0;
+/// 编号与标题之间的间距（Swift `titleLabel.leading = shortcut.trailing + 3`）。
+const SHORTCUT_TO_TITLE: f32 = 3.0;
+/// 尾部按钮宽（Swift `trailingButtonWidth = 22`）。
+const TRAILING_WIDTH: f32 = 22.0;
 
 impl GpuiApp {
     pub(crate) fn render_sidebar(&self, cx: &mut gpui::Context<Self>) -> AnyElement {
@@ -44,7 +57,19 @@ impl GpuiApp {
             .bg(theme.sidebar_bg)
             .border_r_1()
             .border_color(theme.border)
-            .children(sections)
+            .child(
+                // 四段都在同一个滚动区里：workspace 一多不能把后面的段挤没
+                // （Swift 每段各有一个 NSScrollView，这里整栏滚动更简单，
+                // 视觉上仍是四段）。
+                div()
+                    .id("sidebar-scroll")
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .overflow_y_scroll()
+                    .children(sections),
+            )
             .into_any_element()
     }
 
@@ -70,6 +95,16 @@ impl GpuiApp {
         div()
             .flex()
             .flex_col()
+            .when(kind != Section::Workspaces, |element| {
+                // 段间隔一条 hairline + 8pt：Swift 的四个独立表格之间就是
+                // 这种「分组卡片」的边界，没有分隔线会糊成一大片。
+                element
+                    .pt(px(8.0))
+                    .border_t_1()
+                    .border_color(theme.border)
+                    .mt(px(4.0))
+                    .mb(px(4.0))
+            })
             .child(
                 div()
                     .id(SharedString::from(format!("section-{:?}", kind)))
@@ -88,38 +123,43 @@ impl GpuiApp {
                         MouseButton::Left,
                         cx.listener(move |this, _, _, cx| this.toggle_sidebar_section(kind, cx)),
                     )
-                    .child(SharedString::from(header_title))
+                    // 对照 Swift `configureHeader`：chevron 在前、标题在后。
                     .child(
                         div()
                             .flex()
                             .flex_row()
                             .items_center()
-                            .gap(px(6.0))
-                            .when(kind == Section::Workspaces, |element| {
-                                // 对照 `WorkspaceSidebar` 的 `addWorkspaceButton`：新建 project。
-                                element.child(
-                                    div()
-                                        .id("sidebar-add-workspace")
-                                        .px(px(4.0))
-                                        .cursor_pointer()
-                                        .text_color(theme.muted)
-                                        .hover(|style| style.text_color(theme.label()))
-                                        .on_mouse_down(
-                                            MouseButton::Left,
-                                            cx.listener(|this, _, _, cx| {
-                                                cx.stop_propagation();
-                                                this.open_target_editor(None, cx);
-                                            }),
-                                        )
-                                        .child(SharedString::from("+")),
-                                )
-                            })
-                            .child(SharedString::from(if section.expanded {
-                                "▾"
-                            } else {
-                                "▸"
-                            })),
-                    ),
+                            .gap(px(5.0))
+                            .child(icons::chevron_icon(section.expanded, theme.muted))
+                            .child(SharedString::from(header_title)),
+                    )
+                    .child(div().flex().flex_row().items_center().gap(px(2.0)).when(
+                        kind == Section::Workspaces,
+                        |element| {
+                            // 对照 `WorkspaceSidebar` 的 `addWorkspaceButton`：新建 project。
+                            element.child(
+                                div()
+                                    .id("sidebar-add-workspace")
+                                    .debug_selector(|| "sidebar-add-workspace".to_string())
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .w(px(16.0))
+                                    .h(px(16.0))
+                                    .rounded(px(4.0))
+                                    .cursor_pointer()
+                                    .hover(|style| style.bg(theme.active_bg))
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(|this, _, _, cx| {
+                                            cx.stop_propagation();
+                                            this.open_target_editor(None, cx);
+                                        }),
+                                    )
+                                    .child(icons::plus_icon(theme.muted)),
+                            )
+                        },
+                    )),
             )
             .children(children)
             .into_any_element()
@@ -165,12 +205,8 @@ impl GpuiApp {
         let hover_group = SharedString::from(format!("sidebar-row-{:?}-{}", section, row.title));
         let mut trailing_buttons: Vec<AnyElement> = Vec::new();
         if let Some(symbol) = trailing {
-            let label = match symbol {
-                "xmark" => "✕",
-                "eye" => "👁",
-                "eye.slash" => "🚫",
-                _ => symbol,
-            };
+            // 矢量图标，不用 emoji：`👁` / `🚫` 是彩色字形，字号一变就跳基线。
+            let icon = icons::icon_for_trailing(symbol);
             let close_target = if symbol == "xmark" {
                 match &row.target {
                     RowTarget::Workspace(id) => Some(id.clone()),
@@ -185,13 +221,21 @@ impl GpuiApp {
                         "trailing-{:?}-{}-{}",
                         section, row.title, symbol
                     )))
+                    .debug_selector({
+                        let title = row.title.clone();
+                        move || format!("sidebar-trailing-{title}")
+                    })
                     .group_hover(hover_group.clone(), |style| style.opacity(1.0))
                     .opacity(if row.active { 1.0 } else { 0.0 })
                     .flex_none()
-                    .px(px(4.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .w(px(TRAILING_WIDTH))
+                    .h(px(18.0))
+                    .rounded(px(4.0))
                     .cursor_pointer()
-                    .text_size(px(crate::frontend::gpui::theme::SIDEBAR_DETAIL_FONT_SIZE))
-                    .text_color(theme.muted)
+                    .hover(|style| style.bg(theme.active_bg))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _, _, cx| {
@@ -204,10 +248,18 @@ impl GpuiApp {
                             }
                         }),
                     )
-                    .child(SharedString::from(label))
+                    .child(icons::trailing_icon(icon, theme.muted))
                     .into_any_element(),
             );
         }
+
+        // 行的视觉：Swift sourceList 的单行卡片 —— 圆角选中底、悬停淡底，
+        // 左侧 2pt 身份色竖条标出「当前」这一行（比整行高亮更克制）。
+        let accent_strip = if row.active { Some(marker_color) } else { None };
+        let marker_icon_element = match row.identity {
+            Some(_) => icons::marker_icon(Icon::Diamond, marker_color),
+            None => icons::indicator_glyph(row.indicator, marker_color),
+        };
 
         div()
             .id(SharedString::from(format!(
@@ -215,13 +267,15 @@ impl GpuiApp {
                 section, row.title
             )))
             .group(hover_group.clone())
+            .relative()
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(6.0))
-            .h(px(ROW_HEIGHT))
-            .px(px(ROW_INSET))
-            .rounded(px(4.0))
+            .h(px(ROW_HEIGHT - ROW_SPACING))
+            .mb(px(ROW_SPACING))
+            .mx(px(6.0))
+            .rounded(px(5.0))
+            .overflow_hidden()
             .cursor_pointer()
             .bg(if row.active {
                 theme.active_bg
@@ -236,14 +290,29 @@ impl GpuiApp {
                     this.activate_sidebar_row(target.clone(), cx);
                 }),
             )
+            .when_some(accent_strip, |element, color| {
+                // 2pt 竖条：贴左边、比行短一点，像 sourceList 的强调线。
+                element.child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .top(px(6.0))
+                        .bottom(px(6.0))
+                        .w(px(2.0))
+                        .rounded(px(1.0))
+                        .bg(color),
+                )
+            })
             .child(
-                // 标记列固定宽度，行与行之间才对得齐（Swift 用 9.5pt 居中标签）。
+                // 标记列固定 11pt（Swift `marker.width = 11`），行与行才对得齐。
                 div()
                     .flex_none()
-                    .w(px(12.0))
-                    .text_size(px(crate::frontend::gpui::theme::SIDEBAR_SHORTCUT_FONT_SIZE))
-                    .text_color(marker_color)
-                    .child(SharedString::from(row.marker)),
+                    .ml(px(ROW_INSET))
+                    .w(px(MARKER_WIDTH))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(marker_icon_element),
             )
             // 编号 / 字母紧跟标记列（Swift `shortcutLabel` 在 marker 右侧 6pt，
             // 宽 13pt 居中）。放在行尾会让数字离标题很远，扫视时对不上。
@@ -255,10 +324,18 @@ impl GpuiApp {
                             move || format!("sidebar-shortcut-{title}")
                         })
                         .flex_none()
-                        .w(px(13.0))
+                        .ml(px(MARKER_TO_SHORTCUT))
+                        .w(px(SHORTCUT_WIDTH))
+                        .flex()
+                        .justify_center()
                         .text_size(px(crate::frontend::gpui::theme::SIDEBAR_SHORTCUT_FONT_SIZE))
+                        .line_height(px(11.0))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(theme.muted)
+                        .text_color(if row.active {
+                            theme.label()
+                        } else {
+                            theme.muted
+                        })
                         .child(SharedString::from(shortcut)),
                 )
             })
@@ -271,6 +348,8 @@ impl GpuiApp {
                     .flex()
                     .flex_col()
                     .flex_1()
+                    .min_w(px(0.0))
+                    .ml(px(SHORTCUT_TO_TITLE))
                     .overflow_hidden()
                     .child(
                         div()

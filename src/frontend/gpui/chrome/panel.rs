@@ -302,28 +302,40 @@ fn render_row(
     let detail = row.detail();
     // 状态色一律走主题 token：Attention 行必须能一眼看出 working / done / blocked，
     // 聚合槽用身份色（Shells 青 / Agents 紫），不借用状态色。
-    let (symbol, color) = match &row {
+    // 标记列也走矢量图标：`◆` / `●` 在不同字体里粗细不一，看起来像贴纸。
+    let (icon, symbol, color) = match &row {
         PanelRow::Aggregate(AggregateKind::Shells) => (
-            "◆".into(),
+            Some(crate::frontend::gpui::chrome::icons::Icon::Diamond),
+            String::new(),
             crate::frontend::gpui::chrome::sidebar::identity_color(
                 crate::frontend::gpui::model::aggregate::AggregateIdentity::Shells,
                 theme,
             ),
         ),
         PanelRow::Aggregate(AggregateKind::Agents) => (
-            "◆".into(),
+            Some(crate::frontend::gpui::chrome::icons::Icon::Diamond),
+            String::new(),
             crate::frontend::gpui::chrome::sidebar::identity_color(
                 crate::frontend::gpui::model::aggregate::AggregateIdentity::Agents,
                 theme,
             ),
         ),
-        PanelRow::Action(PickerAction::Open) => ("+".into(), theme.accent),
+        PanelRow::Action(PickerAction::Open) => (
+            Some(crate::frontend::gpui::chrome::icons::Icon::Plus),
+            String::new(),
+            theme.accent,
+        ),
         PanelRow::Workspace { shortcut, .. } => (
+            None,
             shortcut.map(|n| n.to_string()).unwrap_or_default(),
             theme.muted,
         ),
-        PanelRow::Attention { status, .. } => ("●".into(), attention_color(*status, theme)),
-        _ => (String::new(), theme.muted),
+        PanelRow::Attention { status, .. } => (
+            Some(crate::frontend::gpui::chrome::icons::Icon::CircleFilled),
+            String::new(),
+            attention_color(*status, theme),
+        ),
+        _ => (None, String::new(), theme.muted),
     };
     let is_project = matches!(
         &row,
@@ -363,9 +375,24 @@ fn render_row(
         .child(
             div()
                 .w(px(14.))
+                .h(px(14.))
                 .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_size(px(10.0))
                 .text_color(color)
-                .child(SharedString::from(symbol)),
+                .when_some(icon, |element, icon| {
+                    element.child(crate::frontend::gpui::chrome::icons::icon_element(
+                        crate::frontend::gpui::chrome::icons::IconSpec::with_size(
+                            icon, color, 10.0,
+                        ),
+                        14.0,
+                    ))
+                })
+                .when(!symbol.is_empty(), |element| {
+                    element.child(SharedString::from(symbol))
+                }),
         )
         .child(
             div()

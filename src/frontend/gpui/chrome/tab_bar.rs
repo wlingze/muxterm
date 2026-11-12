@@ -66,17 +66,16 @@ pub(crate) fn render_tab(
 
     let mut children: Vec<AnyElement> = Vec::new();
     if let Some(mark) = mark {
-        children.push(
-            div()
-                .flex_none()
-                .text_size(px(TAB_BAR_FONT_SIZE))
-                .text_color(activity_color)
-                .child(SharedString::from(match mark {
-                    ActivityMark::Ring => "◌",
-                    ActivityMark::Filled => "●",
-                }))
-                .into_any_element(),
-        );
+        // 活动标记也是矢量图形：环形 / 实心点，不用字体字形（`◌` 在
+        // fallback 字体里会变成方块或跳基线）。
+        let icon = match mark {
+            ActivityMark::Ring => crate::frontend::gpui::chrome::icons::Icon::Circle,
+            ActivityMark::Filled => crate::frontend::gpui::chrome::icons::Icon::CircleFilled,
+        };
+        children.push(crate::frontend::gpui::chrome::icons::marker_icon(
+            icon,
+            activity_color,
+        ));
     }
     children.push(
         div()
@@ -107,7 +106,10 @@ pub(crate) fn render_tab(
                     this.close_tab(tab_id, cx);
                 }),
             )
-            .child(SharedString::from("✕"))
+            .child(crate::frontend::gpui::chrome::icons::trailing_icon(
+                crate::frontend::gpui::chrome::icons::Icon::Xmark,
+                theme.muted,
+            ))
             .into_any_element()
     });
 

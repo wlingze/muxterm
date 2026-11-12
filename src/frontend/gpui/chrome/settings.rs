@@ -496,13 +496,10 @@ fn field_control(
                         .overflow_hidden()
                         .child(SharedString::from(field.option_text(current))),
                 )
-                .child(
-                    div()
-                        .flex_none()
-                        .text_size(px(10.0))
-                        .text_color(theme.muted)
-                        .child("⌄"),
-                )
+                .child(crate::frontend::gpui::chrome::icons::chevron_icon(
+                    true,
+                    theme.muted,
+                ))
                 .into_any_element()
         }
         // 其余（文本 / 数字 / 文件 / 多行）= 输入框外观，正在编辑时显示缓冲。

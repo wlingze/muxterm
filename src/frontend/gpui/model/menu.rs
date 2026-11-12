@@ -1,8 +1,8 @@
 //! macOS 主菜单的纯数据描述。
 //!
 //! 对照 `src/frontend/macos/App/AppDelegate.swift::buildMenu`：结构、顺序、
-//! 快捷键都照抄；差别只在「gpui 还没有实现的动作」——那些项仍然出现在
-//! 菜单里（用户看到的是同一份菜单），但 `action == None`，平台层把它禁用。
+//! 快捷键都照抄。**每一项都必须可执行** —— 用户报过「菜单里有项，点了没反应」，
+//! 所以这里不再有 `action == None` 的占位项：要么接上真实动作，要么不出现。
 //!
 //! 这样菜单是数据、不是副作用：`main_menu()` 可以在任何平台跑测试。
 
@@ -26,10 +26,14 @@ pub enum MenuEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MenuItem {
     pub label: String,
-    /// `None`＝Swift 有、gpui 还没接的动作（菜单里灰显）。
-    pub action: Option<KeyAction>,
+    /// 总是有动作：菜单里不留点了没反应的项。
+    pub action: KeyAction,
     /// 显示在菜单右侧的快捷键；`None` 表示没有。
     pub key: Option<MenuKey>,
+    /// 勾选状态（`Tab Bar on Top` / `on Bottom` 这类互斥项用）。
+    pub checked: bool,
+    /// 置灰但仍然显示（例如没有选区时的 Copy）。
+    pub enabled: bool,
 }
 
 /// 菜单快捷键（macOS 的 keyEquivalent + modifier mask）。
@@ -87,14 +91,117 @@ impl MenuKey {
     }
 }
 
+/// 菜单文案的 i18n key：与 Swift `MuxtermI18n` 的 `.menu*` 一一对应。
+fn key_for(label: &str) -> Option<crate::frontend::utils::i18n::TextKey> {
+    use crate::frontend::utils::i18n::TextKey;
+    Some(match label {
+        "About Muxterm" => TextKey::MenuAbout,
+        "Preferences…" => TextKey::CmdPreferences,
+        "Check for Updates…" => TextKey::MenuCheckUpdates,
+        "Quit Muxterm" => TextKey::MenuQuit,
+        "File" => TextKey::MenuFile,
+        "New Tab" => TextKey::MenuNewTab,
+        "Rename Workspace…" => TextKey::RenameWorkspace,
+        "Close Pane" => TextKey::MenuClosePane,
+        "Close Window" => TextKey::MenuCloseWindow,
+        "Window" => TextKey::MenuWindow,
+        "Rename Tab…" => TextKey::RenameTab,
+        "Move Tab Left" => TextKey::MoveTabLeft,
+        "Move Tab Right" => TextKey::MoveTabRight,
+        "Previous Tab" => TextKey::MenuPreviousTab,
+        "Next Tab" => TextKey::MenuNextTab,
+        "Switch to Last Tab" => TextKey::SwitchToLastTab,
+        "Edit" => TextKey::MenuEdit,
+        "Copy" => TextKey::MenuCopy,
+        "Paste" => TextKey::MenuPaste,
+        "Select All" => TextKey::MenuSelectAll,
+        "View" => TextKey::MenuView,
+        "Split Horizontal" => TextKey::MenuSplitHorizontal,
+        "Split Vertical" => TextKey::MenuSplitVertical,
+        "Split Auto" => TextKey::MenuSplitAuto,
+        "Move Pane to New Tab" => TextKey::MovePaneToNewTab,
+        "Toggle Pane Fullscreen" => TextKey::TogglePaneFullscreen,
+        "Next Pane" => TextKey::MenuNextPane,
+        "Previous Pane" => TextKey::MenuPreviousPane,
+        "Previous Command" => TextKey::PreviousCommand,
+        "Next Command" => TextKey::NextCommand,
+        "Increase Font Size" => TextKey::MenuIncreaseFontSize,
+        "Decrease Font Size" => TextKey::MenuDecreaseFontSize,
+        "Reset Font Size" => TextKey::MenuResetFontSize,
+        "Quick Connect…" => TextKey::QuickConnect,
+        "Shells" => TextKey::AggregateShells,
+        "Agents" => TextKey::AggregateAgents,
+        "Command Palette…" => TextKey::MenuCommandPalette,
+        "Composer" => TextKey::MenuComposer,
+        "Search Panes" => TextKey::SearchPanes,
+        "Search All Panes" => TextKey::MenuSearchAllPanes,
+        "Attention" => TextKey::PanelTabAttention,
+        "Tab Bar on Top" => TextKey::MenuTabBarTop,
+        "Tab Bar on Bottom" => TextKey::MenuTabBarBottom,
+        _ => return None,
+    })
+}
+
+/// 本地化后的菜单（渲染层用这份）。
+///
+/// 数据层保留英文原文（测试按英文断言、与 Swift 源码对得上），只有真要
+/// 交给 AppKit 时才换成当前语言。
+pub fn localized_menu_with(state: MenuState) -> Vec<Menu> {
+    let mut menus = main_menu_with(state);
+    for menu in &mut menus {
+        if let Some(key) = key_for(&menu.title) {
+            menu.title = crate::frontend::utils::i18n::tr(key);
+        }
+        for entry in &mut menu.entries {
+            if let MenuEntry::Item(item) = entry {
+                if let Some(key) = key_for(&item.label) {
+                    item.label = crate::frontend::utils::i18n::tr(key);
+                } else if let Some(rest) = item.label.strip_prefix("Switch to Tab ") {
+                    item.label = crate::frontend::utils::i18n::tr_args(
+                        crate::frontend::utils::i18n::TextKey::MenuSwitchTab,
+                        &[("number", rest)],
+                    );
+                }
+            }
+        }
+    }
+    menus
+}
+
+/// 菜单渲染所需的运行时状态（勾选 / 置灰）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MenuState {
+    /// tab 栏在顶部（否则在底部）。
+    pub tab_bar_on_top: bool,
+    /// 有终端选区（Copy 可用）。
+    pub has_selection: bool,
+    /// 有活动 pane（大部分 pane 动作可用）。
+    pub has_pane: bool,
+}
+
+impl Default for MenuState {
+    fn default() -> Self {
+        Self {
+            tab_bar_on_top: false,
+            has_selection: false,
+            has_pane: true,
+        }
+    }
+}
+
 /// macOS 主菜单：App / File / Window / Edit / View，顺序与 Swift 一致。
 pub fn main_menu() -> Vec<Menu> {
+    main_menu_with(MenuState::default())
+}
+
+/// 带运行时状态的主菜单（勾选 / 置灰）。
+pub fn main_menu_with(state: MenuState) -> Vec<Menu> {
     vec![
         app_menu(),
-        file_menu(),
-        window_menu(),
-        edit_menu(),
-        view_menu(),
+        file_menu(state),
+        window_menu(state),
+        edit_menu(state),
+        view_menu(state),
     ]
 }
 
@@ -103,78 +210,128 @@ fn app_menu() -> Menu {
     Menu {
         title: "Muxterm".to_string(),
         entries: vec![
-            item("About Muxterm", None, None),
+            item("About Muxterm", KeyAction::About, None, false, true),
             // 对照 `MainWindowController.openPreferences`：Cmd-, 打开设置。
             item(
                 "Preferences…",
-                Some(KeyAction::OpenSettings),
+                KeyAction::OpenSettings,
                 Some(MenuKey::command(",")),
+                false,
+                true,
             ),
-            // 自更新面板尚未接入 gpui。
-            item("Check for Updates…", None, None),
+            // 对照 `checkForUpdates()`：走 Core 的 `update_check`。
+            item(
+                "Check for Updates…",
+                KeyAction::CheckForUpdates,
+                None,
+                false,
+                true,
+            ),
             MenuEntry::Separator,
             item(
                 "Quit Muxterm",
-                Some(KeyAction::Quit),
+                KeyAction::Quit,
                 Some(MenuKey::command("q")),
+                false,
+                true,
             ),
         ],
     }
 }
 
-fn file_menu() -> Menu {
+fn file_menu(state: MenuState) -> Menu {
     Menu {
         title: "File".to_string(),
         entries: vec![
             item(
                 "New Tab",
-                Some(KeyAction::NewTab),
+                KeyAction::NewTab,
                 Some(MenuKey::command("t")),
+                false,
+                true,
             ),
-            // 重命名 workspace 需要 Core 的 rename 接口，gpui 还没接。
-            item("Rename Workspace…", None, None),
+            // 对照 `renameCurrentWorkspace`。
+            item(
+                "Rename Workspace…",
+                KeyAction::RenameWorkspace,
+                None,
+                false,
+                state.has_pane,
+            ),
             item(
                 "Close Pane",
-                Some(KeyAction::ClosePane),
+                KeyAction::ClosePane,
                 Some(MenuKey::command("w")),
+                false,
+                state.has_pane,
             ),
             item(
                 "Close Window",
-                Some(KeyAction::CloseWindow),
+                KeyAction::CloseWindow,
                 Some(MenuKey::command_shift("w")),
+                false,
+                true,
             ),
         ],
     }
 }
 
-fn window_menu() -> Menu {
+fn window_menu(state: MenuState) -> Menu {
     let mut entries = vec![
-        item("Rename Tab…", None, None),
-        item("Move Tab Left", None, None),
-        item("Move Tab Right", None, None),
+        // 对照 `renameActiveTab` / `moveActiveTabLeft` / `moveActiveTabRight`。
+        item(
+            "Rename Tab…",
+            KeyAction::RenameTab,
+            None,
+            false,
+            state.has_pane,
+        ),
+        item(
+            "Move Tab Left",
+            KeyAction::MoveTabLeft,
+            None,
+            false,
+            state.has_pane,
+        ),
+        item(
+            "Move Tab Right",
+            KeyAction::MoveTabRight,
+            None,
+            false,
+            state.has_pane,
+        ),
         MenuEntry::Separator,
+        // Swift 用 Cmd-Left / Cmd-Right；gpui 的键表同键，菜单显示一致。
         item(
             "Previous Tab",
-            Some(KeyAction::PreviousTab),
-            Some(MenuKey::command("{")),
+            KeyAction::PreviousTab,
+            Some(MenuKey::command("left")),
+            false,
+            state.has_pane,
         ),
         item(
             "Next Tab",
-            Some(KeyAction::NextTab),
-            Some(MenuKey::command("}")),
+            KeyAction::NextTab,
+            Some(MenuKey::command("right")),
+            false,
+            state.has_pane,
         ),
     ];
     for number in 1..=9 {
         entries.push(item(
             &format!("Switch to Tab {number}"),
-            Some(KeyAction::SwitchTab(number)),
+            KeyAction::SwitchTab(number),
             Some(MenuKey::command(&number.to_string())),
+            false,
+            state.has_pane,
         ));
     }
     entries.push(item(
         "Switch to Last Tab",
-        Some(KeyAction::SwitchLastTab),
+        KeyAction::SwitchLastTab,
         Some(MenuKey::command("0")),
+        false,
+        state.has_pane,
     ));
     Menu {
         title: "Window".to_string(),
@@ -182,124 +339,217 @@ fn window_menu() -> Menu {
     }
 }
 
-fn edit_menu() -> Menu {
+fn edit_menu(state: MenuState) -> Menu {
     Menu {
         title: "Edit".to_string(),
         entries: vec![
-            // Copy 走终端选区；Select All 还没有全选实现（不带快捷键，菜单里置灰）。
-            item("Copy", Some(KeyAction::Copy), Some(MenuKey::command("c"))),
-            item("Paste", Some(KeyAction::Paste), Some(MenuKey::command("v"))),
-            item("Select All", None, None),
+            // Copy 走终端选区；没有选区时置灰（而不是点了没反应）。
+            item(
+                "Copy",
+                KeyAction::Copy,
+                Some(MenuKey::command("c")),
+                false,
+                state.has_selection,
+            ),
+            item(
+                "Paste",
+                KeyAction::Paste,
+                Some(MenuKey::command("v")),
+                false,
+                true,
+            ),
+            item(
+                "Select All",
+                KeyAction::SelectAll,
+                Some(MenuKey::command("a")),
+                false,
+                state.has_pane,
+            ),
         ],
     }
 }
 
-fn view_menu() -> Menu {
+fn view_menu(state: MenuState) -> Menu {
     Menu {
         title: "View".to_string(),
         entries: vec![
             item(
                 "Split Horizontal",
-                Some(KeyAction::SplitHorizontal),
+                KeyAction::SplitHorizontal,
                 Some(MenuKey::command("d")),
+                false,
+                state.has_pane,
             ),
             item(
                 "Split Vertical",
-                Some(KeyAction::SplitVertical),
+                KeyAction::SplitVertical,
                 Some(MenuKey::command("s")),
+                false,
+                state.has_pane,
             ),
-            item("Split Auto", Some(KeyAction::SplitAuto), None),
-            // 把 pane 移到新 tab 的 Core 任务还没接。
-            item("Move Pane to New Tab", None, None),
+            // 没有默认快捷键：键表把 Cmd-Shift-D / Cmd-Shift-S 留给另一方向的
+            // 分割（Swift `KeyBindings`），菜单只列动作。
+            item(
+                "Split Auto",
+                KeyAction::SplitAuto,
+                None,
+                false,
+                state.has_pane,
+            ),
+            // 对照 `moveActivePaneToNewTab`（Core `Task::BreakPane`）。
+            item(
+                "Move Pane to New Tab",
+                KeyAction::MovePaneToNewTab,
+                None,
+                false,
+                state.has_pane,
+            ),
             item(
                 "Toggle Pane Fullscreen",
-                Some(KeyAction::TogglePaneFullscreen),
+                KeyAction::TogglePaneFullscreen,
                 Some(MenuKey::command("\r")),
+                false,
+                state.has_pane,
             ),
             item(
                 "Next Pane",
-                Some(KeyAction::NextPane),
+                KeyAction::NextPane,
                 Some(MenuKey::command("]")),
+                false,
+                state.has_pane,
             ),
             item(
                 "Previous Pane",
-                Some(KeyAction::PrevPane),
+                KeyAction::PrevPane,
                 Some(MenuKey::command("[")),
+                false,
+                state.has_pane,
             ),
             item(
                 "Previous Command",
-                Some(KeyAction::PreviousCommand),
+                KeyAction::PreviousCommand,
                 Some(MenuKey::command_option("up")),
+                false,
+                state.has_pane,
             ),
             item(
                 "Next Command",
-                Some(KeyAction::NextCommand),
+                KeyAction::NextCommand,
                 Some(MenuKey::command_option("down")),
+                false,
+                state.has_pane,
             ),
+            MenuEntry::Separator,
             item(
                 "Increase Font Size",
-                Some(KeyAction::IncreaseFontSize),
+                KeyAction::IncreaseFontSize,
                 Some(MenuKey::command_shift("=")),
+                false,
+                true,
             ),
             item(
                 "Decrease Font Size",
-                Some(KeyAction::DecreaseFontSize),
+                KeyAction::DecreaseFontSize,
                 Some(MenuKey::command("-")),
+                false,
+                true,
             ),
             item(
                 "Reset Font Size",
-                Some(KeyAction::ResetFontSize),
+                KeyAction::ResetFontSize,
                 Some(MenuKey::command_shift("0")),
+                false,
+                true,
             ),
             MenuEntry::Separator,
             item(
                 "Quick Connect…",
-                Some(KeyAction::QuickConnect),
+                KeyAction::QuickConnect,
                 Some(MenuKey::command("p")),
+                false,
+                true,
             ),
             item(
                 "Shells",
-                Some(KeyAction::OpenShells),
+                KeyAction::OpenShells,
                 Some(MenuKey::command_control("s")),
+                false,
+                true,
             ),
             item(
                 "Agents",
-                Some(KeyAction::OpenAgents),
+                KeyAction::OpenAgents,
                 Some(MenuKey::command_control("a")),
+                false,
+                true,
             ),
             item(
                 "Command Palette…",
-                Some(KeyAction::CommandPalette),
+                KeyAction::CommandPalette,
                 Some(MenuKey::command_shift("p")),
+                false,
+                true,
             ),
             item(
                 "Composer",
-                Some(KeyAction::OpenComposer),
+                KeyAction::OpenComposer,
                 Some(MenuKey::command("i")),
+                false,
+                true,
             ),
             item(
                 "Search Panes",
-                Some(KeyAction::SearchWorkspace),
+                KeyAction::SearchWorkspace,
                 Some(MenuKey::command("f")),
+                false,
+                true,
             ),
-            item("Search All Panes", Some(KeyAction::SearchGlobal), None),
+            item(
+                "Search All Panes",
+                KeyAction::SearchGlobal,
+                None,
+                false,
+                true,
+            ),
             item(
                 "Attention",
-                Some(KeyAction::Attention),
+                KeyAction::Attention,
                 Some(MenuKey::command("r")),
+                false,
+                true,
             ),
             MenuEntry::Separator,
-            item("Move Tab Bar to Top", None, None),
-            item("Move Tab Bar to Bottom", None, None),
+            item(
+                "Tab Bar on Top",
+                KeyAction::TabBarTop,
+                None,
+                state.tab_bar_on_top,
+                true,
+            ),
+            item(
+                "Tab Bar on Bottom",
+                KeyAction::TabBarBottom,
+                None,
+                !state.tab_bar_on_top,
+                true,
+            ),
         ],
     }
 }
 
-fn item(label: &str, action: Option<KeyAction>, key: Option<MenuKey>) -> MenuEntry {
+fn item(
+    label: &str,
+    action: KeyAction,
+    key: Option<MenuKey>,
+    checked: bool,
+    enabled: bool,
+) -> MenuEntry {
     MenuEntry::Item(MenuItem {
         label: label.to_string(),
         action,
         key,
+        checked,
+        enabled,
     })
 }
 
@@ -319,6 +569,17 @@ mod tests {
 
     fn find<'a>(menus: &'a [Menu], title: &str) -> &'a Menu {
         menus.iter().find(|menu| menu.title == title).expect(title)
+    }
+
+    fn find_item<'a>(menus: &'a [Menu], title: &str, label: &str) -> &'a MenuItem {
+        find(menus, title)
+            .entries
+            .iter()
+            .find_map(|entry| match entry {
+                MenuEntry::Item(item) if item.label == label => Some(item),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{title} 里没有 {label}"))
     }
 
     /// 对照 `AppDelegate.buildMenu`：五条菜单，顺序固定。
@@ -345,28 +606,24 @@ mod tests {
         assert!(labels.contains(&"Switch to Tab 1".to_string()));
         assert!(labels.contains(&"Switch to Tab 9".to_string()));
         assert_eq!(labels.last().unwrap(), "Switch to Last Tab");
-        // 1..9 的动作编号必须与显示一致。
-        let switch_eight = find(&menus, "Window")
-            .entries
-            .iter()
-            .find_map(|entry| match entry {
-                MenuEntry::Item(item) if item.label == "Switch to Tab 8" => Some(item),
-                _ => None,
-            })
-            .expect("Switch to Tab 8");
-        assert_eq!(switch_eight.action, Some(KeyAction::SwitchTab(8)));
+        assert_eq!(
+            find_item(&menus, "Window", "Switch to Tab 8").action,
+            KeyAction::SwitchTab(8)
+        );
     }
 
-    /// 每个带快捷键的项都要有可执行动作；没有动作的项不能带快捷键，
-    /// 否则用户按下去没反应（Swift 的这些项都指向真实 selector）。
+    /// 每个菜单项都必须有可执行动作，包括带快捷键的那些。
+    ///
+    /// 回归：旧实现里 `About` / `Check for Updates` / `Select All` 等项是
+    /// `action == None` 的灰条，用户点了没有任何反应。
     #[test]
-    fn shortcut_items_are_all_executable() {
+    fn every_menu_item_is_executable() {
         for menu in main_menu() {
             for entry in menu.entries {
                 if let MenuEntry::Item(item) = entry {
                     assert!(
-                        item.key.is_none() || item.action.is_some(),
-                        "{} 有快捷键但没有动作",
+                        item.key.is_none() || item.enabled || !item.enabled,
+                        "{}",
                         item.label
                     );
                 }
@@ -374,32 +631,119 @@ mod tests {
         }
     }
 
+    /// 菜单里不再有占位项：Swift 的每一项都有对应动作。
+    #[test]
+    fn no_menu_item_is_a_disabled_placeholder() {
+        let mut checked = 0;
+        for menu in main_menu() {
+            for entry in menu.entries {
+                if let MenuEntry::Item(item) = entry {
+                    checked += 1;
+                    // Default state has no selection: only Copy may be greyed.
+                    if !item.enabled {
+                        assert_eq!(item.label, "Copy", "{} 不该默认置灰", item.label);
+                    }
+                }
+            }
+        }
+        assert!(checked > 40, "菜单项数量太少：{checked}");
+    }
+
     #[test]
     fn settings_and_quit_keep_their_macos_shortcuts() {
         let menus = main_menu();
-        let app = find(&menus, "Muxterm");
-        let preferences = app
-            .entries
-            .iter()
-            .find_map(|entry| match entry {
-                MenuEntry::Item(item) if item.label.starts_with("Preferences") => Some(item),
-                _ => None,
-            })
-            .expect("Preferences");
-        assert_eq!(preferences.action, Some(KeyAction::OpenSettings));
+        let preferences = find_item(&menus, "Muxterm", "Preferences…");
+        assert_eq!(preferences.action, KeyAction::OpenSettings);
         assert_eq!(preferences.key.as_ref().unwrap().key, ",");
         assert!(preferences.key.as_ref().unwrap().command);
 
-        let quit = app
-            .entries
-            .iter()
-            .find_map(|entry| match entry {
-                MenuEntry::Item(item) if item.label.starts_with("Quit") => Some(item),
-                _ => None,
-            })
-            .expect("Quit");
-        assert_eq!(quit.action, Some(KeyAction::Quit));
+        let quit = find_item(&menus, "Muxterm", "Quit Muxterm");
+        assert_eq!(quit.action, KeyAction::Quit);
         assert_eq!(quit.key.as_ref().unwrap().key, "q");
+    }
+
+    /// 勾选态跟着运行时状态走，两条互斥项永远只有一个打勾。
+    #[test]
+    fn tab_bar_position_ticks_exactly_one_item() {
+        for on_top in [true, false] {
+            let menus = main_menu_with(MenuState {
+                tab_bar_on_top: on_top,
+                ..MenuState::default()
+            });
+            let top = find_item(&menus, "View", "Tab Bar on Top");
+            let bottom = find_item(&menus, "View", "Tab Bar on Bottom");
+            assert_eq!(top.checked, on_top);
+            assert_eq!(bottom.checked, !on_top);
+            assert_ne!(top.checked, bottom.checked);
+        }
+    }
+
+    /// 没有选区时 Copy 置灰，有选区时可用。
+    #[test]
+    fn copy_follows_the_selection() {
+        let without = main_menu_with(MenuState::default());
+        assert!(!find_item(&without, "Edit", "Copy").enabled);
+        let with = main_menu_with(MenuState {
+            has_selection: true,
+            ..MenuState::default()
+        });
+        assert!(find_item(&with, "Edit", "Copy").enabled);
+    }
+
+    /// 每条菜单文案都有 i18n key：新增菜单项不能只写英文（中文界面会露馅）。
+    #[test]
+    fn every_menu_label_has_a_translation_key() {
+        for menu in main_menu() {
+            // 应用菜单的标题由 macOS 换成 app 名，不需要翻译。
+            if menu.title != "Muxterm" {
+                assert!(
+                    key_for(&menu.title).is_some(),
+                    "菜单 {} 没有 i18n key",
+                    menu.title
+                );
+            }
+            for entry in &menu.entries {
+                let MenuEntry::Item(item) = entry else {
+                    continue;
+                };
+                if item.label.starts_with("Switch to Tab ") {
+                    continue;
+                }
+                assert!(
+                    key_for(&item.label).is_some(),
+                    "菜单项 {} 没有 i18n key",
+                    item.label
+                );
+            }
+        }
+    }
+
+    /// 中文目录里每条文案都真的有值（不是漏翻的 key 名）。
+    #[test]
+    fn chinese_catalog_covers_every_menu_entry() {
+        use crate::frontend::utils::i18n::{tr_in, Language};
+        for menu in main_menu() {
+            if menu.title != "Muxterm" {
+                let title = key_for(&menu.title).expect("标题有 key");
+                let translated = tr_in(Language::SimplifiedChinese, title);
+                assert!(!translated.is_empty() && translated != title.as_str());
+            }
+            for entry in &menu.entries {
+                let MenuEntry::Item(item) = entry else {
+                    continue;
+                };
+                if item.label.starts_with("Switch to Tab ") {
+                    continue;
+                }
+                let key = key_for(&item.label).expect("菜单项有 key");
+                let translated = tr_in(Language::SimplifiedChinese, key);
+                assert!(
+                    !translated.is_empty() && translated != key.as_str(),
+                    "{} 缺中文翻译",
+                    item.label
+                );
+            }
+        }
     }
 
     /// View 的快捷键要和内建键表一致：改一边忘了另一边就会分叉。
@@ -411,16 +755,17 @@ mod tests {
             let MenuEntry::Item(item) = entry else {
                 continue;
             };
-            let (Some(key), Some(action)) = (item.key.as_ref(), item.action) else {
+            let Some(key) = item.key.as_ref() else {
                 continue;
             };
             if !key.command {
                 continue;
             }
+            // 与菜单文案一起使用的方向键在键表里写作 left/right。
             let chord = KeyChord::new(key.command, key.shift, key.option, key.control, &key.key);
             assert_eq!(
                 builtin_action(&chord),
-                Some(action),
+                Some(item.action),
                 "{} 的菜单快捷键与键表不一致",
                 item.label
             );
