@@ -187,6 +187,9 @@ pub struct GpuiApp {
     pub(crate) tab_bar_position: crate::frontend::gpui::chrome::tab_bar_view::TabBarPosition,
     /// 侧栏是否显示（Cmd-B 切换，与 Swift 一致）。
     pub(crate) sidebar_visible: bool,
+    /// 是否直读系统剪贴板（`NSPasteboard`）。无头测试关掉它：并行测试读真实
+    /// 剪贴板既不确定（取决于用户此刻复制了什么），也不是线程安全的。
+    system_pasteboard: bool,
     /// 注意力快照（Agents/Commands 段的数据源）。FFI 快照接入前保持 `None`。
     pub(crate) attention: Option<crate::frontend::gpui::model::attention::AttentionSnapshot>,
     /// Cmd-P 面板的「现有 runtime」：来自 Core discovery，不手工拼。
@@ -298,6 +301,7 @@ impl GpuiApp {
             search_snapshot: None,
             tab_bar_position,
             sidebar_visible: true,
+            system_pasteboard: true,
             attention: None,
             existing: Vec::new(),
             existing_loaded: false,
@@ -525,8 +529,10 @@ impl GpuiApp {
         // 图片、Keynote 等都会这样）。gpui 的 `read_from_clipboard` 先看文本，
         // 只走它会把图片当 URL / 文件名粘进终端。
         #[cfg(target_os = "macos")]
-        if let Some(result) =
-            crate::frontend::gpui::platform::clipboard_image::clipboard_image_png()
+        if let Some(result) = self
+            .system_pasteboard
+            .then(crate::frontend::gpui::platform::clipboard_image::clipboard_image_png)
+            .flatten()
         {
             // 已经有一张在传：Swift 在这个窗口里回 `ImagePasteBusy`，这里同样不排队。
             if self.image_paste.is_busy() {
@@ -1080,6 +1086,8 @@ impl GpuiApp {
             composer_open: false,
             composer_selection: crate::frontend::gpui::model::composer::TextRange::default(),
             composer_key: None,
+            // 无头环境不碰真实剪贴板：测试里的 ClipboardItem 才是唯一输入。
+            system_pasteboard: false,
             composer_status: None,
             search_snapshot: None,
             tab_bar_position: crate::frontend::gpui::chrome::tab_bar_view::TabBarPosition::default(
@@ -4246,8 +4254,10 @@ impl GpuiApp {
             }
         }
         if keystroke.modifiers.platform {
-            // 粘贴走剪贴板文本；图片粘贴需要平台读 PNG，暂未接（见 terminal.md）。
-            if keystroke.key == "v" {
+            // Cmd-V：图片优先（与 Swift `MuxTerminalView.paste(from:)` 一致）。
+            // 以前这里只读文本，剪贴板里是截图时这次粘贴什么都不做 —— 用户看到
+            // 的就是「复制图片粘贴没反应」，而 Core 侧一条日志都没有。
+            if keystroke.key == "v" && !self.paste_clipboard_image(cx) {
                 let text = cx.read_from_clipboard().and_then(|item| {
                     item.entries().iter().find_map(|entry| match entry {
                         gpui::ClipboardEntry::String(text) => Some(text.text().to_string()),

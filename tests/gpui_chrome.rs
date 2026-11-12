@@ -3678,6 +3678,32 @@ fn the_panel_caret_sits_before_the_placeholder(cx: &mut TestAppContext) {
     let _ = view;
 }
 
+/// 用户报障：「复制图片粘贴仍然没反应」。
+///
+/// 终端里的 `Cmd-V` 以前只读剪贴板文本，剪贴板里是截图时这次粘贴什么
+/// 都不发生（Core 侧连一条日志都没有）。现在必须走图片通路。
+#[gpui::test]
+fn cmd_v_pastes_a_clipboard_image(cx: &mut TestAppContext) {
+    use gpui::{ClipboardItem, Image, ImageFormat};
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.run_until_parked();
+    let image = Image::from_bytes(ImageFormat::Jpeg, vec![0xff, 0xd8, 0x00, 0x01]);
+    cx.update(|_, cx| cx.write_to_clipboard(ClipboardItem::new_image(&image)));
+    cx.simulate_keystrokes("cmd-v");
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("image-paste-banner").is_some(),
+        "Cmd-V 遇到图片必须走图片粘贴（横幅是用户唯一能看到的反馈）"
+    );
+    let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    assert!(
+        !commands
+            .iter()
+            .any(|command| matches!(command, ClientCommand::Input { .. })),
+        "图片粘贴不能顺手把字节写进终端：{commands:?}"
+    );
+}
+
 /// IME 提交要落到当前吃文字的那个输入框，而不是永远当成终端输入。
 ///
 /// 回归：`commit_text` 只判断 `panel.open`，命令面板 / 设置里用中文输入法

@@ -29,8 +29,16 @@ pub fn clipboard_image_png() -> Option<Result<Vec<u8>, String>> {
     use objc2::rc::autoreleasepool;
     use objc2_app_kit::NSPasteboard;
 
+    // `NSPasteboard` 不是线程安全的：无头测试会并行跑到这条路径，不加锁
+    // 会偶发 SIGSEGV（真实 app 只有主线程读，锁成本可以忽略）。
+    let _guard = PASTEBOARD_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     autoreleasepool(|_| read_image_png_from(NSPasteboard::generalPasteboard()))
 }
+
+#[cfg(target_os = "macos")]
+static PASTEBOARD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// 从指定 pasteboard 读 PNG / TIFF（测试用独立 pasteboard，不动用户剪贴板）。
 #[cfg(target_os = "macos")]
