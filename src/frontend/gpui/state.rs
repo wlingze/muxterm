@@ -4005,6 +4005,14 @@ impl GpuiApp {
             control: keystroke.modifiers.control,
             key: keystroke.key.clone(),
         };
+        // 物理键位先于布局字符：Colemak / Dvorak 把字母挪了位置，按字符匹配
+        // 的 Cmd 组合会漂到别的动作上（见 `model/physical_key.rs`）。
+        // 只在带 Command 时取：普通打字走的是终端编码路径，那里必须用布局字符。
+        let physical_key = if keystroke.modifiers.platform {
+            crate::frontend::gpui::platform::physical_key_for_event(&keystroke.key)
+        } else {
+            None
+        };
         // 目标配置窗口打开时独占按键：Esc 取消、Tab 换字段、Enter 保存，
         // 无修饰键的字符写进当前字段。
         if self.target_editor.is_some() && !keystroke.modifiers.platform {
@@ -4129,7 +4137,10 @@ impl GpuiApp {
             if keystroke.modifiers.platform {
                 // Cmd-, / Cmd-Q 等继续走动作表；其余 Cmd 组合留在浮层里。
                 if let Some(action) =
-                    crate::frontend::gpui::model::shortcuts::builtin_action(&chord)
+                    crate::frontend::gpui::model::shortcuts::builtin_action_for_event(
+                        physical_key,
+                        &chord,
+                    )
                 {
                     if self.run_action(action, window, cx) {
                         cx.stop_propagation();
@@ -4305,7 +4316,9 @@ impl GpuiApp {
             }
         }
 
-        if let Some(action) = crate::frontend::gpui::model::shortcuts::builtin_action(&chord) {
+        if let Some(action) =
+            crate::frontend::gpui::model::shortcuts::builtin_action_for_event(physical_key, &chord)
+        {
             if self.run_action(action, window, cx) {
                 // **必须消费事件**：macOS 会先拿同一条 chord 问视图（performKeyEquivalent），
                 // 再拿它去匹配原生菜单。不消费就等于按一次执行两遍——Cmd-D 分两个窗格、
@@ -4320,7 +4333,8 @@ impl GpuiApp {
             // Cmd-V：图片优先（与 Swift `MuxTerminalView.paste(from:)` 一致）。
             // 以前这里只读文本，剪贴板里是截图时这次粘贴什么都不做 —— 用户看到
             // 的就是「复制图片粘贴没反应」，而 Core 侧一条日志都没有。
-            if keystroke.key == "v" && !self.paste_clipboard_image(cx) {
+            let paste_key = physical_key.unwrap_or(keystroke.key.as_str());
+            if paste_key == "v" && !self.paste_clipboard_image(cx) {
                 let text = cx.read_from_clipboard().and_then(|item| {
                     item.entries().iter().find_map(|entry| match entry {
                         gpui::ClipboardEntry::String(text) => Some(text.text().to_string()),

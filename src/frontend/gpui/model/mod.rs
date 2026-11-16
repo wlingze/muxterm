@@ -24,6 +24,7 @@ pub mod pane_menu;
 pub mod pane_navigation;
 pub mod pane_title;
 pub mod panel;
+pub mod physical_key;
 pub mod query_detector;
 pub mod query_reply;
 pub mod quick_connect;

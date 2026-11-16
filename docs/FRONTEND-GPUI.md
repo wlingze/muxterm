@@ -252,6 +252,47 @@ tab 活动标记、panel 标记列、`⋯` 全部走同一套矢量图标；未�
   重建会换掉 `watch_menu` 的 channel，菜单点击就断了。
 - 文案走 i18n；测试断言每条菜单文案都有 key，且中文目录有翻译。
 
+### 5.5.1 Cmd 快捷键按**物理键位**匹配
+
+用户报障（2026-11-16）：「快捷键 cmd-d / cmd-t / cmd-s 都失败了」，同一台机器上
+cmd-c / cmd-v / cmd-a / cmd-z / cmd-x 却一直好使。
+
+根因是键盘布局，不是菜单也不是输入法。这台机器的输入源是 **Colemak**，
+它把字母挪了位置：
+
+| 物理键（键帽） | macOS 给出的字符 | 只按字符匹配的后果 |
+| --- | --- | --- |
+| `T` | `g` | 没有任何绑定 → 按了完全没反应 |
+| `D` | `s` | 落到「纵向分屏」→ 方向错 |
+| `S` | `r` | 没有任何绑定 → 按了完全没反应 |
+| `C` / `V` / `A` / `Z` / `X` | 同字母 | 正常（Colemak 没挪这些） |
+
+`Keystroke.key` 与原生菜单的 key equivalent 都是「布局产出的字符」，所以只有被
+挪过位置的字母失效 —— 这正好解释了「为什么偏偏是这三个」。
+
+现在的规则（`model/physical_key.rs` + `platform/macos_keys.rs`）：
+
+1. 本地事件监视器 `NSEvent addLocalMonitorForEventsMatchingMask:` 在窗口 /
+   输入法之前拿到真正的 keyDown，记下 `keyCode` 与布局字符，**事件原样放行**
+   —— 只记录，不改变派发，输入法与文本编辑行为一律不动。
+2. `handle_key` 先按物理键位（`keyCode` → US QWERTY 字符）查动作，查不到再
+   回落到布局字符。回落是必须的：方向键、中文输入法给出的 `【】` 只能走字符。
+3. 记录值必须与 `Keystroke.key` 对得上才采用，对不上就当没有 —— 宁可回落到
+   字符，也不能把按键路由错。
+
+为什么不用 `NSApp.currentEvent` 取 keyCode：实测在视图的
+`performKeyEquivalent:` 回调里它指向 `NSEventTypeAppKitDefined`（type 13），
+`keyCode` 会抛 `NSInternalInconsistencyException`；gpui 的 `Keystroke` 又只有
+字符没有键码。所以只能靠事件监视器记录。
+
+业界对照：Ghostty 用 W3C 物理键码派发快捷键（`ghostty-org/ghostty#7320`），
+Zed 明确「先派发快捷键、再交给输入法」（`zed.dev/blog/keyboard-localization`）。
+
+回归测试：`physical_key::tests::printed_keys_map_to_their_label_not_the_layout_char`、
+`shortcuts::tests::colemak_printed_keys_keep_their_shortcuts`、
+`shortcuts::tests::qwerty_layout_is_unaffected`（US QWERTY 下逐键与旧行为相同）、
+`macos_keys::tests::recorded_key_must_match_the_layout_char`。
+
 ### 5.6 侧栏几何与 tab 栏策略
 
 侧栏的可变部分全部是纯模型（`model/sidebar_layout.rs`），渲染不自己算：
@@ -424,7 +465,7 @@ Project / discovery 行用 Core 记账的 attach 频率排序（`attach-history.
 ## 9. 验收
 
 - `cargo check --no-default-features --features gpui` 通过。
-- `cargo test --no-default-features --features gpui --lib` 通过（2026-11-11 实测 **1998 passed**，3 ignored）。
+- `cargo test --no-default-features --features gpui --lib` 通过（2026-11-16 实测 **2011 passed**，3 ignored）。
 - 集成测试（每个都实测通过）：
   - `--test gpui_chrome`（133，含命令面板每条命令的动作、改名浮层、tab 重排、语言/主题/状态栏、
     设置浮层的 Esc / ⏎ / Cancel / Apply 与放弃修改确认（有改动先问、点遮罩也走同一条路）、
