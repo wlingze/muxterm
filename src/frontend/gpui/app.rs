@@ -48,6 +48,8 @@ pub fn run(socket: Option<String>, session: Option<String>) -> anyhow::Result<()
             if let Some(receiver) = crate::frontend::gpui::platform::install_menu() {
                 view.update(cx, |app, cx| app.watch_menu(receiver, cx));
             }
+            // 物理键位记录器：Cmd 组合按物理键位匹配，不受 Colemak / Dvorak 影响。
+            crate::frontend::gpui::platform::install_physical_key_tracker();
             view
         })
         .expect("gpui 窗口必须能创建");
