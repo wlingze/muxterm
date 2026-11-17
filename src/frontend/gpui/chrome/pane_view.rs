@@ -144,6 +144,8 @@ impl GpuiApp {
                 .left_0()
                 .w_full()
                 .h_full()
+                // 终端内容盒的选择器：切焦点时它的几何必须一动不动。
+                .debug_selector(move || format!("pane-text-{pane_id}"))
                 .child(canvas(
                     |_, _, _| (),
                     move |bounds, _, window, _cx| {
@@ -288,7 +290,9 @@ impl GpuiApp {
                 theme.bg
             })
             .when(dimmed, |this| this.debug_selector(|| "pane-dimmed".into()))
-            .when(focused, |this| this.border_1().border_color(theme.accent))
+            // 焦点只改光影：强调色描边画在覆盖层里，**不能**给终端容器加
+            // `border_1` —— 边框会挤小内容盒（终端内容右移/下移 1pt、列数
+            // 跟着变），切 pane 时看起来就是「pane 跳了一下」。
             .font_family(theme.font_family)
             .text_size(px(theme.font_size))
             .line_height(px(cell_height))
@@ -358,6 +362,19 @@ impl GpuiApp {
             .child(text_layer)
             .children(title_bar)
             .child(input_handler)
+            .when(focused, |this| {
+                this.child(
+                    div()
+                        .debug_selector(|| "pane-focus-ring".into())
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .w_full()
+                        .h_full()
+                        .border_1()
+                        .border_color(theme.accent),
+                )
+            })
             .into_any_element()
     }
 
