@@ -3495,6 +3495,70 @@ fn terminal_cursor_after_cjk_uses_the_same_grid(cx: &mut TestAppContext) {
     );
 }
 
+/// 用户报障：后台 pane 持续输出也让当前终端重画，CPU 长期接近一核。
+/// 对照 Surface「常驻 Scene、隐藏 pane 仍收输出」：要更新 Surface，但不能请求前台重绘。
+#[gpui::test]
+fn background_workspace_output_does_not_dirty_the_terminal(cx: &mut TestAppContext) {
+    use muxterm::frontend::utils::corebridge::{ClientEvent, ClientWorkspaceEvent};
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            app.store_for_tests_event(ClientWorkspaceEvent {
+                workspace_id: "local@@ops@tmux@ops".into(),
+                event: ClientEvent {
+                    type_: 0,
+                    pane_id: 20,
+                    tab_id: 2,
+                    window_id: 0,
+                    data: b"background output".to_vec(),
+                    name: String::new(),
+                },
+            });
+            assert!(!app.drain_render_events(), "后台输出不能让当前终端变脏");
+            let text = app
+                .surface("local@@ops@tmux@ops", 20)
+                .unwrap()
+                .grid()
+                .screen_lines()
+                .join("\n");
+            assert!(
+                text.contains("background output"),
+                "后台 Surface 不能丢输出"
+            );
+        });
+    });
+}
+
+/// 同一 workspace 的隐藏 tab 也只更新 Surface；切过去时仍能读到最新画面。
+#[gpui::test]
+fn background_tab_output_does_not_dirty_the_terminal(cx: &mut TestAppContext) {
+    use muxterm::frontend::utils::corebridge::{ClientEvent, ClientWorkspaceEvent};
+    let (view, cx) = mount(two_tab_store_with_pane_20(), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            app.store_for_tests_event(ClientWorkspaceEvent {
+                workspace_id: "local@@dev@tmux@dev".into(),
+                event: ClientEvent {
+                    type_: 0,
+                    pane_id: 20,
+                    tab_id: 2,
+                    window_id: 0,
+                    data: b"hidden tab output".to_vec(),
+                    name: String::new(),
+                },
+            });
+            assert!(!app.drain_render_events(), "隐藏 tab 输出不能要求重绘");
+            let text = app
+                .surface("local@@dev@tmux@dev", 20)
+                .unwrap()
+                .grid()
+                .screen_lines()
+                .join("\n");
+            assert!(text.contains("hidden tab output"));
+        });
+    });
+}
+
 /// 空闲的 pump 不能报告 dirty：没有变化就不重绘（CPU 不做白工）。
 #[gpui::test]
 fn idle_pump_is_not_dirty(cx: &mut TestAppContext) {
