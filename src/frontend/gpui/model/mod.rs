@@ -18,6 +18,7 @@ pub mod image_paste;
 pub mod ime;
 pub mod input_encoding;
 pub mod layout_projection;
+pub mod links;
 pub mod menu;
 pub mod pane_dimming;
 pub mod pane_menu;

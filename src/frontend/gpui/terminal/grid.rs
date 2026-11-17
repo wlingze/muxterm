@@ -51,12 +51,16 @@ pub struct Attributes {
 }
 
 /// 一个格子。
+///
+/// `link` 是 OSC 8 超链接在 [`Grid`] 链接表里的下标 +1（0 = 无链接）。
+/// 存在格子上而不是行上：同一行的两段可以是两条不同的链接。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cell {
     pub ch: char,
     pub fg: Color,
     pub bg: Color,
     pub attrs: Attributes,
+    pub link: u16,
 }
 
 impl Default for Cell {
@@ -66,6 +70,7 @@ impl Default for Cell {
             fg: Color::Default,
             bg: Color::Default,
             attrs: Attributes::default(),
+            link: 0,
         }
     }
 }
@@ -101,6 +106,7 @@ impl Pen {
             fg: self.fg,
             bg: self.bg,
             attrs: self.attrs,
+            link: 0,
         }
     }
 
@@ -131,6 +137,13 @@ pub struct Grid {
     mouse_mode: MouseMode,
     sgr_mouse: bool,
     title: String,
+    /// OSC 8 链接表：格子里的 `link` 是这里的下标 +1。
+    ///
+    /// 链接很少但格子很多（80×10k 滚回）：只存下标，不把 `String` 塞进
+    /// 每个格子。
+    links: Vec<String>,
+    /// 当前生效的 OSC 8 链接（0 = 没有）。
+    link: u16,
 }
 
 struct AltScreen {
@@ -163,6 +176,8 @@ impl Grid {
             mouse_mode: MouseMode::Off,
             sgr_mouse: false,
             title: String::new(),
+            links: Vec::new(),
+            link: 0,
         }
     }
 
@@ -289,9 +304,11 @@ impl Grid {
         }
         let index = self.cursor_row * self.cols + self.cursor_col;
         self.cells[index] = self.pen.cell(ch);
+        self.cells[index].link = self.link;
         if width == 2 {
             // 第二格是占位：绘制时跳过，提取文本时也跳过。
             self.cells[index + 1] = self.pen.cell(FILLER);
+            self.cells[index + 1].link = self.link;
         }
         let next = self.cursor_col + width;
         if next >= self.cols {
@@ -408,11 +425,46 @@ impl Grid {
             *cell = Cell::default();
         }
         self.pen.reset();
+        self.link = 0;
         self.cursor_row = 0;
         self.cursor_col = 0;
         self.wrap_pending = false;
         self.scroll_top = 0;
         self.scroll_bottom = self.rows - 1;
+    }
+
+    /// OSC 8：`None` 结束当前链接，`Some(uri)` 让后续字符都指向它。
+    ///
+    /// 表只增不减：滚回里的格子还指着旧下标，删了会让历史行开错链接。
+    pub(crate) fn set_link(&mut self, uri: Option<&str>) {
+        self.link = match uri {
+            None | Some("") => 0,
+            Some(uri) => {
+                let index = match self.links.iter().position(|known| known == uri) {
+                    Some(index) => index,
+                    None => {
+                        // 上限保护：格子只存 u16 下标。
+                        if self.links.len() >= usize::from(u16::MAX) - 1 {
+                            self.link = 0;
+                            return;
+                        }
+                        self.links.push(uri.to_string());
+                        self.links.len() - 1
+                    }
+                };
+                u16::try_from(index + 1).unwrap_or(0)
+            }
+        };
+    }
+
+    /// 格子指向的 OSC 8 链接（没有则 `None`）。
+    pub fn link_of(&self, cell: &Cell) -> Option<&str> {
+        if cell.link == 0 {
+            return None;
+        }
+        self.links
+            .get(usize::from(cell.link) - 1)
+            .map(String::as_str)
     }
 
     pub(crate) fn set_cursor(&mut self, row: usize, col: usize) {
