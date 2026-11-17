@@ -195,6 +195,38 @@ SGR 属性不是只解析、不画：绘制 run 的 key 是「颜色 + 字体变
 
 复制文本：逐行去掉尾部空白，行之间 `\n` 连接；宽字符占位格（`\0`）跳过。
 
+### 5.2.2 应用鼠标上报与悬停
+
+终端里的 vim / htop / tmux copy-mode 通过 DECSET 9 / 1000 / 1002 / 1003 要鼠标。
+`terminal/mouse.rs` 负责协议与编码，`GpuiApp::report_mouse` 负责路由：
+
+| 模式 | 上报 |
+| --- | --- |
+| 9（X10） | 只报按下 |
+| 1000（Normal） | 按下 / 释放 / 滚轮 |
+| 1002（Button） | 1000 + 按住拖动 |
+| 1003（Any） | 1002 + 无按键悬停 |
+
+1006 只决定编码：开了就一律 SGR（`CSI < code ; col ; row M/m`），否则退回经典
+`CSI M` 三字节。修饰键按 xterm 的 4（Shift）/ 8（Alt）/ 16（Control）加在事件码上；
+Command 不转发，留给本机链接与快捷键。
+
+规则：
+
+- **Shift 是逃逸通道**：应用要鼠标时按住 Shift 仍走本地选字（对照 Swift
+  `mouseReportingConsumes`）。没上报的按下不补释放：`mouse_press` 只记已上报的键。
+- **移动按格去重**：`mouse_motion_cell` 只在跨格时才发 motion（xterm 的 1002/1003
+  语义）；触控板的像素级移动否则会把一次拖动拆成几百条命令。离开 pane 时清缓存，
+  再进来同一格可以重新上报。
+- **右键 / 中键**：键号 1 / 2（左键 0），按下与释放都走同一张表。
+- **拖出 pane 再松手**也必须发释放：`on_mouse_up` 只在指针还在元素上时触发，
+  所以另挂 `on_mouse_up_out`。
+- 坐标一律经 `pane_cell_at(rect, origin, …)`：滚轮与标题条 hover 都必须减掉
+  内容区原点（侧栏 / 顶部 bar）**和这一块 pane 自己的 `rect`**。标题条只在
+  鼠标进入该 pane 顶部 `TITLE_BAR_HEIGHT`（22pt）时显示。
+- 应用没接管（模式关闭或 Shift）时，左键回到本地选区；Command+点击链接优先于
+  鼠标上报（vim / tmux 开着鼠标时链接仍要能点开）。
+
 ### 5.3 输入法
 
 `GpuiApp` 实现 `EntityInputHandler`：`set_marked_text` 存组合串、`commit_text` 剥占位符后写 PTY、
@@ -524,7 +556,7 @@ Project / discovery 行用 Core 记账的 attach 频率排序（`attach-history.
 | `Open preview` | 提醒行可开预览 | 没有预览窗口 |
 | `Cmd-K` 选中项 | 全局命令（Action Catalog）在独立面板 | 同一份行内动作，但不带全局命令 |
 | 本地化 | i18n 全量 | 命令面板 / 改名浮层 / 侧栏段头走 `i18n` catalog；其余 chrome 文案仍硬编码英文 |
-| 终端选区复制 | 有 | 没有鼠标拖选；`Edit → Copy` 仍是禁用项（Info 浮层的复制已可用） |
+| 终端选区复制 | 有 | 有：拖选 / 双击选词 / 三击整行 / `Cmd-C`（§5.2.1）；应用鼠标上报见 §5.2.2 |
 | 活动 / Agents | Core 推送 + 轮询 | 每秒拉一次 `muxterm_attention_snapshot`，按 replica id join 到产品 workspace id |
 | 命令刻度轨 | 有（`CommandMarkRail`） | 未移植（`docs/gpui-parity/tests.md` §5.2 缺口表） |
 | `Muxterm Info` | 独立小窗口（`MuxtermInfoWindowController`） | 同内容的前端浮层，Esc 关闭 |

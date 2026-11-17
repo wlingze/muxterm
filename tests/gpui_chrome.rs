@@ -2101,6 +2101,300 @@ fn wheel_over_a_pane_scrolls_its_history(cx: &mut TestAppContext) {
 }
 
 // ---------------------------------------------------------------------------
+// 鼠标：点击 / 拖动 / 悬停都必须走应用鼠标上报（DECSET 1000/1002/1003）
+// ---------------------------------------------------------------------------
+
+const DEV_WORKSPACE: &str = "local@@dev@tmux@dev";
+
+/// 取出写给某个 pane 的输入字节（忽略 Resize / 任务类命令）。
+fn pane_input(
+    view: &gpui::Entity<GpuiApp>,
+    cx: &mut gpui::VisualTestContext,
+    pane_id: u32,
+) -> Vec<Vec<u8>> {
+    cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            app.take_commands_for_tests()
+                .into_iter()
+                .filter_map(|command| match command {
+                    ClientCommand::Input {
+                        pane_id: id, data, ..
+                    } if id == pane_id => Some(data),
+                    _ => None,
+                })
+                .collect()
+        })
+    })
+}
+
+/// 让 pane 打开鼠标上报（1006 = SGR 编码），并清掉首帧的 Resize 命令。
+fn enable_mouse(
+    view: &gpui::Entity<GpuiApp>,
+    cx: &mut gpui::VisualTestContext,
+    pane_id: u32,
+    mode: u16,
+) {
+    let (cols, rows) = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            let surface = app
+                .surface(DEV_WORKSPACE, pane_id)
+                .expect("pane surface 必须先渲染");
+            (surface.grid().cols() as u16, surface.grid().rows() as u16)
+        })
+    });
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.feed_pane_for_tests(
+                DEV_WORKSPACE,
+                pane_id,
+                cols,
+                rows,
+                format!("\x1b[?{mode}h\x1b[?1006h").as_bytes(),
+                cx,
+            );
+            app.take_commands_for_tests();
+        })
+    });
+    cx.run_until_parked();
+}
+
+/// pane 内容盒左上角（窗口坐标）。
+fn pane_origin(cx: &mut gpui::VisualTestContext, pane_id: u32) -> gpui::Point<gpui::Pixels> {
+    cx.debug_bounds(match pane_id {
+        10 => "pane-text-10",
+        11 => "pane-text-11",
+        12 => "pane-text-12",
+        other => panic!("没有 pane {other} 的选择器"),
+    })
+    .expect("pane 内容盒必须渲染")
+    .origin
+}
+
+/// DECSET 1000：左键按下/释放要原样写给应用，并且不能顺手起一个选区。
+///
+/// 用户报障：「鼠标点击…必须支持」。之前 gpui 只接左键拖选，vim / htop /
+/// tmux copy-mode 这类开了 1000 的程序收不到任何点击。
+#[gpui::test]
+fn click_reports_press_and_release_to_a_mouse_aware_application(cx: &mut TestAppContext) {
+    let (view, cx) = mount(two_tab_store(), cx);
+    enable_mouse(&view, cx, 10, 1000);
+    let origin = pane_origin(cx, 10);
+    let (cw, ch) = cx.update(|_, cx| view.update(cx, |app, _| app.cell()));
+    let point = gpui::point(origin.x + px(cw * 2.5), origin.y + px(ch * 3.5));
+
+    cx.simulate_mouse_down(point, gpui::MouseButton::Left, gpui::Modifiers::none());
+    assert_eq!(
+        pane_input(&view, cx, 10),
+        vec![b"\x1b[<0;3;4M".to_vec()],
+        "按下必须按 SGR 上报（0 = 左键，1 基坐标）"
+    );
+    let selection = cx.update(|_, cx| view.update(cx, |app, _| app.selection_for(10)));
+    assert!(selection.is_none(), "应用接管点击时不能同时起选区");
+
+    cx.simulate_mouse_up(point, gpui::MouseButton::Left, gpui::Modifiers::none());
+    assert_eq!(
+        pane_input(&view, cx, 10),
+        vec![b"\x1b[<0;3;4m".to_vec()],
+        "释放必须用 SGR 的 `m` 形式"
+    );
+}
+
+/// Shift 是逃逸通道：应用要鼠标时，按住 Shift 仍然能本地选字复制。
+#[gpui::test]
+fn shift_click_still_selects_text_when_the_application_tracks_the_mouse(cx: &mut TestAppContext) {
+    let (view, cx) = mount(two_tab_store(), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.feed_pane_for_tests(DEV_WORKSPACE, 10, 40, 10, b"hello world", cx);
+        })
+    });
+    enable_mouse(&view, cx, 10, 1000);
+    let origin = pane_origin(cx, 10);
+    let (cw, ch) = cx.update(|_, cx| view.update(cx, |app, _| app.cell()));
+    let start = gpui::point(origin.x + px(cw * 0.5), origin.y + px(ch * 0.5));
+    let end = gpui::point(origin.x + px(cw * 8.5), origin.y + px(ch * 0.5));
+    cx.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::shift());
+    cx.simulate_mouse_move(end, Some(gpui::MouseButton::Left), gpui::Modifiers::shift());
+    cx.simulate_mouse_up(end, gpui::MouseButton::Left, gpui::Modifiers::shift());
+
+    assert!(
+        pane_input(&view, cx, 10).is_empty(),
+        "Shift 按住时不能把拖动写给应用"
+    );
+    let selection = cx.update(|_, cx| view.update(cx, |app, _| app.selection_for(10)));
+    assert!(selection.is_some(), "Shift+拖动必须落回本地选区");
+}
+
+/// DECSET 1002：按住拖动时跨格要发 motion（32 + 键号），同格不重复发。
+#[gpui::test]
+fn dragging_reports_motion_in_button_event_mode(cx: &mut TestAppContext) {
+    let (view, cx) = mount(two_tab_store(), cx);
+    enable_mouse(&view, cx, 10, 1002);
+    let origin = pane_origin(cx, 10);
+    let (cw, ch) = cx.update(|_, cx| view.update(cx, |app, _| app.cell()));
+    let start = gpui::point(origin.x + px(cw * 2.5), origin.y + px(ch * 3.5));
+    let next = gpui::point(origin.x + px(cw * 6.5), origin.y + px(ch * 5.5));
+    let same = gpui::point(origin.x + px(cw * 6.7), origin.y + px(ch * 5.7));
+
+    cx.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::none());
+    assert_eq!(pane_input(&view, cx, 10), vec![b"\x1b[<0;3;4M".to_vec()]);
+
+    cx.simulate_mouse_move(next, Some(gpui::MouseButton::Left), gpui::Modifiers::none());
+    assert_eq!(
+        pane_input(&view, cx, 10),
+        vec![b"\x1b[<32;7;6M".to_vec()],
+        "拖动必须是 32 + 左键号"
+    );
+
+    cx.simulate_mouse_move(same, Some(gpui::MouseButton::Left), gpui::Modifiers::none());
+    assert!(
+        pane_input(&view, cx, 10).is_empty(),
+        "同一格内的像素移动不能刷屏"
+    );
+
+    cx.simulate_mouse_up(next, gpui::MouseButton::Left, gpui::Modifiers::none());
+    assert_eq!(pane_input(&view, cx, 10), vec![b"\x1b[<0;7;6m".to_vec()]);
+}
+
+/// DECSET 1003：没有按键的悬停也要发 motion（35），同样按格去重。
+#[gpui::test]
+fn hover_reports_motion_in_any_event_mode(cx: &mut TestAppContext) {
+    let (view, cx) = mount(two_tab_store(), cx);
+    enable_mouse(&view, cx, 10, 1003);
+    let origin = pane_origin(cx, 10);
+    let (cw, ch) = cx.update(|_, cx| view.update(cx, |app, _| app.cell()));
+    let first = gpui::point(origin.x + px(cw * 4.5), origin.y + px(ch * 2.5));
+    let same = gpui::point(origin.x + px(cw * 4.7), origin.y + px(ch * 2.7));
+    let next = gpui::point(origin.x + px(cw * 9.5), origin.y + px(ch * 2.5));
+
+    cx.simulate_mouse_move(first, None, gpui::Modifiers::none());
+    assert_eq!(
+        pane_input(&view, cx, 10),
+        vec![b"\x1b[<35;5;3M".to_vec()],
+        "无按键移动必须上报 35"
+    );
+
+    cx.simulate_mouse_move(same, None, gpui::Modifiers::none());
+    assert!(
+        pane_input(&view, cx, 10).is_empty(),
+        "同一格内的悬停不能重复上报"
+    );
+
+    cx.simulate_mouse_move(next, None, gpui::Modifiers::none());
+    assert_eq!(pane_input(&view, cx, 10), vec![b"\x1b[<35;10;3M".to_vec()]);
+}
+
+/// 右键 / 中键也要能点：xterm 的键号是 1 / 2（左键 0）。
+#[gpui::test]
+fn right_and_middle_clicks_are_reported(cx: &mut TestAppContext) {
+    let (view, cx) = mount(two_tab_store(), cx);
+    enable_mouse(&view, cx, 10, 1000);
+    let origin = pane_origin(cx, 10);
+    let (cw, ch) = cx.update(|_, cx| view.update(cx, |app, _| app.cell()));
+    let point = gpui::point(origin.x + px(cw * 1.5), origin.y + px(ch * 1.5));
+
+    cx.simulate_mouse_down(point, gpui::MouseButton::Right, gpui::Modifiers::none());
+    cx.simulate_mouse_up(point, gpui::MouseButton::Right, gpui::Modifiers::none());
+    assert_eq!(
+        pane_input(&view, cx, 10),
+        vec![b"\x1b[<2;2;2M".to_vec(), b"\x1b[<2;2;2m".to_vec()]
+    );
+
+    cx.simulate_mouse_down(point, gpui::MouseButton::Middle, gpui::Modifiers::none());
+    cx.simulate_mouse_up(point, gpui::MouseButton::Middle, gpui::Modifiers::none());
+    assert_eq!(
+        pane_input(&view, cx, 10),
+        vec![b"\x1b[<1;2;2M".to_vec(), b"\x1b[<1;2;2m".to_vec()]
+    );
+}
+
+/// 标题条 hover 必须减掉这一块 pane 自己的原点。
+///
+/// 用户报障：「鼠标悬停也必须支持」。多 pane 时只有鼠标停在 pane 顶部
+/// 22pt 才浮出标题条；之前只减了内容区原点，下面/右边的 pane 永远判不到。
+#[gpui::test]
+fn pane_title_hover_uses_the_pane_rect(cx: &mut TestAppContext) {
+    let (view, cx) = mount(three_pane_store(10), cx);
+    let origin = pane_origin(cx, 12);
+    let point = gpui::point(origin.x + px(5.0), origin.y + px(5.0));
+    cx.simulate_mouse_move(point, None, gpui::Modifiers::none());
+
+    let hovered = cx.update(|_, cx| view.update(cx, |app, _| app.hovered_pane_title()));
+    assert_eq!(hovered, Some(12), "右下 pane 的顶部同样要浮出标题条");
+    let shown = cx.update(|_, cx| view.update(cx, |app, _| app.shows_pane_title(12)));
+    assert!(shown, "悬停中的 pane 标题条必须可见");
+}
+
+/// 滚轮命中要落在收到事件的那个 pane 里。
+///
+/// 之前只减了 `rect`，没减侧栏/顶部 bar 的内容区原点：右半边 pane 上
+/// 滚轮会按「侧栏宽度 + 列号」报给应用，列表高亮就滚到别处去了。
+#[gpui::test]
+fn wheel_over_a_pane_reports_the_cell_inside_that_pane(cx: &mut TestAppContext) {
+    let (view, cx) = mount(three_pane_store(10), cx);
+    enable_mouse(&view, cx, 12, 1000);
+    let origin = pane_origin(cx, 12);
+    let (cw, ch) = cx.update(|_, cx| view.update(cx, |app, _| app.cell()));
+    let point = gpui::point(origin.x + px(cw * 2.5), origin.y + px(ch * 3.5));
+    cx.simulate_event(gpui::ScrollWheelEvent {
+        position: point,
+        delta: gpui::ScrollDelta::Lines(gpui::point(0.0, -1.0)),
+        modifiers: gpui::Modifiers::none(),
+        touch_phase: gpui::TouchPhase::Moved,
+    });
+
+    assert_eq!(
+        pane_input(&view, cx, 12),
+        vec![b"\x1b[<65;3;4M".to_vec()],
+        "滚轮坐标必须相对这个 pane，不能把侧栏算进去"
+    );
+}
+
+/// 拖出 pane 再松手：释放仍要送给应用。
+///
+/// `on_mouse_up` 只在指针还在 pane 上时触发；少了 `on_mouse_up_out`，
+/// 应用会永远以为鼠标还按着（vim 的选区拖到外面就卡住）。
+#[gpui::test]
+fn release_outside_the_pane_still_reaches_the_application(cx: &mut TestAppContext) {
+    let (view, cx) = mount(two_tab_store(), cx);
+    enable_mouse(&view, cx, 10, 1000);
+    let origin = pane_origin(cx, 10);
+    let (cw, ch) = cx.update(|_, cx| view.update(cx, |app, _| app.cell()));
+    let start = gpui::point(origin.x + px(cw * 2.5), origin.y + px(ch * 3.5));
+    cx.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::none());
+    assert_eq!(pane_input(&view, cx, 10), vec![b"\x1b[<0;3;4M".to_vec()]);
+
+    // 侧栏里松手：已经不在 pane 上了。
+    cx.simulate_mouse_up(
+        gpui::point(px(5.0), px(5.0)),
+        gpui::MouseButton::Left,
+        gpui::Modifiers::none(),
+    );
+    assert_eq!(
+        pane_input(&view, cx, 10),
+        vec![b"\x1b[<0;1;1m".to_vec()],
+        "拖出 pane 后松开也必须把释放送给应用"
+    );
+}
+
+/// 方向键必须原样进 PTY（普通 CSI；app-cursor 模式见 keymap 单测）。
+#[gpui::test]
+fn arrow_keys_reach_the_terminal(cx: &mut TestAppContext) {
+    let (view, cx) = mount(two_tab_store(), cx);
+    cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    cx.simulate_keystrokes("up down left right");
+    let mut data = Vec::new();
+    for chunk in pane_input(&view, cx, 10) {
+        data.extend_from_slice(&chunk);
+    }
+    assert_eq!(
+        data,
+        b"\x1b[A\x1b[B\x1b[D\x1b[C".to_vec(),
+        "上下左右必须进终端"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Cmd-P：现有 runtime（Core discovery）只在这里出现，激活走 Catalog attach
 // ---------------------------------------------------------------------------
 

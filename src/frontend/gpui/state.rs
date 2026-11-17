@@ -16,7 +16,7 @@ use crate::frontend::event_pump::EventPump;
 use crate::frontend::gpui::model::composer::{ComposerTarget, ComposerTargetKind};
 use crate::frontend::gpui::model::quick_connect::TargetConfig;
 use crate::frontend::gpui::model::scroll::{wheel_lines, wheel_outcome, WheelOutcome};
-use crate::frontend::gpui::terminal::mouse::{self, MouseEventKind};
+use crate::frontend::gpui::terminal::mouse::{self, Button, MouseEventKind, MouseModifiers};
 use crate::frontend::gpui::terminal::{encode, KeyPress, Surface};
 use crate::frontend::gpui::theme::Theme;
 use crate::frontend::utils::corebridge::{ClientEventKind, ClientLayout, ClientTab};
@@ -105,6 +105,10 @@ pub struct GpuiApp {
     last_sizes: HashMap<SurfaceKey, (u16, u16)>,
     /// 触控板的零头：不足一格的部分留到下一次事件，见 `wheel_lines`。
     wheel_accumulators: HashMap<SurfaceKey, f32>,
+    /// 鼠标按下时的 pane 与键：拖出 pane 以后释放仍要送给应用。
+    pub(crate) mouse_press: Option<(u32, Button)>,
+    /// 上一次上报给应用的移动格子：xterm 只在跨格时报 motion（1002/1003）。
+    mouse_motion_cell: Option<(u32, usize, usize)>,
     focus_handle: FocusHandle,
     theme: Theme,
     /// 渲染期量出来的格子像素尺寸；Core 上报与鼠标命中共用。
@@ -321,6 +325,8 @@ impl GpuiApp {
             quit_requested: false,
             last_sizes: HashMap::new(),
             wheel_accumulators: HashMap::new(),
+            mouse_press: None,
+            mouse_motion_cell: None,
             focus_handle: cx.focus_handle(),
             marked_text: String::new(),
             panel: crate::frontend::gpui::chrome::panel_view::PanelState::default(),
@@ -1179,6 +1185,8 @@ impl GpuiApp {
             quit_requested: false,
             last_sizes: HashMap::new(),
             wheel_accumulators: HashMap::new(),
+            mouse_press: None,
+            mouse_motion_cell: None,
             focus_handle: cx.focus_handle(),
             marked_text: String::new(),
             panel: crate::frontend::gpui::chrome::panel_view::PanelState::default(),
@@ -3997,6 +4005,74 @@ impl GpuiApp {
             cols,
             rows,
         });
+    }
+
+    /// 把一次指针事件写给应用（DECSET 9 / 1000 / 1002 / 1003）。
+    ///
+    /// 返回 `true` 表示应用接管了这次事件，调用方不能再起本地选区。
+    /// Shift 是逃逸通道：除了已经发生的释放，其余一概不报，留给本地选字。
+    ///
+    /// 1002/1003 的移动只在跨格子时上报（xterm 语义），否则触控板的像素级
+    /// 事件会把一次拖动拆成几百条控制命令。
+    pub fn report_mouse(
+        &mut self,
+        pane_id: u32,
+        kind: MouseEventKind,
+        col: usize,
+        row: usize,
+        modifiers: MouseModifiers,
+    ) -> bool {
+        let Some(workspace) = self.visible.clone() else {
+            return false;
+        };
+        let key = (workspace.clone(), pane_id);
+        let Some(surface) = self.surfaces.get(&key) else {
+            return false;
+        };
+        let grid = surface.grid();
+        let mode = grid.mouse_mode();
+        let sgr = grid.sgr_mouse();
+        if mode == crate::frontend::gpui::terminal::MouseMode::Off {
+            return false;
+        }
+        if modifiers.shift && !matches!(kind, MouseEventKind::Release(_)) {
+            return false;
+        }
+        if !mode.accepts(kind) {
+            return false;
+        }
+        if matches!(kind, MouseEventKind::Move | MouseEventKind::Drag(_)) {
+            let cell = (pane_id, row, col);
+            if self.mouse_motion_cell == Some(cell) {
+                return true;
+            }
+            self.mouse_motion_cell = Some(cell);
+        } else {
+            self.mouse_motion_cell = None;
+        }
+        // 老式协议坐标溢出时 encode 返回 None：事件仍算被应用接管，
+        // 免得退化成用户在终端里拖出一个莫名其妙的选区。
+        let Some(data) = mouse::encode_with_modifiers(kind, col, row, mode, sgr, modifiers) else {
+            return true;
+        };
+        self.commands.push(ClientCommand::Input {
+            workspace_id: Some(workspace),
+            pane_id,
+            data,
+            quiet: false,
+        });
+        self.note_input_sent();
+        true
+    }
+
+    /// 鼠标离开 pane：清掉跨格去重缓存，再进来同一格时重新上报。
+    pub fn forget_mouse_motion(&mut self, pane_id: u32) {
+        if self
+            .mouse_motion_cell
+            .is_some_and(|(last, _, _)| last == pane_id)
+        {
+            self.mouse_motion_cell = None;
+        }
     }
 
     /// 滚轮：先问服务端，再看应用要不要鼠标，最后才动本地历史。

@@ -22,6 +22,7 @@ use gpui::{
 use crate::frontend::gpui::chrome::pane_grid::Rect;
 use crate::frontend::gpui::state::{GpuiApp, WheelInput};
 use crate::frontend::gpui::terminal::grid::{Cell, Color, FILLER};
+use crate::frontend::gpui::terminal::mouse::{Button, MouseEventKind, MouseModifiers};
 
 /// 选区背景混色比例（强调色叠在格子背景上的 alpha）。
 pub const SELECTION_ALPHA: f32 = 0.3;
@@ -299,47 +300,182 @@ impl GpuiApp {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
-                    window.focus(&this.focus_handle());
-                    this.focus_pane(pane_id, cx);
-                    // 点终端任意处都关掉 pane 菜单（NSMenu 点外面即消）。
-                    this.close_pane_menu(cx);
-                    let (col, row) =
-                        pane_cell_at(rect, origin, cell_width, cell_height, event.position);
-                    // Command+点击 = 打开光标下的链接（macOS 惯例，对照 Swift
-                    // `requestOpenLink`）。没链接时才退回拖选。
-                    if event.modifiers.platform {
-                        if let Some(url) = this.pane_url_at(pane_id, row, col) {
-                            cx.open_url(&url);
-                            return;
-                        }
-                    }
-                    this.begin_selection(pane_id, row, col, event.click_count, cx);
+                    pane_mouse_down(
+                        this,
+                        window,
+                        pane_id,
+                        PaneGeometry {
+                            rect,
+                            origin,
+                            cell: (cell_width, cell_height),
+                        },
+                        MouseButton::Left,
+                        event,
+                        cx,
+                    );
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
+                    pane_mouse_down(
+                        this,
+                        window,
+                        pane_id,
+                        PaneGeometry {
+                            rect,
+                            origin,
+                            cell: (cell_width, cell_height),
+                        },
+                        MouseButton::Right,
+                        event,
+                        cx,
+                    );
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Middle,
+                cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
+                    pane_mouse_down(
+                        this,
+                        window,
+                        pane_id,
+                        PaneGeometry {
+                            rect,
+                            origin,
+                            cell: (cell_width, cell_height),
+                        },
+                        MouseButton::Middle,
+                        event,
+                        cx,
+                    );
                 }),
             )
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(move |this, _: &gpui::MouseUpEvent, _, cx| {
-                    // 松手后选区留着（可以继续 Cmd-C）；只结束拖拽状态。
-                    this.finish_drag(cx);
+                cx.listener(move |this, event: &gpui::MouseUpEvent, _window, cx| {
+                    pane_mouse_up(
+                        this,
+                        pane_id,
+                        PaneGeometry {
+                            rect,
+                            origin,
+                            cell: (cell_width, cell_height),
+                        },
+                        MouseButton::Left,
+                        event,
+                        cx,
+                    );
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Right,
+                cx.listener(move |this, event: &gpui::MouseUpEvent, _window, cx| {
+                    pane_mouse_up(
+                        this,
+                        pane_id,
+                        PaneGeometry {
+                            rect,
+                            origin,
+                            cell: (cell_width, cell_height),
+                        },
+                        MouseButton::Right,
+                        event,
+                        cx,
+                    );
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Middle,
+                cx.listener(move |this, event: &gpui::MouseUpEvent, _window, cx| {
+                    pane_mouse_up(
+                        this,
+                        pane_id,
+                        PaneGeometry {
+                            rect,
+                            origin,
+                            cell: (cell_width, cell_height),
+                        },
+                        MouseButton::Middle,
+                        event,
+                        cx,
+                    );
+                }),
+            )
+            // 拖出 pane 再松手：`on_mouse_up` 只在指针还在本元素上时触发，
+            // 少了这一条应用会永远以为鼠标还按着。
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(move |this, event: &gpui::MouseUpEvent, _window, cx| {
+                    pane_mouse_up(
+                        this,
+                        pane_id,
+                        PaneGeometry {
+                            rect,
+                            origin,
+                            cell: (cell_width, cell_height),
+                        },
+                        MouseButton::Left,
+                        event,
+                        cx,
+                    );
+                }),
+            )
+            .on_mouse_up_out(
+                MouseButton::Right,
+                cx.listener(move |this, event: &gpui::MouseUpEvent, _window, cx| {
+                    pane_mouse_up(
+                        this,
+                        pane_id,
+                        PaneGeometry {
+                            rect,
+                            origin,
+                            cell: (cell_width, cell_height),
+                        },
+                        MouseButton::Right,
+                        event,
+                        cx,
+                    );
+                }),
+            )
+            .on_mouse_up_out(
+                MouseButton::Middle,
+                cx.listener(move |this, event: &gpui::MouseUpEvent, _window, cx| {
+                    pane_mouse_up(
+                        this,
+                        pane_id,
+                        PaneGeometry {
+                            rect,
+                            origin,
+                            cell: (cell_width, cell_height),
+                        },
+                        MouseButton::Middle,
+                        event,
+                        cx,
+                    );
                 }),
             )
             // 悬停只观察、不拦截：标题条默认隐藏，鼠标移到顶部 22pt 才出现。
             // 不能用一条透明 div 做“感应条”，那会吞掉终端首行的点击。
             .on_mouse_move(
                 cx.listener(move |this, event: &MouseMoveEvent, _window, cx| {
-                    let in_title_strip = f32::from(event.position.y) - origin.1
-                        <= crate::frontend::gpui::model::pane_title::TITLE_BAR_HEIGHT;
-                    this.note_pane_hover(pane_id, in_title_strip, cx);
-                    if event.pressed_button == Some(MouseButton::Left) {
-                        let (col, row) =
-                            pane_cell_at(rect, origin, cell_width, cell_height, event.position);
-                        this.extend_selection(pane_id, row, col, cx);
-                    }
+                    pane_mouse_move(
+                        this,
+                        pane_id,
+                        PaneGeometry {
+                            rect,
+                            origin,
+                            cell: (cell_width, cell_height),
+                        },
+                        event,
+                        cx,
+                    );
                 }),
             )
             .on_hover(cx.listener(move |this, hovered: &bool, _window, cx| {
                 if !*hovered {
                     this.clear_pane_hover(pane_id, cx);
+                    this.forget_mouse_motion(pane_id);
                 }
             }))
             .on_scroll_wheel(
@@ -349,10 +485,10 @@ impl GpuiApp {
                         ScrollDelta::Pixels(delta) => (f32::from(delta.y), true),
                         ScrollDelta::Lines(delta) => (delta.y, false),
                     };
-                    let col =
-                        ((f32::from(event.position.x) - rect.x) / cell_width).max(0.0) as usize;
-                    let row =
-                        ((f32::from(event.position.y) - rect.y) / cell_height).max(0.0) as usize;
+                    // 坐标必须减掉窗口内容原点（侧栏 / 顶部 bar）和这一块
+                    // pane 自己相对内容区的位置，否则右半边会把侧栏宽度算进列号。
+                    let (col, row) =
+                        pane_cell_at(rect, origin, cell_width, cell_height, event.position);
                     this.handle_wheel(
                         WheelInput {
                             pane_id,
@@ -748,6 +884,144 @@ fn pane_cell_at(
     let col = (x / cell_width).floor().max(0.0) as usize;
     let row = (y / cell_height).floor().max(0.0) as usize;
     (col, row)
+}
+
+/// 一块 pane 的几何：内容区原点 + pane 自身位置 + 格子尺寸。
+#[derive(Clone, Copy)]
+struct PaneGeometry {
+    rect: Rect,
+    origin: (f32, f32),
+    cell: (f32, f32),
+}
+
+impl PaneGeometry {
+    fn cell_at(self, position: gpui::Point<gpui::Pixels>) -> (usize, usize) {
+        pane_cell_at(self.rect, self.origin, self.cell.0, self.cell.1, position)
+    }
+}
+
+/// gpui 的按键 → xterm 键号；导航键不参与终端鼠标上报。
+fn mouse_button(button: MouseButton) -> Option<Button> {
+    match button {
+        MouseButton::Left => Some(Button::Left),
+        MouseButton::Middle => Some(Button::Middle),
+        MouseButton::Right => Some(Button::Right),
+        MouseButton::Navigate(_) => None,
+    }
+}
+
+/// gpui 的修饰键 → xterm 的 4/8/16 位（Command 不转发，留给本机快捷键）。
+fn mouse_modifiers(modifiers: &gpui::Modifiers) -> MouseModifiers {
+    MouseModifiers {
+        shift: modifiers.shift,
+        alt: modifiers.alt,
+        control: modifiers.control,
+    }
+}
+
+/// 鼠标按下：先聚焦，再看应用是否接管（Shift 绕过）。
+fn pane_mouse_down(
+    app: &mut GpuiApp,
+    window: &mut gpui::Window,
+    pane_id: u32,
+    geometry: PaneGeometry,
+    button: MouseButton,
+    event: &gpui::MouseDownEvent,
+    cx: &mut gpui::Context<GpuiApp>,
+) {
+    window.focus(&app.focus_handle());
+    app.focus_pane(pane_id, cx);
+    // 点终端任意处都关掉 pane 菜单（NSMenu 点外面即消）。
+    app.close_pane_menu(cx);
+    let (col, row) = geometry.cell_at(event.position);
+    // Command+点击 = 打开光标下的链接（macOS 惯例，对照 Swift
+    // `requestOpenLink`）。放在鼠标上报之前：vim / tmux 开着鼠标时链接
+    // 仍然要能点开。
+    if button == MouseButton::Left && event.modifiers.platform {
+        if let Some(url) = app.pane_url_at(pane_id, row, col) {
+            cx.open_url(&url);
+            return;
+        }
+    }
+    let Some(protocol_button) = mouse_button(button) else {
+        return;
+    };
+    let reported = app.report_mouse(
+        pane_id,
+        MouseEventKind::Press(protocol_button),
+        col,
+        row,
+        mouse_modifiers(&event.modifiers),
+    );
+    if reported {
+        app.mouse_press = Some((pane_id, protocol_button));
+        return;
+    }
+    // 应用不要鼠标（或按住 Shift）：左键回到本地选字。
+    // 不记 `mouse_press`：没上报的按下不能补一个释放给应用。
+    if protocol_button == Button::Left {
+        app.begin_selection(pane_id, row, col, event.click_count, cx);
+    }
+}
+
+/// 鼠标释放：按键在哪块 pane 按下，就由哪块把释放送给应用。
+fn pane_mouse_up(
+    app: &mut GpuiApp,
+    pane_id: u32,
+    geometry: PaneGeometry,
+    button: MouseButton,
+    event: &gpui::MouseUpEvent,
+    cx: &mut gpui::Context<GpuiApp>,
+) {
+    let Some(protocol_button) = mouse_button(button) else {
+        return;
+    };
+    let (col, row) = geometry.cell_at(event.position);
+    if app.mouse_press == Some((pane_id, protocol_button)) {
+        app.report_mouse(
+            pane_id,
+            MouseEventKind::Release(protocol_button),
+            col,
+            row,
+            mouse_modifiers(&event.modifiers),
+        );
+        app.mouse_press = None;
+    }
+    if protocol_button == Button::Left {
+        // 松手后选区留着（可以继续 Cmd-C）；只结束拖拽状态。
+        app.finish_drag(cx);
+    }
+}
+
+/// 鼠标移动：标题条 hover、应用拖动上报（1002）、无按键悬停（1003）、
+/// 以及应用没接管时的本地拖选。
+fn pane_mouse_move(
+    app: &mut GpuiApp,
+    pane_id: u32,
+    geometry: PaneGeometry,
+    event: &MouseMoveEvent,
+    cx: &mut gpui::Context<GpuiApp>,
+) {
+    // 标题条只看这一块 pane 自己的顶部，必须减掉 `rect.y`。
+    let top = f32::from(event.position.y) - geometry.origin.1 - geometry.rect.y;
+    app.note_pane_hover(
+        pane_id,
+        top <= crate::frontend::gpui::model::pane_title::TITLE_BAR_HEIGHT,
+        cx,
+    );
+    let (col, row) = geometry.cell_at(event.position);
+    let modifiers = mouse_modifiers(&event.modifiers);
+    if let Some(button) = event.pressed_button.and_then(mouse_button) {
+        // 应用拖动优先；应用没接管才继续本地选区。
+        if !app.report_mouse(pane_id, MouseEventKind::Drag(button), col, row, modifiers)
+            && button == Button::Left
+        {
+            app.extend_selection(pane_id, row, col, cx);
+        }
+    } else {
+        // 无按键移动 = 1003 悬停；应用不接就什么都不做（标题条已经更新）。
+        app.report_mouse(pane_id, MouseEventKind::Move, col, row, modifiers);
+    }
 }
 
 /// 制表符 / 方块元素：按格子几何画矩形（iTerm2 `iTermBoxDrawingRenderer` 同思路）。
