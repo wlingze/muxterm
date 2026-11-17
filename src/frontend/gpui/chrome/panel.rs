@@ -504,7 +504,9 @@ fn render_row(
                         .gap(px(6.))
                         .child(
                             div()
-                                .overflow_hidden()
+                                .debug_selector(move || format!("panel-title-{index}"))
+                                .min_w_0()
+                                .truncate()
                                 .text_color(
                                     if matches!(
                                         row,
@@ -534,10 +536,12 @@ fn render_row(
                 .when_some(detail, |element, detail| {
                     element.child(
                         div()
+                            .debug_selector(move || format!("panel-detail-{index}"))
+                            .min_w_0()
+                            .truncate()
                             .text_size(px(11.))
                             .line_height(px(14.))
                             .text_color(theme.muted)
-                            .overflow_hidden()
                             .child(SharedString::from(detail)),
                     )
                 }),

@@ -119,7 +119,11 @@ pub(crate) fn render_tab(
     }
     children.push(
         div()
-            .overflow_hidden()
+            .debug_selector(move || format!("tab-label-{tab_id}"))
+            .min_w_0()
+            // 长 tab 标题（重命名、命令名）必须单行 + 省略号：换行会把
+            // 标题撑成两行，把关闭按钮顶出 tab、压缩到只剩半个字。
+            .truncate()
             .text_size(px(TAB_BAR_FONT_SIZE))
             .line_height(px(14.0))
             .text_color(label_color)

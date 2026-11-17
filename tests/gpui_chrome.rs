@@ -118,6 +118,213 @@ fn clicking_a_sidebar_row_switches_workspace(cx: &mut TestAppContext) {
     assert_eq!(visible.as_deref(), Some("local@@ops@tmux@ops"));
 }
 
+/// 侧栏长名字必须单行截断。
+///
+/// 用户报障（截图）：`feature-ssa2llvm-support_ci_and_mustpass_test` 在
+/// Workspaces 段和 Agents 段都换行成两行 —— 第二行压住副标题，活动行的
+/// 尾部关闭按钮还被顶出侧栏裁掉一半。Swift 的 `NSTextField` 是
+/// `byTruncatingTail`，这里必须一致：标题/副标题单行、行高固定。
+#[gpui::test]
+fn long_sidebar_rows_stay_single_line(cx: &mut TestAppContext) {
+    use muxterm::frontend::utils::corebridge::{
+        ClientActivitySnapshot, ClientAttentionPane, ClientWorkspaceAttention,
+    };
+    const NAME: &str = "feature-ssa2llvm-support_ci_and_mustpass_test-with-an-extremely-long-branch-suffix-for-overflow";
+    const ID: &str = "local@@long@tmux@long";
+    let mut store = ViewStore::default();
+    store.replace_topology(
+        workspace(ID, NAME, true),
+        vec![ClientTab {
+            id: 1,
+            name: "main".to_string(),
+            is_active: true,
+        }],
+        vec![(
+            1,
+            vec![ClientPane {
+                id: 10,
+                cols: 80,
+                rows: 24,
+                is_active: true,
+                title: "zsh".to_string(),
+            }],
+        )],
+    );
+    store.ensure_workspace(ID).backend_status = Some(backend_status::CONNECTED);
+    let (view, cx) = mount(store, cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.set_activity_snapshot_for_tests(&ClientActivitySnapshot {
+                blocked_count: 0,
+                workspaces: vec![ClientWorkspaceAttention {
+                    workspace_id: ID.to_string(),
+                    path: "/home/u/long".to_string(),
+                    blocked: 0,
+                    done: 1,
+                    working: 0,
+                    panes: vec![ClientAttentionPane {
+                        muted: false,
+                        workspace_id: ID.to_string(),
+                        pane_id: 10,
+                        status: "done".to_string(),
+                        acknowledged: false,
+                        last_line: "done".to_string(),
+                        seq: 3,
+                        process_name: Some("pi".to_string()),
+                        process_is_agent: true,
+                        agent_name: Some("pi".to_string()),
+                        shell_name: None,
+                    }],
+                }],
+            });
+            // 快照 setter 故意不 notify（真实路径由 pump 统一置脏）。
+            cx.notify();
+        });
+    });
+    cx.run_until_parked();
+
+    let titles: Vec<String> = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            app.sidebar_model()
+                .into_iter()
+                .flat_map(|section| section.rows.into_iter().map(|row| row.title))
+                .filter(|title| title.contains(NAME))
+                .collect()
+        })
+    });
+    assert_eq!(
+        titles.len(),
+        2,
+        "长名字要同时出现在 Workspaces 与 Agents：{titles:?}"
+    );
+
+    for title in &titles {
+        let name = cx
+            .debug_bounds(Box::leak(format!("sidebar-name-{title}").into_boxed_str()))
+            .unwrap_or_else(|| panic!("标题必须渲染：{title}"));
+        let detail = cx
+            .debug_bounds(Box::leak(
+                format!("sidebar-detail-{title}").into_boxed_str(),
+            ))
+            .unwrap_or_else(|| panic!("副标题必须渲染：{title}"));
+        assert!(
+            (f32::from(name.size.height) - 15.0).abs() < 0.6,
+            "标题必须单行（换行 = 撑破行高）：{title} {name:?}"
+        );
+        assert!(
+            (f32::from(detail.size.height) - 12.0).abs() < 0.6,
+            "副标题必须单行：{title} {detail:?}"
+        );
+        assert!(
+            f32::from(detail.origin.y) + 0.6 >= f32::from(name.origin.y) + 15.0,
+            "副标题不能被标题压住：{title} {name:?} {detail:?}"
+        );
+    }
+
+    // 活动 workspace 行的关闭按钮必须完整落在侧栏里。
+    let trailing = cx
+        .debug_bounds(Box::leak(
+            format!("sidebar-trailing-{NAME}").into_boxed_str(),
+        ))
+        .expect("活动行必须有尾部按钮");
+    let sidebar = cx.debug_bounds("sidebar").expect("侧栏必须渲染");
+    assert!(
+        f32::from(trailing.origin.x) + f32::from(trailing.size.width)
+            <= f32::from(sidebar.origin.x) + f32::from(sidebar.size.width) - 5.0,
+        "关闭按钮不能被裁掉：{trailing:?} / {sidebar:?}"
+    );
+}
+
+/// 快速面板的行也是单行：长 workspace 名不许把行撑高。
+#[gpui::test]
+fn quick_panel_rows_stay_one_line_with_long_names(cx: &mut TestAppContext) {
+    const NAME: &str = "feature-ssa2llvm-support_ci_and_mustpass_test-with-an-extremely-long-branch-suffix-for-overflow";
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            // discovery 行用真实 workspace 名：长名字以前会换行、把行撑高。
+            app.set_existing_for_tests(vec![existing_runtime(NAME, 2)]);
+            cx.notify();
+        })
+    });
+    cx.simulate_keystrokes("cmd-p");
+    cx.run_until_parked();
+
+    let titles: Vec<String> = cx.update(|_, cx| {
+        view.update(cx, |app, _| {
+            app.panel_rows().iter().map(|row| row.title()).collect()
+        })
+    });
+    assert!(
+        titles.iter().any(|title| title.contains(NAME)),
+        "面板必须列出长名字的 discovery 行：{titles:?}"
+    );
+
+    let mut title_heights: Vec<f32> = Vec::new();
+    let mut row = 0usize;
+    while let Some(title) =
+        cx.debug_bounds(Box::leak(format!("panel-title-{row}").into_boxed_str()))
+    {
+        let row_bounds = cx
+            .debug_bounds(Box::leak(format!("panel-row-{row}").into_boxed_str()))
+            .unwrap_or_else(|| panic!("第 {row} 行必须渲染"));
+        assert!(
+            f32::from(title.origin.x) + f32::from(title.size.width)
+                <= f32::from(row_bounds.origin.x) + f32::from(row_bounds.size.width) - 4.0,
+            "第 {row} 行标题溢出面板行（长名字必须省略号收尾）：{title:?} / {row_bounds:?}"
+        );
+        title_heights.push(f32::from(title.size.height));
+        row += 1;
+    }
+    assert_eq!(row, titles.len(), "面板行必须全部渲染：{titles:?}");
+    assert_eq!(row, titles.len(), "面板行必须全部渲染：{titles:?}");
+    let tallest = title_heights.iter().copied().fold(0.0_f32, f32::max);
+    let shortest = title_heights.iter().copied().fold(f32::MAX, f32::min);
+    assert!(
+        tallest - shortest < 0.6,
+        "面板行标题必须等高（换行会把长名字那行撑高）：{title_heights:?}"
+    );
+}
+
+/// tab 标题同样单行截断，不能盖住关闭按钮。
+#[gpui::test]
+fn a_long_tab_name_truncates_instead_of_wrapping(cx: &mut TestAppContext) {
+    const NAME: &str = "feature-ssa2llvm-support_ci_and_mustpass_test-with-an-extremely-long-branch-suffix-for-overflow";
+    let mut store = ViewStore::default();
+    store.replace_topology(
+        workspace("local@@dev@tmux@dev", "dev", true),
+        vec![ClientTab {
+            id: 1,
+            name: NAME.to_string(),
+            is_active: true,
+        }],
+        vec![(
+            1,
+            vec![ClientPane {
+                id: 10,
+                cols: 80,
+                rows: 24,
+                is_active: true,
+                title: "zsh".to_string(),
+            }],
+        )],
+    );
+    let (view, cx) = mount(store, cx);
+    cx.run_until_parked();
+    let label = cx.debug_bounds("tab-label-1").expect("tab 标题必须渲染");
+    let tab = cx.debug_bounds("tab-1").expect("tab 必须渲染");
+    assert!(
+        (f32::from(label.size.height) - 14.0).abs() < 0.6,
+        "tab 标题必须单行：{label:?}"
+    );
+    assert!(
+        f32::from(label.origin.x) + f32::from(label.size.width)
+            <= f32::from(tab.origin.x) + f32::from(tab.size.width) - 2.0,
+        "标题不能盖住关闭按钮：{label:?} / {tab:?}"
+    );
+    let _ = view;
+}
+
 /// 侧栏的 Shells / Agents 行点进去 = 固定聚合投影，绝不能当成 Core workspace。
 #[gpui::test]
 fn clicking_an_aggregate_row_switches_the_projection(cx: &mut TestAppContext) {
