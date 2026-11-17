@@ -258,6 +258,7 @@ mod tests {
 pub fn render_image_paste_banner(
     app: &crate::frontend::gpui::state::GpuiApp,
     theme: &crate::frontend::gpui::theme::Theme,
+    cx: &mut gpui::Context<crate::frontend::gpui::state::GpuiApp>,
 ) -> Option<gpui::AnyElement> {
     use crate::frontend::gpui::model::image_paste::{ImagePasteStage, Tone};
     use gpui::{div, prelude::*, px, SharedString};
@@ -273,6 +274,37 @@ pub fn render_image_paste_banner(
         label
     };
     let detail = feedback.detail.clone().map(SharedString::from);
+    // 结果阶段给一个关闭按钮（用户要求）：成功/失败横幅不能只能等到超时消失。
+    // 进度阶段不给 —— 上传还没完，关掉会让用户以为已经取消。
+    let dismiss = feedback.stage.is_result().then(|| {
+        div()
+            .id("image-paste-dismiss")
+            .debug_selector(|| "image-paste-dismiss".into())
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .w(px(14.0))
+            .h(px(14.0))
+            .rounded(px(3.0))
+            .cursor_pointer()
+            .hover(|style| style.bg(theme.active_bg))
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.dismiss_image_paste(cx);
+                }),
+            )
+            .child(crate::frontend::gpui::chrome::icons::icon_element(
+                crate::frontend::gpui::chrome::icons::IconSpec::with_size(
+                    crate::frontend::gpui::chrome::icons::Icon::Xmark,
+                    theme.muted,
+                    9.0,
+                ),
+                9.0,
+            ))
+    });
     Some(
         div()
             .id("image-paste-banner")
@@ -298,9 +330,18 @@ pub fn render_image_paste_banner(
                     .flex()
                     .flex_row()
                     .items_center()
+                    .justify_between()
                     .gap_2()
-                    .child(div().w(px(6.0)).h(px(6.0)).rounded_full().bg(tone_color))
-                    .child(SharedString::from(label)),
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_2()
+                            .child(div().w(px(6.0)).h(px(6.0)).rounded_full().bg(tone_color))
+                            .child(SharedString::from(label)),
+                    )
+                    .children(dismiss),
             )
             .children(detail.map(|detail| {
                 div()

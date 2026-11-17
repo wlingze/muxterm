@@ -4946,6 +4946,59 @@ fn image_paste_banner_follows_the_core_stage(cx: &mut TestAppContext) {
     );
 }
 
+/// 用户要求：结果横幅要有可见的关闭按钮。进度阶段不给 —— 上传还没完，
+/// 关掉会让人以为已经取消了。
+///
+/// 两个阶段用两个窗口：gpui 0.2.2 的 `Frame::clear` 不清 `debug_bounds`，
+/// 同一个窗口里消失的选择器会留到下一帧，缺席断言会不可靠。
+#[gpui::test]
+fn the_image_paste_result_banner_can_be_dismissed(cx: &mut TestAppContext) {
+    use muxterm::frontend::gpui::model::image_paste::ImagePasteStage;
+    let (view, cx) = mount(two_tab_store(), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.set_image_paste_stage_for_tests(ImagePasteStage::Done("/tmp/a.png".into()));
+            cx.notify();
+        })
+    });
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("image-paste-banner").is_some());
+    let close = cx
+        .debug_bounds("image-paste-dismiss")
+        .expect("成功横幅必须有可见关闭按钮");
+    let center = gpui::point(
+        close.origin.x + close.size.width / 2.0,
+        close.origin.y + close.size.height / 2.0,
+    );
+    cx.simulate_mouse_down(center, gpui::MouseButton::Left, gpui::Modifiers::none());
+    cx.simulate_mouse_up(center, gpui::MouseButton::Left, gpui::Modifiers::none());
+    cx.run_until_parked();
+    assert!(
+        cx.update(|_, cx| view.update(cx, |app, _| app.image_paste_feedback()))
+            .is_none(),
+        "点关闭后时间线必须收回 Idle（横幅随之消失）"
+    );
+}
+
+/// 上传阶段没有关闭按钮（否则用户会以为已经取消）。
+#[gpui::test]
+fn the_image_paste_progress_banner_has_no_close_button(cx: &mut TestAppContext) {
+    use muxterm::frontend::gpui::model::image_paste::ImagePasteStage;
+    let (view, cx) = mount(two_tab_store(), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.set_image_paste_stage_for_tests(ImagePasteStage::Uploading);
+            cx.notify();
+        })
+    });
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("image-paste-banner").is_some());
+    assert!(
+        cx.debug_bounds("image-paste-dismiss").is_none(),
+        "上传中不能给关闭，否则用户会以为已经取消"
+    );
+}
+
 /// 聚合槽是固定入口：颜色用专属身份色，不借用 blocked（粉）/ done（青绿）。
 #[gpui::test]
 fn aggregate_rows_use_their_identity_colors(cx: &mut TestAppContext) {

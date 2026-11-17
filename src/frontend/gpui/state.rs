@@ -685,7 +685,9 @@ impl GpuiApp {
         let now = std::time::Instant::now();
         let before = self.image_paste.visible_stage(now);
         self.image_paste.tick(now);
-        if !before.is_progress() {
+        // 结果落地后绝不能继续问 Core：它的 take 语义会让第二次 poll 回
+        // `no image paste in progress`，成功就被改写成失败。
+        if !self.image_paste.awaits_core() {
             return before != self.image_paste.visible_stage(now);
         }
         let Some(pump) = self.pump.as_ref() else {
@@ -707,6 +709,12 @@ impl GpuiApp {
         stage: crate::frontend::gpui::model::image_paste::ImagePasteStage,
     ) {
         self.image_paste.advance(stage, std::time::Instant::now());
+    }
+
+    /// 用户点横幅上的关闭按钮：只收结果阶段（进度阶段不给关闭，避免重复粘贴）。
+    pub fn dismiss_image_paste(&mut self, cx: &mut Context<Self>) {
+        self.image_paste.dismiss();
+        cx.notify();
     }
 
     /// 横幅内容（`Idle` 时 None）。
