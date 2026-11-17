@@ -123,6 +123,12 @@ impl GpuiApp {
                 _ => false,
             })
             .unwrap_or(0);
+        // 打开面板时滚动位置必须是确定的 0。只用 `scroll_to_top_of_item(0)` 不够：
+        // 它在 prepaint 里拿上一帧的 `child_bounds` 反推偏移，面板尺寸一变（搜索框/
+        // 头部高度调整）就会算出整行高度的偏移，第一行（Shells）被顶出可视区。
+        // 先把偏移置零，再保留 active_item 让后续帧对齐。
+        self.panel_scroll
+            .set_offset(gpui::point(gpui::px(0.), gpui::px(0.)));
         self.panel_scroll.scroll_to_top_of_item(0);
     }
 
