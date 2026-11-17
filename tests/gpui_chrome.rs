@@ -5636,6 +5636,72 @@ fn switching_focus_only_changes_the_lighting(cx: &mut TestAppContext) {
     assert_eq!(before.size, after.size, "焦点变化不能改变终端内容尺寸");
 }
 
+/// 用户要求：终端里 Command+点击链接要开浏览器（对照 Swift `requestOpenLink`）。
+#[gpui::test]
+fn cmd_click_opens_a_url_from_the_terminal(cx: &mut TestAppContext) {
+    let (view, cx) = mount(two_tab_store(), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.feed_pane_for_tests(
+                "local@@dev@tmux@dev",
+                10,
+                40,
+                10,
+                b"see https://example.com/x now",
+                cx,
+            );
+        })
+    });
+    cx.run_until_parked();
+    let (cw, ch) = cx.update(|_, cx| view.update(cx, |app, _| app.cell()));
+    // 列 10 落在链接中间（"see " 之后）。
+    let point = gpui::point(px(240.0 + cw * 10.0 + 1.0), px(ch * 0.5));
+    let cmd = gpui::Modifiers {
+        platform: true,
+        ..Default::default()
+    };
+    cx.simulate_mouse_down(point, gpui::MouseButton::Left, cmd);
+    cx.simulate_mouse_up(point, gpui::MouseButton::Left, cmd);
+    cx.run_until_parked();
+    assert_eq!(
+        cx.opened_url().as_deref(),
+        Some("https://example.com/x"),
+        "Command+点击必须打开格子下的链接"
+    );
+}
+
+/// 没有 Command 时拖过链接仍然是选字，不能顺手开浏览器。
+#[gpui::test]
+fn dragging_over_a_url_still_selects_text(cx: &mut TestAppContext) {
+    let (view, cx) = mount(two_tab_store(), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.feed_pane_for_tests(
+                "local@@dev@tmux@dev",
+                10,
+                40,
+                10,
+                b"see https://example.com/x now",
+                cx,
+            );
+        })
+    });
+    cx.run_until_parked();
+    let (cw, ch) = cx.update(|_, cx| view.update(cx, |app, _| app.cell()));
+    let start = gpui::point(px(240.0 + cw * 8.0 + 1.0), px(ch * 0.5));
+    let end = gpui::point(px(240.0 + cw * 16.0 + 1.0), px(ch * 0.5));
+    cx.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::none());
+    cx.simulate_mouse_move(end, Some(gpui::MouseButton::Left), gpui::Modifiers::none());
+    cx.simulate_mouse_up(end, gpui::MouseButton::Left, gpui::Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(cx.opened_url(), None, "普通拖选不能打开浏览器");
+    assert!(
+        cx.update(|_, cx| view.update(cx, |app, _| app.selection_for(10)))
+            .is_some(),
+        "拖过链接仍然是选区"
+    );
+}
+
 /// Cmd-A / Edit → Select All：整屏（含滚动历史）都进选区，Cmd-C 复制全文。
 #[gpui::test]
 fn select_all_takes_the_whole_screen(cx: &mut TestAppContext) {

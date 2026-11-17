@@ -377,6 +377,20 @@ tab 栏宽度策略来自 Core 配置 `[ui] tab_bar_style`（`equal_width` 缺�
 
 回归：`switching_focus_only_changes_the_lighting`。
 
+### 5.9 Command+点击打开链接
+
+用户要求：「浏览器 cmd+点击可以打开才行」。命中顺序与 Linux
+`terminal/pane_view.rs::open_url_at` 一致：先看格子的 OSC 8 超链接，再用行内
+`https?://` 正则（`model/links.rs`，纯函数，尾随标点与不配对括号会被剥掉）；
+命中就交给 `cx.open_url`，没命中时仍然是拖选。
+
+OSC 8 的 URI 存在 `Grid` 的链接表里，格子只存 `u16` 下标（滚回行也能开）；
+链接表只增不删，避免历史格的旧下标指向错行。
+
+回归：`cmd_click_opens_a_url_from_the_terminal`、
+`dragging_over_a_url_still_selects_text`、`model::links` 5 条纯函数测试、
+`parser` 的 OSC 8 与纯文本两条。
+
 ## 6. 数据流与线程
 
 ```text

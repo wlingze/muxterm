@@ -135,6 +135,22 @@ impl Surface {
         Some(self.grid.row(row - covered))
     }
 
+    /// 视口里第 `(row, col)` 格上的链接：OSC 8 超链接优先，其次行内
+    /// `http(s)://` 文本。返回值直接交给系统浏览器。
+    pub fn url_at(&self, row: usize, col: usize) -> Option<String> {
+        let cells = self.visible_row(row)?;
+        if let Some(cell) = cells.get(col) {
+            if let Some(link) = self.grid.link_of(cell) {
+                return Some(link.to_string());
+            }
+        }
+        let line: Vec<char> = cells
+            .iter()
+            .map(|cell| if cell.ch == FILLER { ' ' } else { cell.ch })
+            .collect();
+        crate::frontend::gpui::model::links::url_at(&line, col)
+    }
+
     /// feed 原始字节。禁止用 `reset` 追帧。
     pub fn feed(&mut self, bytes: &[u8]) {
         // vte 0.13 的 advance 只吃单字节；解析状态保存在 parser 里，逐字节推进。
@@ -248,6 +264,14 @@ impl Perform for Grid {
 
     fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
         if params.len() < 2 {
+            return;
+        }
+        if params[0] == b"8" {
+            // `OSC 8 ; params ; URI ST`：URI 为空表示结束当前链接。
+            // Command+点击按格子去找这条 URI（`Surface::url_at`）。
+            let uri = params.get(2).copied().unwrap_or_default();
+            let uri = String::from_utf8_lossy(uri).into_owned();
+            self.set_link(if uri.is_empty() { None } else { Some(&uri) });
             return;
         }
         if params[0] == b"0" || params[0] == b"2" {
@@ -489,6 +513,36 @@ mod tests {
         let mut surface = surface(10, 2);
         surface.feed(b"\x1b]0;build\x07");
         assert_eq!(surface.grid().title(), "build");
+    }
+
+    /// OSC 8：链接跟着**格子**走，结束序列之后的字符不再属于它。
+    #[test]
+    fn osc8_hyperlinks_belong_to_cells() {
+        let mut surface = surface(20, 2);
+        surface.feed(b"\x1b]8;;https://example.com/x/\x1b\\click\x1b]8;;\x1b\\tail");
+        assert_eq!(
+            surface.url_at(0, 0).as_deref(),
+            Some("https://example.com/x/")
+        );
+        assert_eq!(
+            surface.url_at(0, 4).as_deref(),
+            Some("https://example.com/x/"),
+            "链接覆盖它的每一个字符格"
+        );
+        assert_eq!(surface.url_at(0, 6), None, "结束序列后的字符没有链接");
+    }
+
+    /// 没有 OSC 8 时按行内文本找：Command+点击纯文本 URL 也要能开。
+    #[test]
+    fn plain_url_text_is_detected_for_clicks() {
+        let mut surface = surface(40, 2);
+        surface.feed(b"see https://example.com/a now");
+        assert_eq!(
+            surface.url_at(0, 6).as_deref(),
+            Some("https://example.com/a")
+        );
+        assert_eq!(surface.url_at(0, 2), None, "URL 前面的字不算");
+        assert_eq!(surface.url_at(5, 0), None, "空行/越界不能恐慌");
     }
 
     #[test]

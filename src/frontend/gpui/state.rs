@@ -3934,6 +3934,14 @@ impl GpuiApp {
         self.surfaces.get(&(workspace.to_string(), pane_id))
     }
 
+    /// 当前 pane 里某一格上的链接（OSC 8 或行内 `http(s)://`）。
+    ///
+    /// Command+点击用它决定是「打开浏览器」还是「开始拖选」。
+    pub fn pane_url_at(&self, pane_id: u32, row: usize, col: usize) -> Option<String> {
+        let workspace = self.visible.clone()?;
+        self.surface(&workspace, pane_id)?.url_at(row, col)
+    }
+
     /// 布局算出来的尺寸写回 Surface，并在变化时排一条 Resize。
     pub fn apply_sizes(&mut self, sizes: &[(u32, u16, u16)]) {
         let Some(workspace) = self.visible.clone() else {

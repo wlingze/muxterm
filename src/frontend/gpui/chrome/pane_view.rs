@@ -305,6 +305,14 @@ impl GpuiApp {
                     this.close_pane_menu(cx);
                     let (col, row) =
                         pane_cell_at(rect, origin, cell_width, cell_height, event.position);
+                    // Command+点击 = 打开光标下的链接（macOS 惯例，对照 Swift
+                    // `requestOpenLink`）。没链接时才退回拖选。
+                    if event.modifiers.platform {
+                        if let Some(url) = this.pane_url_at(pane_id, row, col) {
+                            cx.open_url(&url);
+                            return;
+                        }
+                    }
                     this.begin_selection(pane_id, row, col, event.click_count, cx);
                 }),
             )
