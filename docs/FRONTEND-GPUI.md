@@ -252,33 +252,36 @@ tab 活动标记、panel 标记列、`⋯` 全部走同一套矢量图标；未�
   重建会换掉 `watch_menu` 的 channel，菜单点击就断了。
 - 文案走 i18n；测试断言每条菜单文案都有 key，且中文目录有翻译。
 
-### 5.5.1 Cmd 快捷键按**物理键位**匹配
+### 5.5.1 快捷键以 **Colemak 手位**为基准（QWERTY 同手位）
 
-用户报障（2026-11-16）：「快捷键 cmd-d / cmd-t / cmd-s 都失败了」，同一台机器上
-cmd-c / cmd-v / cmd-a / cmd-z / cmd-x 却一直好使。
+用户报障（2026-11-16）：「快捷键 cmd-d / cmd-t / cmd-s 都失败了」，随后明确要求：
+**所有默认快捷键都用同手位**。这台机器的输入源是 **Colemak**，它把字母挪了位置：
 
-根因是键盘布局，不是菜单也不是输入法。这台机器的输入源是 **Colemak**，
-它把字母挪了位置：
+| 物理键 | Colemak 标签 | QWERTY 标签 | 动作 |
+| --- | --- | --- | --- |
+| 左手中指内侧 | `⌘D` | `⌘G` | 左右分屏 |
+| 左手无名指 | `⌘S` | `⌘D` | 上下分屏 |
+| 左手食指内侧 | `⌘T` | `⌘F` | 新建标签 |
 
-| 物理键（键帽） | macOS 给出的字符 | 只按字符匹配的后果 |
-| --- | --- | --- |
-| `T` | `g` | 没有任何绑定 → 按了完全没反应 |
-| `D` | `s` | 落到「纵向分屏」→ 方向错 |
-| `S` | `r` | 没有任何绑定 → 按了完全没反应 |
-| `C` / `V` / `A` / `Z` / `X` | 同字母 | 正常（Colemak 没挪这些） |
+结论：**快捷键属于手指位置，不属于字母**。所以预设按 Colemak 标签书写，
+解析时按物理键位（`keyCode`）匹配；切到 QWERTY 时同一个物理键仍然执行同一个
+动作，只是菜单和设置里显示 `⌘G / ⌘D / ⌘F`。
 
-`Keystroke.key` 与原生菜单的 key equivalent 都是「布局产出的字符」，所以只有被
-挪过位置的字母失效 —— 这正好解释了「为什么偏偏是这三个」。
-
-现在的规则（`model/physical_key.rs` + `platform/macos_keys.rs`）：
+现在的规则（`model/physical_key.rs` + `model/shortcut_editor.rs` +
+`platform/macos_keys.rs`）：
 
 1. 本地事件监视器 `NSEvent addLocalMonitorForEventsMatchingMask:` 在窗口 /
    输入法之前拿到真正的 keyDown，记下 `keyCode` 与布局字符，**事件原样放行**
    —— 只记录，不改变派发，输入法与文本编辑行为一律不动。
-2. `handle_key` 先按物理键位（`keyCode` → US QWERTY 字符）查动作，查不到再
-   回落到布局字符。回落是必须的：方向键、中文输入法给出的 `【】` 只能走字符。
-3. 记录值必须与 `Keystroke.key` 对得上才采用，对不上就当没有 —— 宁可回落到
-   字符，也不能把按键路由错。
+2. 物理键位是**唯一权威**：`keyCode` → Colemak 字符 → 动作。查不到就是没绑定，
+   **绝不**回落到布局字符去找一个别的动作（否则 Colemak 的 `⌘S` 会二次命中
+   「上下分屏」）。只有没有物理键的按键（方向键、中文输入法给的 `【】`）才走
+   字符匹配。
+3. `ShortcutMap` 是唯一事实源：预设（Colemak 标签）、用户 override（按预设的
+   同一套标签存储）、菜单 key equivalent、设置列表、实际派发全部用它。
+   `[shortcuts] preset` 从 `colemak` 切到 `qwerty`（或反向）时，草稿里的
+   override 键标签会被重写，物理手位保持不变。
+4. 普通文字输入永远不经过快捷键表；它只由 IME / 布局决定。
 
 为什么不用 `NSApp.currentEvent` 取 keyCode：实测在视图的
 `performKeyEquivalent:` 回调里它指向 `NSEventTypeAppKitDefined`（type 13），
@@ -288,10 +291,33 @@ cmd-c / cmd-v / cmd-a / cmd-z / cmd-x 却一直好使。
 业界对照：Ghostty 用 W3C 物理键码派发快捷键（`ghostty-org/ghostty#7320`），
 Zed 明确「先派发快捷键、再交给输入法」（`zed.dev/blog/keyboard-localization`）。
 
-回归测试：`physical_key::tests::printed_keys_map_to_their_label_not_the_layout_char`、
-`shortcuts::tests::colemak_printed_keys_keep_their_shortcuts`、
-`shortcuts::tests::qwerty_layout_is_unaffected`（US QWERTY 下逐键与旧行为相同）、
-`macos_keys::tests::recorded_key_must_match_the_layout_char`。
+回归测试：`physical_key::tests::*`（三组映射表）、
+`shortcut_editor::tests::colemak_is_the_anchor_for_physical_positions`、
+`shortcut_editor::tests::qwerty_labels_move_but_the_hand_position_does_not`、
+`shortcuts::tests::physical_anchor_never_falls_back_to_a_conflicting_layout_action`、
+`tests/gpui_native_shortcuts.rs`（74 条真实 NSEvent 经生产监视器各派发一次）。
+
+### 5.5.2 设置是**独立窗口**，快捷键可编辑
+
+设置不再叠在终端上：主窗口不画遮罩、不变暗，`chrome/settings_window.rs` 开一个
+独立 `gpui` 窗口（`— Settings` 标题后缀用于识别），两个窗口共享同一个
+`GpuiApp` / `CommandQueue` / `EventPump`，不建第二个 Core handle。
+
+- 页面：200pt 图标侧栏 + 可滚动分组卡片 + 固定底栏（Cancel / Apply）。
+- Projects：占满页宽的管理器，新建 / 点行编辑 / 删除，编辑只改草稿、不打开
+  workspace；行内显示 `runtime · transport · path`。
+- Shortcuts：搜索、录制（必须带修饰键、冲突拒绝）、禁用、恢复；每行并排显示
+  Colemak 与 QWERTY 两套标签，并写明「预设只改标签，手位不变」。
+- Apply 是**单笔原子 Core 事务**（`ConfigApplyTransaction` + RFC6902 patches）：
+  收到成功回执前不关窗口、不清草稿；失败保留草稿并显示错误。
+- 录制态绝不执行动作；设置窗口打开时主窗口不处理按键；关设置不关主窗口。
+
+回归测试：`tests/support/gpui_settings.rs`（8 条：全宽 Projects、草稿编辑、
+创建/删除、录制/禁用/恢复/取消、双列标签、冲突拒绝、Apply 失败保留、窗口生命周期）、
+`tests/gpui_settings_native.rs`（真实多窗口，**需 `MUXTERM_NATIVE_UI_TESTS=1`**）。
+
+真机 GUI 测试纪律（`AGENTS.md` 同步）：默认 `cargo test` 不开窗口；测试里禁止
+`cx.activate(true)`；禁止循环 `screencapture` / `window.refresh()`；只截本进程窗口。
 
 ### 5.6 侧栏几何与 tab 栏策略
 
@@ -456,7 +482,7 @@ Project / discovery 行用 Core 记账的 attach 频率排序（`attach-history.
 | Windows | **编不过**。`src/core/transport/mod.rs` 无条件声明 `local` / `ssh`，它们无条件 `use portable_pty`、`libc::SIGHUP`，而 `portable-pty` / `libc` 只在 `[target."cfg(unix)".dependencies]` 下；`connection.rs` 也无条件用 `std::os::unix::net::UnixStream`，`src/core` 里 `cfg(windows)` 出现 0 次。`src/frontend/windows/mod.rs` 只有 4 行占位。 | 把 Unix-only 模块加 `#[cfg(unix)]`，并决定 Windows 的 PTY 后端（ConPTY）与 runtime 范围；在那之前至少用 `compile_error!` 明说「Windows 不支持」，不要把一堆悬空符号抛给用户。 |
 | Linux 构建 | **依赖链编不过**：`gpui 0.2.2 → gpui_http_client → zed-async-tar → xattr 0.2.3`，`xattr` 在 `cfg(target_os = "linux")` 分支里用 `libc::ENOATTR`，而 Linux 只有 `ENODATA`。`cargo check --target x86_64-unknown-linux-gnu --features gpui` 停在这里，还没轮到本项目代码。 | 加 `[patch.crates-io] xattr`（或 vendor 一份把 Linux 的 `ENOATTR` 映射到 `ENODATA`）。打完这个补丁后本库可以完整编过 Linux target（实测 2m02s 出 `libmuxterm-*.rmeta`）。 |
 | 字体 fallback | 默认 `[font] family` 读 Core 配置（缺省 Menlo 18）。仓库里的 `assets/fonts/JetBrainsMono-Regular.ttf` 没有通过 `TextSystem::add_fonts` 注册；配置的字体不存在时 gpui 会落到它的 fallback 栈（含比例字体），格子对齐开始漂。 | 启动时 `cx.text_system().add_fonts(...)` 注册内置字体，并把 Core 的 `[font] fallback` 接进 `Font.fallbacks`。 |
-| 快捷键 | `handle_key` 用 `keystroke.modifiers.platform`：macOS=Command，Linux=Super，Windows=Win。`[shortcuts] primary_key` 与 `effective_keybindings` 还没被 gpui 消费。 | 接 `primary_key` / `effective_keybindings`（Linux 上 GTK 前端用 Alt），或明确「gpui 前端只支持 macOS 语义」。 |
+| 快捷键 | `handle_key` 用 `keystroke.modifiers.platform`：macOS=Command，Linux=Super，Windows=Win。已消费 `[shortcuts] preset` 与 `overrides`（Colemak 手位为锚）。`primary_key` 还没被 gpui 消费。 | 接 `primary_key`（Linux 上 GTK 前端用 Alt），或明确「gpui 前端只支持 macOS 语义」。 |
 | 菜单栏 | macOS 走原生 NSMenu（`platform/macos_menu.rs`，结构 = `model/menu.rs`）。Linux / Windows 还没有菜单条（`platform::install_menu()` 返回 `None`）。 | 自绘菜单条：同一份 `model::menu` 数据，用 gpui 元素画在窗口顶部。 |
 | CI | `.github/workflows/*.yml` 里 `gpui` 出现 0 次。 | 加一个 `ubuntu-latest` 的 `cargo check --no-default-features --features gpui`。 |
 | 打包 | 只有 `scripts/build-gpui-macos.sh`，没有 Linux `.desktop` / Windows 打包。 | 与各平台 frontend 一起补。 |
@@ -465,10 +491,10 @@ Project / discovery 行用 Core 记账的 attach 频率排序（`attach-history.
 ## 9. 验收
 
 - `cargo check --no-default-features --features gpui` 通过。
-- `cargo test --no-default-features --features gpui --lib` 通过（2026-11-16 实测 **2011 passed**，3 ignored）。
+- `cargo test --no-default-features --features gpui --lib` 通过（2026-11-16 实测 **2010 passed**，3 ignored）。
 - 集成测试（每个都实测通过）：
-  - `--test gpui_chrome`（133，含命令面板每条命令的动作、改名浮层、tab 重排、语言/主题/状态栏、
-    设置浮层的 Esc / ⏎ / Cancel / Apply 与放弃修改确认（有改动先问、点遮罩也走同一条路）、
+  - `--test gpui_chrome`（146，含设置独立窗口 / 双布局快捷键管理 / Cmd-P 面板几何与空状态、命令面板每条命令的动作、改名浮层、tab 重排、语言/主题/状态栏、
+    设置页的 Esc / ⏎ / Cancel / Apply 与放弃修改确认（有改动先问；无头测试走同一套渲染兜底）、
     面板按 Core attach 频率排序（活跃项第一）、
     SGR 粗体/斜体/下划线/删除线真的进渲染树、
     侧栏两个固定聚合槽与 `shell` 行隐藏、空本机 shell 只补一次 `NewTab`、
