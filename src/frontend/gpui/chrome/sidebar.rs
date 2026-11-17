@@ -515,6 +515,10 @@ impl GpuiApp {
                     .overflow_hidden()
                     .child(
                         div()
+                            .debug_selector({
+                                let title = row.title.clone();
+                                move || format!("sidebar-name-{title}")
+                            })
                             .text_size(px(crate::frontend::gpui::theme::SIDEBAR_TITLE_FONT_SIZE))
                             .line_height(px(15.0))
                             .font_weight(if row.emphasized || row.active {
@@ -523,15 +527,22 @@ impl GpuiApp {
                                 gpui::FontWeight::MEDIUM
                             })
                             .text_color(theme.label())
-                            .overflow_hidden()
-                            .child(SharedString::from(row.title)),
+                            // 长名字必须单行 + 省略号：换行会把行撑成两行，
+                            // 压住副标题、还把尾部关闭按钮顶出可视区
+                            // （Swift 的 `NSTextField` 是 byTruncatingTail）。
+                            .truncate()
+                            .child(SharedString::from(row.title.clone())),
                     )
                     .child(
                         div()
+                            .debug_selector({
+                                let title = row.title.clone();
+                                move || format!("sidebar-detail-{title}")
+                            })
                             .text_size(px(crate::frontend::gpui::theme::SIDEBAR_DETAIL_FONT_SIZE))
                             .line_height(px(12.0))
                             .text_color(detail_color)
-                            .overflow_hidden()
+                            .truncate()
                             .child(SharedString::from(row.detail)),
                     ),
             )
