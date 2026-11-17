@@ -362,6 +362,9 @@ tab 栏宽度策略来自 Core 配置 `[ui] tab_bar_style`（`equal_width` 缺�
 `early_pane_output_reaches_the_surface`。无头回归不能代替新 app 的 CPU 实测；
 不为验证而自动启动/激活用户机器上的窗口。
 
+真机体感与 CPU 只看 `--release` 产物：debug 版的字形排版/绘制慢数倍，
+2026-11-17 采样到的 100% CPU 就跑在 debug 的 `build/macos/MuxtermGpui.app` 上。
+
 在线核对（2026-11-17T15:19:41+08:00）：Zed 官方
 [`gpui/text_system/line.rs`](https://github.com/zed-industries/zed/blob/main/crates/gpui/src/text_system/line.rs)
 与 [`gpui/scene.rs`](https://github.com/zed-industries/zed/blob/main/crates/gpui/src/scene.rs)
