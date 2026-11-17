@@ -5607,6 +5607,35 @@ fn dragging_selects_text_and_cmd_c_copies_it(cx: &mut TestAppContext) {
     );
 }
 
+/// 切 pane 只允许光影变：内容盒几何一格都不能动。
+///
+/// 用户报障：「切换 pane 的时候会出现 pane 的变化一下…应该只有光影的明暗
+/// 变换才对」。以前给活动 pane 加 `border_1`，边框会挤小内容盒，文字整体
+/// 位移 1pt、可见列数也跟着变。现在描边画在覆盖层，不占布局。
+#[gpui::test]
+fn switching_focus_only_changes_the_lighting(cx: &mut TestAppContext) {
+    let (view, cx) = mount(three_pane_store(10), cx);
+    cx.run_until_parked();
+    let before = cx.debug_bounds("pane-text-10").expect("活动 pane 要渲染");
+    assert!(
+        cx.debug_bounds("pane-focus-ring").is_some(),
+        "活动 pane 要有焦点描边"
+    );
+    assert!(
+        cx.debug_bounds("pane-dimmed").is_some(),
+        "非活动 pane 要压暗"
+    );
+
+    cx.update(|_, cx| view.update(cx, |app, cx| app.focus_pane(11, cx)));
+    cx.run_until_parked();
+
+    let after = cx
+        .debug_bounds("pane-text-10")
+        .expect("非活动 pane 仍要渲染");
+    assert_eq!(before.origin, after.origin, "焦点变化不能让终端内容位移");
+    assert_eq!(before.size, after.size, "焦点变化不能改变终端内容尺寸");
+}
+
 /// Cmd-A / Edit → Select All：整屏（含滚动历史）都进选区，Cmd-C 复制全文。
 #[gpui::test]
 fn select_all_takes_the_whole_screen(cx: &mut TestAppContext) {

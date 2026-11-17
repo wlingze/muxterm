@@ -367,6 +367,16 @@ tab 栏宽度策略来自 Core 配置 `[ui] tab_bar_style`（`equal_width` 缺�
 与 [`gpui/scene.rs`](https://github.com/zed-industries/zed/blob/main/crates/gpui/src/scene.rs)
 确认按层批量提交的意图；具体 API 签名以本地锁定的 0.2.2 源码为准。
 
+### 5.8 切 pane 只改光影
+
+用户报障：「切换 pane 的时候会出现 pane 的变化一下…应该只有光影的明暗变换才对」。
+根因是活动 pane 用 `border_1` 描边：gpui/taffy 的边框挤进内容盒，终端画布
+整体位移 1pt、可见列数也跟着变。现在强调色描边画在绝对定位的覆盖层
+（`pane-focus-ring`），不占布局；内容盒几何（`pane-text-{pane_id}`）在焦点
+切换前后逐像素相同，非活动 pane 仍按 `INACTIVE_PANE_DIM` 压暗。
+
+回归：`switching_focus_only_changes_the_lighting`。
+
 ## 6. 数据流与线程
 
 ```text
