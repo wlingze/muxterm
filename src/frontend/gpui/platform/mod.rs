@@ -28,11 +28,7 @@ pub fn install_physical_key_tracker() {
 #[cfg(not(target_os = "macos"))]
 pub fn install_physical_key_tracker() {}
 
-/// 当前这条按键的**物理键位**（US QWERTY 字符）。
-///
-/// 见 `model/physical_key.rs` 与 `platform/macos_keys.rs`：Colemak 这类布局下
-/// `Keystroke.key` 给的是布局字符，直接按它匹配会把 Cmd-D 路由成纵向分屏、
-/// 并把 Cmd-T / Cmd-S 丢进黑洞。
+/// 当前事件对应的 Colemak 锚点（不是 US QWERTY 标签）。
 #[cfg(target_os = "macos")]
 pub fn physical_key_for_event(expected_layout_key: &str) -> Option<&'static str> {
     macos_keys::physical_key_for_event(expected_layout_key)
@@ -42,6 +38,22 @@ pub fn physical_key_for_event(expected_layout_key: &str) -> Option<&'static str>
 #[cfg(not(target_os = "macos"))]
 pub fn physical_key_for_event(_expected_layout_key: &str) -> Option<&'static str> {
     None
+}
+
+/// 原生快捷键边界与菜单提示使用同一配置。
+pub fn configure_shortcuts(
+    map: &crate::frontend::gpui::model::shortcut_editor::ShortcutMap,
+    modal: bool,
+    recording: bool,
+    qwerty_labels: bool,
+) {
+    #[cfg(target_os = "macos")]
+    {
+        macos_keys::configure(map, modal, recording);
+        macos_menu::refresh_shortcut_keys(map, qwerty_labels);
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (map, modal, recording, qwerty_labels);
 }
 
 /// 非 macOS 没有原生菜单，刷新是空操作。
@@ -55,7 +67,9 @@ pub fn refresh_menu(_state: crate::frontend::gpui::model::menu::MenuState) -> bo
 /// 非 macOS 平台先返回 `None`：没有原生菜单栏，自绘菜单条还没实现。
 #[cfg(not(target_os = "macos"))]
 pub fn install_menu() -> Option<
-    futures::channel::mpsc::UnboundedReceiver<crate::frontend::gpui::model::shortcuts::KeyAction>,
+    futures::channel::mpsc::UnboundedReceiver<
+        crate::frontend::gpui::model::shortcuts::ShortcutCommand,
+    >,
 > {
     None
 }

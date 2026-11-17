@@ -6,6 +6,8 @@
 #![cfg(feature = "gpui")]
 
 use gpui::{px, size, TestAppContext};
+#[path = "support/gpui_settings.rs"]
+mod settings_regressions;
 use muxterm::frontend::command_queue::ClientCommand;
 use muxterm::frontend::gpui::chrome::palette_view::PaletteAction;
 use muxterm::frontend::gpui::chrome::sidebar_view::{CommandKey, RowTarget, Section};
@@ -961,11 +963,22 @@ fn settings_apply_queues_only_changed_paths(cx: &mut TestAppContext) {
     let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
     let patches: Vec<(String, serde_json::Value)> = commands
         .iter()
-        .filter_map(|command| match command {
-            ClientCommand::ConfigApply { path, value } => Some((path.clone(), value.clone())),
-            _ => None,
+        .flat_map(|command| match command {
+            ClientCommand::ConfigApplyTransaction { patches } => patches
+                .iter()
+                .map(|patch| (patch.path.clone(), patch.value.clone().unwrap()))
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
         })
         .collect();
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|command| matches!(command, ClientCommand::ConfigApplyTransaction { .. }))
+            .count(),
+        1,
+        "所有字段必须原子提交"
+    );
     assert_eq!(
         patches,
         vec![
@@ -978,6 +991,11 @@ fn settings_apply_queues_only_changed_paths(cx: &mut TestAppContext) {
         "顺序跟随 manifest，只报改动过的路径"
     );
 
+    assert!(
+        cx.update(|_, cx| view.update(cx, |app, _| app.settings_dirty())),
+        "没有 Core 成功回执前保留草稿"
+    );
+    cx.update(|_, cx| view.update(cx, |app, cx| app.complete_settings_apply(true, cx)));
     let second = cx.update(|_, cx| view.update(cx, |app, cx| app.settings_apply(cx)));
     assert_eq!(second, 0, "Apply 之后 baseline 已更新");
     assert!(!cx.update(|_, cx| view.update(cx, |app, _| app.settings_dirty())));
@@ -1327,16 +1345,21 @@ fn settings_footer_buttons_apply_discard_and_cancel(cx: &mut TestAppContext) {
     });
     let apply = cx.debug_bounds("settings-apply").unwrap();
     cx.simulate_click(apply.center(), Default::default());
-    assert!(!cx.update(|_, cx| view.update(cx, |app, _| app.settings_open)));
+    assert!(
+        cx.update(|_, cx| view.update(cx, |app, _| app.settings_open)),
+        "等待 Core 回执"
+    );
     let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
     assert!(
         commands.iter().any(|command| matches!(
             command,
-            ClientCommand::ConfigApply { path, value }
-                if path == "/font/size" && value == &serde_json::json!(19.0)
+            ClientCommand::ConfigApplyTransaction { patches }
+                if patches.len() == 1 && patches[0].path == "/font/size" && patches[0].value == Some(serde_json::json!(19.0))
         )),
         "Apply 必须写 Core：{commands:?}"
     );
+    cx.update(|_, cx| view.update(cx, |app, cx| app.complete_settings_apply(true, cx)));
+    assert!(!cx.update(|_, cx| view.update(cx, |app, _| app.settings_open)));
 }
 
 /// 设置浮层独占键盘：可打印键只改搜索词，绝不进 PTY。
@@ -1937,7 +1960,10 @@ fn menu_actions_run_through_the_action_table(cx: &mut TestAppContext) {
     let (view, cx) = mount(store_with_two_workspaces(), cx);
     let (tx, rx) = futures::channel::mpsc::unbounded();
     cx.update(|_, cx| view.update(cx, |app, cx| app.watch_menu(rx, cx)));
-    tx.unbounded_send(KeyAction::NewTab).expect("菜单动作");
+    tx.unbounded_send(
+        muxterm::frontend::gpui::model::shortcuts::ShortcutCommand::Action(KeyAction::NewTab),
+    )
+    .expect("菜单动作");
     cx.run_until_parked();
     let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
     assert!(

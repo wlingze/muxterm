@@ -1,158 +1,147 @@
-//! 物理键位 → US QWERTY 字符。
+//! 默认快捷键以 Colemak 字母为基准，切换布局后保持同手位。
 //!
-//! 为什么需要这一层：macOS 的菜单 key equivalent 和 gpui 的 `Keystroke.key`
-//! 都按**当前键盘布局产出的字符**匹配。Colemak / Dvorak / AZERTY 把字母挪了
-//! 位置，于是「键盘上印着 `D` 的那个键 + Cmd」产出的字符是 `s`：
-//!
-//! | 物理键（键帽） | QWERTY 字符 | Colemak 产出 | Cmd 组合落点 |
-//! | --- | --- | --- | --- |
-//! | T | `t` | `g` | 没有任何绑定 → 静默丢弃 |
-//! | D | `d` | `s` | 落到「纵向分屏」→ 方向错 |
-//! | S | `s` | `r` | 没有任何绑定 → 静默丢弃 |
-//! | C / V / A / Z / X | 同字母 | 同字母 | 正常 |
-//!
-//! 这就是用户报的「cmd-d / cmd-t / cmd-s 全失败，别的 Cmd 组合却好使」：
-//! Colemak 没挪 C/V/A/Z/X，只挪了 D/T/S 这些。
-//!
-//! 终端的业界惯例是按**物理键位**派发快捷键：
-//! - Ghostty 用 W3C key code（物理键）派发，只在给原生菜单做 key equivalent
-//!   时才把物理键翻译成布局字符
-//!   <https://github.com/ghostty-org/ghostty/pull/7320>
-//! - Zed 明确「先派发快捷键，再交给输入法」，并且同样按 key code 查表
-//!   <https://zed.dev/blog/keyboard-localization>
-//!
-//! 所以这里把 macOS 虚拟键码（`kVK_ANSI_*`）翻成 US QWERTY 字符，让 Cmd 组合
-//! 按物理位置匹配；布局字符作为兜底（方向键、中文输入法的全角括号等）。
+//! 用户确认的规则（2026-11-16）：Colemak ⌘D / ⌘S / ⌘T 分别对应
+//! QWERTY ⌘G / ⌘D / ⌘F。这条规则适用于所有默认快捷键，而不是三个特例。
+//! 普通打字仍用布局字符，绝不能经此表转换。
 
-/// macOS 虚拟键码 → US QWERTY 字符（单字符，不含 Shift 变体）。
-///
-/// 数字取自 Carbon 的 `kVK_ANSI_*` 常量（`HIToolbox/Events.h`）。只收本前端
-/// 关心的键：字母、数字、标点；功能键交给 `Keystroke.key` 的语义名。
+/// macOS ANSI 虚拟键码、QWERTY 标签与 Colemak 标签。
+/// 数字、标点不换位；功能键由平台的语义名处理。
+const KEYS: &[(u16, &str, &str)] = &[
+    (0, "a", "a"),
+    (1, "s", "r"),
+    (2, "d", "s"),
+    (3, "f", "t"),
+    (4, "h", "h"),
+    (5, "g", "d"),
+    (6, "z", "z"),
+    (7, "x", "x"),
+    (8, "c", "c"),
+    (9, "v", "v"),
+    (11, "b", "b"),
+    (12, "q", "q"),
+    (13, "w", "w"),
+    (14, "e", "f"),
+    (15, "r", "p"),
+    (16, "y", "j"),
+    (17, "t", "g"),
+    (18, "1", "1"),
+    (19, "2", "2"),
+    (20, "3", "3"),
+    (21, "4", "4"),
+    (22, "6", "6"),
+    (23, "5", "5"),
+    (24, "=", "="),
+    (25, "9", "9"),
+    (26, "7", "7"),
+    (27, "-", "-"),
+    (28, "8", "8"),
+    (29, "0", "0"),
+    (30, "]", "]"),
+    (31, "o", "y"),
+    (32, "u", "l"),
+    (33, "[", "["),
+    (34, "i", "u"),
+    (35, "p", ";"),
+    (37, "l", "i"),
+    (38, "j", "n"),
+    (39, "'", "'"),
+    (40, "k", "e"),
+    (41, ";", "o"),
+    (42, "\\", "\\"),
+    (43, ",", ","),
+    (44, "/", "/"),
+    (45, "n", "k"),
+    (46, "m", "m"),
+    (47, ".", "."),
+    (50, "`", "`"),
+];
+
 pub fn us_char(key_code: u16) -> Option<&'static str> {
-    Some(match key_code {
-        // 字母行
-        0 => "a",
-        1 => "s",
-        2 => "d",
-        3 => "f",
-        4 => "h",
-        5 => "g",
-        6 => "z",
-        7 => "x",
-        8 => "c",
-        9 => "v",
-        11 => "b",
-        12 => "q",
-        13 => "w",
-        14 => "e",
-        15 => "r",
-        16 => "y",
-        17 => "t",
-        31 => "o",
-        32 => "u",
-        34 => "i",
-        35 => "p",
-        37 => "l",
-        38 => "j",
-        40 => "k",
-        45 => "n",
-        46 => "m",
-        // 数字行
-        18 => "1",
-        19 => "2",
-        20 => "3",
-        21 => "4",
-        22 => "6",
-        23 => "5",
-        24 => "=",
-        25 => "9",
-        26 => "7",
-        27 => "-",
-        28 => "8",
-        29 => "0",
-        // 标点
-        30 => "]",
-        33 => "[",
-        39 => "'",
-        41 => ";",
-        42 => "\\",
-        43 => ",",
-        44 => "/",
-        47 => ".",
-        50 => "`",
-        _ => return None,
-    })
+    KEYS.iter().find(|row| row.0 == key_code).map(|row| row.1)
+}
+
+/// 物理位置换成快捷键表使用的 Colemak 标签。
+pub fn colemak_char(key_code: u16) -> Option<&'static str> {
+    KEYS.iter().find(|row| row.0 == key_code).map(|row| row.2)
+}
+
+/// Colemak 标签对应的 macOS 物理键码（菜单与测试也使用这一份表）。
+pub fn key_code(colemak: &str) -> Option<u16> {
+    KEYS.iter().find(|row| row.2 == colemak).map(|row| row.0)
+}
+
+/// QWERTY 字符 → 同位置 Colemak 字符。
+pub fn from_qwerty(key: &str) -> String {
+    KEYS.iter()
+        .find(|row| row.1 == key)
+        .map(|row| row.2)
+        .unwrap_or(key)
+        .to_string()
+}
+
+/// Colemak 字符 → 同位置 QWERTY 字符。
+pub fn to_qwerty(key: &str) -> String {
+    KEYS.iter()
+        .find(|row| row.2 == key)
+        .map(|row| row.1)
+        .unwrap_or(key)
+        .to_string()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// 用户报障现场：Colemak 布局，按键盘上印着 D/T/S 的三个物理键。
-    ///
-    /// 对照 `KeyBindingsTests.testCommandShortcutsUsePrintedKeyOnNonQwertyLayout`。
+    /// 用户明确确认：Colemak 为基准，所有默认快捷键在 QWERTY 下同手位。
     #[test]
-    fn printed_keys_map_to_their_label_not_the_layout_char() {
-        // keyCode 2 = QWERTY D 位，Colemak 下产出 's'
-        assert_eq!(us_char(2), Some("d"));
-        // keyCode 17 = QWERTY T 位，Colemak 下产出 'g'
-        assert_eq!(us_char(17), Some("t"));
-        // keyCode 1 = QWERTY S 位，Colemak 下产出 'r'
-        assert_eq!(us_char(1), Some("s"));
-    }
-
-    /// 没挪过位置的字母两种布局一样，不能因为加了物理键表而改变行为。
-    #[test]
-    fn unmoved_letters_keep_their_identity() {
-        for (code, expected) in [
-            (8u16, "c"),
-            (9, "v"),
-            (0, "a"),
-            (6, "z"),
-            (7, "x"),
-            (13, "w"),
-            (12, "q"),
+    fn colemak_is_the_anchor_not_qwerty() {
+        for (code, colemak, qwerty) in [
+            (5, "d", "g"),
+            (2, "s", "d"),
+            (3, "t", "f"),
+            (15, "p", "r"),
+            (14, "f", "e"),
+            (45, "k", "n"),
+            (37, "i", "l"),
         ] {
-            assert_eq!(us_char(code), Some(expected), "keyCode {code}");
+            assert_eq!(colemak_char(code), Some(colemak));
+            assert_eq!(us_char(code), Some(qwerty));
+            assert_eq!(key_code(colemak), Some(code));
+            assert_eq!(to_qwerty(colemak), qwerty);
+            assert_eq!(from_qwerty(qwerty), colemak);
         }
     }
 
-    /// 数字键：Cmd-1..9 切 tab 依赖这张表。
     #[test]
-    fn digit_row_round_trips() {
-        for (code, expected) in [
-            (18u16, "1"),
-            (19, "2"),
-            (20, "3"),
-            (21, "4"),
-            (23, "5"),
-            (22, "6"),
-            (26, "7"),
-            (28, "8"),
-            (25, "9"),
-            (29, "0"),
+    fn every_key_round_trips_without_duplicate_codes_or_labels() {
+        let mut codes = std::collections::HashSet::new();
+        let mut qwerty = std::collections::HashSet::new();
+        let mut colemak = std::collections::HashSet::new();
+        for &(code, q, c) in KEYS {
+            assert!(codes.insert(code));
+            assert!(qwerty.insert(q));
+            assert!(colemak.insert(c));
+            assert_eq!(from_qwerty(&to_qwerty(c)), c);
+        }
+        assert_eq!(
+            colemak
+                .iter()
+                .filter(|key| key.chars().all(char::is_alphabetic))
+                .count(),
+            26
+        );
+    }
+
+    #[test]
+    fn digits_punctuation_and_function_keys_do_not_move() {
+        for key in [
+            "1", "0", "[", "]", "=", "-", ",", "/", "left", "enter", "escape",
         ] {
-            assert_eq!(us_char(code), Some(expected), "keyCode {code}");
+            assert_eq!(from_qwerty(key), key);
+            assert_eq!(to_qwerty(key), key);
         }
-    }
-
-    /// 方向键 / 功能键没有可打印字符，必须返回 `None` 让调用方回落到
-    /// `Keystroke.key` 的语义名（`left` / `right` / `escape` …）。
-    #[test]
-    fn non_printing_keys_have_no_char() {
-        for code in [123u16, 124, 125, 126, 53, 36, 48, 51, 122, 120] {
-            assert_eq!(us_char(code), None, "keyCode {code}");
-        }
-    }
-
-    /// 表里不允许出现重复键码（写错会静默丢一个键）。
-    #[test]
-    fn table_has_no_duplicate_codes() {
-        let mut seen = std::collections::HashSet::new();
-        for code in 0u16..=127 {
-            if us_char(code).is_some() {
-                assert!(seen.insert(code), "duplicate keyCode {code}");
-            }
+        for code in [123, 124, 125, 126, 53, 36] {
+            assert_eq!(colemak_char(code), None);
         }
     }
 }

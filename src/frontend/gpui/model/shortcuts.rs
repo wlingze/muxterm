@@ -96,6 +96,14 @@ impl KeyAction {
 
 /// 修饰键 + 主键（大小写无关）的纯数据描述。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ShortcutCommand {
+    Action(KeyAction),
+    Record(KeyChord),
+    CloseSettings,
+}
+
+/// 修饰键 + 主键（大小写无关）。
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct KeyChord {
     pub command: bool,
     pub shift: bool,
@@ -139,6 +147,13 @@ pub fn builtin_action(chord: &KeyChord) -> Option<KeyAction> {
     // Cmd-C 复制选区（不发 ^C 进 PTY）。
     if chord.command && !chord.shift && !chord.option && !chord.control && key == "c" {
         return Some(KeyAction::Copy);
+    }
+    // 剪贴板也走统一动作表，原生菜单与快捷键录制不可绕开它。
+    if chord.command && !chord.shift && !chord.option && !chord.control && key == "v" {
+        return Some(KeyAction::Paste);
+    }
+    if chord.command && !chord.shift && !chord.option && !chord.control && key == "q" {
+        return Some(KeyAction::Quit);
     }
     // Cmd+T 新建 tab
     if chord.command && !chord.shift && !chord.option && key == "t" {
@@ -330,29 +345,14 @@ pub fn builtin_action(chord: &KeyChord) -> Option<KeyAction> {
     None
 }
 
-/// 按键事件 → 内置动作：**先按物理键位，再按布局字符**。
-///
-/// macOS 如实报告「当前布局产出的字符」，所以 Colemak 用户按键盘上印着 `D`
-/// 的键，事件里的字符是 `s`：Cmd-D 会落到「纵向分屏」，而 Cmd-T / Cmd-S 产出的
-/// `g` / `r` 谁都不认领 —— 按了完全没反应。终端（Ghostty 用 W3C 物理键码
-/// 派发、Zed 在 IME 之前先派发快捷键）的惯例是按物理键位。
-///
-/// 规则：物理键位能解析出动作就用它；否则回落到布局字符（方向键、中文
-/// 输入法给出的全角括号等只能走布局字符）。两者相同时只查一次。
+/// 物理位置已由平台换成 Colemak 标签；无法取得物理位置时才用布局字符。
+/// 两个标签冲突时绝不再尝试另一套字母绑定，否则同一个键会产生两个语义。
 pub fn builtin_action_for_event(physical: Option<&str>, chord: &KeyChord) -> Option<KeyAction> {
-    if let Some(physical) = physical {
-        let physical = physical.to_lowercase();
-        if physical != chord.key {
-            let physical_chord = KeyChord {
-                key: physical,
-                ..chord.clone()
-            };
-            if let Some(action) = builtin_action(&physical_chord) {
-                return Some(action);
-            }
-        }
-    }
-    builtin_action(chord)
+    let canonical = KeyChord {
+        key: physical.unwrap_or(&chord.key).to_lowercase(),
+        ..chord.clone()
+    };
+    builtin_action(&canonical)
 }
 
 /// 只有单个 `1..=9` 的数字键才算 tab 号；`"10"` 不是。
@@ -404,6 +404,7 @@ pub fn adjacent_tab_index(active_index: usize, count: usize, offset: isize) -> O
 /// 配置里的 action 名 → 窗口动作。未知名字返回 `None`，不猜。
 pub fn action_from_name(name: &str) -> Option<KeyAction> {
     let fixed = match name {
+        "select_all" => KeyAction::SelectAll,
         "new_window" | "new_tab" => KeyAction::NewTab,
         "new_pane" => KeyAction::SplitHorizontal,
         "new_pane_vertical" => KeyAction::SplitVertical,
@@ -501,13 +502,13 @@ pub fn action_name(action: KeyAction) -> Option<String> {
         KeyAction::SwitchTab(n) => return Some(format!("switch_tab_{n}")),
         KeyAction::SwitchWorkspace(0) => "switch_workspace_last",
         KeyAction::SwitchWorkspace(n) => return Some(format!("switch_workspace_{n}")),
+        KeyAction::SelectAll => "select_all",
         // 菜单专属动作：不参与配置文件的自定义键位（Swift 同样没有可配键）。
         KeyAction::RenameWorkspace
         | KeyAction::RenameTab
         | KeyAction::MoveTabLeft
         | KeyAction::MoveTabRight
         | KeyAction::MovePaneToNewTab
-        | KeyAction::SelectAll
         | KeyAction::TabBarTop
         | KeyAction::TabBarBottom
         | KeyAction::About
@@ -656,42 +657,48 @@ mod tests {
 
     // === KeyBindingsTests（FlatChromeTests.swift）===
 
-    /// 用户报障（2026-11-16）：「cmd-d cmd-t cmd-s 都失败了」。
-    ///
-    /// 现场是 Colemak 布局：按键盘上印着 D / T / S 的三个物理键，macOS 给出的
-    /// `Keystroke.key` 分别是 `s` / `g` / `r`。只按字符匹配时，`s` 落到纵向分屏
-    /// （方向错），`g` / `r` 没有任何绑定（按了完全没反应）。物理键位必须优先。
+    /// 用户确认：Colemak ⌘D/⌘S/⌘T 对应 QWERTY ⌘G/⌘D/⌘F。
     #[test]
-    fn colemak_printed_keys_keep_their_shortcuts() {
-        // 物理 D / T / S 的 QWERTY 字符，与 Colemak 产出的布局字符配对。
-        for (physical, layout, expected) in [
-            ("d", "s", KeyAction::SplitHorizontal),
-            ("t", "g", KeyAction::NewTab),
-            ("s", "r", KeyAction::SplitVertical),
+    fn colemak_is_the_anchor_for_every_default_shortcut() {
+        for key in [
+            "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q",
+            "r", "s", "t", "u", "v", "w", "x", "y", "z", "1", "[", ",",
         ] {
-            assert_eq!(
-                builtin_action_for_event(
-                    Some(physical),
-                    &KeyChord::new(true, false, false, false, layout)
-                ),
-                Some(expected),
-                "物理 {physical} / 布局 {layout}"
-            );
+            let physical = crate::frontend::gpui::model::physical_key::key_code(key).unwrap();
+            let qwerty = crate::frontend::gpui::model::physical_key::us_char(physical).unwrap();
+            for (command, shift, option, control) in [
+                (true, false, false, false),
+                (true, true, false, false),
+                (true, false, false, true),
+                (false, false, true, false),
+                (false, false, false, true),
+            ] {
+                let canonical = KeyChord::new(command, shift, option, control, key);
+                let qwerty_event = KeyChord {
+                    key: qwerty.to_string(),
+                    ..canonical.clone()
+                };
+                assert_eq!(
+                    builtin_action_for_event(Some(key), &qwerty_event),
+                    builtin_action(&canonical)
+                );
+            }
         }
     }
 
-    /// Colemak 用户按「产出 d 的那个物理键」（QWERTY G 位）仍然要能分屏：
-    /// 物理位 `g` 没有绑定，回落到布局字符 `d`。
     #[test]
-    fn layout_char_is_the_fallback_when_physical_is_unbound() {
+    fn physical_anchor_never_falls_back_to_a_conflicting_layout_action() {
         assert_eq!(
-            builtin_action_for_event(Some("g"), &KeyChord::new(true, false, false, false, "d")),
+            builtin_action_for_event(Some("g"), &KeyChord::command("t")),
+            None
+        );
+        assert_eq!(
+            builtin_action_for_event(Some("d"), &KeyChord::command("g")),
             Some(KeyAction::SplitHorizontal)
         );
-        // Cmd-F（搜索）在物理位 `f` 上本来就有绑定，不能被布局字符抢走。
         assert_eq!(
-            builtin_action_for_event(Some("f"), &KeyChord::new(true, false, false, false, "t")),
-            Some(KeyAction::SearchWorkspace)
+            builtin_action_for_event(Some("t"), &KeyChord::command("f")),
+            Some(KeyAction::NewTab)
         );
     }
 
@@ -708,9 +715,9 @@ mod tests {
         );
     }
 
-    /// 物理位与布局字符一致（US QWERTY）时结果必须与旧行为逐键相同。
+    /// Colemak 规范标签必须与 Swift 内置表逐键相同。
     #[test]
-    fn qwerty_layout_is_unaffected() {
+    fn canonical_labels_match_the_swift_builtin_table() {
         for key in [
             "t", "d", "s", "c", "v", "w", "a", "p", "f", "r", "k", "i", "1", "9", "[", "]",
         ] {
@@ -884,8 +891,8 @@ mod tests {
         );
         assert_eq!(
             builtin_action(&KeyChord::command("v")),
-            None,
-            "Cmd-V 必须留给粘贴，不能再拦截成切分"
+            Some(KeyAction::Paste),
+            "Cmd-V 统一派发为粘贴，不能再拦截成切分"
         );
         assert_eq!(
             builtin_action(&KeyChord::command("w")),

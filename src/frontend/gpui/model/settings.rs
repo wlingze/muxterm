@@ -21,6 +21,8 @@ pub enum ControlKind {
     Select,
     ThemePicker,
     Directory,
+    ProjectEditor,
+    ShortcutEditor,
     /// manifest 里出现但前端还不认识的控件：退化成文本框，不丢字段。
     Other(String),
 }
@@ -36,7 +38,9 @@ impl ControlKind {
             "switch" => Self::Switch,
             "select" => Self::Select,
             "theme_picker" => Self::ThemePicker,
-            "directory" => Self::Directory,
+            "directory" | "file" => Self::Directory,
+            "project_editor" => Self::ProjectEditor,
+            "shortcut_editor" => Self::ShortcutEditor,
             other => Self::Other(other.to_string()),
         }
     }
@@ -187,6 +191,21 @@ impl SettingsManifest {
                 .map(Vec::as_slice)
                 .unwrap_or_default()
             {
+                if let Some(platforms) = field.get("platforms").and_then(Value::as_array) {
+                    let platform = if cfg!(target_os = "macos") {
+                        "macos"
+                    } else if cfg!(target_os = "windows") {
+                        "windows"
+                    } else {
+                        "linux"
+                    };
+                    if !platforms
+                        .iter()
+                        .any(|entry| entry.as_str() == Some(platform))
+                    {
+                        continue;
+                    }
+                }
                 let Some(path) = field.get("path").and_then(Value::as_str) else {
                     continue;
                 };
@@ -257,7 +276,25 @@ impl SettingsManifest {
 pub fn category_title(id: &str, title_key: &str) -> String {
     let tail = title_key.rsplit('.').next().unwrap_or_default();
     let source = if tail.is_empty() { id } else { tail };
-    humanize(source)
+    let fallback = match id {
+        "ui" => "Interface".to_string(),
+        "ssh" => "SSH".to_string(),
+        _ => humanize(source),
+    };
+    localized(
+        &format!("settings_{}", if id == "ui" { "interface" } else { id }),
+        &fallback,
+    )
+}
+
+/// Core manifest 的动态标题复用同一份 typed i18n catalog。
+pub fn localized(key: &str, fallback: &str) -> String {
+    use crate::frontend::utils::i18n::{tr, TextKey};
+    TextKey::ALL
+        .iter()
+        .find(|entry| entry.as_str() == key)
+        .map(|key| tr(*key))
+        .unwrap_or_else(|| fallback.to_string())
 }
 
 /// `font.line_spacing` → `Font Line Spacing`。
@@ -277,6 +314,44 @@ pub fn humanize(raw: &str) -> String {
 
 /// 字段标题：manifest 没给 key 时退回路径尾段。
 pub fn field_title(path: &str, title_key: &str) -> String {
+    let fallback = match path {
+        "/font/family" => "Font family",
+        "/font/size" => "Font size",
+        "/font/line_spacing" => "Line height",
+        "/font/column_spacing" => "Character width",
+        "/font/fallback" => "Fallback fonts",
+        "/theme/name" => "Theme",
+        "/theme/light" => "Light appearance",
+        "/theme/dark" => "Dark appearance",
+        "/scrollback/lines" => "Scrollback lines",
+        "/attention/enabled" => "Workspace attention",
+        "/attention/blocked_regex" => "Blocked output patterns",
+        "/attention/debounce_ms" => "Notification delay",
+        "/ui/tab_bar_position" => "Tab bar position",
+        "/ui/tab_bar_style" => "Tab style",
+        "/ui/show_title_bar" => "Show title bar",
+        "/ui/language" => "Language",
+        "/tmux/auto_mouse" => "Mouse forwarding",
+        "/tmux/default_session" => "Default session",
+        "/tmux/socket" => "tmux socket",
+        "/pool/max_slots" => "Workspace reminder limit",
+        "/pane/default_command" => "Default shell command",
+        "/pane/workdir" => "Initial directory",
+        "/ssh/host" => "Default SSH host",
+        "/ssh/user" => "SSH user",
+        "/ssh/port" => "SSH port",
+        "/ssh/key_path" => "SSH private key",
+        "/shortcuts/preset" => "Configuration labels",
+        "/shortcuts/primary_key" => "Primary modifier",
+        "/shortcuts/overrides" => "Custom shortcuts",
+        "/projects" => "Projects",
+        "/debug/enabled" => "Debug logging",
+        "/debug/log_dir" => "Log directory",
+        _ => "",
+    };
+    if !fallback.is_empty() {
+        return localized(&title_key.replace('.', "_"), fallback);
+    }
     if !title_key.is_empty() {
         return humanize(title_key.rsplit('.').next().unwrap_or_default());
     }
@@ -308,7 +383,9 @@ pub fn field_description(path: &str, _title_key: &str) -> String {
         "/platform/macos/option_as_alt" => "Type Option as Alt/Esc instead of accented characters.".to_string(),
         "/platform/linux/client_side_decorations" => "Draw window buttons inside the app.".to_string(),
         "/update/auto_check" => "Check for a newer release once at startup.".to_string(),
-        "/projects" => "Saved launch profiles. Press Apply to write them to the config.".to_string(),
+        "/projects" => "Reusable workspace launch profiles shared by Open. Changes are saved with Apply.".to_string(),
+        "/shortcuts/preset" => "Only changes the labels used in configuration. Every default keeps the Colemak hand position in both layouts.".to_string(),
+        "/shortcuts/primary_key" => "Modifier used for configured shortcuts.".to_string(),
         _ => String::new(),
     }
 }
@@ -644,8 +721,8 @@ mod tests {
         );
         assert_eq!(
             field_title("/font/line_spacing", ""),
-            "Line Spacing",
-            "没有 title_key 时退回路径尾段"
+            "Line height",
+            "已知字段采用 Swift 的可读标题，不显示 schema 标识符"
         );
     }
 

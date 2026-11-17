@@ -13,6 +13,8 @@ pub mod panel;
 pub mod panel_view;
 pub mod prompt;
 pub mod settings;
+mod settings_managers;
+pub mod settings_window;
 pub mod sidebar;
 pub mod sidebar_view;
 pub mod status_bar;

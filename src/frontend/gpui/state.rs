@@ -51,6 +51,10 @@ mod picker;
 
 #[path = "state/palette_actions.rs"]
 mod palette_actions;
+#[path = "state/settings.rs"]
+mod settings_state;
+#[path = "state/shortcuts.rs"]
+mod shortcut_state;
 
 pub use palette_actions::{PaletteMenu, PromptState, PromptTarget, StatusBarMode};
 
@@ -79,6 +83,9 @@ struct PaneSelection {
 
 pub struct GpuiApp {
     pump: Option<EventPump>,
+    pub(crate) shortcuts: crate::frontend::gpui::model::shortcut_editor::ShortcutMap,
+    pub(crate) shortcut_editor: crate::frontend::gpui::model::shortcut_editor::ShortcutEditor,
+    pub(crate) qwerty_labels: bool,
     store: ViewStore,
     commands: CommandQueue,
     surfaces: HashMap<SurfaceKey, Surface>,
@@ -162,6 +169,14 @@ pub struct GpuiApp {
     pub target_editor_focus: crate::frontend::gpui::model::target_editor::TargetEditorFocus,
     /// 设置窗口是否打开。
     pub settings_open: bool,
+    pub(crate) settings_window:
+        Option<gpui::WindowHandle<crate::frontend::gpui::chrome::settings_window::SettingsWindow>>,
+    pub(crate) settings_project_editor: bool,
+    pub(crate) settings_detached: bool,
+    pub(crate) settings_select_all: bool,
+    pub(crate) settings_error: Option<String>,
+    pub(crate) settings_pending: bool,
+    pub(crate) settings_close_on_commit: bool,
     /// 上次按键是否已被前端消费（不再交给原生菜单再执行一遍）。
     /// 测试用：回归「按一次 Cmd-D 只能分一次屏」。
     key_consumed: bool,
@@ -284,6 +299,16 @@ impl GpuiApp {
             ));
         let mut app = Self {
             pump: Some(pump),
+            settings_detached: false,
+            settings_close_on_commit: false,
+            settings_pending: false,
+            settings_window: None,
+            settings_project_editor: false,
+            settings_select_all: false,
+            settings_error: None,
+            shortcuts: Default::default(),
+            shortcut_editor: Default::default(),
+            qwerty_labels: !cx.keyboard_layout().id().to_lowercase().contains("colemak"),
             store,
             commands,
             surfaces: HashMap::new(),
@@ -396,6 +421,7 @@ impl GpuiApp {
         snapshot: &crate::frontend::utils::corebridge::ClientConfigSnapshot,
         cx: &mut Context<Self>,
     ) {
+        self.apply_shortcut_values(&snapshot.values);
         let theme = theme_from_snapshot(snapshot);
         self.show_title_bar = ui_config_from_snapshot(snapshot).show_title_bar;
         self.cell = (theme.cell_width(), theme.cell_height());
@@ -453,24 +479,32 @@ impl GpuiApp {
     pub fn watch_menu(
         &mut self,
         mut receiver: futures::channel::mpsc::UnboundedReceiver<
-            crate::frontend::gpui::model::shortcuts::KeyAction,
+            crate::frontend::gpui::model::shortcuts::ShortcutCommand,
         >,
         cx: &mut Context<Self>,
     ) {
         use futures::StreamExt;
-        cx.spawn(async move |_this, cx| {
-            while let Some(action) = receiver.next().await {
-                let Ok(windows) = cx.update(|cx| cx.windows()) else {
-                    break;
-                };
-                for handle in windows {
-                    let _ = handle.update(cx, |view, window, cx| {
-                        if let Ok(entity) = view.downcast::<crate::frontend::gpui::state::GpuiApp>()
-                        {
-                            entity.update(cx, |app, cx| {
-                                app.run_action(action, window, cx);
-                            });
-                        }
+        cx.spawn(async move |this, cx| {
+            while let Some(command) = receiver.next().await {
+                let Ok(handle) = cx.update(|cx| cx.active_window().or_else(|| cx.windows().into_iter().next())) else { break; };
+                if let Some(handle) = handle {
+                    let _ = handle.update(cx, |_, window, cx| {
+                        let _ = this.update(cx, |app, cx| {
+                            use crate::frontend::gpui::model::shortcuts::{ShortcutCommand, KeyAction};
+                            let settings = window.window_handle().downcast::<crate::frontend::gpui::chrome::settings_window::SettingsWindow>().is_some();
+                            match command.clone() {
+                                ShortcutCommand::Record(chord) => app.settings_record_shortcut(chord, cx),
+                                ShortcutCommand::CloseSettings => app.settings_cancel(cx),
+                                ShortcutCommand::Action(action) if settings => match action {
+                                    KeyAction::Quit => cx.quit(),
+                                    KeyAction::ClosePane | KeyAction::CloseWindow => app.settings_cancel(cx),
+                                    KeyAction::Paste => { if let Some(text) = cx.read_from_clipboard().and_then(|item|item.text()) { app.settings_type(&text, cx); } },
+                                    KeyAction::SelectAll => { app.settings_select_all = true; cx.notify(); },
+                                    _ => {},
+                                },
+                                ShortcutCommand::Action(action) => { app.run_action(action, window, cx); },
+                            }
+                        });
                     });
                 }
             }
@@ -686,11 +720,15 @@ impl GpuiApp {
 
     pub fn pump_once(&mut self, cx: &mut Context<Self>) -> bool {
         let mut dirty = false;
+        let mut settings_result = None;
         if let Some(pump) = self.pump.as_ref() {
             let events = pump.poll_into_with_events(&mut self.store);
             dirty |= events.iter().any(|event| event.event.is_topology());
             // `commands` 与 `pump` 是不同字段，借用互不冲突。
             let outcomes = self.commands.flush(pump.client());
+            if self.settings_pending && !outcomes.is_empty() {
+                settings_result = Some(outcomes.iter().all(|code| *code == 0));
+            }
             if outcomes.iter().any(|code| *code != 0)
                 && (self.open_pending || self.projects_pending)
             {
@@ -699,6 +737,10 @@ impl GpuiApp {
                 self.open_pending = false;
                 self.projects_pending = false;
             }
+        }
+        if let Some(accepted) = settings_result {
+            self.complete_settings_apply(accepted, cx);
+            dirty = true;
         }
         let active = self.store.active_workspace_id().map(str::to_string);
         if self.visible.is_none() {
@@ -718,6 +760,8 @@ impl GpuiApp {
         // 「切了 / 分了但光标不见了、打字没反应」。
         dirty |= self.sync_focused_pane();
         dirty |= self.drain_render_events();
+        self.qwerty_labels = !cx.keyboard_layout().id().to_lowercase().contains("colemak");
+        self.sync_native_shortcuts();
         self.sync_menu_state();
         let _ = cx;
         dirty
@@ -1079,6 +1123,16 @@ impl GpuiApp {
             .or_else(|| store.workspace_ids().next().map(str::to_string));
         let mut app = Self {
             pump: None,
+            settings_detached: false,
+            settings_close_on_commit: false,
+            settings_pending: false,
+            settings_window: None,
+            settings_project_editor: false,
+            settings_select_all: false,
+            settings_error: None,
+            shortcuts: Default::default(),
+            shortcut_editor: Default::default(),
+            qwerty_labels: false,
             store,
             commands: CommandQueue::default(),
             surfaces: HashMap::new(),
@@ -2065,9 +2119,16 @@ impl GpuiApp {
                 true
             }
             KeyAction::OpenSettings => {
-                // Swift：Cmd-, 打开/聚焦设置。已经开着就按取消处理（有改动先确认）。
+                if let Some(handle) = self.settings_window {
+                    if handle
+                        .update(cx, |_, window, _| window.activate_window())
+                        .is_ok()
+                    {
+                        return true;
+                    }
+                    self.settings_window = None;
+                }
                 if self.settings_open {
-                    self.settings_cancel(cx);
                     return true;
                 }
                 // manifest 与当前值都来自 Core 的一次 describe；拿不到就开空窗口，
@@ -2085,6 +2146,9 @@ impl GpuiApp {
                             cx,
                         );
                     }
+                }
+                if self.pump.is_some() {
+                    let _ = self.detach_settings_window(cx);
                 }
                 true
             }
@@ -2351,11 +2415,13 @@ impl GpuiApp {
 
     pub fn open_palette(&mut self, cx: &mut Context<Self>) {
         self.palette.show();
+        self.sync_native_shortcuts();
         cx.notify();
     }
 
     pub fn close_palette(&mut self, cx: &mut Context<Self>) {
         self.palette.dismiss();
+        self.sync_native_shortcuts();
         cx.notify();
     }
 
@@ -2603,6 +2669,7 @@ impl GpuiApp {
     }
 
     pub fn close_target_editor(&mut self, cx: &mut Context<Self>) {
+        self.settings_project_editor = false;
         if self.target_editor.is_none() {
             return;
         }
@@ -2667,6 +2734,20 @@ impl GpuiApp {
                 return;
             }
         };
+        if self.settings_project_editor {
+            let mut projects = crate::frontend::gpui::model::workspace_picker::ProjectList::new(
+                &self
+                    .settings_value("/projects")
+                    .unwrap_or_else(|| serde_json::json!([])),
+            );
+            projects.upsert(&config);
+            self.settings_set("/projects", projects.value(), cx);
+            self.target_editor = None;
+            self.settings_project_editor = false;
+            self.target_editor_error = None;
+            cx.notify();
+            return;
+        }
         self.open_pending = true;
         self.open_started = Some(std::time::Instant::now());
         self.commands.push(ClientCommand::OpenTarget {
@@ -2698,7 +2779,11 @@ impl GpuiApp {
         self.settings_focus = SettingsFocus::Search;
         self.settings_edit = None;
         self.settings_discard_pending = false;
+        self.shortcut_editor = Default::default();
+        self.settings_error = None;
+        self.settings_select_all = false;
         self.settings_open = true;
+        self.settings_detached = false;
         cx.notify();
     }
 
@@ -2708,6 +2793,10 @@ impl GpuiApp {
             return;
         }
         self.settings_open = false;
+        self.shortcut_editor = Default::default();
+        self.settings_project_editor = false;
+        self.settings_window = None;
+        self.sync_native_shortcuts();
         self.settings_focus = SettingsFocus::Field(0);
         self.settings_edit = None;
         self.settings_discard_pending = false;
@@ -2782,6 +2871,38 @@ impl GpuiApp {
 
     /// 改一个字段（草稿态，不写 Core）。
     pub fn settings_set(&mut self, path: &str, value: serde_json::Value, cx: &mut Context<Self>) {
+        if path == "/shortcuts/preset" && self.settings_value(path).as_ref() != Some(&value) {
+            let was_qwerty = self
+                .settings_value(path)
+                .as_ref()
+                .and_then(serde_json::Value::as_str)
+                == Some("qwerty");
+            let is_qwerty = value.as_str() == Some("qwerty");
+            if was_qwerty != is_qwerty {
+                if let Some(mut overrides) = self.settings_value("/shortcuts/overrides") {
+                    if let Some(rows) = overrides.as_array_mut() {
+                        for row in rows {
+                            if let Some(bindings) = row["bindings"].as_array_mut() {
+                                for binding in bindings {
+                                    if let Some(key) = binding["key"].as_str() {
+                                        binding["key"] = serde_json::json!(if is_qwerty {
+                                            crate::frontend::gpui::model::physical_key::to_qwerty(
+                                                key,
+                                            )
+                                        } else {
+                                            crate::frontend::gpui::model::physical_key::from_qwerty(
+                                                key,
+                                            )
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    self.settings_draft.set("/shortcuts/overrides", overrides);
+                }
+            }
+        }
         self.settings_draft.set(path, value);
         cx.notify();
     }
@@ -2875,12 +2996,16 @@ impl GpuiApp {
 
     /// 点击某个字段：把键盘落点移过去。
     pub fn settings_focus_field(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.shortcut_editor.searching = false;
+        self.settings_select_all = false;
         self.settings_focus = SettingsFocus::Field(index);
         self.settings_edit = None;
         cx.notify();
     }
 
     pub fn settings_focus_search(&mut self, cx: &mut Context<Self>) {
+        self.shortcut_editor.searching = false;
+        self.settings_select_all = false;
         self.settings_focus = SettingsFocus::Search;
         self.settings_edit = None;
         cx.notify();
@@ -2940,9 +3065,22 @@ impl GpuiApp {
 
     /// 键盘输入：搜索框追加查询词；文本字段进去编辑缓冲。
     fn settings_type(&mut self, text: &str, cx: &mut Context<Self>) {
+        let replace = std::mem::take(&mut self.settings_select_all);
+        if self.shortcut_editor.searching {
+            if replace {
+                self.shortcut_editor.query.clear();
+            }
+            self.shortcut_editor.query.push_str(text);
+            cx.notify();
+            return;
+        }
         match self.settings_focus {
             SettingsFocus::Search => {
-                let query = format!("{}{}", self.settings_draft.query(), text);
+                let query = if replace {
+                    text.to_string()
+                } else {
+                    format!("{}{}", self.settings_draft.query(), text)
+                };
                 self.settings_set_query(query, cx);
             }
             SettingsFocus::Field(index) => {
@@ -2952,15 +3090,18 @@ impl GpuiApp {
                 if !field.control.is_text_like() {
                     return;
                 }
-                let mut buffer = self
-                    .settings_edit
-                    .as_ref()
-                    .map(|edit| edit.buffer.clone())
-                    .unwrap_or_else(|| {
-                        crate::frontend::gpui::model::settings::display_value(
-                            self.settings_value(&field.path).as_ref(),
-                        )
-                    });
+                let mut buffer = if replace {
+                    String::new()
+                } else {
+                    self.settings_edit
+                        .as_ref()
+                        .map(|edit| edit.buffer.clone())
+                        .unwrap_or_else(|| {
+                            crate::frontend::gpui::model::settings::display_value(
+                                self.settings_value(&field.path).as_ref(),
+                            )
+                        })
+                };
                 buffer.push_str(text);
                 self.settings_edit = Some(SettingsEdit {
                     path: field.path.clone(),
@@ -2973,6 +3114,15 @@ impl GpuiApp {
 
     /// 退格：查询词或编辑缓冲各删一个字符。
     fn settings_backspace(&mut self, cx: &mut Context<Self>) {
+        if self.settings_select_all {
+            self.settings_type("", cx);
+            return;
+        }
+        if self.shortcut_editor.searching {
+            self.shortcut_editor.query.pop();
+            cx.notify();
+            return;
+        }
         match self.settings_focus {
             SettingsFocus::Search => {
                 let mut query = self.settings_draft.query().to_string();
@@ -3046,6 +3196,9 @@ impl GpuiApp {
 
     /// 设置浮层的 Esc / 取消：有改动先确认，否则直接关。
     pub fn settings_cancel(&mut self, cx: &mut Context<Self>) {
+        if self.settings_pending {
+            return;
+        }
         if self.settings_draft.is_dirty() && !self.settings_discard_pending {
             self.settings_discard_pending = true;
             cx.notify();
@@ -3070,7 +3223,9 @@ impl GpuiApp {
     pub fn settings_apply_and_close(&mut self, cx: &mut Context<Self>) {
         self.settings_finish_edit();
         if self.settings_draft.is_dirty() {
+            self.settings_close_on_commit = true;
             self.settings_apply(cx);
+            return;
         }
         self.settings_discard_pending = false;
         self.close_settings(cx);
@@ -3123,17 +3278,48 @@ impl GpuiApp {
         }
     }
 
-    /// Apply：每个改动一条 ConfigApply，再以当前值为新 baseline。
+    /// Apply：整份草稿只用一笔 Core 事务；确认成功前不抹掉 baseline。
     pub fn settings_apply(&mut self, cx: &mut Context<Self>) -> usize {
+        if self.settings_pending {
+            return 0;
+        }
         let patches = self.settings_draft.patches_for(&self.settings_manifest);
         let count = patches.len();
-        for (path, value) in patches {
-            self.commands
-                .push(ClientCommand::ConfigApply { path, value });
+        if count == 0 {
+            return 0;
         }
-        self.settings_draft.rebase();
+        self.settings_pending = true;
+        self.settings_error = None;
+        self.commands.push(ClientCommand::ConfigApplyTransaction {
+            patches: patches
+                .into_iter()
+                .map(
+                    |(path, value)| crate::frontend::utils::corebridge::ClientJsonPatchOperation {
+                        op: "replace".into(),
+                        path,
+                        value: Some(value),
+                    },
+                )
+                .collect(),
+        });
         cx.notify();
         count
+    }
+
+    /// 命令队列的提交结果（纯状态回归也显式注入回执，不能假装提交成功）。
+    pub fn complete_settings_apply(&mut self, accepted: bool, cx: &mut Context<Self>) {
+        self.settings_pending = false;
+        if accepted {
+            self.settings_draft.rebase();
+            self.config_reload_pending = true;
+            if self.settings_close_on_commit {
+                self.close_settings(cx);
+            }
+        } else {
+            self.settings_error = Some(crate::frontend::gpui::model::settings::localized("settings_save_failed", "Core rejected these changes. Your edits are kept. Correct the values and try Apply again."));
+        }
+        self.settings_close_on_commit = false;
+        cx.notify();
     }
 
     /// 输入框打开时绑定的目标：当前 workspace + 聚焦 pane。
@@ -3178,6 +3364,7 @@ impl GpuiApp {
         self.composer_selection = page.selection;
         self.composer_key = Some(key);
         self.composer_open = true;
+        self.sync_native_shortcuts();
         cx.notify();
     }
 
@@ -3187,6 +3374,7 @@ impl GpuiApp {
             return;
         }
         self.composer_open = false;
+        self.sync_native_shortcuts();
         cx.notify();
     }
 
@@ -3451,6 +3639,7 @@ impl GpuiApp {
     ) {
         let opening = !self.panel.open;
         self.panel.show(tab);
+        self.sync_native_shortcuts();
         if opening {
             self.panel
                 .picker
@@ -3511,6 +3700,7 @@ impl GpuiApp {
             return;
         }
         self.panel.close();
+        self.sync_native_shortcuts();
         self.panel.actions = None;
         self.panel
             .picker
@@ -3614,7 +3804,7 @@ impl GpuiApp {
             self.palette_push(text, cx);
             return;
         }
-        if self.settings_open {
+        if self.settings_open && !self.settings_detached {
             self.settings_type(text, cx);
             return;
         }
@@ -3998,7 +4188,7 @@ impl GpuiApp {
         cx: &mut Context<Self>,
     ) {
         let keystroke = &event.keystroke;
-        let chord = crate::frontend::gpui::model::shortcuts::KeyChord {
+        let mut chord = crate::frontend::gpui::model::shortcuts::KeyChord {
             command: keystroke.modifiers.platform,
             shift: keystroke.modifiers.shift,
             option: keystroke.modifiers.alt,
@@ -4008,14 +4198,44 @@ impl GpuiApp {
         // 物理键位先于布局字符：Colemak / Dvorak 把字母挪了位置，按字符匹配
         // 的 Cmd 组合会漂到别的动作上（见 `model/physical_key.rs`）。
         // 只在带 Command 时取：普通打字走的是终端编码路径，那里必须用布局字符。
-        let physical_key = if keystroke.modifiers.platform {
+        let physical_key = if keystroke.modifiers.platform
+            || keystroke.modifiers.alt
+            || keystroke.modifiers.control
+        {
             crate::frontend::gpui::platform::physical_key_for_event(&keystroke.key)
         } else {
             None
         };
+        if let Some(key) = physical_key {
+            chord.key = key.to_string();
+        }
+        if self.settings_open
+            && self.shortcut_editor.recording.is_some()
+            && (!self.settings_detached
+                || window
+                    .window_handle()
+                    .downcast::<crate::frontend::gpui::chrome::settings_window::SettingsWindow>()
+                    .is_some())
+        {
+            self.settings_record_shortcut(chord, cx);
+            cx.stop_propagation();
+            return;
+        }
+        let mut routed = keystroke.clone();
+        if let Some(key) = physical_key {
+            routed.key = key.to_string();
+        }
+        let keystroke = &routed;
         // 目标配置窗口打开时独占按键：Esc 取消、Tab 换字段、Enter 保存，
         // 无修饰键的字符写进当前字段。
-        if self.target_editor.is_some() && !keystroke.modifiers.platform {
+        if self.target_editor.is_some()
+            && (!self.settings_project_editor
+                || window
+                    .window_handle()
+                    .downcast::<crate::frontend::gpui::chrome::settings_window::SettingsWindow>()
+                    .is_some())
+            && !keystroke.modifiers.platform
+        {
             match keystroke.key.as_str() {
                 "escape" => {
                     self.close_target_editor(cx);
@@ -4133,15 +4353,10 @@ impl GpuiApp {
 
         // 设置浮层独占按键：Esc 取消、Enter 应用、Tab 换分类、上下换字段。
         // 之前这里没有分支，Esc 和所有可打印键都会漏到终端 —— 设置关不掉。
-        if self.settings_open {
+        if self.settings_open && !self.settings_detached {
             if keystroke.modifiers.platform {
                 // Cmd-, / Cmd-Q 等继续走动作表；其余 Cmd 组合留在浮层里。
-                if let Some(action) =
-                    crate::frontend::gpui::model::shortcuts::builtin_action_for_event(
-                        physical_key,
-                        &chord,
-                    )
-                {
+                if let Some(action) = self.shortcuts.resolve(&chord) {
                     if self.run_action(action, window, cx) {
                         cx.stop_propagation();
                         return;
@@ -4316,9 +4531,7 @@ impl GpuiApp {
             }
         }
 
-        if let Some(action) =
-            crate::frontend::gpui::model::shortcuts::builtin_action_for_event(physical_key, &chord)
-        {
+        if let Some(action) = self.shortcuts.resolve(&chord) {
             if self.run_action(action, window, cx) {
                 // **必须消费事件**：macOS 会先拿同一条 chord 问视图（performKeyEquivalent），
                 // 再拿它去匹配原生菜单。不消费就等于按一次执行两遍——Cmd-D 分两个窗格、
@@ -4509,11 +4722,18 @@ impl EntityInputHandler for GpuiApp {
         &mut self,
         _range: Option<std::ops::Range<usize>>,
         text: &str,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // 先提交再清组合态：`commit_text` 里要判断当前有没有组合文本。
-        self.commit_text(text, cx);
+        if window
+            .window_handle()
+            .downcast::<crate::frontend::gpui::chrome::settings_window::SettingsWindow>()
+            .is_some()
+        {
+            self.settings_type(text, cx);
+        } else {
+            self.commit_text(text, cx);
+        }
         self.finish_ime_commit(cx);
     }
 

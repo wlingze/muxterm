@@ -439,7 +439,7 @@ impl ClientConfigEvent {
 }
 
 /// RFC 6902-style patch operation accepted by the Core configuration ABI.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct ClientJsonPatchOperation {
     pub op: String,
     pub path: String,
