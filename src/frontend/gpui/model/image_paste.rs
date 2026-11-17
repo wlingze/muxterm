@@ -198,6 +198,16 @@ impl ImagePasteTimeline {
         }
     }
 
+    /// 是否还该向 Core 要上传结果。
+    ///
+    /// 只有「已经交给 Core、结果还没拿到」时才轮询。结果一落地（哪怕还在
+    /// `MINIMUM_VISIBLE` 展示期挂着）就必须停手：Core 的 `poll_image_paste`
+    /// 取走结果后再问会回 `no image paste in progress`，把成功改写成失败
+    /// （用户报障：文件已经生成了，横幅却报 no image paste in progress）。
+    pub fn awaits_core(&self) -> bool {
+        matches!(self.stage, ImagePasteStage::Uploading) && self.pending.is_none()
+    }
+
     /// 直接回到 Idle，不展示结果。
     ///
     /// 输入框把路径插进草稿后不该再弹一条成功横幅（路径本身已经可见），
@@ -236,6 +246,34 @@ mod tests {
 
     fn failed(message: &str) -> ImagePasteStage {
         ImagePasteStage::Failed(message.to_string())
+    }
+
+    /// 用户报障：粘贴其实成功了（文件已生成、路径可用），横幅却报
+    /// `no image paste in progress`。原因就是成功结果挂起等展示时又去问了
+    /// Core —— 它已经 take 走了任务。结果一到手就必须停止轮询。
+    #[test]
+    fn a_landed_result_stops_asking_core() {
+        let base = t0();
+        let mut timeline = ImagePasteTimeline::new();
+        assert!(!timeline.awaits_core(), "空闲时不该问 Core");
+        timeline.advance(ImagePasteStage::Encoding, at(base, 0.0));
+        assert!(!timeline.awaits_core(), "还没交给 Core 时不该问");
+        timeline.advance(ImagePasteStage::Uploading, at(base, 0.01));
+        assert!(timeline.awaits_core(), "上传中才轮询");
+
+        // 快速完成：结果落进 pending，横幅还停在 Uploading 的最短展示期。
+        timeline.advance(done("/tmp/a.png"), at(base, 0.02));
+        assert_eq!(timeline.stage(), &ImagePasteStage::Uploading);
+        assert!(timeline.is_busy());
+        assert!(
+            !timeline.awaits_core(),
+            "结果已拿到就不能再问 Core（会回 no image paste in progress）"
+        );
+
+        // 展示期结束后落到成功，仍然不问。
+        timeline.tick(at(base, 1.0));
+        assert_eq!(timeline.stage(), &done("/tmp/a.png"));
+        assert!(!timeline.awaits_core());
     }
 
     // MARK: 阶段 → 展示

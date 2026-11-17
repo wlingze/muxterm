@@ -192,7 +192,7 @@ impl Render for GpuiApp {
                             .children(self.render_prompt(cx))
                             .children(
                                 crate::frontend::gpui::chrome::info::render_image_paste_banner(
-                                    self, &theme,
+                                    self, &theme, cx,
                                 ),
                             ),
                     )

@@ -468,6 +468,15 @@ ANSI 0–6，dim 与背景对半混合）
   macOS 剪贴板几乎都是 TIFF（截图、Preview、浏览器），所以
   `platform::clipboard_image::to_png` 用 AppKit 的 `NSBitmapImageRep` 先转码；
   转不了码、没有焦点 pane、没有 Core 连接**都会**出失败横幅 —— 静默失败是 bug。
+- 结果一到手就**停止轮询** Core（`ImagePasteTimeline::awaits_core`）：
+  `poll_image_paste` 是 take 语义，成功结果挂着等 `MINIMUM_VISIBLE` 时再问
+  会回 `no image paste in progress`，把成功改写成失败（用户报障：文件其实
+  已经生成）。结果阶段（成功/失败）的横幅带可见关闭按钮
+  （`image-paste-dismiss` → `dismiss_image_paste`），进度阶段不给 ——
+  上传未完成时关掉会让人以为已取消。
+  回归：`a_landed_result_stops_asking_core`、
+  `the_image_paste_result_banner_can_be_dismissed`、
+  `the_image_paste_progress_banner_has_no_close_button`。
 - 指示色对齐 Swift 语义色：`working` = systemYellow、`blocked` = systemPink、
   `done` = systemTeal（之前借用 success/danger/warning，侧栏与 tab 看起来偏红偏绿）。
 - 普通查询词匹配**所有**字段（名字 / runtime / 传输 / 路径 / session / socket /
