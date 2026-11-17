@@ -96,6 +96,21 @@ pub enum MouseEventKind {
     Wheel(bool, u8),
 }
 
+/// 鼠标事件的修饰键。xterm 用 4 / 8 / 16 三个位表示 Shift / Meta(Alt) / Control。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MouseModifiers {
+    pub shift: bool,
+    pub alt: bool,
+    pub control: bool,
+}
+
+impl MouseModifiers {
+    /// 事件码要加的位。
+    pub fn bits(self) -> u16 {
+        u16::from(self.shift) * 4 + u16::from(self.alt) * 8 + u16::from(self.control) * 16
+    }
+}
+
 /// 把一次指针事件编码成要写进 pane 的字节。
 ///
 /// `col` / `row` 是 0 基格子坐标；两套协议都按 1 基发送。
@@ -106,20 +121,33 @@ pub fn encode(
     mode: MouseMode,
     sgr: bool,
 ) -> Option<Vec<u8>> {
+    encode_with_modifiers(kind, col, row, mode, sgr, MouseModifiers::default())
+}
+
+/// 同上，但带上修饰键（xterm 的 4/8/16 位）。
+pub fn encode_with_modifiers(
+    kind: MouseEventKind,
+    col: usize,
+    row: usize,
+    mode: MouseMode,
+    sgr: bool,
+    modifiers: MouseModifiers,
+) -> Option<Vec<u8>> {
     if !mode.accepts(kind) {
         return None;
     }
+    let bits = modifiers.bits();
     let (code, final_byte) = match kind {
-        MouseEventKind::Press(button) => (button as u16, b'M'),
+        MouseEventKind::Press(button) => (button as u16 + bits, b'M'),
         MouseEventKind::Release(button) => {
             if sgr {
-                (button as u16, b'm')
+                (button as u16 + bits, b'm')
             } else {
-                (3, b'M')
+                (3 + bits, b'M')
             }
         }
-        MouseEventKind::Drag(button) => (32 + button as u16, b'M'),
-        MouseEventKind::Move => (35, b'M'),
+        MouseEventKind::Drag(button) => (32 + button as u16 + bits, b'M'),
+        MouseEventKind::Move => (35 + bits, b'M'),
         MouseEventKind::Wheel(up, amount) => {
             // 一次滚动事件可以带多格：一格一条，保持与 xterm 一致。
             if amount == 0 {
@@ -128,7 +156,7 @@ pub fn encode(
             let button = if up { 64 } else { 65 };
             let mut out = Vec::new();
             for _ in 0..amount {
-                out.extend(encode_single(button, b'M', col, row, sgr)?);
+                out.extend(encode_single(button + bits, b'M', col, row, sgr)?);
             }
             return Some(out);
         }
@@ -379,5 +407,69 @@ mod tests {
             true
         )
         .is_some());
+    }
+
+    /// 修饰键按 xterm 的 4 / 8 / 16 位加在事件码上：Shift+Ctrl 左键 = 20。
+    #[test]
+    fn modifiers_add_the_xterm_bits() {
+        assert_eq!(MouseModifiers::default().bits(), 0);
+        assert_eq!(
+            MouseModifiers {
+                shift: true,
+                alt: false,
+                control: true,
+            }
+            .bits(),
+            20
+        );
+        assert_eq!(
+            encode_with_modifiers(
+                MouseEventKind::Press(Button::Left),
+                2,
+                3,
+                MouseMode::Normal,
+                true,
+                MouseModifiers {
+                    shift: true,
+                    alt: false,
+                    control: true,
+                },
+            )
+            .unwrap(),
+            b"\x1b[<20;3;4M".to_vec()
+        );
+        // 拖动 = 32 + 键号 + 修饰位；无按键移动 = 32 + 3 + 修饰位。
+        assert_eq!(
+            encode_with_modifiers(
+                MouseEventKind::Drag(Button::Left),
+                0,
+                0,
+                MouseMode::Button,
+                true,
+                MouseModifiers {
+                    shift: false,
+                    alt: true,
+                    control: false,
+                },
+            )
+            .unwrap(),
+            b"\x1b[<40;1;1M".to_vec()
+        );
+        assert_eq!(
+            encode_with_modifiers(
+                MouseEventKind::Move,
+                0,
+                0,
+                MouseMode::Any,
+                true,
+                MouseModifiers {
+                    shift: false,
+                    alt: true,
+                    control: false,
+                },
+            )
+            .unwrap(),
+            b"\x1b[<43;1;1M".to_vec()
+        );
     }
 }
