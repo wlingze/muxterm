@@ -607,93 +607,106 @@ fn paint_text(
 
     for row in rows {
         let row_top = bounds.origin.y + px(row.row as f32 * cell_height);
-        for run in &row.runs {
-            if run.text.is_empty() {
-                continue;
-            }
-            // 先画制表符 / 方块：它们不用字体字形，按格子几何对齐。
-            paint_box_glyphs(bounds, row, run, cell_width, cell_height, window);
-            let mut font = gpui::font(family.clone());
-            if run.style.bold {
-                font.weight = FontWeight::BOLD;
-            }
-            if run.style.italic {
-                font.style = FontStyle::Italic;
-            }
-            let color = Hsla::from(run.fg);
-            let shaped = text_system.shape_line(
-                run.text.clone().into(),
-                size,
-                &[TextRun {
-                    len: run.text.len(),
-                    font,
-                    color,
-                    background_color: None,
-                    underline: None,
-                    strikethrough: None,
-                }],
-                None,
-            );
+        // 参照 gpui 自己的 LineLayout::paint：整行共用 paint layer，避免每个
+        // 字形都独立插入 BoundsTree（真机采样热点：Bounds::intersects）。
+        let row_bounds = gpui::Bounds::new(
+            gpui::point(bounds.origin.x, row_top),
+            gpui::size(bounds.size.width, cell),
+        );
+        window.paint_layer(row_bounds, |window| {
+            for run in &row.runs {
+                if run.text.is_empty() {
+                    continue;
+                }
+                // 先画制表符 / 方块：它们不用字体字形，按格子几何对齐。
+                paint_box_glyphs(bounds, row, run, cell_width, cell_height, window);
+                let mut font = gpui::font(family.clone());
+                if run.style.bold {
+                    font.weight = FontWeight::BOLD;
+                }
+                if run.style.italic {
+                    font.style = FontStyle::Italic;
+                }
+                let color = Hsla::from(run.fg);
+                let shaped = text_system.shape_line(
+                    run.text.clone().into(),
+                    size,
+                    &[TextRun {
+                        len: run.text.len(),
+                        font,
+                        color,
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    }],
+                    None,
+                );
 
-            let char_starts: Vec<usize> = run.text.char_indices().map(|(index, _)| index).collect();
-            let chars: Vec<char> = run.text.chars().collect();
-            let mut char_index = 0usize;
-            for shaped_run in &shaped.runs {
-                for glyph in &shaped_run.glyphs {
-                    while char_index + 1 < char_starts.len()
-                        && char_starts[char_index + 1] <= glyph.index
-                    {
-                        char_index += 1;
-                    }
-                    let Some(column) = run.cols.get(char_index) else {
-                        continue;
-                    };
-                    // 制表 / 方块字符已由 `paint_box_glyphs` 画完，字体字形会
-                    // 多画一层（错位、断线、方块锯齿都来自这里）。
-                    if chars
-                        .get(char_index)
-                        .is_some_and(|ch| crate::frontend::gpui::model::box_drawing::is_custom(*ch))
-                    {
-                        continue;
-                    }
-                    let origin = point(
-                        bounds.origin.x + px(*column as f32 * cell_width),
-                        row_top + baseline,
-                    );
-                    if glyph.is_emoji {
-                        let _ = window.paint_emoji(origin, shaped_run.font_id, glyph.id, size);
-                    } else {
-                        let _ =
-                            window.paint_glyph(origin, shaped_run.font_id, glyph.id, size, color);
+                let char_starts: Vec<usize> =
+                    run.text.char_indices().map(|(index, _)| index).collect();
+                let chars: Vec<char> = run.text.chars().collect();
+                let mut char_index = 0usize;
+                for shaped_run in &shaped.runs {
+                    for glyph in &shaped_run.glyphs {
+                        while char_index + 1 < char_starts.len()
+                            && char_starts[char_index + 1] <= glyph.index
+                        {
+                            char_index += 1;
+                        }
+                        let Some(column) = run.cols.get(char_index) else {
+                            continue;
+                        };
+                        // 制表 / 方块字符已由 `paint_box_glyphs` 画完，字体字形会
+                        // 多画一层（错位、断线、方块锯齿都来自这里）。
+                        if chars.get(char_index).is_some_and(|ch| {
+                            crate::frontend::gpui::model::box_drawing::is_custom(*ch)
+                        }) {
+                            continue;
+                        }
+                        let origin = point(
+                            bounds.origin.x + px(*column as f32 * cell_width),
+                            row_top + baseline,
+                        );
+                        if glyph.is_emoji {
+                            let _ = window.paint_emoji(origin, shaped_run.font_id, glyph.id, size);
+                        } else {
+                            let _ = window.paint_glyph(
+                                origin,
+                                shaped_run.font_id,
+                                glyph.id,
+                                size,
+                                color,
+                            );
+                        }
                     }
                 }
-            }
 
-            let left = bounds.origin.x + px(run.start as f32 * cell_width);
-            let width = px((run.end - run.start) as f32 * cell_width);
-            let (underline_y, strike_y) = decoration_offsets(baseline, ascent, descent);
-            if run.style.underline {
-                window.paint_underline(
-                    point(left, row_top + underline_y),
-                    width,
-                    &UnderlineStyle {
-                        thickness: px(1.0),
-                        color: Some(color),
-                        wavy: false,
-                    },
-                );
+                let left = bounds.origin.x + px(run.start as f32 * cell_width);
+                let width = px((run.end - run.start) as f32 * cell_width);
+                let (underline_y, strike_y) = decoration_offsets(baseline, ascent, descent);
+                if run.style.underline {
+                    window.paint_underline(
+                        point(left, row_top + underline_y),
+                        width,
+                        &UnderlineStyle {
+                            thickness: px(1.0),
+                            color: Some(color),
+                            wavy: false,
+                        },
+                    );
+                }
+                if run.style.strike {
+                    window.paint_strikethrough(
+                        point(left, row_top + strike_y),
+                        width,
+                        &StrikethroughStyle {
+                            thickness: px(1.0),
+                            color: Some(color),
+                        },
+                    );
+                }
             }
-            if run.style.strike {
-                window.paint_strikethrough(
-                    point(left, row_top + strike_y),
-                    width,
-                    &StrikethroughStyle {
-                        thickness: px(1.0),
-                        color: Some(color),
-                    },
-                );
-            }
-        }
+        });
     }
 }
 

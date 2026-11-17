@@ -1092,10 +1092,36 @@ impl GpuiApp {
                         | ClientEventKind::Other(_) => {}
                     }
                 }
-                dirty = true;
+                // 只有画得出来的 pane 才请求重绘。后台 workspace / 隐藏 tab 的
+                // 常驻 Surface 照常吃字节（切过去就是最新画面），但每一条输出都
+                // 把整窗标脏会让 CPU 长期接近一核（`SURFACE.md`：Scene 常驻，
+                // 不可见的 pane 不参与绘制）。
+                dirty |= self.pane_is_visible(&workspace, pane_id);
             }
         }
         dirty
+    }
+
+    /// 这个 pane 现在是否可见。拓扑/布局还没到的首帧先保留刷新，不能漏掉
+    /// 本地 shell 抢在快照之前的输出；已知是后台 tab 的则不刷新。
+    fn pane_is_visible(&self, workspace: &str, pane_id: u32) -> bool {
+        if self.visible.as_deref() != Some(workspace) {
+            return false;
+        }
+        if let Some(layout) = self.layout() {
+            return crate::frontend::gpui::model::pane_navigation::layout_leaf_ids(&layout)
+                .contains(&pane_id);
+        }
+        let Some(view) = self.store.workspace(workspace) else {
+            return false;
+        };
+        let Some(active_tab) = view.active_tab_id() else {
+            return true;
+        };
+        view.panes_for_tab(active_tab)
+            .iter()
+            .any(|pane| pane.id == pane_id)
+            || !view.panes.values().flatten().any(|pane| pane.id == pane_id)
     }
 
     fn focus_default_pane(&mut self) {

@@ -344,6 +344,29 @@ tab 栏宽度策略来自 Core 配置 `[ui] tab_bar_style`（`equal_width` 缺�
 `distribution = .fillEqually` + trailing constraint。tab 的颜色跟着活动状态走
 （working / blocked / done 用状态色，idle 用 muted），不只在活动 tab 上画。
 
+### 5.7 绘制开销与后台输出
+
+2026-11-17 用户报障 CPU 持续约 100%。只读采样实际 app（PID 31493，
+15:14:40 +08:00，3 秒/10ms）显示主线程热点为 `paint_text` 经
+`paint_glyph → Scene::insert_primitive → BoundsTree::find_max_ordering`。
+字形不是排版错了，而是每个字形单独插入绘制顺序树，反复计算重叠边界。
+
+- 字形按**一行一个 `paint_layer`**提交，不改列坐标、字体或格子尺寸。
+  与本机 gpui 0.2.2 的 `text_system/line.rs::paint_line` 用法一致。
+- `drain_render_events` 始终更新每个常驻 Surface，但只有当前 workspace / tab
+  的可见 pane 输出才使终端变脏；后台仍保留最新画面，切过去无需重灌。
+- 布局尚未到达的首屏输出仍触发刷新，不能回退为「启动时漏输出」。
+
+回归：`background_workspace_output_does_not_dirty_the_terminal`、
+`background_tab_output_does_not_dirty_the_terminal`、`idle_pump_is_not_dirty`、
+`early_pane_output_reaches_the_surface`。无头回归不能代替新 app 的 CPU 实测；
+不为验证而自动启动/激活用户机器上的窗口。
+
+在线核对（2026-11-17T15:19:41+08:00）：Zed 官方
+[`gpui/text_system/line.rs`](https://github.com/zed-industries/zed/blob/main/crates/gpui/src/text_system/line.rs)
+与 [`gpui/scene.rs`](https://github.com/zed-industries/zed/blob/main/crates/gpui/src/scene.rs)
+确认按层批量提交的意图；具体 API 签名以本地锁定的 0.2.2 源码为准。
+
 ## 6. 数据流与线程
 
 ```text
