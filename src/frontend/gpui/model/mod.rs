@@ -34,6 +34,7 @@ pub mod scroll;
 pub mod search;
 pub mod selection;
 pub mod settings;
+pub mod shortcut_editor;
 pub mod shortcuts;
 pub mod sidebar;
 pub mod sidebar_layout;

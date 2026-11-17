@@ -28,7 +28,18 @@ pub fn run(socket: Option<String>, session: Option<String>) -> anyhow::Result<()
     let commands = CommandQueue::default();
 
     Application::new().run(move |cx: &mut App| {
-        cx.on_window_closed(|cx| cx.quit()).detach();
+        cx.on_window_closed(|cx| {
+            if cx.windows().is_empty() {
+                cx.quit();
+            }
+        })
+        .detach();
+        cx.on_app_quit(|_| {
+            #[cfg(target_os = "macos")]
+            crate::frontend::gpui::platform::macos_keys::uninstall();
+            async {}
+        })
+        .detach();
         let bounds = Bounds::centered(None, size(px(1_280.0), px(800.0)), cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -41,6 +52,10 @@ pub fn run(socket: Option<String>, session: Option<String>) -> anyhow::Result<()
             ..Default::default()
         };
         cx.open_window(options, |window, cx| {
+            window.on_window_should_close(cx, |_, cx| {
+                cx.quit();
+                true
+            });
             let view = cx.new(|cx| GpuiApp::new(pump, store, commands, connect_socket.clone(), cx));
             let handle = view.read(cx).focus_handle();
             window.focus(&handle);
@@ -169,7 +184,9 @@ impl Render for GpuiApp {
                             .children(self.render_panel(cx))
                             .children(self.render_composer(cx))
                             .children(self.render_settings(window, cx))
-                            .children(self.render_target_editor(cx))
+                            .when(!self.settings_project_editor, |element| {
+                                element.children(self.render_target_editor(cx))
+                            })
                             .children(self.render_palette(cx))
                             .children(self.render_info(cx))
                             .children(self.render_prompt(cx))

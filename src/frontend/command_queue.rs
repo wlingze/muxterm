@@ -40,6 +40,10 @@ pub enum ClientCommand {
         path: String,
         value: serde_json::Value,
     },
+    /// 设置整份草稿原子提交；失败时 Core 回滚全部字段。
+    ConfigApplyTransaction {
+        patches: Vec<crate::frontend::utils::corebridge::ClientJsonPatchOperation>,
+    },
     /// Catalog Candidate 身份完整回传（Herdr session/socket/workspace_id 不丢失）。
     OpenCandidate {
         request: crate::frontend::utils::corebridge::ClientOpenRequest,
@@ -181,6 +185,13 @@ fn dispatch(client: &FfiClient, command: ClientCommand) -> i32 {
                 Err(_) => -1,
             }
         }
+        ClientCommand::ConfigApplyTransaction { patches } => match client.config_apply(&patches) {
+            Ok(_) => 0,
+            Err(error) => {
+                tracing::error!("settings transaction rejected: {error}");
+                -1
+            }
+        },
         ClientCommand::OpenCandidate { request } => client.start_open(&request).map_or(-1, |_| 0),
         ClientCommand::OpenTarget { target, intent } => {
             match client.start_open_target(&target, intent) {

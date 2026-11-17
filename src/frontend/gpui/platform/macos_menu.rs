@@ -19,21 +19,33 @@ use objc::{class, msg_send, sel, sel_impl};
 use crate::frontend::gpui::model::menu::{
     localized_menu_with, Menu, MenuEntry, MenuKey, MenuState,
 };
-use crate::frontend::gpui::model::shortcuts::KeyAction;
+use crate::frontend::gpui::model::shortcuts::{KeyAction, ShortcutCommand};
 
 /// 动作表：菜单项的 `tag` 是这里的下标。
 static ACTIONS: OnceLock<Mutex<Vec<KeyAction>>> = OnceLock::new();
 /// 主菜单是否已经装到 `NSApp`：没有装时（无头测试）刷新是纯空操作。
 static INSTALLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// 点击回调 → gpui 的桥。只有一个窗口时也够用。
-static SENDER: OnceLock<Mutex<Option<UnboundedSender<KeyAction>>>> = OnceLock::new();
+static SENDER: OnceLock<Mutex<Option<UnboundedSender<ShortcutCommand>>>> = OnceLock::new();
 
 fn actions() -> &'static Mutex<Vec<KeyAction>> {
     ACTIONS.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-fn sender() -> &'static Mutex<Option<UnboundedSender<KeyAction>>> {
+fn sender() -> &'static Mutex<Option<UnboundedSender<ShortcutCommand>>> {
     SENDER.get_or_init(|| Mutex::new(None))
+}
+
+pub fn send_command(command: ShortcutCommand) -> bool {
+    sender()
+        .lock()
+        .ok()
+        .and_then(|sender| {
+            sender
+                .as_ref()
+                .map(|sender| sender.unbounded_send(command).is_ok())
+        })
+        .unwrap_or(false)
 }
 
 /// NSEventModifierFlags 的位值（AppKit 头文件里的常量）。
@@ -70,11 +82,7 @@ extern "C" fn menu_action(_this: &Object, _: Sel, sender_item: *mut Object) {
         .ok()
         .and_then(|actions| actions.get(tag.max(0) as usize).copied());
     if let Some(action) = action {
-        if let Ok(guard) = sender().lock() {
-            if let Some(sender) = guard.as_ref() {
-                let _ = sender.unbounded_send(action);
-            }
-        }
+        send_command(ShortcutCommand::Action(action));
     }
 }
 
@@ -170,7 +178,7 @@ fn build_submenu(spec: &Menu, target: *mut Object, actions: &mut Vec<KeyAction>)
 }
 
 /// 安装主菜单。返回菜单动作的接收端；没有 AppKit 时返回 `None`。
-pub fn install_menu() -> Option<UnboundedReceiver<KeyAction>> {
+pub fn install_menu() -> Option<UnboundedReceiver<ShortcutCommand>> {
     install_menu_with_state(MenuState::default())
 }
 
@@ -178,7 +186,7 @@ pub fn install_menu() -> Option<UnboundedReceiver<KeyAction>> {
 ///
 /// 只建一次：之后用 [`refresh_menu`] 原地改 item 的 state / enabled，
 /// 不重建 NSMenu（重建会把 `watch_menu` 的 channel 换掉，菜单点击就断了）。
-pub fn install_menu_with_state(state: MenuState) -> Option<UnboundedReceiver<KeyAction>> {
+pub fn install_menu_with_state(state: MenuState) -> Option<UnboundedReceiver<ShortcutCommand>> {
     let (tx, rx) = unbounded();
     if let Ok(mut guard) = sender().lock() {
         *guard = Some(tx);
@@ -246,8 +254,9 @@ pub fn refresh_menu(state: MenuState) -> bool {
     }
     let table_len = actions().lock().map(|table| table.len()).unwrap_or(0);
     if flat.len() != table_len {
-        // 结构变了（代码升级），重建一次菜单最稳。
-        return install_menu_with_state(state).is_some();
+        // 不允许重建并丢掉 receiver：保留已连接菜单，报告结构错误。
+        tracing::error!("native menu structure changed without an action receiver");
+        return false;
     }
 
     unsafe {
@@ -286,6 +295,88 @@ pub fn refresh_menu(state: MenuState) -> bool {
         }
     }
     true
+}
+
+/// 快捷键显示与派发共享 ShortcutMap；输入源改变只更新 key equivalent，不重建菜单。
+pub fn refresh_shortcut_keys(
+    map: &crate::frontend::gpui::model::shortcut_editor::ShortcutMap,
+    qwerty: bool,
+) {
+    if !INSTALLED.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    static LAST_MAP: Mutex<
+        Option<(
+            crate::frontend::gpui::model::shortcut_editor::ShortcutMap,
+            bool,
+        )>,
+    > = Mutex::new(None);
+    if let Ok(mut last) = LAST_MAP.lock() {
+        if last
+            .as_ref()
+            .is_some_and(|(last_map, last_layout)| last_map == map && *last_layout == qwerty)
+        {
+            return;
+        }
+        *last = Some((map.clone(), qwerty));
+    }
+    let table = actions()
+        .lock()
+        .map(|table| table.clone())
+        .unwrap_or_default();
+    let keys: Vec<_> = table
+        .iter()
+        .map(|action| map.default_chord(*action))
+        .collect();
+    unsafe {
+        let app: *mut Object = msg_send![class!(NSApplication), sharedApplication];
+        let main: *mut Object = msg_send![app, mainMenu];
+        let count: isize = msg_send![main, numberOfItems];
+        for menu_index in 0..count {
+            let top: *mut Object = msg_send![main, itemAtIndex: menu_index];
+            let submenu: *mut Object = msg_send![top, submenu];
+            if submenu.is_null() {
+                continue;
+            }
+            let count: isize = msg_send![submenu, numberOfItems];
+            for index in 0..count {
+                let item: *mut Object = msg_send![submenu, itemAtIndex: index];
+                let separator: bool = msg_send![item, isSeparatorItem];
+                if separator {
+                    continue;
+                }
+                let tag: isize = msg_send![item, tag];
+                let Some(key) = keys.get(tag as usize) else {
+                    continue;
+                };
+                let (equivalent, flags) = if let Some(key) = key {
+                    let value = if qwerty {
+                        crate::frontend::gpui::model::physical_key::to_qwerty(&key.key)
+                    } else {
+                        key.key.clone()
+                    };
+                    let spec = MenuKey {
+                        key: value,
+                        command: key.command,
+                        shift: key.shift,
+                        option: key.option,
+                        control: key.control,
+                    };
+                    (
+                        key_equivalent(&spec).unwrap_or_default(),
+                        (if key.command { MOD_COMMAND } else { 0 })
+                            | (if key.shift { MOD_SHIFT } else { 0 })
+                            | (if key.option { MOD_OPTION } else { 0 })
+                            | (if key.control { MOD_CONTROL } else { 0 }),
+                    )
+                } else {
+                    (String::new(), 0)
+                };
+                let _: () = msg_send![item, setKeyEquivalent: ns_string(&equivalent)];
+                let _: () = msg_send![item, setKeyEquivalentModifierMask: flags];
+            }
+        }
+    }
 }
 
 #[cfg(test)]

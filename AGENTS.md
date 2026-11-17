@@ -99,6 +99,16 @@ gpui 的行为回接到 Swift。新功能优先在 gpui 落地。
 - [ ] 改了 gpui 前端就重建 `./build/macos/MuxtermGpui.app`（`scripts/build-gpui-macos.sh`）并通过
       `codesign --verify --deep --strict`：用户每次都用这个 `.app` 试用，产物必须是当前 HEAD 的代码
 
+## 真机 GUI 测试纪律（MUST，违反=干扰用户使用电脑）
+
+- **默认 `cargo test` 不得打开真实窗口**。开窗测试必须用环境变量显式开启
+  （例：`MUXTERM_NATIVE_UI_TESTS=1`），未开启时打印 skip 并直接返回。
+- 测试代码里**禁止调用 `cx.activate(true)` / `NSApp activateIgnoringOtherApps`**：
+  会把用户正在用的应用切走，表现为整台机器“卡住”。
+- 禁止在测试里循环 `screencapture` 或循环 `window.refresh()`；只允许一次性呈现 + 截图。
+- 截图只截本进程的窗口（`screencapture -o -l <windowNumber>`），绝不整屏截图。
+- 后台/长时间运行的 GUI 验证前先问用户；跑完立刻退出进程，不留窗口。
+
 ## Time verification (MUST)
 
 Before making any decision, first verify the current real time on the machine.

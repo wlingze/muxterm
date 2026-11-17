@@ -358,6 +358,7 @@ impl GpuiApp {
         &mut self,
         snapshot: &crate::frontend::utils::corebridge::ClientConfigSnapshot,
     ) {
+        self.apply_shortcut_values(&snapshot.values);
         self.theme = super::theme_from_snapshot(snapshot);
         self.configured_font_size = self.theme.font_size;
         self.cell = (self.theme.cell_width(), self.theme.cell_height());

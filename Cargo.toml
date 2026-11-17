@@ -419,6 +419,18 @@ name = "sendkeys_regression"
 path = "tests/sendkeys_regression.rs"
 
 [[test]]
+name = "gpui_settings_native"
+path = "tests/gpui_settings_native.rs"
+harness = false
+required-features = ["gpui"]
+
+[[test]]
+name = "gpui_native_shortcuts"
+path = "tests/gpui_native_shortcuts.rs"
+harness = false
+required-features = ["gpui"]
+
+[[test]]
 name = "gpui_harness_smoke"
 path = "tests/gpui_harness_smoke.rs"
 required-features = ["gpui"]
