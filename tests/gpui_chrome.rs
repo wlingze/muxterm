@@ -1203,6 +1203,82 @@ fn panel_numbers_match_the_sidebar(cx: &mut TestAppContext) {
     }
 }
 
+/// 面板在小窗口里必须缩到正文范围内：底部操作条和搜索框都不能被挤出去。
+/// 对照 macOS `UnifiedPanelController` 里 640×420 的固定尺寸 + 屏幕内夹取。
+#[gpui::test]
+fn quick_panel_size_fits_the_content_area(cx: &mut TestAppContext) {
+    use muxterm::frontend::gpui::chrome::panel;
+    assert_eq!(panel::fitted_panel_size(960.0, 750.0), (640.0, 420.0));
+    let (width, height) = panel::fitted_panel_size(420.0, 360.0);
+    assert!(width < 420.0, "窄窗口里面板不能撑出正文：{width}");
+    assert!(height < 360.0, "矮窗口里面板不能撑出正文：{height}");
+    let _ = cx;
+}
+
+/// 面板列表的第一行必须贴在列表顶端：以前测试截图里 `Shells` 被画丢，
+/// 用户打开 Cmd-P 第一行就少了。这里按几何锁定：行与行连续，行 0 在列表顶部。
+#[gpui::test]
+fn quick_panel_first_row_sits_at_the_list_top(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.simulate_keystrokes("cmd-p");
+    cx.run_until_parked();
+    let titles: Vec<_> = cx
+        .update(|_, cx| view.update(cx, |app, _| app.panel_rows()))
+        .iter()
+        .map(|row| row.title())
+        .collect();
+    assert_eq!(titles.first().map(String::as_str), Some("Shells"));
+    let list = cx.debug_bounds("panel-list").expect("panel list");
+    let first = cx.debug_bounds("panel-row-0").expect("first row");
+    assert_eq!(first.top(), list.top(), "第一行必须从列表顶部开始");
+    let second = cx.debug_bounds("panel-row-1").expect("second row");
+    assert_eq!(second.top(), first.bottom(), "行与行之间不能有缝或重叠");
+}
+
+/// 面板每次打开都从顶部开始：滚动偏移必须被显式清零。
+/// `scroll_to_top_of_item(0)` 会拿上一帧的 child_bounds 反推偏移，面板尺寸一变
+/// （搜索框加高）就会整行错位 —— 实测第一行 Shells 被顶出可视区。
+#[gpui::test]
+fn quick_panel_opens_scrolled_to_the_top(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.simulate_keystrokes("cmd-p");
+    cx.run_until_parked();
+    let offset = cx.update(|_, cx| view.update(cx, |app, _| app.panel_scroll_handle().offset()));
+    assert_eq!(offset.y, gpui::px(0.), "面板必须从第一行开始");
+}
+
+/// 面板打开后必须同时画出搜索框、逐行和底部键盘提示：
+/// 用户报障「面板看不出怎么操作」，所以提示条是回归项。
+#[gpui::test]
+fn quick_panel_renders_its_footer_hints(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.simulate_keystrokes("cmd-p");
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("panel-footer").is_some(),
+        "面板底部要有 ↑↓ / ⏎ / ⌘K / Esc 提示"
+    );
+}
+
+/// 查不到东西时要给出「无结果」而不是一片空白。
+#[gpui::test]
+fn quick_panel_reports_an_empty_search(cx: &mut TestAppContext) {
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    cx.simulate_keystrokes("cmd-p");
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.panel_push_query("zz-no-such-workspace", cx)
+        })
+    });
+    cx.run_until_parked();
+    let rows = cx.update(|_, cx| view.update(cx, |app, _| app.panel_rows()));
+    assert!(rows.is_empty(), "不该有匹配行：{rows:?}");
+    assert!(
+        cx.debug_bounds("panel-empty").is_some(),
+        "空结果要有占位说明"
+    );
+}
+
 /// Esc 关设置。以前浮层没有按键分支：Esc 既关不掉，还会漏进终端。
 #[gpui::test]
 fn escape_closes_the_settings_overlay(cx: &mut TestAppContext) {

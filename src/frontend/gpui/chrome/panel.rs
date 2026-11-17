@@ -1,10 +1,12 @@
 //! Swift UnifiedPanel 的 640×420 快速面板：真实列表滚动 + Open 分步导航 + 右下角 Cmd-K。
+use crate::frontend::gpui::chrome::icons::{self, Icon, IconSpec};
 use crate::frontend::gpui::chrome::panel_view::{AggregateKind, PanelRow, PickerAction};
 use crate::frontend::gpui::model::panel::PanelTab;
 use crate::frontend::gpui::model::target::TargetRuntime;
 use crate::frontend::gpui::model::workspace_picker::PickerStage;
 use crate::frontend::gpui::state::GpuiApp;
 use crate::frontend::gpui::theme::Theme;
+use crate::frontend::utils::i18n::{tr, TextKey};
 use gpui::{div, prelude::*, px, AnyElement, MouseButton, SharedString};
 
 pub const PANEL_OPEN_LABEL: &str = "+ Open";
@@ -17,6 +19,23 @@ impl GpuiApp {
             return None;
         }
         let theme = self.theme().clone();
+        let sidebar = if self.sidebar_visible() {
+            crate::frontend::gpui::model::sidebar_layout::clamp_sidebar_width(
+                self.sidebar_width,
+                self.window_width,
+                320.0,
+            )
+        } else {
+            0.0
+        };
+        let (panel_width, panel_height) = fitted_panel_size(
+            self.window_width - sidebar,
+            self.window_height - crate::frontend::gpui::chrome::status_bar::STATUS_BAR_HEIGHT,
+        );
+        let action_key = crate::frontend::gpui::model::shortcut_editor::label(
+            &crate::frontend::gpui::model::shortcuts::KeyChord::command("k"),
+            self.qwerty_labels,
+        );
         let query = if let Some(menu) = self.panel_actions() {
             menu.query.clone()
         } else {
@@ -29,15 +48,17 @@ impl GpuiApp {
                 let selected = tab == self.panel_tab();
                 div()
                     .id(SharedString::from(format!("panel-tab-{tab:?}")))
-                    .px(px(6.))
-                    .py(px(2.))
-                    .rounded(px(4.))
-                    .cursor_pointer()
-                    .bg(if selected {
-                        theme.active_bg
+                    .px(px(10.))
+                    .py(px(5.))
+                    .rounded(px(6.))
+                    .text_size(px(12.0))
+                    .font_weight(if selected {
+                        gpui::FontWeight::SEMIBOLD
                     } else {
-                        theme.chrome_bg
+                        gpui::FontWeight::NORMAL
                     })
+                    .cursor_pointer()
+                    .bg(if selected { theme.bg } else { theme.chrome_bg })
                     .text_color(if selected { theme.label() } else { theme.muted })
                     .on_mouse_down(
                         MouseButton::Left,
@@ -56,9 +77,32 @@ impl GpuiApp {
         if rows.is_empty() {
             rows.push(
                 div()
-                    .p_3()
+                    .id("panel-empty")
+                    .debug_selector(|| "panel-empty".into())
+                    .flex_1()
+                    .py(px(38.0))
+                    .px(px(20.0))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap(px(8.0))
                     .text_color(theme.muted)
-                    .child("No results")
+                    .child(icons::icon_element(
+                        IconSpec::with_size(Icon::Search, theme.muted, 24.0),
+                        28.0,
+                    ))
+                    .child(
+                        div()
+                            .text_size(px(13.0))
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(theme.label())
+                            .child(tr(TextKey::PanelNoResults)),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.5))
+                            .child(tr(TextKey::PanelNoResultsHint)),
+                    )
                     .into_any_element(),
             );
         }
@@ -124,14 +168,18 @@ impl GpuiApp {
             .items_center()
             .gap(px(8.))
             .flex_none()
-            .h(px(28.))
+            .h(px(36.))
             .mx(px(14.))
-            .px(px(8.))
-            .rounded(px(6.))
+            .mb(px(8.))
+            .px(px(10.))
+            .rounded(px(7.))
             .border_1()
             .border_color(theme.border)
-            .bg(theme.active_bg)
-            .child(div().text_color(theme.muted).child("⌕"))
+            .bg(theme.bg)
+            .child(icons::icon_element(
+                IconSpec::with_size(Icon::Search, theme.muted, 16.0),
+                18.0,
+            ))
             // 查询框：选区高亮 + 可见光标（`Cmd-A` 能看见结果）。
             .child(crate::frontend::gpui::chrome::input_line::input_line(
                 &self.panel.model.input,
@@ -221,8 +269,8 @@ impl GpuiApp {
                         .flex()
                         .flex_col()
                         .gap(px(8.))
-                        .w(px(PANEL_WIDTH))
-                        .h(px(PANEL_HEIGHT))
+                        .w(px(panel_width))
+                        .h(px(panel_height))
                         .rounded(px(8.))
                         .border_1()
                         .border_color(theme.border)
@@ -236,11 +284,10 @@ impl GpuiApp {
                             div()
                                 .flex()
                                 .flex_none()
-                                .h(px(28.))
+                                .h(px(48.))
                                 .items_center()
                                 .justify_between()
                                 .px(px(14.))
-                                .pt(px(6.))
                                 .child(div().flex().children(tabs))
                                 .child(
                                     div()
@@ -256,10 +303,22 @@ impl GpuiApp {
                                                 app.toggle_panel_actions(cx)
                                             }),
                                         )
-                                        .child("⌘K"),
+                                        .child(SharedString::from(action_key.clone())),
                                 ),
                         )
                         .child(search)
+                        .when_some(self.panel.picker.error.clone(), |element, error| {
+                            element.child(
+                                div()
+                                    .id("panel-error")
+                                    .debug_selector(|| "panel-error".into())
+                                    .px(px(14.0))
+                                    .pb(px(6.0))
+                                    .text_size(px(11.5))
+                                    .text_color(theme.danger)
+                                    .child(error),
+                            )
+                        })
                         .children(runtime_controls)
                         .child(
                             div()
@@ -284,6 +343,40 @@ impl GpuiApp {
                                     .child("Working…"),
                             )
                         })
+                        .child(
+                            div()
+                                .id("panel-footer")
+                                .debug_selector(|| "panel-footer".into())
+                                .h(px(32.0))
+                                .flex_none()
+                                .px(px(14.0))
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .border_t_1()
+                                .border_color(theme.border)
+                                .text_size(px(10.5))
+                                .text_color(theme.muted)
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(6.0))
+                                        .child(keycap("↑ ↓", &theme))
+                                        .child(tr(TextKey::PanelNavigate))
+                                        .child(keycap("↩", &theme))
+                                        .child(tr(TextKey::PanelOpen)),
+                                )
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(6.0))
+                                        .child(tr(TextKey::PanelActions))
+                                        .child(keycap(&action_key, &theme))
+                                        .child(keycap("Esc", &theme)),
+                                ),
+                        )
                         .children(action_menu),
                 )
                 .into_any_element(),
@@ -351,7 +444,10 @@ fn render_row(
         _ => None,
     };
     let row_background = if selected {
-        theme.active_bg
+        gpui::Rgba {
+            a: 0.12,
+            ..theme.accent
+        }
     } else {
         theme.chrome_bg
     };
@@ -361,9 +457,10 @@ fn render_row(
         .flex()
         .items_center()
         .flex_none()
-        .min_h(px(if detail.is_some() { 46. } else { 29. }))
+        .min_h(px(if detail.is_some() { 48. } else { 34. }))
+        .rounded(px(6.0))
         .px(px(12.))
-        .py(px(5.))
+        .py(px(6.))
         .gap(px(8.))
         .cursor_pointer()
         .bg(row_background)
@@ -426,8 +523,11 @@ fn render_row(
                             element.child(
                                 div()
                                     .text_size(px(10.))
-                                    .text_color(theme.success)
-                                    .child("● Project"),
+                                    .px(px(5.0))
+                                    .rounded(px(3.0))
+                                    .text_color(theme.muted)
+                                    .bg(theme.active_bg)
+                                    .child("Project"),
                             )
                         }),
                 )
@@ -482,7 +582,17 @@ fn render_row(
                 div()
                     .id(SharedString::from(format!("panel-close-{index}")))
                     .text_color(theme.muted)
-                    .child("×")
+                    .w(px(22.0))
+                    .h(px(22.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(4.0))
+                    .hover(|style| style.bg(theme.active_bg))
+                    .child(icons::icon_element(
+                        IconSpec::with_size(Icon::Xmark, theme.muted, 12.0),
+                        14.0,
+                    ))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |app, _, _, cx| {
@@ -505,6 +615,44 @@ fn attention_color(
         Status::Done => theme.done,
         Status::Blocked => theme.blocked,
         Status::Idle | Status::Unknown => theme.muted,
+    }
+}
+
+/// 小窗口保持 16pt 外边距，不把搜索或底部操作条挤出正文。
+pub fn fitted_panel_size(width: f32, height: f32) -> (f32, f32) {
+    (
+        PANEL_WIDTH.min((width - 32.0).max(1.0)),
+        PANEL_HEIGHT.min((height - 32.0).max(1.0)),
+    )
+}
+
+fn keycap(label: &str, theme: &Theme) -> AnyElement {
+    div()
+        .flex_none()
+        .px(px(4.0))
+        .h(px(18.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(3.0))
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.bg)
+        .text_size(px(10.0))
+        .text_color(theme.muted)
+        .child(SharedString::from(label.to_string()))
+        .into_any_element()
+}
+
+#[cfg(test)]
+mod geometry_tests {
+    use super::*;
+    #[test]
+    fn quick_panel_fits_small_content_areas() {
+        assert_eq!(fitted_panel_size(960.0, 750.0), (640.0, 420.0));
+        assert_eq!(fitted_panel_size(400.0, 370.0), (368.0, 338.0));
+        let (width, height) = fitted_panel_size(300.0, 200.0);
+        assert!(width < 300.0 && height < 200.0);
     }
 }
 
