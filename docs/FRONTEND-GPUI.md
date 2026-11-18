@@ -369,15 +369,14 @@ Zed 明确「先派发快捷键、再交给输入法」（`zed.dev/blog/keyboard
   `sidebarItem.minimumThickness/maximumThickness` 与 `setPosition(240)`）。
   `clamp_sidebar_width` 是**唯一**入口：`app.rs` 算正文 origin 用它，
   `chrome/sidebar.rs` 画侧栏也用它，两处口径不能分叉。
-- 分区：对齐 VS Code 侧边栏 —— 四段按顺序排在同一列，各自只占内容的自然高度；
-  **折叠 = 只留 26pt 段头**，下一段立刻跟上来；整栏只有 `sidebar-scroll` 一个
-  滚动区。曾经按 3:2:1 切固定高度、把 Hidden Commands 钉在整栏底部：折叠的段
-  照样占一块空白（看起来没生效），钉底的那段被窗口下沿裁掉（`HIDDEN COMMANDS`
-  被遮盖的报障截图）。
-- 拖动：`sidebar-divider` 是右侧 5pt 的热区，按下记
-  `sidebar_drag_offset`；一旦开始拖，`sidebar-drag-overlay` 铺满窗口接管
-  move/up —— gpui 的 `on_mouse_move` 只在 hitbox 被 hover 时触发，鼠标离开
-  5pt 热区就会跟丢。
+- 分区：侧栏留在窗口左侧。默认展开 Workspaces、Agents、Commands，Hidden Commands 折叠。
+  先给底部每个折叠段留一个 **26pt** 段头，再按 **Workspaces 1/2、Agents 1/4、Commands 1/4**
+  分配展开区高度（含各自段头）。展开的空列表也有这个位置；长列表只滚自己的正文，不滚走段头。
+- 折叠任意段都归到底部，不占列表高度。多段折叠时按 Workspaces → Agents → Commands → Hidden Commands
+  排列；全部折叠时空白在上、四个段头贴底。点段头重新展开会回到原顺序，沿用本窗口的分配比例。
+- 拖动两条相邻展开区之间的横线可调高度，只从相邻另一段借空间（如增大 Agents、缩小 Commands）。
+  展开区正常至少 80pt，小窗口优先保留段头；窗口变高或变矮按比例缩放。拖动右边缘可调宽度。
+  两个方向的分隔条均有 5pt 热区，按下后由全窗口接管拖动，离开热区松手即结束。
 
 tab 栏宽度策略来自 Core 配置 `[ui] tab_bar_style`（`equal_width` 缺省 /
 `fixed` / `compact`）。等宽时 tab 带自己 `flex_1` 吃掉中间所有空间、每个 tab

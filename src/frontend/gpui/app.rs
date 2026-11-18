@@ -159,6 +159,7 @@ impl Render for GpuiApp {
             .flex()
             .flex_row()
             .size_full()
+            .relative()
             .bg(theme.bg)
             .text_color(theme.fg)
             .track_focus(&self.focus_handle())
@@ -187,7 +188,6 @@ impl Render for GpuiApp {
                             // 所以 pane 之间看得到一条 chrome 色，而不是连成一片。
                             .bg(theme.chrome_bg)
                             .children(panes)
-                            .child(self.render_sidebar_drag_overlay(cx))
                             .children(self.render_pane_menu(area, cx))
                             .children(self.render_panel(window, cx))
                             .children(self.render_composer(cx))
@@ -207,5 +207,7 @@ impl Render for GpuiApp {
                     .child(bar_bottom),
             )
             .children(self.render_selection_menu(cx))
+            // 全窗口遮罩要盖过侧栏与正文；否则宽度拖动回到侧栏后收不到松手。
+            .child(self.render_sidebar_drag_overlay(cx))
     }
 }
