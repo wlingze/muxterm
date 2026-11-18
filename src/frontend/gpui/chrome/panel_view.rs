@@ -6,6 +6,7 @@
 
 use crate::frontend::gpui::model::attention::{attention_rows, AttentionRow};
 use crate::frontend::gpui::model::existing::ExistingRuntime;
+use crate::frontend::gpui::model::machine_inventory::{MachineInventory, MachinePhase};
 use crate::frontend::gpui::model::panel::{PanelModel, PanelTab, SearchScope};
 use crate::frontend::gpui::model::quick_connect::{TargetConfig, WorkspaceQuery};
 use crate::frontend::gpui::model::search::{search_rows, SearchHit, SearchSnapshot};
@@ -88,7 +89,7 @@ impl ActionMenu {
             // Swift `.search(line)` 只有 Jump。
             PanelRow::Search(_) => vec![RowAction::Jump],
             // Swift 里 .open / .back / .status 这类行没有行内动作。
-            PanelRow::Action(_) | PanelRow::Status(_) => vec![],
+            PanelRow::Action(_) | PanelRow::Heading { .. } | PanelRow::Status(_) => vec![],
         };
         let terms: Vec<_> = self
             .query
@@ -131,6 +132,11 @@ pub enum PanelRow {
         status: crate::frontend::gpui::model::attention::PaneAttentionStatus,
     },
     Search(SearchHit),
+    /// 搜索时按机器分组的标题（本机 / 一个 SSH 别名）。只做分区，不能选中。
+    Heading {
+        label: String,
+        phase: MachinePhase,
+    },
     /// 现有 runtime：选中后走 Catalog 的 attach。
     Existing {
         index: usize,
@@ -160,6 +166,7 @@ impl PanelRow {
                 PickerAction::Create => "Create Workspace".into(),
             },
             PanelRow::Target { config } => config.name.clone(),
+            PanelRow::Heading { label, .. } => label.clone(),
             PanelRow::Status(text) => text.clone(),
             PanelRow::Workspace { title, .. } => title.clone(),
             PanelRow::Attention { title, .. } => title.clone(),
@@ -184,11 +191,32 @@ impl PanelRow {
                 crate::frontend::gpui::model::quick_connect::QuickConnect::subtitle(config),
                 config.path
             )),
-            PanelRow::Action(_) | PanelRow::Status(_) => None,
+            PanelRow::Action(_) | PanelRow::Heading { .. } | PanelRow::Status(_) => None,
             PanelRow::Workspace { detail, .. } => Some(detail.clone()),
             PanelRow::Attention { detail, .. } => Some(detail.clone()),
             PanelRow::Search(_) => None,
             PanelRow::Existing { detail, .. } => Some(detail.clone()),
+        }
+    }
+
+    /// 键盘能不能停在这一行。分组标题与状态说明只读。
+    pub fn is_selectable(&self) -> bool {
+        !matches!(self, PanelRow::Heading { .. } | PanelRow::Status(_))
+    }
+
+    /// 两行是不是「同一条」。新结果到达后按它保住选中项。
+    ///
+    /// `Existing` 的 `index` 会随其他机器回包移动，`saved` 也会被 Project
+    /// 列表重算，两者都不能参与身份比较。
+    pub fn same_row(&self, other: &Self) -> bool {
+        match (self, other) {
+            (PanelRow::Existing { config: left, .. }, PanelRow::Existing { config: right, .. }) => {
+                left == right
+            }
+            (PanelRow::Heading { label: left, .. }, PanelRow::Heading { label: right, .. }) => {
+                left == right
+            }
+            (left, right) => left == right,
         }
     }
 }
@@ -220,13 +248,27 @@ impl PanelState {
     }
 
     /// 上下移动选中行，越界夹住（不环绕：macOS uniﬁed panel 同样不环绕）。
-    pub fn move_selection(&mut self, delta: i32, len: usize) {
-        if len == 0 {
+    ///
+    /// 分组标题 / 状态说明不是动作行，必须跳过；否则方向键会停在一个按
+    /// Enter 什么都没发生的行上。
+    pub fn move_selection(&mut self, delta: i32, rows: &[PanelRow]) {
+        let selectable: Vec<usize> = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.is_selectable())
+            .map(|(index, _)| index)
+            .collect();
+        let Some(last) = selectable.len().checked_sub(1) else {
             self.selected = 0;
             return;
-        }
-        let next = self.selected as i32 + delta;
-        self.selected = next.clamp(0, len as i32 - 1) as usize;
+        };
+        let current = selectable.iter().position(|index| *index == self.selected);
+        let next = match current {
+            Some(position) => (position as i32 + delta).clamp(0, last as i32) as usize,
+            None if delta < 0 => last,
+            None => 0,
+        };
+        self.selected = selectable[next];
     }
 
     /// 查询串编辑：可打印字符进 query，任何编辑都把选中打回第一行。
@@ -253,7 +295,7 @@ impl PanelState {
     fn workspace_rows(
         &self,
         workspaces: &[SidebarItem],
-        existing: &[ExistingRuntime],
+        inventory: &MachineInventory,
     ) -> Vec<PanelRow> {
         use crate::frontend::gpui::model::workspace_picker::same_target;
         use PickerAction as Action;
@@ -291,53 +333,57 @@ impl PanelState {
                     PanelRow::Workspace { shortcut, .. } => shortcut.unwrap_or(usize::MAX),
                     _ => usize::MAX,
                 });
-                rows.extend(live);
                 let mut project_rows: Vec<_> = projects
                     .iter()
                     .cloned()
                     .map(|config| PanelRow::Target { config })
                     .collect();
                 self.sort_by_usage(&mut project_rows);
-                rows.extend(project_rows);
-                let mut discovered: Vec<_> = annotate(existing_rows(existing, ""))
-                    .into_iter()
-                    .filter(|row| {
-                        let PanelRow::Existing { config, .. } = row else {
-                            return true;
-                        };
-                        !projects.iter().any(|project| same_target(project, config))
-                    })
-                    .collect();
-                self.sort_by_usage(&mut discovered);
-                rows.extend(discovered);
-                // 开启搜索后，各来源共用 WorkspaceQuery；空串保持截图中的分区顺序。
+
+                // 空查询：保持截图里的分区顺序，不插机器标题。
                 if query.trim().is_empty() {
-                    rows
-                } else {
-                    let parsed = WorkspaceQuery::new(query);
-                    let mut scored: Vec<_> =
-                        rows.into_iter()
-                            .enumerate()
-                            .filter_map(|(order, row)| {
-                                let score = match &row {
-                                    PanelRow::Target { config }
-                                    | PanelRow::Existing { config, .. } => parsed.score(config),
-                                    PanelRow::Workspace { workspace_id, .. } => workspaces
-                                        .iter()
-                                        .find(|item| &item.workspace_id == workspace_id)
-                                        .and_then(|item| parsed.score(&config_for(item))),
-                                    _ => row
-                                        .title()
-                                        .to_lowercase()
-                                        .contains(&query.trim().to_lowercase())
-                                        .then_some(10_000),
-                                }?;
-                                Some((score, order, row))
-                            })
-                            .collect();
-                    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-                    scored.into_iter().map(|(_, _, row)| row).collect()
+                    rows.extend(live);
+                    rows.extend(project_rows);
+                    let mut discovered: Vec<_> = annotate(existing_rows(&inventory.rows(), ""))
+                        .into_iter()
+                        .filter(|row| {
+                            let PanelRow::Existing { config, .. } = row else {
+                                return true;
+                            };
+                            !projects.iter().any(|project| same_target(project, config))
+                        })
+                        .collect();
+                    self.sort_by_usage(&mut discovered);
+                    rows.extend(discovered);
+                    return rows;
                 }
+
+                // 搜索：非机器行照旧共用 WorkspaceQuery 打分；机器自己的行留在
+                // 机器分组里，否则一条结果会跑到别的机器标题下面。
+                let parsed = WorkspaceQuery::new(query);
+                let needle = query.trim().to_lowercase();
+                let mut scored: Vec<(i64, usize, PanelRow)> = Vec::new();
+                for (order, row) in rows.into_iter().chain(live).chain(project_rows).enumerate() {
+                    let score = match &row {
+                        PanelRow::Target { config } => parsed.score(config),
+                        PanelRow::Workspace { workspace_id, .. } => workspaces
+                            .iter()
+                            .find(|item| &item.workspace_id == workspace_id)
+                            .and_then(|item| parsed.score(&config_for(item))),
+                        _ => row
+                            .title()
+                            .to_lowercase()
+                            .contains(&needle)
+                            .then_some(10_000),
+                    };
+                    if let Some(score) = score {
+                        scored.push((score, order, row));
+                    }
+                }
+                scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+                let mut rows: Vec<PanelRow> = scored.into_iter().map(|(_, _, row)| row).collect();
+                rows.extend(machine_groups(inventory, &parsed, &projects));
+                rows
             }
             PickerStage::Hosts => {
                 let mut rows = vec![PanelRow::Action(Action::Back)];
@@ -452,10 +498,10 @@ impl PanelState {
         workspaces: &[SidebarItem],
         attention: Option<&crate::frontend::gpui::model::attention::AttentionSnapshot>,
         search: Option<&SearchSnapshot>,
-        existing: &[ExistingRuntime],
+        inventory: &MachineInventory,
     ) -> Vec<PanelRow> {
         match self.model.tab {
-            PanelTab::Workspaces => self.workspace_rows(workspaces, existing),
+            PanelTab::Workspaces => self.workspace_rows(workspaces, inventory),
             PanelTab::Attention => match attention {
                 Some(snapshot) => attention_panel_rows(snapshot, workspaces, &self.model.query()),
                 None => Vec::new(),
@@ -512,6 +558,87 @@ pub fn existing_rows(existing: &[ExistingRuntime], query: &str) -> Vec<PanelRow>
             saved: false,
         })
         .collect()
+}
+
+/// 去掉下面没有可见行的机器标题。
+///
+/// 「已打开的工作区」会在投影后从列表里删掉；如果一台机器的命中全是已打开
+/// 的 session，标题就会孤零零挂在列表里。仍在加载的机器保留标题：它是
+/// 「还没检查完、不能报无匹配」的唯一证据。
+pub fn drop_empty_headings(rows: Vec<PanelRow>) -> Vec<PanelRow> {
+    let keep: Vec<bool> = (0..rows.len())
+        .map(|index| match &rows[index] {
+            PanelRow::Heading { phase, .. } => {
+                phase.is_loading()
+                    || rows[index + 1..]
+                        .iter()
+                        .take_while(|row| !matches!(row, PanelRow::Heading { .. }))
+                        .any(|row| matches!(row, PanelRow::Existing { .. }))
+            }
+            _ => true,
+        })
+        .collect();
+    rows.into_iter()
+        .zip(keep)
+        .filter_map(|(row, keep)| keep.then_some(row))
+        .collect()
+}
+
+/// 根页搜索：现有 runtime 按机器分组。
+///
+/// 标题行只做分区；仍在加载的机器即使还没有结果也必须有标题，这样
+/// 「其他机器还没回来」不会被当成「没有匹配结果」。已解析完且没有匹配的
+/// 机器整组省略；全部结束仍有机器没检查成功时补一条状态说明，把
+/// 「没搜到」和「没检查完」区分开。
+fn machine_groups(
+    inventory: &MachineInventory,
+    parsed: &WorkspaceQuery,
+    projects: &[TargetConfig],
+) -> Vec<PanelRow> {
+    use crate::frontend::gpui::model::workspace_picker::same_target;
+    let mut rows = Vec::new();
+    let mut flat = 0usize;
+    for entry in inventory.entries() {
+        let mut matched: Vec<(i64, usize, PanelRow)> = Vec::new();
+        for runtime in entry.rows() {
+            let index = flat;
+            flat += 1;
+            let config = runtime.config();
+            let Some(score) = parsed.score(&config) else {
+                continue;
+            };
+            // 已保存成 Project 的 runtime 由 Project 行代表，不能出现两次。
+            if projects.iter().any(|project| same_target(project, &config)) {
+                continue;
+            }
+            matched.push((
+                score,
+                index,
+                PanelRow::Existing {
+                    index,
+                    title: runtime.name.clone(),
+                    detail: runtime.detail(),
+                    saved: false,
+                    config,
+                },
+            ));
+        }
+        matched.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
+        if matched.is_empty() && !entry.is_loading() {
+            continue;
+        }
+        rows.push(PanelRow::Heading {
+            label: entry.transport.label().to_string(),
+            phase: entry.phase.clone(),
+        });
+        rows.extend(matched.into_iter().map(|(_, _, row)| row));
+    }
+    if !inventory.is_pending() && inventory.failed_machines() > 0 {
+        rows.push(PanelRow::Status(crate::frontend::utils::i18n::tr(
+            crate::frontend::utils::i18n::TextKey::PanelMachineUnreachable,
+        )));
+    }
+    rows
 }
 
 /// 侧栏投影里没有 path/session，只能填出查询用得上的那几个字段。
@@ -631,7 +758,7 @@ mod tests {
         for (offset, item) in workspaces.iter_mut().enumerate() {
             item.shortcut = Some(offset as u32 + 1);
         }
-        let rows = state.rows(&workspaces, None, None, &[]);
+        let rows = state.rows(&workspaces, None, None, &MachineInventory::default());
         let live: Vec<(String, Option<usize>)> = rows
             .iter()
             .skip(3) // Shells / Agents / Open
@@ -681,7 +808,7 @@ mod tests {
             ],
             ..PanelState::default()
         };
-        let rows = state.rows(&[], None, None, &[]);
+        let rows = state.rows(&[], None, None, &MachineInventory::default());
         let titles: Vec<String> = rows
             .iter()
             .filter(|row| matches!(row, PanelRow::Target { .. }))
@@ -726,7 +853,7 @@ mod tests {
             selected: 0,
             ..PanelState::default()
         };
-        let rows = state.rows(&workspaces, None, None, &[]);
+        let rows = state.rows(&workspaces, None, None, &MachineInventory::default());
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].title(), "work · ryzen");
         assert_eq!(rows[0].detail().as_deref(), Some("tmux @ ryzen"));
@@ -780,7 +907,12 @@ mod tests {
             selected: 0,
             ..PanelState::default()
         };
-        let rows = state.rows(&workspaces, Some(&snapshot), None, &[]);
+        let rows = state.rows(
+            &workspaces,
+            Some(&snapshot),
+            None,
+            &MachineInventory::default(),
+        );
         assert_eq!(rows.len(), 2);
         // blocked 排在 working 前。
         assert!(rows[0].title().contains("dev"));
@@ -801,7 +933,9 @@ mod tests {
             selected: 0,
             ..PanelState::default()
         };
-        assert!(state.rows(&[], None, None, &[]).is_empty());
+        assert!(state
+            .rows(&[], None, None, &MachineInventory::default())
+            .is_empty());
     }
 
     /// Search tab：命中行来自 `search_rows`，query 过滤生效。
@@ -824,13 +958,18 @@ mod tests {
             selected: 0,
             ..PanelState::default()
         };
-        let rows = state.rows(&[], None, Some(&snapshot), &[]);
+        let rows = state.rows(&[], None, Some(&snapshot), &MachineInventory::default());
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].title(), "cargo test failed");
         assert_eq!(rows[0].detail(), None);
 
         state.model.input.clear();
-        assert_eq!(state.rows(&[], None, Some(&snapshot), &[]).len(), 2);
+        assert_eq!(
+            state
+                .rows(&[], None, Some(&snapshot), &MachineInventory::default())
+                .len(),
+            2
+        );
     }
 
     /// `@runtime` 过滤与子序列匹配都来自 WorkspaceQuery。
@@ -860,6 +999,202 @@ mod tests {
             workspace_rows(&workspaces, "@tmux notes").is_empty(),
             "条件必须同时满足"
         );
+    }
+
+    /// 已打开的工作区被过滤掉以后，不能留下一个空标题；加载中的标题必须保留。
+    #[test]
+    fn empty_machine_headings_are_dropped_only_when_loaded() {
+        let rows = vec![
+            PanelRow::Heading {
+                label: "local".into(),
+                phase: MachinePhase::Loaded,
+            },
+            PanelRow::Heading {
+                label: "ryzen".into(),
+                phase: MachinePhase::Loading,
+            },
+            PanelRow::Heading {
+                label: "slow".into(),
+                phase: MachinePhase::Loaded,
+            },
+            PanelRow::Action(PickerAction::Open),
+        ];
+        let titles: Vec<String> = drop_empty_headings(rows)
+            .iter()
+            .map(PanelRow::title)
+            .collect();
+        assert_eq!(titles, vec!["ryzen", "Open"], "{titles:?}");
+    }
+
+    /// 标题下面还有结果时照常保留。
+    #[test]
+    fn a_machine_heading_with_rows_survives() {
+        let rows = vec![
+            PanelRow::Heading {
+                label: "local".into(),
+                phase: MachinePhase::Loaded,
+            },
+            PanelRow::Existing {
+                index: 0,
+                title: "alpha".into(),
+                detail: String::new(),
+                config: TargetConfig::default(),
+                saved: false,
+            },
+            PanelRow::Heading {
+                label: "ryzen".into(),
+                phase: MachinePhase::Loaded,
+            },
+        ];
+        let titles: Vec<String> = drop_empty_headings(rows)
+            .iter()
+            .map(PanelRow::title)
+            .collect();
+        assert_eq!(titles, vec!["local", "alpha"], "{titles:?}");
+    }
+
+    fn ssh(name: &str) -> TargetTransport {
+        TargetTransport::Ssh { name: name.into() }
+    }
+
+    fn discovered(machine: &str, session: &str) -> ExistingRuntime {
+        let ssh = machine != "local";
+        ExistingRuntime {
+            name: session.into(),
+            runtime: "tmux".into(),
+            transport: if ssh { "ssh".into() } else { "local".into() },
+            target: if ssh { machine.into() } else { String::new() },
+            session: session.into(),
+            socket: None,
+            windows: 1,
+            attached: false,
+            workspace_id: None,
+            path: String::new(),
+        }
+    }
+
+    fn searching(query: &str) -> PanelState {
+        PanelState {
+            open: true,
+            model: PanelModel {
+                tab: PanelTab::Workspaces,
+                input: crate::frontend::gpui::model::text_input::TextInput::from_text(query),
+                ..PanelModel::default()
+            },
+            ..PanelState::default()
+        }
+    }
+
+    fn headings(rows: &[PanelRow]) -> Vec<(String, MachinePhase)> {
+        rows.iter()
+            .filter_map(|row| match row {
+                PanelRow::Heading { label, phase } => Some((label.clone(), phase.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// 报障回归：慢机器还在路上时，搜索不能提前变成「没有匹配」。
+    ///
+    /// 已完成的机器整组省略；在路上的机器一定要留下标题（渲染带「正在检查」），
+    /// 这样列表非空、不会落到空态。
+    #[test]
+    fn a_loading_machine_keeps_a_heading_when_nothing_matches() {
+        let mut inventory = MachineInventory::default();
+        inventory.begin(&[TargetTransport::Local, ssh("ryzen")]);
+        inventory.finish(
+            &TargetTransport::Local,
+            vec![discovered("local", "muxterm")],
+        );
+
+        let rows = searching("zzz").rows(&[], None, None, &inventory);
+        assert_eq!(
+            headings(&rows),
+            vec![("ryzen".to_string(), MachinePhase::Loading)],
+            "只有还在加载的机器需要标题：{rows:?}"
+        );
+        assert!(!rows.is_empty(), "还有机器在跑时不能是空列表");
+    }
+
+    /// 搜索按机器分组：每台机器一个标题，结果留在自己的机器下面。
+    #[test]
+    fn search_groups_each_machine_under_its_own_heading() {
+        let mut inventory = MachineInventory::default();
+        inventory.begin(&[TargetTransport::Local, ssh("ryzen")]);
+        inventory.finish(&TargetTransport::Local, vec![discovered("local", "alpha")]);
+        inventory.finish(&ssh("ryzen"), vec![discovered("ryzen", "api")]);
+
+        let rows = searching("a").rows(&[], None, None, &inventory);
+        let titles: Vec<String> = rows
+            .iter()
+            .filter(|row| matches!(row, PanelRow::Heading { .. } | PanelRow::Existing { .. }))
+            .map(PanelRow::title)
+            .collect();
+        assert_eq!(titles, vec!["local", "alpha", "ryzen", "api"], "{titles:?}");
+        assert!(
+            rows.iter()
+                .filter(|row| matches!(row, PanelRow::Heading { .. }))
+                .all(|row| !row.is_selectable()),
+            "机器标题不能被方向键选中"
+        );
+    }
+
+    /// 全部完成但有一台没检查成功：不能用「没有匹配」冒充结果。
+    #[test]
+    fn an_unchecked_machine_is_not_reported_as_no_matches() {
+        let mut inventory = MachineInventory::default();
+        inventory.begin(&[TargetTransport::Local, ssh("ryzen")]);
+        inventory.finish(
+            &TargetTransport::Local,
+            vec![discovered("local", "muxterm")],
+        );
+        inventory.fail(&ssh("ryzen"), "ssh: connect timed out".into());
+
+        let rows = searching("zzz").rows(&[], None, None, &inventory);
+        assert!(headings(&rows).is_empty(), "失败的机器没有命中就不占标题");
+        assert!(
+            matches!(rows.last(), Some(PanelRow::Status(text))
+            if *text == crate::frontend::utils::i18n::tr(
+                crate::frontend::utils::i18n::TextKey::PanelMachineUnreachable
+            )),
+            "没检查完要有说明，不能显示「没有匹配结果」：{rows:?}"
+        );
+    }
+
+    /// 空查询不插机器标题：保持截图里的分区顺序与编号。
+    #[test]
+    fn a_plain_root_list_has_no_machine_headings() {
+        let inventory = MachineInventory::loaded(vec![
+            discovered("ryzen", "api"),
+            discovered("local", "muxterm"),
+        ]);
+        let rows = PanelState::default().rows(&[], None, None, &inventory);
+        assert!(headings(&rows).is_empty(), "空查询不分组：{rows:?}");
+        assert!(
+            rows.iter().any(|row| row.title() == "api")
+                && rows.iter().any(|row| row.title() == "muxterm"),
+            "所有机器的结果都要在列表里"
+        );
+    }
+
+    /// 方向键 / 默认落点都要跳过标题与状态行。
+    #[test]
+    fn selection_skips_headings_and_status_rows() {
+        let rows = vec![
+            PanelRow::Heading {
+                label: "local".into(),
+                phase: MachinePhase::Loaded,
+            },
+            PanelRow::Action(PickerAction::Open),
+            PanelRow::Status("done".into()),
+        ];
+        let mut state = PanelState::default();
+        state.move_selection(1, &rows);
+        assert_eq!(state.selected, 1);
+        state.move_selection(1, &rows);
+        assert_eq!(state.selected, 1, "状态说明不是动作行");
+        state.move_selection(-1, &rows);
+        assert_eq!(state.selected, 1);
     }
 
     /// 每个 tab 对应一个搜索范围。

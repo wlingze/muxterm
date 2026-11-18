@@ -280,7 +280,12 @@ fn discovered_save_button_persists_without_attaching(cx: &mut TestAppContext) {
     open(&view, cx);
     cx.update(|_, cx| view.update(cx, |app, cx| app.set_panel_query("discovered", cx)));
     cx.run_until_parked();
-    let save = cx.debug_bounds("panel-save-0").expect("Save 按钮必须渲染");
+    // 搜索会按机器分组，标题行也占行号：按前缀找 Save 按钮，不写死 index。
+    let save = (0..)
+        .find_map(|index| {
+            cx.debug_bounds(Box::leak(format!("panel-save-{index}").into_boxed_str()))
+        })
+        .expect("Save 按钮必须渲染");
     cx.simulate_click(save.center(), Modifiers::default());
     cx.run_until_parked();
     cx.update(|_, cx| {

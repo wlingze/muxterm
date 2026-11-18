@@ -230,8 +230,9 @@ pub struct GpuiApp {
     system_pasteboard: bool,
     /// 注意力快照（Agents/Commands 段的数据源）。FFI 快照接入前保持 `None`。
     pub(crate) attention: Option<crate::frontend::gpui::model::attention::AttentionSnapshot>,
-    /// Cmd-P 面板的「现有 runtime」：来自 Core discovery，不手工拼。
-    pub(crate) existing: Vec<crate::frontend::gpui::model::existing::ExistingRuntime>,
+    /// Cmd-P 面板的「按机器」目录：本机 + 每个 SSH 别名各一格，来自 Core
+    /// discovery，不手工拼。一台机器回包不覆盖其他机器。
+    pub(crate) inventory: crate::frontend::gpui::model::machine_inventory::MachineInventory,
     /// discovery 是否已经跑过一次（面板打开时只跑一次，失败可重试）。
     existing_loaded: bool,
     /// discovery 是否正在跑，避免连续按键重复发查询。
@@ -371,7 +372,7 @@ impl GpuiApp {
             system_pasteboard: true,
             tab_bar_style,
             attention: None,
-            existing: Vec::new(),
+            inventory: Default::default(),
             existing_loaded: false,
             existing_loading: false,
             runtime_info: None,
@@ -1238,7 +1239,7 @@ impl GpuiApp {
             window_height: 800.0,
             attention: None,
             attention_at: None,
-            existing: Vec::new(),
+            inventory: Default::default(),
             existing_loaded: false,
             existing_loading: false,
             runtime_info: None,
@@ -3680,8 +3681,8 @@ impl GpuiApp {
             menu.selected =
                 (menu.selected as i32 + delta).clamp(0, len.saturating_sub(1) as i32) as usize;
         } else {
-            let len = self.panel_rows().len();
-            self.panel.move_selection(delta, len);
+            let rows = self.panel_rows();
+            self.panel.move_selection(delta, &rows);
             self.panel_scroll.scroll_to_item(self.panel.selected);
         }
         cx.notify();
@@ -3741,14 +3742,38 @@ impl GpuiApp {
         self.panel.usage = entries;
     }
 
-    /// 无头测试注入 discovery 结果。
+    /// 无头测试注入 discovery 结果（一台机器一组，按首次出现顺序）。
     #[doc(hidden)]
     pub fn set_existing_for_tests(
         &mut self,
         existing: Vec<crate::frontend::gpui::model::existing::ExistingRuntime>,
     ) {
-        self.existing = existing;
+        self.inventory =
+            crate::frontend::gpui::model::machine_inventory::MachineInventory::loaded(existing);
         self.existing_loaded = true;
+        self.existing_loading = false;
+    }
+
+    /// 无头测试注入这一轮的机器发现状态（模拟慢机器还在路上）。
+    #[doc(hidden)]
+    pub fn set_machine_inventory_for_tests(
+        &mut self,
+        inventory: crate::frontend::gpui::model::machine_inventory::MachineInventory,
+    ) {
+        self.inventory = inventory;
+        self.existing_loading = self.inventory.is_pending();
+        self.existing_loaded = !self.inventory.is_empty();
+    }
+
+    /// 无头测试：模拟一台机器回包，走与真实 discovery 相同的合并路径。
+    #[doc(hidden)]
+    pub fn finish_machine_for_tests(
+        &mut self,
+        transport: &crate::frontend::gpui::model::target::TargetTransport,
+        rows: Vec<crate::frontend::gpui::model::existing::ExistingRuntime>,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_machine_result(transport, Ok(rows), cx);
     }
 
     /// discovery 是否已经跑完（面板显示空态用）。

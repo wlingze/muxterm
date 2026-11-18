@@ -88,17 +88,25 @@ impl ExistingRuntime {
         candidates.iter().filter_map(Self::from_candidate).collect()
     }
 
-    /// 激活这一行时要交给 Catalog 的目标配置。
+    /// 这条 runtime 属于哪台机器（面板按机器分组用）。
     ///
-    /// `path` 留空：attach 已有 session 不需要工作目录。
-    pub fn config(&self) -> TargetConfig {
-        let transport = if self.transport == "local" || self.transport.is_empty() {
+    /// 与 `config()` 的判定保持一致：只有 `transport == "local"` 算本机，
+    /// 其余一律按 SSH 别名处理。
+    pub fn transport_key(&self) -> TargetTransport {
+        if self.transport == "local" || self.transport.is_empty() {
             TargetTransport::Local
         } else {
             TargetTransport::Ssh {
                 name: self.target.clone(),
             }
-        };
+        }
+    }
+
+    /// 激活这一行时要交给 Catalog 的目标配置。
+    ///
+    /// `path` 留空：attach 已有 session 不需要工作目录。
+    pub fn config(&self) -> TargetConfig {
+        let transport = self.transport_key();
         TargetConfig {
             name: self.name.clone(),
             runtime: TargetRuntime::parse(&self.runtime).unwrap_or(TargetRuntime::Tmux),

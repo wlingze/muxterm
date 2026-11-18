@@ -1,6 +1,7 @@
 //! Swift UnifiedPanel 的 640×420 快速面板：真实列表滚动 + Open 分步导航 + 右下角 Cmd-K。
 use crate::frontend::gpui::chrome::icons::{self, Icon, IconSpec};
 use crate::frontend::gpui::chrome::panel_view::{AggregateKind, PanelRow, PickerAction};
+use crate::frontend::gpui::model::machine_inventory::MachinePhase;
 use crate::frontend::gpui::model::panel::PanelTab;
 use crate::frontend::gpui::model::target::TargetRuntime;
 use crate::frontend::gpui::model::workspace_picker::PickerStage;
@@ -433,6 +434,51 @@ fn render_row(
     measure_detail: &dyn Fn(&str) -> f32,
     cx: &mut gpui::Context<GpuiApp>,
 ) -> AnyElement {
+    // 机器分组标题：只做分区，不高亮也不可点（方向键会跳过它）。
+    if let PanelRow::Heading { label, phase } = &row {
+        let status = match phase {
+            MachinePhase::Loading => Some(tr(TextKey::PanelMachineLoading)),
+            MachinePhase::Failed(_) => Some(tr(TextKey::PanelMachineFailed)),
+            MachinePhase::Loaded => None,
+        };
+        // 别名可能很长：用真实字形量好再截断。`.truncate()` 对 nowrap 文本
+        // 会把首次（flex basis = 0）测量缓存住，结果只剩省略号。
+        let status_width = status.as_deref().map(measure_detail).unwrap_or(0.0);
+        let label = crate::frontend::gpui::model::text_fit::fit_one_line(
+            &label.to_uppercase(),
+            (detail_width - status_width - 8.0).max(40.0),
+            measure_detail,
+        );
+        return div()
+            .id(SharedString::from(format!("panel-row-{index}")))
+            .debug_selector(|| format!("panel-row-{index}"))
+            .flex()
+            .items_center()
+            .justify_between()
+            .flex_none()
+            .h(px(28.))
+            .px(px(12.))
+            .child(
+                div()
+                    .debug_selector(|| format!("panel-title-{index}"))
+                    .whitespace_nowrap()
+                    .overflow_hidden()
+                    .text_size(px(10.5))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(theme.muted)
+                    .child(SharedString::from(label)),
+            )
+            .when_some(status, |element, status| {
+                element.child(
+                    div()
+                        .debug_selector(|| format!("panel-heading-status-{index}"))
+                        .text_size(px(10.5))
+                        .text_color(theme.muted)
+                        .child(SharedString::from(status)),
+                )
+            })
+            .into_any_element();
+    }
     let title = row.title();
     let detail = row.detail().map(|text| {
         let one_line = text.replace(['\n', '\r'], " ");

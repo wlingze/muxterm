@@ -547,7 +547,12 @@ ANSI 0–6，dim 与背景对半混合）
   回包才更新的 `cols/rows`；窗口一变大，状态栏立刻跟着变。
 - 本机 tmux 去重先核对 runtime / transport / socket：同名的 shell workspace 或
   同名 SSH session 不会把本机 tmux session 当成「已打开」过滤掉。
-  面板打开时会重新 discovery，先发本机结果再补远端。
+  每次打开 Workspaces 时刷新目录；若同一次发现仍在进行，复用它，不按每次输入重发。
+  本机和各 SSH 别名单独返回。某台返回只替换该机器的缓存；刷新期间保留已有结果。
+  根页有查询时按机器分组，完成的匹配可立即打开，未完成的组标「加载中」。
+  已打开的工作区和已保存的 Project 不等网络。迟到的结果不能抢走选中项；本机与名为
+  `local` 的 SSH 别名不是同一组。只有搜索范围内的发现都已结束且没有匹配，才显示空态。
+  无查询时保留 Shells / Agents / Open 和工作区编号顺序；Attention 和终端历史 Search 不分组。
 - 两个固定聚合槽另有**专属身份色**：Shells = teal、Agents = systemPurple
   （`model::aggregate::AggregateIdentity`）。聚合行是入口，不是连接状态，
   所以永远不借用 blocked/done 的粉与青绿，侧栏行与聚合页 tab 用同一个色。

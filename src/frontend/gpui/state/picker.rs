@@ -1,5 +1,6 @@
 //! Quick Panel 的 UI→CommandQueue 接线；导航/查询/持久化规则保持可测。
 use super::*;
+
 use crate::frontend::gpui::chrome::panel_view::{
     ActionMenu, AggregateKind, PanelRow, PickerAction, RowAction,
 };
@@ -13,6 +14,7 @@ use crate::frontend::gpui::model::workspace_picker::{
 use crate::frontend::utils::corebridge::{
     ClientCandidateRef, ClientExistingCandidateRef, ClientOpenIntent, ClientOpenRequest, CoreBridge,
 };
+use futures::StreamExt;
 
 impl GpuiApp {
     pub(super) fn projected_panel_rows(&self) -> Vec<PanelRow> {
@@ -28,7 +30,7 @@ impl GpuiApp {
             &workspaces,
             self.attention.as_ref(),
             self.search_snapshot.as_ref(),
-            &self.existing,
+            &self.inventory,
         );
         if self.panel.picker.stage == PickerStage::Root {
             rows.retain(|row| match row {
@@ -37,6 +39,8 @@ impl GpuiApp {
                 }
                 _ => true,
             });
+            // 命中全是已打开的 session 时，机器标题别孤零零留在列表里。
+            rows = crate::frontend::gpui::chrome::panel_view::drop_empty_headings(rows);
         }
         rows
     }
@@ -109,7 +113,7 @@ impl GpuiApp {
     pub(super) fn reset_panel_selection(&mut self) {
         let rows = self.panel_rows();
         let query_empty = self.panel.model.query().trim().is_empty();
-        self.panel.selected = rows
+        let preferred = rows
             .iter()
             .position(|row| match (&self.panel.picker.stage, row) {
                 (PickerStage::Root, PanelRow::Workspace { active, .. }) => query_empty && *active,
@@ -123,6 +127,8 @@ impl GpuiApp {
                 _ => false,
             })
             .unwrap_or(0);
+        // 分组标题 / 状态说明不是动作行：默认落点不能被它们占住。
+        self.panel.selected = next_selectable(&rows, preferred);
         // 打开面板时滚动位置必须是确定的 0。只用 `scroll_to_top_of_item(0)` 不够：
         // 它在 prepaint 里拿上一帧的 `child_bounds` 反推偏移，面板尺寸一变（搜索框/
         // 头部高度调整）就会算出整行高度的偏移，第一行（Shells）被顶出可视区。
@@ -356,7 +362,8 @@ impl GpuiApp {
                 );
             }
             PanelRow::Action(action) => self.navigate_picker(action, cx),
-            PanelRow::Status(_) => {}
+            // 分组标题 / 状态说明不是动作行。
+            PanelRow::Heading { .. } | PanelRow::Status(_) => {}
         }
     }
     fn queue_panel_candidate(
@@ -616,42 +623,88 @@ impl GpuiApp {
         }
         self.existing_loading = true;
         let socket = self.socket.clone();
+        let background = cx.background_executor().clone();
         cx.spawn(async move |this, cx| {
-            // 先发布本机结果：慢速或失联的 SSH 主机不能挡住 local muxterm。
-            let local_socket = socket.clone();
-            let local = cx
-                .background_executor()
-                .spawn(async move {
-                    discover_rows(Some(&TargetTransport::Local), local_socket.as_deref())
-                })
-                .await;
-            let _ = this.update(cx, |app, cx| {
-                if let Ok(rows) = local {
-                    app.existing = rows;
-                    app.existing_loaded = true;
-                    app.reset_panel_selection();
-                    cx.notify();
+            // 1. 机器清单：ssh config 是本机文件，不碰网络。本机永远排第一。
+            let hosts = background
+                .spawn(async { CoreBridge::discover_ssh_hosts() })
+                .await
+                .unwrap_or_default();
+            let mut targets = vec![TargetTransport::Local];
+            for host in hosts {
+                let transport = TargetTransport::Ssh { name: host.alias };
+                if !targets.contains(&transport) {
+                    targets.push(transport);
                 }
+            }
+            let _ = this.update(cx, |app, cx| {
+                app.inventory.begin(&targets);
+                cx.notify();
             });
-            let result = cx
-                .background_executor()
-                .spawn(async move { discover_rows(None, socket.as_deref()) })
-                .await;
+            // 2. 每台机器单独请求：谁先回包谁先上屏，慢主机不再挡住整张列表。
+            //    并发上限 4，避免几十个 SSH 别名一起起连接。
+            let requests = futures::stream::iter(targets)
+                .map(|transport| {
+                    let socket = socket.clone();
+                    let background = background.clone();
+                    async move {
+                        let worker = transport.clone();
+                        let result = background
+                            .spawn(async move { discover_rows(Some(&worker), socket.as_deref()) })
+                            .await;
+                        (transport, result)
+                    }
+                })
+                .buffer_unordered(4);
+            futures::pin_mut!(requests);
+            while let Some((transport, result)) = requests.next().await {
+                let _ = this.update(cx, |app, cx| {
+                    app.apply_machine_result(&transport, result, cx);
+                });
+            }
             let _ = this.update(cx, |app, cx| {
                 app.existing_loading = false;
                 app.existing_loaded = true;
-                match result {
-                    Ok(rows) => app.existing = rows,
-                    Err(error) => {
-                        // 本机结果继续可用，不能因远端 discovery 失败一起消失。
-                        app.panel.picker.error = Some(format!("Discovery failed: {error}"))
-                    }
-                }
-                app.reset_panel_selection();
                 cx.notify();
             });
         })
         .detach();
+    }
+
+    /// 一台机器的回包落库。
+    ///
+    /// 只替换这台机器的结果；其他已经回包的机器继续可见。
+    pub(super) fn apply_machine_result(
+        &mut self,
+        transport: &TargetTransport,
+        result: anyhow::Result<Vec<crate::frontend::gpui::model::existing::ExistingRuntime>>,
+        cx: &mut Context<Self>,
+    ) {
+        // 迟到的机器结果不能把用户正在看的行顶掉：先记住同一行，合并后再找回来。
+        let anchor = self.panel_selected_row();
+        match result {
+            Ok(rows) => self.inventory.finish(transport, rows),
+            Err(error) => self.inventory.fail(transport, error.to_string()),
+        }
+        self.preserve_panel_selection(anchor);
+        cx.notify();
+    }
+
+    /// 当前选中的行（合并前后用它保持选中项）。
+    fn panel_selected_row(&self) -> Option<PanelRow> {
+        self.panel_rows().get(self.panel.selected).cloned()
+    }
+
+    /// 按「同一行」找回选中项；找不到时只把下标夹回可选范围。
+    fn preserve_panel_selection(&mut self, anchor: Option<PanelRow>) {
+        let rows = self.panel_rows();
+        if let Some(index) =
+            anchor.and_then(|anchor| rows.iter().position(|row| row.same_row(&anchor)))
+        {
+            self.panel.selected = index;
+            return;
+        }
+        self.panel.selected = next_selectable(&rows, self.panel.selected);
     }
     fn discover_picker_aliases(&mut self, cx: &mut Context<Self>) {
         if self.pump.is_none() {
@@ -1060,6 +1113,21 @@ impl GpuiApp {
             directories,
         })
     }
+}
+
+/// 从 `from` 开始找第一个可选中的行（找不到就夹住下标）。
+///
+/// 分组标题与状态说明不可选中：方向键、默认落点、合并后的夹取都要跳过它们。
+fn next_selectable(rows: &[PanelRow], from: usize) -> usize {
+    if rows.is_empty() {
+        return 0;
+    }
+    rows.iter()
+        .enumerate()
+        .skip(from)
+        .find(|(_, row)| row.is_selectable())
+        .map(|(index, _)| index)
+        .unwrap_or_else(|| from.min(rows.len() - 1))
 }
 
 fn discover_rows(
