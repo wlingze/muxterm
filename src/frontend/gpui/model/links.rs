@@ -41,10 +41,10 @@ fn is_unbalanced_closer(url: &[char], ch: char) -> bool {
     closes > opens
 }
 
-/// 这一列是否落在某条 URL 上；是则返回修剪过的 URI。
+/// 这一列所在的 URL 的字符区间（首尾都含）。
 ///
-/// `line` 是整行字符（一格一个字符，宽字符的占位格已由调用方换成空格）。
-pub fn url_at(line: &[char], col: usize) -> Option<String> {
+/// Command+悬停要高亮整条链接，不能只高亮光标所在格。
+pub fn url_span_at(line: &[char], col: usize) -> Option<(usize, usize)> {
     if line.is_empty() || col >= line.len() {
         return None;
     }
@@ -80,10 +80,18 @@ pub fn url_at(line: &[char], col: usize) -> Option<String> {
             }
         }
         if col >= start && col < end {
-            return Some(line[start..end].iter().collect());
+            return Some((start, end - 1));
         }
     }
     None
+}
+
+/// 这一列是否落在某条 URL 上；是则返回修剪过的 URI。
+///
+/// `line` 是整行字符（一格一个字符，宽字符的占位格已由调用方换成空格）。
+pub fn url_at(line: &[char], col: usize) -> Option<String> {
+    let (start, end) = url_span_at(line, col)?;
+    Some(line[start..=end].iter().collect())
 }
 
 #[cfg(test)]
@@ -128,6 +136,16 @@ mod tests {
             url_at(&line, 5).as_deref(),
             Some("https://en.wikipedia.org/wiki/Foo_(bar)")
         );
+    }
+
+    /// 悬停高亮要拿到整条链接的列范围。
+    #[test]
+    fn the_span_covers_the_whole_url() {
+        let line = chars("see https://example.com/a?b=1 now");
+        assert_eq!(url_span_at(&line, 4), Some((4, 28)));
+        assert_eq!(url_span_at(&line, 20), Some((4, 28)));
+        assert_eq!(url_span_at(&line, 3), None);
+        assert_eq!(url_span_at(&line, 29), None);
     }
 
     /// 只有 http/https 才算；普通命令与文件路径不打开。

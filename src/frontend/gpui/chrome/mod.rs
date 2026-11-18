@@ -12,6 +12,7 @@ pub mod pane_view;
 pub mod panel;
 pub mod panel_view;
 pub mod prompt;
+pub mod selection_menu_view;
 pub mod settings;
 mod settings_managers;
 pub mod settings_window;

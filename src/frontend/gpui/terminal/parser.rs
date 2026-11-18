@@ -135,6 +135,32 @@ impl Surface {
         Some(self.grid.row(row - covered))
     }
 
+    /// 视口里第 `(row, col)` 格所在链接的列范围（首尾都含）。
+    ///
+    /// OSC 8 链接按 `Cell::link` 的 id 向两侧扩张；行内 http(s) 文本交给
+    /// `model::links::url_span_at`。Command+悬停只画这条范围。
+    pub fn url_span_at(&self, row: usize, col: usize) -> Option<(usize, usize)> {
+        let cells = self.visible_row(row)?;
+        if let Some(cell) = cells.get(col) {
+            if cell.link != 0 {
+                let mut start = col;
+                while start > 0 && cells[start - 1].link == cell.link {
+                    start -= 1;
+                }
+                let mut end = col;
+                while end + 1 < cells.len() && cells[end + 1].link == cell.link {
+                    end += 1;
+                }
+                return Some((start, end));
+            }
+        }
+        let line: Vec<char> = cells
+            .iter()
+            .map(|cell| if cell.ch == FILLER { ' ' } else { cell.ch })
+            .collect();
+        crate::frontend::gpui::model::links::url_span_at(&line, col)
+    }
+
     /// 视口里第 `(row, col)` 格上的链接：OSC 8 超链接优先，其次行内
     /// `http(s)://` 文本。返回值直接交给系统浏览器。
     pub fn url_at(&self, row: usize, col: usize) -> Option<String> {
@@ -530,6 +556,12 @@ mod tests {
             "链接覆盖它的每一个字符格"
         );
         assert_eq!(surface.url_at(0, 6), None, "结束序列后的字符没有链接");
+        assert_eq!(
+            surface.url_span_at(0, 2),
+            Some((0, 4)),
+            "OSC 8 覆盖整段 `click`"
+        );
+        assert_eq!(surface.url_span_at(0, 6), None);
     }
 
     /// 没有 OSC 8 时按行内文本找：Command+点击纯文本 URL 也要能开。
@@ -542,6 +574,11 @@ mod tests {
             Some("https://example.com/a")
         );
         assert_eq!(surface.url_at(0, 2), None, "URL 前面的字不算");
+        assert_eq!(
+            surface.url_span_at(0, 6),
+            Some((4, 24)),
+            "行内 URL 的列范围"
+        );
         assert_eq!(surface.url_at(5, 0), None, "空行/越界不能恐慌");
     }
 

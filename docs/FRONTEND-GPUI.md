@@ -183,7 +183,9 @@ SGR 属性不是只解析、不画：绘制 run 的 key 是「颜色 + 字体变
 | 双击 | 走 `word_selection` 三级扩展（Identifier → Word → Path） |
 | 三击 | 整行 |
 | 单击不拖 | 不算选区（松手即清，`Cmd-C` 不写剪贴板） |
+| 拖选松手 | 立即写系统剪贴板（copy-on-select，与 iTerm2 的「Copy to pasteboard on selection」同义） |
 | `Cmd-C` / Edit → Copy | 选区文本进系统剪贴板 |
+| 右键 | 本地菜单：Copy（无选区时置灰）/ Paste / Select All；不再转发给应用 |
 
 渲染：选中的格子背景按 `SELECTION_ALPHA = 0.3` 叠一层 `theme.accent`，前景不变（反显与
 光标格仍然是光标语义优先）。选区里的**尾随空格也要画**，否则选中一片空白看不到高亮。
@@ -213,19 +215,21 @@ Command 不转发，留给本机链接与快捷键。
 
 规则：
 
-- **Shift 是逃逸通道**：应用要鼠标时按住 Shift 仍走本地选字（对照 Swift
-  `mouseReportingConsumes`）。没上报的按下不补释放：`mouse_press` 只记已上报的键。
+- **Shift / Option 是逃逸通道**：应用要鼠标时按住 Shift（xterm）或 Option（iTerm2）
+  仍走本地选字；`pi` 这类 TUI 会打开 1002/1003，靠它才能选中文本。没上报的按下
+  不补释放：`mouse_press` 只记已上报的键。
 - **移动按格去重**：`mouse_motion_cell` 只在跨格时才发 motion（xterm 的 1002/1003
   语义）；触控板的像素级移动否则会把一次拖动拆成几百条命令。离开 pane 时清缓存，
   再进来同一格可以重新上报。
-- **右键 / 中键**：键号 1 / 2（左键 0），按下与释放都走同一张表。
+- **中键**：键号 1（左键 0），按下与释放都走同一张表。**右键不转发**：本机
+  右键菜单（复制 / 粘贴 / 全选）优先，用户不必先记快捷键。
 - **拖出 pane 再松手**也必须发释放：`on_mouse_up` 只在指针还在元素上时触发，
   所以另挂 `on_mouse_up_out`。
 - 坐标一律经 `pane_cell_at(rect, origin, …)`：滚轮与标题条 hover 都必须减掉
   内容区原点（侧栏 / 顶部 bar）**和这一块 pane 自己的 `rect`**。标题条只在
   鼠标进入该 pane 顶部 `TITLE_BAR_HEIGHT`（22pt）时显示。
-- 应用没接管（模式关闭或 Shift）时，左键回到本地选区；Command+点击链接优先于
-  鼠标上报（vim / tmux 开着鼠标时链接仍要能点开）。
+- 应用没接管（模式关闭或 Shift/Option）时，左键回到本地选区；Command+点击链接
+  优先于鼠标上报（vim / tmux 开着鼠标时链接仍要能点开）。
 
 ### 5.3 输入法
 
@@ -360,11 +364,11 @@ Zed 明确「先派发快捷键、再交给输入法」（`zed.dev/blog/keyboard
   `sidebarItem.minimumThickness/maximumThickness` 与 `setPosition(240)`）。
   `clamp_sidebar_width` 是**唯一**入口：`app.rs` 算正文 origin 用它，
   `chrome/sidebar.rs` 画侧栏也用它，两处口径不能分叉。
-- 分区：`SidebarSectionHeights::compute(available, hidden_height)` 按 3:2:1
-  分 Workspaces / Agents / Commands（Agents 恒为 Commands 的 2 倍）；Commands
-  被压到下限时从 Workspaces 补，Workspaces 也到下限就把下半区按 2:1 压回；
-  三段下限都放不下时返回 `None`，**不硬排**。Hidden Commands 固定贴整栏底部，
-  高度 = `26pt 折叠 + 行数 × 行高`，不参与比例分配。
+- 分区：对齐 VS Code 侧边栏 —— 四段按顺序排在同一列，各自只占内容的自然高度；
+  **折叠 = 只留 26pt 段头**，下一段立刻跟上来；整栏只有 `sidebar-scroll` 一个
+  滚动区。曾经按 3:2:1 切固定高度、把 Hidden Commands 钉在整栏底部：折叠的段
+  照样占一块空白（看起来没生效），钉底的那段被窗口下沿裁掉（`HIDDEN COMMANDS`
+  被遮盖的报障截图）。
 - 拖动：`sidebar-divider` 是右侧 5pt 的热区，按下记
   `sidebar_drag_offset`；一旦开始拖，`sidebar-drag-overlay` 铺满窗口接管
   move/up —— gpui 的 `on_mouse_move` 只在 hitbox 被 hover 时触发，鼠标离开
@@ -420,11 +424,17 @@ tab 栏宽度策略来自 Core 配置 `[ui] tab_bar_style`（`equal_width` 缺�
 `https?://` 正则（`model/links.rs`，纯函数，尾随标点与不配对括号会被剥掉）；
 命中就交给 `cx.open_url`，没命中时仍然是拖选。
 
+悬停反馈：按住 Command 时，指针下的链接**整条**画强调色下划线、指针变成小手
+（`hover_link_span` → `row_runs` 在链接左右边界断开，只给链接本身加
+`hover_underline`，不碰终端自己的 SGR）。修饰键变化本身也会刷新反馈：用户是
+「先按住 Cmd，再悬停」，不能只等鼠标移动。
+
 OSC 8 的 URI 存在 `Grid` 的链接表里，格子只存 `u16` 下标（滚回行也能开）；
 链接表只增不删，避免历史格的旧下标指向错行。
 
 回归：`cmd_click_opens_a_url_from_the_terminal`、
-`dragging_over_a_url_still_selects_text`、`model::links` 5 条纯函数测试、
+`dragging_over_a_url_still_selects_text`、`command_hover_marks_the_link_under_the_pointer`、
+`hovering_a_link_underlines_only_the_link`、`model::links` 6 条纯函数测试、
 `parser` 的 OSC 8 与纯文本两条。
 
 ## 6. 数据流与线程
@@ -457,6 +467,8 @@ cargo build --no-default-features --features gpui --release
 
 `.app` 结构与 Swift 前端一致：`Contents/MacOS/Muxterm` 是一个 exec 脚本，转发到同 bundle 内的
 `muxterm gpui`。这样做是因为项目规则禁止第二个 frontend binary，而 LaunchServices 不能传参。
+LaunchServices 会丢弃 stderr，所以启动脚本显式传 `--log-file ${TMPDIR}/muxterm-logs/muxterm-<日期>.log`；
+开发包再加 `--debug`。报障时先看这个文件，不要只看（可能为空的）日志目录。
 Bundle 可见名称与版本号规则同 Swift：release 用 `dev.muxterm.app`，debug 用 commit 后缀，
 避免开发包和历史安装互相抢 LaunchServices 身份。
 
@@ -469,14 +481,13 @@ Bundle 可见名称与版本号规则同 Swift：release 用 `dev.muxterm.app`�
 | 逐 pane 颜色上报 | Core 的 pane colours 仍取默认 | 接 `ClientCommand::PaneColours` |
 | 无障碍树 | 与现状持平（现状也没有） | gpui 已依赖 accesskit，接上即净增 |
 | sixel / 图片协议 | 无 | 按需 |
-| Select All | Edit → Select All 还没有全选实现（菜单项置灰、不带快捷键） | 接 `Selection::all` 再走同一条复制路径 |
-| `.app` 里没有菜单栏 | Cmd 快捷键靠 window key handler | 接 gpui 菜单，或继续走 handler |
 
 已完成（v1 缺口表里曾经列过的）：输入法 marked text 与候选窗定位、滚轮历史滚动、
 设置页、快速面板、鼠标事件上报、宽字符宽度、Cmd-Shift-P 命令面板、Core 驱动的
 浅色/深色主题（默认白底黑字 + Menlo 18）、按真实字形度量格子、窗口级
 `refresh-client -C` 上报、attach 历史回填（Core `PaneHistory` → 本地 scrollback）、
-Cmd-P 面板列出现有 runtime（discovery 驱动，点开即 attach）、macOS 原生菜单栏
+Cmd-P 面板列出现有 runtime（discovery 驱动，点开即 attach）、
+Select All / 右键复制菜单 / 选中即复制、链接 Command+悬停下划线、macOS 原生菜单栏
 （NSMenu，结构照抄 Swift `buildMenu`）、快速面板按 Swift `loadWorkspaceItems` 的
 根列表分段（Shells / Agents / Open / 编号 workspace / Project / discovery）、
 未保存项的 Save 与 Cmd-K 行内动作菜单、`Open` 分步导航 + 末端「运行时 + 名字」确认、

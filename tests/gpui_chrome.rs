@@ -2284,9 +2284,10 @@ fn hover_reports_motion_in_any_event_mode(cx: &mut TestAppContext) {
     assert_eq!(pane_input(&view, cx, 10), vec![b"\x1b[<35;10;3M".to_vec()]);
 }
 
-/// 右键 / 中键也要能点：xterm 的键号是 1 / 2（左键 0）。
+/// 用户要求「鼠标右键应该可以复制」：右键开本地菜单，不再转发给应用；
+/// 中键仍按 xterm 键号 1 上报。
 #[gpui::test]
-fn right_and_middle_clicks_are_reported(cx: &mut TestAppContext) {
+fn right_click_opens_the_local_menu_and_middle_clicks_are_reported(cx: &mut TestAppContext) {
     let (view, cx) = mount(two_tab_store(), cx);
     enable_mouse(&view, cx, 10, 1000);
     let origin = pane_origin(cx, 10);
@@ -2295,10 +2296,16 @@ fn right_and_middle_clicks_are_reported(cx: &mut TestAppContext) {
 
     cx.simulate_mouse_down(point, gpui::MouseButton::Right, gpui::Modifiers::none());
     cx.simulate_mouse_up(point, gpui::MouseButton::Right, gpui::Modifiers::none());
-    assert_eq!(
-        pane_input(&view, cx, 10),
-        vec![b"\x1b[<2;2;2M".to_vec(), b"\x1b[<2;2;2m".to_vec()]
+    assert!(
+        pane_input(&view, cx, 10).is_empty(),
+        "右键被本地菜单接管，不能同时送进 PTY"
     );
+    assert!(
+        cx.debug_bounds("selection-menu").is_some(),
+        "右键必须弹出复制 / 粘贴菜单"
+    );
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
 
     cx.simulate_mouse_down(point, gpui::MouseButton::Middle, gpui::Modifiers::none());
     cx.simulate_mouse_up(point, gpui::MouseButton::Middle, gpui::Modifiers::none());
@@ -4422,37 +4429,70 @@ fn dragging_the_sidebar_divider_resizes_the_sidebar(cx: &mut TestAppContext) {
     assert!(SIDEBAR_MIN_WIDTH < SIDEBAR_MAX_WIDTH);
 }
 
-/// 用户报障（截图 1）：四段挤在同一个滚动区。
+/// 用户报障：折叠的 Commands 仍占一大块空白，Hidden Commands 被窗口下沿盖住。
 ///
-/// 现在 Workspaces / Agents / Commands 各自成区，Hidden Commands 固定贴底。
+/// 对齐 VS Code 侧边栏：四段排在同一列、各自只占内容高度、整栏一个滚动区；
+/// 折叠 = 只留段头，下一段立刻跟上来。
 #[gpui::test]
-fn the_sidebar_keeps_its_sections_in_separate_bands(cx: &mut TestAppContext) {
+fn the_sidebar_stacks_sections_and_collapses_to_headers(cx: &mut TestAppContext) {
     let (view, cx) = mount(store_with_two_workspaces(), cx);
     cx.run_until_parked();
-    let workspaces = cx
-        .debug_bounds("sidebar-scroll-Workspaces")
-        .expect("上半区必须渲染");
+    let sidebar = cx.debug_bounds("sidebar").expect("侧栏必须渲染");
+    let scroll = cx
+        .debug_bounds("sidebar-scroll")
+        .expect("整栏必须只有一个滚动区");
+    assert!(
+        f32::from(scroll.size.height) <= f32::from(sidebar.size.height) + 0.5,
+        "滚动区不能超出侧栏：{scroll:?} / {sidebar:?}"
+    );
+
     let agents = cx
-        .debug_bounds("sidebar-scroll-Agents")
-        .expect("Agents 区必须渲染");
+        .debug_bounds("section-Agents")
+        .expect("Agents 段头必须渲染");
     let commands = cx
-        .debug_bounds("sidebar-scroll-Commands")
-        .expect("Commands 区必须渲染");
+        .debug_bounds("section-Commands")
+        .expect("Commands 段头必须渲染");
+    let hidden = cx
+        .debug_bounds("section-HiddenCommands")
+        .expect("Hidden Commands 段头必须渲染");
+
+    // 空段之间只有 8pt padding + 1pt hairline + 4 + 4pt margin。
+    let gap =
+        f32::from(commands.origin.y) - (f32::from(agents.origin.y) + f32::from(agents.size.height));
     assert!(
-        f32::from(workspaces.origin.y) < f32::from(agents.origin.y),
-        "Workspaces 在上半区"
+        gap <= 20.0,
+        "空段之间不能留按比例切出来的空白（折叠看起来没生效）：{gap}"
     );
+
+    // 贴底就会被窗口下沿裁掉；段头必须完整落在侧栏里。
     assert!(
-        f32::from(agents.origin.y) < f32::from(commands.origin.y),
-        "Agents 在 Commands 之上"
+        f32::from(hidden.origin.y) + f32::from(hidden.size.height)
+            <= f32::from(sidebar.origin.y) + f32::from(sidebar.size.height) - 2.0,
+        "Hidden Commands 不能被窗口下沿盖住：{hidden:?} / {sidebar:?}"
     );
-    assert!(
-        f32::from(workspaces.size.height) > f32::from(agents.size.height),
-        "Workspaces 要比 Agents 高"
+
+    // 折叠 Commands：只剩 26pt 段头，Hidden Commands 马上跟上来。
+    cx.simulate_mouse_down(
+        commands.center(),
+        gpui::MouseButton::Left,
+        gpui::Modifiers::none(),
     );
+    cx.run_until_parked();
+    let commands_after = cx
+        .debug_bounds("section-Commands")
+        .expect("折叠后段头仍然渲染");
     assert!(
-        f32::from(agents.size.height) > f32::from(commands.size.height),
-        "Agents 要比 Commands 高（用户明确要求）"
+        (f32::from(commands_after.size.height) - 26.0).abs() < 1.0,
+        "折叠后只留段头：{commands_after:?}"
+    );
+    let hidden_after = cx
+        .debug_bounds("section-HiddenCommands")
+        .expect("下一段必须跟着上来");
+    let gap = f32::from(hidden_after.origin.y)
+        - (f32::from(commands_after.origin.y) + f32::from(commands_after.size.height));
+    assert!(
+        gap <= 20.0,
+        "折叠的 Commands 不能继续占着一整块固定高度：{gap}"
     );
     let _ = view;
 }
@@ -5954,6 +5994,160 @@ fn dragging_selects_text_and_cmd_c_copies_it(cx: &mut TestAppContext) {
     );
 }
 
+/// 用户要求「选中就复制」：拖选松手即进剪贴板，不必再按 Cmd-C。
+#[gpui::test]
+fn dragging_selects_and_copies_without_a_shortcut(cx: &mut TestAppContext) {
+    let (view, cx) = mount(two_tab_store(), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.feed_pane_for_tests(
+                "local@@dev@tmux@dev",
+                10,
+                40,
+                10,
+                b"hello world\r\nsecond line",
+                cx,
+            );
+        })
+    });
+    cx.run_until_parked();
+    cx.update(|_, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string("MARKER".to_string())));
+    let (cw, ch) = cx.update(|_, cx| view.update(cx, |app, _| app.cell()));
+    let start = gpui::point(px(240.0 + cw * 0.5), px(ch * 0.5));
+    let end = gpui::point(px(240.0 + cw * 20.5), px(ch * 1.5));
+    cx.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::none());
+    cx.simulate_mouse_move(end, Some(gpui::MouseButton::Left), gpui::Modifiers::none());
+    cx.simulate_mouse_up(end, gpui::MouseButton::Left, gpui::Modifiers::none());
+    cx.run_until_parked();
+    let copied = cx.update(|_, cx| {
+        cx.read_from_clipboard()
+            .and_then(|item| item.text())
+            .unwrap_or_default()
+    });
+    assert!(
+        copied.contains("hello world") && copied.contains("second"),
+        "拖选松手就应该复制：{copied:?}"
+    );
+}
+
+/// pi 这类 TUI 会打开鼠标上报；按住 Option 拖拽仍然选中本地文本，
+/// 松手即复制（iTerm2 / xterm 的逃逸键惯例）。
+#[gpui::test]
+fn option_drag_selects_and_copies_while_the_app_reports_the_mouse(cx: &mut TestAppContext) {
+    let (view, cx) = mount(two_tab_store(), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.feed_pane_for_tests(
+                "local@@dev@tmux@dev",
+                10,
+                40,
+                10,
+                b"\x1b[?1002hhello world\r\nsecond line",
+                cx,
+            );
+        })
+    });
+    cx.run_until_parked();
+    let (cw, ch) = cx.update(|_, cx| view.update(cx, |app, _| app.cell()));
+    let start = gpui::point(px(240.0 + cw * 0.5), px(ch * 0.5));
+    let end = gpui::point(px(240.0 + cw * 20.5), px(ch * 1.5));
+    let alt = gpui::Modifiers {
+        alt: true,
+        ..Default::default()
+    };
+    cx.simulate_mouse_down(start, gpui::MouseButton::Left, alt);
+    cx.simulate_mouse_move(end, Some(gpui::MouseButton::Left), alt);
+    cx.simulate_mouse_up(end, gpui::MouseButton::Left, alt);
+    cx.run_until_parked();
+
+    let selected = cx.update(|_, cx| view.update(cx, |app, _| app.selection_for(10)));
+    assert!(selected.is_some(), "Option+拖拽必须选中本地文本");
+    let copied = cx.update(|_, cx| {
+        cx.read_from_clipboard()
+            .and_then(|item| item.text())
+            .unwrap_or_default()
+    });
+    assert!(copied.contains("hello world"), "选中即复制：{copied:?}");
+}
+
+/// 用户要求「鼠标右键应该可以复制」：右键菜单 Copy 写回选区。
+#[gpui::test]
+fn right_click_opens_a_menu_and_copies_the_selection(cx: &mut TestAppContext) {
+    let (view, cx) = mount(two_tab_store(), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.feed_pane_for_tests(
+                "local@@dev@tmux@dev",
+                10,
+                40,
+                10,
+                b"hello world\r\nsecond line",
+                cx,
+            );
+        })
+    });
+    cx.run_until_parked();
+    let (cw, ch) = cx.update(|_, cx| view.update(cx, |app, _| app.cell()));
+    let start = gpui::point(px(240.0 + cw * 0.5), px(ch * 0.5));
+    let end = gpui::point(px(240.0 + cw * 20.5), px(ch * 1.5));
+    cx.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::none());
+    cx.simulate_mouse_move(end, Some(gpui::MouseButton::Left), gpui::Modifiers::none());
+    cx.simulate_mouse_up(end, gpui::MouseButton::Left, gpui::Modifiers::none());
+    cx.run_until_parked();
+
+    let menu_point = gpui::point(px(240.0 + cw * 3.0), px(ch * 0.5));
+    cx.simulate_mouse_down(
+        menu_point,
+        gpui::MouseButton::Right,
+        gpui::Modifiers::none(),
+    );
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("selection-menu").is_some(),
+        "右键必须弹出本地菜单"
+    );
+
+    // 先把剪贴板换成标记，确认文字是菜单里的 Copy 写回来的。
+    cx.update(|_, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string("MARKER".to_string())));
+    let copy = cx
+        .debug_bounds("selection-menu-copy")
+        .expect("Copy 行必须渲染");
+    cx.simulate_mouse_down(
+        copy.center(),
+        gpui::MouseButton::Left,
+        gpui::Modifiers::none(),
+    );
+    cx.run_until_parked();
+    let copied = cx.update(|_, cx| {
+        cx.read_from_clipboard()
+            .and_then(|item| item.text())
+            .unwrap_or_default()
+    });
+    assert!(
+        copied.contains("hello world"),
+        "菜单 Copy 必须写回选区：{copied:?}"
+    );
+    assert!(
+        cx.debug_bounds("selection-menu").is_none(),
+        "执行后菜单必须关闭"
+    );
+
+    // Esc 关闭。
+    cx.simulate_mouse_down(
+        menu_point,
+        gpui::MouseButton::Right,
+        gpui::Modifiers::none(),
+    );
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("selection-menu").is_some());
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("selection-menu").is_none(),
+        "Esc 必须关闭右键菜单"
+    );
+}
+
 /// 切 pane 只允许光影变：内容盒几何一格都不能动。
 ///
 /// 用户报障：「切换 pane 的时候会出现 pane 的变化一下…应该只有光影的明暗
@@ -6015,6 +6209,61 @@ fn cmd_click_opens_a_url_from_the_terminal(cx: &mut TestAppContext) {
         Some("https://example.com/x"),
         "Command+点击必须打开格子下的链接"
     );
+}
+
+/// 用户报障：按住 Command 悬停链接没有反馈。
+///
+/// 现在按住 Command 时整条链接画强调色下划线、指针变小手；松开立即消失。
+/// 用户是「先按住 Cmd，再悬停」，所以修饰键变化本身也要刷新反馈。
+#[gpui::test]
+fn command_hover_marks_the_link_under_the_pointer(cx: &mut TestAppContext) {
+    let (view, cx) = mount(two_tab_store(), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.feed_pane_for_tests(
+                "local@@dev@tmux@dev",
+                10,
+                40,
+                10,
+                b"see https://example.com/x now",
+                cx,
+            );
+        })
+    });
+    cx.run_until_parked();
+    let (cw, ch) = cx.update(|_, cx| view.update(cx, |app, _| app.cell()));
+    let on_link = gpui::point(px(240.0 + cw * 10.0 + 1.0), px(ch * 0.5));
+    let off_link = gpui::point(px(240.0 + cw * 2.0 + 1.0), px(ch * 0.5));
+    let cmd = gpui::Modifiers {
+        platform: true,
+        ..Default::default()
+    };
+    let span = |cx: &mut gpui::VisualTestContext| {
+        cx.update(|_, cx| view.update(cx, |app, _| app.hover_link_span(10)))
+    };
+
+    // 先移动、再按住 Command：也要出现反馈。
+    cx.simulate_mouse_move(on_link, None, gpui::Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(span(cx), None, "没按 Command 时不高亮");
+    cx.simulate_modifiers_change(cmd);
+    cx.run_until_parked();
+    assert_eq!(
+        span(cx),
+        Some((0, 4, 24)),
+        "按住 Command 后悬停必须得到整条链接的列范围"
+    );
+
+    // 悬停到链接外：下划线消失。
+    cx.simulate_mouse_move(off_link, None, cmd);
+    cx.run_until_parked();
+    assert_eq!(span(cx), None, "链接外不画下划线");
+
+    // 松开 Command：立即消失。
+    cx.simulate_mouse_move(on_link, None, cmd);
+    cx.simulate_modifiers_change(gpui::Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(span(cx), None, "松开 Command 后下划线必须消失");
 }
 
 /// 没有 Command 时拖过链接仍然是选字，不能顺手开浏览器。
