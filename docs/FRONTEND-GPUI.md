@@ -14,7 +14,7 @@
 先用起来，再按实测决定是否合并。
 
 > **2026-11-09 决策：gpui 成为发布前端。** 对外发布只构建这条线
-> （`scripts/build-gpui-macos.sh` → `build/macos/MuxtermGpui.app`）；Swift / GTK4
+> （`scripts/build-gpui-macos.sh` → `build/macos/Muxterm.app`）；Swift / GTK4
 > 保留为历史参照与兼容实现，不再作为发布目标，也不再要求把 gpui 的行为回接过去。
 
 它把 [`FRONTEND-PLATFORM.md`](FRONTEND-PLATFORM.md) §6 阶段 2 的两个硬门当成设计前提接受下来，
@@ -395,7 +395,8 @@ tab 栏宽度策略来自 Core 配置 `[ui] tab_bar_style`（`equal_width` 缺�
 不为验证而自动启动/激活用户机器上的窗口。
 
 真机体感与 CPU 只看 `--release` 产物：debug 版的字形排版/绘制慢数倍，
-2026-11-17 采样到的 100% CPU 就跑在 debug 的 `build/macos/MuxtermGpui.app` 上。
+2026-11-17 采样到的 100% CPU 就跑在 debug 的 `build/macos/MuxtermGpui.app` 上
+（当时 GPUI 开发包还带 `Gpui` 后缀；2026-11-18 起产物统一叫 `Muxterm.app`）。
 
 在线核对（2026-11-17T15:19:41+08:00）：Zed 官方
 [`gpui/text_system/line.rs`](https://github.com/zed-industries/zed/blob/main/crates/gpui/src/text_system/line.rs)
@@ -449,13 +450,15 @@ v1 的事件泵跑在主线程的 gpui 异步任务里，每 8–16ms 收一次�
 ```bash
 cargo build --no-default-features --features gpui --release
 ./build/macos/muxterm gpui                     # 直接跑
-./scripts/build-gpui-macos.sh --release        # 产出 build/macos/MuxtermGpui.app
+./scripts/build-gpui-macos.sh --release        # 产出 build/macos/Muxterm.app
 ```
 
 `gpui` feature = `["dep:gpui", "ffi"]`，默认不启用，现有 GTK / TUI / FFI 构建完全不受影响。
 
-`.app` 结构与 Swift 前端一致：`Contents/MacOS/MuxtermGpui` 是一个 exec 脚本，转发到同 bundle 内的
+`.app` 结构与 Swift 前端一致：`Contents/MacOS/Muxterm` 是一个 exec 脚本，转发到同 bundle 内的
 `muxterm gpui`。这样做是因为项目规则禁止第二个 frontend binary，而 LaunchServices 不能传参。
+Bundle 可见名称与版本号规则同 Swift：release 用 `dev.muxterm.app`，debug 用 commit 后缀，
+避免开发包和历史安装互相抢 LaunchServices 身份。
 
 ## 8. 已知缺口（v1 不含）
 
@@ -614,7 +617,7 @@ Project / discovery 行用 Core 记账的 attach 频率排序（`attach-history.
   轮询固定 8ms 时 **2.9% / 3.0% / 2.9% CPU**，改成「空闲退避到 64ms、有事件立刻回 8ms」
   加「tmux status 无变化不重绘」后 **0.8% / 0.7% / 0.7% CPU**，RSS 89MB 左右不变。
 - `muxterm gpui` 打开窗口，侧栏列出 workspace，tab 栏与 pane 网格按 `ClientLayout` 渲染。
-- `build/macos/MuxtermGpui.app` 存在、`codesign --verify` 通过、双击可启动。
+- `build/macos/Muxterm.app` 存在、`codesign --verify` 通过、双击可启动。
 
 所有真机测试都用隔离 socket / named session：tmux 走 `-L muxterm-test-*`（清理带同一个 `-L`），
 Herdr 走 `muxterm-test-*` session（只 `session stop` + `session delete`）。

@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
-# 编译 GPUI 跨平台前端 → ./build/macos/MuxtermGpui.app
+# 编译 GPUI 跨平台前端 → ./build/macos/Muxterm.app
 #
 # 结构：
-#   MuxtermGpui.app/Contents/Info.plist
-#   MuxtermGpui.app/Contents/MacOS/MuxtermGpui   exec 脚本，转发到同 bundle 的二进制
-#   MuxtermGpui.app/Contents/Resources/muxterm   gpui feature 编出的单一 binary
+#   Muxterm.app/Contents/Info.plist
+#   Muxterm.app/Contents/MacOS/Muxterm   exec 脚本，转发到同 bundle 的二进制
+#   Muxterm.app/Contents/Resources/muxterm   gpui feature 编出的单一 binary
 #
 # 用 exec 脚本而不是独立 Mach-O：项目规则只允许一个 frontend binary，
 # 而 LaunchServices 不能给 CFBundleExecutable 传参数。
+#
+# 注意：Swift 前端也产出 `build/macos/Muxterm.app`（`scripts/build-macos.sh`）。
+# 两者不要同时构建、不要指望在同一目录里共存：谁最后构建，谁就是当前的
+# `Muxterm.app`。gpui 已是发布前端，发布构建用本脚本。
 #
 # 用法: ./scripts/build-gpui-macos.sh [--release]
 set -euo pipefail
@@ -24,9 +28,9 @@ PROFILE="debug"
 if [[ -n "${MUXTERM_BUNDLE_IDENTIFIER:-}" ]]; then
   BUNDLE_IDENTIFIER="$MUXTERM_BUNDLE_IDENTIFIER"
 elif [[ -n "$RELEASE" ]]; then
-  BUNDLE_IDENTIFIER="dev.muxterm.gpui"
+  BUNDLE_IDENTIFIER="dev.muxterm.app"
 else
-  BUNDLE_IDENTIFIER="dev.muxterm.gpui.debug.$(git rev-parse --short HEAD 2>/dev/null || printf 'local')"
+  BUNDLE_IDENTIFIER="dev.muxterm.app.debug.$(git rev-parse --short HEAD 2>/dev/null || printf 'local')"
 fi
 BUNDLE_VERSION="$(git rev-parse --short HEAD 2>/dev/null || printf 'local')"
 
@@ -44,7 +48,7 @@ fi
 smoke_cli_help "$BIN"
 
 OUT_DIR="$(build_os_dir)"
-APP="$OUT_DIR/MuxtermGpui.app"
+APP="$OUT_DIR/Muxterm.app"
 
 echo "==> assemble $APP"
 rm -rf "$APP"
@@ -68,11 +72,11 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <plist version="1.0">
 <dict>
   <key>CFBundleName</key>
-  <string>Muxterm GPUI</string>
+  <string>Muxterm</string>
   <key>CFBundleDisplayName</key>
-  <string>Muxterm GPUI</string>
+  <string>Muxterm</string>
   <key>CFBundleExecutable</key>
-  <string>MuxtermGpui</string>
+  <string>Muxterm</string>
   <key>CFBundleIconFile</key>
   <string>MuxtermLogo.icns</string>
   <key>CFBundleIdentifier</key>
@@ -93,9 +97,9 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-cat > "$APP/Contents/MacOS/MuxtermGpui" <<'LAUNCHER'
+cat > "$APP/Contents/MacOS/Muxterm" <<'LAUNCHER'
 #!/bin/sh
-# 转发到 bundle 内的单一 binary。$0 是 Contents/MacOS/MuxtermGpui。
+# 转发到 bundle 内的单一 binary。$0 是 Contents/MacOS/Muxterm。
 # LaunchServices 会塞一个 -psn_* 参数，clap 不认，这里过滤掉再转发其余参数。
 args=""
 for arg in "$@"; do
@@ -107,7 +111,7 @@ done
 # shellcheck disable=SC2086  # 有意做词分割，把过滤后的参数原样交给 muxterm
 exec "$(dirname "$0")/../Resources/muxterm" gpui $args
 LAUNCHER
-chmod +x "$APP/Contents/MacOS/MuxtermGpui"
+chmod +x "$APP/Contents/MacOS/Muxterm"
 
 xattr -cr "$APP" 2>/dev/null || true
 chmod 755 "$APP" "$APP/Contents" "$APP/Contents/MacOS" "$APP/Contents/Resources"
