@@ -19,7 +19,9 @@ use crate::frontend::gpui::model::scroll::{wheel_lines, wheel_outcome, WheelOutc
 use crate::frontend::gpui::terminal::mouse::{self, Button, MouseEventKind, MouseModifiers};
 use crate::frontend::gpui::terminal::{encode, KeyPress, Surface};
 use crate::frontend::gpui::theme::Theme;
-use crate::frontend::utils::corebridge::{ClientEventKind, ClientLayout, ClientTab};
+use crate::frontend::utils::corebridge::{
+    ClientEventKind, ClientLayout, ClientRuntimeCapability, ClientRuntimeInfo, ClientTab,
+};
 use crate::frontend::view_store::ViewStore;
 
 /// 事件泵间隔：约 120Hz，够跟住输出又不空转。
@@ -234,6 +236,9 @@ pub struct GpuiApp {
     existing_loaded: bool,
     /// discovery 是否正在跑，避免连续按键重复发查询。
     existing_loading: bool,
+    /// Core 的 runtime provider 元数据（能力查询）：滚轮要不要交给服务端。
+    /// 懒加载，一次进程只读一次。
+    runtime_info: Option<Vec<ClientRuntimeInfo>>,
     /// 连接时用的 tmux socket（`-L`）；隔离 server 的 session 只在它上面可见。
     socket: Option<String>,
     panel_scroll: gpui::ScrollHandle,
@@ -369,6 +374,7 @@ impl GpuiApp {
             existing: Vec::new(),
             existing_loaded: false,
             existing_loading: false,
+            runtime_info: None,
             socket: socket.clone(),
             panel_scroll: gpui::ScrollHandle::new(),
             open_pending: false,
@@ -1235,6 +1241,7 @@ impl GpuiApp {
             existing: Vec::new(),
             existing_loaded: false,
             existing_loading: false,
+            runtime_info: None,
             socket: None,
             panel_scroll: gpui::ScrollHandle::new(),
             open_pending: false,
@@ -1420,6 +1427,12 @@ impl GpuiApp {
     #[doc(hidden)]
     pub fn take_commands_for_tests(&mut self) -> Vec<ClientCommand> {
         self.commands.drain()
+    }
+
+    /// 测试：直接给 runtime provider 元数据（能力查询不经过 Core）。
+    #[doc(hidden)]
+    pub fn set_runtime_info_for_tests(&mut self, providers: Vec<ClientRuntimeInfo>) {
+        self.runtime_info = Some(providers);
     }
 
     /// 无头测试用：上一个按键有没有被消费（消费后才不会被原生菜单再跑一遍）。
@@ -4191,6 +4204,38 @@ impl GpuiApp {
         }
     }
 
+    /// 这个 workspace 的 runtime 是否支持某个能力。
+    ///
+    /// 只问 Core 的 provider 元数据；不能按 runtime 名字分支（同一个名字在
+    /// 不同平台也可能支持不同能力，能力表是唯一契约）。
+    pub(crate) fn workspace_supports(
+        &mut self,
+        workspace_id: &str,
+        capability: ClientRuntimeCapability,
+    ) -> bool {
+        let runtime = self.workspace_runtime(workspace_id);
+        if runtime.is_empty() {
+            return false;
+        }
+        self.runtime_providers()
+            .iter()
+            .find(|provider| provider.id == runtime)
+            .is_some_and(|provider| provider.supports(capability))
+    }
+
+    /// Core 的 provider 元数据（懒加载一次）。
+    fn runtime_providers(&mut self) -> &[ClientRuntimeInfo] {
+        if self.runtime_info.is_none() {
+            self.runtime_info = Some(
+                self.pump
+                    .as_ref()
+                    .and_then(|pump| pump.client().runtime_list().ok())
+                    .unwrap_or_default(),
+            );
+        }
+        self.runtime_info.as_deref().unwrap_or(&[])
+    }
+
     /// 滚轮：先问服务端，再看应用要不要鼠标，最后才动本地历史。
     pub fn handle_wheel(&mut self, wheel: WheelInput, cx: &mut Context<Self>) {
         let WheelInput {
@@ -4208,6 +4253,12 @@ impl GpuiApp {
         let (_, cell_height) = self.cell;
         let accumulator = self.wheel_accumulators.entry(key.clone()).or_insert(0.0);
         let lines = wheel_lines(delta_y, precise, cell_height, accumulator);
+        // Herdr 这类 Runtime 自己持历史，`ScrollPane` 才会拿到权威画面；
+        // tmux/shell 不支持，继续走本机 scrollback。
+        let has_server_scroll = self.workspace_supports(
+            &workspace,
+            crate::frontend::utils::corebridge::ClientRuntimeCapability::ServerScroll,
+        );
         let Some(surface) = self.surfaces.get(&key) else {
             return;
         };
@@ -4216,15 +4267,28 @@ impl GpuiApp {
             grid.mouse_mode() != crate::frontend::gpui::terminal::MouseMode::Off,
             shift,
             grid.alternate_screen(),
-            // gpui 目前没有 Herdr 的服务端滚动通道。
-            false,
+            has_server_scroll,
             lines,
         );
         // 应用鼠标路径固定用 SGR：macOS 同样不跟随 1006 模式。
         let sgr_mode = crate::frontend::gpui::terminal::MouseMode::Normal;
         let payload = match outcome {
             None => return,
-            Some(WheelOutcome::Server(_)) => return,
+            Some(WheelOutcome::Server(count)) => {
+                // 服务端滚：让 Runtime 自己决定（它知道子进程的鼠标/备用屏状态）。
+                self.commands.push(ClientCommand::Task {
+                    workspace_id: Some(workspace.clone()),
+                    task: crate::frontend::utils::corebridge::ClientTask::ScrollPane {
+                        pane_id,
+                        lines: count,
+                    },
+                });
+                self.note_input_sent();
+                self.selection = None;
+                self.dragging_selection = false;
+                cx.notify();
+                return;
+            }
             Some(WheelOutcome::MouseReport(count)) => mouse::encode(
                 MouseEventKind::Wheel(count > 0, count.unsigned_abs() as u8),
                 col,

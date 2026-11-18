@@ -164,8 +164,13 @@ SGR 属性不是只解析、不画：绘制 run 的 key 是「颜色 + 字体变
 
 滚轮路由优先级与 macOS `TerminalView.scrollWheel` 一致：
 `ServerScroll > ApplicationMouse(mouse_reporting && !shift) > ApplicationArrows(alternate_screen) > LocalHistory`。
-应用鼠标路径恒用 SGR 编码；方向键回落用裸 `CSI A` / `CSI B`；服务端滚动路径在本前端是 no-op
-（gpui 还没有服务端滚动通道，`has_server_scroll` 恒 false）。
+应用鼠标路径恒用 SGR 编码；方向键回落用裸 `CSI A` / `CSI B`。
+
+`has_server_scroll` 取 `support()` 里的 `ServerScroll` 能力（`GpuiApp::workspace_supports`
+懒加载 Core 的 provider 元数据），**不按 runtime 名字分支**。命中时发
+`ClientTask::ScrollPane { pane_id, lines }` 交给 Runtime：Herdr 的历史在服务端，前端
+本来就没有可滚的 scrollback。tmux / shell 没有这个能力，继续走 `Surface::scroll_offset`
+的本地历史（tmux 的 attach 历史由 Core `PaneHistory` 回填）。
 
 ### 5.2 宽字符与选词
 
@@ -476,7 +481,6 @@ Bundle 可见名称与版本号规则同 Swift：release 用 `dev.muxterm.app`�
 
 | 缺口 | 影响 | 后续 |
 | --- | --- | --- |
-| 服务端滚动通道 | Herdr / tmux 的 server-side scroll 走不到 | 等 Core 提供通道后接 `WheelOutcome::Server` |
 | 提交帧绘制（committed paint） | 没有「已提交但未确认」的第二层 | 按 `terminal.md` 缺口表接 |
 | 逐 pane 颜色上报 | Core 的 pane colours 仍取默认 | 接 `ClientCommand::PaneColours` |
 | 无障碍树 | 与现状持平（现状也没有） | gpui 已依赖 accesskit，接上即净增 |
