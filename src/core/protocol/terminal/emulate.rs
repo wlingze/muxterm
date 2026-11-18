@@ -210,8 +210,16 @@ pub struct TerminalState {
     pub active_charset: CharsetIndex,
     /// W18：OSC 133 命令回合（滚动条刻度）。Codex 必须在 A/B/C/D 时写入，不要永远空。
     command_marks: Vec<CommandMark>,
-    /// B 与 C 之间收集的命令文本（W18h）。
-    command_pending: Option<String>,
+    /// B 时刻的命令行锚点 `(行 seq, 光标列)`；C 时从网格取最终命令文本。
+    ///
+    /// 不能按字节收集：zsh 语法高亮会在 B..C 之间反复重绘同一行，
+    /// 原始字节里混着 SGR 和光标移动，按屏幕取值才是 iTerm2 的语义。
+    command_anchor: Option<(u64, usize)>,
+    /// 命令行滚入 scrollback 时提前抓的未裁剪文本。
+    ///
+    /// `ScrollbackLine.text` 会 `trim_end`（搜索用），软换行边界的空格
+    /// 恰好是命令的一部分；命令文本必须在滚出时按原始单元格抓一份。
+    command_anchor_text: Option<(u64, String)>,
     /// 命令回合开始时的 seq（刻度跳转用）。
     command_start_seq: u64,
     /// 最近一次已完成 C、等待 D 补退出码的命令刻度 seq。
@@ -356,7 +364,8 @@ impl TerminalState {
             osc_esc_seen: false,
             osc_pending: None,
             command_marks: Vec::new(),
-            command_pending: None,
+            command_anchor: None,
+            command_anchor_text: None,
             command_start_seq: 0,
             command_mark_seq: None,
             command_prune_fingerprint: None,
@@ -415,7 +424,7 @@ impl TerminalState {
     /// 会让 UI 把 stale seq 错误地当成 offset=0 跳转。
     fn prune_command_marks(&mut self) {
         if self.command_marks.is_empty()
-            && self.command_pending.is_none()
+            && self.command_anchor.is_none()
             && self.command_mark_seq.is_none()
         {
             return;
@@ -440,9 +449,12 @@ impl TerminalState {
                 self.command_mark_seq = None;
             }
         }
-        if self.command_pending.is_some() && !live.contains(&self.command_start_seq) {
-            self.command_pending = None;
-            self.command_start_seq = 0;
+        if let Some((seq, _)) = self.command_anchor {
+            if !live.contains(&seq) {
+                self.command_anchor = None;
+                self.command_anchor_text = None;
+                self.command_start_seq = 0;
+            }
         }
         self.command_prune_fingerprint = Some(fingerprint);
     }
@@ -576,7 +588,7 @@ impl TerminalState {
             self.scroll_bottom = rows - 1;
         }
 
-        self.wrap_pending = false;
+        self.cancel_pending_wrap();
         self.cursor_row = self.cursor_row.min(rows - 1);
         self.cursor_col = self.cursor_col.min(cols - 1);
         self.prune_command_marks();
@@ -616,22 +628,136 @@ impl TerminalState {
         self.push_reply(b"\x1b\\");
     }
 
-    /// OSC 133 B 之后只收命令文本。超过这个长度说明 C 没来，后面是画面。
+    /// OSC 133 B 后的命令文本上限。超过说明 C 丢了，不能把后续画面当命令。
     const MAX_COMMAND_TEXT_CHARS: usize = 4096;
 
-    fn collect_command_byte(&mut self, b: u8) {
-        let Some(len) = self.command_pending.as_ref().map(String::len) else {
-            return;
+    /// 取 B..C 的最终屏幕文本（iTerm2 `FTCS_COMMAND_EXECUTED` 语义）。
+    ///
+    /// 取值边界是 B 的光标与 C 的光标之间的单元格；C 在 B 左边/上面时
+    /// 按空命令处理。中间经过硬换行时用一个空格连接（侧栏是单行显示），
+    /// 软换行直接拼接并把边界空格当成命令的一部分。
+    fn take_command_text(&mut self) -> String {
+        let Some((anchor_seq, anchor_col)) = self.command_anchor.take() else {
+            return String::new();
         };
-        if len >= Self::MAX_COMMAND_TEXT_CHARS {
-            self.command_pending = None;
-            self.command_start_seq = 0;
-            self.command_prune_fingerprint = None;
-            return;
+        let anchor_text = self
+            .command_anchor_text
+            .take()
+            .filter(|(seq, _)| *seq == anchor_seq)
+            .map(|(_, text)| text);
+        let Some(anchor) = self.line_index_by_seq(anchor_seq) else {
+            return String::new();
+        };
+        let cursor_seq = self
+            .grid_line_ids
+            .get(self.cursor_row)
+            .copied()
+            .unwrap_or(self.next_seq);
+        let Some(cursor) = self.line_index_by_seq(cursor_seq) else {
+            return String::new();
+        };
+        if cursor < anchor || (cursor == anchor && self.cursor_col < anchor_col) {
+            return String::new();
         }
-        if let Some(pending) = self.command_pending.as_mut() {
-            pending.push(b as char);
+        if cursor - anchor > Self::MAX_COMMAND_TEXT_CHARS {
+            return String::new();
         }
+        let mut out = String::new();
+        for index in anchor..=cursor {
+            let (start, end) = match (index == anchor, index == cursor) {
+                (true, true) => (anchor_col, self.cursor_col),
+                (true, false) => (anchor_col, usize::MAX),
+                (false, true) => (0, self.cursor_col),
+                (false, false) => (0, usize::MAX),
+            };
+            let Some(text) = (if index == anchor {
+                anchor_text.clone().or_else(|| self.line_text_at(index))
+            } else {
+                self.line_text_at(index)
+            }) else {
+                return String::new();
+            };
+            let segment = Self::text_in_columns(&text, start, end);
+            if index > anchor {
+                // 软换行是同一逻辑行，边界的空格是命令的一部分。
+                if !self.line_is_soft_wrapped_at(index - 1) {
+                    out.push(' ');
+                }
+            }
+            if self.line_is_soft_wrapped_at(index) {
+                out.push_str(&segment);
+            } else {
+                out.push_str(segment.trim_end());
+            }
+            if out.len() > Self::MAX_COMMAND_TEXT_CHARS * 4 {
+                return String::new();
+            }
+        }
+        let command = out.trim().to_string();
+        if command.chars().count() > Self::MAX_COMMAND_TEXT_CHARS {
+            return String::new();
+        }
+        command
+    }
+
+    /// 按终端列区间取一行文本（右开；`usize::MAX` 表示行尾）。
+    ///
+    /// scrollback 只存文本不存单元格，宽字符是一个 char 却占两列，
+    /// 必须按 `is_wide` 累计宽度才能和光标列对齐。
+    fn text_in_columns(text: &str, start_col: usize, end_col: usize) -> String {
+        let mut out = String::new();
+        let mut col = 0usize;
+        for ch in text.chars() {
+            let width = if is_wide(ch) { 2 } else { 1 };
+            if col >= start_col && col < end_col {
+                out.push(ch);
+            }
+            col = col.saturating_add(width);
+            if col >= end_col {
+                break;
+            }
+        }
+        out
+    }
+
+    /// 把 scrollback+可见屏的统一行号映射回文本。
+    fn line_text_at(&self, index: usize) -> Option<String> {
+        if let Some(line) = self.scrollback.get(index) {
+            return Some(line.text.clone());
+        }
+        self.grid
+            .get(index.saturating_sub(self.scrollback.len()))
+            .map(|row| Self::text_from_cells(row))
+    }
+
+    /// 单元格行转文本：跳过宽字符右侧的占位格。
+    ///
+    /// 终端里「中」占两格，第二格是占位；直接 join 会变成「中 文」。
+    fn text_from_cells(cells: &[Cell]) -> String {
+        let mut out = String::new();
+        let mut skip_placeholder = false;
+        for cell in cells {
+            if skip_placeholder {
+                skip_placeholder = false;
+                continue;
+            }
+            out.push(cell.ch);
+            skip_placeholder = is_wide(cell.ch);
+        }
+        out
+    }
+
+    fn line_is_soft_wrapped_at(&self, index: usize) -> bool {
+        let Some(grid_index) = index.checked_sub(self.scrollback.len()) else {
+            return self
+                .scrollback
+                .get(index)
+                .is_some_and(|line| line.soft_wrapped);
+        };
+        self.grid_soft_wrapped
+            .get(grid_index)
+            .copied()
+            .unwrap_or(false)
     }
 
     /// 把原始字节喂给解析器。
@@ -642,12 +768,7 @@ impl TerminalState {
         for &b in bytes {
             // vte 0.13 的 Handler 不暴露 osc_dispatch，OSC 由内部 Performer
             // 直接派发成 set_title/set_color 等；注意力 OSC 在这里并行收集。
-            let terminated_osc = self.scan_attention_byte(b);
-            // W18h：B..C 之间的命令文本（含混入的 C OSC 帧，C 处理时再剥掉）。
-            // 终止 OSC 的 BEL/ST 不是命令文本，不收集。
-            if !terminated_osc {
-                self.collect_command_byte(b);
-            }
+            self.scan_attention_byte(b);
             processor.advance(self, b);
         }
         self.processor = processor;
@@ -665,8 +786,7 @@ impl TerminalState {
     /// 9/99/777/1337 的有效通知形式产生注意力信号；OSC 9;4 进度帧、
     /// 133 的 prompt 边界以及 1337 的其它 iTerm2 扩展不产生通知，
     /// 其余原样留给 vte 处理。
-    /// 返回 true 表示该字节终止了一条 OSC（BEL/ST），调用方不要把它当命令文本。
-    fn scan_attention_byte(&mut self, b: u8) -> bool {
+    fn scan_attention_byte(&mut self, b: u8) {
         if self.osc_pending.is_some() {
             let mut buf = self.osc_pending.take().expect("is_some 分支必须命中");
             let mut terminated = false;
@@ -694,7 +814,7 @@ impl TerminalState {
             } else {
                 self.osc_pending = Some(buf);
             }
-            return terminated;
+            return;
         }
         if self.osc_esc_seen {
             if b == b']' {
@@ -705,12 +825,11 @@ impl TerminalState {
                 // 普通 ESC + 非 `]`：不是 OSC，重新按当前字节处理。
                 self.scan_attention_byte(b);
             }
-            return false;
+            return;
         }
         if b == 0x1b {
             self.osc_esc_seen = true;
         }
-        false
     }
 
     /// 处理一条完整的注意力 OSC（其余 OSC 由 vte 正常处理，这里直接忽略）。
@@ -724,24 +843,28 @@ impl TerminalState {
             b"133" => {
                 let code = params.get(1).and_then(|p| p.first()).copied();
                 match code {
+                    Some(b'A') => {
+                        // 新提示符开始：上一回合没等到 C 就不再是待取命令。
+                        self.command_anchor = None;
+                        self.command_anchor_text = None;
+                        self.command_start_seq = 0;
+                    }
                     Some(b'B') => {
-                        // 命令文本从 B 开始收集，到 C 结束（W18h）。
-                        self.command_pending = Some(String::new());
+                        // 锚点 = B 的单元格位置；命令文本在 C 时从屏幕取。
                         self.command_mark_seq = None;
-                        self.command_start_seq = self
+                        let seq = self
                             .grid_line_ids
                             .get(self.cursor_row)
                             .copied()
                             .unwrap_or(self.next_seq);
+                        self.command_start_seq = seq;
+                        self.command_anchor = Some((seq, self.cursor_col));
+                        self.command_anchor_text = None;
                     }
                     Some(b'C') => {
-                        // B..C 之间的那一行就是命令文本；C 之后清空待收集。
+                        // 取 B..C 的最终屏幕文本；C 之后清空锚点。
                         self.command_mark_seq = None;
-                        let cmd = self.command_pending.take().map(|cmd| {
-                            // 收集时把 C 的 OSC 帧也吞进来了，剥到 `ESC ]` 为止。
-                            cmd.split("\x1b]").next().unwrap_or("").trim().to_string()
-                        });
-                        let cmd = cmd.unwrap_or_default();
+                        let cmd = self.take_command_text();
                         if !cmd.is_empty() {
                             self.command_marks.push(CommandMark {
                                 seq: self.command_start_seq,
@@ -755,6 +878,9 @@ impl TerminalState {
                         }
                     }
                     Some(b'D') => {
+                        // D 结束回合：B 之后直接 D 说明命令被取消，迟到 C 不应建刻度。
+                        self.command_anchor = None;
+                        self.command_anchor_text = None;
                         // OSC 133;D;<exit>：退出码在第 3 段，解析整段（12 不能变 1）。
                         let exit = params.get(2).and_then(|p| {
                             std::str::from_utf8(p)
@@ -776,10 +902,10 @@ impl TerminalState {
                             }
                         }
                     }
-                    // A/B 是 prompt 边界，P 是属性，不是命令完成信号。
+                    // P 是属性，不是命令完成信号。
                     // 命令完成只接受 D；否则普通 prompt 刷新会把运行中的
                     // agent 错误地标成 Done。
-                    Some(b'A' | b'P') => {}
+                    Some(b'P') => {}
                     _ => {}
                 }
             }
@@ -943,13 +1069,32 @@ impl TerminalState {
         self.linefeed_inner(false);
     }
 
+    /// 光标离开末列（CR/CUP/硬换行等）时取消待换行。
+    ///
+    /// `put_char` 在末列会先乐观地把该行标成软换行；若换行没真正发生，
+    /// 这个标记必须撤销，否则搜索/命令文本会把两条独立行拼在一起。
+    fn cancel_pending_wrap(&mut self) {
+        if !self.wrap_pending {
+            return;
+        }
+        self.wrap_pending = false;
+        if let Some(flag) = self.grid_soft_wrapped.get_mut(self.cursor_row) {
+            *flag = false;
+        }
+    }
+
     /// 软换行（写满末列后自动折行）：滚出的行标记 soft_wrapped，搜索可拼回。
     fn linefeed_soft(&mut self) {
         self.linefeed_inner(true);
     }
 
     fn linefeed_inner(&mut self, soft: bool) {
-        self.wrap_pending = false;
+        if soft {
+            // 软换行：乐观标记保留，下一行是同一逻辑行的继续。
+            self.wrap_pending = false;
+        } else {
+            self.cancel_pending_wrap();
+        }
         if self.cursor_row < self.scroll_bottom {
             self.cursor_row += 1;
         } else {
@@ -1000,12 +1145,15 @@ impl TerminalState {
     }
 
     fn carriage_return(&mut self) {
-        self.wrap_pending = false;
+        self.cancel_pending_wrap();
         self.cursor_col = 0;
     }
 
     /// 把一行推入 scrollback（按 `with_scrollback` 上限截断，seq 单调递增）。
     fn push_scrollback(&mut self, cells: &[Cell], seq: u64, soft_wrapped: bool) {
+        if self.command_anchor.is_some_and(|(anchor, _)| anchor == seq) {
+            self.command_anchor_text = Some((seq, Self::text_from_cells(cells)));
+        }
         if self.scrollback.len() >= self.scrollback_max {
             self.scrollback.pop_front();
         }
@@ -1650,18 +1798,18 @@ impl Handler for TerminalState {
     }
 
     fn goto(&mut self, line: i32, col: usize) {
-        self.wrap_pending = false;
+        self.cancel_pending_wrap();
         self.cursor_row = line.clamp(0, self.rows() as i32 - 1) as usize;
         self.cursor_col = col.min(self.cols().saturating_sub(1));
     }
 
     fn goto_line(&mut self, line: i32) {
-        self.wrap_pending = false;
+        self.cancel_pending_wrap();
         self.cursor_row = line.clamp(0, self.rows() as i32 - 1) as usize;
     }
 
     fn goto_col(&mut self, col: usize) {
-        self.wrap_pending = false;
+        self.cancel_pending_wrap();
         self.cursor_col = col.min(self.cols().saturating_sub(1));
     }
 
@@ -1670,33 +1818,33 @@ impl Handler for TerminalState {
     }
 
     fn move_up(&mut self, n: usize) {
-        self.wrap_pending = false;
+        self.cancel_pending_wrap();
         self.cursor_row = self.cursor_row.saturating_sub(n.min(self.cursor_row));
     }
 
     fn move_down(&mut self, n: usize) {
-        self.wrap_pending = false;
+        self.cancel_pending_wrap();
         self.cursor_row = (self.cursor_row + n).min(self.rows() - 1);
     }
 
     fn move_forward(&mut self, n: usize) {
-        self.wrap_pending = false;
+        self.cancel_pending_wrap();
         self.cursor_col = (self.cursor_col + n).min(self.cols() - 1);
     }
 
     fn move_backward(&mut self, n: usize) {
-        self.wrap_pending = false;
+        self.cancel_pending_wrap();
         self.cursor_col = self.cursor_col.saturating_sub(n.min(self.cursor_col));
     }
 
     fn move_down_and_cr(&mut self, n: usize) {
-        self.wrap_pending = false;
+        self.cancel_pending_wrap();
         self.move_down(n);
         self.cursor_col = 0;
     }
 
     fn move_up_and_cr(&mut self, n: usize) {
-        self.wrap_pending = false;
+        self.cancel_pending_wrap();
         self.move_up(n);
         self.cursor_col = 0;
     }
@@ -1715,7 +1863,7 @@ impl Handler for TerminalState {
     }
 
     fn backspace(&mut self) {
-        self.wrap_pending = false;
+        self.cancel_pending_wrap();
         if self.cursor_col > 0 {
             self.cursor_col -= 1;
         }
@@ -1762,12 +1910,12 @@ impl Handler for TerminalState {
         self.cursor_row = 0;
         self.cursor_col = 0;
         self.line_wrap = true;
-        self.wrap_pending = false;
+        self.cancel_pending_wrap();
         self.show_cursor = true;
     }
 
     fn reverse_index(&mut self) {
-        self.wrap_pending = false;
+        self.cancel_pending_wrap();
         if self.cursor_row == self.scroll_top {
             self.scroll_down_n(1);
         } else if self.cursor_row > 0 {
@@ -1848,7 +1996,7 @@ impl Handler for TerminalState {
             self.scroll_top = 0;
             self.scroll_bottom = rows.saturating_sub(1);
         }
-        self.wrap_pending = false;
+        self.cancel_pending_wrap();
         self.cursor_row = 0;
         self.cursor_col = 0;
     }
@@ -3217,6 +3365,94 @@ mod attention_signal_tests {
             marks[0].seq,
             marks[1].seq
         );
+    }
+
+    /// 命令文本取「按 C 时的屏幕」而不是 B..C 的原始字节。
+    ///
+    /// 用户报障（截图）：侧栏 Commands 把 zsh 语法高亮的 `[39m`、`[29D`
+    /// 也当成命令显示。iTerm2 的 FTCS_COMMAND_EXECUTED 明确要求在 C
+    /// 到达时按屏幕内容取命令；颜色是单元格属性，不是命令字符。
+    #[test]
+    fn command_mark_uses_the_rendered_line_not_the_raw_redraw_bytes() {
+        let mut t = TerminalState::new(40, 6);
+        t.feed(b"$ \x1b]133;B\x07");
+        t.feed(b"./scripts/build-\x1b[39m\x1b[32mgpui\x1b[39m-macos.sh");
+        // OSC 0 中的标题是元数据；裸文本里的 [39m 则确实是参数。
+        t.feed(b"\x1b]0;title\x1b\\ '[39m'\r\n\x1b]133;C\x07");
+        assert_eq!(
+            t.command_marks()[0].command,
+            "./scripts/build-gpui-macos.sh '[39m'",
+            "语法高亮的 SGR 不能进命令文本"
+        );
+    }
+
+    /// C 的光标是右开边界，不包括光标右边的提示文字或 C 之后的输出。
+    #[test]
+    fn command_mark_stops_at_the_c_cursor() {
+        let mut t = TerminalState::new(40, 6);
+        t.feed(b"$ \x1b]133;B\x07git status    RPROMPT\x1b[11D\x1b]133;C\x07output");
+        assert_eq!(t.command_marks()[0].command, "git status");
+    }
+
+    /// 行内编辑（光标左移后覆盖）也必须按最终屏幕取值。
+    #[test]
+    fn command_mark_reads_the_edited_line() {
+        let mut t = TerminalState::new(40, 6);
+        t.feed(b"$ \x1b]133;B\x07car\x1b[1Dt\r\n\x1b]133;C\x07");
+        assert_eq!(t.command_marks()[0].command, "cat");
+    }
+
+    /// 宽字符按两列占位，按屏幕列切片不能把中文切坏。
+    #[test]
+    fn command_mark_keeps_wide_characters_intact() {
+        let mut t = TerminalState::new(40, 6);
+        // 刻意按单个字节分段：UTF-8、CSI 和 OSC 的边界都可能在两次 feed 之间。
+        for byte in "$ \x1b]133;B\x07echo 中文\r\n\x1b]133;C\x1b\\".as_bytes() {
+            t.feed(std::slice::from_ref(byte));
+        }
+        assert_eq!(t.command_marks()[0].command, "echo 中文");
+    }
+
+    #[test]
+    fn command_mark_keeps_wrap_spaces_and_real_line_breaks_across_scrollback() {
+        let mut t = TerminalState::with_scrollback(8, 2, 8);
+        // 8 列：行 0 写满后软换行续到 'test1234'；回车后 '--flag' 是新的硬换行。
+        t.feed(b"$ \x1b]133;B\x07cargo test1234\r\n--flag\r\n\x1b]133;C\x07");
+        assert_eq!(t.command_marks()[0].command, "cargo test1234 --flag");
+    }
+
+    #[test]
+    fn command_mark_ignores_erased_and_abandoned_input() {
+        for edit in [
+            &b"cargo\x1b[5D\x1b[K"[..], // 清掉整条输入
+            b"cargo\r",                 // C 在 B 左边
+            b"cargo\x1b]133;D\x07",     // B 之后直接 D：取消，迟到的 C 不应创建刻度
+        ] {
+            let mut t = TerminalState::new(40, 6);
+            t.feed(b"$ \x1b]133;B\x07");
+            t.feed(edit);
+            t.feed(b"\x1b]133;C\x07");
+            assert!(t.command_marks().is_empty(), "{edit:?}");
+            assert!(!t
+                .take_attention_signals()
+                .contains(&AttentionSignal::CommandStart));
+        }
+    }
+
+    #[test]
+    fn command_mark_bounds_the_final_command_not_its_redraw_traffic() {
+        let mut t = TerminalState::new(40, 6);
+        t.feed(b"$ \x1b]133;B\x07");
+        for _ in 0..700 {
+            t.feed(b"\x1b[32mjob\x1b[3D");
+        }
+        t.feed(b"cargo test\x1b]133;C\x07");
+        assert_eq!(t.command_marks()[0].command, "cargo test");
+        let mut t = TerminalState::new(80, 24);
+        t.feed(b"\x1b]133;B\x07");
+        t.feed(&vec![b'x'; 4097]);
+        t.feed(b"\x1b]133;C\x07");
+        assert!(t.command_marks().is_empty(), "不能发布截断的命令身份");
     }
 
     #[test]

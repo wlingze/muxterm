@@ -677,6 +677,31 @@ fn ffi_agent_process_and_screen_in_one_batch_use_screen_rules() {
     }
 }
 
+/// 对照 WorkspaceSidebarModelTests：Commands 的详情来自 attention.process_name。
+/// 重绘中被改掉的命令、SGR 和程序的输出都不能成为运行中命令的名字。
+#[test]
+fn ffi_command_mark_redraw_supplies_the_running_command_name() {
+    let h = muxterm_catalog_new();
+    unsafe {
+        let id = WorkspaceId::new("local", None, "command-fixture", "shell", "repo");
+        let value = poll_attention_fixture(
+            h,
+            &id,
+            vec![
+                process_fixture(1, "zsh"),
+                StateChange::PaneOutput {
+                    pane: PaneId(1),
+                    data: b"repo % \x1b]133;B\x07\x1b[90m./scripts/build-\x1b[39m\x1b[32mgpui\x1b[39m-macos.sh --debug\x1b[5Drelease\r\n\x1b]133;C\x07   Compiling muxterm".to_vec(),
+                },
+            ],
+        );
+        muxterm_free(h);
+        let pane = &value["workspaces"][0]["panes"][0];
+        assert_eq!(pane["process_name"], "build-gpui-macos.sh --release");
+        assert_eq!(pane["process_is_agent"], false);
+    }
+}
+
 #[test]
 fn ffi_osc7501_program_status_is_exported_and_drives_attention() {
     let h = muxterm_catalog_new();

@@ -83,6 +83,9 @@
 本轮只读确认了以下基础，未把它们当作整项功能已完成：
 
 - `src/core/protocol/terminal/emulate.rs` 的 `CommandMark` 有稳定行 ID、命令文本和退出码；
+  命令文本按 iTerm2 `FTCS_COMMAND_EXECUTED` 语义取自 C 到达时的屏幕单元格
+  （B 的光标到 C 的光标，跨软换行拼接、跨硬换行用空格连接），不按 B..C 原始字节拼接，
+  因此 shell 语法高亮的 SGR/光标移动不会混进命令名；
   **还不能单凭这三个字段证明完整输出起止范围已就绪**。
 - `src/core/workspace/pane_buf.rs` 有有界历史、搜索、最近 N 行、命令刻度及历史坐标查询。
 - `src/core/protocol/ffi/functions/snapshot.rs` 已经向 frontend 暴露命令刻度；
