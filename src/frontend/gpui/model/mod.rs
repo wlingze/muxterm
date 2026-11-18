@@ -19,6 +19,7 @@ pub mod ime;
 pub mod input_encoding;
 pub mod layout_projection;
 pub mod links;
+pub mod machine_inventory;
 pub mod menu;
 pub mod pane_dimming;
 pub mod pane_menu;

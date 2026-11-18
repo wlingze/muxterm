@@ -4,7 +4,9 @@
 use gpui::{px, size, Entity, TestAppContext, VisualTestContext};
 use muxterm::frontend::gpui::chrome::panel_view::PanelRow;
 use muxterm::frontend::gpui::model::existing::ExistingRuntime;
+use muxterm::frontend::gpui::model::machine_inventory::MachineInventory;
 use muxterm::frontend::gpui::model::panel::PanelTab;
+use muxterm::frontend::gpui::model::target::TargetTransport;
 use muxterm::frontend::gpui::state::GpuiApp;
 use muxterm::frontend::utils::corebridge::{ClientPane, ClientTab, ClientWorkspace};
 use muxterm::frontend::view_store::ViewStore;
@@ -112,6 +114,126 @@ fn local_tmux_survives_a_same_named_remote_session(cx: &mut TestAppContext) {
         if config.transport.label() == "local")),
         "远程同名 session 不能吞掉本机 tmux: {rows:?}"
     );
+}
+
+fn remote(machine: &str, session: &str) -> ExistingRuntime {
+    ExistingRuntime {
+        name: session.into(),
+        runtime: "tmux".into(),
+        transport: "ssh".into(),
+        target: machine.into(),
+        session: session.into(),
+        socket: None,
+        windows: 1,
+        attached: false,
+        workspace_id: None,
+        path: String::new(),
+    }
+}
+
+fn ryzen() -> TargetTransport {
+    TargetTransport::Ssh {
+        name: "ryzen".into(),
+    }
+}
+
+/// 报障回归：搜索时慢机器还在路上，界面先显示「没有匹配结果」，过一会结果
+/// 又出现。已解析完的机器结果必须立即显示；没回来的机器只能标「加载中」，
+/// 不能当成「没有匹配」。
+#[gpui::test]
+fn a_slow_machine_is_loading_not_an_empty_result(cx: &mut TestAppContext) {
+    // 本机回包了（没有命中），远端还在路上。
+    let mut inventory = MachineInventory::default();
+    inventory.begin(&[TargetTransport::Local, ryzen()]);
+    inventory.finish(&TargetTransport::Local, vec![local_muxterm()]);
+    let (view, cx) = mount(topology("tmux", "local-muxterm", None), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.set_machine_inventory_for_tests(inventory);
+            app.show_panel(PanelTab::Workspaces, cx);
+            app.set_panel_query("zzz", cx);
+        })
+    });
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("panel-empty").is_none(),
+        "远端还没回包时不能报「没有匹配结果」"
+    );
+    // 标题行要真的画出来，并带上「正在检查」的状态。
+    assert!(
+        cx.debug_bounds("panel-heading-status-0").is_some(),
+        "还在加载的机器必须有标题和加载状态"
+    );
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            assert!(
+                matches!(app.panel_rows().first(), Some(PanelRow::Heading { .. })),
+                "慢机器要留下标题行：{:?}",
+                app.panel_rows()
+            );
+            // 标题行不是动作行：Enter 不能触发任何命令（先丢掉首帧 Resize）。
+            let _ = app.take_commands_for_tests();
+            app.activate_panel_row(cx);
+            let commands = app.take_commands_for_tests();
+            assert!(
+                commands.is_empty(),
+                "Enter 落在机器标题上不能打开任何东西：{commands:?}"
+            );
+        })
+    });
+
+    // 一台都还没回：同样是「加载中」，不是空结果。
+    let mut pending = MachineInventory::default();
+    pending.begin(&[TargetTransport::Local, ryzen()]);
+    let (view, cx) = mount(topology("tmux", "local-muxterm", None), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.set_machine_inventory_for_tests(pending);
+            app.show_panel(PanelTab::Workspaces, cx);
+            app.set_panel_query("zzz", cx);
+        })
+    });
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("panel-empty").is_none(),
+        "所有机器都在路上时不能报「没有匹配结果」"
+    );
+}
+
+/// 报障回归：迟到的机器结果不能抢走用户已经选中的行。
+#[gpui::test]
+fn a_late_machine_result_keeps_the_selected_row(cx: &mut TestAppContext) {
+    let mut inventory = MachineInventory::default();
+    inventory.begin(&[TargetTransport::Local, ryzen()]);
+    inventory.finish(
+        &TargetTransport::Local,
+        vec![remote("local", "alpha"), remote("local", "beta")],
+    );
+    let (view, cx) = mount(topology("tmux", "local-muxterm", None), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.set_machine_inventory_for_tests(inventory);
+            app.show_panel(PanelTab::Workspaces, cx);
+            let rows = app.panel_rows();
+            let target = rows
+                .iter()
+                .position(|row| row.title() == "alpha")
+                .expect("本机结果必须立即显示");
+            while app.panel_selected() < target {
+                app.move_panel_selection(1, cx);
+            }
+            assert_eq!(app.panel_rows()[app.panel_selected()].title(), "alpha");
+        })
+    });
+
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.finish_machine_for_tests(&ryzen(), vec![remote("ryzen", "api")], cx);
+        })
+    });
+    let selected =
+        cx.update(|_, cx| view.update(cx, |app, _| app.panel_rows()[app.panel_selected()].title()));
+    assert_eq!(selected, "alpha", "远端回包不能把选中行顶掉");
 }
 
 /// 报障回归：普通 zsh 里滚轮完全无效，看不到历史记录。
