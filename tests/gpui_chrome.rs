@@ -4429,73 +4429,9 @@ fn dragging_the_sidebar_divider_resizes_the_sidebar(cx: &mut TestAppContext) {
     assert!(SIDEBAR_MIN_WIDTH < SIDEBAR_MAX_WIDTH);
 }
 
-/// 用户报障：折叠的 Commands 仍占一大块空白，Hidden Commands 被窗口下沿盖住。
-///
-/// 对齐 VS Code 侧边栏：四段排在同一列、各自只占内容高度、整栏一个滚动区；
-/// 折叠 = 只留段头，下一段立刻跟上来。
-#[gpui::test]
-fn the_sidebar_stacks_sections_and_collapses_to_headers(cx: &mut TestAppContext) {
-    let (view, cx) = mount(store_with_two_workspaces(), cx);
-    cx.run_until_parked();
-    let sidebar = cx.debug_bounds("sidebar").expect("侧栏必须渲染");
-    let scroll = cx
-        .debug_bounds("sidebar-scroll")
-        .expect("整栏必须只有一个滚动区");
-    assert!(
-        f32::from(scroll.size.height) <= f32::from(sidebar.size.height) + 0.5,
-        "滚动区不能超出侧栏：{scroll:?} / {sidebar:?}"
-    );
-
-    let agents = cx
-        .debug_bounds("section-Agents")
-        .expect("Agents 段头必须渲染");
-    let commands = cx
-        .debug_bounds("section-Commands")
-        .expect("Commands 段头必须渲染");
-    let hidden = cx
-        .debug_bounds("section-HiddenCommands")
-        .expect("Hidden Commands 段头必须渲染");
-
-    // 空段之间只有 8pt padding + 1pt hairline + 4 + 4pt margin。
-    let gap =
-        f32::from(commands.origin.y) - (f32::from(agents.origin.y) + f32::from(agents.size.height));
-    assert!(
-        gap <= 20.0,
-        "空段之间不能留按比例切出来的空白（折叠看起来没生效）：{gap}"
-    );
-
-    // 贴底就会被窗口下沿裁掉；段头必须完整落在侧栏里。
-    assert!(
-        f32::from(hidden.origin.y) + f32::from(hidden.size.height)
-            <= f32::from(sidebar.origin.y) + f32::from(sidebar.size.height) - 2.0,
-        "Hidden Commands 不能被窗口下沿盖住：{hidden:?} / {sidebar:?}"
-    );
-
-    // 折叠 Commands：只剩 26pt 段头，Hidden Commands 马上跟上来。
-    cx.simulate_mouse_down(
-        commands.center(),
-        gpui::MouseButton::Left,
-        gpui::Modifiers::none(),
-    );
-    cx.run_until_parked();
-    let commands_after = cx
-        .debug_bounds("section-Commands")
-        .expect("折叠后段头仍然渲染");
-    assert!(
-        (f32::from(commands_after.size.height) - 26.0).abs() < 1.0,
-        "折叠后只留段头：{commands_after:?}"
-    );
-    let hidden_after = cx
-        .debug_bounds("section-HiddenCommands")
-        .expect("下一段必须跟着上来");
-    let gap = f32::from(hidden_after.origin.y)
-        - (f32::from(commands_after.origin.y) + f32::from(commands_after.size.height));
-    assert!(
-        gap <= 20.0,
-        "折叠的 Commands 不能继续占着一整块固定高度：{gap}"
-    );
-    let _ = view;
-}
+// 几何与拖动回归挂同一个真实 GpuiApp，无需启动系统窗口。
+#[path = "support/gpui_sidebar_layout.rs"]
+mod sidebar_layout_regressions;
 
 /// 用户报障（截图 3）：tab 栏应该默认等宽铺满，并用颜色区分运行/完成。
 ///

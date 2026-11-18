@@ -220,8 +220,13 @@ pub struct GpuiApp {
     pub(crate) sidebar_width: f32,
     /// 正在拖侧栏分隔条。
     pub(crate) sidebar_dragging: bool,
-    /// 按下分隔条时鼠标到侧栏左边界的距离（拖动时保持这个偏移）。
+    /// 按下分隔条时鼠标到侧栏左边界的距离（横向拖动时保持这个偏移）。
     pub(crate) sidebar_drag_offset: f32,
+    /// Workspaces / Agents / Commands / Hidden Commands 的持久布局权重。
+    pub(crate) sidebar_section_weights: [f32; 4],
+    /// 当前纵向分隔条拖动的起始几何。
+    pub(crate) sidebar_split_drag:
+        Option<crate::frontend::gpui::model::sidebar_layout::SidebarSplitDrag>,
     /// 上一帧的窗口尺寸：侧栏分区 / 拖动夹取都要用它。
     pub(crate) window_width: f32,
     pub(crate) window_height: f32,
@@ -367,6 +372,9 @@ impl GpuiApp {
             sidebar_width: crate::frontend::gpui::model::sidebar_layout::SIDEBAR_WIDTH,
             sidebar_dragging: false,
             sidebar_drag_offset: 0.0,
+            sidebar_section_weights:
+                crate::frontend::gpui::model::sidebar_layout::DEFAULT_SECTION_WEIGHTS,
+            sidebar_split_drag: None,
             window_width: 1_280.0,
             window_height: 800.0,
             system_pasteboard: true,
@@ -1235,6 +1243,9 @@ impl GpuiApp {
             sidebar_width: crate::frontend::gpui::model::sidebar_layout::SIDEBAR_WIDTH,
             sidebar_dragging: false,
             sidebar_drag_offset: 0.0,
+            sidebar_section_weights:
+                crate::frontend::gpui::model::sidebar_layout::DEFAULT_SECTION_WEIGHTS,
+            sidebar_split_drag: None,
             window_width: 1_280.0,
             window_height: 800.0,
             attention: None,

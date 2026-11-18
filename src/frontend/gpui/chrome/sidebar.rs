@@ -1,8 +1,5 @@
-//! 侧栏渲染：四段（Workspaces / Agents / Commands / Hidden Commands）。
-//!
-//! 行内容全部来自 `sidebar_view::build`（纯投影，带单测）；这里只负责铺像素和
-//! 接点击。对照 macOS `App/WorkspaceSidebar.swift`：36pt 行、段头可折叠、
-//! 命令行尾部按钮切换可见性、可关闭工作区尾部一个关闭按钮。
+//! 侧栏分段：默认 Workspaces 占一半，Agents 与 Commands 各占四分之一。
+//! 折叠段头归到底部，展开段有独立滚动正文和可拖动分隔条。
 
 use gpui::{div, prelude::*, px, AnyElement, MouseButton, MouseMoveEvent, SharedString};
 
@@ -17,9 +14,10 @@ use crate::frontend::gpui::theme::Theme;
 /// 与 Swift `table.rowHeight` 一致。
 const ROW_HEIGHT: f32 = 36.0;
 /// 侧栏宽度：与 macOS `mainSplitController.setPosition(240)` 一致。
-pub const SIDEBAR_WIDTH: f32 = 240.0;
-/// 段头高度：Swift 的 `NSButton` 段头（26pt）+ 上下留白。
-const SECTION_HEIGHT: f32 = 26.0;
+pub const SIDEBAR_WIDTH: f32 = crate::frontend::gpui::model::sidebar_layout::SIDEBAR_WIDTH;
+/// 段头高度：Swift 的 `NSButton` 段头（26pt）。
+const SECTION_HEIGHT: f32 =
+    crate::frontend::gpui::model::sidebar_layout::SIDEBAR_SECTION_HEADER_HEIGHT;
 /// 段头左右内边距：与 Swift `header.leading = 6` 一致。
 const SECTION_INSET: f32 = 6.0;
 /// 行左右内边距：Swift cell 的 marker 从 9pt 起（`leadingAnchor + 9`）。
@@ -40,34 +38,86 @@ const TRAILING_WIDTH: f32 = 22.0;
 impl GpuiApp {
     pub(crate) fn render_sidebar(&self, cx: &mut gpui::Context<Self>) -> AnyElement {
         use crate::frontend::gpui::model::sidebar_layout::{
-            clamp_sidebar_width, SIDEBAR_DIVIDER_HIT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH,
+            clamp_sidebar_width, section_heights, DEFAULT_SECTION_WEIGHTS,
+            SIDEBAR_DIVIDER_HIT_WIDTH, SIDEBAR_VERTICAL_INSET,
         };
         let theme = self.theme().clone();
         let width = clamp_sidebar_width(self.sidebar_width, self.window_width, 320.0);
-        let mut models = self.sidebar_model();
-        // Hidden Commands 默认收起（对应 Swift `state = .off`）；模型缺失时也要
-        // 保留段头，否则用户找不到被隐藏的命令。
-        if !models
-            .iter()
-            .any(|model| model.section == Section::HiddenCommands)
-        {
-            models.push(SidebarSectionModel {
+        let mut by_section: Vec<Option<SidebarSectionModel>> = vec![None; Section::ALL.len()];
+        for model in self.sidebar_model() {
+            let index = section_index(model.section);
+            by_section[index] = Some(model);
+        }
+        if by_section[section_index(Section::HiddenCommands)].is_none() {
+            by_section[section_index(Section::HiddenCommands)] = Some(SidebarSectionModel {
                 section: Section::HiddenCommands,
                 title: Section::HiddenCommands.title(),
                 expanded: false,
                 rows: Vec::new(),
             });
         }
-        // 对齐 VS Code 侧边栏：四段按顺序排在同一列里，各自只占内容的自然
-        // 高度；整栏一个滚动区。折叠 = 只留段头，下一段立刻跟上来。
-        //
-        // 以前的实现按 3:2:1 给三区切固定高度、把 Hidden Commands 钉在整栏
-        // 底部：折叠的段照样占一块空白（看起来「没收起」），钉底的那段又被
-        // 窗口下沿裁掉（用户截图里的 `HIDDEN COMMANDS`）。
-        let sections: Vec<AnyElement> = models
-            .into_iter()
-            .map(|model| self.render_section(model, &theme, cx))
-            .collect();
+
+        let expanded = Section::ALL.map(|section| self.sidebar_expansion.is_expanded(section));
+        let content_height = (self.window_height - SIDEBAR_VERTICAL_INSET * 2.0).max(0.0);
+        let weights = if self
+            .sidebar_section_weights
+            .iter()
+            .all(|weight| *weight == 0.0)
+        {
+            DEFAULT_SECTION_WEIGHTS
+        } else {
+            self.sidebar_section_weights
+        };
+        let heights = section_heights(content_height, expanded, weights);
+        let mut expanded_sections = Vec::new();
+        let mut collapsed_sections = Vec::new();
+        let mut dividers = Vec::new();
+        let mut boundary = 0.0;
+        let mut previous_expanded = None;
+        for section in Section::ALL {
+            let index = section_index(section);
+            let model = by_section[index]
+                .take()
+                .unwrap_or_else(|| SidebarSectionModel {
+                    section,
+                    title: section.title(),
+                    expanded: false,
+                    rows: Vec::new(),
+                });
+            if expanded[index] {
+                if let Some(previous) = previous_expanded {
+                    dividers.push(self.render_split_divider(
+                        previous,
+                        section,
+                        boundary,
+                        theme.border,
+                        cx,
+                    ));
+                }
+                expanded_sections.push(self.render_section(model, heights[index], &theme, cx));
+                boundary += heights[index];
+                previous_expanded = Some(section);
+            } else {
+                collapsed_sections.push(self.render_section(model, heights[index], &theme, cx));
+            }
+        }
+
+        let mut section_column = div()
+            .id("sidebar-sections")
+            .debug_selector(|| "sidebar-sections".to_string())
+            .relative()
+            .flex()
+            .flex_col()
+            .w_full()
+            .h_full()
+            .min_h(px(0.0));
+        if expanded_sections.is_empty() {
+            section_column = section_column.child(div().flex_1().min_h(px(0.0)));
+        }
+        section_column = section_column.children(expanded_sections);
+        section_column = section_column.children(collapsed_sections);
+        section_column = section_column.children(dividers);
+
         let column = div()
             .flex()
             .flex_col()
@@ -75,21 +125,10 @@ impl GpuiApp {
             .debug_selector(|| "sidebar".to_string())
             .h_full()
             .overflow_hidden()
-            .py(px(4.0))
+            .py(px(SIDEBAR_VERTICAL_INSET))
             .bg(theme.sidebar_bg)
             .border_color(theme.border)
-            .child(
-                div()
-                    .id("sidebar-scroll")
-                    .debug_selector(|| "sidebar-scroll".to_string())
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .w_full()
-                    .min_h(px(0.0))
-                    .overflow_y_scroll()
-                    .children(sections),
-            );
+            .child(section_column);
 
         // 拖动宽度：热区是右侧一条 5pt 的透明带（视觉上仍是 1pt 边线）。
         div()
@@ -107,39 +146,82 @@ impl GpuiApp {
                     .right(px(-SIDEBAR_DIVIDER_HIT_WIDTH / 2.0))
                     .w(px(SIDEBAR_DIVIDER_HIT_WIDTH))
                     .cursor(gpui::CursorStyle::ResizeLeftRight)
-                    // 拖动时鼠标会离开这条 5pt 热区，所以除了 `on_mouse_down`
-                    // 还要在同一个元素上挂 `on_drag_move`：gpui 会把后续 move
-                    // 继续交给按下时命中的元素，热区不会「拖丢」。
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                            cx.stop_propagation();
                             this.sidebar_dragging = true;
+                            this.sidebar_split_drag = None;
                             this.sidebar_drag_offset =
                                 f32::from(event.position.x) - this.sidebar_width;
                             cx.notify();
                         }),
-                    )
-                    .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
-                        if !this.sidebar_dragging || event.pressed_button.is_none() {
-                            return;
-                        }
-                        let target = f32::from(event.position.x) - this.sidebar_drag_offset;
-                        let next = clamp_sidebar_width(target, this.window_width, 320.0)
-                            .clamp(SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH);
-                        if (next - this.sidebar_width).abs() > 0.5 {
-                            this.sidebar_width = next;
-                            cx.notify();
-                        }
-                    })),
+                    ),
             )
             .into_any_element()
     }
 
-    /// 拖动期间的全局遮罩：鼠标一旦离开分隔条热区，分隔条自己就收不到 move 事件了，
-    /// 所以拖动时铺一层满窗口的透明层接管 move / up。
+    fn render_split_divider(
+        &self,
+        upper: Section,
+        lower: Section,
+        boundary: f32,
+        border: gpui::Rgba,
+        cx: &mut gpui::Context<Self>,
+    ) -> AnyElement {
+        use crate::frontend::gpui::model::sidebar_layout::{
+            section_heights, SidebarSplitDrag, SIDEBAR_DIVIDER_HIT_WIDTH, SIDEBAR_VERTICAL_INSET,
+        };
+        let split = SIDEBAR_DIVIDER_HIT_WIDTH;
+        div()
+            .id(SharedString::from(format!(
+                "sidebar-split-{upper:?}-{lower:?}"
+            )))
+            .debug_selector(move || format!("sidebar-split-{upper:?}-{lower:?}"))
+            .absolute()
+            .left_0()
+            .right_0()
+            .top(px(boundary - split / 2.0))
+            .h(px(split))
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor(gpui::CursorStyle::ResizeUpDown)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    let expanded =
+                        Section::ALL.map(|section| this.sidebar_expansion.is_expanded(section));
+                    let content_height =
+                        (this.window_height - SIDEBAR_VERTICAL_INSET * 2.0).max(0.0);
+                    let heights =
+                        section_heights(content_height, expanded, this.sidebar_section_weights);
+                    let upper_index = section_index(upper);
+                    let lower_index = section_index(lower);
+                    this.sidebar_dragging = true;
+                    this.sidebar_drag_offset = 0.0;
+                    this.sidebar_split_drag = Some(SidebarSplitDrag {
+                        upper: upper_index,
+                        lower: lower_index,
+                        start_y: f32::from(event.position.y),
+                        start_upper_height: heights[upper_index],
+                        pair_height: heights[upper_index] + heights[lower_index],
+                        pair_weight: this.sidebar_section_weights[upper_index]
+                            + this.sidebar_section_weights[lower_index],
+                    });
+                    cx.notify();
+                }),
+            )
+            .child(div().mx(px(6.0)).h(px(1.0)).w_full().bg(border))
+            .into_any_element()
+    }
+
+    /// 拖动期间的全窗口遮罩：覆盖侧栏与正文，接管两种方向的 move/up。
     pub(crate) fn render_sidebar_drag_overlay(&self, cx: &mut gpui::Context<Self>) -> AnyElement {
         use crate::frontend::gpui::model::sidebar_layout::{
-            clamp_sidebar_width, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH,
+            clamp_sidebar_width, resize_adjacent_weights, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH,
+            SIDEBAR_SECTION_MIN_HEIGHT,
         };
         if !self.sidebar_dragging {
             return div().into_any_element();
@@ -152,23 +234,52 @@ impl GpuiApp {
             .top_0()
             .right_0()
             .bottom_0()
-            .cursor(gpui::CursorStyle::ResizeLeftRight)
+            .cursor(if self.sidebar_split_drag.is_some() {
+                gpui::CursorStyle::ResizeUpDown
+            } else {
+                gpui::CursorStyle::ResizeLeftRight
+            })
             .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
-                if !this.sidebar_dragging {
+                if event.pressed_button.is_none() {
                     return;
                 }
-                let target = f32::from(event.position.x) - this.sidebar_drag_offset;
-                let next = clamp_sidebar_width(target, this.window_width, 320.0)
-                    .clamp(SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH);
-                if (next - this.sidebar_width).abs() > 0.5 {
-                    this.sidebar_width = next;
+                if let Some(drag) = this.sidebar_split_drag {
+                    let requested =
+                        drag.start_upper_height + f32::from(event.position.y) - drag.start_y;
+                    let minimum = SIDEBAR_SECTION_MIN_HEIGHT.min(drag.pair_height / 2.0);
+                    let upper_height = requested.clamp(minimum, drag.pair_height - minimum);
+                    resize_adjacent_weights(
+                        &mut this.sidebar_section_weights,
+                        drag.upper,
+                        drag.lower,
+                        upper_height,
+                        drag.pair_height,
+                        drag.pair_weight,
+                    );
                     cx.notify();
+                } else {
+                    let target = f32::from(event.position.x) - this.sidebar_drag_offset;
+                    let next = clamp_sidebar_width(target, this.window_width, 320.0)
+                        .clamp(SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH);
+                    if (next - this.sidebar_width).abs() > 0.5 {
+                        this.sidebar_width = next;
+                        cx.notify();
+                    }
                 }
             }))
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _: &gpui::MouseUpEvent, _, cx| {
                     this.sidebar_dragging = false;
+                    this.sidebar_split_drag = None;
+                    cx.notify();
+                }),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _: &gpui::MouseUpEvent, _, cx| {
+                    this.sidebar_dragging = false;
+                    this.sidebar_split_drag = None;
                     cx.notify();
                 }),
             )
@@ -178,95 +289,107 @@ impl GpuiApp {
     fn render_section(
         &self,
         section: SidebarSectionModel,
+        height: f32,
         theme: &Theme,
         cx: &mut gpui::Context<Self>,
     ) -> AnyElement {
         let kind = section.section;
+        let expanded = section.expanded;
         let header_title = section_header_title(&section);
-        // 空段只留段头：Swift 的表格段没有行时不占高度，但段头仍然可点。
-        let mut children: Vec<AnyElement> = Vec::new();
-        if section.expanded {
-            children.extend(
-                section
-                    .rows
-                    .into_iter()
-                    .map(|row| self.render_sidebar_row(kind, row, theme, cx)),
-            );
-        }
-
-        div()
+        let rows: Vec<AnyElement> = if expanded {
+            section
+                .rows
+                .into_iter()
+                .map(|row| self.render_sidebar_row(kind, row, theme, cx))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let body_id = match kind {
+            Section::Workspaces => "sidebar-scroll",
+            Section::Agents => "sidebar-agent-scroll",
+            Section::Commands => "sidebar-command-scroll",
+            Section::HiddenCommands => "sidebar-hidden-command-scroll",
+        };
+        let header = div()
+            .id(SharedString::from(format!("section-{kind:?}")))
+            .debug_selector(move || format!("section-{kind:?}"))
             .flex()
-            .flex_col()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .h(px(SECTION_HEIGHT))
             .flex_none()
-            .when(kind != Section::Workspaces, |element| {
-                // 段间隔一条 hairline + 8pt：Swift 的四个独立表格之间就是
-                // 这种「分组卡片」的边界，没有分隔线会糊成一大片。
-                element
-                    .pt(px(8.0))
-                    .border_t_1()
-                    .border_color(theme.border)
-                    .mt(px(4.0))
-                    .mb(px(4.0))
-            })
+            .px(px(SECTION_INSET))
+            .cursor_pointer()
+            .text_size(px(crate::frontend::gpui::theme::SIDEBAR_SECTION_FONT_SIZE))
+            .line_height(px(13.0))
+            .font_weight(gpui::FontWeight::SEMIBOLD)
+            .text_color(theme.muted)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, _, cx| this.toggle_sidebar_section(kind, cx)),
+            )
             .child(
                 div()
-                    .id(SharedString::from(format!("section-{:?}", kind)))
-                    .debug_selector(move || format!("section-{kind:?}"))
                     .flex()
                     .flex_row()
                     .items_center()
-                    .justify_between()
-                    .h(px(SECTION_HEIGHT))
-                    .px(px(SECTION_INSET))
-                    .cursor_pointer()
-                    .text_size(px(crate::frontend::gpui::theme::SIDEBAR_SECTION_FONT_SIZE))
-                    .line_height(px(13.0))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(theme.muted)
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _, _, cx| this.toggle_sidebar_section(kind, cx)),
-                    )
-                    // 对照 Swift `configureHeader`：chevron 在前、标题在后。
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(5.0))
-                            .child(icons::chevron_icon(section.expanded, theme.muted))
-                            .child(SharedString::from(header_title)),
-                    )
-                    .child(div().flex().flex_row().items_center().gap(px(2.0)).when(
-                        kind == Section::Workspaces,
-                        |element| {
-                            // 对照 `WorkspaceSidebar` 的 `addWorkspaceButton`：新建 project。
-                            element.child(
-                                div()
-                                    .id("sidebar-add-workspace")
-                                    .debug_selector(|| "sidebar-add-workspace".to_string())
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .w(px(16.0))
-                                    .h(px(16.0))
-                                    .rounded(px(4.0))
-                                    .cursor_pointer()
-                                    .hover(|style| style.bg(theme.active_bg))
-                                    .on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(|this, _, _, cx| {
-                                            cx.stop_propagation();
-                                            this.open_target_editor(None, cx);
-                                        }),
-                                    )
-                                    .child(icons::plus_icon(theme.muted)),
-                            )
-                        },
-                    )),
+                    .gap(px(5.0))
+                    .child(icons::chevron_icon(expanded, theme.muted))
+                    .child(SharedString::from(header_title)),
             )
-            .children(children)
-            .into_any_element()
+            .child(div().flex().flex_row().items_center().gap(px(2.0)).when(
+                kind == Section::Workspaces,
+                |element| {
+                    element.child(
+                        div()
+                            .id("sidebar-add-workspace")
+                            .debug_selector(|| "sidebar-add-workspace".to_string())
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .w(px(16.0))
+                            .h(px(16.0))
+                            .rounded(px(4.0))
+                            .cursor_pointer()
+                            .hover(|style| style.bg(theme.active_bg))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.open_target_editor(None, cx);
+                                }),
+                            )
+                            .child(icons::plus_icon(theme.muted)),
+                    )
+                },
+            ));
+
+        let mut element = div()
+            .flex()
+            .flex_col()
+            .flex_none()
+            .w_full()
+            .h(px(height))
+            .min_h(px(SECTION_HEIGHT))
+            .overflow_hidden()
+            .child(header);
+        if expanded {
+            element = element.child(
+                div()
+                    .id(body_id)
+                    .debug_selector(move || body_id.to_string())
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .w_full()
+                    .min_h(px(0.0))
+                    .overflow_y_scroll()
+                    .children(rows),
+            );
+        }
+        element.into_any_element()
     }
 
     fn render_sidebar_row(
@@ -376,6 +499,7 @@ impl GpuiApp {
             .flex_row()
             .items_center()
             .h(px(ROW_HEIGHT - ROW_SPACING))
+            .flex_none()
             .mb(px(ROW_SPACING))
             .mx(px(6.0))
             .rounded(px(5.0))
@@ -490,6 +614,15 @@ impl GpuiApp {
             )
             .children(trailing_buttons)
             .into_any_element()
+    }
+}
+
+fn section_index(section: Section) -> usize {
+    match section {
+        Section::Workspaces => 0,
+        Section::Agents => 1,
+        Section::Commands => 2,
+        Section::HiddenCommands => 3,
     }
 }
 

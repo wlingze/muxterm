@@ -226,7 +226,7 @@ rg -c '#\[(gpui::)?test\]' tests/gpui_*.rs | awk -F: '{s+=$2} END {print s}'
 | ResizeRedrawRegressionTests (3) | model/resize_math.rs (7) + chrome/pane_grid.rs (5) | 部分（重绘时序没有逐帧对照） |
 | SearchModelTests (4) | model/search.rs (7) | 已覆盖 |
 | ShortcutEditorTests (7) | model/shortcuts.rs (20) + state/palette_actions.rs | 已覆盖 |
-| SidebarSectionSplitLayoutTests (5) | chrome/sidebar_view.rs (8) | 已覆盖 |
+| SidebarSectionSplitLayoutTests (5) | model/sidebar_layout.rs (5) + tests/support/gpui_sidebar_layout.rs (5，真实 GPUI 段头 / 分隔条 / 滚动回归) | 已覆盖 |
 | StatusBarTests (28) | model/status_bar.rs (30) | 已覆盖 |
 | SwiftTermQueryReplyTests (5) | model/query_reply.rs (8) + model/query_detector.rs (9) | 已覆盖 |
 | SwiftTerm 1.15 属性绘制（`getAttributes` / `mapColor`，无同名 Swift 测试） | chrome/pane_view.rs (8，切段与颜色 + `paint_text` 按列坐标绘字形) + theme.rs（提亮 / dim 数学）+ gpui_chrome（`pane-bold` 等渲染断言、`terminal_mixed_width_runs_use_terminal_columns`、`terminal_cursor_after_cjk_uses_the_same_grid`） | 已覆盖（粗体提亮 0–6、dim 对半混合、反显后再提亮、隐藏格保宽度；中英同列对齐） |
