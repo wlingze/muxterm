@@ -113,3 +113,54 @@ fn local_tmux_survives_a_same_named_remote_session(cx: &mut TestAppContext) {
         "远程同名 session 不能吞掉本机 tmux: {rows:?}"
     );
 }
+
+/// 报障回归：普通 zsh 里滚轮完全无效，看不到历史记录。
+///
+/// Herdr 这类 Runtime 的历史在服务端，前端根本没有本地 scrollback；
+/// 滚轮必须发 `ScrollPane` 交给 Runtime，不能落进「本地历史」这条空路。
+/// 能力从 Core 的 provider 元数据问，不按 runtime 名字分支。
+#[gpui::test]
+fn the_wheel_reaches_a_server_scroll_runtime(cx: &mut TestAppContext) {
+    use muxterm::frontend::command_queue::ClientCommand;
+    use muxterm::frontend::gpui::state::WheelInput;
+    use muxterm::frontend::utils::corebridge::{ClientRuntimeInfo, ClientTask};
+
+    const WORKSPACE: &str = "remote@@ryzen@herdr@wH";
+    let (view, cx) = mount(topology("herdr", WORKSPACE, None), cx);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.set_runtime_info_for_tests(vec![ClientRuntimeInfo {
+                id: "herdr".into(),
+                name: "Herdr".into(),
+                support: vec!["ServerScroll".into()],
+                accepted_transports: vec!["ssh".into()],
+            }]);
+            app.feed_pane_for_tests(WORKSPACE, 10, 80, 24, b"plain zsh\r\n", cx);
+            app.handle_wheel(
+                WheelInput {
+                    pane_id: 10,
+                    delta_y: 3.0,
+                    precise: false,
+                    shift: false,
+                    col: 0,
+                    row: 0,
+                },
+                cx,
+            );
+        })
+    });
+    let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            ClientCommand::Task {
+                task: ClientTask::ScrollPane {
+                    pane_id: 10,
+                    lines: 3
+                },
+                ..
+            }
+        )),
+        "服务端持历史的 pane 必须收到 ScrollPane：{commands:?}"
+    );
+}
