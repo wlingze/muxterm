@@ -41,6 +41,8 @@ pub(crate) struct RowRun {
     pub fg: gpui::Rgba,
     pub bg: gpui::Rgba,
     pub style: RunStyle,
+    /// Command+悬停命中这条链接：画强调色下划线（不改终端自己的 SGR）。
+    pub hover_underline: bool,
 }
 
 /// 一行待绘制的字形计划（字体与位置在 paint 阶段解析）。
@@ -92,6 +94,9 @@ impl GpuiApp {
         let visible_panes = self.visible_pane_count();
         let dimmed = crate::frontend::gpui::model::pane_dimming::should_dim(focused, visible_panes);
         let selection = self.selection_for(pane_id);
+        // Command+悬停：每次渲染都从当前 Surface 重新求值，滚动/输出后不会
+        // 把下划线留在旧的文字上。
+        let link_hover = self.hover_link_span(pane_id);
 
         let mut row_elements: Vec<AnyElement> = Vec::new();
         let mut row_texts: Vec<RowText> = Vec::new();
@@ -116,6 +121,9 @@ impl GpuiApp {
                         show_cursor,
                         dimmed,
                         selection,
+                        link_hover.and_then(|(link_row, start, end)| {
+                            (link_row == row).then_some((start, end))
+                        }),
                     );
                     row_elements.push(Self::render_row(
                         &runs,
@@ -139,6 +147,7 @@ impl GpuiApp {
             let rows = Arc::new(row_texts);
             let family = theme.font_family.clone();
             let font_size = theme.font_size;
+            let accent = theme.accent;
             div()
                 .absolute()
                 .top_0()
@@ -157,6 +166,7 @@ impl GpuiApp {
                             font_size,
                             cell_width,
                             cell_height,
+                            accent,
                             window,
                         );
                     },
@@ -297,6 +307,12 @@ impl GpuiApp {
             .font_family(theme.font_family)
             .text_size(px(theme.font_size))
             .line_height(px(cell_height))
+            // Command 悬停在链接上：指针变成小手，配合下划线告诉用户可点。
+            .cursor(if link_hover.is_some() {
+                gpui::CursorStyle::PointingHand
+            } else {
+                gpui::CursorStyle::Arrow
+            })
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
@@ -476,6 +492,7 @@ impl GpuiApp {
                 if !*hovered {
                     this.clear_pane_hover(pane_id, cx);
                     this.forget_mouse_motion(pane_id);
+                    this.clear_hover_cell(pane_id, cx);
                 }
             }))
             .on_scroll_wheel(
@@ -595,6 +612,7 @@ impl GpuiApp {
         show_cursor: bool,
         dimmed: bool,
         selection: Option<crate::frontend::gpui::model::selection::Selection>,
+        link_hover: Option<(usize, usize)>,
     ) -> Vec<RowRun> {
         let selection_end = selection.and_then(|selection| {
             let (start, end) = selection.normalized();
@@ -632,6 +650,14 @@ impl GpuiApp {
                 if Some(index) == cursor_col && index > start {
                     break;
                 }
+                // 链接悬停：必须在链接的左右边界断开，下划线不能盖到相邻文本。
+                if index > start
+                    && link_hover.is_some_and(|(link_start, link_end)| {
+                        index == link_start || index == link_end + 1
+                    })
+                {
+                    break;
+                }
                 let (next_fg, next_bg) = Self::cell_colors(
                     &cells[index],
                     theme,
@@ -656,6 +682,9 @@ impl GpuiApp {
                 }
                 index += 1;
             }
+            let hover_underline = link_hover.is_some_and(|(link_start, link_end)| {
+                start >= link_start && index <= link_end + 1 && index > start
+            });
             runs.push(RowRun {
                 start,
                 end: index,
@@ -664,6 +693,7 @@ impl GpuiApp {
                 fg,
                 bg,
                 style,
+                hover_underline,
             });
         }
         runs
@@ -745,6 +775,7 @@ impl GpuiApp {
 ///
 /// 只借用 `shape_line` 的 glyph id / font id：位置由 `列号 × 格子宽` 决定。
 /// 这样中文回退字体、粗斜体、emoji 都不会改变列对齐。
+#[allow(clippy::too_many_arguments)]
 fn paint_text(
     bounds: gpui::Bounds<gpui::Pixels>,
     rows: &[RowText],
@@ -752,6 +783,7 @@ fn paint_text(
     font_size: f32,
     cell_width: f32,
     cell_height: f32,
+    link_color: gpui::Rgba,
     window: &mut gpui::Window,
 ) {
     let text_system = window.text_system().clone();
@@ -845,13 +877,17 @@ fn paint_text(
                 let left = bounds.origin.x + px(run.start as f32 * cell_width);
                 let width = px((run.end - run.start) as f32 * cell_width);
                 let (underline_y, strike_y) = decoration_offsets(baseline, ascent, descent);
-                if run.style.underline {
+                if run.style.underline || run.hover_underline {
                     window.paint_underline(
                         point(left, row_top + underline_y),
                         width,
                         &UnderlineStyle {
                             thickness: px(1.0),
-                            color: Some(color),
+                            color: Some(if run.hover_underline {
+                                Hsla::from(link_color)
+                            } else {
+                                color
+                            }),
                             wavy: false,
                         },
                     );
@@ -933,12 +969,25 @@ fn pane_mouse_down(
     app.focus_pane(pane_id, cx);
     // 点终端任意处都关掉 pane 菜单（NSMenu 点外面即消）。
     app.close_pane_menu(cx);
+    // 右键：本地菜单（复制 / 粘贴 / 全选）优先于应用鼠标上报。
+    // 用户要求「鼠标右键应该可以复制」；右键盘菜单比转发右键更可预期。
+    if button == MouseButton::Right {
+        app.open_selection_menu(
+            pane_id,
+            f32::from(event.position.x),
+            f32::from(event.position.y),
+            cx,
+        );
+        cx.stop_propagation();
+        return;
+    }
     let (col, row) = geometry.cell_at(event.position);
     // Command+点击 = 打开光标下的链接（macOS 惯例，对照 Swift
     // `requestOpenLink`）。放在鼠标上报之前：vim / tmux 开着鼠标时链接
     // 仍然要能点开。
     if button == MouseButton::Left && event.modifiers.platform {
         if let Some(url) = app.pane_url_at(pane_id, row, col) {
+            app.clear_hover_cell(pane_id, cx);
             cx.open_url(&url);
             return;
         }
@@ -1010,6 +1059,7 @@ fn pane_mouse_move(
         cx,
     );
     let (col, row) = geometry.cell_at(event.position);
+    app.set_hover_cell(pane_id, row, col, cx);
     let modifiers = mouse_modifiers(&event.modifiers);
     if let Some(button) = event.pressed_button.and_then(mouse_button) {
         // 应用拖动优先；应用没接管才继续本地选区。
@@ -1158,6 +1208,7 @@ mod tests {
             (usize::MAX, usize::MAX),
             false,
             false,
+            None,
             None,
         )
     }
@@ -1339,7 +1390,7 @@ mod tests {
                 ..Attributes::default()
             },
         )];
-        let runs = GpuiApp::row_runs(&theme, &line, 0, 1, (0, 0), true, false, None);
+        let runs = GpuiApp::row_runs(&theme, &line, 0, 1, (0, 0), true, false, None, None);
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].fg, theme.bg, "字号用格子背景色");
         assert_eq!(runs[0].bg, theme.cursor, "整格填 cursor 色");
@@ -1356,7 +1407,17 @@ mod tests {
         let theme = crate::frontend::gpui::theme::Theme::default();
         let cells = vec![Cell::default(); 12];
         let selection = Selection::new(CellPos::new(0, 8), CellPos::new(2, 2), Kind::Simple);
-        let runs = GpuiApp::row_runs(&theme, &cells, 1, 12, (0, 0), false, false, Some(selection));
+        let runs = GpuiApp::row_runs(
+            &theme,
+            &cells,
+            1,
+            12,
+            (0, 0),
+            false,
+            false,
+            Some(selection),
+            None,
+        );
         // `end` 是开区间：12 表示画到第 11 列。
         assert_eq!(runs.last().map(|run| run.end), Some(12), "中间行整行都要画");
     }
@@ -1374,10 +1435,59 @@ mod tests {
 
         let selection = Selection::new(CellPos::new(1, 2), CellPos::new(1, 8), Kind::Simple);
         let cells = vec![Cell::default(); 12];
-        let runs = GpuiApp::row_runs(&theme, &cells, 1, 12, (0, 0), false, false, Some(selection));
+        let runs = GpuiApp::row_runs(
+            &theme,
+            &cells,
+            1,
+            12,
+            (0, 0),
+            false,
+            false,
+            Some(selection),
+            None,
+        );
         assert!(
             runs.iter().any(|run| run.bg == selected.1),
             "选区覆盖的 run 用高亮背景"
+        );
+    }
+
+    /// Command+悬停：只有链接本身画下划线，左右文本不能被带上。
+    ///
+    /// 用户要求「按住 cmd 悬停要出现下划线表示可以点击打开」。
+    #[test]
+    fn hovering_a_link_underlines_only_the_link() {
+        let theme = crate::frontend::gpui::theme::Theme::default();
+        let text: Vec<char> = "see https://x.test now".chars().collect();
+        let cells: Vec<Cell> = text
+            .iter()
+            .map(|ch| Cell {
+                ch: *ch,
+                ..Cell::default()
+            })
+            .collect();
+        let (start, end) =
+            crate::frontend::gpui::model::links::url_span_at(&text, 6).expect("第 6 列在链接里");
+        let runs = GpuiApp::row_runs(
+            &theme,
+            &cells,
+            0,
+            text.len(),
+            (usize::MAX, usize::MAX),
+            false,
+            false,
+            None,
+            Some((start, end)),
+        );
+        let underlined: Vec<&str> = runs
+            .iter()
+            .filter(|run| run.hover_underline)
+            .map(|run| run.text.as_str())
+            .collect();
+        assert_eq!(underlined, vec!["https://x.test"], "只给链接画下划线");
+        assert!(
+            runs.iter().all(|run| !run.style.underline),
+            "悬停下划线不能污染终端自己的 SGR 属性"
         );
     }
 }

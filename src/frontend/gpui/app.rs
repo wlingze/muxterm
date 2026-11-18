@@ -155,6 +155,7 @@ impl Render for GpuiApp {
         };
 
         div()
+            .relative()
             .flex()
             .flex_row()
             .size_full()
@@ -162,6 +163,13 @@ impl Render for GpuiApp {
             .text_color(theme.fg)
             .track_focus(&self.focus_handle())
             .on_key_down(cx.listener(|this, event, window, cx| this.handle_key(event, window, cx)))
+            // Command 按下/松开：悬停链接的下划线要立刻出现/消失，不能等下一次
+            // 鼠标移动（用户是「先按住 Cmd，再悬停」）。
+            .on_modifiers_changed(cx.listener(
+                |this, event: &gpui::ModifiersChangedEvent, _, cx| {
+                    this.command_modifiers_changed(event.modifiers.platform, cx);
+                },
+            ))
             .child(sidebar)
             .child(
                 div()
@@ -181,7 +189,7 @@ impl Render for GpuiApp {
                             .children(panes)
                             .child(self.render_sidebar_drag_overlay(cx))
                             .children(self.render_pane_menu(area, cx))
-                            .children(self.render_panel(cx))
+                            .children(self.render_panel(window, cx))
                             .children(self.render_composer(cx))
                             .children(self.render_settings(window, cx))
                             .when(!self.settings_project_editor, |element| {
@@ -198,5 +206,6 @@ impl Render for GpuiApp {
                     )
                     .child(bar_bottom),
             )
+            .children(self.render_selection_menu(cx))
     }
 }

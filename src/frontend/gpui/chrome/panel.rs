@@ -14,7 +14,11 @@ pub const PANEL_WIDTH: f32 = 640.0;
 pub const PANEL_HEIGHT: f32 = 420.0;
 
 impl GpuiApp {
-    pub(crate) fn render_panel(&self, cx: &mut gpui::Context<Self>) -> Option<AnyElement> {
+    pub(crate) fn render_panel(
+        &self,
+        window: &mut gpui::Window,
+        cx: &mut gpui::Context<Self>,
+    ) -> Option<AnyElement> {
         if !self.panel_open() {
             return None;
         }
@@ -68,11 +72,47 @@ impl GpuiApp {
                     .into_any_element()
             })
             .collect::<Vec<_>>();
+        // 副标题的可用宽度：面板宽 − 列表左右 7pt − 行左右 12pt − 图标 14pt − 间距 8pt。
+        // 必须先按真实字体量好再交给文本元素，不能靠 gpui 的 `.truncate()`：
+        // `nowrap` 文本只缓存第一次测量，flex basis 阶段宽度是 0，整行会永远只剩「…」。
+        let detail_width = (panel_width - 60.0).max(40.0);
+        let text_system = window.text_system().clone();
+        let measure_detail = move |text: &str| -> f32 {
+            let font = gpui::font(".SystemUIFont");
+            let run = gpui::TextRun {
+                len: text.len(),
+                font,
+                color: gpui::black(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            f32::from(
+                text_system
+                    .shape_line(
+                        gpui::SharedString::from(text.to_string()),
+                        px(11.0),
+                        &[run],
+                        None,
+                    )
+                    .width,
+            )
+        };
         let mut rows = self
             .panel_rows()
             .into_iter()
             .enumerate()
-            .map(|(index, row)| render_row(row, index, index == self.panel_selected(), &theme, cx))
+            .map(|(index, row)| {
+                render_row(
+                    row,
+                    index,
+                    index == self.panel_selected(),
+                    &theme,
+                    detail_width,
+                    &measure_detail,
+                    cx,
+                )
+            })
             .collect::<Vec<_>>();
         if rows.is_empty() {
             rows.push(
@@ -389,10 +429,19 @@ fn render_row(
     index: usize,
     selected: bool,
     theme: &Theme,
+    detail_width: f32,
+    measure_detail: &dyn Fn(&str) -> f32,
     cx: &mut gpui::Context<GpuiApp>,
 ) -> AnyElement {
     let title = row.title();
-    let detail = row.detail();
+    let detail = row.detail().map(|text| {
+        let one_line = text.replace(['\n', '\r'], " ");
+        crate::frontend::gpui::model::text_fit::fit_one_line(
+            &one_line,
+            detail_width,
+            measure_detail,
+        )
+    });
     // 状态色一律走主题 token：Attention 行必须能一眼看出 working / done / blocked，
     // 聚合槽用身份色（Shells 青 / Agents 紫），不借用状态色。
     // 标记列也走矢量图标：`◆` / `●` 在不同字体里粗细不一，看起来像贴纸。
@@ -538,7 +587,10 @@ fn render_row(
                         div()
                             .debug_selector(move || format!("panel-detail-{index}"))
                             .min_w_0()
-                            .truncate()
+                            // 只画已经量好、截断过的字符串；不用 `.truncate()`，
+                            // 避免 gpui 把 nowrap 文本缓存成零宽测量。
+                            .whitespace_nowrap()
+                            .overflow_hidden()
                             .text_size(px(11.))
                             .line_height(px(14.))
                             .text_color(theme.muted)

@@ -109,6 +109,10 @@ pub struct GpuiApp {
     pub(crate) mouse_press: Option<(u32, Button)>,
     /// 上一次上报给应用的移动格子：xterm 只在跨格时报 motion（1002/1003）。
     mouse_motion_cell: Option<(u32, usize, usize)>,
+    /// Command 是否按住：按住时悬停链接画下划线（对应 macOS 惯例）。
+    command_down: bool,
+    /// 鼠标最后一次落在哪一格；按住/松开 Command 时用它重画链接反馈。
+    hover_cell: Option<(u32, usize, usize)>,
     focus_handle: FocusHandle,
     theme: Theme,
     /// 渲染期量出来的格子像素尺寸；Core 上报与鼠标命中共用。
@@ -158,6 +162,8 @@ pub struct GpuiApp {
     pub(crate) pane_menu: Option<crate::frontend::gpui::model::pane_menu::PaneMenu>,
     /// 鼠标选区（只属于一个 pane；切 pane 时清掉）。
     selection: Option<PaneSelection>,
+    /// 右键菜单（复制 / 粘贴 / 全选）。
+    pub(crate) selection_menu: Option<crate::frontend::gpui::model::selection_menu::SelectionMenu>,
     /// 正在拖选。
     dragging_selection: bool,
     status: String,
@@ -327,6 +333,8 @@ impl GpuiApp {
             wheel_accumulators: HashMap::new(),
             mouse_press: None,
             mouse_motion_cell: None,
+            command_down: false,
+            hover_cell: None,
             focus_handle: cx.focus_handle(),
             marked_text: String::new(),
             panel: crate::frontend::gpui::chrome::panel_view::PanelState::default(),
@@ -388,6 +396,7 @@ impl GpuiApp {
             pane_title_hover: None,
             pane_menu: None,
             selection: None,
+            selection_menu: None,
             dragging_selection: false,
             theme,
             cell,
@@ -1187,6 +1196,8 @@ impl GpuiApp {
             wheel_accumulators: HashMap::new(),
             mouse_press: None,
             mouse_motion_cell: None,
+            command_down: false,
+            hover_cell: None,
             focus_handle: cx.focus_handle(),
             marked_text: String::new(),
             panel: crate::frontend::gpui::chrome::panel_view::PanelState::default(),
@@ -1250,6 +1261,7 @@ impl GpuiApp {
             pane_title_hover: None,
             pane_menu: None,
             selection: None,
+            selection_menu: None,
             dragging_selection: false,
             theme: Theme::default(),
             cell: (
@@ -1735,6 +1747,9 @@ impl GpuiApp {
     }
 
     /// 松开鼠标：单格点击不算选区（否则 Cmd-C 会复制一个字符）。
+    ///
+    /// 拖选结束立刻写剪贴板（iTerm2 的 copy-on-select）：应用抢了鼠标时
+    /// 用户用 Option/Shift 拖选，松手即可粘贴，不必再去够 Cmd-C。
     pub fn finish_drag(&mut self, cx: &mut Context<Self>) {
         self.dragging_selection = false;
         if self
@@ -1743,7 +1758,62 @@ impl GpuiApp {
         {
             self.selection = None;
             cx.notify();
+            return;
         }
+        if self.selection.is_some() {
+            self.copy_selection(cx);
+        }
+    }
+
+    /// 右键菜单：在指针位置打开；执行 Copy / Paste / Select All。
+    pub fn open_selection_menu(&mut self, pane_id: u32, x: f32, y: f32, cx: &mut Context<Self>) {
+        self.selection_menu =
+            Some(crate::frontend::gpui::model::selection_menu::SelectionMenu::new(x, y, pane_id));
+        cx.notify();
+    }
+
+    pub fn close_selection_menu(&mut self, cx: &mut Context<Self>) {
+        if self.selection_menu.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    pub fn move_selection_menu(&mut self, delta: i32, cx: &mut Context<Self>) {
+        if let Some(menu) = self.selection_menu.as_mut() {
+            menu.move_selection(delta);
+            cx.notify();
+        }
+    }
+
+    pub fn run_selection_menu_action(
+        &mut self,
+        action: crate::frontend::gpui::model::selection_menu::SelectionMenuAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::frontend::gpui::model::selection_menu::SelectionMenuAction;
+        self.selection_menu = None;
+        match action {
+            SelectionMenuAction::Copy => {
+                self.copy_selection(cx);
+            }
+            SelectionMenuAction::Paste => {
+                self.run_action(
+                    crate::frontend::gpui::model::shortcuts::KeyAction::Paste,
+                    window,
+                    cx,
+                );
+            }
+            SelectionMenuAction::SelectAll => {
+                self.select_all(cx);
+            }
+        }
+        cx.notify();
+    }
+
+    /// 右键菜单里 Copy 是否可用（右键点了空白也保留 Paste / Select All）。
+    pub(crate) fn has_terminal_selection(&self) -> bool {
+        self.selection.is_some()
     }
 
     pub fn clear_selection(&mut self, cx: &mut Context<Self>) {
@@ -4035,7 +4105,9 @@ impl GpuiApp {
         if mode == crate::frontend::gpui::terminal::MouseMode::Off {
             return false;
         }
-        if modifiers.shift && !matches!(kind, MouseEventKind::Release(_)) {
+        // Shift / Option 是本地选字的逃逸通道（xterm / iTerm2 的惯例）：
+        // 应用要求鼠标时，按住任一修饰键拖拽仍然选中终端文本。
+        if (modifiers.shift || modifiers.alt) && !matches!(kind, MouseEventKind::Release(_)) {
             return false;
         }
         if !mode.accepts(kind) {
@@ -4063,6 +4135,50 @@ impl GpuiApp {
         });
         self.note_input_sent();
         true
+    }
+
+    /// Command 键按下/松开：只影响链接悬停的视觉反馈。
+    pub fn command_modifiers_changed(&mut self, command: bool, cx: &mut Context<Self>) {
+        if self.command_down != command {
+            self.command_down = command;
+            cx.notify();
+        }
+    }
+
+    /// 记录鼠标下的格子。Command 按住时要重画，普通移动不需要额外通知。
+    pub fn set_hover_cell(&mut self, pane_id: u32, row: usize, col: usize, cx: &mut Context<Self>) {
+        let next = (pane_id, row, col);
+        if self.hover_cell != Some(next) {
+            self.hover_cell = Some(next);
+            if self.command_down {
+                cx.notify();
+            }
+        }
+    }
+
+    pub fn clear_hover_cell(&mut self, pane_id: u32, cx: &mut Context<Self>) {
+        if matches!(self.hover_cell, Some((pane, _, _)) if pane == pane_id) {
+            self.hover_cell = None;
+            if self.command_down {
+                cx.notify();
+            }
+        }
+    }
+
+    /// Command+悬停：返回 `(row, start_col, end_col)`，渲染层据此画下划线并
+    /// 把指针改成小手。每次渲染都从当前 Surface 重新求值，输出滚动后不会
+    /// 把下划线留在错误的文字上。
+    pub fn hover_link_span(&self, pane_id: u32) -> Option<(usize, usize, usize)> {
+        if !self.command_down {
+            return None;
+        }
+        let (pane, row, col) = self.hover_cell?;
+        if pane != pane_id {
+            return None;
+        }
+        let workspace = self.visible.as_deref()?;
+        let (start, end) = self.surface(workspace, pane)?.url_span_at(row, col)?;
+        Some((row, start, end))
     }
 
     /// 鼠标离开 pane：清掉跨格去重缓存，再进来同一格时重新上报。
@@ -4457,6 +4573,39 @@ impl GpuiApp {
                     return;
                 }
                 _ => self.close_pane_menu(cx),
+            }
+        }
+
+        // 右键菜单打开时独占上下/回车/Esc；其它键先关菜单再继续。
+        if self.selection_menu.is_some() {
+            match keystroke.key.as_str() {
+                "escape" => {
+                    self.close_selection_menu(cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                "enter" => {
+                    if let Some(action) = self
+                        .selection_menu
+                        .as_ref()
+                        .map(|menu| menu.selected_action())
+                    {
+                        self.run_selection_menu_action(action, window, cx);
+                    }
+                    cx.stop_propagation();
+                    return;
+                }
+                "up" => {
+                    self.move_selection_menu(-1, cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                "down" => {
+                    self.move_selection_menu(1, cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                _ => self.close_selection_menu(cx),
             }
         }
 

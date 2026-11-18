@@ -40,75 +40,34 @@ const TRAILING_WIDTH: f32 = 22.0;
 impl GpuiApp {
     pub(crate) fn render_sidebar(&self, cx: &mut gpui::Context<Self>) -> AnyElement {
         use crate::frontend::gpui::model::sidebar_layout::{
-            clamp_sidebar_width, SidebarSectionHeights, SECTION_COLLAPSED_HEIGHT,
-            SIDEBAR_DIVIDER_HIT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH,
+            clamp_sidebar_width, SIDEBAR_DIVIDER_HIT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH,
         };
         let theme = self.theme().clone();
         let width = clamp_sidebar_width(self.sidebar_width, self.window_width, 320.0);
-        let models = self.sidebar_model();
-        let find = |kind: Section| models.iter().find(|model| model.section == kind).cloned();
-        let workspaces = find(Section::Workspaces);
-        let agents = find(Section::Agents);
-        let commands = find(Section::Commands);
-        let hidden = find(Section::HiddenCommands);
-
-        // 下半区每段至少留一个段头；Hidden Commands 固定贴底，只在展开时
-        // 按行高增加高度。
-        let hidden_rows = hidden
-            .as_ref()
-            .filter(|model| model.expanded)
-            .map(|model| model.rows.len())
-            .unwrap_or(0) as f32;
-        let hidden_height = SECTION_COLLAPSED_HEIGHT + hidden_rows * ROW_HEIGHT;
-        let available = (self.window_height - 8.0).max(0.0);
-        let heights = SidebarSectionHeights::compute(available, hidden_height);
-
-        // 三段各自滚动：workspace 再多也挤不掉下面两个区，反之亦然。
-        let make = |model: Option<SidebarSectionModel>,
-                    height: Option<f32>,
-                    fill: bool,
-                    cx: &mut gpui::Context<Self>| {
-            let Some(model) = model else {
-                return div().into_any_element();
-            };
-            let kind = model.section;
-            let body = self.render_section(model, &theme, cx);
-            let mut column = div().flex().flex_col().flex_none().w_full();
-            if let Some(height) = height {
-                column = column.h(px(height));
-            }
-            if fill {
-                column = column.flex_1().min_h(px(0.0));
-            }
-            column
-                .child(
-                    div()
-                        .id(SharedString::from(format!("sidebar-scroll-{:?}", kind)))
-                        .debug_selector(move || format!("sidebar-scroll-{kind:?}"))
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .min_h(px(0.0))
-                        .overflow_y_scroll()
-                        .child(body),
-                )
-                .into_any_element()
-        };
-
-        let (workspaces, agents, commands) = match heights {
-            Some(heights) => (
-                make(workspaces, Some(heights.workspaces), false, cx),
-                make(agents, Some(heights.agents), false, cx),
-                make(commands, Some(heights.commands), false, cx),
-            ),
-            // 高度不够：只让 Workspaces 吃掉剩下的空间，不硬排三区。
-            None => (
-                make(workspaces, None, true, cx),
-                make(agents, None, false, cx),
-                make(commands, None, false, cx),
-            ),
-        };
-
+        let mut models = self.sidebar_model();
+        // Hidden Commands 默认收起（对应 Swift `state = .off`）；模型缺失时也要
+        // 保留段头，否则用户找不到被隐藏的命令。
+        if !models
+            .iter()
+            .any(|model| model.section == Section::HiddenCommands)
+        {
+            models.push(SidebarSectionModel {
+                section: Section::HiddenCommands,
+                title: Section::HiddenCommands.title(),
+                expanded: false,
+                rows: Vec::new(),
+            });
+        }
+        // 对齐 VS Code 侧边栏：四段按顺序排在同一列里，各自只占内容的自然
+        // 高度；整栏一个滚动区。折叠 = 只留段头，下一段立刻跟上来。
+        //
+        // 以前的实现按 3:2:1 给三区切固定高度、把 Hidden Commands 钉在整栏
+        // 底部：折叠的段照样占一块空白（看起来「没收起」），钉底的那段又被
+        // 窗口下沿裁掉（用户截图里的 `HIDDEN COMMANDS`）。
+        let sections: Vec<AnyElement> = models
+            .into_iter()
+            .map(|model| self.render_section(model, &theme, cx))
+            .collect();
         let column = div()
             .flex()
             .flex_col()
@@ -119,26 +78,17 @@ impl GpuiApp {
             .py(px(4.0))
             .bg(theme.sidebar_bg)
             .border_color(theme.border)
-            .child(workspaces)
-            .child(agents)
-            .child(commands)
-            // Hidden Commands 固定在整栏最底部：Swift 里它最后一段、默认收起。
             .child(
                 div()
-                    .flex_none()
+                    .id("sidebar-scroll")
+                    .debug_selector(|| "sidebar-scroll".to_string())
+                    .flex()
+                    .flex_col()
+                    .flex_1()
                     .w_full()
-                    .border_t_1()
-                    .border_color(theme.border)
-                    .child(self.render_section_plain(
-                        hidden.unwrap_or_else(|| SidebarSectionModel {
-                            section: Section::HiddenCommands,
-                            title: Section::HiddenCommands.title(),
-                            expanded: false,
-                            rows: Vec::new(),
-                        }),
-                        &theme,
-                        cx,
-                    )),
+                    .min_h(px(0.0))
+                    .overflow_y_scroll()
+                    .children(sections),
             );
 
         // 拖动宽度：热区是右侧一条 5pt 的透明带（视觉上仍是 1pt 边线）。
@@ -225,16 +175,6 @@ impl GpuiApp {
             .into_any_element()
     }
 
-    /// 段渲染（不含外层滚动区）：三区已各自带滚动。
-    fn render_section_plain(
-        &self,
-        section: SidebarSectionModel,
-        theme: &Theme,
-        cx: &mut gpui::Context<Self>,
-    ) -> AnyElement {
-        self.render_section(section, theme, cx)
-    }
-
     fn render_section(
         &self,
         section: SidebarSectionModel,
@@ -257,6 +197,7 @@ impl GpuiApp {
         div()
             .flex()
             .flex_col()
+            .flex_none()
             .when(kind != Section::Workspaces, |element| {
                 // 段间隔一条 hairline + 8pt：Swift 的四个独立表格之间就是
                 // 这种「分组卡片」的边界，没有分隔线会糊成一大片。
@@ -270,6 +211,7 @@ impl GpuiApp {
             .child(
                 div()
                     .id(SharedString::from(format!("section-{:?}", kind)))
+                    .debug_selector(move || format!("section-{kind:?}"))
                     .flex()
                     .flex_row()
                     .items_center()
