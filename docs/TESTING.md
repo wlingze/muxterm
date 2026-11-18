@@ -367,6 +367,8 @@ cargo test --test tmux_ssh_feature_contract -- --test-threads=1
 | `linux_last_seen_e2e` | 切走再切回：`muxterm-last-seen`；点击含 `LEFT_HERE_*` |
 | `linux_command_marks_e2e` | `muxterm-cmd-mark-ok/fail`；tooltip 命令；点击跳转 |
 | `osc133_records_command_marks_with_exit_and_text` | 两条刻度，exit 0 然后 1，带命令文本 |
+| `command_mark_uses_the_rendered_line_not_the_raw_redraw_bytes` | B..C 的 SGR/光标移动不进命令文本；C 光标是右开边界 |
+| `ffi_command_mark_redraw_supplies_the_running_command_name` | Commands 运行中的名字来自重绘后的屏幕（含回退覆盖编辑） |
 
 禁止：`#[ignore]` SSH 测试；连用户 22；SSH 重连用本地 `tmux -L` 查远端 bell；用 MockRuntime 冒充 SSH；削弱 +N / last-seen / 刻度断言。
 
