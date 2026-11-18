@@ -108,9 +108,25 @@ for arg in "$@"; do
     *) args="$args $arg" ;;
   esac
 done
+# 日志落到用户临时目录的日期文件：LaunchServices 丢弃 stderr，没有文件就
+# 等于没有日志（用户报障时只能贴一个空目录）。显式 --log-file 时尊重用户。
+log_file="${TMPDIR:-/tmp}/muxterm-logs/muxterm-$(date +%Y-%m-%d).log"
+case " $args " in
+  *" --log-file "*) ;;
+  *) args="$args --log-file $log_file" ;;
+esac
+# 开发包开 debug：输入 / resize / attach 的现场只在 --debug 里；
+# 发布包保持默认级别，避免把终端内容写进用户日志。
 # shellcheck disable=SC2086  # 有意做词分割，把过滤后的参数原样交给 muxterm
-exec "$(dirname "$0")/../Resources/muxterm" gpui $args
+exec "$(dirname "$0")/../Resources/muxterm" gpui __DEBUG_ARG__ $args
 LAUNCHER
+# 上面的 heredoc 必须整体引用（运行期的 $@ / $args 不能在构建期展开），
+# debug 开关在写完后替换占位符。
+if [[ -n "$RELEASE" ]]; then
+  sed -i '' 's/__DEBUG_ARG__//' "$APP/Contents/MacOS/Muxterm"
+else
+  sed -i '' 's/__DEBUG_ARG__/--debug/' "$APP/Contents/MacOS/Muxterm"
+fi
 chmod +x "$APP/Contents/MacOS/Muxterm"
 
 xattr -cr "$APP" 2>/dev/null || true
