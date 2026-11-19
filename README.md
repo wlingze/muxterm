@@ -51,23 +51,28 @@ Agents 聚合、Shells 聚合三张一组，另有端口选择器，各有亮/�
 
 | 组件 | 说明 |
 |------|------|
-| Linux | 桌面环境（GTK4）才能跑 `muxterm gui` |
+| macOS | 13+；发布前端是 GPUI（`muxterm gpui`） |
+| Linux | 图形会话（X11 或 Wayland）才能跑 `muxterm gpui`；GTK4 前端仍可用 |
+| Windows | 10 1809+（ConPTY）或 11 |
 | Rust | 建议 stable（开发机实测 `rustc 1.97.1`） |
-| tmux | 建议 3.x（实测 `3.7b`）；tmux runtime 需要 |
-| 系统库 | `gtk4`、`vte`（GTK4 版）、OpenSSL 等开发包 |
+| tmux | 建议 3.x（实测 `3.7b`）；tmux runtime 需要（Windows 上没有本地 tmux） |
+| 系统库 | Linux GPUI：`xkbcommon`、`wayland` / `libX11`、`fontconfig`、`freetype`、Vulkan 驱动 |
 
-Arch 示例：
+Arch 示例（GPUI）：
 
 ```bash
-sudo pacman -S rust gtk4 vte4 openssl pkgconf tmux
+sudo pacman -S rust pkgconf xkbcommon wayland libx11 fontconfig freetype2 vulkan-icd-loader mesa tmux
 ```
 
-Debian / Ubuntu 示例：
+Debian / Ubuntu 示例（GPUI；仓库脚本 `scripts/ci/setup-gpui-linux.sh` 装的就是这一组）：
 
 ```bash
 sudo apt-get install -y build-essential pkg-config \
-  libgtk-4-dev libvte-2.91-gtk4-dev libssl-dev tmux
+  libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+  libx11-dev libfontconfig1-dev libfreetype-dev tmux
 ```
+
+GTK4 前端（历史实现）另需 `libgtk-4-dev libvte-2.91-gtk4-dev libssl-dev`。
 
 ## 安装
 
@@ -82,12 +87,13 @@ sudo apt-get install -y build-essential pkg-config \
 | `v1.2.3-alpha.1` | alpha | **只构建**，产物上传到 Actions artifacts，不创建 Release |
 | 手动 dispatch | manual | 构建 `最近 tag-dev.短SHA` 的 prerelease |
 
-正式目标平台是两个桌面版本：
+正式目标平台是三个桌面版本，全部是 GPUI 前端（`muxterm gpui`）：
 
 | 产物 | 平台 | 类型 | 运行时依赖 |
 |------|------|------|-----------|
-| `muxterm-macos-arm64.dmg` | macOS ARM64 | DMG containing `Muxterm.app` | macOS 13+ |
-| `muxterm-gtk-linux-x86_64.tar.gz` | Linux x86_64 | GTK4 GUI app | glibc, libgtk-4-1, libvte-2.91-gtk4, libssl3, tmux |
+| `muxterm-macos-arm64.dmg` | macOS ARM64 | DMG containing `Muxterm.app`（GPUI） | macOS 13+ |
+| `muxterm-linux-x86_64.tar.gz` | Linux x86_64 | GPUI app + `.desktop` + 图标 | glibc, libxkbcommon, libwayland-client（或 libX11）, fontconfig, Vulkan 驱动, tmux |
+| `muxterm-windows-x86_64.zip` | Windows x86_64 | `muxterm.exe` + 图标 | Windows 10 1809+（ConPTY）/ 11；本地 shell 走 ConPTY，远程走 SSH |
 
 每个产物附带 `.sha256` 校验文件；Release 同时发布 `latest.json`（内置更新读取的清单）。
 资产文件名同时保留带版本号的一份（如 `muxterm-macos-arm64-v1.2.3.dmg`）。
@@ -95,7 +101,8 @@ sudo apt-get install -y build-essential pkg-config \
 直接下载 stable（`latest`）：
 
 - macOS ARM64：[`muxterm-macos-arm64.dmg`](https://github.com/wlingze/muxterm/releases/latest/download/muxterm-macos-arm64.dmg)
-- Linux x86_64：[`muxterm-gtk-linux-x86_64.tar.gz`](https://github.com/wlingze/muxterm/releases/latest/download/muxterm-gtk-linux-x86_64.tar.gz)
+- Linux x86_64：[`muxterm-linux-x86_64.tar.gz`](https://github.com/wlingze/muxterm/releases/latest/download/muxterm-linux-x86_64.tar.gz)
+- Windows x86_64：[`muxterm-windows-x86_64.zip`](https://github.com/wlingze/muxterm/releases/latest/download/muxterm-windows-x86_64.zip)
 
 macOS 发布包使用 ad-hoc 签名，未经过 Apple 公证；首次启动若被 Gatekeeper 拦截，
 请在 **系统设置 → 隐私与安全性** 允许该应用。Linux 包在 ubuntu-latest 上构建；
@@ -137,7 +144,10 @@ workflow 注入，本地构建回退 `Cargo.toml` 版本号。
 
 | 脚本 | 产物 |
 |------|------|
-| `scripts/build-linux.sh [--release]` | Linux GTK4 桌面前端 |
+| `scripts/build-gpui-macos.sh [--release]` | macOS GPUI `Muxterm.app`（发布前端） |
+| `scripts/build-gpui-linux.sh [--release]` | Linux GPUI 二进制 + `.desktop` + 图标 |
+| `scripts/build-gpui-windows.sh [--release]` | Windows GPUI `muxterm.exe`（Git Bash） |
+| `scripts/build-linux.sh [--release]` | Linux GTK4 桌面前端（历史实现） |
 | `scripts/build-tui.sh [--release]` | 纯终端 TUI（CI / 无头，跨平台） |
 | `scripts/build-cli.sh [--release]` | C ABI 库 + CLI 二进制 |
 | `scripts/build-macos.sh [--release]` | macOS SwiftUI app（libmuxterm.a + SwiftPM） |
@@ -167,11 +177,14 @@ cargo run -- --help
 # TUI
 cargo run --no-default-features --features tui -- tui
 
-# Linux GUI
+# GPUI（macOS / Linux / Windows）
+cargo run --no-default-features --features gpui -- gpui
+
+# Linux GTK4（历史实现）
 cargo run --features gtk -- gui
 
 # 详细日志
-cargo run --features gtk -- gui --verbose
+cargo run --no-default-features --features gpui -- gpui --verbose
 ```
 
 兼容期内 `--tui` / `--gtk` 仍可用；目标入口是 subcommand `tui` / `gui`。

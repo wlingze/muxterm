@@ -591,26 +591,121 @@ Project / discovery 行用 Core 记账的 attach 频率排序（`attach-history.
 | 现有 runtime 去重键 | `transport\|runtime\|session\|socket\|workspace_id\|name` | `(transport, target, runtime, session, socket, workspace_id)`：与 Swift 同语义，不按 name 去重（同 session 多个 Herdr workspace 是不同身份） |
 
 
-## 8.1 跨平台 TODO（2026-11-05 实测记录）
+## 8.1 跨平台状态（2026-11-19 更新）
 
-一份 widget 树是真的：`src/frontend/gpui/` 里 `cfg(target_os)` / `objc` / `winapi` / `gtk::`
-出现次数都是 0。但「编到别的机器上就行」目前还不成立，下面每一条都是实测过的：
+目标：macOS / Linux（X11 + Wayland）/ Windows 三平台都出 GPUI 应用。
+平台差异全部收在 `src/frontend/gpui/platform/`（前端）与 `src/core/os.rs`
+（Core），业务代码里不再出现 `cfg(target_os)` 分支。
 
-| 平台 | 现状 | 要做什么 |
+### OS 差异清单（现状）
+
+| 维度 | macOS | Linux | Windows | 落点 |
+| --- | --- | --- | --- | --- |
+| 命令键 | Command | `[shortcuts] primary_key`，`auto` = Alt | 同 Linux（`auto` = Alt） | `platform/desktop.rs::chord_modifiers`；`platform::normalize_keystroke` |
+| 终端 Ctrl 语义 | Ctrl 照旧进 PTY | 同左（Alt 才是命令键） | 同左 | `state.rs::handle_key` 用**原始**修饰键编码 |
+| 未命中动作表的命令键 | Cmd 组合不交给终端 | 交回终端（Alt = Meta 前缀） | 同左 | `platform::unbound_command_reaches_terminal` |
+| 菜单 | 原生 NSMenu（`platform/macos_menu.rs`） | 窗口内自绘菜单条（`chrome/menu_bar.rs`） | 同左 | `platform::uses_native_menu_bar` |
+| 默认等宽字体 | Menlo | DejaVu Sans Mono | Cascadia Mono | `platform/desktop.rs::default_monospace_family` |
+| 字体注册 / 回退 | `TextSystem::add_fonts(JetBrains Mono, Noto Symbols)` + 平台回退栈 | 同左 | 同左 | `app.rs::register_bundled_fonts`；`theme::font_fallbacks` |
+| 窗口标题栏 | 隐藏标题、只留 traffic lights | 系统标题栏（xdg-decoration server side） | 系统标题栏 | `platform::titlebar_options` |
+| 窗口标题文字 | `[ui] show_title_bar=false` → 空 | 始终显示 workspace 名 | 同左 | `platform::window_title_text` |
+| 图标 / 打包 | `.app` + `.dmg`（ad-hoc 签名） | `tar.gz` + `.desktop` + PNG 图标 | `.zip`（exe + PNG） | `scripts/build-gpui-{macos,linux,windows}.sh` |
+| 剪贴板图片 | NSPasteboard TIFF/PNG → PNG（AppKit 解码） | PNG 透传（签名校验） | PNG 透传（签名校验） | `platform/clipboard_image.rs` |
+| 拖放 | 未实现（与 Linux/Windows 一致，见下） | 未实现 | 未实现 | — |
+| 通知 | 无系统通知；BEL → attention 面板 | 同左 | 同左 | `chrome/status_bar.rs` |
+| 路径 | `~/.config/muxterm`、`~/.cache/muxterm` | `$XDG_CONFIG_HOME` / `$XDG_CACHE_HOME`（缺省同上） | `%APPDATA%` / `%LOCALAPPDATA%` | `core/os.rs::{config_home,cache_home}` |
+| 粘贴临时文件 | `/tmp` | `/tmp` | `%TEMP%` | `core/os::paste_dir` |
+| PTY | openpty（portable-pty） | openpty（portable-pty） | **ConPTY**（portable-pty） | `portable-pty` 不再是 unix-only 依赖 |
+| 进程终止 | SIGHUP/TERM/KILL | 同左 | `taskkill /PID <pid> /T /F` | `core/os::terminate_process` |
+| 默认 shell | `$SHELL` → `/bin/sh` | 同左 | `%COMSPEC%` → `cmd.exe` | `core/os::default_shell` |
+| 本地 IPC | UnixSocket（tmux `-CC` / shell daemon / Herdr） | 同左 | **不支持**：`core/os::unix_socket_unsupported` 给出可读错误 | `core/os::SUPPORTS_UNIX_SOCKET` |
+| 一键更新 | DMG（hdiutil） | tar.gz | 不支持（`current_asset_key` 返回 None） | `core/update/platform.rs` |
+| 权限 / 签名 | ad-hoc codesign（`codesign --verify --deep --strict`） | 无（只有文件权限 0600/0755） | 无（未做 Authenticode） | 构建脚本 |
+
+### 关键取舍
+
+- **Linux / Windows 的命令键是 Alt，不是 Ctrl**：终端里 Ctrl-C 必须是控制字节。
+  这与 Core `config/action_catalog::primary_modifier("auto")` 和 GTK 前端一致。
+  用户在 `[shortcuts] primary_key` 里显式写成 `control` 时，Ctrl 才变成命令键。
+- **Linux 的构建依赖链修复**：`gpui 0.2.2 → gpui_http_client → zed-async-tar
+  → xattr 0.2.3` 在 Linux 上用 `libc::ENOATTR`（Linux 只有 `ENODATA`）编不过。
+  仓库内 `vendor/xattr` 是上游 0.2.3 的原样拷贝 + 一处错误码映射，通过
+  `[patch.crates-io]` 接入；说明见 `vendor/xattr/PATCH.md`。
+- **Windows 后端范围**：本地 shell（ConPTY）与 SSH transport 可用；tmux 的
+  `-CC` 控制 client、shell daemon、Herdr 都依赖 Unix domain socket，Windows
+  上返回明确错误（`core/os::unix_socket_unsupported`）。Windows 上要做
+  tmux 请连 SSH 目标。
+- **自绘菜单条只在 Linux / Windows 出现**：gpui 0.2.2 在 Linux 的
+  `set_menus` 是空实现、Windows 只写进跳转列表，所以必须自己画。数据仍是
+  `model::menu` 的同一份 `Vec<Menu>`，动作仍走 `KeyAction` → `run_action`。
+
+### 构建与验证（三平台命令）
+
+```bash
+# macOS：.app（ad-hoc 签名）+ 本机运行
+./scripts/build-gpui-macos.sh            # 或 --release
+./build/macos/Muxterm.app/Contents/MacOS/Muxterm gpui
+
+# Linux：单二进制 + 桌面集成资源（缺库时脚本先打印 apt 安装命令）
+./scripts/build-gpui-linux.sh --release
+./build/linux/muxterm gpui
+
+# Windows（Git Bash / MSYS）
+./scripts/build-gpui-windows.sh --release
+./build/windows/muxterm.exe gpui
+```
+
+三平台统一门禁（不依赖 tmux / herdr，可在任意平台跑）：
+
+```bash
+bash scripts/test.sh run gpui-cross
+# = fmt --check + clippy(-D warnings) + `--lib frontend::` + gpui_harness_smoke
+#   + gpui_platform + gpui_chrome + release 构建
+```
+
+macOS 完整门禁（含 tmux / herdr 验收）：`bash scripts/test.sh run gpui`。
+
+### CI 与产物
+
+仓库没有 `linux.yml` / `macos.yml`：Linux 与 macOS 的 GPUI 门禁都在
+`ci-gpui-frontend.yml`（两个 job）；Windows 是新加的 `ci-windows.yml`。
+
+| Job | Runner | 内容 |
 | --- | --- | --- |
-| Windows | **编不过**。`src/core/transport/mod.rs` 无条件声明 `local` / `ssh`，它们无条件 `use portable_pty`、`libc::SIGHUP`，而 `portable-pty` / `libc` 只在 `[target."cfg(unix)".dependencies]` 下；`connection.rs` 也无条件用 `std::os::unix::net::UnixStream`，`src/core` 里 `cfg(windows)` 出现 0 次。`src/frontend/windows/mod.rs` 只有 4 行占位。 | 把 Unix-only 模块加 `#[cfg(unix)]`，并决定 Windows 的 PTY 后端（ConPTY）与 runtime 范围；在那之前至少用 `compile_error!` 明说「Windows 不支持」，不要把一堆悬空符号抛给用户。 |
-| Linux 构建 | **依赖链编不过**：`gpui 0.2.2 → gpui_http_client → zed-async-tar → xattr 0.2.3`，`xattr` 在 `cfg(target_os = "linux")` 分支里用 `libc::ENOATTR`，而 Linux 只有 `ENODATA`。`cargo check --target x86_64-unknown-linux-gnu --features gpui` 停在这里，还没轮到本项目代码。 | 加 `[patch.crates-io] xattr`（或 vendor 一份把 Linux 的 `ENOATTR` 映射到 `ENODATA`）。打完这个补丁后本库可以完整编过 Linux target（实测 2m02s 出 `libmuxterm-*.rmeta`）。 |
-| 字体 fallback | 默认 `[font] family` 读 Core 配置（缺省 Menlo 18）。仓库里的 `assets/fonts/JetBrainsMono-Regular.ttf` 没有通过 `TextSystem::add_fonts` 注册；配置的字体不存在时 gpui 会落到它的 fallback 栈（含比例字体），格子对齐开始漂。 | 启动时 `cx.text_system().add_fonts(...)` 注册内置字体，并把 Core 的 `[font] fallback` 接进 `Font.fallbacks`。 |
-| 快捷键 | `handle_key` 用 `keystroke.modifiers.platform`：macOS=Command，Linux=Super，Windows=Win。已消费 `[shortcuts] preset` 与 `overrides`（Colemak 手位为锚）。`primary_key` 还没被 gpui 消费。 | 接 `primary_key`（Linux 上 GTK 前端用 Alt），或明确「gpui 前端只支持 macOS 语义」。 |
-| 菜单栏 | macOS 走原生 NSMenu（`platform/macos_menu.rs`，结构 = `model/menu.rs`）。Linux / Windows 还没有菜单条（`platform::install_menu()` 返回 `None`）。 | 自绘菜单条：同一份 `model::menu` 数据，用 gpui 元素画在窗口顶部。 |
-| CI | `.github/workflows/*.yml` 里 `gpui` 出现 0 次。 | 加一个 `ubuntu-latest` 的 `cargo check --no-default-features --features gpui`。 |
-| 打包 | 只有 `scripts/build-gpui-macos.sh`，没有 Linux `.desktop` / Windows 打包。 | 与各平台 frontend 一起补。 |
-| 图标 | macOS `.app` 内置 `MuxtermLogo.icns` + `CFBundleIconFile`（与 Swift 同一份资源）。 | Linux / Windows 用同一张 PNG 生成 `.desktop` / `.ico`。 |
+| `ci-gpui-frontend (macos)` | `macos-latest` | `scripts/test.sh run gpui`（完整套件）+ 发布 profile 构建 |
+| `ci-gpui-frontend (linux)` | `ubuntu-latest` | `scripts/ci/setup-gpui-linux.sh` → `run gpui-cross` → `build-gpui-linux.sh --release` |
+| `ci-windows` | `windows-latest` | `run gpui-cross` → `build-gpui-windows.sh --release` → 上传 `muxterm.exe` |
+| `release / Linux GPUI` | `ubuntu-latest` | `muxterm-linux-x86_64-<ver>.tar.gz`（bin + `.desktop` + PNG + README + sha256） |
+| `release / macOS ARM` | `macos-latest` | `muxterm-macos-arm64-<ver>.dmg`（内含 GPUI `Muxterm.app`） |
+| `release / Windows GPUI` | `windows-latest` | `muxterm-windows-x86_64-<ver>.zip`（exe + PNG + README + sha256） |
+
+### 未验证 / 已知缺口
+
+- **Windows 运行期**：本机没有 Windows 机器，CI 验证的是编译 + 无头测试 +
+  `--version`；真实窗口（ConPTY、DPI、Vulkan/D3D12、IME）没跑过。对应 job：
+  `ci-windows`。
+- **Linux 运行期**：CI 跑 `cargo test` 无头套件与构建，连接真实合成器的窗口
+  （X11 / Wayland 各自的输入法、剪贴板、DPI）没跑过。对应 job：
+  `ci-gpui-frontend (linux)`。
+- **拖放**：三平台都没有实现文件拖放（`on_drop` 从未接线），现状一致。
+- **系统通知**：三平台都没有系统通知，bell 仍进 attention 面板。
+- **Windows 自更新 / Authenticode / 嵌入 exe 图标**：未做；Windows zip 里只有
+  未签名 exe 与 PNG。
+- **AppImage**：Linux 发布用 `tar.gz`（与仓库既有格式一致）；未做 AppImage。
+- **Windows 的 tmux / Herdr**：依赖 Unix socket，明确不支持。
 
 ## 9. 验收
 
 - `cargo check --no-default-features --features gpui` 通过。
+- `cargo check --target x86_64-unknown-linux-gnu --no-default-features --features gpui --lib`
+  通过（2026-11-19 本机实测，含 `vendor/xattr` 补丁）；同一命令加
+  `--test gpui_platform --test gpui_chrome` 也能编过 Linux target。
 - `cargo test --no-default-features --features gpui --lib` 通过（2026-11-16 实测 **2010 passed**，3 ignored）。
+- 跨平台策略用例：`--test gpui_platform`（2026-11-19 新增 11 条）验证
+  命令键归一化（macOS Cmd / 其它 Alt）、Ctrl-C 仍进 PTY、自绘菜单条只在
+  非 macOS 出现、菜单数据三平台一致、菜单项与快捷键发出同一条命令。
+- 三平台原生 runner：`ci-gpui-frontend (macos|linux)` 与 `ci-windows`
+  跑 `scripts/test.sh run gpui-cross`（见 §8.1 的 CI 表）。
 - 集成测试（每个都实测通过）：
   - `--test gpui_chrome`（146，含设置独立窗口 / 双布局快捷键管理 / Cmd-P 面板几何与空状态、命令面板每条命令的动作、改名浮层、tab 重排、语言/主题/状态栏、
     设置页的 Esc / ⏎ / Cancel / Apply 与放弃修改确认（有改动先问；无头测试走同一套渲染兜底）、

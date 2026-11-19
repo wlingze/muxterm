@@ -99,6 +99,10 @@ gpui 的行为回接到 Swift。新功能优先在 gpui 落地。
 - [ ] 改了 gpui 前端就重建 `./build/macos/Muxterm.app`（`scripts/build-gpui-macos.sh`）并通过
       `codesign --verify --deep --strict`：用户每次都用这个 `.app` 试用，产物必须是当前 HEAD 的代码。
       这个路径与 Swift 的 `build-macos.sh` 产物同名；两者不要同时构建，后构建者覆盖前者。
+- [ ] 跨平台：Linux 用 `./scripts/build-gpui-linux.sh --release`（缺系统库时脚本会打印 apt 命令），
+      Windows 用 `./scripts/build-gpui-windows.sh --release`（Git Bash）。三平台都能跑的门禁是
+      `bash scripts/test.sh run gpui-cross`；平台差异只能写在 `src/frontend/gpui/platform/` 或
+      `src/core/os.rs`，业务代码里不许出现 `cfg(target_os)` 分支。
 
 ## 真机 GUI 测试纪律（MUST，违反=干扰用户使用电脑）
 
