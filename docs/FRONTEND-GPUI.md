@@ -542,6 +542,12 @@ ANSI 0–6，dim 与背景对半混合）
 - Attention / Search 的跳转是**完整身份**：workspace → tab（按 pane 反查）→
   显式 `SwitchPane`。只切 workspace + pane 的话，pane 在别的 tab 时屏幕还停在
   原 tab —— 用户看到的就是「跳不到位」（对照 `MainWindow.jumpToPane`）。
+- **查看不等于处理**：打开铃铛只展示列表，不清未读。点提醒行、Agents 行、tab 或直接
+  点 pane 时，只把实际看到的 `(workspace, pane)` 的本次 blocked/done 提醒标成已读；
+  已聚焦的 pane 再点一次也算查看。铃铛计数与待处理列表移除这一条，其他 pane 不受影响。
+  Agents 行与 tab 保留 Agent 的真实状态（`blocked` 仍是 `blocked`，只有 done 降为 idle），
+  不发送终端输入，也不静音。已读由 Core 记录，刷新不重新点亮；同一 pane 后续产生的
+  新提醒仍正常出现。跳跃到指定 pane 时，中途经过的 workspace/tab 默认 pane 不算已读。
 - 状态栏右侧读 **Surface 的实时网格**（`pane_grid_size`），不读 store 里等 Core
   回包才更新的 `cols/rows`；窗口一变大，状态栏立刻跟着变。
 - 本机 tmux 去重先核对 runtime / transport / socket：同名的 shell workspace 或

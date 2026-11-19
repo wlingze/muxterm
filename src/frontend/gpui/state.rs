@@ -854,6 +854,9 @@ impl GpuiApp {
             return false;
         }
         self.focused_pane = Some(target);
+        // Core 把活动 pane 换到了这一格（tab 切换、tmux 侧切换、分屏）：
+        // 它现在就在屏幕上，算已经看过。
+        self.mark_pane_viewed(&workspace, target);
         true
     }
 
@@ -3920,13 +3923,7 @@ impl GpuiApp {
                 pane_id,
                 tab_id,
             } => {
-                if self.visible.as_deref() != Some(workspace_id.as_str()) {
-                    self.select_workspace(workspace_id, cx);
-                }
-                if let Some(tab_id) = tab_id {
-                    self.select_tab(tab_id, cx);
-                }
-                self.focus_pane(pane_id, cx);
+                self.reveal_pane_in_tab(&workspace_id, pane_id, tab_id, cx);
             }
         }
     }
@@ -4370,6 +4367,12 @@ impl GpuiApp {
     }
 
     pub fn select_workspace(&mut self, workspace: String, cx: &mut Context<Self>) {
+        self.show_workspace(workspace, true, cx);
+    }
+
+    /// 切到工作区。`mark_viewed` 只在该工作区是用户的最终目的地时为真：
+    /// 跳到指定 pane 的中途换工作区，不能顺手清掉默认 pane 的未读。
+    fn show_workspace(&mut self, workspace: String, mark_viewed: bool, cx: &mut Context<Self>) {
         // 固定聚合槽不是 Core workspace：点它只能切到聚合投影。
         if let Some(kind) = aggregate_kind_for_identity(&workspace) {
             self.select_aggregate(kind, cx);
@@ -4385,7 +4388,35 @@ impl GpuiApp {
         self.commands
             .push(ClientCommand::ActivateWorkspace(workspace));
         self.focus_default_pane();
+        if mark_viewed {
+            if let (Some(workspace), Some(pane_id)) = (self.visible.clone(), self.focused_pane) {
+                self.mark_pane_viewed(&workspace, pane_id);
+            }
+        }
         cx.notify();
+    }
+
+    /// 记下“用户已经看见这个 pane”。
+    ///
+    /// 本地先清掉这一条未读，避免下一次轮询前铃铛还亮着；真正的已读状态
+    /// 由 Core 保存（下次快照以 Core 为准）。只动这一个 pane：其他 pane 的
+    /// 未读、以及同一 pane 之后新产生的提醒都不受影响。
+    fn mark_pane_viewed(&mut self, workspace_id: &str, pane_id: u32) {
+        if let Some(snapshot) = self.attention.as_mut() {
+            for pane in snapshot
+                .workspaces
+                .iter_mut()
+                .filter(|workspace| workspace.workspace_id == workspace_id)
+                .flat_map(|workspace| workspace.panes.iter_mut())
+                .filter(|pane| pane.pane_id == pane_id)
+            {
+                pane.acknowledged = true;
+            }
+        }
+        self.commands.push(ClientCommand::AttentionViewed {
+            workspace_id: workspace_id.to_string(),
+            pane_id,
+        });
     }
 
     /// 含这个 pane 的 tab id（对照 Swift `cachedTabID(containingPane:)`）。
@@ -4406,10 +4437,27 @@ impl GpuiApp {
     ///    （即使焦点已经在这个 pane 上也要发：刚从别的 tab 过来时 Core 的活动
     ///    pane 可能还是旧 tab 的）。
     pub fn reveal_pane(&mut self, workspace_id: &str, pane_id: u32, cx: &mut Context<Self>) {
-        self.select_workspace(workspace_id.to_string(), cx);
-        if let Some(tab_id) = self.tab_containing_pane(workspace_id, pane_id) {
+        self.reveal_pane_in_tab(workspace_id, pane_id, None, cx);
+    }
+
+    /// `tab_hint` 来自侧栏行（命令/Agent 行还记着自己属于哪个 tab）。
+    /// 没有提示时按 pane 反查。
+    fn reveal_pane_in_tab(
+        &mut self,
+        workspace_id: &str,
+        pane_id: u32,
+        tab_hint: Option<u32>,
+        cx: &mut Context<Self>,
+    ) {
+        // 中途的 workspace / tab 切换只是实现细节：只记目标 pane 已读。
+        self.show_workspace(workspace_id.to_string(), false, cx);
+        let tab_id = tab_hint.or_else(|| self.tab_containing_pane(workspace_id, pane_id));
+        if let Some(tab_id) = tab_id {
             if self.active_tab_id() != Some(tab_id) {
-                self.select_tab(tab_id, cx);
+                self.commands.push(ClientCommand::Task {
+                    workspace_id: Some(workspace_id.to_string()),
+                    task: crate::frontend::utils::corebridge::ClientTask::SwitchTab { tab_id },
+                });
             }
         }
         self.focused_pane = Some(pane_id);
@@ -4418,6 +4466,7 @@ impl GpuiApp {
             workspace_id: Some(workspace_id.to_string()),
             task: crate::frontend::utils::corebridge::ClientTask::SwitchPane { pane_id },
         });
+        self.mark_pane_viewed(workspace_id, pane_id);
         cx.notify();
     }
 
@@ -4429,7 +4478,24 @@ impl GpuiApp {
             workspace_id: self.visible.clone(),
             task: crate::frontend::utils::corebridge::ClientTask::SwitchTab { tab_id },
         });
+        // 切 tab 后 Core 会把该 tab 的活动 pane 设为焦点；用户看到的就是它。
+        if let (Some(workspace), Some(pane_id)) =
+            (self.visible.clone(), self.tab_active_pane(tab_id))
+        {
+            self.mark_pane_viewed(&workspace, pane_id);
+        }
         cx.notify();
+    }
+
+    /// 某个 tab 的活动 pane（Core 的 pane 快照按 tab 记 active）。
+    fn tab_active_pane(&self, tab_id: u32) -> Option<u32> {
+        let view = self.store.workspace(self.visible.as_deref()?)?;
+        let panes = view.panes_for_tab(tab_id);
+        panes
+            .iter()
+            .find(|pane| pane.is_active)
+            .or_else(|| panes.first())
+            .map(|pane| pane.id)
     }
 
     /// 关当前 workspace 的某个 tab（tab 栏 ✕ 与命令面板共用）。
@@ -4499,6 +4565,10 @@ impl GpuiApp {
     }
 
     pub fn focus_pane(&mut self, pane_id: u32, cx: &mut Context<Self>) {
+        // 点已经聚焦的 pane 也算“看了一眼”：先记已读，再做无变化的短路。
+        if let Some(workspace) = self.visible.clone() {
+            self.mark_pane_viewed(&workspace, pane_id);
+        }
         if self.focused_pane == Some(pane_id) {
             return;
         }

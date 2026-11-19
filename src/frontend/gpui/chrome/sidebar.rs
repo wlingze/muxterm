@@ -411,6 +411,14 @@ impl GpuiApp {
         };
         let target = row.target.clone();
         let shortcut = row.shortcut.clone();
+        // 行级选择器：名字行可能重名（Agents 行与 Workspace 行标题都是
+        // `dev · local`），回归测试点整行时要用带身份的选择器。
+        let row_selector = match (&target, section) {
+            (RowTarget::Pane { pane_id, .. }, _) => {
+                format!("sidebar-row-{section:?}-{pane_id}")
+            }
+            (RowTarget::Workspace(id), _) => format!("sidebar-row-workspace-{id}"),
+        };
         let trailing = row.trailing;
         let command_key = match (&row.target, section) {
             (
@@ -493,6 +501,10 @@ impl GpuiApp {
                 "row-{:?}-{}",
                 section, row.title
             )))
+            .debug_selector({
+                let selector = row_selector.clone();
+                move || selector.clone()
+            })
             .group(hover_group.clone())
             .relative()
             .flex()
