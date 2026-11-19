@@ -35,6 +35,14 @@ pub enum ClientCommand {
     },
     ActivateWorkspace(String),
     CloseWorkspace(String),
+    /// 用户看到了某个 pane：让 Core 记已读（不改变 Runtime 状态）。
+    ///
+    /// 对照 macOS `MainWindow.acknowledgeWorkspacePane` / `AttentionOperation.becameVisible`：
+    /// 已读是 Core 的语义，前端不能只把行藏起来。
+    AttentionViewed {
+        workspace_id: String,
+        pane_id: u32,
+    },
     /// 设置窗口 Apply：一条 manifest 路径一个 patch，走 Core 的配置事务。
     ConfigApply {
         path: String,
@@ -137,6 +145,16 @@ fn coalesces(previous: &ClientCommand, next: &ClientCommand) -> bool {
                 ..
             },
         ) => previous_workspace == next_workspace && previous_pane == next_pane,
+        (
+            ClientCommand::AttentionViewed {
+                workspace_id: previous_workspace,
+                pane_id: previous_pane,
+            },
+            ClientCommand::AttentionViewed {
+                workspace_id: next_workspace,
+                pane_id: next_pane,
+            },
+        ) => previous_workspace == next_workspace && previous_pane == next_pane,
         _ => false,
     }
 }
@@ -179,6 +197,10 @@ fn dispatch(client: &FfiClient, command: ClientCommand) -> i32 {
             (None, Some(pane_id)) => client.resize_pane(pane_id, cols, rows),
             (None, None) => client.resize_client(cols, rows),
         },
+        ClientCommand::AttentionViewed {
+            workspace_id,
+            pane_id,
+        } => client.workspace_attention_on_became_visible(&workspace_id, pane_id),
         ClientCommand::ConfigApply { path, value } => {
             match client.config_apply_path(&path, value) {
                 Ok(_) => 0,
@@ -296,6 +318,34 @@ mod tests {
                 cols: 120,
                 rows: 40,
             }
+        );
+    }
+
+    /// 对照 macOS `CommandQueueTests.testRepeatedVisibilityAcknowledgeForOnePaneCoalesces`：
+    /// 同一 pane 的重复“已看”只发一次，不同 pane 不能合并。
+    #[test]
+    fn repeated_view_marks_coalesce_only_for_the_same_pane() {
+        let mut queue = CommandQueue::default();
+        for pane_id in [3, 3, 4] {
+            queue.push(ClientCommand::AttentionViewed {
+                workspace_id: "one".into(),
+                pane_id,
+            });
+        }
+
+        assert_eq!(queue.len(), 2);
+        assert_eq!(
+            queue.drain(),
+            vec![
+                ClientCommand::AttentionViewed {
+                    workspace_id: "one".into(),
+                    pane_id: 3,
+                },
+                ClientCommand::AttentionViewed {
+                    workspace_id: "one".into(),
+                    pane_id: 4,
+                },
+            ]
         );
     }
 

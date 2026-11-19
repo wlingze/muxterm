@@ -1363,6 +1363,7 @@ mod client_mapping_tests {
             process_is_agent: is_agent,
             agent_name: is_agent.then(|| process.unwrap_or_default().to_string()),
             shell_name: None,
+            program_status: None,
         }
     }
 

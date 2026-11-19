@@ -6,6 +6,8 @@
 #![cfg(feature = "gpui")]
 
 use gpui::{px, size, TestAppContext};
+#[path = "support/gpui_attention.rs"]
+mod agent_notification;
 #[path = "support/gpui_settings.rs"]
 mod settings_regressions;
 use muxterm::frontend::command_queue::ClientCommand;
@@ -174,6 +176,7 @@ fn long_sidebar_rows_stay_single_line(cx: &mut TestAppContext) {
                         process_is_agent: true,
                         agent_name: Some("pi".to_string()),
                         shell_name: None,
+                        program_status: None,
                     }],
                 }],
             });
@@ -3799,6 +3802,7 @@ fn activity_snapshot_with_agent() -> muxterm::frontend::utils::corebridge::Clien
         process_is_agent: agent,
         agent_name: agent.then(|| process.to_string()),
         shell_name: None,
+        program_status: None,
     };
     ClientActivitySnapshot {
         blocked_count: 0,

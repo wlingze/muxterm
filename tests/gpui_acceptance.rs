@@ -25,6 +25,10 @@ struct IsolatedTmux {
 
 impl IsolatedTmux {
     fn start() -> Self {
+        Self::start_with_command(&[])
+    }
+
+    fn start_with_command(command: &[&str]) -> Self {
         // 并行测试可能在同一纳秒起步，所以再拼一个进程内序号。
         static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -36,6 +40,7 @@ impl IsolatedTmux {
         let session = format!("muxterm-test-gpui-{unique}-{sequence}");
         let status = std::process::Command::new("tmux")
             .args(["-L", &socket, "new-session", "-d", "-s", &session])
+            .args(command)
             .status()
             .expect("tmux 必须可用");
         assert!(status.success(), "隔离 tmux session 必须创建成功");
@@ -713,6 +718,59 @@ fn app_with_local_shell<'a>(
             .is_some_and(|screen| !screen.trim().is_empty())
     });
     (view, cx)
+}
+
+/// 对照 AttentionSemanticsE2ETests.testBlockedLeavesAttentionAfterViewAndRegexLightsAgain。
+/// 真 PTY 发两次 BEL，中间停在 read；不能只藏前端行，下一次 Core 快照也必须已读。
+#[gpui::test]
+fn viewing_a_notification_survives_a_core_refresh_but_not_the_next_alert(cx: &mut TestAppContext) {
+    use muxterm::frontend::gpui::chrome::panel_view::PanelRow;
+    use muxterm::frontend::gpui::model::panel::PanelTab;
+    use muxterm::frontend::gpui::model::sidebar::Indicator;
+
+    // 专用 socket 上的交互程序：不用用户的 shell 初始化文件；每次回车才发一条提醒。
+    let tmux = IsolatedTmux::start_with_command(&[
+        "/bin/sh",
+        "-c",
+        r#"printf 'READ_FIXTURE_READY\n'; while IFS= read -r reply; do printf 'READ_FIXTURE_ALERT\n\007'; done"#,
+    ]);
+    let (view, cx) = app_with_isolated_tmux(cx, &tmux);
+    pump_until(&view, cx, "READ_FIXTURE_READY");
+    cx.simulate_keystrokes("enter");
+    pump_until(&view, cx, "READ_FIXTURE_ALERT");
+    let is_blocked = |app: &GpuiApp| app.status_attention().indicator == Some(Indicator::Blocked);
+    pump_until_true(&view, cx, "第一次 BEL 产生未读", is_blocked);
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            let id = app.focused_pane().unwrap();
+            app.show_panel(PanelTab::Attention, cx);
+            let index = app
+                .panel_rows()
+                .iter()
+                .position(
+                    |row| matches!(row, PanelRow::Attention { pane_id, .. } if *pane_id == id),
+                )
+                .unwrap();
+            app.select_panel_row(index, cx);
+            app.pump_once(cx);
+            let snapshot = app.client_for_tests().unwrap().activity_snapshot().unwrap();
+            let pane = snapshot
+                .workspaces
+                .iter()
+                .flat_map(|ws| &ws.panes)
+                .find(|p| p.pane_id == id)
+                .expect("Core pane");
+            assert!(
+                pane.acknowledged,
+                "下一轮 Core 快照不能把点过的提醒带回来：{pane:?}"
+            );
+            assert_eq!(pane.status, "blocked", "查看不等于给进程输入");
+            app.refresh_attention();
+            assert!(!app.status_attention().is_active());
+        })
+    });
+    cx.simulate_keystrokes("enter");
+    pump_until_true(&view, cx, "同一 pane 的第二次 BEL 仍可提醒", is_blocked);
 }
 
 /// 回归（pane 关闭）：本机 shell 进程退出只移除它自己的 pane；
