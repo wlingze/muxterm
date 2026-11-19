@@ -1563,6 +1563,7 @@ mod tests {
         ShellRuntime::new("sleep 60", "/")
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn shell_agent_lifecycle_is_observed_without_osc_or_frontend() {
         use crate::activity::attention::engine::known_agent_process_name;

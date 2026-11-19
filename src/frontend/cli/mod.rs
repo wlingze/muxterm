@@ -2,6 +2,7 @@
 
 pub mod application;
 pub mod config;
+#[cfg(unix)]
 pub mod daemon;
 pub mod format;
 pub mod routing;

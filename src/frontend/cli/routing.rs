@@ -431,6 +431,10 @@ fn cli_mode_daemon(
 }
 
 /// fork 启动 daemon 进程（后台）。
+///
+/// daemon 是 Unix 形态（fork + setsid + Unix socket）：Windows 上直接报错，
+/// 让 CLI 走 ephemeral / 本机 shell 路径。
+#[cfg(unix)]
 pub(crate) fn spawn_daemon(
     socket_path: &std::path::Path,
     name: &str,
@@ -469,12 +473,30 @@ pub(crate) fn spawn_daemon(
     std::process::exit(0);
 }
 
+/// fork 启动 daemon 进程（后台）。
+#[cfg(not(unix))]
+pub(crate) fn spawn_daemon(
+    _socket_path: &std::path::Path,
+    _name: &str,
+    _tmux_socket: Option<&str>,
+) -> anyhow::Result<()> {
+    Err(crate::os::unix_socket_unsupported("muxterm 后台 daemon"))
+}
+
 /// socket 文件存在且可 connect。
+#[cfg(unix)]
 pub(crate) fn socket_is_alive(path: &std::path::Path) -> bool {
     std::os::unix::net::UnixStream::connect(path).is_ok()
 }
 
+/// Windows 没有 daemon socket：永远视为「不可连接」。
+#[cfg(not(unix))]
+pub(crate) fn socket_is_alive(_path: &std::path::Path) -> bool {
+    false
+}
+
 /// 等待 socket 可连接（轮询）。
+#[cfg(unix)]
 pub(crate) fn wait_for_socket(
     path: &std::path::Path,
     timeout: std::time::Duration,
@@ -487,6 +509,15 @@ pub(crate) fn wait_for_socket(
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
     anyhow::bail!("等待 daemon 启动超时: {}", path.display())
+}
+
+/// 等待 socket 可连接（轮询）。
+#[cfg(not(unix))]
+pub(crate) fn wait_for_socket(
+    _path: &std::path::Path,
+    _timeout: std::time::Duration,
+) -> anyhow::Result<()> {
+    Err(crate::os::unix_socket_unsupported("muxterm 后台 daemon"))
 }
 
 /// TUI × local：若 daemon 不存在则 fork 启动。

@@ -28,11 +28,11 @@ pub enum SpawnError {
 pub struct ProcessHandle {
     pid: u32,
     /// 由 [`spawn_program`] 创建时持有；外部 pid（如 VTE）则为 None。
-    #[cfg(unix)]
     inner: Option<PtyOwned>,
 }
 
-#[cfg(unix)]
+/// 持有 pty 子进程。`portable-pty` 在 Unix 用 openpty、Windows 用 ConPTY，
+/// 结构体本身不带平台假设。
 struct PtyOwned {
     /// 持有 master 以保持 pty 存活（读写由调用方后续扩展）。
     #[allow(dead_code)]
@@ -43,11 +43,7 @@ struct PtyOwned {
 impl ProcessHandle {
     /// 仅包装已知 pid（例如 VTE `spawn_async` 返回的子进程）。
     pub fn from_pid(pid: u32) -> Self {
-        Self {
-            pid,
-            #[cfg(unix)]
-            inner: None,
-        }
+        Self { pid, inner: None }
     }
 
     pub fn pid(&self) -> u32 {
@@ -56,19 +52,19 @@ impl ProcessHandle {
 
     /// 非阻塞探测是否仍在运行。
     pub fn try_reap(&mut self) -> Option<Option<u32>> {
+        if let Some(ref mut owned) = self.inner {
+            match owned.child.try_wait() {
+                Ok(Some(status)) => {
+                    let code = status.exit_code();
+                    return Some(Some(code));
+                }
+                Ok(None) => return Some(None),
+                Err(_) => return None,
+            }
+        }
+        // 无 child 句柄时用 kill(pid, 0) 探测（仅 Unix 有这种探测方式）。
         #[cfg(unix)]
         {
-            if let Some(ref mut owned) = self.inner {
-                match owned.child.try_wait() {
-                    Ok(Some(status)) => {
-                        let code = status.exit_code();
-                        return Some(Some(code));
-                    }
-                    Ok(None) => return Some(None),
-                    Err(_) => return None,
-                }
-            }
-            // 无 child 句柄时用 kill(pid, 0) 探测
             let alive = unsafe { libc::kill(self.pid as i32, 0) } == 0;
             if alive {
                 Some(None)
@@ -90,7 +86,6 @@ pub fn spawn_program(
     workdir: &str,
     size: TerminalSize,
 ) -> Result<ProcessHandle, SpawnError> {
-    #[cfg(unix)]
     {
         use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 
@@ -134,51 +129,19 @@ pub fn spawn_program(
             }),
         })
     }
-    #[cfg(not(unix))]
-    {
-        let _ = (program, args, workdir, size);
-        Err(SpawnError::Unsupported)
-    }
 }
 
-/// 关闭进程：先 SIGHUP，必要时 SIGTERM。
+/// 关闭进程：先 SIGHUP，必要时 SIGTERM（Windows 上是 taskkill /T /F）。
 pub fn kill(handle: &ProcessHandle) -> Result<(), io::Error> {
-    #[cfg(unix)]
-    {
-        // 不允许 u32 溢出成负 PID；Unix 会把负数解释为进程组。
-        let pid = i32::try_from(handle.pid)
-            .ok()
-            .filter(|pid| *pid > 0)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid pid"))?;
-        // 优先 SIGHUP（关闭终端会话的常见信号）
-        let r = unsafe { libc::kill(pid, libc::SIGHUP) };
-        if r == 0 {
-            return Ok(());
-        }
-        let err = io::Error::last_os_error();
-        if err.raw_os_error() == Some(libc::ESRCH) {
-            return Ok(()); // 已退出
-        }
-        // 回退 SIGTERM
-        let r2 = unsafe { libc::kill(pid, libc::SIGTERM) };
-        if r2 == 0 {
-            Ok(())
-        } else {
-            let err2 = io::Error::last_os_error();
-            if err2.raw_os_error() == Some(libc::ESRCH) {
-                Ok(())
-            } else {
-                Err(err2)
-            }
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = handle;
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "kill unsupported on this platform",
-        ))
+    // 不允许 u32 溢出成负 PID；Unix 会把负数解释为进程组。
+    let pid = i32::try_from(handle.pid)
+        .ok()
+        .filter(|pid| *pid > 0)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid pid"))?;
+    // Unix：先 SIGHUP 再 SIGTERM；Windows：taskkill /T /F。
+    match crate::os::terminate_process(pid, crate::os::Terminate::Hangup) {
+        Ok(()) => Ok(()),
+        Err(_) => crate::os::terminate_process(pid, crate::os::Terminate::Term),
     }
 }
 
