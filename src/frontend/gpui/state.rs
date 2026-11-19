@@ -51,6 +51,8 @@ pub struct WheelInput {
 #[path = "state/picker.rs"]
 mod picker;
 
+#[path = "state/menu_bar.rs"]
+mod menu_bar_state;
 #[path = "state/palette_actions.rs"]
 mod palette_actions;
 #[path = "state/settings.rs"]
@@ -166,6 +168,8 @@ pub struct GpuiApp {
     selection: Option<PaneSelection>,
     /// 右键菜单（复制 / 粘贴 / 全选）。
     pub(crate) selection_menu: Option<crate::frontend::gpui::model::selection_menu::SelectionMenu>,
+    /// Linux / Windows 的自绘菜单条（macOS 走原生 NSMenu，这里始终收起）。
+    pub(crate) menu_bar: crate::frontend::gpui::model::menu_bar::MenuBar,
     /// 正在拖选。
     dragging_selection: bool,
     status: String,
@@ -412,6 +416,7 @@ impl GpuiApp {
             pane_menu: None,
             selection: None,
             selection_menu: None,
+            menu_bar: crate::frontend::gpui::model::menu_bar::MenuBar::default(),
             dragging_selection: false,
             theme,
             cell,
@@ -807,14 +812,7 @@ impl GpuiApp {
 
     /// 把运行时可变的菜单状态（勾选 / 置灰）同步到原生菜单栏。
     fn sync_menu_state(&self) {
-        use crate::frontend::gpui::model::menu::MenuState;
-        let state = MenuState {
-            tab_bar_on_top: self.tab_bar_position()
-                == crate::frontend::gpui::chrome::tab_bar_view::TabBarPosition::Top,
-            has_selection: self.selection.is_some(),
-            has_pane: self.focused_pane.is_some(),
-        };
-        let _ = crate::frontend::gpui::platform::refresh_menu(state);
+        let _ = crate::frontend::gpui::platform::refresh_menu(self.menu_state());
     }
 
     /// 把焦点同步到当前 tab 的活动 pane。
@@ -1284,6 +1282,7 @@ impl GpuiApp {
             pane_menu: None,
             selection: None,
             selection_menu: None,
+            menu_bar: crate::frontend::gpui::model::menu_bar::MenuBar::default(),
             dragging_selection: false,
             theme: Theme::default(),
             cell: (
@@ -4591,7 +4590,13 @@ impl GpuiApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let keystroke = &event.keystroke;
+        // 平台差异先归一化：Linux / Windows 的命令键来自配置
+        // `[shortcuts] primary_key`（`auto` = Alt），归一化后落到
+        // `modifiers.platform` 字段，下面的判定与 macOS 完全同构。
+        // 原始修饰键留给终端编码：Alt 在 Linux 上同时是终端的 Meta 前缀。
+        let raw_modifiers = event.keystroke.modifiers;
+        let normalized = crate::frontend::gpui::platform::normalize_keystroke(&event.keystroke);
+        let keystroke = &normalized;
         let mut chord = crate::frontend::gpui::model::shortcuts::KeyChord {
             command: keystroke.modifiers.platform,
             shift: keystroke.modifiers.shift,
@@ -4630,6 +4635,19 @@ impl GpuiApp {
             routed.key = key.to_string();
         }
         let keystroke = &routed;
+        // Linux / Windows 的自绘菜单条打开时先吃导航键；其它键收起菜单后继续。
+        // 排除独立设置窗口：那是另一个 window 的焦点。
+        if self.menu_bar.is_open()
+            && (!self.settings_detached
+                || window
+                    .window_handle()
+                    .downcast::<crate::frontend::gpui::chrome::settings_window::SettingsWindow>()
+                    .is_some())
+            && self.menu_bar_key(event, window, cx)
+        {
+            cx.stop_propagation();
+            return;
+        }
         // 目标配置窗口打开时独占按键：Esc 取消、Tab 换字段、Enter 保存，
         // 无修饰键的字符写进当前字段。
         if self.target_editor.is_some()
@@ -4979,7 +4997,12 @@ impl GpuiApp {
                 return;
             }
         }
-        if keystroke.modifiers.platform {
+        if keystroke.modifiers.platform
+            && crate::frontend::gpui::platform::unbound_command_reaches_terminal()
+        {
+            // Linux / Windows：命令键（缺省 Alt）同时是终端的 Meta 前缀。
+            // 动作表没命中时把它交回终端，readline 的 Alt-F / Alt-B 才不会被吃掉。
+        } else if keystroke.modifiers.platform {
             // Cmd-V：图片优先（与 Swift `MuxTerminalView.paste(from:)` 一致）。
             // 以前这里只读文本，剪贴板里是截图时这次粘贴什么都不做 —— 用户看到
             // 的就是「复制图片粘贴没反应」，而 Core 侧一条日志都没有。
@@ -5065,12 +5088,14 @@ impl GpuiApp {
             .get(&(workspace.clone(), pane_id))
             .map(|surface| surface.grid().app_cursor_keys())
             .unwrap_or(false);
+        // 终端编码用**原始**修饰键：归一化只服务窗口动作，终端要的是用户真实
+        // 按下的 Ctrl / Alt / Shift（Linux 上 Alt = Meta 前缀）。
         let press = KeyPress {
             key: keystroke.key.clone(),
             key_char: keystroke.key_char.clone(),
-            ctrl: keystroke.modifiers.control,
-            alt: keystroke.modifiers.alt,
-            shift: keystroke.modifiers.shift,
+            ctrl: raw_modifiers.control,
+            alt: raw_modifiers.alt,
+            shift: raw_modifiers.shift,
             cmd: false,
         };
         // 无修饰键的可打印文本先让给平台输入法：中文/日文组词必须先看到
@@ -5286,7 +5311,9 @@ pub(crate) fn ui_config_from_snapshot(
 /// 只剩 traffic lights —— 与 Swift 版默认观感一致。打开时按
 /// `workspace — Muxterm` 显示，方便在 Mission Control 里辨认窗口。
 pub fn window_title_text(show_title_bar: bool, workspace: &str) -> String {
-    if !show_title_bar {
+    // 标题栏是系统画的平台（Linux / Windows）上，空标题只会让用户看不到
+    // 自己在哪个 workspace；只有 macOS 会真的隐藏标题文字。
+    if crate::frontend::gpui::platform::os().hides_title_text(show_title_bar) {
         return String::new();
     }
     let workspace = workspace.trim();
@@ -5347,7 +5374,7 @@ pub fn pump_delay(current: Duration, dirty: bool) -> Duration {
 
 fn measure_cell_size(theme: &Theme, text_system: &gpui::WindowTextSystem) -> (f32, f32) {
     use gpui::px;
-    let font = gpui::font(theme.font_family.clone());
+    let font = crate::frontend::gpui::theme::terminal_font(theme);
     let font_id = text_system.resolve_font(&font);
     let size = px(theme.font_size);
     let width = text_system

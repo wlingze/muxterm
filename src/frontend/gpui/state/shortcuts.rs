@@ -9,6 +9,15 @@ use serde_json::Value;
 
 impl GpuiApp {
     pub fn apply_shortcut_values(&mut self, values: &Value) {
+        // `[shortcuts] primary_key` 决定 Linux / Windows 上哪个键是「命令键」
+        // （`auto`：macOS = Command，其它平台 = Alt）。平台层持有它，
+        // 子视图（命令面板 / 设置窗）不必各自传一遍配置。
+        crate::frontend::gpui::platform::set_primary_key(
+            values
+                .pointer("/shortcuts/primary_key")
+                .and_then(Value::as_str)
+                .unwrap_or("auto"),
+        );
         self.shortcuts = ShortcutMap::from_values(values);
         self.sync_native_shortcuts();
     }

@@ -4,6 +4,7 @@ pub mod composer;
 pub mod icons;
 pub mod info;
 pub mod input_line;
+pub mod menu_bar;
 pub mod palette;
 pub mod palette_view;
 pub mod pane_grid;

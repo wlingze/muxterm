@@ -41,7 +41,10 @@ impl GpuiApp {
             cx.stop_propagation();
             return;
         }
-        let key = &event.keystroke;
+        // 设置窗自己的按键入口同样要归一化：Linux / Windows 的命令键是
+        // `[shortcuts] primary_key`（缺省 Alt），不是 Super/Win。
+        let normalized = crate::frontend::gpui::platform::normalize_keystroke(&event.keystroke);
+        let key = &normalized;
         if self.shortcut_editor.recording.is_some() {
             let canonical = crate::frontend::gpui::platform::physical_key_for_event(&key.key)
                 .unwrap_or(&key.key);

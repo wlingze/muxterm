@@ -122,28 +122,23 @@ pub fn catalog() -> Vec<ShortcutRow> {
     rows
 }
 
+/// 快捷键的显示文本。
+///
+/// 平台写法统一交给 `platform::chord_label`：macOS 是 `⌘⇧T`，Linux / Windows
+/// 是 `Alt+Shift+T`（命令键取 `[shortcuts] primary_key`）。设置页与菜单提示
+/// 共用一份，不会一边写 ⌘ 一边写 Alt。
 pub fn label(chord: &KeyChord, qwerty: bool) -> String {
     let key = if qwerty {
         physical_key::to_qwerty(&chord.key)
     } else {
         chord.key.clone()
     };
-    let key = match key.as_str() {
-        "\r" | "enter" => "↩".into(),
-        "left" => "←".into(),
-        "right" => "→".into(),
-        "up" => "↑".into(),
-        "down" => "↓".into(),
-        "escape" => "⎋".into(),
-        " " => "Space".into(),
-        _ => key.to_uppercase(),
-    };
-    format!(
-        "{}{}{}{}{key}",
-        if chord.control { "⌃" } else { "" },
-        if chord.option { "⌥" } else { "" },
-        if chord.shift { "⇧" } else { "" },
-        if chord.command { "⌘" } else { "" }
+    crate::frontend::gpui::platform::chord_label(
+        chord.command,
+        chord.shift,
+        chord.option,
+        chord.control,
+        &key,
     )
 }
 
@@ -242,8 +237,15 @@ mod tests {
                 Some(KeyAction::NewTab)
             );
         }
-        assert_eq!(label(&KeyChord::command("d"), false), "⌘D");
-        assert_eq!(label(&KeyChord::command("d"), true), "⌘G");
+        // 显示文本按平台：macOS `⌘D`，Linux / Windows `<primary>+D`。
+        assert_eq!(
+            label(&KeyChord::command("d"), false),
+            crate::frontend::gpui::platform::chord_label(true, false, false, false, "d")
+        );
+        assert_eq!(
+            label(&KeyChord::command("d"), true),
+            crate::frontend::gpui::platform::chord_label(true, false, false, false, "g")
+        );
     }
 
     #[test]
