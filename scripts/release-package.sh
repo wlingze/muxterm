@@ -26,9 +26,11 @@ PRERELEASE="${PRERELEASE:-false}"
 SOURCE_SHA="${SOURCE_SHA:-}"
 
 MACOS_SRC="muxterm-macos-arm64-${FS_VERSION}.dmg"
-LINUX_SRC="muxterm-gtk-linux-x86_64-${FS_VERSION}.tar.gz"
+LINUX_SRC="muxterm-linux-x86_64-${FS_VERSION}.tar.gz"
+WINDOWS_SRC="muxterm-windows-x86_64-${FS_VERSION}.zip"
 MACOS_STABLE="muxterm-macos-arm64.dmg"
-LINUX_STABLE="muxterm-gtk-linux-x86_64.tar.gz"
+LINUX_STABLE="muxterm-linux-x86_64.tar.gz"
+WINDOWS_STABLE="muxterm-windows-x86_64.zip"
 
 sha256_of() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -51,6 +53,24 @@ cp "$DIST/$MACOS_SRC" "$DIST/$MACOS_STABLE"
 cp "$DIST/$MACOS_SRC.sha256" "$DIST/$MACOS_STABLE.sha256"
 cp "$DIST/$LINUX_SRC" "$DIST/$LINUX_STABLE"
 cp "$DIST/$LINUX_SRC.sha256" "$DIST/$LINUX_STABLE.sha256"
+# Windows 也在扫描表里，但当前客户端没有 Windows 自更新目标
+# （`core/update/platform.rs` 返回 None）；缺包时跳过，不阻断 macOS/Linux 发布。
+WINDOWS_JSON=""
+if [[ -f "$DIST/$WINDOWS_SRC" ]]; then
+  cp "$DIST/$WINDOWS_SRC" "$DIST/$WINDOWS_STABLE"
+  if [[ -f "$DIST/$WINDOWS_SRC.sha256" ]]; then
+    cp "$DIST/$WINDOWS_SRC.sha256" "$DIST/$WINDOWS_STABLE.sha256"
+  fi
+  windows_sha="$(sha256_of "$DIST/$WINDOWS_STABLE")"
+  windows_size="$(size_of "$DIST/$WINDOWS_STABLE")"
+  WINDOWS_JSON=",
+    \"windows-x86_64\": {
+      \"name\": \"${WINDOWS_STABLE}\",
+      \"url\": \"${WINDOWS_STABLE}\",
+      \"sha256\": \"${windows_sha}\",
+      \"size\": ${windows_size}
+    }"
+fi
 
 macos_sha="$(sha256_of "$DIST/$MACOS_STABLE")"
 linux_sha="$(sha256_of "$DIST/$LINUX_STABLE")"
@@ -79,7 +99,7 @@ cat > "$DIST/latest.json" <<EOF
       "url": "${LINUX_STABLE}",
       "sha256": "${linux_sha}",
       "size": ${linux_size}
-    }
+    }${WINDOWS_JSON}
   }
 }
 EOF
