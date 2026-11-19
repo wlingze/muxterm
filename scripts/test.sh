@@ -3,6 +3,7 @@
 #
 #   scripts/test.sh run core    # core/tui + ffi 全部测试（含 four-mode 矩阵）
 #   scripts/test.sh run gpui    # GPUI 前端：fmt/clippy + headless 测试 + release 构建
+#   scripts/test.sh run gpui-cross  # GPUI 跨平台门禁：无 tmux 依赖，Linux/Windows 跑这一条
 #   scripts/test.sh run linux   # GTK e2e 全部测试（xvfb）
 #   scripts/test.sh run macos   # macOS ffi + Swift 测试（需 macOS）
 #
@@ -195,6 +196,29 @@ run_gpui() {
     cargo build --release --no-default-features --features gpui
 }
 
+# 跨平台门禁：Linux / Windows 原生 runner 用这一条。
+#
+# 与 `run_gpui` 的差别：不跑依赖 tmux/herdr 的 acceptance 套件（那两个后端
+# 在 Windows 上不存在），也不假定 macOS 的像素基线。跑的是：
+# - fmt / clippy（三平台同一份 lint 阈值）
+# - frontend 单元测试（平台差异表、菜单条状态机、快捷键归一化…）
+# - 无头 UI 验收：菜单条、快捷键、布局（`gpui_platform` / `gpui_chrome`）
+# - release profile 构建（release-only cfg 比 debug 更容易漏）
+run_gpui_cross() {
+    run_architecture
+    cargo fmt --all -- --check
+    cargo clippy --no-default-features --features gpui --lib -- -D warnings
+
+    cargo test --no-default-features --features gpui --lib frontend:: -- --test-threads="$THREADS"
+    cargo test --no-default-features --features gpui \
+        --test gpui_harness_smoke \
+        --test gpui_platform \
+        --test gpui_chrome \
+        -- --test-threads="$THREADS"
+
+    cargo build --release --no-default-features --features gpui
+}
+
 doctor() {
     # 只读环境/版本/fixture capability 预检（§13.1/§13.2），不安装任何工具。
     echo "== 工具版本 =="
@@ -250,6 +274,7 @@ run)
     case "${2:-}" in
     core) run_core ;;
     gpui) run_gpui ;;
+    gpui-cross) run_gpui_cross ;;
     linux) run_linux ;;
     macos) run_macos ;;
     *) usage ;;

@@ -1,0 +1,93 @@
+name: "CI: windows"
+
+# Windows 原生 runner：GPUI 前端必须在三平台可编可跑（见 docs/FRONTEND-GPUI.md §8）。
+# 这里不装 tmux / herdr —— 那两个后端在 Windows 上不存在；本地 shell 走 ConPTY，
+# 远程走 SSH（russh，纯 Rust）。
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/core/**"
+      - "src/frontend/gpui/**"
+      - "src/frontend/cli/**"
+      - "src/frontend/utils/**"
+      - "src/lib.rs"
+      - "src/main.rs"
+      - "tests/gpui*"
+      - "Cargo.toml"
+      - "vendor/**"
+      - "scripts/build-gpui-windows.sh"
+      - "scripts/build-common.sh"
+      - "scripts/test.sh"
+      - ".github/workflows/ci-windows.yml"
+  push:
+    branches: [main]
+    paths:
+      - "src/core/**"
+      - "src/frontend/gpui/**"
+      - "Cargo.toml"
+      - "vendor/**"
+      - ".github/workflows/ci-windows.yml"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  ci_windows:
+    name: ci-windows
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          components: rustfmt, clippy
+
+      - name: Show toolchain
+        run: |
+          rustc --version
+          cargo --version
+          rustc -vV
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-gpui-${{ hashFiles('Cargo.toml') }}
+
+      # 与 Linux / macOS 同一份门禁：fmt / clippy / frontend 单测 /
+      # 无头 UI 验收（菜单条、快捷键归一化、布局）/ release 构建。
+      - name: Run GPUI checks (windows)
+        run: bash scripts/test.sh run gpui-cross
+
+      # 打包脚本本身也要在 Windows runner 上真的跑一遍：它产出
+      # build/windows/muxterm.exe，release.yml 的 Windows job 用的是同一条路径。
+      - name: Build Windows GPUI binary (release, packaged layout)
+        run: ./scripts/build-gpui-windows.sh --release
+
+      - name: Verify Windows binary
+        run: |
+          set -euo pipefail
+          test -f build/windows/muxterm.exe
+          ls -la build/windows
+          ./build/windows/muxterm.exe --version
+
+      - name: Upload Windows GPUI binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpui-windows
+          path: build/windows/**
+          if-no-files-found: error
+          retention-days: 7
