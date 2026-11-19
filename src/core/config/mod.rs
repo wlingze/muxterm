@@ -565,10 +565,8 @@ pub use storage::*;
 pub use theme::{parse_hex, parse_theme_toml, Rgb, Theme};
 
 fn dirs_config() -> Option<PathBuf> {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-        .map(|d| d.join("muxterm"))
+    // 平台差异（XDG / APPDATA / USERPROFILE）只在 `crate::os` 里判断。
+    crate::os::config_home().map(|d| d.join("muxterm"))
 }
 
 fn dirs_themes() -> Option<PathBuf> {

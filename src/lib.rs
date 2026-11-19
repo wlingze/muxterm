@@ -35,6 +35,8 @@ pub mod logging;
 #[cfg(feature = "ffi")]
 #[path = "core/muxterm.rs"]
 pub mod muxterm;
+#[path = "core/os.rs"]
+pub mod os;
 #[path = "core/performance.rs"]
 pub(crate) mod performance;
 #[path = "core/projects/mod.rs"]

@@ -5,15 +5,36 @@
 //! 浏览器），直接用 `ImageFormat::Tiff` 的字节调 Core 只会失败，而且失败
 //! 之前用户什么提示都看不到 —— 这就是「复制图片粘贴没反应」的根因。
 //!
-//! 这里统一在**前端边界**转成 PNG，转换用 AppKit 自己的解码器，格式覆盖
-//! TIFF / JPEG / GIF / BMP / WebP。其它平台把原样 PNG 透传。
+//! 三平台的实际来源（2026-11-19 核对 gpui 0.2.2）：
+//! - macOS：`NSPasteboard` 常见 TIFF/PNG；这里用 AppKit 的解码器转 PNG。
+//! - Linux：Wayland / X11 剪贴板按 `image/png` 等 MIME 通告，gpui 已给 PNG。
+//! - Windows：gpui 的剪贴板只登记 PNG/GIF/JPG/SVG（读 CF_DIB 的旧应用看不到），
+//!   得到 PNG 是常态。
+//!
+//! 所以非 macOS 平台只做 PNG 透传 + 签名校验；其它格式明确告诉用户
+//! 「copy it as PNG」，而不是把坏字节交给 Core 再静默失败。
 
 use gpui::ImageFormat;
 
+/// PNG 文件签名（`\x89PNG\r\n\x1a\n`）。
+const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+
+/// 字节真的是 PNG 吗？
+pub fn is_png(bytes: &[u8]) -> bool {
+    bytes.starts_with(&PNG_SIGNATURE)
+}
+
 /// 把剪贴板图片字节转成 PNG。已经是 PNG 的原样返回。
+///
+/// 空字节一律拒绝：Core 只收合法 PNG，0 字节图只会让远端留下一个坏文件。
+/// 标成 PNG 但签名不对的（有的应用把 TIFF 写成 PNG 类型）也拒绝，
+/// 让上层给出「unsupported clipboard image」横幅。
 pub fn to_png(format: ImageFormat, bytes: &[u8]) -> Option<Vec<u8>> {
+    if bytes.is_empty() {
+        return None;
+    }
     if format == ImageFormat::Png {
-        return Some(bytes.to_vec());
+        return is_png(bytes).then(|| bytes.to_vec());
     }
     convert(format, bytes)
 }
@@ -119,6 +140,20 @@ mod tests {
     #[test]
     fn empty_input_is_rejected() {
         assert_eq!(to_png(ImageFormat::Tiff, &[]), None);
+        assert_eq!(to_png(ImageFormat::Png, &[]), None);
+    }
+
+    /// 标成 PNG 但签名不对：拒绝，别把坏字节交给 Core。
+    #[test]
+    fn mislabelled_png_is_rejected() {
+        assert_eq!(to_png(ImageFormat::Png, b"not a png"), None);
+    }
+
+    /// 非 macOS 平台没有解码器：PNG 之外的格式明确失败（上层给横幅）。
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn other_formats_are_reported_as_unsupported_off_macos() {
+        assert_eq!(to_png(ImageFormat::Jpeg, b"\xff\xd8\xff"), None);
     }
 
     /// 截图的 TIFF 必须真的转成 PNG（这是 mac 上最常见的剪贴板格式）。

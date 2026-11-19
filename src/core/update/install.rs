@@ -409,7 +409,15 @@ fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<(), UpdateErr
         } else if file_type.is_symlink() {
             let link = fs::read_link(&from)?;
             let _ = fs::remove_file(&to);
+            // Windows 上自更新本来就不支持（`current_install_target` 直接返回
+            // `UnsupportedPlatform`）；这里保留可编译的实现，符号链接退回复制。
+            #[cfg(unix)]
             std::os::unix::fs::symlink(link, &to)?;
+            #[cfg(not(unix))]
+            {
+                let _ = link;
+                fs::copy(&from, &to)?;
+            }
         } else {
             fs::copy(&from, &to)?;
         }

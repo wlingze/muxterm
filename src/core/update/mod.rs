@@ -41,9 +41,6 @@ pub const MAX_DOWNLOAD_BYTES: u64 = 512 * 1024 * 1024;
 
 /// 下载与安装的落盘位置：`~/.cache/muxterm/updates`（或平台等价目录）。
 pub fn staging_dir() -> PathBuf {
-    let base = std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
-        .unwrap_or_else(std::env::temp_dir);
+    let base = crate::os::cache_home().unwrap_or_else(std::env::temp_dir);
     base.join("muxterm").join("updates")
 }
