@@ -11,6 +11,7 @@ on:
       - "src/frontend/view_store.rs"
       - "src/frontend/utils/**"
       - "src/frontend/mod.rs"
+      - "src/core/os.rs"
       - "src/lib.rs"
       - "src/main.rs"
       - "tests/gpui*"
@@ -18,10 +19,19 @@ on:
       - "tests/samples/**"
       - "Cargo.toml"
       - ".cargo/**"
+      - "vendor/**"
       - "scripts/build-gpui-macos.sh"
+      - "scripts/build-gpui-linux.sh"
       - "scripts/build-common.sh"
       - "scripts/test.sh"
       - "scripts/ci/**"
+      - ".github/workflows/ci-gpui-frontend.yml"
+  push:
+    branches: [main]
+    paths:
+      - "src/frontend/gpui/**"
+      - "Cargo.toml"
+      - "vendor/**"
       - ".github/workflows/ci-gpui-frontend.yml"
 
 permissions:
@@ -32,8 +42,9 @@ env:
   GH_TOKEN: ${{ github.token }}
 
 jobs:
+  # macOS：完整 gpui 门禁（含 tmux / herdr 验收套件）。
   ci_gpui_frontend:
-    name: ci-gpui-frontend
+    name: ci-gpui-frontend (macos)
     runs-on: macos-latest
     # headless chrome/acceptance 套件 + release profile 构建。
     timeout-minutes: 45
@@ -63,3 +74,45 @@ jobs:
       # 原生窗口用例（settings 窗口、NSEvent 监视器）要求交互式桌面，不进 CI。
       - name: Run GPUI frontend checks (one entry)
         run: bash scripts/test.sh run gpui
+
+  # Linux：原生 runner 验证 GPUI 能编、能过无头验收。
+  # 与 macOS 同一份脚本（`run gpui-cross`），不依赖 tmux / herdr。
+  ci_gpui_linux:
+    name: ci-gpui-frontend (linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          components: rustfmt, clippy
+
+      - name: Install GPUI system dependencies (xkbcommon / wayland / X11 / fontconfig)
+        run: bash scripts/ci/setup-gpui-linux.sh
+        timeout-minutes: 15
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-gpui-${{ hashFiles('Cargo.toml') }}
+
+      - name: Run GPUI checks (linux)
+        run: bash scripts/test.sh run gpui-cross
+
+      - name: Build Linux GPUI binary (release, packaged layout)
+        run: ./scripts/build-gpui-linux.sh --release
+
+      - name: Upload Linux GPUI binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpui-linux
+          path: build/linux/**
+          if-no-files-found: warn
+          retention-days: 7
