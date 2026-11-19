@@ -10,11 +10,15 @@
 
 use gpui::{rgb, Rgba, SharedString};
 
+use crate::frontend::gpui::platform;
 use crate::frontend::gpui::terminal::grid::Color;
 use crate::frontend::utils::corebridge::{ClientFontConfig, ClientTheme};
 
-/// 终端字体缺省值：与 macOS `MuxtermTerminalFont` 完全一致。
-pub const DEFAULT_FONT_FAMILY: &str = "Menlo";
+/// 终端字体缺省值：按平台取该平台自带的等宽字体。
+///
+/// Core 的配置缺省会写 `JetBrains Mono`（`assets/fonts/` 里带了这份字体，
+/// 启动时会注册进 `TextSystem`）；这个常量只用于配置缺失与首帧。
+pub const DEFAULT_FONT_FAMILY: &str = platform::os().default_monospace_family();
 pub const DEFAULT_FONT_SIZE: f32 = 18.0;
 /// 行距/字距的默认倍数（1.0 = 字体本来的行高/字宽）。
 pub const DEFAULT_FONT_SPACING: f32 = 1.0;
@@ -69,6 +73,8 @@ pub struct Theme {
     pub purple: Rgba,
     /// 终端字体家族（`[font] family`）。
     pub font_family: SharedString,
+    /// 用户配置的回退字体（`[font] fallback`），排在平台回退栈前面。
+    pub font_fallback: Vec<SharedString>,
     /// 终端字号（`[font] size`）。
     pub font_size: f32,
     /// 行距倍数（`[font] line_spacing`）。
@@ -103,6 +109,7 @@ impl Default for Theme {
             done: rgb(0x30b0c7),
             purple: rgb(0xaf52de),
             font_family: SharedString::from(DEFAULT_FONT_FAMILY),
+            font_fallback: Vec::new(),
             font_size: DEFAULT_FONT_SIZE,
             line_spacing: DEFAULT_FONT_SPACING,
             column_spacing: DEFAULT_FONT_SPACING,
@@ -143,6 +150,13 @@ impl Theme {
         if theme.font_family.is_empty() {
             theme.font_family = SharedString::from(DEFAULT_FONT_FAMILY);
         }
+        // 配置里的 `[font] fallback` 是用户显式要求的回退顺序，排在平台栈前面。
+        theme.font_fallback = font
+            .fallback
+            .iter()
+            .map(|family| SharedString::from(family.trim().to_string()))
+            .filter(|family| !family.is_empty())
+            .collect();
         theme.font_size = clamp_font_size(font.size);
         theme.line_spacing = DEFAULT_FONT_SPACING;
         theme.column_spacing = DEFAULT_FONT_SPACING;
@@ -184,6 +198,7 @@ impl Theme {
             done: rgb(0x40c8e0),
             purple: rgb(0xbf5af2),
             font_family: SharedString::from(DEFAULT_FONT_FAMILY),
+            font_fallback: Vec::new(),
             font_size: DEFAULT_FONT_SIZE,
             line_spacing: DEFAULT_FONT_SPACING,
             column_spacing: DEFAULT_FONT_SPACING,
@@ -329,6 +344,32 @@ pub fn clamp_font_spacing(value: f32) -> f32 {
         return DEFAULT_FONT_SPACING;
     }
     value.clamp(MIN_FONT_SPACING, MAX_FONT_SPACING)
+}
+
+/// 终端字体的回退栈：用户配置先、平台栈后。
+///
+/// 为什么要显式给：Linux / Windows 上没有 Menlo，配置里写了一个本机不存在的
+/// 族名时，gpui 会落到比例字体，格子宽度立刻漂。内置的 JetBrains Mono
+/// （`assets/fonts/`）与 Noto Symbols 在启动时注册，这里保证它们进回退栈。
+pub fn font_fallbacks(theme: &Theme) -> gpui::FontFallbacks {
+    let mut families: Vec<String> = theme
+        .font_fallback
+        .iter()
+        .map(|family| family.to_string())
+        .collect();
+    for family in platform::os().monospace_fallbacks() {
+        if !families.iter().any(|known| known == family) {
+            families.push((*family).to_string());
+        }
+    }
+    gpui::FontFallbacks::from_fonts(families)
+}
+
+/// 终端正文用的 `Font`（带回退栈）。测量格子与绘制字形必须用同一份。
+pub fn terminal_font(theme: &Theme) -> gpui::Font {
+    let mut font = gpui::font(theme.font_family.clone());
+    font.fallbacks = Some(font_fallbacks(theme));
+    font
 }
 
 fn rgba_of(color: crate::frontend::utils::corebridge::ClientRgb) -> Rgba {

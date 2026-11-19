@@ -184,6 +184,7 @@ run_gpui() {
         --test gpui_acceptance_herdr \
         --test gpui_chrome \
         --test gpui_harness_smoke \
+        --test gpui_platform \
         --test gpui_reported_regressions \
         --test gpui_surface_e2e \
         --test gpui_surface_events \
