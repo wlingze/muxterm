@@ -493,12 +493,13 @@ mod tests {
     }
 
     #[test]
-    fn default_theme_is_light_with_menlo_18() {
+    fn default_theme_is_light_with_the_platform_font_at_18() {
         // 对照 macOS `MuxtermTerminalColors.activePalette = .light` 与
-        // `MuxtermTerminalFont.defaultFamily/defaultSize`。
+        // `MuxtermTerminalFont.defaultFamily/defaultSize`。字体随平台：
+        // Menlo / DejaVu Sans Mono / Cascadia Mono。
         let theme = Theme::default();
         assert!(!theme.is_dark);
-        assert_eq!(theme.font_family.as_ref(), "Menlo");
+        assert_eq!(theme.font_family.as_ref(), DEFAULT_FONT_FAMILY);
         assert_eq!(theme.font_size, 18.0);
         assert_eq!(theme.bg, rgb(0xffffff));
     }
@@ -550,14 +551,14 @@ mod tests {
     }
 
     #[test]
-    fn empty_family_falls_back_to_menlo() {
+    fn empty_family_falls_back_to_the_platform_font() {
         let font = ClientFontConfig {
             family: "  ".into(),
             size: 18.0,
             fallback: Vec::new(),
         };
         let theme = Theme::from_config(None, &font);
-        assert_eq!(theme.font_family.as_ref(), "Menlo");
+        assert_eq!(theme.font_family.as_ref(), DEFAULT_FONT_FAMILY);
     }
 
     #[test]
