@@ -697,6 +697,10 @@ GPUI 的 CI 分两段：先跑一次**统一测试**，通过后**并行**跑三
 | `release / macOS ARM` | `macos-latest` | `muxterm-macos-arm64-<ver>.dmg`（内含 GPUI `Muxterm.app`） |
 | `release / Windows GPUI` | `windows-latest` | `muxterm-windows-x86_64-<ver>.zip`（exe + PNG + README + sha256） |
 
+`release.yml` 与 CI 同一形状：`resolve-version` → `verify-unified`
+（`run gpui-cross`）→ 三个平台 job 并行（各自先跑 `run platform`，再构建产物）→
+`publish`。统一测试失败时三个平台 job 与发布都不会启动。
+
 ### 未验证 / 已知缺口
 
 - **Windows 运行期**：本机没有 Windows 机器，CI 验证的是编译 + 无头测试 +
