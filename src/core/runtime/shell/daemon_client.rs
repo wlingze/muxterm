@@ -13,7 +13,9 @@ use anyhow::Context;
 use anyhow::Result;
 
 use crate::protocol::command::CliCommand;
-use crate::protocol::daemon::{OutputFormat, Request, Response};
+#[cfg(unix)]
+use crate::protocol::daemon::Request;
+use crate::protocol::daemon::{OutputFormat, Response};
 
 /// 连接到 daemon socket，发送命令，返回响应。
 ///

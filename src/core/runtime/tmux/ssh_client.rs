@@ -387,7 +387,14 @@ fn to_auth_method(auth: &SshAuth) -> Result<AuthMethod> {
         SshAuth::Key { path, passphrase } => {
             Ok(AuthMethod::with_key_file(path, passphrase.as_deref()))
         }
+        #[cfg(unix)]
         SshAuth::Agent => Ok(AuthMethod::with_agent()),
+        // ssh-agent 通过 Unix socket 暴露；Windows 上请用 private key 或密码。
+        #[cfg(not(unix))]
+        SshAuth::Agent => Err(anyhow::anyhow!(
+            "SSH agent 认证需要 ssh-agent 的 Unix socket，当前平台不支持：\
+             请为该 SSH target 配置 private key 或 password"
+        )),
     }
 }
 
