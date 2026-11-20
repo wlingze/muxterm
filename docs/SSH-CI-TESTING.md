@@ -25,8 +25,12 @@ TUI 集成测试在 `tests/tui_integration.rs`（local shell/tmux）。
 ## Workflow 文件
 
 - `.github/workflows/ci-core.yml`
-  - 单一 `ci-core` job：`bash scripts/test.sh run core`（local + SSH CLI 都在这条入口里，
+  - `ci-core-unified`：`bash scripts/test.sh run core`（local + SSH CLI 都在这条入口里，
     SSH 由 `scripts/ci/setup.sh` 拉起 loopback sshd 后自动启用）
+  - `ci-core-platform (macos|linux|windows)`：统一测试通过后并行跑
+    `bash scripts/test.sh run platform` + 本平台 TUI/CLI 构建。
+    Windows 的 SSH 客户端路径由 `run platform` 覆盖；tmux / herdr / sshd 契约
+    仍只在 unix runner 上跑。
 
 ## SSH 测试环境要求
 

@@ -608,7 +608,7 @@ Project / discovery 行用 Core 记账的 attach 频率排序（`attach-history.
 | 默认等宽字体 | Menlo | DejaVu Sans Mono | Cascadia Mono | `platform/desktop.rs::default_monospace_family` |
 | 字体注册 / 回退 | `TextSystem::add_fonts(JetBrains Mono, Noto Symbols)` + 平台回退栈 | 同左 | 同左 | `app.rs::register_bundled_fonts`；`theme::font_fallbacks` |
 | 窗口标题栏 | 隐藏标题、只留 traffic lights | 系统标题栏（xdg-decoration server side） | 系统标题栏 | `platform::titlebar_options` |
-| 窗口标题文字 | `[ui] show_title_bar=false` → 空 | 始终显示 workspace 名 | 同左 | `platform::window_title_text` |
+| 窗口标题文字 | `[ui] show_title_bar=false` → 空 | 始终显示 workspace 名 | 同左 | `platform/desktop.rs::hides_title_text` |
 | 图标 / 打包 | `.app` + `.dmg`（ad-hoc 签名） | `tar.gz` + `.desktop` + PNG 图标 | `.zip`（exe + PNG） | `scripts/build-gpui-{macos,linux,windows}.sh` |
 | 剪贴板图片 | NSPasteboard TIFF/PNG → PNG（AppKit 解码） | PNG 透传（签名校验） | PNG 透传（签名校验） | `platform/clipboard_image.rs` |
 | 拖放 | 未实现（与 Linux/Windows 一致，见下） | 未实现 | 未实现 | — |
@@ -618,7 +618,10 @@ Project / discovery 行用 Core 记账的 attach 频率排序（`attach-history.
 | PTY | openpty（portable-pty） | openpty（portable-pty） | **ConPTY**（portable-pty） | `portable-pty` 不再是 unix-only 依赖 |
 | 进程终止 | SIGHUP/TERM/KILL | 同左 | `taskkill /PID <pid> /T /F` | `core/os::terminate_process` |
 | 默认 shell | `$SHELL` → `/bin/sh` | 同左 | `%COMSPEC%` → `cmd.exe` | `core/os::default_shell` |
-| 本地 IPC | UnixSocket（tmux `-CC` / shell daemon / Herdr） | 同左 | **不支持**：`core/os::unix_socket_unsupported` 给出可读错误 | `core/os::SUPPORTS_UNIX_SOCKET` |
+| 本地 IPC 形态 | Unix socket 路径 | 同左 | **命名管道** `\\.\pipe\<name>`（Herdr）或 TCP loopback（ssh 转发） | `core/ipc.rs` |
+| Herdr | API socket 路径 | 同左 | 命名管道；端点优先由 `herdr status --json` / `session list --json` 发现 | `core/runtime/herdr/{provider,session}.rs` |
+| Herdr / socket over SSH | `ssh -L <local.sock>:<remote.sock>` | 同左 | `ssh -L 127.0.0.1:<port>:<remote.sock>` + 本地 TCP | `transport/connection.rs::SocketByteChannel` |
+| shell daemon（TUI/CLI 本地） | Unix socket | 同左 | **不支持**：`core/os::unix_socket_unsupported` 给出可读错误 | `runtime/shell/daemon_client.rs` |
 | 一键更新 | DMG（hdiutil） | tar.gz | 不支持（`current_asset_key` 返回 None） | `core/update/platform.rs` |
 | 权限 / 签名 | ad-hoc codesign（`codesign --verify --deep --strict`） | 无（只有文件权限 0600/0755） | 无（未做 Authenticode） | 构建脚本 |
 
@@ -631,10 +634,15 @@ Project / discovery 行用 Core 记账的 attach 频率排序（`attach-history.
   → xattr 0.2.3` 在 Linux 上用 `libc::ENOATTR`（Linux 只有 `ENODATA`）编不过。
   仓库内 `vendor/xattr` 是上游 0.2.3 的原样拷贝 + 一处错误码映射，通过
   `[patch.crates-io]` 接入；说明见 `vendor/xattr/PATCH.md`。
-- **Windows 后端范围**：本地 shell（ConPTY）与 SSH transport 可用；tmux 的
-  `-CC` 控制 client、shell daemon、Herdr 都依赖 Unix domain socket，Windows
-  上返回明确错误（`core/os::unix_socket_unsupported`）。Windows 上要做
-  tmux 请连 SSH 目标。
+- **Windows 的本地 IPC 是命名管道，不是 Unix socket**：Herdr 在 Windows 用
+  `\\.\pipe\<name>`，muxterm 用 `core/ipc.rs` 统一解释端点字符串（路径 /
+  管道 / `tcp://`）。Win32-OpenSSH 不支持把本地 Unix socket 作为 `-L` 的本地端，
+  所以 Windows 上的 SSH socket 转发改成 `127.0.0.1:<port>` → 远端 Unix socket，
+  远端仍然是 Linux 的 socket，Herdr / 图片粘贴等功能不变。
+- **Windows 后端范围**：本地 shell（ConPTY）、SSH transport（含 SSH + Herdr、
+  SSH + tmux）、本地 Herdr（命名管道）可用；**shell daemon**（TUI/CLI 的后台
+  会话宿主）仍是 Unix socket 专有形态，Windows 上返回明确错误。Windows 本机
+  没有 tmux 可执行文件，要用 tmux 就连 SSH 目标。
 - **自绘菜单条只在 Linux / Windows 出现**：gpui 0.2.2 在 Linux 的
   `set_menus` 是空实现、Windows 只写进跳转列表，所以必须自己画。数据仍是
   `model::menu` 的同一份 `Vec<Menu>`，动作仍走 `KeyAction` → `run_action`。
@@ -665,16 +673,26 @@ bash scripts/test.sh run gpui-cross
 
 macOS 完整门禁（含 tmux / herdr 验收）：`bash scripts/test.sh run gpui`。
 
+平台专属不变量（每个 OS 各跑一次，三平台都能整份跑完）：
+
+```bash
+bash scripts/test.sh run platform
+# = fmt --check + tests/platform.rs
+#   路径约定（XDG / APPDATA / LOCALAPPDATA / %TEMP%）、默认 shell（$SHELL vs %COMSPEC%）、
+#   本地 IPC 端点形态与真实往返（Unix socket / 命名管道 / TCP loopback）、
+#   缺失 PID 的终止语义
+```
+
 ### CI 与产物
 
-仓库没有 `linux.yml` / `macos.yml`：Linux 与 macOS 的 GPUI 门禁都在
-`ci-gpui-frontend.yml`（两个 job）；Windows 是新加的 `ci-windows.yml`。
+GPUI 的 CI 分两段：先跑一次**统一测试**，通过后**并行**跑三个平台。
 
 | Job | Runner | 内容 |
 | --- | --- | --- |
-| `ci-gpui-frontend (macos)` | `macos-latest` | `scripts/test.sh run gpui`（完整套件）+ 发布 profile 构建 |
-| `ci-gpui-frontend (linux)` | `ubuntu-latest` | `scripts/ci/setup-gpui-linux.sh` → `run gpui-cross` → `build-gpui-linux.sh --release` |
-| `ci-windows` | `windows-latest` | `run gpui-cross` → `build-gpui-windows.sh --release` → 上传 `muxterm.exe` |
+| `gpui-unified` | `ubuntu-latest` | `setup-gpui-linux.sh` → `run gpui-cross`（统一门禁） |
+| `gpui-platform (macos)` | `macos-latest` | `run platform` + `run gpui`（完整套件）→ `build-gpui-macos.sh` → `.app` zip |
+| `gpui-platform (linux)` | `ubuntu-latest` | `run platform` + `run gpui-cross` → `build-gpui-linux.sh` → tar.gz |
+| `gpui-platform (windows)` | `windows-latest` | `run platform` + `run gpui-cross` → `build-gpui-windows.sh` → zip |
 | `release / Linux GPUI` | `ubuntu-latest` | `muxterm-linux-x86_64-<ver>.tar.gz`（bin + `.desktop` + PNG + README + sha256） |
 | `release / macOS ARM` | `macos-latest` | `muxterm-macos-arm64-<ver>.dmg`（内含 GPUI `Muxterm.app`） |
 | `release / Windows GPUI` | `windows-latest` | `muxterm-windows-x86_64-<ver>.zip`（exe + PNG + README + sha256） |
@@ -683,16 +701,19 @@ macOS 完整门禁（含 tmux / herdr 验收）：`bash scripts/test.sh run gpui
 
 - **Windows 运行期**：本机没有 Windows 机器，CI 验证的是编译 + 无头测试 +
   `--version`；真实窗口（ConPTY、DPI、Vulkan/D3D12、IME）没跑过。对应 job：
-  `ci-windows`。
+  `gpui-platform (windows)`。
 - **Linux 运行期**：CI 跑 `cargo test` 无头套件与构建，连接真实合成器的窗口
   （X11 / Wayland 各自的输入法、剪贴板、DPI）没跑过。对应 job：
-  `ci-gpui-frontend (linux)`。
+  `gpui-platform (linux)`。
 - **拖放**：三平台都没有实现文件拖放（`on_drop` 从未接线），现状一致。
 - **系统通知**：三平台都没有系统通知，bell 仍进 attention 面板。
 - **Windows 自更新 / Authenticode / 嵌入 exe 图标**：未做；Windows zip 里只有
   未签名 exe 与 PNG。
 - **AppImage**：Linux 发布用 `tar.gz`（与仓库既有格式一致）；未做 AppImage。
-- **Windows 的 tmux / Herdr**：依赖 Unix socket，明确不支持。
+- **Windows 上的本地 Herdr**：端点发现依赖 `herdr status --json`（0.9.5+）；
+  未在真机跑过，CI 只覆盖端点推导与命名管道往返。命名管道的兜底名字
+  （`herdr` / `herdr-<session>`）是推断值，未能用真机核对。
+- **Windows 的 shell daemon**：Unix socket 专有，明确不支持。
 
 ## 9. 验收
 

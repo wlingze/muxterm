@@ -1,5 +1,10 @@
 name: "CI: gpui frontend"
 
+# 结构：先跑一次「统一测试」（跨平台必须一致的行为），通过后再并行跑三个
+# 平台自己的测试与打包。统一测试挂了，平台 job 不启动。
+#   unified  : ubuntu，`run gpui-cross`（fmt / clippy / 单测 / 无头验收 / release 构建）
+#   platform : macOS / Linux / Windows 各一份，跑 `run platform` + 本平台构建
+#   macOS 额外跑完整 `run gpui`（含 tmux / herdr 验收）
 on:
   pull_request:
     branches: [main]
@@ -11,10 +16,11 @@ on:
       - "src/frontend/view_store.rs"
       - "src/frontend/utils/**"
       - "src/frontend/mod.rs"
-      - "src/core/os.rs"
+      - "src/core/**"
       - "src/lib.rs"
       - "src/main.rs"
       - "tests/gpui*"
+      - "tests/platform.rs"
       - "tests/support/**"
       - "tests/samples/**"
       - "Cargo.toml"
@@ -22,6 +28,7 @@ on:
       - "vendor/**"
       - "scripts/build-gpui-macos.sh"
       - "scripts/build-gpui-linux.sh"
+      - "scripts/build-gpui-windows.sh"
       - "scripts/build-common.sh"
       - "scripts/test.sh"
       - "scripts/ci/**"
@@ -30,6 +37,7 @@ on:
     branches: [main]
     paths:
       - "src/frontend/gpui/**"
+      - "src/core/**"
       - "Cargo.toml"
       - "vendor/**"
       - ".github/workflows/ci-gpui-frontend.yml"
@@ -42,43 +50,9 @@ env:
   GH_TOKEN: ${{ github.token }}
 
 jobs:
-  # macOS：完整 gpui 门禁（含 tmux / herdr 验收套件）。
-  ci_gpui_frontend:
-    name: ci-gpui-frontend (macos)
-    runs-on: macos-latest
-    # headless chrome/acceptance 套件 + release profile 构建。
-    timeout-minutes: 45
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.97.1
-        with:
-          components: rustfmt, clippy
-
-      - name: Install tools (tmux / herdr)
-        run: MUXTERM_ENV_FILE="$GITHUB_ENV" bash scripts/ci/setup.sh
-        timeout-minutes: 20
-
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-gpui-${{ hashFiles('Cargo.toml') }}
-
-      # 单一入口：fmt / clippy（--lib）/ headless GPUI 测试 / release 构建。
-      # 原生窗口用例（settings 窗口、NSEvent 监视器）要求交互式桌面，不进 CI。
-      - name: Run GPUI frontend checks (one entry)
-        run: bash scripts/test.sh run gpui
-
-  # Linux：原生 runner 验证 GPUI 能编、能过无头验收。
-  # 与 macOS 同一份脚本（`run gpui-cross`），不依赖 tmux / herdr。
-  ci_gpui_linux:
-    name: ci-gpui-frontend (linux)
+  # 统一测试：三平台应当一致的部分。只在 Linux 上跑一次。
+  unified:
+    name: gpui-unified
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -101,18 +75,137 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-gpui-${{ hashFiles('Cargo.toml') }}
+          key: ${{ runner.os }}-gpui-unified-${{ hashFiles('Cargo.toml') }}
 
-      - name: Run GPUI checks (linux)
+      # 单一入口：fmt / clippy（--lib）/ frontend 单测 / 无头验收 / release 构建。
+      # 原生窗口用例（settings 窗口、NSEvent 监视器）要求交互式桌面，不进 CI。
+      - name: Run unified GPUI checks
         run: bash scripts/test.sh run gpui-cross
 
-      - name: Build Linux GPUI binary (release, packaged layout)
+  # 平台测试：并行三分支。每个平台跑自己的不变量 + 自己的产物。
+  platform:
+    name: gpui-platform (${{ matrix.name }})
+    needs: unified
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macos
+            os: macos-latest
+          - name: linux
+            os: ubuntu-latest
+          - name: windows
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          components: rustfmt, clippy
+
+      - name: Install GPUI system dependencies (linux)
+        if: matrix.name == 'linux'
+        run: bash scripts/ci/setup-gpui-linux.sh
+        timeout-minutes: 15
+
+      # macOS 的完整套件需要 tmux / herdr（隔离 session，见 AGENTS.md）。
+      - name: Install tools (macos)
+        if: matrix.name == 'macos'
+        run: MUXTERM_ENV_FILE="$GITHUB_ENV" bash scripts/ci/setup.sh
+        timeout-minutes: 20
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ matrix.name }}-gpui-platform-${{ hashFiles('Cargo.toml') }}
+
+      # 本平台的事实：XDG vs APPDATA、$SHELL vs %COMSPEC%、Unix socket vs
+      # 命名管道 vs TCP loopback、缺失 PID 的终止语义。
+      - name: Run platform tests
+        run: bash scripts/test.sh run platform
+
+      # macOS 是发布基线：完整 gpui 门禁（含 tmux / herdr 验收）。
+      - name: Run full GPUI checks (macos)
+        if: matrix.name == 'macos'
+        run: bash scripts/test.sh run gpui
+
+      # Linux / Windows 跑同一份跨平台门禁，再各自打包。
+      - name: Run cross-platform GPUI checks
+        if: matrix.name != 'macos'
+        run: bash scripts/test.sh run gpui-cross
+
+      - name: Build macOS app bundle
+        if: matrix.name == 'macos'
+        run: ./scripts/build-gpui-macos.sh --release
+
+      - name: Verify macOS bundle
+        if: matrix.name == 'macos'
+        run: |
+          set -euo pipefail
+          test -x build/macos/Muxterm.app/Contents/MacOS/Muxterm
+          test -x build/macos/Muxterm.app/Contents/Resources/muxterm
+          codesign --verify --deep --strict build/macos/Muxterm.app
+          build/macos/Muxterm.app/Contents/Resources/muxterm --version
+
+      - name: Package macOS app
+        if: matrix.name == 'macos'
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          ditto -c -k --sequesterRsrc --keepParent \
+            build/macos/Muxterm.app dist/muxterm-macos-app.zip
+
+      - name: Build Linux GPUI binary
+        if: matrix.name == 'linux'
         run: ./scripts/build-gpui-linux.sh --release
 
-      - name: Upload Linux GPUI binary
+      - name: Verify Linux binary
+        if: matrix.name == 'linux'
+        run: |
+          set -euo pipefail
+          test -x build/linux/muxterm
+          build/linux/muxterm --version
+
+      - name: Package Linux binary
+        if: matrix.name == 'linux'
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          tar -C build/linux -czf dist/muxterm-linux-x86_64.tar.gz .
+
+      - name: Build Windows GPUI binary
+        if: matrix.name == 'windows'
+        run: ./scripts/build-gpui-windows.sh --release
+
+      - name: Verify Windows binary
+        if: matrix.name == 'windows'
+        run: |
+          set -euo pipefail
+          test -f build/windows/muxterm.exe
+          ./build/windows/muxterm.exe --version
+
+      - name: Package Windows binary
+        if: matrix.name == 'windows'
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          powershell -NoProfile -Command "Compress-Archive -Path 'build/windows/*' -DestinationPath 'dist/muxterm-windows-x86_64.zip' -Force"
+
+      - name: Upload platform artifact
         uses: actions/upload-artifact@v4
         with:
-          name: gpui-linux
-          path: build/linux/**
-          if-no-files-found: warn
+          name: gpui-${{ matrix.name }}
+          path: dist/**
+          if-no-files-found: error
           retention-days: 7
