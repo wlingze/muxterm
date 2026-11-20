@@ -99,6 +99,7 @@ fn escape_closes_the_menu(cx: &mut TestAppContext) {
     let (view, cx) = mount(cx);
     click(cx, "menu-bar-title-0");
     cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
     let open = cx.update(|_, cx| view.update(cx, |app, _| app.menu_bar_open()));
     assert_eq!(open, None);
     assert!(cx.debug_bounds("menu-bar-panel").is_none());
@@ -113,6 +114,7 @@ fn keyboard_navigation_runs_the_highlighted_item(cx: &mut TestAppContext) {
     click(cx, "menu-bar-title-0");
     // 第一项是 About：回车后应该打开 Info 浮层。
     cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
     assert!(
         cx.debug_bounds("info-panel").is_some(),
         "回车必须执行高亮项（About → Info 浮层）"
