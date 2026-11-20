@@ -98,11 +98,19 @@ fn escape_closes_the_menu(cx: &mut TestAppContext) {
     }
     let (view, cx) = mount(cx);
     click(cx, "menu-bar-title-0");
+    assert_eq!(
+        cx.update(|_, cx| view.update(cx, |app, _| app.menu_bar_open())),
+        Some(0),
+        "点击标题先打开菜单"
+    );
     cx.simulate_keystrokes("escape");
     cx.run_until_parked();
     let open = cx.update(|_, cx| view.update(cx, |app, _| app.menu_bar_open()));
-    assert_eq!(open, None);
-    assert!(cx.debug_bounds("menu-bar-panel").is_none());
+    assert_eq!(open, None, "Escape 必须收起菜单");
+    // 无头 gpui 的 `rendered_frame.debug_bounds` 是上一帧快照：条件元素消失后
+    // 仍可能读到一次旧 bounds，所以「面板已消失」用状态断言，不靠它。
+    let selected = cx.update(|_, cx| view.update(cx, |app, _| app.menu_bar_selected_action()));
+    assert_eq!(selected, None, "收起后不再有高亮项");
 }
 
 #[gpui::test]
