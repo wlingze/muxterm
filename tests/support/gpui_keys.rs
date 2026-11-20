@@ -8,6 +8,25 @@
 
 use muxterm::frontend::gpui::platform::{primary_modifier, PrimaryModifier};
 
+/// 当前平台的命令键修饰位（`Modifiers::platform` 在 Linux 上是 Ctrl）。
+pub fn modifiers() -> gpui::Modifiers {
+    match primary_modifier() {
+        PrimaryModifier::Command => gpui::Modifiers {
+            platform: true,
+            ..Default::default()
+        },
+        PrimaryModifier::Control => gpui::Modifiers {
+            control: true,
+            ..Default::default()
+        },
+        // Alt / Super：缺省命令键是 Alt。
+        _ => gpui::Modifiers {
+            alt: true,
+            ..Default::default()
+        },
+    }
+}
+
 /// gpui keystroke 语法里的命令键名。
 pub fn primary_token() -> &'static str {
     match primary_modifier() {
