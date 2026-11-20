@@ -10,7 +10,7 @@
 pub mod clipboard_image;
 pub mod desktop;
 
-use desktop::{DesktopOs, PrimaryModifier};
+pub use desktop::{DesktopOs, PrimaryModifier};
 use gpui::{Keystroke, Modifiers};
 
 // objc 的 `msg_send!` / `class!` 宏内部会引用 `cargo-clippy` 等 cfg，

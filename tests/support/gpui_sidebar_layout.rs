@@ -1,4 +1,5 @@
 //! 左侧栏布局契约：断言真实段头的位置和真实鼠标事件，不用模型结果作预期值。
+use super::keys::keys;
 use super::{mount, store_with_two_workspaces, workspace};
 use gpui::{
     point, px, size, Bounds, Modifiers, MouseButton, Pixels, ScrollDelta, ScrollWheelEvent,
@@ -144,7 +145,7 @@ fn height_drags_only_trade_space_with_the_other_side_of_the_divider(cx: &mut Tes
     );
     click(cx, A);
     click(cx, A);
-    cx.simulate_keystrokes("cmd-b cmd-b");
+    cx.simulate_keystrokes(&keys("cmd-b cmd-b"));
     for (actual, wanted) in open_heights(cx).into_iter().zip([w, a, c]) {
         near(actual, wanted, "重新显示后保留拖动结果");
     }
