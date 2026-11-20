@@ -49,6 +49,10 @@ pub struct HerdrDriver;
 /// 本地 Herdr API socket：default → `~/.config/herdr/herdr.sock`；
 /// named → `~/.config/herdr/sessions/<name>/herdr.sock`。
 /// `HERDR_SOCKET_PATH` 仍可整体覆盖（测试隔离用）。
+///
+/// Windows 的 Herdr 端点不是文件而是命名管道，路径推导没有意义：先问
+/// `herdr status --json` 要 `server.socket`（Herdr 0.9.5 起），问不到再按
+/// Herdr 的命名规则兜底（default → `herdr`，named → `herdr-<session>`）。
 fn local_herdr_socket_for(session: &str) -> String {
     if let Ok(path) = std::env::var("HERDR_SOCKET_PATH") {
         let path = path.trim();
@@ -56,15 +60,55 @@ fn local_herdr_socket_for(session: &str) -> String {
             return path.to_string();
         }
     }
-    let base = crate::discovery::existing::local_herdr_config_dir();
-    if session.is_empty() || session == "default" {
-        base.join("herdr.sock").to_string_lossy().into_owned()
+    #[cfg(windows)]
+    {
+        if let Some(socket) = herdr_status_socket(session) {
+            return socket;
+        }
+        return if session.is_empty() || session == "default" {
+            "herdr".to_string()
+        } else {
+            format!("herdr-{session}")
+        };
+    }
+    #[cfg(not(windows))]
+    {
+        let base = crate::discovery::existing::local_herdr_config_dir();
+        if session.is_empty() || session == "default" {
+            base.join("herdr.sock").to_string_lossy().into_owned()
+        } else {
+            base.join("sessions")
+                .join(session)
+                .join("herdr.sock")
+                .to_string_lossy()
+                .into_owned()
+        }
+    }
+}
+
+/// 问本机 Herdr 自己的 API 端点（Windows：命名管道名）。
+///
+/// 只在 Windows 上调用；Herdr 未运行或输出不可解析时返回 None，由调用方兜底。
+fn herdr_status_socket(session: &str) -> Option<String> {
+    let mut command = std::process::Command::new("herdr");
+    if !session.is_empty() && session != "default" {
+        command.arg("--session").arg(session);
+    }
+    let output = command
+        .args(["status", "--json"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    let socket = value.get("server")?.get("socket")?.as_str()?.trim();
+    if socket.is_empty() {
+        None
     } else {
-        base.join("sessions")
-            .join(session)
-            .join("herdr.sock")
-            .to_string_lossy()
-            .into_owned()
+        Some(socket.to_string())
     }
 }
 

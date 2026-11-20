@@ -30,6 +30,8 @@ pub mod discovery;
 pub mod executable;
 #[path = "core/fault.rs"]
 pub mod fault;
+#[path = "core/ipc.rs"]
+pub mod ipc;
 #[path = "core/logging.rs"]
 pub mod logging;
 #[cfg(feature = "ffi")]
