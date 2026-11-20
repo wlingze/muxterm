@@ -5441,12 +5441,19 @@ fn sidebar_shortcuts_sit_next_to_the_marker(cx: &mut TestAppContext) {
     let _ = view;
 }
 
-/// `[ui] show_title_bar` 关掉后窗口标题为空串（只剩 traffic lights）。
+/// `[ui] show_title_bar` 关掉后：macOS 清空标题（只剩 traffic lights），
+/// Linux / Windows 的标题栏是系统画的，保持 workspace 名。
 #[gpui::test]
 fn window_title_follows_the_ui_toggle(cx: &mut TestAppContext) {
+    use muxterm::frontend::gpui::platform::os;
     use muxterm::frontend::gpui::state::window_title_text;
+    let hidden_title = if os().hides_title_text(false) {
+        ""
+    } else {
+        "dev — Muxterm"
+    };
     assert_eq!(window_title_text(true, "dev"), "dev — Muxterm");
-    assert_eq!(window_title_text(false, "dev"), "");
+    assert_eq!(window_title_text(false, "dev"), hidden_title);
     assert_eq!(window_title_text(true, "  "), "Muxterm");
 
     let (view, cx) = mount(store_with_two_workspaces(), cx);
@@ -5469,7 +5476,11 @@ fn window_title_follows_the_ui_toggle(cx: &mut TestAppContext) {
         })
     });
     assert!(!show, "开关要反映到状态");
-    assert_eq!(applied, "", "关掉后原生窗口标题必须被清空");
+    if os().hides_title_text(false) {
+        assert_eq!(applied, "", "macOS 关掉后原生窗口标题必须被清空");
+    } else {
+        assert!(!applied.is_empty(), "其它平台保留系统标题栏文字");
+    }
 }
 
 /// Attention 行必须带状态色与状态徽标（之前整行全灰，看不出 working/blocked）。

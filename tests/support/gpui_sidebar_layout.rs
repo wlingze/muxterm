@@ -151,8 +151,15 @@ fn height_drags_only_trade_space_with_the_other_side_of_the_divider(cx: &mut Tes
     }
     cx.simulate_resize(size(px(1200.), px(1026.)));
     cx.run_until_parked();
+    // 可分配高度从实测侧栏扣 inset 与折叠段头得到：非 macOS 顶部还有菜单条，
+    // 不能写死 1026 - 8 - 26。
+    let available = f32::from(bounds(cx, "sidebar").size.height) - 8.0 - HEADER;
     for (actual, fraction) in open_heights(cx).into_iter().zip([w, a, c]) {
-        near(actual, 992. * fraction / (w + a + c), "随窗口按比例缩放");
+        near(
+            actual,
+            available * fraction / (w + a + c),
+            "随窗口按比例缩放",
+        );
     }
     let prev = open_heights(cx);
     drag_height(cx, "sidebar-split-Workspaces-Agents", -460., 100.);
