@@ -65,11 +65,11 @@ fn local_herdr_socket_for(session: &str) -> String {
         if let Some(socket) = herdr_status_socket(session) {
             return socket;
         }
-        return if session.is_empty() || session == "default" {
+        if session.is_empty() || session == "default" {
             "herdr".to_string()
         } else {
             format!("herdr-{session}")
-        };
+        }
     }
     #[cfg(not(windows))]
     {
