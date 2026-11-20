@@ -122,9 +122,8 @@ pub fn discover_local_herdr(config_dir: Option<&Path>) -> Vec<ExistingEntry> {
 /// 本地正在运行的 Herdr namespace。即使 session 暂时没有 workspace，也
 /// 必须出现在 create target 选择中。
 pub(crate) fn local_herdr_config_dir() -> PathBuf {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .filter(|path| !path.is_empty())
-        .map(PathBuf::from)
+    // Windows 上 Herdr 用 %APPDATA%\herdr；Unix 仍是 XDG/HOME 推导。
+    crate::os::config_home()
         .unwrap_or_else(|| {
             PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config")
         })
@@ -155,7 +154,64 @@ pub(crate) fn discover_local_herdr_namespaces(config_dir: Option<&Path>) -> Vec<
             }
         }
     }
+    if sockets.is_empty() && config_dir.is_none() {
+        // Windows 的 Herdr 端点不是文件，目录扫描永远为空；问 Herdr 自己
+        // （`session list --json` 同时给出 session 名和 socket）。
+        // 调用方显式给了目录时尊重它：测试用临时目录表示「这里什么都没有」。
+        return herdr_session_list_running();
+    }
     scan_running_sockets(sockets, Some(default))
+}
+
+/// `herdr session list --json` 里的运行中 session。
+///
+/// 端点字符串原样返回：Unix 是 socket 路径，Windows 是命名管道名（或
+/// `\\.\pipe\...`），连接侧由 [`crate::ipc::endpoint_from_raw`] 解释。
+fn herdr_session_list_running() -> Vec<(String, String)> {
+    let output = std::process::Command::new("herdr")
+        .args(["session", "list", "--json"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output();
+    let Ok(output) = output else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&output.stdout) else {
+        return Vec::new();
+    };
+    let mut out: Vec<(String, String)> = Vec::new();
+    let Some(sessions) = value.get("sessions").and_then(|value| value.as_array()) else {
+        return out;
+    };
+    for session in sessions {
+        if !session
+            .get("running")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        let name = session
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let socket = session
+            .get("socket_path")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .trim();
+        if socket.is_empty() {
+            continue;
+        }
+        if !out.iter().any(|(existing, _)| existing == &name) {
+            out.push((name, socket.to_string()));
+        }
+    }
+    out
 }
 
 /// 逐个 socket ping，产出可安全用于 workspace.create 的运行中 namespace。
