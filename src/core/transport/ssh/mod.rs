@@ -387,13 +387,12 @@ impl ProcessTransport for SshProcessTransport {
         };
         let pid = child.process_id().unwrap_or(0) as i32;
         if pid > 0 {
-            let sig = match signal {
-                TransportSignal::Hangup => libc::SIGHUP,
-                TransportSignal::Term => libc::SIGTERM,
-                TransportSignal::Kill => libc::SIGKILL,
+            let how = match signal {
+                TransportSignal::Hangup => crate::os::Terminate::Hangup,
+                TransportSignal::Term => crate::os::Terminate::Term,
+                TransportSignal::Kill => crate::os::Terminate::Kill,
             };
-            let r = unsafe { libc::kill(pid, sig) };
-            if r == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+            if crate::os::terminate_process(pid, how).is_ok() {
                 return Ok(());
             }
         }

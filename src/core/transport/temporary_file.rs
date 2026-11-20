@@ -4,8 +4,9 @@
 //! 不再重写或重传。本地直接写 `/tmp`，不走 SSH 复制，也不用 macOS `TMPDIR`
 //! （`/var/folders/.../T`）。过期的 `muxterm-paste-*` 在下一次粘贴时删掉。
 use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Stdio;
 use std::time::{Duration, SystemTime};
 
@@ -13,7 +14,6 @@ use anyhow::{bail, Context, Result};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-const PASTE_DIR: &str = "/tmp";
 const PASTE_PREFIX: &str = "muxterm-paste-";
 const PASTE_TTL: Duration = Duration::from_secs(60 * 60);
 
@@ -70,6 +70,8 @@ fn local_paste_is_current(path: &Path, bytes: &[u8]) -> Result<bool> {
         Ok(existing) if existing == bytes => {
             // 只刷新时间和权限，不重写内容。
             if let Ok(file) = std::fs::OpenOptions::new().write(true).open(path) {
+                // Windows 没有 POSIX 权限位：文件在用户目录，继承 %TEMP% 的 ACL。
+                #[cfg(unix)]
                 let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
                 let _ = file.set_modified(SystemTime::now());
             }
@@ -166,7 +168,7 @@ pub(super) fn store(
     let name = paste_file_name(&hash, extension);
     match transport {
         "local" => {
-            let dir = PathBuf::from(PASTE_DIR);
+            let dir = crate::os::paste_dir();
             sweep_expired_pastes(&dir);
             let path = dir.join(name);
             if local_paste_is_current(&path, bytes)? {
@@ -175,11 +177,11 @@ pub(super) fn store(
             if path.exists() {
                 let _ = std::fs::remove_file(&path);
             }
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(&path)?;
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            options.mode(0o600);
+            let mut file = options.open(&path)?;
             if let Err(error) = file.write_all(bytes).and_then(|_| file.sync_all()) {
                 drop(file);
                 let _ = std::fs::remove_file(&path);
@@ -221,6 +223,7 @@ pub(super) fn store(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
     fn unique_bytes(label: &str) -> Vec<u8> {
@@ -243,6 +246,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn local_files_reuse_identical_bytes_and_replace_a_mismatch() {
         let bytes = unique_bytes("reuse");
@@ -279,6 +283,7 @@ mod tests {
         std::fs::remove_file(other).unwrap();
     }
 
+    // Windows 也有本机落盘路径：这里只验证「远端脚本」以及参数校验。
     #[test]
     fn remote_probe_checks_the_hash_before_any_upload() {
         let hash = content_token(b"\x89PNG");
@@ -298,8 +303,9 @@ mod tests {
 
     #[test]
     fn local_paste_sweeps_expired_tmp_files() {
-        let stale = PathBuf::from(format!(
-            "/tmp/muxterm-paste-stale-{}-deadbeef.png",
+        let dir = crate::os::paste_dir();
+        let stale = dir.join(format!(
+            "muxterm-paste-stale-{}-deadbeef.png",
             std::process::id()
         ));
         std::fs::write(&stale, b"old").unwrap();
@@ -308,8 +314,12 @@ mod tests {
             .unwrap();
         drop(file);
         let fresh = store("local", "", &unique_bytes("sweep"), "png").unwrap();
-        assert!(!stale.exists(), "超过 1 小时的 /tmp 粘贴必须被清掉");
-        assert!(fresh.starts_with("/tmp/muxterm-paste-"));
+        assert!(!stale.exists(), "超过 1 小时的临时粘贴必须被清掉");
+        assert!(
+            fresh.starts_with(&dir.to_string_lossy().to_string()),
+            "本地粘贴必须落在平台临时目录: {fresh}"
+        );
+        assert!(fresh.contains("muxterm-paste-"));
         std::fs::remove_file(fresh).unwrap();
     }
 }

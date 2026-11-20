@@ -438,12 +438,28 @@ impl HerdrSession {
 /// `muxterm-herdr-fwd-X.sock` → `muxterm-herdr-fwd-X-client.sock`。不能只取
 /// parent 后硬编码 `herdr-client.sock`，否则所有 SSH 连接都会撞到 `/tmp`。
 pub(crate) fn client_socket_path_from_api(api_socket_path: &Path) -> PathBuf {
-    let stem = api_socket_path
+    PathBuf::from(client_socket_from_api(&api_socket_path.to_string_lossy()))
+}
+
+/// 端点字符串版本的 [`client_socket_path_from_api`]。
+///
+/// Windows 的 Herdr 端点是命名管道名（`\\.\pipe\herdr`），派生规则退化成
+/// 「名字后面加 `-client`」；不能再做 `parent() + join(".sock")`，那样会把
+/// 管道名变成 `\\.\pipe\herdr-client.sock`。
+pub(crate) fn client_socket_from_api(api_socket: &str) -> String {
+    if crate::ipc::is_pipe(api_socket) {
+        return format!("{api_socket}-client");
+    }
+    let path = Path::new(api_socket);
+    let stem = path
         .file_stem()
         .and_then(|value| value.to_str())
         .unwrap_or("herdr");
-    let parent = api_socket_path.parent().unwrap_or_else(|| Path::new(""));
-    parent.join(format!("{stem}-client.sock"))
+    let parent = path.parent().unwrap_or_else(|| Path::new(""));
+    parent
+        .join(format!("{stem}-client.sock"))
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Accept either the API socket or an already-derived client socket.
@@ -1083,6 +1099,25 @@ impl HerdrWorktreeRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn client_socket_keeps_the_endpoint_shape() {
+        // Unix：同目录 `-client.sock`。
+        assert_eq!(
+            client_socket_from_api("/home/wlz/.config/herdr/herdr.sock"),
+            "/home/wlz/.config/herdr/herdr-client.sock"
+        );
+        // SSH 转发的临时 socket 不能都落到同一个 `herdr-client.sock`。
+        assert_eq!(
+            client_socket_from_api("/tmp/mt-hf-1-abc.sock"),
+            "/tmp/mt-hf-1-abc-client.sock"
+        );
+        // Windows 命名管道：只加后缀，不再拼 `.sock`。
+        assert_eq!(
+            client_socket_from_api(r"\\.\pipe\herdr"),
+            r"\\.\pipe\herdr-client"
+        );
+    }
 
     #[test]
     fn parse_target_home_accepts_only_an_absolute_directory() {

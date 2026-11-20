@@ -4,13 +4,11 @@
 use std::collections::HashMap;
 use std::io;
 #[cfg(unix)]
-use std::io::{Read, Write};
-#[cfg(unix)]
-use std::net::Shutdown;
+use std::io::Read;
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 #[cfg(unix)]
@@ -53,7 +51,6 @@ impl Connect {
 }
 
 impl TargetConnection for Connect {
-    #[cfg(unix)]
     fn store_temporary_file(&self, bytes: &[u8], extension: &str) -> TransportResult<String> {
         super::temporary_file::store(self.transport_id(), self.target(), bytes, extension)
             .map_err(Into::into)
@@ -471,12 +468,17 @@ impl Connect {
         }
     }
 
+    /// 打开一条到「目标机器上某个本地 socket」的通道。
+    ///
+    /// 端点形态由平台决定：Unix 用 socket 路径；Windows 用命名管道（本机
+    /// Herdr/shell）或 loopback TCP（`ssh -L` 的本地端，因为 Win32-OpenSSH
+    /// 不支持本地 Unix socket 转发）。远端永远还是 Linux 的 Unix socket。
     fn open_unix_socket_channel(&self, path: PathBuf) -> anyhow::Result<Box<dyn ByteChannel>> {
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = path;
             return Err(anyhow::anyhow!(
-                "UnixSocket channels are not supported on this platform"
+                "target socket channels are not supported on this platform"
             ));
         }
 
@@ -498,7 +500,39 @@ impl Connect {
                 }
             };
             stream.set_nonblocking(true)?;
-            Ok(Box::new(UnixSocketByteChannel { stream, forward }))
+            Ok(Box::new(SocketByteChannel {
+                stream: crate::ipc::LocalStream::Unix(stream),
+                forward,
+            }))
+        }
+
+        #[cfg(windows)]
+        {
+            match self.transport_id.as_str() {
+                "local" => {
+                    let endpoint = crate::ipc::endpoint_from_raw(&path.to_string_lossy())?;
+                    let stream = crate::ipc::LocalStream::connect(&endpoint)?;
+                    stream.set_nonblocking(true)?;
+                    Ok(Box::new(SocketByteChannel {
+                        stream,
+                        forward: None,
+                    }))
+                }
+                "ssh" => {
+                    if self.target.is_empty() {
+                        return Err(anyhow::anyhow!("SSH socket channel 缺少 target alias"));
+                    }
+                    let (stream, forward) = SshTcpSocketForward::start(&self.target, &path)?;
+                    stream.set_nonblocking(true)?;
+                    Ok(Box::new(SocketByteChannel {
+                        stream,
+                        forward: Some(forward),
+                    }))
+                }
+                transport => Err(anyhow::anyhow!(
+                    "unsupported target transport '{transport}'"
+                )),
+            }
         }
     }
 }
@@ -588,44 +622,52 @@ fn is_valid_env_key(key: &str) -> bool {
         && chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
 }
 
-#[cfg(unix)]
-struct UnixSocketByteChannel {
-    stream: UnixStream,
+/// 本地/转发 socket 通道：跨平台的 `LocalStream` + 平台自己的转发守卫。
+struct SocketByteChannel {
+    stream: crate::ipc::LocalStream,
+    #[cfg(unix)]
     forward: Option<Arc<SshUnixSocketForward>>,
+    #[cfg(windows)]
+    forward: Option<SshTcpSocketForward>,
 }
 
-#[cfg(unix)]
-impl ByteChannel for UnixSocketByteChannel {
+impl ByteChannel for SocketByteChannel {
     fn read(&mut self) -> io::Result<Option<Vec<u8>>> {
-        let mut buffer = [0u8; 8192];
-        match self.stream.read(&mut buffer) {
-            Ok(0) => Err(io::Error::new(
+        match self.stream.read_chunk()? {
+            crate::ipc::Chunk::Data(bytes) => Ok(Some(bytes)),
+            crate::ipc::Chunk::Pending => Ok(None),
+            crate::ipc::Chunk::Closed => Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
-                "Unix socket channel EOF",
+                "socket channel EOF",
             )),
-            Ok(size) => Ok(Some(buffer[..size].to_vec())),
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(None),
-            Err(error) => Err(error),
         }
     }
 
     fn write(&mut self, data: &[u8]) -> io::Result<usize> {
-        self.stream.write(data)
+        self.stream.write_all(data)?;
+        Ok(data.len())
     }
 
     fn resize(&mut self, _cols: u16, _rows: u16) -> TransportResult<()> {
-        Err(anyhow::anyhow!("UnixSocket channels do not support resize").into())
+        Err(anyhow::anyhow!("socket channels do not support resize").into())
     }
 
     fn shutdown(&mut self) -> TransportResult<()> {
-        let _ = self.stream.shutdown(Shutdown::Both);
-        self.forward.take();
+        let _ = self.stream.shutdown();
+        #[cfg(unix)]
+        {
+            // 只释放本通道对共享 forward 的引用；缓存里还有别的使用者。
+            self.forward.take();
+        }
+        #[cfg(windows)]
+        {
+            self.forward.take();
+        }
         Ok(())
     }
 }
 
-#[cfg(unix)]
-impl Drop for UnixSocketByteChannel {
+impl Drop for SocketByteChannel {
     fn drop(&mut self) {
         let _ = self.shutdown();
     }
@@ -758,9 +800,116 @@ impl Drop for SshUnixSocketForward {
     }
 }
 
+/// Windows 上的 SSH socket 转发：本地 loopback TCP → 远端 Unix socket。
+///
+/// Win32-OpenSSH 不支持把本地 Unix socket 作为 `-L` 的本地端，但 `-L
+/// 127.0.0.1:<port>:<remote unix socket>`（streamlocal 的 TCP 本地端）是支持的。
+/// 端口由本进程先绑定再释放，撞车时换一个重试。
+#[cfg(windows)]
+#[derive(Debug)]
+struct SshTcpSocketForward {
+    child: Child,
+    port: u16,
+}
+
+#[cfg(windows)]
+impl SshTcpSocketForward {
+    fn start(alias: &str, remote_path: &Path) -> anyhow::Result<(crate::ipc::LocalStream, Self)> {
+        let remote = remote_path
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("SSH socket path 不是 UTF-8"))?;
+        let mut last_error: Option<anyhow::Error> = None;
+        for _ in 0..3 {
+            let port = crate::ipc::free_loopback_port()?;
+            match Self::try_start(alias, remote, port) {
+                // 探测连接直接当通道用：再连一次会多出一条被 ssh 立刻关闭的
+                // 转发连接，Herdr 那边会看到一次多余的 accept。
+                Ok((stream, forward)) => {
+                    return Ok((crate::ipc::LocalStream::Tcp(stream), forward));
+                }
+                Err(error) => last_error = Some(error),
+            }
+        }
+        Err(last_error
+            .unwrap_or_else(|| anyhow::anyhow!("SSH socket forwarding 失败（alias={alias}）")))
+    }
+
+    fn try_start(
+        alias: &str,
+        remote_path: &str,
+        port: u16,
+    ) -> anyhow::Result<(std::net::TcpStream, Self)> {
+        let mut command = Command::new("ssh");
+        // Windows 没有 control master，别传 ControlMaster/ControlPath。
+        command.args([
+            "-nNT",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ExitOnForwardFailure=yes",
+            "-o",
+            "ConnectTimeout=2",
+        ]);
+        if let Some(config) = std::env::var_os("MUXTERM_SSH_CONFIG_PATH") {
+            command.arg("-F").arg(config);
+        }
+        command
+            .arg("-L")
+            .arg(format!("127.0.0.1:{port}:{remote_path}"))
+            .arg(alias)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        let mut child = command
+            .spawn()
+            .map_err(|error| anyhow::anyhow!("spawn SSH socket forwarding 失败: {error}"))?;
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if let Ok(Some(status)) = child.try_wait() {
+                // ssh 已退出：stderr 里是「-L 语法不支持 / 远端 socket 不存在」
+                // 之类的原因，读出来比只说 exit code 有用得多。
+                let diagnostic = child
+                    .stderr
+                    .take()
+                    .map(|stderr| {
+                        use std::io::Read as _;
+                        let mut text = String::new();
+                        let _ = stderr.take(4096).read_to_string(&mut text);
+                        text
+                    })
+                    .unwrap_or_default();
+                return Err(anyhow::anyhow!(
+                    "SSH socket forwarding 退出（alias={alias}, remote={remote_path}, {status}）: {}",
+                    diagnostic.trim()
+                ));
+            }
+            if let Ok(stream) = std::net::TcpStream::connect(("127.0.0.1", port)) {
+                stream.set_nodelay(true)?;
+                return Ok((stream, Self { child, port }));
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        let _ = child.kill();
+        let _ = child.wait();
+        Err(anyhow::anyhow!(
+            "SSH socket forwarding 未就绪（alias={alias}, remote={remote_path}, 127.0.0.1:{port} 等待超时）"
+        ))
+    }
+}
+
+#[cfg(windows)]
+impl Drop for SshTcpSocketForward {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
 
     #[cfg(unix)]
     #[test]

@@ -30,11 +30,15 @@ pub mod discovery;
 pub mod executable;
 #[path = "core/fault.rs"]
 pub mod fault;
+#[path = "core/ipc.rs"]
+pub mod ipc;
 #[path = "core/logging.rs"]
 pub mod logging;
 #[cfg(feature = "ffi")]
 #[path = "core/muxterm.rs"]
 pub mod muxterm;
+#[path = "core/os.rs"]
+pub mod os;
 #[path = "core/performance.rs"]
 pub(crate) mod performance;
 #[path = "core/projects/mod.rs"]

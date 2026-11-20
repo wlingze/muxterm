@@ -3,8 +3,8 @@
 //! Core handle 在 gpui 主线程创建并持有，之后只被 EventPump 消费。
 
 use gpui::{
-    div, prelude::*, px, size, AnyElement, App, Application, Bounds, Context, Render,
-    TitlebarOptions, Window, WindowBounds, WindowOptions,
+    div, prelude::*, px, size, AnyElement, App, Application, Bounds, Context, Render, Window,
+    WindowBounds, WindowOptions,
 };
 
 use crate::frontend::command_queue::CommandQueue;
@@ -28,6 +28,9 @@ pub fn run(socket: Option<String>, session: Option<String>) -> anyhow::Result<()
     let commands = CommandQueue::default();
 
     Application::new().run(move |cx: &mut App| {
+        // 内置字体：Linux / Windows 上没有 Menlo / JetBrains Mono，不注册就只能拿
+        // 系统比例字体，终端列宽立刻漂（见 `docs/FRONTEND-GPUI.md` §8.1）。
+        register_bundled_fonts(cx);
         cx.on_window_closed(|cx| {
             if cx.windows().is_empty() {
                 cx.quit();
@@ -43,12 +46,11 @@ pub fn run(socket: Option<String>, session: Option<String>) -> anyhow::Result<()
         let bounds = Bounds::centered(None, size(px(1_280.0), px(800.0)), cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
-            // macOS 侧 `titleVisibility` 是隐藏的：这里同样不画标题，只留 traffic lights。
-            titlebar: Some(TitlebarOptions {
-                title: Some(" ".into()),
-                appears_transparent: false,
-                traffic_light_position: None,
-            }),
+            // macOS：隐藏标题文字，只留 traffic lights。
+            // Linux / Windows：标题栏由系统画，gpui 不接管。
+            titlebar: crate::frontend::gpui::platform::titlebar_options(),
+            // Wayland / XDG 的应用标识：desktop 文件、任务栏分组都靠它。
+            app_id: Some("dev.muxterm.app".to_string()),
             ..Default::default()
         };
         cx.open_window(options, |window, cx| {
@@ -114,18 +116,19 @@ impl Render for GpuiApp {
             0.0
         };
         let main_width = (width - sidebar_width).max(1.0);
-        // 只有一条 bar（tab + 状态），高度统一取 STATUS_BAR_HEIGHT。
-        let main_height = (height - STATUS_BAR_HEIGHT).max(1.0);
+        // 只有一条 bar（tab + 状态）；非 macOS 顶部还有一条自绘菜单条。
+        let menu_height = crate::frontend::gpui::chrome::menu_bar::menu_bar_height();
+        let main_height = (height - STATUS_BAR_HEIGHT - menu_height).max(1.0);
         let area = Rect::new(0.0, 0.0, main_width, main_height);
 
         let mut sizes: Vec<(u32, u16, u16)> = Vec::new();
         let mut panes: Vec<AnyElement> = Vec::new();
         let bar_on_top = self.tab_bar_position()
             == crate::frontend::gpui::chrome::tab_bar_view::TabBarPosition::Top;
-        // 鼠标事件是窗口坐标：内容区原点是侧栏宽度 + 顶部 bar 高度。
+        // 鼠标事件是窗口坐标：内容区原点是侧栏宽度 + 顶部（菜单条 + bar）高度。
         let content_origin = (
             sidebar_width,
-            if bar_on_top { STATUS_BAR_HEIGHT } else { 0.0 },
+            menu_height + if bar_on_top { STATUS_BAR_HEIGHT } else { 0.0 },
         );
         if let Some(layout) = self.layout() {
             for (pane_id, rect) in pane_grid::pane_rects(&layout, area) {
@@ -154,60 +157,96 @@ impl Render for GpuiApp {
             (div().into_any_element(), bar)
         };
 
+        // 非 macOS 的自绘菜单条（macOS 是原生 NSMenu，两个都返回 None）。
+        let menu_bar = self.render_menu_bar(cx);
+        let menu_panel = self.render_menu_panel(cx);
+
         div()
             .relative()
             .flex()
-            .flex_row()
+            .flex_col()
             .size_full()
-            .relative()
             .bg(theme.bg)
             .text_color(theme.fg)
             .track_focus(&self.focus_handle())
             .on_key_down(cx.listener(|this, event, window, cx| this.handle_key(event, window, cx)))
             // Command 按下/松开：悬停链接的下划线要立刻出现/消失，不能等下一次
             // 鼠标移动（用户是「先按住 Cmd，再悬停」）。
+            // Linux / Windows 的命令键来自配置（缺省 Alt），不是 Super/Win。
             .on_modifiers_changed(cx.listener(
                 |this, event: &gpui::ModifiersChangedEvent, _, cx| {
-                    this.command_modifiers_changed(event.modifiers.platform, cx);
+                    this.command_modifiers_changed(
+                        crate::frontend::gpui::platform::command_held(&event.modifiers),
+                        cx,
+                    );
                 },
             ))
-            .child(sidebar)
+            .children(menu_bar)
             .child(
                 div()
                     .flex()
-                    .flex_col()
+                    .flex_row()
                     .flex_1()
-                    .h_full()
-                    .child(bar_top)
+                    .min_h(px(0.0))
+                    .child(sidebar)
                     .child(
                         div()
-                            .relative()
+                            .flex()
+                            .flex_col()
                             .flex_1()
-                            .w_full()
-                            // 分屏拖拽带露出的底色：Swift 是 `windowBackgroundColor`，
-                            // 所以 pane 之间看得到一条 chrome 色，而不是连成一片。
-                            .bg(theme.chrome_bg)
-                            .children(panes)
-                            .children(self.render_pane_menu(area, cx))
-                            .children(self.render_panel(window, cx))
-                            .children(self.render_composer(cx))
-                            .children(self.render_settings(window, cx))
-                            .when(!self.settings_project_editor, |element| {
-                                element.children(self.render_target_editor(cx))
-                            })
-                            .children(self.render_palette(cx))
-                            .children(self.render_info(cx))
-                            .children(self.render_prompt(cx))
-                            .children(
-                                crate::frontend::gpui::chrome::info::render_image_paste_banner(
-                                    self, &theme, cx,
-                                ),
-                            ),
-                    )
-                    .child(bar_bottom),
+                            .h_full()
+                            .child(bar_top)
+                            .child(
+                                div()
+                                    .relative()
+                                    .flex_1()
+                                    .w_full()
+                                    // 分屏拖拽带露出的底色：Swift 是 `windowBackgroundColor`，
+                                    // 所以 pane 之间看得到一条 chrome 色，而不是连成一片。
+                                    .bg(theme.chrome_bg)
+                                    .children(panes)
+                                    .children(self.render_pane_menu(area, cx))
+                                    .children(self.render_panel(window, cx))
+                                    .children(self.render_composer(cx))
+                                    .children(self.render_settings(window, cx))
+                                    .when(!self.settings_project_editor, |element| {
+                                        element.children(self.render_target_editor(cx))
+                                    })
+                                    .children(self.render_palette(cx))
+                                    .children(self.render_info(cx))
+                                    .children(self.render_prompt(cx))
+                                    .children(
+                                        crate::frontend::gpui::chrome::info::render_image_paste_banner(
+                                            self, &theme, cx,
+                                        ),
+                                    ),
+                            )
+                            .child(bar_bottom),
+                    ),
             )
+            // 菜单下拉面板要盖在正文上（含侧栏），所以放在 body 之后。
+            .children(menu_panel)
             .children(self.render_selection_menu(cx))
             // 全窗口遮罩要盖过侧栏与正文；否则宽度拖动回到侧栏后收不到松手。
             .child(self.render_sidebar_drag_overlay(cx))
+    }
+}
+
+/// 注册仓库自带的等宽字体与符号回退。
+///
+/// `assets/fonts/JetBrainsMono-Regular.ttf` 是 Core 配置的缺省族名
+/// （`JetBrains Mono`），Linux / Windows 上系统一般没有；
+/// `NotoSansSymbols2` 补充箭头 / 图形字符。注册是幂等的（平台文本系统按 family 去重）。
+fn register_bundled_fonts(cx: &mut App) {
+    use std::borrow::Cow;
+    let fonts: Vec<Cow<'static, [u8]>> = vec![
+        Cow::Borrowed(include_bytes!("../../../assets/fonts/JetBrainsMono-Regular.ttf").as_slice()),
+        Cow::Borrowed(
+            include_bytes!("../../../assets/fonts/NotoSansSymbols2-Regular.ttf").as_slice(),
+        ),
+    ];
+    if let Err(error) = cx.text_system().add_fonts(fonts) {
+        // 字体缺失不是致命错误：回退栈里还有系统等宽字体，只影响字形。
+        tracing::warn!(%error, "注册内置字体失败");
     }
 }

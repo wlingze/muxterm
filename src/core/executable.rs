@@ -33,11 +33,18 @@ pub fn resolve_tmux_binary() -> String {
 /// 展开命令和工作目录中的简单环境变量占位（`$SHELL` / `$HOME`）。
 pub fn expand_config_value(raw: &str) -> String {
     let t = raw.trim();
+    // `$SHELL` / `$HOME` / `~` 都是平台相关的：Windows 上是 COMSPEC /
+    // USERPROFILE，由 `crate::os` 决定。
     if t == "$SHELL" {
-        return std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+        return crate::os::default_shell();
     }
+    let home = || {
+        crate::os::home_dir()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "/".into())
+    };
     if t == "$HOME" {
-        return std::env::var("HOME").unwrap_or_else(|_| "/".into());
+        return home();
     }
     if let Some(rest) = t.strip_prefix('$') {
         if let Ok(v) = std::env::var(rest) {
@@ -45,11 +52,14 @@ pub fn expand_config_value(raw: &str) -> String {
         }
     }
     if t == "~" {
-        return std::env::var("HOME").unwrap_or_else(|_| "/".into());
+        return home();
     }
     if let Some(rest) = t.strip_prefix("~/") {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
-        return format!("{}/{}", home.trim_end_matches('/'), rest);
+        let home = home();
+        return std::path::Path::new(&home)
+            .join(rest)
+            .to_string_lossy()
+            .into_owned();
     }
     t.to_string()
 }

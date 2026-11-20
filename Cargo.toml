@@ -9,7 +9,7 @@ license = "MIT"
 # 默认编译 GTK4 前端（archmini 等 GTK 机器用）。
 default = ["gtk"]
 # GTK4 原生前端：依赖 gtk4 / vte4，并通过 ffi 调用核心。
-gtk = ["dep:gtk4", "dep:vte4", "ffi"]
+gtk = ["dep:gtk4", "dep:vte4", "dep:yeslogic-fontconfig-sys", "ffi"]
 # TUI 前端：纯 crossterm + ratatui，经 ffi 调用核心（CI / 无头，跨平台）。
 tui = ["dep:crossterm", "dep:ratatui", "ffi"]
 # GPUI 前端：一份 Rust widget 树跑 macOS / Linux / Windows（见 docs/FRONTEND-GPUI.md）。
@@ -52,6 +52,9 @@ tar = "0.4"
 flate2 = "1"
 sha2 = "0.11"
 hex = "0.4"
+# PTY：Unix 走 openpty，Windows 走 ConPTY。三平台共用同一套
+# `portable-pty` API，上层不再按平台分叉（见 `src/core/os.rs`）。
+portable-pty = "0.8"
 
 
 # 可选：跨平台 TUI 前端
@@ -88,7 +91,9 @@ objc2-foundation = { version = "0.3", optional = true, default-features = false,
 ] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-yeslogic-fontconfig-sys = "6"
+# 仅 GTK 前端注册内置字体用；gpui 前端走 `TextSystem::add_fonts`，
+# 不需要 fontconfig 的 C 依赖（Linux CI 的 gpui job 因此不装 fontconfig）。
+yeslogic-fontconfig-sys = { version = "6", optional = true }
 
 # 可选：GTK4 前端
 gtk4 = { version = "0.9", optional = true }
@@ -96,18 +101,18 @@ gtk4 = { version = "0.9", optional = true }
 vte4 = { version = "0.8", optional = true, features = ["v0_76"] }
 
 [target."cfg(unix)".dependencies]
-# 仅 Unix: 为 tmux -CC 子进程分配 pty
-# （tmux 在非 tty 的 stdout 下会立即报错退出）
-portable-pty = "0.8"
+# 仅 Unix：POSIX 信号 / fcntl / getrusage。Windows 的等价能力在
+# `src/core/os.rs` 里用 std 实现（taskkill 等）。
 libc = "0.2"
 
+# gpui 测试 harness（TestAppContext）：三平台都要，Linux / Windows 的
+# 原生 runner 才能跑同一套无头 UI 验收。
+#
+# 历史：gpui → gpui_http_client → zed-async-tar → xattr 0.2.3 在 Linux 上用
+# `libc::ENOATTR`（Linux 只有 ENODATA）编不过，所以这里曾经只给 macOS。
+# 现在 `vendor/xattr` 打了这个补丁（见文末 `[patch.crates-io]`），三平台都能编。
 [dev-dependencies]
 pretty_assertions = "1"
-
-# gpui 只在 macOS 上跑测试：它经 gpui_http_client → zed-async-tar → xattr 0.2.3
-# 带进一棵无法在 Linux 编译的依赖树（libc 没有 ENOATTR）。放到 macOS 专属
-# dev-dependency 后，Linux 的 core CI 不再被 gpui 测试依赖拖累。
-[target.'cfg(target_os = "macos")'.dev-dependencies]
 gpui = { version = "0.2.2", features = ["test-support"] }
 
 # Linux GTK 前端集成测试（需显示器或 xvfb-run）
@@ -150,6 +155,11 @@ required-features = ["gtk"]
 name = "linux_live_e2e"
 path = "tests/linux_live_e2e.rs"
 required-features = ["gtk"]
+
+[[test]]
+name = "gpui_platform"
+path = "tests/gpui_platform.rs"
+required-features = ["gpui"]
 
 [[test]]
 name = "tmux_attach_contract"
@@ -454,6 +464,14 @@ required-features = ["ffi"]
 name = "ssh_streaming_integration"
 path = "tests/ssh_streaming_integration.rs"
 required-features = ["ffi"]
+
+# ── 本地补丁 ────────────────────────────────────────────────
+# xattr 0.2.3 在 Linux / Android 上引用不存在的 `libc::ENOATTR`，会拖死
+# gpui 的依赖链（gpui → gpui_http_client → zed-async-tar → xattr）。
+# 仓库内 `vendor/xattr` 是同一版本的原样拷贝，只把 Linux 的错误码映射到
+# `ENODATA`；补丁说明见 `vendor/xattr/PATCH.md`。
+[patch.crates-io]
+xattr = { path = "vendor/xattr" }
 
 # GUI 开发者构建：保留 dev 的 debug 断言，但让热路径（VTE 解析 / ANSI 重编码）
 # 走优化。`build-macos.sh` 默认用它链接 .app；未优化解析实测慢 7-9 倍

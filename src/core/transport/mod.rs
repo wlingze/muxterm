@@ -17,7 +17,6 @@ pub mod registry;
 pub mod ssh;
 #[cfg(not(feature = "test-harness"))]
 mod ssh;
-#[cfg(unix)]
 mod temporary_file;
 
 use std::path::{Path, PathBuf};

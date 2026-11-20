@@ -196,16 +196,12 @@ impl ProcessTransport for LocalProcessTransport {
                 .map_err(|e| anyhow::anyhow!("kill 失败: {e}"))?;
             return Ok(());
         }
-        let sig = match signal {
-            TransportSignal::Hangup => libc::SIGHUP,
-            TransportSignal::Term => libc::SIGTERM,
-            TransportSignal::Kill => libc::SIGKILL,
+        let how = match signal {
+            TransportSignal::Hangup => crate::os::Terminate::Hangup,
+            TransportSignal::Term => crate::os::Terminate::Term,
+            TransportSignal::Kill => crate::os::Terminate::Kill,
         };
-        if unsafe { libc::kill(pid, sig) } != 0 {
-            let error = std::io::Error::last_os_error();
-            if error.raw_os_error() == Some(libc::ESRCH) {
-                return Ok(());
-            }
+        if crate::os::terminate_process(pid, how).is_err() {
             child
                 .kill()
                 .map_err(|e| anyhow::anyhow!("kill fallback 失败: {e}"))?;

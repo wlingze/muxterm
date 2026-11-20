@@ -38,10 +38,9 @@ impl PtyChild {
             return;
         }
         if let Some(pid) = pid {
-            #[cfg(unix)]
-            unsafe {
-                libc::kill(pid as i32, libc::SIGKILL);
-            }
+            // Windows 走 taskkill /T /F，Unix 走 SIGKILL；三平台都在
+            // `crate::os` 收口，这里不再直接碰 libc。
+            let _ = crate::os::terminate_process(pid as i32, crate::os::Terminate::Kill);
         }
         let _ = wait_exited(&mut *self.child, Duration::from_millis(200));
     }

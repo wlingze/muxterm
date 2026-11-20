@@ -2,18 +2,25 @@
 //!
 //! 不做单元测试（需要真实 socket + daemon），集成测试在 tests/。
 
+#[cfg(unix)]
 use std::io::{BufRead, BufReader, Write};
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 
-use anyhow::{Context, Result};
+#[cfg(unix)]
+use anyhow::Context;
+use anyhow::Result;
 
 use crate::protocol::command::CliCommand;
-use crate::protocol::daemon::{OutputFormat, Request, Response};
+#[cfg(unix)]
+use crate::protocol::daemon::Request;
+use crate::protocol::daemon::{OutputFormat, Response};
 
 /// 连接到 daemon socket，发送命令，返回响应。
 ///
 /// 如果 socket 不存在或连接失败，返回 Err（调用方决定是否 fork daemon）。
+#[cfg(unix)]
 pub fn send_command(
     socket_path: &Path,
     command: &CliCommand,
@@ -48,4 +55,18 @@ pub fn send_command(
     }
 
     last_response.context("未收到 daemon 响应")
+}
+
+/// Windows 没有 Unix domain socket：shell daemon 是 Unix 专有形态。
+/// 返回可读错误，让 CLI 告诉用户改用本机 shell / SSH。
+#[cfg(not(unix))]
+pub fn send_command(
+    socket_path: &Path,
+    _command: &CliCommand,
+    _format: OutputFormat,
+) -> Result<Response> {
+    Err(crate::os::unix_socket_unsupported(&format!(
+        "shell daemon（socket: {}）",
+        socket_path.display()
+    )))
 }

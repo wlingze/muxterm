@@ -8,8 +8,11 @@
 use gpui::{px, size, TestAppContext};
 #[path = "support/gpui_attention.rs"]
 mod agent_notification;
+#[path = "support/gpui_keys.rs"]
+mod keys;
 #[path = "support/gpui_settings.rs"]
 mod settings_regressions;
+use keys::keys;
 use muxterm::frontend::command_queue::ClientCommand;
 use muxterm::frontend::gpui::chrome::palette_view::PaletteAction;
 use muxterm::frontend::gpui::chrome::sidebar_view::{CommandKey, RowTarget, Section};
@@ -250,7 +253,7 @@ fn quick_panel_rows_stay_one_line_with_long_names(cx: &mut TestAppContext) {
             cx.notify();
         })
     });
-    cx.simulate_keystrokes("cmd-p");
+    cx.simulate_keystrokes(&keys("cmd-p"));
     cx.run_until_parked();
 
     let titles: Vec<String> = cx.update(|_, cx| {
@@ -438,7 +441,7 @@ fn clicking_shells_without_a_shell_opens_one(cx: &mut TestAppContext) {
     assert_eq!(target.transport, "local");
     assert_eq!(intent, ClientOpenIntent::CreateIfMissing);
     assert!(
-        target.path.starts_with('/'),
+        std::path::Path::new(&target.path).is_absolute(),
         "本机路径要展开成绝对路径：{}",
         target.path
     );
@@ -481,7 +484,7 @@ fn cmd_t_in_the_shells_aggregate_targets_the_local_shell(cx: &mut TestAppContext
             let _ = app.take_commands_for_tests();
         })
     });
-    cx.simulate_keystrokes("cmd-t");
+    cx.simulate_keystrokes(&keys("cmd-t"));
     let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
     assert!(
         commands.iter().any(|command| matches!(
@@ -557,12 +560,12 @@ fn an_empty_local_shell_asks_core_for_one_new_tab(cx: &mut TestAppContext) {
 #[gpui::test]
 fn workspace_shortcuts_follow_the_key_table(cx: &mut TestAppContext) {
     let (view, cx) = mount(store_with_two_workspaces(), cx);
-    cx.simulate_keystrokes("cmd-ctrl-2");
+    cx.simulate_keystrokes(&keys("cmd-ctrl-2"));
     let visible =
         cx.update(|_, cx| view.update(cx, |app, _| app.visible_workspace().map(str::to_string)));
     assert_eq!(visible.as_deref(), Some("local@@ops@tmux@ops"));
 
-    cx.simulate_keystrokes("cmd-ctrl-0");
+    cx.simulate_keystrokes(&keys("cmd-ctrl-0"));
     let visible =
         cx.update(|_, cx| view.update(cx, |app, _| app.visible_workspace().map(str::to_string)));
     assert_eq!(
@@ -571,7 +574,7 @@ fn workspace_shortcuts_follow_the_key_table(cx: &mut TestAppContext) {
         "0 永远是最后一个，这里仍然是 ops"
     );
 
-    cx.simulate_keystrokes("cmd-ctrl-1");
+    cx.simulate_keystrokes(&keys("cmd-ctrl-1"));
     let visible =
         cx.update(|_, cx| view.update(cx, |app, _| app.visible_workspace().map(str::to_string)));
     assert_eq!(visible.as_deref(), Some("local@@dev@tmux@dev"));
@@ -635,7 +638,7 @@ fn workspace_numbers_skip_the_raw_local_shell(cx: &mut TestAppContext) {
         store.ensure_workspace(id).backend_status = Some(backend_status::CONNECTED);
     }
     let (view, cx) = mount(store, cx);
-    cx.simulate_keystrokes("cmd-ctrl-1");
+    cx.simulate_keystrokes(&keys("cmd-ctrl-1"));
     let visible =
         cx.update(|_, cx| view.update(cx, |app, _| app.visible_workspace().map(str::to_string)));
     assert_eq!(
@@ -643,7 +646,7 @@ fn workspace_numbers_skip_the_raw_local_shell(cx: &mut TestAppContext) {
         Some("local@@dev@tmux@dev"),
         "1 必须是侧栏第一个 workspace，不是被隐藏的 shell"
     );
-    cx.simulate_keystrokes("cmd-ctrl-2");
+    cx.simulate_keystrokes(&keys("cmd-ctrl-2"));
     let visible =
         cx.update(|_, cx| view.update(cx, |app, _| app.visible_workspace().map(str::to_string)));
     assert_eq!(visible.as_deref(), Some("local@@ops@tmux@ops"));
@@ -654,9 +657,9 @@ fn workspace_numbers_skip_the_raw_local_shell(cx: &mut TestAppContext) {
 fn cmd_b_toggles_the_sidebar(cx: &mut TestAppContext) {
     let (view, cx) = mount(store_with_two_workspaces(), cx);
     assert!(cx.update(|_, cx| view.update(cx, |app, _| app.sidebar_visible())));
-    cx.simulate_keystrokes("cmd-b");
+    cx.simulate_keystrokes(&keys("cmd-b"));
     assert!(!cx.update(|_, cx| view.update(cx, |app, _| app.sidebar_visible())));
-    cx.simulate_keystrokes("cmd-b");
+    cx.simulate_keystrokes(&keys("cmd-b"));
     assert!(cx.update(|_, cx| view.update(cx, |app, _| app.sidebar_visible())));
 }
 
@@ -727,7 +730,7 @@ fn hiding_a_command_moves_it_between_sections(cx: &mut TestAppContext) {
 #[gpui::test]
 fn cmd_t_creates_a_tab_through_the_command_queue(cx: &mut TestAppContext) {
     let (view, cx) = mount(store_with_two_workspaces(), cx);
-    cx.simulate_keystrokes("cmd-t");
+    cx.simulate_keystrokes(&keys("cmd-t"));
     let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
     assert!(
         commands.iter().any(|command| matches!(
@@ -911,7 +914,7 @@ fn tab_bar_position_defaults_to_bottom(cx: &mut TestAppContext) {
 fn cmd_p_opens_the_panel_on_workspaces(cx: &mut TestAppContext) {
     let (view, cx) = mount(store_with_two_workspaces(), cx);
     assert!(!cx.update(|_, cx| view.update(cx, |app, _| app.panel_open())));
-    cx.simulate_keystrokes("cmd-p");
+    cx.simulate_keystrokes(&keys("cmd-p"));
     assert!(cx.update(|_, cx| view.update(cx, |app, _| app.panel_open())));
     assert_eq!(
         cx.update(|_, cx| view.update(cx, |app, _| app.panel_tab())),
@@ -930,7 +933,7 @@ fn cmd_p_opens_the_panel_on_workspaces(cx: &mut TestAppContext) {
 #[gpui::test]
 fn tab_cycles_panel_tabs_and_escape_closes(cx: &mut TestAppContext) {
     let (view, cx) = mount(store_with_two_workspaces(), cx);
-    cx.simulate_keystrokes("cmd-p");
+    cx.simulate_keystrokes(&keys("cmd-p"));
     cx.simulate_keystrokes("tab");
     assert_eq!(
         cx.update(|_, cx| view.update(cx, |app, _| app.panel_tab())),
@@ -950,7 +953,7 @@ fn tab_cycles_panel_tabs_and_escape_closes(cx: &mut TestAppContext) {
 fn panel_swallows_tab_instead_of_sending_it(cx: &mut TestAppContext) {
     let (view, cx) = mount(store_with_two_workspaces(), cx);
     cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
-    cx.simulate_keystrokes("cmd-p");
+    cx.simulate_keystrokes(&keys("cmd-p"));
     cx.simulate_keystrokes("tab");
     let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
     assert!(
@@ -978,7 +981,7 @@ fn cmd_f_opens_the_search_tab(cx: &mut TestAppContext) {
             ));
         })
     });
-    cx.simulate_keystrokes("cmd-f");
+    cx.simulate_keystrokes(&keys("cmd-f"));
     assert_eq!(
         cx.update(|_, cx| view.update(cx, |app, _| app.panel_tab())),
         PanelTab::Search
@@ -992,7 +995,7 @@ fn cmd_f_opens_the_search_tab(cx: &mut TestAppContext) {
 fn cmd_i_opens_the_composer_with_its_target(cx: &mut TestAppContext) {
     let (view, cx) = mount(store_with_two_workspaces(), cx);
     assert!(!cx.update(|_, cx| view.update(cx, |app, _| app.composer_open)));
-    cx.simulate_keystrokes("cmd-i");
+    cx.simulate_keystrokes(&keys("cmd-i"));
     let (open, badge, page_title) = cx.update(|_, cx| {
         view.update(cx, |app, _| {
             (
@@ -1013,7 +1016,7 @@ fn cmd_i_opens_the_composer_with_its_target(cx: &mut TestAppContext) {
 fn typing_stays_in_the_draft_and_survives_closing(cx: &mut TestAppContext) {
     let (view, cx) = mount(store_with_two_workspaces(), cx);
     cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
-    cx.simulate_keystrokes("cmd-i");
+    cx.simulate_keystrokes(&keys("cmd-i"));
     cx.simulate_keystrokes("h i");
     let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
     assert!(
@@ -1021,7 +1024,7 @@ fn typing_stays_in_the_draft_and_survives_closing(cx: &mut TestAppContext) {
         "输入框里的字不能直接进终端：{commands:?}"
     );
     cx.simulate_keystrokes("escape");
-    cx.simulate_keystrokes("cmd-i");
+    cx.simulate_keystrokes(&keys("cmd-i"));
     let text = cx.update(|_, cx| {
         view.update(cx, |app, _| {
             app.composer_page()
@@ -1037,9 +1040,9 @@ fn typing_stays_in_the_draft_and_survives_closing(cx: &mut TestAppContext) {
 fn cmd_enter_sends_the_draft_once(cx: &mut TestAppContext) {
     let (view, cx) = mount(store_with_two_workspaces(), cx);
     cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
-    cx.simulate_keystrokes("cmd-i");
+    cx.simulate_keystrokes(&keys("cmd-i"));
     cx.simulate_keystrokes("e c h o");
-    cx.simulate_keystrokes("cmd-enter");
+    cx.simulate_keystrokes(&keys("cmd-enter"));
 
     let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
     let inputs: Vec<&ClientCommand> = commands
@@ -1065,7 +1068,7 @@ fn cmd_enter_sends_the_draft_once(cx: &mut TestAppContext) {
     assert_eq!(status.as_deref(), Some("sent"));
 
     cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
-    cx.simulate_keystrokes("cmd-enter");
+    cx.simulate_keystrokes(&keys("cmd-enter"));
     let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
     assert!(commands.is_empty(), "空草稿不发任何字节：{commands:?}");
     let status = cx.update(|_, cx| view.update(cx, |app, _| app.composer_status.clone()));
@@ -1076,13 +1079,13 @@ fn cmd_enter_sends_the_draft_once(cx: &mut TestAppContext) {
 #[gpui::test]
 fn composer_drafts_are_per_pane(cx: &mut TestAppContext) {
     let (view, cx) = mount(store_with_two_workspaces(), cx);
-    cx.simulate_keystrokes("cmd-i");
+    cx.simulate_keystrokes(&keys("cmd-i"));
     cx.simulate_keystrokes("a b");
     cx.simulate_keystrokes("escape");
 
     // 切到另一个 workspace（pane 20），打开输入框应是空白页。
-    cx.simulate_keystrokes("cmd-ctrl-2");
-    cx.simulate_keystrokes("cmd-i");
+    cx.simulate_keystrokes(&keys("cmd-ctrl-2"));
+    cx.simulate_keystrokes(&keys("cmd-i"));
     let second_text = cx.update(|_, cx| {
         view.update(cx, |app, _| {
             app.composer_page()
@@ -1094,8 +1097,8 @@ fn composer_drafts_are_per_pane(cx: &mut TestAppContext) {
 
     cx.simulate_keystrokes("c d");
     cx.simulate_keystrokes("escape");
-    cx.simulate_keystrokes("cmd-ctrl-1");
-    cx.simulate_keystrokes("cmd-i");
+    cx.simulate_keystrokes(&keys("cmd-ctrl-1"));
+    cx.simulate_keystrokes(&keys("cmd-i"));
     let first_text = cx.update(|_, cx| {
         view.update(cx, |app, _| {
             app.composer_page()
@@ -1114,7 +1117,7 @@ fn settings_manifest() -> serde_json::Value {
 #[gpui::test]
 fn cmd_comma_opens_settings_and_the_manifest_drives_the_sidebar(cx: &mut TestAppContext) {
     let (view, cx) = mount(store_with_two_workspaces(), cx);
-    cx.simulate_keystrokes("cmd-,");
+    cx.simulate_keystrokes(&keys("cmd-,"));
     assert!(cx.update(|_, cx| view.update(cx, |app, _| app.settings_open)));
 
     cx.update(|_, cx| {
@@ -1430,7 +1433,7 @@ fn quick_panel_size_fits_the_content_area(cx: &mut TestAppContext) {
 #[gpui::test]
 fn quick_panel_first_row_sits_at_the_list_top(cx: &mut TestAppContext) {
     let (view, cx) = mount(store_with_two_workspaces(), cx);
-    cx.simulate_keystrokes("cmd-p");
+    cx.simulate_keystrokes(&keys("cmd-p"));
     cx.run_until_parked();
     let titles: Vec<_> = cx
         .update(|_, cx| view.update(cx, |app, _| app.panel_rows()))
@@ -1451,7 +1454,7 @@ fn quick_panel_first_row_sits_at_the_list_top(cx: &mut TestAppContext) {
 #[gpui::test]
 fn quick_panel_opens_scrolled_to_the_top(cx: &mut TestAppContext) {
     let (view, cx) = mount(store_with_two_workspaces(), cx);
-    cx.simulate_keystrokes("cmd-p");
+    cx.simulate_keystrokes(&keys("cmd-p"));
     cx.run_until_parked();
     let offset = cx.update(|_, cx| view.update(cx, |app, _| app.panel_scroll_handle().offset()));
     assert_eq!(offset.y, gpui::px(0.), "面板必须从第一行开始");
@@ -1462,7 +1465,7 @@ fn quick_panel_opens_scrolled_to_the_top(cx: &mut TestAppContext) {
 #[gpui::test]
 fn quick_panel_renders_its_footer_hints(cx: &mut TestAppContext) {
     let (view, cx) = mount(store_with_two_workspaces(), cx);
-    cx.simulate_keystrokes("cmd-p");
+    cx.simulate_keystrokes(&keys("cmd-p"));
     cx.run_until_parked();
     assert!(
         cx.debug_bounds("panel-footer").is_some(),
@@ -1474,7 +1477,7 @@ fn quick_panel_renders_its_footer_hints(cx: &mut TestAppContext) {
 #[gpui::test]
 fn quick_panel_reports_an_empty_search(cx: &mut TestAppContext) {
     let (view, cx) = mount(store_with_two_workspaces(), cx);
-    cx.simulate_keystrokes("cmd-p");
+    cx.simulate_keystrokes(&keys("cmd-p"));
     cx.update(|_, cx| {
         view.update(cx, |app, cx| {
             app.panel_push_query("zz-no-such-workspace", cx)
@@ -1824,7 +1827,7 @@ fn ssh_project_without_a_host_shows_an_error(cx: &mut TestAppContext) {
 #[gpui::test]
 fn cmd_shift_p_opens_the_command_palette(cx: &mut TestAppContext) {
     let (view, cx) = mount(store_with_two_workspaces(), cx);
-    cx.simulate_keystrokes("cmd-shift-p");
+    cx.simulate_keystrokes(&keys("cmd-shift-p"));
     assert!(
         cx.update(|_, cx| view.update(cx, |app, _| app.palette_open())),
         "Cmd-Shift-P 必须打开命令面板"
@@ -1878,7 +1881,7 @@ fn palette_lists_tabs_and_filters_by_query(cx: &mut TestAppContext) {
 #[gpui::test]
 fn palette_enter_runs_the_selected_command(cx: &mut TestAppContext) {
     let (view, cx) = mount(store_with_two_workspaces(), cx);
-    cx.simulate_keystrokes("cmd-shift-p");
+    cx.simulate_keystrokes(&keys("cmd-shift-p"));
     // 用查询把目标收窄到唯一一条；空格的按键模拟不通用，直接写查询串。
     cx.update(|_, cx| view.update(cx, |app, cx| app.palette_push("new tab", cx)));
     let visible = cx.update(|_, cx| {
@@ -1918,7 +1921,7 @@ fn palette_enter_runs_the_selected_command(cx: &mut TestAppContext) {
 #[gpui::test]
 fn palette_enter_without_matches_only_dismisses(cx: &mut TestAppContext) {
     let (view, cx) = mount(store_with_two_workspaces(), cx);
-    cx.simulate_keystrokes("cmd-shift-p");
+    cx.simulate_keystrokes(&keys("cmd-shift-p"));
     cx.update(|_, cx| view.update(cx, |app, cx| app.palette_push("zzzz", cx)));
     cx.simulate_keystrokes("enter");
     let (open, commands) = cx.update(|_, cx| {
@@ -1938,7 +1941,7 @@ fn palette_enter_without_matches_only_dismisses(cx: &mut TestAppContext) {
 #[gpui::test]
 fn palette_arrow_keys_move_selection(cx: &mut TestAppContext) {
     let (view, cx) = mount(store_with_two_workspaces(), cx);
-    cx.simulate_keystrokes("cmd-shift-p");
+    cx.simulate_keystrokes(&keys("cmd-shift-p"));
     cx.simulate_keystrokes("down");
     cx.simulate_keystrokes("down");
     let selected = cx.update(|_, cx| view.update(cx, |app, _| app.palette_selected()));
@@ -1950,7 +1953,7 @@ fn palette_arrow_keys_move_selection(cx: &mut TestAppContext) {
 
 /// 无头默认主题是浅色、Menlo 18 —— 与 macOS `MuxtermTerminalColors/MuxtermTerminalFont` 一致。
 #[gpui::test]
-fn headless_theme_defaults_to_light_menlo_18(cx: &mut TestAppContext) {
+fn headless_theme_defaults_to_the_platform_font_at_18(cx: &mut TestAppContext) {
     let (view, cx) = mount(store_with_two_workspaces(), cx);
     let (dark, family, size, bg) = cx.update(|_, cx| {
         view.update(cx, |app, _| {
@@ -1964,7 +1967,11 @@ fn headless_theme_defaults_to_light_menlo_18(cx: &mut TestAppContext) {
         })
     });
     assert!(!dark, "默认必须是浅色主题");
-    assert_eq!(family, "Menlo");
+    assert_eq!(
+        family,
+        muxterm::frontend::gpui::theme::DEFAULT_FONT_FAMILY,
+        "默认字体随平台（Menlo / DejaVu Sans Mono / Cascadia Mono）"
+    );
     assert_eq!(size, 18.0);
     assert_eq!(bg, gpui::rgb(0xffffff));
 }
@@ -2183,6 +2190,7 @@ fn click_reports_press_and_release_to_a_mouse_aware_application(cx: &mut TestApp
     enable_mouse(&view, cx, 10, 1000);
     let origin = pane_origin(cx, 10);
     let (cw, ch) = cx.update(|_, cx| view.update(cx, |app, _| app.cell()));
+    let origin = pane_origin(cx, 10);
     let point = gpui::point(origin.x + px(cw * 2.5), origin.y + px(ch * 3.5));
 
     cx.simulate_mouse_down(point, gpui::MouseButton::Left, gpui::Modifiers::none());
@@ -2214,6 +2222,7 @@ fn shift_click_still_selects_text_when_the_application_tracks_the_mouse(cx: &mut
     enable_mouse(&view, cx, 10, 1000);
     let origin = pane_origin(cx, 10);
     let (cw, ch) = cx.update(|_, cx| view.update(cx, |app, _| app.cell()));
+    let origin = pane_origin(cx, 10);
     let start = gpui::point(origin.x + px(cw * 0.5), origin.y + px(ch * 0.5));
     let end = gpui::point(origin.x + px(cw * 8.5), origin.y + px(ch * 0.5));
     cx.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::shift());
@@ -2235,6 +2244,7 @@ fn dragging_reports_motion_in_button_event_mode(cx: &mut TestAppContext) {
     enable_mouse(&view, cx, 10, 1002);
     let origin = pane_origin(cx, 10);
     let (cw, ch) = cx.update(|_, cx| view.update(cx, |app, _| app.cell()));
+    let origin = pane_origin(cx, 10);
     let start = gpui::point(origin.x + px(cw * 2.5), origin.y + px(ch * 3.5));
     let next = gpui::point(origin.x + px(cw * 6.5), origin.y + px(ch * 5.5));
     let same = gpui::point(origin.x + px(cw * 6.7), origin.y + px(ch * 5.7));
@@ -2295,6 +2305,7 @@ fn right_click_opens_the_local_menu_and_middle_clicks_are_reported(cx: &mut Test
     enable_mouse(&view, cx, 10, 1000);
     let origin = pane_origin(cx, 10);
     let (cw, ch) = cx.update(|_, cx| view.update(cx, |app, _| app.cell()));
+    let origin = pane_origin(cx, 10);
     let point = gpui::point(origin.x + px(cw * 1.5), origin.y + px(ch * 1.5));
 
     cx.simulate_mouse_down(point, gpui::MouseButton::Right, gpui::Modifiers::none());
@@ -2370,6 +2381,7 @@ fn release_outside_the_pane_still_reaches_the_application(cx: &mut TestAppContex
     enable_mouse(&view, cx, 10, 1000);
     let origin = pane_origin(cx, 10);
     let (cw, ch) = cx.update(|_, cx| view.update(cx, |app, _| app.cell()));
+    let origin = pane_origin(cx, 10);
     let start = gpui::point(origin.x + px(cw * 2.5), origin.y + px(ch * 3.5));
     cx.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::none());
     assert_eq!(pane_input(&view, cx, 10), vec![b"\x1b[<0;3;4M".to_vec()]);
@@ -2590,7 +2602,7 @@ fn panel_primary_action_is_open(cx: &mut TestAppContext) {
 #[gpui::test]
 fn palette_owns_keystrokes_and_never_reaches_the_shell(cx: &mut TestAppContext) {
     let (view, cx) = mount(store_with_two_workspaces(), cx);
-    cx.simulate_keystrokes("cmd-shift-p");
+    cx.simulate_keystrokes(&keys("cmd-shift-p"));
     assert!(cx.update(|_, cx| view.update(cx, |app, _| app.palette_open())));
     cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
     cx.simulate_keystrokes("i n f o");
@@ -2641,7 +2653,7 @@ fn muxterm_info_opens_from_the_palette_and_owns_keystrokes(cx: &mut TestAppConte
     use muxterm::frontend::utils::corebridge::ClientBuildInfo;
     let (view, cx) = mount(store_with_two_workspaces(), cx);
     // 走真实入口：Cmd-Shift-P → 输入 info → 回车。
-    cx.simulate_keystrokes("cmd-shift-p");
+    cx.simulate_keystrokes(&keys("cmd-shift-p"));
     cx.simulate_keystrokes("i n f o");
     cx.simulate_keystrokes("enter");
     cx.run_until_parked();
@@ -2693,7 +2705,7 @@ fn run_palette_action(
     cx: &mut gpui::VisualTestContext,
     action: muxterm::frontend::gpui::chrome::palette_view::PaletteAction,
 ) {
-    cx.simulate_keystrokes("cmd-shift-p");
+    cx.simulate_keystrokes(&keys("cmd-shift-p"));
     let found =
         cx.update(|_, cx| view.update(cx, |app, _| app.palette_select_action_for_tests(action)));
     assert!(found, "命令目录里找不到 {action:?}");
@@ -2942,7 +2954,7 @@ fn language_menu_switches_the_catalog_and_persists(cx: &mut TestAppContext) {
     use muxterm::frontend::command_queue::ClientCommand;
     use muxterm::frontend::utils::i18n::Language;
     let (view, cx) = mount(store_with_two_workspaces(), cx);
-    cx.simulate_keystrokes("cmd-shift-p");
+    cx.simulate_keystrokes(&keys("cmd-shift-p"));
     assert!(cx.update(|_, cx| {
         view.update(cx, |app, _| {
             app.palette_select_action_for_tests(PaletteAction::Languages)
@@ -3055,7 +3067,7 @@ fn two_tab_store() -> ViewStore {
 #[gpui::test]
 fn cmd_d_and_cmd_s_split_the_focused_pane(cx: &mut TestAppContext) {
     let (view, cx) = mount(two_tab_store(), cx);
-    cx.simulate_keystrokes("cmd-d");
+    cx.simulate_keystrokes(&keys("cmd-d"));
     let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
     assert!(
         commands.iter().any(|command| matches!(
@@ -3071,7 +3083,7 @@ fn cmd_d_and_cmd_s_split_the_focused_pane(cx: &mut TestAppContext) {
         "Cmd-D 必须左右分屏：{commands:?}"
     );
 
-    cx.simulate_keystrokes("cmd-s");
+    cx.simulate_keystrokes(&keys("cmd-s"));
     let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
     assert!(
         commands.iter().any(|command| matches!(
@@ -3140,7 +3152,7 @@ fn three_pane_store(active_pane: u32) -> ViewStore {
 #[gpui::test]
 fn cmd_brackets_walk_the_panes_of_the_current_tab(cx: &mut TestAppContext) {
     let (view, cx) = mount(three_pane_store(10), cx);
-    cx.simulate_keystrokes("cmd-]");
+    cx.simulate_keystrokes(&keys("cmd-]"));
     let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
     assert!(
         commands.iter().any(|command| matches!(
@@ -3174,7 +3186,7 @@ fn cmd_brackets_walk_the_panes_of_the_current_tab(cx: &mut TestAppContext) {
         cx.update(|_, cx| view.update(cx, |app, _| app.focused_pane())),
         Some(11)
     );
-    cx.simulate_keystrokes("cmd-]");
+    cx.simulate_keystrokes(&keys("cmd-]"));
     let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
     assert!(
         commands.iter().any(|command| matches!(
@@ -3193,7 +3205,7 @@ fn cmd_brackets_walk_the_panes_of_the_current_tab(cx: &mut TestAppContext) {
             app.pump_once(cx);
         })
     });
-    cx.simulate_keystrokes("cmd-[");
+    cx.simulate_keystrokes(&keys("cmd-["));
     let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
     assert!(
         commands.iter().any(|command| matches!(
@@ -3218,7 +3230,7 @@ fn cmd_brackets_leave_a_zoomed_pane_by_walking_the_snapshot(cx: &mut TestAppCont
         vec![(1, ClientLayout::Leaf { pane_id: 11 })],
     );
     let (view, cx) = mount(store, cx);
-    cx.simulate_keystrokes("cmd-]");
+    cx.simulate_keystrokes(&keys("cmd-]"));
     let commands = cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
     assert!(
         commands.iter().any(|command| matches!(
@@ -4089,7 +4101,7 @@ fn command_shortcuts_are_consumed_before_the_native_menu(cx: &mut TestAppContext
     use muxterm::frontend::command_queue::ClientCommand;
     use muxterm::frontend::utils::corebridge::ClientTask;
     let (view, cx) = mount(two_tab_store(), cx);
-    cx.simulate_keystrokes("cmd-d");
+    cx.simulate_keystrokes(&keys("cmd-d"));
     let (splits, consumed) = cx.update(|_, cx| {
         view.update(cx, |app, _| {
             let splits = app
@@ -4119,7 +4131,7 @@ fn command_shortcuts_are_consumed_before_the_native_menu(cx: &mut TestAppContext
 #[gpui::test]
 fn cmd_comma_opens_settings_and_keeps_them_open(cx: &mut TestAppContext) {
     let (view, cx) = mount(two_tab_store(), cx);
-    cx.simulate_keystrokes("cmd-,");
+    cx.simulate_keystrokes(&keys("cmd-,"));
     cx.run_until_parked();
     assert!(
         cx.update(|_, cx| view.update(cx, |app, _| app.settings_open)),
@@ -4184,7 +4196,7 @@ fn aggregates_switch_pages_with_cmd_digits(cx: &mut TestAppContext) {
     let pages = cx.update(|_, cx| view.update(cx, |app, _| app.aggregate_pages().len()));
     assert_eq!(pages, 2, "两个本机 shell 应该是两页");
 
-    cx.simulate_keystrokes("cmd-2");
+    cx.simulate_keystrokes(&keys("cmd-2"));
     let visible =
         cx.update(|_, cx| view.update(cx, |app, _| app.visible_workspace().map(str::to_string)));
     assert_eq!(
@@ -4193,7 +4205,7 @@ fn aggregates_switch_pages_with_cmd_digits(cx: &mut TestAppContext) {
         "Cmd-2 必须切到第 2 页"
     );
 
-    cx.simulate_keystrokes("cmd-1");
+    cx.simulate_keystrokes(&keys("cmd-1"));
     let visible =
         cx.update(|_, cx| view.update(cx, |app, _| app.visible_workspace().map(str::to_string)));
     assert_eq!(visible.as_deref(), Some("local//shell/tmux/"));
@@ -4265,7 +4277,7 @@ fn inactive_panes_are_dimmed_when_a_tab_is_split(cx: &mut TestAppContext) {
 #[gpui::test]
 fn palette_query_shows_a_caret_and_cmd_a_selects_all(cx: &mut TestAppContext) {
     let (view, cx) = mount(two_tab_store(), cx);
-    cx.simulate_keystrokes("cmd-shift-p");
+    cx.simulate_keystrokes(&keys("cmd-shift-p"));
     cx.run_until_parked();
     assert!(
         cx.debug_bounds("input-caret").is_some(),
@@ -4278,7 +4290,7 @@ fn palette_query_shows_a_caret_and_cmd_a_selects_all(cx: &mut TestAppContext) {
         "abc"
     );
     // Cmd-A 全选：查询串保留，选区非空。
-    cx.simulate_keystrokes("cmd-a");
+    cx.simulate_keystrokes(&keys("cmd-a"));
     cx.run_until_parked();
     assert_eq!(
         cx.update(|_, cx| view.update(cx, |app, _| app.palette_query_for_tests())),
@@ -4301,7 +4313,7 @@ fn palette_query_shows_a_caret_and_cmd_a_selects_all(cx: &mut TestAppContext) {
 #[gpui::test]
 fn panel_query_supports_selection_and_caret(cx: &mut TestAppContext) {
     let (view, cx) = mount(store_with_two_workspaces(), cx);
-    cx.simulate_keystrokes("cmd-p");
+    cx.simulate_keystrokes(&keys("cmd-p"));
     cx.run_until_parked();
     assert!(
         cx.debug_bounds("input-caret").is_some(),
@@ -4319,7 +4331,7 @@ fn panel_query_supports_selection_and_caret(cx: &mut TestAppContext) {
         "dexv",
         "方向键把光标移到中间再插入"
     );
-    cx.simulate_keystrokes("cmd-a");
+    cx.simulate_keystrokes(&keys("cmd-a"));
     cx.run_until_parked();
     assert!(cx.debug_bounds("input-selection").is_some());
     cx.simulate_keystrokes("backspace");
@@ -4337,7 +4349,7 @@ fn panel_query_supports_selection_and_caret(cx: &mut TestAppContext) {
 #[gpui::test]
 fn the_panel_caret_sits_before_the_placeholder(cx: &mut TestAppContext) {
     let (view, cx) = mount(store_with_two_workspaces(), cx);
-    cx.simulate_keystrokes("cmd-p");
+    cx.simulate_keystrokes(&keys("cmd-p"));
     cx.run_until_parked();
     let caret = cx.debug_bounds("input-caret").expect("查询框必须有光标");
     let placeholder = cx
@@ -4372,7 +4384,7 @@ fn cmd_v_pastes_a_clipboard_image(cx: &mut TestAppContext) {
         vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0],
     );
     cx.update(|_, cx| cx.write_to_clipboard(ClipboardItem::new_image(&image)));
-    cx.simulate_keystrokes("cmd-v");
+    cx.simulate_keystrokes(&keys("cmd-v"));
     cx.run_until_parked();
     assert!(
         cx.debug_bounds("image-paste-banner").is_some(),
@@ -4527,7 +4539,7 @@ fn ime_commit_follows_the_focused_input(cx: &mut TestAppContext) {
     cx.update(|_, cx| view.update(cx, |app, _| app.take_commands_for_tests()));
 
     // 命令面板打开：提交的中文进查询串，不落 PTY。
-    cx.simulate_keystrokes("cmd-shift-p");
+    cx.simulate_keystrokes(&keys("cmd-shift-p"));
     cx.run_until_parked();
     cx.update(|_, cx| {
         view.update(cx, |app, cx| {
@@ -4950,13 +4962,13 @@ fn cmd_d_and_cmd_s_split_once_each(cx: &mut TestAppContext) {
                 })
             })
         };
-    cx.simulate_keystrokes("cmd-d");
+    cx.simulate_keystrokes(&keys("cmd-d"));
     assert_eq!(
         take_splits(&view, cx),
         vec![true],
         "Cmd-D 一次只分一次（左右）"
     );
-    cx.simulate_keystrokes("cmd-s");
+    cx.simulate_keystrokes(&keys("cmd-s"));
     assert_eq!(
         take_splits(&view, cx),
         vec![false],
@@ -5031,9 +5043,10 @@ fn pane_title_bar_appears_only_when_split(cx: &mut TestAppContext) {
         cx.debug_bounds("pane-title-10").is_none(),
         "鼠标不在顶部时标题条隐藏"
     );
-    // 侧栏 240pt，内容区从 x=240 开始；第一个 pane 的标题条带在 y<22。
+    // 标题条带在 pane 顶部 22pt；内容原点随平台（非 macOS 顶部有菜单条）。
+    let origin = pane_origin(cx, 10);
     cx.simulate_mouse_move(
-        gpui::point(px(300.0), px(6.0)),
+        gpui::point(origin.x + px(60.0), origin.y + px(6.0)),
         None,
         gpui::Modifiers::none(),
     );
@@ -5311,7 +5324,7 @@ fn aggregate_rows_use_their_identity_colors(cx: &mut TestAppContext) {
 #[gpui::test]
 fn settings_controls_stay_inside_the_panel(cx: &mut TestAppContext) {
     let (view, cx) = mount(store_with_two_workspaces(), cx);
-    cx.simulate_keystrokes("cmd-,");
+    cx.simulate_keystrokes(&keys("cmd-,"));
     cx.update(|_, cx| {
         view.update(cx, |app, cx| {
             app.open_settings(
@@ -5367,7 +5380,7 @@ fn settings_controls_stay_inside_the_panel(cx: &mut TestAppContext) {
 #[gpui::test]
 fn panel_query_filters_every_row(cx: &mut TestAppContext) {
     let (view, cx) = mount(store_with_two_workspaces(), cx);
-    cx.simulate_keystrokes("cmd-p");
+    cx.simulate_keystrokes(&keys("cmd-p"));
     cx.run_until_parked();
     let before = cx.update(|_, cx| view.update(cx, |app, _| app.panel_rows().len()));
     assert!(before > 0);
@@ -5401,7 +5414,7 @@ fn search_tab_filters_core_hits(cx: &mut TestAppContext) {
             ));
         })
     });
-    cx.simulate_keystrokes("cmd-f");
+    cx.simulate_keystrokes(&keys("cmd-f"));
     cx.simulate_keystrokes("v i m");
     cx.run_until_parked();
     let rows = cx.update(|_, cx| view.update(cx, |app, _| app.panel_rows()));
@@ -5428,16 +5441,23 @@ fn sidebar_shortcuts_sit_next_to_the_marker(cx: &mut TestAppContext) {
     let _ = view;
 }
 
-/// `[ui] show_title_bar` 关掉后窗口标题为空串（只剩 traffic lights）。
+/// `[ui] show_title_bar` 关掉后：macOS 清空标题（只剩 traffic lights），
+/// Linux / Windows 的标题栏是系统画的，保持 workspace 名。
 #[gpui::test]
 fn window_title_follows_the_ui_toggle(cx: &mut TestAppContext) {
+    use muxterm::frontend::gpui::platform::os;
     use muxterm::frontend::gpui::state::window_title_text;
+    let hidden_title = if os().hides_title_text(false) {
+        ""
+    } else {
+        "dev — Muxterm"
+    };
     assert_eq!(window_title_text(true, "dev"), "dev — Muxterm");
-    assert_eq!(window_title_text(false, "dev"), "");
+    assert_eq!(window_title_text(false, "dev"), hidden_title);
     assert_eq!(window_title_text(true, "  "), "Muxterm");
 
     let (view, cx) = mount(store_with_two_workspaces(), cx);
-    cx.simulate_keystrokes("cmd-,");
+    cx.simulate_keystrokes(&keys("cmd-,"));
     cx.update(|_, cx| {
         view.update(cx, |app, cx| {
             app.open_settings(
@@ -5456,7 +5476,11 @@ fn window_title_follows_the_ui_toggle(cx: &mut TestAppContext) {
         })
     });
     assert!(!show, "开关要反映到状态");
-    assert_eq!(applied, "", "关掉后原生窗口标题必须被清空");
+    if os().hides_title_text(false) {
+        assert_eq!(applied, "", "macOS 关掉后原生窗口标题必须被清空");
+    } else {
+        assert!(!applied.is_empty(), "其它平台保留系统标题栏文字");
+    }
 }
 
 /// Attention 行必须带状态色与状态徽标（之前整行全灰，看不出 working/blocked）。
@@ -5477,7 +5501,7 @@ fn attention_rows_show_a_status_color(cx: &mut TestAppContext) {
             ));
         })
     });
-    cx.simulate_keystrokes("cmd-p");
+    cx.simulate_keystrokes(&keys("cmd-p"));
     cx.update(|_, cx| {
         view.update(cx, |app, cx| {
             app.show_panel(
@@ -5911,9 +5935,9 @@ fn dragging_selects_text_and_cmd_c_copies_it(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
     let (cw, ch) = cx.update(|_, cx| view.update(cx, |app, _| app.cell()));
-    // 侧栏 240pt；内容区 y 从 0 开始。
-    let start = gpui::point(px(240.0 + cw * 0.5), px(ch * 0.5));
-    let end = gpui::point(px(240.0 + cw * 20.5), px(ch * 1.5));
+    let origin = pane_origin(cx, 10);
+    let start = gpui::point(origin.x + px(cw * 0.5), origin.y + px(ch * 0.5));
+    let end = gpui::point(origin.x + px(cw * 20.5), origin.y + px(ch * 1.5));
     cx.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::none());
     cx.simulate_mouse_move(end, Some(gpui::MouseButton::Left), gpui::Modifiers::none());
     cx.simulate_mouse_up(end, gpui::MouseButton::Left, gpui::Modifiers::none());
@@ -5922,7 +5946,7 @@ fn dragging_selects_text_and_cmd_c_copies_it(cx: &mut TestAppContext) {
     let selection = cx.update(|_, cx| view.update(cx, |app, _| app.selection_for(10)));
     assert!(selection.is_some(), "拖拽后必须有选区");
 
-    cx.simulate_keystrokes("cmd-c");
+    cx.simulate_keystrokes(&keys("cmd-c"));
     let copied = cx.update(|_, cx| {
         cx.read_from_clipboard()
             .and_then(|item| item.text())
@@ -5953,8 +5977,9 @@ fn dragging_selects_and_copies_without_a_shortcut(cx: &mut TestAppContext) {
     cx.run_until_parked();
     cx.update(|_, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string("MARKER".to_string())));
     let (cw, ch) = cx.update(|_, cx| view.update(cx, |app, _| app.cell()));
-    let start = gpui::point(px(240.0 + cw * 0.5), px(ch * 0.5));
-    let end = gpui::point(px(240.0 + cw * 20.5), px(ch * 1.5));
+    let origin = pane_origin(cx, 10);
+    let start = gpui::point(origin.x + px(cw * 0.5), origin.y + px(ch * 0.5));
+    let end = gpui::point(origin.x + px(cw * 20.5), origin.y + px(ch * 1.5));
     cx.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::none());
     cx.simulate_mouse_move(end, Some(gpui::MouseButton::Left), gpui::Modifiers::none());
     cx.simulate_mouse_up(end, gpui::MouseButton::Left, gpui::Modifiers::none());
@@ -5989,8 +6014,9 @@ fn option_drag_selects_and_copies_while_the_app_reports_the_mouse(cx: &mut TestA
     });
     cx.run_until_parked();
     let (cw, ch) = cx.update(|_, cx| view.update(cx, |app, _| app.cell()));
-    let start = gpui::point(px(240.0 + cw * 0.5), px(ch * 0.5));
-    let end = gpui::point(px(240.0 + cw * 20.5), px(ch * 1.5));
+    let origin = pane_origin(cx, 10);
+    let start = gpui::point(origin.x + px(cw * 0.5), origin.y + px(ch * 0.5));
+    let end = gpui::point(origin.x + px(cw * 20.5), origin.y + px(ch * 1.5));
     let alt = gpui::Modifiers {
         alt: true,
         ..Default::default()
@@ -6028,14 +6054,15 @@ fn right_click_opens_a_menu_and_copies_the_selection(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
     let (cw, ch) = cx.update(|_, cx| view.update(cx, |app, _| app.cell()));
-    let start = gpui::point(px(240.0 + cw * 0.5), px(ch * 0.5));
-    let end = gpui::point(px(240.0 + cw * 20.5), px(ch * 1.5));
+    let origin = pane_origin(cx, 10);
+    let start = gpui::point(origin.x + px(cw * 0.5), origin.y + px(ch * 0.5));
+    let end = gpui::point(origin.x + px(cw * 20.5), origin.y + px(ch * 1.5));
     cx.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::none());
     cx.simulate_mouse_move(end, Some(gpui::MouseButton::Left), gpui::Modifiers::none());
     cx.simulate_mouse_up(end, gpui::MouseButton::Left, gpui::Modifiers::none());
     cx.run_until_parked();
 
-    let menu_point = gpui::point(px(240.0 + cw * 3.0), px(ch * 0.5));
+    let menu_point = gpui::point(origin.x + px(cw * 3.0), origin.y + px(ch * 0.5));
     cx.simulate_mouse_down(
         menu_point,
         gpui::MouseButton::Right,
@@ -6135,12 +6162,10 @@ fn cmd_click_opens_a_url_from_the_terminal(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
     let (cw, ch) = cx.update(|_, cx| view.update(cx, |app, _| app.cell()));
+    let origin = pane_origin(cx, 10);
     // 列 10 落在链接中间（"see " 之后）。
-    let point = gpui::point(px(240.0 + cw * 10.0 + 1.0), px(ch * 0.5));
-    let cmd = gpui::Modifiers {
-        platform: true,
-        ..Default::default()
-    };
+    let point = gpui::point(origin.x + px(cw * 10.0 + 1.0), origin.y + px(ch * 0.5));
+    let cmd = keys::modifiers();
     cx.simulate_mouse_down(point, gpui::MouseButton::Left, cmd);
     cx.simulate_mouse_up(point, gpui::MouseButton::Left, cmd);
     cx.run_until_parked();
@@ -6172,12 +6197,10 @@ fn command_hover_marks_the_link_under_the_pointer(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
     let (cw, ch) = cx.update(|_, cx| view.update(cx, |app, _| app.cell()));
-    let on_link = gpui::point(px(240.0 + cw * 10.0 + 1.0), px(ch * 0.5));
-    let off_link = gpui::point(px(240.0 + cw * 2.0 + 1.0), px(ch * 0.5));
-    let cmd = gpui::Modifiers {
-        platform: true,
-        ..Default::default()
-    };
+    let origin = pane_origin(cx, 10);
+    let on_link = gpui::point(origin.x + px(cw * 10.0 + 1.0), origin.y + px(ch * 0.5));
+    let off_link = gpui::point(origin.x + px(cw * 2.0 + 1.0), origin.y + px(ch * 0.5));
+    let cmd = keys::modifiers();
     let span = |cx: &mut gpui::VisualTestContext| {
         cx.update(|_, cx| view.update(cx, |app, _| app.hover_link_span(10)))
     };
@@ -6224,8 +6247,9 @@ fn dragging_over_a_url_still_selects_text(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
     let (cw, ch) = cx.update(|_, cx| view.update(cx, |app, _| app.cell()));
-    let start = gpui::point(px(240.0 + cw * 8.0 + 1.0), px(ch * 0.5));
-    let end = gpui::point(px(240.0 + cw * 16.0 + 1.0), px(ch * 0.5));
+    let origin = pane_origin(cx, 10);
+    let start = gpui::point(origin.x + px(cw * 8.0 + 1.0), origin.y + px(ch * 0.5));
+    let end = gpui::point(origin.x + px(cw * 16.0 + 1.0), origin.y + px(ch * 0.5));
     cx.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::none());
     cx.simulate_mouse_move(end, Some(gpui::MouseButton::Left), gpui::Modifiers::none());
     cx.simulate_mouse_up(end, gpui::MouseButton::Left, gpui::Modifiers::none());
@@ -6256,7 +6280,7 @@ fn select_all_takes_the_whole_screen(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
 
-    cx.simulate_keystrokes("cmd-a");
+    cx.simulate_keystrokes(&keys("cmd-a"));
     let (selection, text) = cx.update(|_, cx| {
         view.update(cx, |app, _| {
             (
@@ -6274,7 +6298,7 @@ fn select_all_takes_the_whole_screen(cx: &mut TestAppContext) {
     assert!(text.contains("first line"), "整屏都要选中：{text:?}");
     assert!(text.contains("third"), "最后一行也要选中：{text:?}");
 
-    cx.simulate_keystrokes("cmd-c");
+    cx.simulate_keystrokes(&keys("cmd-c"));
     let copied = cx.update(|_, cx| {
         cx.read_from_clipboard()
             .and_then(|item| item.text())

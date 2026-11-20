@@ -3,6 +3,8 @@
 #
 #   scripts/test.sh run core    # core/tui + ffi 全部测试（含 four-mode 矩阵）
 #   scripts/test.sh run gpui    # GPUI 前端：fmt/clippy + headless 测试 + release 构建
+#   scripts/test.sh run gpui-cross  # GPUI 跨平台门禁：无 tmux 依赖，Linux/Windows 跑这一条
+#   scripts/test.sh run platform    # 平台专属不变量（路径/IPC/shell/终止进程），三平台各跑一次
 #   scripts/test.sh run linux   # GTK e2e 全部测试（xvfb）
 #   scripts/test.sh run macos   # macOS ffi + Swift 测试（需 macOS）
 #
@@ -58,6 +60,10 @@ run_core() {
 
     # 一次编译、一起跑：lib/bins + 全部集成测试 target。
     cargo test --no-default-features --features tui,test-harness --lib --bins \
+        -- --test-threads="$THREADS"
+    # 平台专属不变量也进统一入口：本地跑 `run core` 就能发现路径 / IPC 回归。
+    cargo test --no-default-features --features tui,test-harness \
+        --test platform \
         -- --test-threads="$THREADS"
     cargo test --no-default-features --features tui,test-harness \
         --test cli_integration \
@@ -184,6 +190,7 @@ run_gpui() {
         --test gpui_acceptance_herdr \
         --test gpui_chrome \
         --test gpui_harness_smoke \
+        --test gpui_platform \
         --test gpui_reported_regressions \
         --test gpui_surface_e2e \
         --test gpui_surface_events \
@@ -192,6 +199,47 @@ run_gpui() {
 
     # 发布 profile 也要能编过（release-only cfg 比 debug 测试更容易漏）。
     cargo build --release --no-default-features --features gpui
+}
+
+# 跨平台门禁：Linux / Windows 原生 runner 用这一条。
+#
+# 与 `run_gpui` 的差别：不跑依赖 tmux/herdr 的 acceptance 套件（那两个后端
+# 在 Windows 上不存在），也不假定 macOS 的像素基线。跑的是：
+# - fmt / clippy（三平台同一份 lint 阈值）
+# - frontend 单元测试（平台差异表、菜单条状态机、快捷键归一化…）
+# - 无头 UI 验收：菜单条、快捷键、布局（`gpui_platform` / `gpui_chrome`）
+# - release profile 构建（release-only cfg 比 debug 更容易漏）
+run_gpui_cross() {
+    run_architecture
+    cargo fmt --all -- --check
+    cargo clippy --no-default-features --features gpui --lib -- -D warnings
+
+    cargo test --no-default-features --features gpui --lib frontend:: -- --test-threads="$THREADS"
+    cargo test --no-default-features --features gpui \
+        --test gpui_harness_smoke \
+        --test gpui_platform \
+        --test gpui_chrome \
+        -- --test-threads="$THREADS"
+    # 平台不变量（路径 / shell / IPC / 终止进程）在任意平台都能整份跑完。
+    cargo test --no-default-features --features tui,test-harness \
+        --test platform \
+        -- --test-threads="$THREADS"
+
+    cargo build --release --no-default-features --features gpui
+}
+
+# 平台专属不变量：每个 OS 各跑一次。
+#
+# 与「统一测试」（run core / run gpui / run gpui-cross）的分工：统一测试验证
+# 三平台应当一致的行为；这一条只验证当前 OS 自己的事实（XDG vs APPDATA、
+# $SHELL vs %COMSPEC%、Unix socket vs 命名管道 vs TCP loopback、缺失 PID 的
+# 终止语义）。不含 tmux / herdr / sshd 依赖，Windows 也能整份跑完。
+run_platform() {
+    run_architecture
+    cargo fmt --all -- --check
+    cargo test --no-default-features --features tui,test-harness \
+        --test platform \
+        -- --test-threads="$THREADS"
 }
 
 doctor() {
@@ -249,6 +297,8 @@ run)
     case "${2:-}" in
     core) run_core ;;
     gpui) run_gpui ;;
+    gpui-cross) run_gpui_cross ;;
+    platform) run_platform ;;
     linux) run_linux ;;
     macos) run_macos ;;
     *) usage ;;

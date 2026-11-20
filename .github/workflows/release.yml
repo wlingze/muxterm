@@ -16,15 +16,16 @@ on:
         default: 'true'
         type: boolean
       platform:
-        description: 'Which platform to build (all = macos + linux-gtk; linux-cli = TUI)'
+        description: 'Which platform to build (all = macos + linux + windows; linux-cli = TUI)'
         required: false
         default: 'all'
         type: choice
         options:
           - all
           - linux-cli
-          - linux-gtk
+          - linux
           - macos
+          - windows
 
 permissions:
   contents: read
@@ -110,11 +111,46 @@ jobs:
           fi
           echo "Resolved version: $VERSION (fs: $FS_VERSION)"
 
+  # ── Unified gate ────────────────────────────────────────────
+  # 与 ci-core / ci-gpui 同一套结构：先跑一次三平台应当一致的测试，通过后
+  # 再并行构建三个平台。这里跑 gpui 的统一门禁（fmt / clippy / frontend 单测 /
+  # 无头验收 / release 构建）；更重的 core 契约套件在合并前的 ci-core 里跑，
+  # 不重复烧 60 分钟。
+  verify-unified:
+    name: Unified checks
+    # 只构建 TUI（linux-cli）的手动 dispatch 不需要跑 gpui 门禁。
+    if: github.event_name != 'workflow_dispatch' || inputs.platform != 'linux-cli'
+    needs: resolve-version
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install GPUI system dependencies
+        run: bash scripts/ci/setup-gpui-linux.sh
+        timeout-minutes: 15
+
+      - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          components: rustfmt, clippy
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/
+            target
+          key: release-unified-${{ hashFiles('Cargo.toml') }}
+
+      - name: Run unified GPUI checks
+        run: bash scripts/test.sh run gpui-cross
+
   # ── Linux CLI (TUI) — command-line tool ─────────────────────
   build-linux-cli:
     name: Linux CLI (TUI)
-    # Tag 发布只出 macOS ARM64 与 Linux GTK4 两个桌面版本；TUI 包仅在手动
-    # dispatch 时按需构建，避免正式 release 混入非目标产物。
+    # Tag 发布只出三个 GPUI 桌面产物（macOS / Linux / Windows）；TUI 包仅在
+    # 手动 dispatch 时按需构建，避免正式 release 混入非目标产物。
     if: github.event_name == 'workflow_dispatch' &&
         (inputs.platform == 'all' || inputs.platform == 'linux-cli')
     needs: resolve-version
@@ -177,13 +213,14 @@ jobs:
           path: artifacts/*
           if-no-files-found: error
 
-  # ── Linux GTK4 app ──────────────────────────────────────────
-  build-linux-gtk:
-    name: Linux GTK4
-    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'linux-gtk'
-    needs: resolve-version
+  # ── Linux GPUI app ──────────────────────────────────────────
+  # 发布前端是 gpui（AGENTS.md）：Linux 产物就是 `muxterm gpui` 这条线。
+  build-linux:
+    name: Linux GPUI
+    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'linux'
+    needs: [resolve-version, verify-unified]
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       CARGO_TARGET_DIR: target
       FS_VERSION: ${{ needs.resolve-version.outputs.fs_version }}
@@ -192,57 +229,70 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential pkg-config tmux \
-            libgtk-4-dev libvte-2.91-gtk4-dev libssl-dev
+      - name: Install GPUI system dependencies
+        run: bash scripts/ci/setup-gpui-linux.sh
+        timeout-minutes: 15
       - uses: dtolnay/rust-toolchain@1.97.1
       - uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/
             target
-          key: release-linux-gtk-${{ hashFiles('**/Cargo.toml') }}
+          key: release-linux-gpui-${{ hashFiles('Cargo.toml') }}
 
-      - name: Build Linux GTK4 (release)
-        run: ./scripts/build-linux.sh --release
+      # 平台专属不变量：路径约定、本地 IPC 形态、默认 shell、终止语义。
+      - name: Run platform tests (linux)
+        run: bash scripts/test.sh run platform
+
+      - name: Build Linux GPUI (release)
+        run: ./scripts/build-gpui-linux.sh --release
 
       - name: Verify binary
         run: |
           if [ ! -f build/linux/muxterm ]; then
-            echo "ERROR: No Linux GTK4 binary produced (build/linux/muxterm)" >&2
+            echo "ERROR: No Linux GPUI binary produced (build/linux/muxterm)" >&2
             exit 1
           fi
           file build/linux/muxterm
           build/linux/muxterm --version || true
+          test -f build/linux/share/applications/dev.muxterm.app.desktop
 
       - name: Package
         run: |
           mkdir -p staging
           cp build/linux/muxterm "staging/muxterm"
+          cp -R build/linux/share staging/share
           cat > staging/README.txt <<'EOF'
-          muxterm GTK4 for Linux x86_64
+          muxterm (GPUI) for Linux x86_64
 
           Runtime dependencies:
             - glibc (built on ubuntu-latest, requires compatible glibc)
-            - libgtk-4-1, libvte-2.91-gtk4, libssl3
+            - libxkbcommon, libwayland-client (or X11 via libX11)
+            - fontconfig + a monospace font (JetBrains Mono is bundled in the binary)
             - tmux (for tmux control mode operations)
+            - Vulkan driver (Mesa/llvmpipe works; gpui renders through blade)
+
+          Install (per-user):
+            install -Dm755 muxterm ~/.local/bin/muxterm
+            install -Dm644 share/applications/dev.muxterm.app.desktop \
+              ~/.local/share/applications/dev.muxterm.app.desktop
+            install -Dm644 share/icons/hicolor/512x512/apps/dev.muxterm.app.png \
+              ~/.local/share/icons/hicolor/512x512/apps/dev.muxterm.app.png
 
           Usage:
-            ./muxterm
-            ./muxterm -L <socket>
+            muxterm gpui
+            muxterm gpui -L <socket>
 
           Checksums: see .sha256 file alongside this archive.
           EOF
           mkdir -p artifacts
-          tar czf "artifacts/muxterm-gtk-linux-x86_64-${FS_VERSION}.tar.gz" -C staging .
+          tar czf "artifacts/muxterm-linux-x86_64-${FS_VERSION}.tar.gz" -C staging .
           cd artifacts
-          sha256sum "muxterm-gtk-linux-x86_64-${FS_VERSION}.tar.gz" > "muxterm-gtk-linux-x86_64-${FS_VERSION}.tar.gz.sha256"
+          sha256sum "muxterm-linux-x86_64-${FS_VERSION}.tar.gz" > "muxterm-linux-x86_64-${FS_VERSION}.tar.gz.sha256"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: linux-gtk
+          name: linux-gpui
           path: artifacts/*
           if-no-files-found: error
 
@@ -250,7 +300,7 @@ jobs:
   build-macos:
     name: macOS ARM
     if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'macos'
-    needs: resolve-version
+    needs: [resolve-version, verify-unified]
     runs-on: macos-latest
     timeout-minutes: 45
     env:
@@ -273,20 +323,28 @@ jobs:
             target
           key: release-macos-${{ hashFiles('**/Cargo.toml') }}
 
-      - name: Build macOS app
-        run: ./scripts/build-macos.sh --release
+      - name: Run platform tests (macos)
+        run: bash scripts/test.sh run platform
+
+      - name: Build macOS app (GPUI)
+        run: ./scripts/build-gpui-macos.sh --release
 
       - name: Verify binary and app dependencies
         run: |
           set -euo pipefail
           APP=build/macos/Muxterm.app
-          BIN="$APP/Contents/MacOS/Muxterm"
+          # GPUI bundle 的可执行是 launcher 脚本，真正的 Mach-O 在 Resources 下
+          # （LaunchServices 不能给 CFBundleExecutable 传参数，见构建脚本头注释）。
+          LAUNCHER="$APP/Contents/MacOS/Muxterm"
+          BIN="$APP/Contents/Resources/muxterm"
+          test -x "$LAUNCHER"
           test -x "$BIN"
           test -f "$APP/Contents/Info.plist"
           test -d "$APP/Contents/_CodeSignature"
           plutil -lint "$APP/Contents/Info.plist"
           codesign --verify --deep --strict --verbose=4 "$APP"
           file "$BIN" | grep -E 'Mach-O 64-bit.*arm64'
+          "$BIN" --version
           DEPS="$(otool -L "$BIN" | tail -n +2)"
           printf '%s\n' "$DEPS"
           if [[ "$DEPS" == *libmuxterm.dylib* ]]; then
@@ -360,6 +418,7 @@ jobs:
           trap 'hdiutil detach "$MOUNT" || true' EXIT
           test -d "$MOUNT/Muxterm.app"
           test -x "$MOUNT/Muxterm.app/Contents/MacOS/Muxterm"
+          test -x "$MOUNT/Muxterm.app/Contents/Resources/muxterm"
           codesign --verify --deep --strict --verbose=4 "$MOUNT/Muxterm.app"
           test "$(find "$MOUNT" -mindepth 1 -maxdepth 1 -name 'Muxterm.app' | wc -l | tr -d ' ')" = 1
           # Finder needs an /Applications symlink for drag-to-install.
@@ -369,6 +428,87 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: macos-arm64
+          path: artifacts/*
+          if-no-files-found: error
+
+  # ── Windows GPUI app ────────────────────────────────────────
+  # ConPTY 提供本地 shell；本地 Herdr 走命名管道（`\\.\pipe\<name>`）；
+  # tmux 在 Windows 上没有可执行文件，tmux（以及远端 Herdr）走 SSH 目标。
+  build-windows:
+    name: Windows GPUI
+    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'windows'
+    needs: [resolve-version, verify-unified]
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      FS_VERSION: ${{ needs.resolve-version.outputs.fs_version }}
+      MUXTERM_BUILD_VERSION: ${{ needs.resolve-version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/
+            target
+          key: release-windows-gpui-${{ hashFiles('Cargo.toml') }}
+
+      - name: Run platform tests (windows)
+        run: bash scripts/test.sh run platform
+
+      - name: Build Windows GPUI (release)
+        run: ./scripts/build-gpui-windows.sh --release
+
+      - name: Verify binary
+        run: |
+          set -euo pipefail
+          test -f build/windows/muxterm.exe
+          ./build/windows/muxterm.exe --version
+          powershell -NoProfile -Command \
+            "(Get-Item build/windows/muxterm.exe).Length"
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          mkdir -p staging artifacts
+          cp build/windows/muxterm.exe staging/
+          cp build/windows/dev.muxterm.app.png staging/ 2>/dev/null || true
+          cat > staging/README.txt <<'EOF'
+          muxterm (GPUI) for Windows x86_64
+
+          Requirements:
+            - Windows 10 1809+ (ConPTY) or Windows 11
+            - A Vulkan or D3D12 capable GPU driver (software rendering works)
+
+          Usage:
+            muxterm.exe gpui
+            muxterm.exe --help
+
+          Notes:
+            - Local panes run through ConPTY (default shell: %COMSPEC%).
+            - Herdr works locally through its Windows named pipe
+              (\\.\pipe\<name>); the endpoint is discovered from
+              `herdr status --json`.
+            - tmux is a Unix program: use an SSH target (Windows -> Linux) for
+              tmux sessions. SSH targets also carry Herdr and image paste.
+            - The icon is shipped as dev.muxterm.app.png for manual shortcuts;
+              the exe itself has no embedded icon yet (see docs/FRONTEND-GPUI.md).
+
+          Checksums: see .sha256 file alongside this archive.
+          EOF
+          ARCHIVE="artifacts/muxterm-windows-x86_64-${FS_VERSION}.zip"
+          powershell -NoProfile -Command \
+            "Compress-Archive -Path 'staging/*' -DestinationPath '${ARCHIVE}'"
+          sha256sum "${ARCHIVE}" > "${ARCHIVE}.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-gpui
           path: artifacts/*
           if-no-files-found: error
 
@@ -384,9 +524,10 @@ jobs:
         needs.resolve-version.outputs.should_publish == 'true' &&
         github.event_name != 'pull_request' &&
         (needs.build-linux-cli.result == 'success' ||
-         needs.build-linux-gtk.result == 'success' ||
-         needs.build-macos.result == 'success')
-    needs: [resolve-version, build-linux-cli, build-linux-gtk, build-macos]
+         needs.build-linux.result == 'success' ||
+         needs.build-macos.result == 'success' ||
+         needs.build-windows.result == 'success')
+    needs: [resolve-version, verify-unified, build-linux-cli, build-linux, build-macos, build-windows]
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -409,11 +550,13 @@ jobs:
           mkdir -p dist
           find release-assets -type f -exec cp {} dist/ \;
           ls -la dist/
-          # 发布必须带上两个桌面产物，缺一个就失败，避免发布空 release
-          # （某个平台构建失败时 publish 仍会因 always() 进入这里）。
+          # 发布必须带齐三个桌面产物（macOS / Linux / Windows），缺一个就失败：
+          # 某个平台构建失败时 publish 仍会因 always() 进入这里，不能静默发半个
+          # release。
           for expected in \
             "muxterm-macos-arm64-${FS_VERSION}.dmg" \
-            "muxterm-gtk-linux-x86_64-${FS_VERSION}.tar.gz"; do
+            "muxterm-linux-x86_64-${FS_VERSION}.tar.gz" \
+            "muxterm-windows-x86_64-${FS_VERSION}.zip"; do
             if [ ! -f "dist/$expected" ]; then
               echo "ERROR: 缺少发布产物 $expected" >&2
               exit 1
@@ -446,8 +589,9 @@ jobs:
 
             | Platform | Download | Notes |
             |----------|----------|-------|
-            | macOS ARM64 (Apple silicon) | [muxterm-macos-arm64.dmg](https://github.com/${{ github.repository }}/releases/download/${{ needs.resolve-version.outputs.version }}/muxterm-macos-arm64.dmg) | DMG containing `Muxterm.app`, macOS 13+ |
-            | Linux x86_64 (GTK4 desktop) | [muxterm-gtk-linux-x86_64.tar.gz](https://github.com/${{ github.repository }}/releases/download/${{ needs.resolve-version.outputs.version }}/muxterm-gtk-linux-x86_64.tar.gz) | GTK4 GUI app, needs libgtk-4-1 / libvte-2.91-gtk4 / libssl3 / tmux |
+            | macOS ARM64 (Apple silicon) | [muxterm-macos-arm64.dmg](https://github.com/${{ github.repository }}/releases/download/${{ needs.resolve-version.outputs.version }}/muxterm-macos-arm64.dmg) | DMG containing `Muxterm.app` (GPUI), macOS 13+ |
+            | Linux x86_64 | [muxterm-linux-x86_64.tar.gz](https://github.com/${{ github.repository }}/releases/download/${{ needs.resolve-version.outputs.version }}/muxterm-linux-x86_64.tar.gz) | GPUI app, needs libxkbcommon / wayland (or X11) / fontconfig / a Vulkan driver / tmux |
+            | Windows x86_64 | [muxterm-windows-x86_64.zip](https://github.com/${{ github.repository }}/releases/download/${{ needs.resolve-version.outputs.version }}/muxterm-windows-x86_64.zip) | GPUI app, Windows 10 1809+ (ConPTY); local Herdr via named pipe, tmux and Herdr over SSH to Linux |
             | Update manifest | [latest.json](https://github.com/${{ github.repository }}/releases/download/${{ needs.resolve-version.outputs.version }}/latest.json) | Machine-readable metadata consumed by the built-in updater |
 
             Channel: `${{ needs.resolve-version.outputs.channel }}`（stable / beta / prerelease）.

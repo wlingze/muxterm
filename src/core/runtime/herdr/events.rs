@@ -540,7 +540,7 @@ impl Drop for EventStream {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

@@ -146,6 +146,9 @@ impl GpuiApp {
         let text_layer = {
             let rows = Arc::new(row_texts);
             let family = theme.font_family.clone();
+            // 回退栈也要带进绘制：Linux / Windows 上没有 Menlo，配置里写了一个
+            // 本机不存在的族名时，没有回退栈就只能拿到比例字体，列宽立刻漂。
+            let fallbacks = crate::frontend::gpui::theme::font_fallbacks(&theme);
             let font_size = theme.font_size;
             let accent = theme.accent;
             div()
@@ -163,6 +166,7 @@ impl GpuiApp {
                             bounds,
                             &rows,
                             &family,
+                            &fallbacks,
                             font_size,
                             cell_width,
                             cell_height,
@@ -780,6 +784,7 @@ fn paint_text(
     bounds: gpui::Bounds<gpui::Pixels>,
     rows: &[RowText],
     family: &SharedString,
+    fallbacks: &gpui::FontFallbacks,
     font_size: f32,
     cell_width: f32,
     cell_height: f32,
@@ -814,6 +819,7 @@ fn paint_text(
                 // 先画制表符 / 方块：它们不用字体字形，按格子几何对齐。
                 paint_box_glyphs(bounds, row, run, cell_width, cell_height, window);
                 let mut font = gpui::font(family.clone());
+                font.fallbacks = Some(fallbacks.clone());
                 if run.style.bold {
                     font.weight = FontWeight::BOLD;
                 }
@@ -983,9 +989,12 @@ fn pane_mouse_down(
     }
     let (col, row) = geometry.cell_at(event.position);
     // Command+点击 = 打开光标下的链接（macOS 惯例，对照 Swift
-    // `requestOpenLink`）。放在鼠标上报之前：vim / tmux 开着鼠标时链接
+    // `requestOpenLink`）。Linux / Windows 用命令键（缺省 Alt，见
+    // `platform::command_held`）。放在鼠标上报之前：vim / tmux 开着鼠标时链接
     // 仍然要能点开。
-    if button == MouseButton::Left && event.modifiers.platform {
+    if button == MouseButton::Left
+        && crate::frontend::gpui::platform::command_held(&event.modifiers)
+    {
         if let Some(url) = app.pane_url_at(pane_id, row, col) {
             app.clear_hover_cell(pane_id, cx);
             cx.open_url(&url);

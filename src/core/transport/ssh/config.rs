@@ -94,11 +94,7 @@ pub fn list_ssh_hosts(path: Option<&Path>) -> anyhow::Result<Vec<SshHostEntry>> 
     let path = path
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("MUXTERM_SSH_CONFIG_PATH").map(PathBuf::from))
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .map(|home| home.join(".ssh").join("config"))
-        });
+        .or_else(|| crate::os::home_dir().map(|home| home.join(".ssh").join("config")));
     let Some(path) = path else {
         return Ok(Vec::new());
     };
@@ -148,8 +144,7 @@ fn load_ssh_config(path: &Path, visited: &mut Vec<PathBuf>) -> std::io::Result<S
 
 fn expand_include_pattern(pattern: &str, base_dir: &Path) -> Vec<PathBuf> {
     let expanded = if let Some(rest) = pattern.strip_prefix("~/") {
-        std::env::var_os("HOME")
-            .map(PathBuf::from)
+        crate::os::home_dir()
             .map(|home| home.join(rest))
             .unwrap_or_else(|| PathBuf::from(pattern))
     } else {
