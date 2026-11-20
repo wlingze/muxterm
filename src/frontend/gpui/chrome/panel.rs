@@ -33,9 +33,12 @@ impl GpuiApp {
         } else {
             0.0
         };
+        // 面板在正文区里，正文区已经扣掉菜单条（非 macOS）和状态栏。
         let (panel_width, panel_height) = fitted_panel_size(
             self.window_width - sidebar,
-            self.window_height - crate::frontend::gpui::chrome::status_bar::STATUS_BAR_HEIGHT,
+            self.window_height
+                - crate::frontend::gpui::chrome::menu_bar::menu_bar_height()
+                - crate::frontend::gpui::chrome::status_bar::STATUS_BAR_HEIGHT,
         );
         let action_key = crate::frontend::gpui::model::shortcut_editor::label(
             &crate::frontend::gpui::model::shortcuts::KeyChord::command("k"),

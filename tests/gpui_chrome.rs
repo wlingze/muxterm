@@ -1953,7 +1953,7 @@ fn palette_arrow_keys_move_selection(cx: &mut TestAppContext) {
 
 /// 无头默认主题是浅色、Menlo 18 —— 与 macOS `MuxtermTerminalColors/MuxtermTerminalFont` 一致。
 #[gpui::test]
-fn headless_theme_defaults_to_light_menlo_18(cx: &mut TestAppContext) {
+fn headless_theme_defaults_to_the_platform_font_at_18(cx: &mut TestAppContext) {
     let (view, cx) = mount(store_with_two_workspaces(), cx);
     let (dark, family, size, bg) = cx.update(|_, cx| {
         view.update(cx, |app, _| {
@@ -1967,7 +1967,11 @@ fn headless_theme_defaults_to_light_menlo_18(cx: &mut TestAppContext) {
         })
     });
     assert!(!dark, "默认必须是浅色主题");
-    assert_eq!(family, "Menlo");
+    assert_eq!(
+        family,
+        muxterm::frontend::gpui::theme::DEFAULT_FONT_FAMILY,
+        "默认字体随平台（Menlo / DejaVu Sans Mono / Cascadia Mono）"
+    );
     assert_eq!(size, 18.0);
     assert_eq!(bg, gpui::rgb(0xffffff));
 }
@@ -2186,6 +2190,7 @@ fn click_reports_press_and_release_to_a_mouse_aware_application(cx: &mut TestApp
     enable_mouse(&view, cx, 10, 1000);
     let origin = pane_origin(cx, 10);
     let (cw, ch) = cx.update(|_, cx| view.update(cx, |app, _| app.cell()));
+    let origin = pane_origin(cx, 10);
     let point = gpui::point(origin.x + px(cw * 2.5), origin.y + px(ch * 3.5));
 
     cx.simulate_mouse_down(point, gpui::MouseButton::Left, gpui::Modifiers::none());
@@ -2217,6 +2222,7 @@ fn shift_click_still_selects_text_when_the_application_tracks_the_mouse(cx: &mut
     enable_mouse(&view, cx, 10, 1000);
     let origin = pane_origin(cx, 10);
     let (cw, ch) = cx.update(|_, cx| view.update(cx, |app, _| app.cell()));
+    let origin = pane_origin(cx, 10);
     let start = gpui::point(origin.x + px(cw * 0.5), origin.y + px(ch * 0.5));
     let end = gpui::point(origin.x + px(cw * 8.5), origin.y + px(ch * 0.5));
     cx.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::shift());
@@ -2238,6 +2244,7 @@ fn dragging_reports_motion_in_button_event_mode(cx: &mut TestAppContext) {
     enable_mouse(&view, cx, 10, 1002);
     let origin = pane_origin(cx, 10);
     let (cw, ch) = cx.update(|_, cx| view.update(cx, |app, _| app.cell()));
+    let origin = pane_origin(cx, 10);
     let start = gpui::point(origin.x + px(cw * 2.5), origin.y + px(ch * 3.5));
     let next = gpui::point(origin.x + px(cw * 6.5), origin.y + px(ch * 5.5));
     let same = gpui::point(origin.x + px(cw * 6.7), origin.y + px(ch * 5.7));
@@ -2298,6 +2305,7 @@ fn right_click_opens_the_local_menu_and_middle_clicks_are_reported(cx: &mut Test
     enable_mouse(&view, cx, 10, 1000);
     let origin = pane_origin(cx, 10);
     let (cw, ch) = cx.update(|_, cx| view.update(cx, |app, _| app.cell()));
+    let origin = pane_origin(cx, 10);
     let point = gpui::point(origin.x + px(cw * 1.5), origin.y + px(ch * 1.5));
 
     cx.simulate_mouse_down(point, gpui::MouseButton::Right, gpui::Modifiers::none());
@@ -2373,6 +2381,7 @@ fn release_outside_the_pane_still_reaches_the_application(cx: &mut TestAppContex
     enable_mouse(&view, cx, 10, 1000);
     let origin = pane_origin(cx, 10);
     let (cw, ch) = cx.update(|_, cx| view.update(cx, |app, _| app.cell()));
+    let origin = pane_origin(cx, 10);
     let start = gpui::point(origin.x + px(cw * 2.5), origin.y + px(ch * 3.5));
     cx.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::none());
     assert_eq!(pane_input(&view, cx, 10), vec![b"\x1b[<0;3;4M".to_vec()]);
@@ -5034,9 +5043,10 @@ fn pane_title_bar_appears_only_when_split(cx: &mut TestAppContext) {
         cx.debug_bounds("pane-title-10").is_none(),
         "鼠标不在顶部时标题条隐藏"
     );
-    // 侧栏 240pt，内容区从 x=240 开始；第一个 pane 的标题条带在 y<22。
+    // 标题条带在 pane 顶部 22pt；内容原点随平台（非 macOS 顶部有菜单条）。
+    let origin = pane_origin(cx, 10);
     cx.simulate_mouse_move(
-        gpui::point(px(300.0), px(6.0)),
+        gpui::point(origin.x + px(60.0), origin.y + px(6.0)),
         None,
         gpui::Modifiers::none(),
     );
@@ -5914,9 +5924,9 @@ fn dragging_selects_text_and_cmd_c_copies_it(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
     let (cw, ch) = cx.update(|_, cx| view.update(cx, |app, _| app.cell()));
-    // 侧栏 240pt；内容区 y 从 0 开始。
-    let start = gpui::point(px(240.0 + cw * 0.5), px(ch * 0.5));
-    let end = gpui::point(px(240.0 + cw * 20.5), px(ch * 1.5));
+    let origin = pane_origin(cx, 10);
+    let start = gpui::point(origin.x + px(cw * 0.5), origin.y + px(ch * 0.5));
+    let end = gpui::point(origin.x + px(cw * 20.5), origin.y + px(ch * 1.5));
     cx.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::none());
     cx.simulate_mouse_move(end, Some(gpui::MouseButton::Left), gpui::Modifiers::none());
     cx.simulate_mouse_up(end, gpui::MouseButton::Left, gpui::Modifiers::none());
@@ -5956,8 +5966,9 @@ fn dragging_selects_and_copies_without_a_shortcut(cx: &mut TestAppContext) {
     cx.run_until_parked();
     cx.update(|_, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string("MARKER".to_string())));
     let (cw, ch) = cx.update(|_, cx| view.update(cx, |app, _| app.cell()));
-    let start = gpui::point(px(240.0 + cw * 0.5), px(ch * 0.5));
-    let end = gpui::point(px(240.0 + cw * 20.5), px(ch * 1.5));
+    let origin = pane_origin(cx, 10);
+    let start = gpui::point(origin.x + px(cw * 0.5), origin.y + px(ch * 0.5));
+    let end = gpui::point(origin.x + px(cw * 20.5), origin.y + px(ch * 1.5));
     cx.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::none());
     cx.simulate_mouse_move(end, Some(gpui::MouseButton::Left), gpui::Modifiers::none());
     cx.simulate_mouse_up(end, gpui::MouseButton::Left, gpui::Modifiers::none());
@@ -5992,8 +6003,9 @@ fn option_drag_selects_and_copies_while_the_app_reports_the_mouse(cx: &mut TestA
     });
     cx.run_until_parked();
     let (cw, ch) = cx.update(|_, cx| view.update(cx, |app, _| app.cell()));
-    let start = gpui::point(px(240.0 + cw * 0.5), px(ch * 0.5));
-    let end = gpui::point(px(240.0 + cw * 20.5), px(ch * 1.5));
+    let origin = pane_origin(cx, 10);
+    let start = gpui::point(origin.x + px(cw * 0.5), origin.y + px(ch * 0.5));
+    let end = gpui::point(origin.x + px(cw * 20.5), origin.y + px(ch * 1.5));
     let alt = gpui::Modifiers {
         alt: true,
         ..Default::default()
@@ -6031,14 +6043,15 @@ fn right_click_opens_a_menu_and_copies_the_selection(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
     let (cw, ch) = cx.update(|_, cx| view.update(cx, |app, _| app.cell()));
-    let start = gpui::point(px(240.0 + cw * 0.5), px(ch * 0.5));
-    let end = gpui::point(px(240.0 + cw * 20.5), px(ch * 1.5));
+    let origin = pane_origin(cx, 10);
+    let start = gpui::point(origin.x + px(cw * 0.5), origin.y + px(ch * 0.5));
+    let end = gpui::point(origin.x + px(cw * 20.5), origin.y + px(ch * 1.5));
     cx.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::none());
     cx.simulate_mouse_move(end, Some(gpui::MouseButton::Left), gpui::Modifiers::none());
     cx.simulate_mouse_up(end, gpui::MouseButton::Left, gpui::Modifiers::none());
     cx.run_until_parked();
 
-    let menu_point = gpui::point(px(240.0 + cw * 3.0), px(ch * 0.5));
+    let menu_point = gpui::point(origin.x + px(cw * 3.0), origin.y + px(ch * 0.5));
     cx.simulate_mouse_down(
         menu_point,
         gpui::MouseButton::Right,
@@ -6138,12 +6151,10 @@ fn cmd_click_opens_a_url_from_the_terminal(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
     let (cw, ch) = cx.update(|_, cx| view.update(cx, |app, _| app.cell()));
+    let origin = pane_origin(cx, 10);
     // 列 10 落在链接中间（"see " 之后）。
-    let point = gpui::point(px(240.0 + cw * 10.0 + 1.0), px(ch * 0.5));
-    let cmd = gpui::Modifiers {
-        platform: true,
-        ..Default::default()
-    };
+    let point = gpui::point(origin.x + px(cw * 10.0 + 1.0), origin.y + px(ch * 0.5));
+    let cmd = keys::modifiers();
     cx.simulate_mouse_down(point, gpui::MouseButton::Left, cmd);
     cx.simulate_mouse_up(point, gpui::MouseButton::Left, cmd);
     cx.run_until_parked();
@@ -6175,12 +6186,10 @@ fn command_hover_marks_the_link_under_the_pointer(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
     let (cw, ch) = cx.update(|_, cx| view.update(cx, |app, _| app.cell()));
-    let on_link = gpui::point(px(240.0 + cw * 10.0 + 1.0), px(ch * 0.5));
-    let off_link = gpui::point(px(240.0 + cw * 2.0 + 1.0), px(ch * 0.5));
-    let cmd = gpui::Modifiers {
-        platform: true,
-        ..Default::default()
-    };
+    let origin = pane_origin(cx, 10);
+    let on_link = gpui::point(origin.x + px(cw * 10.0 + 1.0), origin.y + px(ch * 0.5));
+    let off_link = gpui::point(origin.x + px(cw * 2.0 + 1.0), origin.y + px(ch * 0.5));
+    let cmd = keys::modifiers();
     let span = |cx: &mut gpui::VisualTestContext| {
         cx.update(|_, cx| view.update(cx, |app, _| app.hover_link_span(10)))
     };
@@ -6227,8 +6236,9 @@ fn dragging_over_a_url_still_selects_text(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
     let (cw, ch) = cx.update(|_, cx| view.update(cx, |app, _| app.cell()));
-    let start = gpui::point(px(240.0 + cw * 8.0 + 1.0), px(ch * 0.5));
-    let end = gpui::point(px(240.0 + cw * 16.0 + 1.0), px(ch * 0.5));
+    let origin = pane_origin(cx, 10);
+    let start = gpui::point(origin.x + px(cw * 8.0 + 1.0), origin.y + px(ch * 0.5));
+    let end = gpui::point(origin.x + px(cw * 16.0 + 1.0), origin.y + px(ch * 0.5));
     cx.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::none());
     cx.simulate_mouse_move(end, Some(gpui::MouseButton::Left), gpui::Modifiers::none());
     cx.simulate_mouse_up(end, gpui::MouseButton::Left, gpui::Modifiers::none());
