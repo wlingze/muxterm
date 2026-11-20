@@ -441,7 +441,7 @@ fn clicking_shells_without_a_shell_opens_one(cx: &mut TestAppContext) {
     assert_eq!(target.transport, "local");
     assert_eq!(intent, ClientOpenIntent::CreateIfMissing);
     assert!(
-        target.path.starts_with('/'),
+        std::path::Path::new(&target.path).is_absolute(),
         "本机路径要展开成绝对路径：{}",
         target.path
     );
