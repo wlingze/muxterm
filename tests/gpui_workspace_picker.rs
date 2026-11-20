@@ -1,6 +1,9 @@
 //! 回归 Swift 的真实 Quick Panel 操作链；不把改文案当成迁移完成。
 #![cfg(feature = "gpui")]
+#[path = "support/gpui_keys.rs"]
+mod keys;
 use gpui::{px, size, Entity, Modifiers, TestAppContext, VisualTestContext};
+use keys::keys;
 use muxterm::frontend::gpui::{
     chrome::panel_view::{AggregateKind, PanelRow, RowAction},
     model::{
@@ -246,7 +249,7 @@ fn cmd_k_opens_context_actions_and_escape_restores_query_and_tab(cx: &mut TestAp
     let (view, cx) = mount(cx);
     open(&view, cx);
     cx.update(|_, cx| view.update(cx, |app, cx| app.set_panel_query("discovered", cx)));
-    cx.simulate_keystrokes("cmd-k");
+    cx.simulate_keystrokes(&keys("cmd-k"));
     cx.run_until_parked();
     cx.update(|_, cx| {
         view.update(cx, |app, _| {

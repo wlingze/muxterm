@@ -10,7 +10,10 @@
 
 use std::time::{Duration, Instant};
 
+#[path = "support/gpui_keys.rs"]
+mod keys;
 use gpui::TestAppContext;
+use keys::keys;
 use muxterm::frontend::command_queue::CommandQueue;
 use muxterm::frontend::event_pump::EventPump;
 use muxterm::frontend::gpui::state::GpuiApp;
@@ -272,7 +275,7 @@ fn cmd_t_adds_a_tab_through_core(cx: &mut TestAppContext) {
     let tmux = IsolatedTmux::start();
     let (view, cx) = app_with_isolated_tmux(cx, &tmux);
 
-    cx.simulate_keystrokes("cmd-t");
+    cx.simulate_keystrokes(&keys("cmd-t"));
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         cx.update(|_, cx| {
@@ -496,7 +499,7 @@ fn cmd_d_splits_the_pane_through_core(cx: &mut TestAppContext) {
     let before = cx.update(|_, cx| view.update(cx, |app, _| app.layout()));
     assert_eq!(leaves(&before), 1, "启动只有一个 pane");
 
-    cx.simulate_keystrokes("cmd-d");
+    cx.simulate_keystrokes(&keys("cmd-d"));
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         cx.update(|_, cx| {
@@ -527,7 +530,7 @@ fn cmd_d_splits_the_pane_through_core(cx: &mut TestAppContext) {
 fn cmd_brackets_walk_the_panes_through_core(cx: &mut TestAppContext) {
     let tmux = IsolatedTmux::start();
     let (view, cx) = app_with_isolated_tmux(cx, &tmux);
-    cx.simulate_keystrokes("cmd-d");
+    cx.simulate_keystrokes(&keys("cmd-d"));
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         cx.update(|_, cx| {
@@ -542,7 +545,7 @@ fn cmd_brackets_walk_the_panes_through_core(cx: &mut TestAppContext) {
         std::thread::sleep(Duration::from_millis(50));
     }
     let first = cx.update(|_, cx| view.update(cx, |app, _| app.focused_pane()));
-    cx.simulate_keystrokes("cmd-[");
+    cx.simulate_keystrokes(&keys("cmd-["));
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         cx.update(|_, cx| {
@@ -563,7 +566,7 @@ fn cmd_brackets_walk_the_panes_through_core(cx: &mut TestAppContext) {
     let second = cx.update(|_, cx| view.update(cx, |app, _| app.focused_pane()));
     assert_ne!(first, second, "Cmd-[ 必须换 pane");
     // Cmd-] 回到原来的 pane。
-    cx.simulate_keystrokes("cmd-]");
+    cx.simulate_keystrokes(&keys("cmd-]"));
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         cx.update(|_, cx| {
@@ -647,7 +650,7 @@ fn pump_until_true(
 fn rename_tab_reaches_core(cx: &mut TestAppContext) {
     let tmux = IsolatedTmux::start();
     let (view, cx) = app_with_isolated_tmux(cx, &tmux);
-    cx.simulate_keystrokes("cmd-shift-p");
+    cx.simulate_keystrokes(&keys("cmd-shift-p"));
     let picked = cx.update(|_, cx| {
         view.update(cx, |app, _| {
             app.palette_select_action_for_tests(
@@ -678,9 +681,9 @@ fn rename_tab_reaches_core(cx: &mut TestAppContext) {
 fn move_tab_reorders_through_core(cx: &mut TestAppContext) {
     let tmux = IsolatedTmux::start();
     let (view, cx) = app_with_isolated_tmux(cx, &tmux);
-    cx.simulate_keystrokes("cmd-t");
+    cx.simulate_keystrokes(&keys("cmd-t"));
     pump_until_true(&view, cx, "第二个 tab", |app| app.tab_items().len() >= 2);
-    cx.simulate_keystrokes("cmd-shift-p");
+    cx.simulate_keystrokes(&keys("cmd-shift-p"));
     let picked = cx.update(|_, cx| {
         view.update(cx, |app, _| {
             app.palette_select_action_for_tests(
@@ -779,7 +782,7 @@ fn viewing_a_notification_survives_a_core_refresh_but_not_the_next_alert(cx: &mu
 fn a_local_shell_exit_removes_only_its_pane(cx: &mut TestAppContext) {
     let (view, cx) = app_with_local_shell(cx);
     let first = cx.update(|_, cx| view.update(cx, |app, _| app.focused_pane()));
-    cx.simulate_keystrokes("cmd-d");
+    cx.simulate_keystrokes(&keys("cmd-d"));
     pump_until_true(&view, cx, "分屏出第二个 pane", |app| {
         leaves(&app.layout()) == 2
     });

@@ -156,8 +156,18 @@ fn shortcut_manager_is_visible_and_lists_both_layout_labels(cx: &mut TestAppCont
     assert!(cx
         .debug_bounds("settings-shortcut-record-new_tab")
         .is_some());
-    assert_eq!(shortcut_editor::label(&KeyChord::command("t"), false), "⌘T");
-    assert_eq!(shortcut_editor::label(&KeyChord::command("t"), true), "⌘F");
+    // 标签跟平台走：macOS `⌘T`，Linux/Windows `Alt+T`。
+    let expected = muxterm::frontend::gpui::platform::chord_label(true, false, false, false, "T");
+    assert_eq!(
+        shortcut_editor::label(&KeyChord::command("t"), false),
+        expected
+    );
+    let expected_qwerty =
+        muxterm::frontend::gpui::platform::chord_label(true, false, false, false, "F");
+    assert_eq!(
+        shortcut_editor::label(&KeyChord::command("t"), true),
+        expected_qwerty
+    );
 }
 
 #[gpui::test]
