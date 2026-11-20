@@ -511,7 +511,7 @@ impl Connect {
             match self.transport_id.as_str() {
                 "local" => {
                     let endpoint = crate::ipc::endpoint_from_raw(&path.to_string_lossy())?;
-                    let mut stream = crate::ipc::LocalStream::connect(&endpoint)?;
+                    let stream = crate::ipc::LocalStream::connect(&endpoint)?;
                     stream.set_nonblocking(true)?;
                     Ok(Box::new(SocketByteChannel {
                         stream,
@@ -522,7 +522,7 @@ impl Connect {
                     if self.target.is_empty() {
                         return Err(anyhow::anyhow!("SSH socket channel 缺少 target alias"));
                     }
-                    let (mut stream, forward) = SshTcpSocketForward::start(&self.target, &path)?;
+                    let (stream, forward) = SshTcpSocketForward::start(&self.target, &path)?;
                     stream.set_nonblocking(true)?;
                     Ok(Box::new(SocketByteChannel {
                         stream,
@@ -871,7 +871,7 @@ impl SshTcpSocketForward {
                 let diagnostic = child
                     .stderr
                     .take()
-                    .map(|mut stderr| {
+                    .map(|stderr| {
                         use std::io::Read as _;
                         let mut text = String::new();
                         let _ = stderr.take(4096).read_to_string(&mut text);

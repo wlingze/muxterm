@@ -305,12 +305,16 @@ pub fn download_and_install(
         (BundleKind::LinuxTarGz, InstallTarget::LinuxBinary(path)) => {
             let extracted = staging.join("muxterm.extracted");
             extract_linux_binary(&archive, &extracted)?;
-            let mut permissions = fs::metadata(&extracted)?.permissions();
             #[cfg(unix)]
-            {
+            let permissions = {
                 use std::os::unix::fs::PermissionsExt;
+                let mut permissions = fs::metadata(&extracted)?.permissions();
                 permissions.set_mode(0o755);
-            }
+                permissions
+            };
+            // Windows 没有 POSIX 权限位：文件由当前用户创建，继承目录 ACL。
+            #[cfg(not(unix))]
+            let permissions = fs::metadata(&extracted)?.permissions();
             fs::set_permissions(&extracted, permissions)?;
             let backup = replace_file(&extracted, &path)?;
             InstallOutcome {
