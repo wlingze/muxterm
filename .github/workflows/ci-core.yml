@@ -35,6 +35,9 @@ on:
       - "tests/existing_ssh_contract.rs"
       - "tests/runtime_transport_matrix_contract.rs"
       - "tests/ffi_tmux_discovery.rs"
+      - "tests/platform.rs"
+      - "src/core/ipc.rs"
+      - "tests/support/**"
       - "tests/support/**"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -56,8 +59,10 @@ env:
   GH_TOKEN: ${{ github.token }}
 
 jobs:
+  # 统一测试：三平台应当一致的行为（tmux / herdr / sshd 契约都归这里）。
+  # 平台专属事实放到下面的 `platform` 矩阵，先统一、再分平台。
   ci_core:
-    name: ci-core
+    name: ci-core-unified
     runs-on: ubuntu-latest
     # core 入口一次编译跑 lib/bin + 全部集成 target，含 four-mode 与 Herdr 契约。
     timeout-minutes: 60
@@ -124,3 +129,51 @@ jobs:
             kill "$(cat "$MUXTERM_SSHD_TMP_DIR/sshd.pid")" 2>/dev/null || true
             rm -rf "$MUXTERM_SSHD_TMP_DIR"
           fi
+  # 平台测试：统一测试通过后并行跑三个平台。
+  #
+  # 每个平台跑 `run platform`（路径约定 / 默认 shell / 本地 IPC / 终止语义）
+  # 再构建一次本平台的 tui 前端，确保 core 改动没有把某个 OS 弄坏。
+  # tmux / herdr / sshd 契约仍只在 unified 里跑：Windows 没有这些后端，
+  # SSH 相关行为由 `run platform` 与 SSH 集成测试在各自平台覆盖。
+  platform:
+    name: ci-core-platform (${{ matrix.name }})
+    needs: ci_core
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macos
+            os: macos-latest
+          - name: linux
+            os: ubuntu-latest
+          - name: windows
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ matrix.name }}-core-platform-${{ hashFiles('Cargo.toml') }}
+
+      - name: Run platform tests
+        run: bash scripts/test.sh run platform
+
+      # core 不只看测试：本平台的 TUI/CLI 也要真的能编出来。
+      - name: Build TUI/CLI for this platform
+        run: cargo build --no-default-features --features tui
