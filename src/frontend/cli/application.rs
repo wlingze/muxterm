@@ -338,11 +338,12 @@ pub fn run() -> anyhow::Result<()> {
         };
     }
 
-    // 无子命令且没有终端（双击 exe / 桌面启动）：TUI 在这里没法工作，
-    // 有图形会话就直接进 gpui。终端里敲 `muxterm` 仍然落到 TUI。
+    // 无子命令时的默认前端，见 `core::os::prefers_gui_when_no_subcommand`：
+    // Windows 一律开窗口（TUI 用 `muxterm tui`）；Linux 只在没有终端时开窗口；
+    // macOS 命令行保持 TUI（`.app` 自己传 `gui`）。
     if !cli.tui
         && !cli.gtk
-        && crate::os::launched_without_terminal()
+        && crate::os::prefers_gui_when_no_subcommand()
         && crate::os::has_gui_session()
     {
         #[cfg(feature = "gpui")]

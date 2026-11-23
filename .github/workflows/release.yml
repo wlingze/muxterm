@@ -474,9 +474,8 @@ jobs:
             muxterm.exe --help
 
           Notes:
-            - 双击 muxterm.exe 直接打开窗口（不带参数、没有终端时默认进 gpui）。
-            - 从 cmd/PowerShell 里跑 `muxterm.exe` 仍是 TUI；要窗口用
-              `muxterm.exe gpui`。
+            - 双击 muxterm.exe 直接打开窗口：Windows 上没有子命令时默认进 gpui。
+            - 想用 TUI：`muxterm.exe tui`。
             - Local panes run through ConPTY (default shell: %COMSPEC%).
             - Herdr works locally through its Windows named pipe
               (\\.\pipe\<name>); the endpoint is discovered from
