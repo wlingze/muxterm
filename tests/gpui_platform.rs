@@ -291,3 +291,22 @@ fn client_side_decorations_get_an_in_app_title_bar() {
         "macOS 有原生 traffic lights"
     );
 }
+
+#[test]
+fn linux_asks_for_client_side_decorations() {
+    // 回归：GNOME（Mutter）没有服务端装饰，也不回 xdg-decoration 的 configure。
+    // 不显式要 Client 时 gpui 按 Server 记账 → 系统不画、我们也不画，
+    // 窗口就没有关闭按钮。
+    assert!(
+        matches!(
+            platform::window_decorations_for(desktop::DesktopOs::Linux),
+            Some(gpui::WindowDecorations::Client)
+        ),
+        "Linux 必须请求客户端装饰"
+    );
+    assert!(
+        platform::window_decorations_for(desktop::DesktopOs::MacOs).is_none()
+            && platform::window_decorations_for(desktop::DesktopOs::Windows).is_none(),
+        "macOS / Windows 的装饰交给系统，不要请求 Client"
+    );
+}

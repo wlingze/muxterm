@@ -62,6 +62,28 @@ pub fn titlebar_options_for(platform: DesktopOs) -> Option<gpui::TitlebarOptions
     }
 }
 
+/// 窗口装饰请求。
+///
+/// Linux 主动要**客户端装饰**：GNOME（Mutter）不实现服务端装饰，也不回
+/// `xdg-decoration` 的 configure；不请求 Client 时 gpui 会先按 Server 记账
+/// （`request_decorations` 默认 Server），于是既没有系统标题栏、也不会画我们的
+/// —— 用户报的「Linux 没有关闭按钮」就是这个。
+///
+/// 反过来要 Client 之后：Mutter 保持 Client → 我们自绘；
+/// KDE 之类支持服务端装饰的合成器会回 ServerSide，`window_decorations()`
+/// 翻回 Server，自绘条自动隐藏，不会出现两条标题栏。
+pub fn window_decorations() -> Option<gpui::WindowDecorations> {
+    window_decorations_for(os())
+}
+
+/// [`window_decorations`] 的纯函数版本（三平台都能在本机测）。
+pub fn window_decorations_for(platform: DesktopOs) -> Option<gpui::WindowDecorations> {
+    match platform {
+        DesktopOs::Linux => Some(gpui::WindowDecorations::Client),
+        DesktopOs::MacOs | DesktopOs::Windows => None,
+    }
+}
+
 /// 需要自绘窗口标题栏吗？
 ///
 /// 只有客户端装饰（Wayland/GNOME 的 `xdg-decoration` 回 client）才需要：服务端

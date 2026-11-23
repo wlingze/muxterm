@@ -49,6 +49,9 @@ pub fn run(socket: Option<String>, session: Option<String>) -> anyhow::Result<()
             // macOS：隐藏标题文字，只留 traffic lights。
             // Linux / Windows：标题栏由系统画，gpui 不接管。
             titlebar: crate::frontend::gpui::platform::titlebar_options(),
+            // Linux 要客户端装饰（GNOME 没有服务端装饰），见
+            // `platform::window_decorations`；其它平台交给系统。
+            window_decorations: crate::frontend::gpui::platform::window_decorations(),
             // Wayland / XDG 的应用标识：desktop 文件、任务栏分组都靠它。
             app_id: Some("dev.muxterm.app".to_string()),
             ..Default::default()
