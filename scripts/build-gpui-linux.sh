@@ -139,10 +139,10 @@ cat > "$OUT_DIR/README.txt" <<'README'
 muxterm (GPUI) for Linux x86_64
 
 运行:
-  ./muxterm gpui            打开窗口
-  ./muxterm                 双击/桌面启动自动进 gpui；终端里跑是 TUI
-  ./muxterm tui             强制 TUI
+  ./muxterm                 打开窗口（这个包只编了 gpui；不带子命令也会开窗口）
+  ./muxterm gpui            同上，显式指定
   ./muxterm gpui -L <sock>  指定 tmux socket
+  ./muxterm tui             TUI 需要单独的 linux-cli 包（本包未编译 tui）
 
 桌面图标 / 应用列表:
   ./install.sh              复制 .desktop 与图标到 ~/.local/share

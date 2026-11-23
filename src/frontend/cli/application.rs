@@ -341,10 +341,12 @@ pub fn run() -> anyhow::Result<()> {
     // 无子命令时的默认前端，见 `core::os::prefers_gui_when_no_subcommand`：
     // Windows 一律开窗口（TUI 用 `muxterm tui`）；Linux 只在没有终端时开窗口；
     // macOS 命令行保持 TUI（`.app` 自己传 `gui`）。
+    // TUI 没编进这个二进制时（发布的 gpui 包就是这样）没有子命令也只能开窗口，
+    // 否则 `muxterm` 会打印「没有可用的前端」。
     if !cli.tui
         && !cli.gtk
-        && crate::os::prefers_gui_when_no_subcommand()
         && crate::os::has_gui_session()
+        && (crate::os::prefers_gui_when_no_subcommand() || !cfg!(feature = "tui"))
     {
         #[cfg(feature = "gpui")]
         {
