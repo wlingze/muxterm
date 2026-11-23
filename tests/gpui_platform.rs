@@ -252,3 +252,42 @@ fn window_title_keeps_the_workspace_name_off_macos() {
         assert_eq!(title, "dev — Muxterm", "其它平台的标题栏由系统画，不能留空");
     }
 }
+
+#[test]
+fn windows_keeps_the_native_title_bar() {
+    // 回归：`titlebar: None` 在 gpui 里等于 `appears_transparent = true`，
+    // Windows 窗口会变成无边框——没有关闭按钮，也没有系统图标。
+    let options = platform::titlebar_options_for(desktop::DesktopOs::Windows)
+        .expect("Windows 必须传 TitlebarOptions 才会保留系统标题栏");
+    assert!(
+        !options.appears_transparent,
+        "appears_transparent 必须为 false"
+    );
+}
+
+#[test]
+fn linux_lets_the_window_manager_draw_the_title_bar() {
+    assert!(
+        platform::titlebar_options_for(desktop::DesktopOs::Linux).is_none(),
+        "Linux 标题栏由窗口管理器决定，前端不传 TitlebarOptions"
+    );
+}
+
+#[test]
+fn client_side_decorations_get_an_in_app_title_bar() {
+    let client = gpui::Decorations::Client {
+        tiling: gpui::Tiling::default(),
+    };
+    assert!(
+        platform::needs_client_title_bar_for(desktop::DesktopOs::Linux, client),
+        "GNOME Wayland 回到客户端装饰时必须自己画关闭按钮"
+    );
+    assert!(
+        !platform::needs_client_title_bar_for(desktop::DesktopOs::Linux, gpui::Decorations::Server),
+        "服务端装饰时不能再画一条标题栏"
+    );
+    assert!(
+        !platform::needs_client_title_bar_for(desktop::DesktopOs::MacOs, client),
+        "macOS 有原生 traffic lights"
+    );
+}

@@ -607,9 +607,10 @@ Project / discovery 行用 Core 记账的 attach 频率排序（`attach-history.
 | 菜单 | 原生 NSMenu（`platform/macos_menu.rs`） | 窗口内自绘菜单条（`chrome/menu_bar.rs`） | 同左 | `platform::uses_native_menu_bar` |
 | 默认等宽字体 | Menlo | DejaVu Sans Mono | Cascadia Mono | `platform/desktop.rs::default_monospace_family` |
 | 字体注册 / 回退 | `TextSystem::add_fonts(JetBrains Mono, Noto Symbols)` + 平台回退栈 | 同左 | 同左 | `app.rs::register_bundled_fonts`；`theme::font_fallbacks` |
-| 窗口标题栏 | 隐藏标题、只留 traffic lights | 系统标题栏（xdg-decoration server side） | 系统标题栏 | `platform::titlebar_options` |
+| 窗口标题栏 | 隐藏标题、只留 traffic lights | 服务端装饰用系统标题栏；客户端装饰（GNOME Wayland）自绘 `chrome/title_bar.rs`（最小化 / 最大化 / 关闭） | 原生标题栏（`appears_transparent: false`，否则 gpui 会隐藏它） | `platform::{titlebar_options, needs_client_title_bar}` |
+| 启动方式 | `.app`（`gui` 子命令） | 桌面/终端：无终端时默认 gpui，有终端默认 TUI | 双击 exe（无终端）默认 gpui；cmd 里默认 TUI | `core/os::{launched_without_terminal, has_gui_session}` |
 | 窗口标题文字 | `[ui] show_title_bar=false` → 空 | 始终显示 workspace 名 | 同左 | `platform/desktop.rs::hides_title_text` |
-| 图标 / 打包 | `.app` + `.dmg`（ad-hoc 签名） | `tar.gz` + `.desktop` + PNG 图标 | `.zip`（exe + PNG） | `scripts/build-gpui-{macos,linux,windows}.sh` |
+| 图标 / 打包 | `.app` + `.dmg`（ad-hoc 签名） | `tar.gz` + `install.sh`（`.desktop` + PNG → `~/.local/share`） | `.zip`；exe 内嵌 `1 ICON`（`build.rs` + `embed-resource`） | `scripts/build-gpui-{macos,linux,windows}.sh`、`assets/icons/muxterm.rc` |
 | 剪贴板图片 | NSPasteboard TIFF/PNG → PNG（AppKit 解码） | PNG 透传（签名校验） | PNG 透传（签名校验） | `platform/clipboard_image.rs` |
 | 拖放 | 未实现（与 Linux/Windows 一致，见下） | 未实现 | 未实现 | — |
 | 通知 | 无系统通知；BEL → attention 面板 | 同左 | 同左 | `chrome/status_bar.rs` |
@@ -711,8 +712,11 @@ GPUI 的 CI 分两段：先跑一次**统一测试**，通过后**并行**跑三
   `gpui-platform (linux)`。
 - **拖放**：三平台都没有实现文件拖放（`on_drop` 从未接线），现状一致。
 - **系统通知**：三平台都没有系统通知，bell 仍进 attention 面板。
-- **Windows 自更新 / Authenticode / 嵌入 exe 图标**：未做；Windows zip 里只有
-  未签名 exe 与 PNG。
+- **Windows 自更新 / Authenticode**：未做；Windows zip 里仍是未签名 exe。
+  exe 图标已内嵌（`assets/icons/muxterm.rc` → 资源 ID 1，gpui 的 `load_icon`
+  直接读它），Explorer / 任务栏 / 窗口图标共用这一份。
+- **Linux 桌面图标**：需要跑包内 `install.sh` 把 `.desktop` 与图标装进
+  `~/.local/share`；否则 GNOME 按 `app_id` 查不到条目，顶栏只能是通用图标。
 - **AppImage**：Linux 发布用 `tar.gz`（与仓库既有格式一致）；未做 AppImage。
 - **Windows 上的本地 Herdr**：端点发现依赖 `herdr status --json`（0.9.5+）；
   未在真机跑过，CI 只覆盖端点推导与命名管道往返。命名管道的兜底名字

@@ -92,6 +92,10 @@ impl Render for GpuiApp {
         // 侧栏分区与拖动夹取都读窗口尺寸：每帧写一次，比到处传参数简单。
         self.window_width = width;
         self.window_height = height;
+        // 客户端装饰（GNOME Wayland）没有系统标题栏：由 `chrome/title_bar.rs`
+        // 画一条带最小化/最大化/关闭的。X11 / Windows 这里是 false。
+        self.client_title_bar =
+            crate::frontend::gpui::platform::needs_client_title_bar(window.window_decorations());
         self.measure_cell(window);
         // 窗口标题：关掉 `[ui] show_title_bar` 就写空串（只剩 traffic lights）。
         let title = crate::frontend::gpui::state::window_title_text(
@@ -116,9 +120,9 @@ impl Render for GpuiApp {
             0.0
         };
         let main_width = (width - sidebar_width).max(1.0);
-        // 只有一条 bar（tab + 状态）；非 macOS 顶部还有一条自绘菜单条。
-        let menu_height = crate::frontend::gpui::chrome::menu_bar::menu_bar_height();
-        let main_height = (height - STATUS_BAR_HEIGHT - menu_height).max(1.0);
+        // 顶部 chrome：非 macOS 有自绘菜单条，CSD 平台还有自绘标题栏。
+        let top_chrome = self.top_chrome_height();
+        let main_height = (height - STATUS_BAR_HEIGHT - top_chrome).max(1.0);
         let area = Rect::new(0.0, 0.0, main_width, main_height);
 
         let mut sizes: Vec<(u32, u16, u16)> = Vec::new();
@@ -128,7 +132,7 @@ impl Render for GpuiApp {
         // 鼠标事件是窗口坐标：内容区原点是侧栏宽度 + 顶部（菜单条 + bar）高度。
         let content_origin = (
             sidebar_width,
-            menu_height + if bar_on_top { STATUS_BAR_HEIGHT } else { 0.0 },
+            top_chrome + if bar_on_top { STATUS_BAR_HEIGHT } else { 0.0 },
         );
         if let Some(layout) = self.layout() {
             for (pane_id, rect) in pane_grid::pane_rects(&layout, area) {
@@ -157,6 +161,8 @@ impl Render for GpuiApp {
             (div().into_any_element(), bar)
         };
 
+        // CSD 标题栏（只有客户端装饰平台有；其它平台返回 None）。
+        let title_bar = self.render_title_bar(cx);
         // 非 macOS 的自绘菜单条（macOS 是原生 NSMenu，两个都返回 None）。
         let menu_bar = self.render_menu_bar(cx);
         let menu_panel = self.render_menu_panel(cx);
@@ -181,6 +187,7 @@ impl Render for GpuiApp {
                     );
                 },
             ))
+            .children(title_bar)
             .children(menu_bar)
             .child(
                 div()

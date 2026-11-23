@@ -23,3 +23,4 @@ pub mod status_bar;
 pub mod tab_bar;
 pub mod tab_bar_view;
 pub mod target_editor;
+pub mod title_bar;
