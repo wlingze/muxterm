@@ -80,6 +80,12 @@ pub enum ResolveError {
         identity: String,
         candidates: Vec<String>,
     },
+    /// 一个正在运行的 namespace 都没有。这不是「选择」问题：候选为空时让用户
+    /// 选只能看到 `[]`，所以单独给一条可操作的提示（启动 Herdr 或改用 tmux）。
+    #[error(
+        "没有运行中的 Herdr（identity={identity}）：先启动 Herdr（运行 `herdr` 或打开 Sheprd），或者改用 tmux 打开这个 workspace"
+    )]
+    NoRunningNamespace { identity: String },
     #[error("需要选择正在运行的 Runtime namespace（identity={identity}）：{candidates:?}")]
     NamespaceChoiceRequired {
         identity: String,
@@ -106,6 +112,7 @@ impl ResolveError {
             | Self::NoMatch { .. }
             | Self::CreateNotAllowed { .. }
             | Self::AmbiguousCandidate { .. }
+            | Self::NoRunningNamespace { .. }
             | Self::NamespaceChoiceRequired { .. }
             | Self::InvalidIdentity { .. }
             | Self::InvalidTemplate { .. } => ResolveErrorStage::IdentityResolution,
@@ -128,6 +135,7 @@ impl ResolveError {
             Self::NoMatch { .. } => "no_match",
             Self::CreateNotAllowed { .. } => "create_not_allowed",
             Self::AmbiguousCandidate { .. } => "ambiguous_candidate",
+            Self::NoRunningNamespace { .. } => "no_running_namespace",
             Self::NamespaceChoiceRequired { .. } => "namespace_choice_required",
             Self::InvalidIdentity { .. } => "invalid_identity",
             Self::InvalidTemplate { .. } => "invalid_template",

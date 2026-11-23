@@ -458,6 +458,12 @@ impl Catalog {
                                     });
                                 }
                                 match namespaces.as_slice() {
+                                    [] => {
+                                        // 空候选不是「需要选择」：直接说清楚没在跑。
+                                        return Err(resolver::ResolveError::NoRunningNamespace {
+                                            identity,
+                                        });
+                                    }
                                     [one] => {
                                         create_descriptor.session = Some(one.name.clone());
                                         if create_descriptor.socket.is_none() {
