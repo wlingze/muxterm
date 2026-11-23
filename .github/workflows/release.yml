@@ -396,7 +396,9 @@ jobs:
           }
           retry create_dmg
           retry verify_dmg
-          shasum -a 256 "$DMG" > "$DMG.sha256"
+          # checksum 文件里只留文件名：留在 artifacts/ 目录下生成会把前缀写进
+          # 校验文件，用户下载后 `shasum -c` 会找不到文件。
+          ( cd artifacts && shasum -a 256 "$(basename "$DMG")" > "$(basename "$DMG").sha256" )
 
       - name: Verify DMG contents
         run: |
@@ -501,10 +503,11 @@ jobs:
 
           Checksums: see .sha256 file alongside this archive.
           EOF
-          ARCHIVE="artifacts/muxterm-windows-x86_64-${FS_VERSION}.zip"
+          ARCHIVE_NAME="muxterm-windows-x86_64-${FS_VERSION}.zip"
           powershell -NoProfile -Command \
-            "Compress-Archive -Path 'staging/*' -DestinationPath '${ARCHIVE}'"
-          sha256sum "${ARCHIVE}" > "${ARCHIVE}.sha256"
+            "Compress-Archive -Path 'staging/*' -DestinationPath 'artifacts/${ARCHIVE_NAME}'"
+          # 同上：校验文件里不能带 artifacts/ 前缀。
+          ( cd artifacts && sha256sum "${ARCHIVE_NAME}" > "${ARCHIVE_NAME}.sha256" )
 
       - uses: actions/upload-artifact@v4
         with:
