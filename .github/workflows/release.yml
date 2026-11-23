@@ -189,102 +189,12 @@ jobs:
         run: |
           mkdir -p staging
           cp build/linux/muxterm "staging/muxterm"
-          cat > staging/README.txt <<'EOF'
-          muxterm CLI (TUI) for Linux x86_64
-
-          Runtime dependencies:
-            - glibc (built on ubuntu-latest, requires compatible glibc)
-            - tmux (for tmux control mode operations)
-
-          Usage:
-            ./muxterm --help
-            ./muxterm --tui -L <socket>
-
-          Checksums: see .sha256 file alongside this archive.
-          EOF
-          mkdir -p artifacts
-          tar czf "artifacts/muxterm-cli-linux-x86_64-${FS_VERSION}.tar.gz" -C staging .
-          cd artifacts
-          sha256sum "muxterm-cli-linux-x86_64-${FS_VERSION}.tar.gz" > "muxterm-cli-linux-x86_64-${FS_VERSION}.tar.gz.sha256"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: linux-cli
-          path: artifacts/*
-          if-no-files-found: error
-
-  # ── Linux GPUI app ──────────────────────────────────────────
-  # 发布前端是 gpui（AGENTS.md）：Linux 产物就是 `muxterm gpui` 这条线。
-  build-linux:
-    name: Linux GPUI
-    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'linux'
-    needs: [resolve-version, verify-unified]
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    env:
-      CARGO_TARGET_DIR: target
-      FS_VERSION: ${{ needs.resolve-version.outputs.fs_version }}
-      MUXTERM_BUILD_VERSION: ${{ needs.resolve-version.outputs.version }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Install GPUI system dependencies
-        run: bash scripts/ci/setup-gpui-linux.sh
-        timeout-minutes: 15
-      - uses: dtolnay/rust-toolchain@1.97.1
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/
-            target
-          key: release-linux-gpui-${{ hashFiles('Cargo.toml') }}
-
-      # 平台专属不变量：路径约定、本地 IPC 形态、默认 shell、终止语义。
-      - name: Run platform tests (linux)
-        run: bash scripts/test.sh run platform
-
-      - name: Build Linux GPUI (release)
-        run: ./scripts/build-gpui-linux.sh --release
-
-      - name: Verify binary
-        run: |
-          if [ ! -f build/linux/muxterm ]; then
-            echo "ERROR: No Linux GPUI binary produced (build/linux/muxterm)" >&2
-            exit 1
-          fi
-          file build/linux/muxterm
-          build/linux/muxterm --version || true
-          test -f build/linux/share/applications/dev.muxterm.app.desktop
-
-      - name: Package
-        run: |
-          mkdir -p staging
-          cp build/linux/muxterm "staging/muxterm"
           cp -R build/linux/share staging/share
-          cat > staging/README.txt <<'EOF'
-          muxterm (GPUI) for Linux x86_64
-
-          Runtime dependencies:
-            - glibc (built on ubuntu-latest, requires compatible glibc)
-            - libxkbcommon, libwayland-client (or X11 via libX11)
-            - fontconfig + a monospace font (JetBrains Mono is bundled in the binary)
-            - tmux (for tmux control mode operations)
-            - Vulkan driver (Mesa/llvmpipe works; gpui renders through blade)
-
-          Install (per-user):
-            install -Dm755 muxterm ~/.local/bin/muxterm
-            install -Dm644 share/applications/dev.muxterm.app.desktop \
-              ~/.local/share/applications/dev.muxterm.app.desktop
-            install -Dm644 share/icons/hicolor/512x512/apps/dev.muxterm.app.png \
-              ~/.local/share/icons/hicolor/512x512/apps/dev.muxterm.app.png
-
-          Usage:
-            muxterm gpui
-            muxterm gpui -L <socket>
-
-          Checksums: see .sha256 file alongside this archive.
-          EOF
+          # install.sh / README.txt 由 build-gpui-linux.sh 生成：桌面图标要装进
+          # ~/.local/share/applications 才能被 GNOME 的 app_id 查到。
+          cp build/linux/install.sh staging/install.sh
+          cp build/linux/README.txt staging/README.txt
+          chmod +x staging/install.sh
           mkdir -p artifacts
           tar czf "artifacts/muxterm-linux-x86_64-${FS_VERSION}.tar.gz" -C staging .
           cd artifacts
@@ -492,6 +402,9 @@ jobs:
             muxterm.exe --help
 
           Notes:
+            - 双击 muxterm.exe 直接打开窗口（不带参数、无终端时默认进 gpui）。
+            - 从 cmd/PowerShell 里跑 `muxterm.exe` 仍是 TUI；要窗口用
+              `muxterm.exe gpui`。
             - Local panes run through ConPTY (default shell: %COMSPEC%).
             - Herdr works locally through its Windows named pipe
               (\\.\pipe\<name>); the endpoint is discovered from

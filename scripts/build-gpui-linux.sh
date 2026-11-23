@@ -86,6 +86,75 @@ Categories=System;TerminalEmulator;
 StartupWMClass=dev.muxterm.app
 DESKTOP
 
+# ── 安装器：把 .desktop + 图标装进 XDG data 目录 ──────────────────
+# 不做这一步，GNOME 顶栏 / 应用列表只能显示通用图标：图标是按 app_id
+# （dev.muxterm.app）去 ~/.local/share/applications 里找 .desktop 的。
+cat > "$OUT_DIR/install.sh" <<'INSTALL'
+#!/bin/sh
+# 安装 Muxterm 的桌面入口与图标（per-user，不需要 root）。
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+data="${XDG_DATA_HOME:-$HOME/.local/share}"
+app_dir="$data/applications"
+icon_dir="$data/icons/hicolor/512x512/apps"
+bin="$here/muxterm"
+
+if [ ! -x "$bin" ]; then
+  echo "ERROR: $bin 不存在或不可执行" >&2
+  exit 1
+fi
+
+install -d "$app_dir" "$icon_dir"
+if [ -f "$here/share/icons/hicolor/512x512/apps/dev.muxterm.app.png" ]; then
+  install -m 644 "$here/share/icons/hicolor/512x512/apps/dev.muxterm.app.png" \
+    "$icon_dir/dev.muxterm.app.png"
+fi
+
+# Exec 用绝对路径：不要求用户把 muxterm 加进 PATH。
+cat > "$app_dir/dev.muxterm.app.desktop" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=Muxterm
+Comment=Terminal for tmux sessions and coding agents
+Exec=$bin gpui
+Icon=dev.muxterm.app
+Terminal=false
+Categories=System;TerminalEmulator;
+StartupWMClass=dev.muxterm.app
+DESKTOP
+
+if command -v update-desktop-database >/dev/null 2>&1; then
+  update-desktop-database "$app_dir" >/dev/null 2>&1 || true
+fi
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+  gtk-update-icon-cache -q -t -f "$data/icons/hicolor" >/dev/null 2>&1 || true
+fi
+
+echo "已安装桌面入口: $app_dir/dev.muxterm.app.desktop"
+echo "现在可以在应用列表里搜 \"Muxterm\" 打开，图标也会出现在顶栏。"
+INSTALL
+chmod +x "$OUT_DIR/install.sh"
+
+cat > "$OUT_DIR/README.txt" <<'README'
+muxterm (GPUI) for Linux x86_64
+
+运行:
+  ./muxterm gpui            打开窗口
+  ./muxterm                 双击/桌面启动自动进 gpui；终端里跑是 TUI
+  ./muxterm tui             强制 TUI
+  ./muxterm gpui -L <sock>  指定 tmux socket
+
+桌面图标 / 应用列表:
+  ./install.sh              复制 .desktop 与图标到 ~/.local/share
+                            （不做这步，GNOME 顶栏只能显示通用图标）
+
+依赖:
+  Wayland 或 X11、Vulkan 或 GL、fontconfig + 等宽字体（内置 JetBrains Mono）、tmux 3.x
+
+Checksums: 见同目录 .sha256 文件。
+README
+chmod 644 "$OUT_DIR/README.txt"
+
 echo "==> done: $OUT_DIR/muxterm"
 file "$OUT_DIR/muxterm" || true
 "$OUT_DIR/muxterm" --version || true
