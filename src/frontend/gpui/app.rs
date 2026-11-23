@@ -94,8 +94,9 @@ impl Render for GpuiApp {
         self.window_height = height;
         // 客户端装饰（GNOME Wayland）没有系统标题栏：由 `chrome/title_bar.rs`
         // 画一条带最小化/最大化/关闭的。X11 / Windows 这里是 false。
-        self.client_title_bar =
-            crate::frontend::gpui::platform::needs_client_title_bar(window.window_decorations());
+        self.client_title_bar = self.client_title_bar_override.unwrap_or_else(|| {
+            crate::frontend::gpui::platform::needs_client_title_bar(window.window_decorations())
+        });
         self.measure_cell(window);
         // 窗口标题：关掉 `[ui] show_title_bar` 就写空串（只剩 traffic lights）。
         let title = crate::frontend::gpui::state::window_title_text(
