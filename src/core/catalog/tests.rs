@@ -294,7 +294,7 @@ fn provisional_herdr_project_attaches_matching_label_without_creating() {
 }
 
 #[test]
-fn provisional_herdr_project_without_running_namespace_requires_a_choice() {
+fn provisional_herdr_project_without_running_namespace_says_herdr_is_not_running() {
     let (catalog, create_calls, _) = herdr_resolver_catalog(Vec::new(), Vec::new());
     let mut connections = ConnectionRegistry::new();
 
@@ -306,10 +306,16 @@ fn provisional_herdr_project_without_running_namespace_requires_a_choice() {
         )
         .expect_err("没有运行中的 namespace 时不能静默选择 default");
 
-    assert!(matches!(
-        error,
-        ResolveError::NamespaceChoiceRequired { candidates, .. } if candidates.is_empty()
-    ));
+    // 空候选不是「需要选择」：`candidates: []` 对用户毫无信息量。
+    let message = error.to_string();
+    match &error {
+        ResolveError::NoRunningNamespace { identity } => {
+            assert!(identity.contains("herdr-provisional"), "{identity}");
+        }
+        other => panic!("expected NoRunningNamespace, got {other:?}"),
+    }
+    assert!(message.contains("没有运行中的 Herdr"), "{message}");
+    assert!(message.contains("tmux"), "{message}");
     assert_eq!(create_calls.load(Ordering::SeqCst), 0);
 }
 
