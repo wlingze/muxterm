@@ -338,6 +338,20 @@ pub fn run() -> anyhow::Result<()> {
         };
     }
 
+    // 无子命令且没有终端（双击 exe / 桌面启动）：TUI 在这里没法工作，
+    // 有图形会话就直接进 gpui。终端里敲 `muxterm` 仍然落到 TUI。
+    if !cli.tui
+        && !cli.gtk
+        && crate::os::launched_without_terminal()
+        && crate::os::has_gui_session()
+    {
+        #[cfg(feature = "gpui")]
+        {
+            crate::os::detach_console();
+            return run_gpui_inner(cli.socket, cli.session);
+        }
+    }
+
     // 无子命令：向后兼容 `--tui` / `--gtk` flag。
     let want_tui = cli.tui || (!cli.gtk && cfg!(not(feature = "gtk")) && cfg!(feature = "tui"));
     let want_gtk = !want_tui && cfg!(feature = "gtk");

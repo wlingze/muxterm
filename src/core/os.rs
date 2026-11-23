@@ -142,6 +142,54 @@ pub fn default_shell() -> String {
     }
 }
 
+/// 当前有图形会话吗？
+///
+/// 无子命令启动时用它决定「开窗口」还是「进 TUI」：Windows / macOS 双击
+/// 一定有桌面；Linux 看 `WAYLAND_DISPLAY` / `DISPLAY`（SSH 里没有）。
+pub fn has_gui_session() -> bool {
+    #[cfg(any(windows, target_os = "macos"))]
+    {
+        true
+    }
+    #[cfg(all(not(windows), not(target_os = "macos")))]
+    {
+        ["WAYLAND_DISPLAY", "DISPLAY"].iter().any(|key| {
+            std::env::var_os(key)
+                .map(|value| !value.is_empty())
+                .unwrap_or(false)
+        })
+    }
+}
+
+/// 是不是双击/桌面启动：stdin 和 stdout 都没有终端。
+///
+/// 终端里敲 `muxterm` 时两个流都接 tty，要保留 TUI 行为；双击 exe 时没有
+/// 终端，TUI 无法工作（Windows 上是控制台一闪而过）。
+pub fn launched_without_terminal() -> bool {
+    use std::io::IsTerminal;
+    !std::io::stdin().is_terminal() && !std::io::stdout().is_terminal()
+}
+
+/// 断开控制台（Windows）。双击 console 子系统的 exe 时系统会分配一个黑框，
+/// 转去开窗口前后要把它收掉，否则窗口旁边一直挂着控制台。
+pub fn detach_console() {
+    #[cfg(windows)]
+    {
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn FreeConsole() -> i32;
+        }
+        // SAFETY: FreeConsole 不需要参数，失败（没有控制台）也不影响后续。
+        unsafe {
+            FreeConsole();
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        // Unix 上双击启动本来就不会分配终端。
+    }
+}
+
 /// 本地 IPC 不可用时给用户看的话（错误信息里带上平台原因）。
 pub fn unix_socket_unsupported(what: &str) -> anyhow::Error {
     anyhow::anyhow!(
