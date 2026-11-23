@@ -62,13 +62,20 @@ crossterm = { version = "0.28", optional = true }
 ratatui = { version = "0.29", optional = true }
 
 # 可选：跨平台 GUI 前端（Zed 的 gpui）
-gpui = { version = "0.2.2", optional = true }
+# `windows-manifest`：DPI aware（PerMonitorV2）+ Common-Controls v6 清单。
+# Windows 的缩放/字体度量全靠它，缺了在高 DPI 屏上整窗模糊。
+gpui = { version = "0.2.2", optional = true, features = ["windows-manifest"] }
 # 可选：gpui 的 CellGrid 需要东亚宽字符判定（CJK 占两格），与 SwiftTerm
 # 的 `UnicodeWidthData` 同义。只在 gpui feature 下启用。
 unicode-width = { version = "0.2", optional = true }
 
 # 可选：Linux bundled font registration
 # macOS 原生菜单栏（NSMenu）。已在 gpui 的依赖树里，不会引入新的下载。
+# Windows 资源编译（exe 图标）：只在 Windows 构建时拉进来，与 gpui 自己
+# 的 manifest 资源编译器同版本，不额外下载。
+[target.'cfg(windows)'.build-dependencies]
+embed-resource = "3.0"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "0.2"
 # 本地事件监视器要传 block（NSEvent addLocalMonitorForEvents:handler:）。

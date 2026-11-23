@@ -37,14 +37,43 @@ pub const fn os() -> DesktopOs {
 /// lights。Linux / Windows 的标题栏由窗口管理器画，传 `None` 让系统决定
 /// （Wayland 的 xdg-decoration 走服务端装饰，GNOME 才会给关闭按钮）。
 pub fn titlebar_options() -> Option<gpui::TitlebarOptions> {
-    match os() {
+    titlebar_options_for(os())
+}
+
+/// [`titlebar_options`] 的纯函数版本：平台是参数，三个平台的期望值都能在本机测。
+pub fn titlebar_options_for(platform: DesktopOs) -> Option<gpui::TitlebarOptions> {
+    match platform {
         DesktopOs::MacOs => Some(gpui::TitlebarOptions {
             title: Some(" ".into()),
             appears_transparent: false,
             traffic_light_position: None,
         }),
-        DesktopOs::Linux | DesktopOs::Windows => None,
+        // Windows：gpui 把 `titlebar: None` 当成「隐藏标题栏」（
+        // `appears_transparent` 默认 true），窗口就成了无边框、没有关闭按钮。
+        // 传 `appears_transparent: false` 才会保留系统的标题栏 / 关闭按钮。
+        DesktopOs::Windows => Some(gpui::TitlebarOptions {
+            title: Some("Muxterm".into()),
+            appears_transparent: false,
+            traffic_light_position: None,
+        }),
+        // Linux：标题栏交给窗口管理器；只有客户端装饰（GNOME Wayland）时
+        // 前端自绘（见 `chrome/title_bar.rs`）。
+        DesktopOs::Linux => None,
     }
+}
+
+/// 需要自绘窗口标题栏吗？
+///
+/// 只有客户端装饰（Wayland/GNOME 的 `xdg-decoration` 回 client）才需要：服务端
+/// 装饰时系统已经画了标题栏和关闭按钮，再画一条就成了两条。macOS 例外
+/// （原生窗口 + traffic lights）。
+pub fn needs_client_title_bar(decorations: gpui::Decorations) -> bool {
+    needs_client_title_bar_for(os(), decorations)
+}
+
+/// [`needs_client_title_bar`] 的纯函数版本。
+pub fn needs_client_title_bar_for(platform: DesktopOs, decorations: gpui::Decorations) -> bool {
+    !matches!(platform, DesktopOs::MacOs) && matches!(decorations, gpui::Decorations::Client { .. })
 }
 
 /// 当前平台有原生应用菜单栏吗（macOS 是，Linux / Windows 用自绘菜单条）。

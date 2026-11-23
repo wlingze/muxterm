@@ -5,6 +5,7 @@
 //! 依赖该常量的代码，不会复用旧版本号。
 
 fn main() {
+    embed_windows_icon();
     println!("cargo:rerun-if-env-changed=MUXTERM_BUILD_VERSION");
     println!("cargo:rerun-if-env-changed=MUXTERM_GIT_COMMIT");
     println!("cargo:rerun-if-changed=.git/HEAD");
@@ -15,6 +16,24 @@ fn main() {
         .unwrap_or_else(|| std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.0.0".into()));
     println!("cargo:rustc-env=MUXTERM_BUILD_VERSION={version}");
     println!("cargo:rustc-env=MUXTERM_GIT_COMMIT={}", git_commit());
+}
+
+/// Windows：把 `assets/icons/muxterm.rc` 编译进 exe。
+///
+/// gpui 创建窗口时 `LoadImageW(module, 1, IMAGE_ICON)` 读的正是资源 ID 1；
+/// 没有这段，窗口/任务栏/Explorer 全是通用图标。非 Windows 构建是空操作。
+fn embed_windows_icon() {
+    println!("cargo:rerun-if-changed=assets/icons/muxterm.rc");
+    println!("cargo:rerun-if-changed=assets/icons/muxterm.ico");
+    #[cfg(windows)]
+    {
+        if let Err(error) = embed_resource::compile("assets/icons/muxterm.rc", embed_resource::NONE)
+            .manifest_optional()
+        {
+            // 图标是装饰性的：编译失败不要挡住发布，但要让日志可见。
+            println!("cargo:warning=嵌入 Windows 图标失败: {error}");
+        }
+    }
 }
 
 fn git_commit() -> String {

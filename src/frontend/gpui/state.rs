@@ -101,6 +101,9 @@ pub struct GpuiApp {
     pending_focus: Option<u32>,
     /// 本机 shell 工作区空了之后已经要过新 tab，避免每拍都发一遍。
     shell_restart_requested: bool,
+    /// 窗口是否需要自绘标题栏（Linux CSD）。每帧从 `window.window_decorations()`
+    /// 更新；侧栏 / 面板 / pane 网格用它决定顶部让出多少高度。
+    pub(crate) client_title_bar: bool,
     /// 用户刚关掉的 workspace：Core 不发 topology 事件，Open 完成时的全量
     /// 同步可能把它塞回来（同一拍里 close 还没落盘），用墓碑挡掉。
     closed_workspaces: std::collections::HashSet<String>,
@@ -351,6 +354,7 @@ impl GpuiApp {
             command_down: false,
             hover_cell: None,
             focus_handle: cx.focus_handle(),
+            client_title_bar: false,
             marked_text: String::new(),
             panel: crate::frontend::gpui::chrome::panel_view::PanelState::default(),
             target_editor: None,
@@ -1215,6 +1219,7 @@ impl GpuiApp {
             command_down: false,
             hover_cell: None,
             focus_handle: cx.focus_handle(),
+            client_title_bar: false,
             marked_text: String::new(),
             panel: crate::frontend::gpui::chrome::panel_view::PanelState::default(),
             target_editor: None,

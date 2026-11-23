@@ -58,12 +58,10 @@ impl GpuiApp {
         }
 
         let expanded = Section::ALL.map(|section| self.sidebar_expansion.is_expanded(section));
-        // 侧栏在菜单条下面（非 macOS 有自绘菜单条），可分配高度要扣掉它，
-        // 否则段高比容器多出一整条菜单条，底部被裁掉。
-        let content_height = (self.window_height
-            - crate::frontend::gpui::chrome::menu_bar::menu_bar_height()
-            - SIDEBAR_VERTICAL_INSET * 2.0)
-            .max(0.0);
+        // 侧栏在顶部 chrome 下面（非 macOS 有自绘菜单条，CSD 平台还有标题栏），
+        // 可分配高度要扣掉它们，否则段高比容器多出一整条，底部被裁掉。
+        let content_height =
+            (self.window_height - self.top_chrome_height() - SIDEBAR_VERTICAL_INSET * 2.0).max(0.0);
         let weights = if self
             .sidebar_section_weights
             .iter()
@@ -199,7 +197,7 @@ impl GpuiApp {
                     let expanded =
                         Section::ALL.map(|section| this.sidebar_expansion.is_expanded(section));
                     let content_height = (this.window_height
-                        - crate::frontend::gpui::chrome::menu_bar::menu_bar_height()
+                        - this.top_chrome_height()
                         - SIDEBAR_VERTICAL_INSET * 2.0)
                         .max(0.0);
                     let heights =

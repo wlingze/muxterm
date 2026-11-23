@@ -1,0 +1,7 @@
+/* Windows 资源：exe 图标。
+ *
+ * gpui 的 `load_icon()` 从 exe 里 `LoadImageW(module, 1)` 取图标，
+ * 所以资源 ID 必须是 1；Explorer / 任务栏也用同一个图标。
+ * PNG 压缩的 7 个尺寸由 `assets/icons/muxterm.ico` 提供（16…256）。
+ */
+1 ICON "muxterm.ico"
