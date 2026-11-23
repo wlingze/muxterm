@@ -161,13 +161,28 @@ pub fn has_gui_session() -> bool {
     }
 }
 
-/// 是不是双击/桌面启动：stdin 和 stdout 都没有终端。
+/// 没有子命令时默认开窗口吗？
 ///
-/// 终端里敲 `muxterm` 时两个流都接 tty，要保留 TUI 行为；双击 exe 时没有
-/// 终端，TUI 无法工作（Windows 上是控制台一闪而过）。
-pub fn launched_without_terminal() -> bool {
-    use std::io::IsTerminal;
-    !std::io::stdin().is_terminal() && !std::io::stdout().is_terminal()
+/// - Windows：默认开窗口。双击 exe 时系统会给 console 子系统的进程新分配一个
+///   控制台，所以 `is_terminal()` 在这里恒为 true，分辨不出「双击」和「cmd 里跑」；
+///   而 Windows 本来也没有 tmux，TUI 只是备用前端（`muxterm tui`）。
+/// - Linux：双击/桌面启动没有终端（`is_terminal()` 为 false）才开窗口，
+///   终端里敲 `muxterm` 仍然是 TUI。
+/// - macOS：`.app` 自己会传 `gui`，命令行保持 TUI。
+pub fn prefers_gui_when_no_subcommand() -> bool {
+    #[cfg(windows)]
+    {
+        true
+    }
+    #[cfg(all(not(windows), not(target_os = "macos")))]
+    {
+        use std::io::IsTerminal;
+        !std::io::stdin().is_terminal() && !std::io::stdout().is_terminal()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        false
+    }
 }
 
 /// 断开控制台（Windows）。双击 console 子系统的 exe 时系统会分配一个黑框，

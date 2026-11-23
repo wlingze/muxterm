@@ -608,7 +608,7 @@ Project / discovery 行用 Core 记账的 attach 频率排序（`attach-history.
 | 默认等宽字体 | Menlo | DejaVu Sans Mono | Cascadia Mono | `platform/desktop.rs::default_monospace_family` |
 | 字体注册 / 回退 | `TextSystem::add_fonts(JetBrains Mono, Noto Symbols)` + 平台回退栈 | 同左 | 同左 | `app.rs::register_bundled_fonts`；`theme::font_fallbacks` |
 | 窗口标题栏 | 隐藏标题、只留 traffic lights | 服务端装饰用系统标题栏；客户端装饰（GNOME Wayland）自绘 `chrome/title_bar.rs`（最小化 / 最大化 / 关闭） | 原生标题栏（`appears_transparent: false`，否则 gpui 会隐藏它） | `platform::{titlebar_options, needs_client_title_bar}` |
-| 启动方式 | `.app`（`gui` 子命令） | 桌面/终端：无终端时默认 gpui，有终端默认 TUI | 双击 exe（无终端）默认 gpui；cmd 里默认 TUI | `core/os::{launched_without_terminal, has_gui_session}` |
+| 启动方式 | `.app`（`gui` 子命令）；命令行默认 TUI | 无终端（双击/桌面）默认 gpui，终端里默认 TUI | 无子命令一律 gpui（`muxterm tui` 走 TUI）：双击时系统会给 console 进程新分配控制台，`is_terminal()` 分不出来 | `core/os::{prefers_gui_when_no_subcommand, has_gui_session}` |
 | 窗口标题文字 | `[ui] show_title_bar=false` → 空 | 始终显示 workspace 名 | 同左 | `platform/desktop.rs::hides_title_text` |
 | 图标 / 打包 | `.app` + `.dmg`（ad-hoc 签名） | `tar.gz` + `install.sh`（`.desktop` + PNG → `~/.local/share`） | `.zip`；exe 内嵌 `1 ICON`（`build.rs` + `embed-resource`） | `scripts/build-gpui-{macos,linux,windows}.sh`、`assets/icons/muxterm.rc` |
 | 剪贴板图片 | NSPasteboard TIFF/PNG → PNG（AppKit 解码） | PNG 透传（签名校验） | PNG 透传（签名校验） | `platform/clipboard_image.rs` |
