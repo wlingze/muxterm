@@ -51,6 +51,8 @@ impl GpuiApp {
         Some(
             div()
                 .id("title-bar")
+                // debug selector：无头测试按它取几何（见 tests/gpui_chrome.rs）。
+                .debug_selector(|| "title-bar".into())
                 .flex()
                 .flex_row()
                 .items_center()

@@ -6362,3 +6362,59 @@ fn click_counts_pick_words_lines_and_nothing(cx: &mut TestAppContext) {
         });
     });
 }
+
+/// 客户端装饰（GNOME Wayland 的 CSD）必须自己画标题栏，且三个窗口按钮真的
+/// 布局出来、靠右、在标题栏内 —— 否则 Linux 上没有关闭按钮。
+#[gpui::test]
+fn client_title_bar_draws_window_controls(cx: &mut TestAppContext) {
+    use muxterm::frontend::gpui::chrome::title_bar::TITLE_BAR_HEIGHT;
+
+    let (view, cx) = mount(store_with_two_workspaces(), cx);
+    // 无头窗口报的是服务端装饰；打开覆盖开关等价于 Wayland 回 client。
+    cx.update(|_, cx| {
+        view.update(cx, |app, _| app.set_client_title_bar_for_tests(true));
+    });
+    // 触发一次重新布局。
+    cx.simulate_resize(size(px(1_200.), px(800.)));
+    cx.run_until_parked();
+
+    let bar = cx
+        .debug_bounds("title-bar")
+        .expect("CSD 平台必须有自绘标题栏");
+    assert!(
+        (f32::from(bar.size.height) - TITLE_BAR_HEIGHT).abs() < 0.6,
+        "标题栏高度应为 {TITLE_BAR_HEIGHT}: {bar:?}"
+    );
+
+    let close = cx
+        .debug_bounds("title-bar-close")
+        .expect("关闭按钮必须布局出来");
+    let minimize = cx
+        .debug_bounds("title-bar-min")
+        .expect("最小化按钮必须布局出来");
+    let maximize = cx
+        .debug_bounds("title-bar-max")
+        .expect("最大化按钮必须布局出来");
+    for (name, control) in [("min", minimize), ("max", maximize), ("close", close)] {
+        assert!(
+            control.origin.x >= bar.origin.x + bar.size.width / 2.0,
+            "{name} 按钮必须在右半侧: {control:?} / {bar:?}"
+        );
+        // 标题栏底边有 1px 分隔线，子元素高度是 35 而不是 36。
+        assert!(
+            f32::from(control.size.height) >= TITLE_BAR_HEIGHT - 1.5,
+            "{name} 按钮要填满标题栏高度: {control:?}"
+        );
+    }
+    assert!(
+        close.origin.x > maximize.origin.x && maximize.origin.x > minimize.origin.x,
+        "按钮顺序必须是 最小化 → 最大化 → 关闭"
+    );
+
+    // 侧栏（和其它正文）要给标题栏让位，不能压在它下面。
+    let sidebar = cx.debug_bounds("sidebar").expect("侧栏必须渲染");
+    assert!(
+        f32::from(sidebar.origin.y) >= TITLE_BAR_HEIGHT - 0.6,
+        "侧栏起点必须至少让出标题栏高度: {sidebar:?}"
+    );
+}

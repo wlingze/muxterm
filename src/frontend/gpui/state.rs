@@ -104,6 +104,8 @@ pub struct GpuiApp {
     /// 窗口是否需要自绘标题栏（Linux CSD）。每帧从 `window.window_decorations()`
     /// 更新；侧栏 / 面板 / pane 网格用它决定顶部让出多少高度。
     pub(crate) client_title_bar: bool,
+    /// 覆盖装饰探测（测试 / 排障用）：`Some(true)` 强制画标题栏。
+    pub(crate) client_title_bar_override: Option<bool>,
     /// 用户刚关掉的 workspace：Core 不发 topology 事件，Open 完成时的全量
     /// 同步可能把它塞回来（同一拍里 close 还没落盘），用墓碑挡掉。
     closed_workspaces: std::collections::HashSet<String>,
@@ -355,6 +357,7 @@ impl GpuiApp {
             hover_cell: None,
             focus_handle: cx.focus_handle(),
             client_title_bar: false,
+            client_title_bar_override: None,
             marked_text: String::new(),
             panel: crate::frontend::gpui::chrome::panel_view::PanelState::default(),
             target_editor: None,
@@ -1220,6 +1223,7 @@ impl GpuiApp {
             hover_cell: None,
             focus_handle: cx.focus_handle(),
             client_title_bar: false,
+            client_title_bar_override: None,
             marked_text: String::new(),
             panel: crate::frontend::gpui::chrome::panel_view::PanelState::default(),
             target_editor: None,
@@ -1540,6 +1544,12 @@ impl GpuiApp {
     }
 
     /// 当前 workspace 的显示名（窗口标题用）。
+    /// 强制自绘/不画标题栏（测试与排障用；生产路径按窗口装饰探测）。
+    #[doc(hidden)]
+    pub fn set_client_title_bar_for_tests(&mut self, value: bool) {
+        self.client_title_bar_override = Some(value);
+    }
+
     pub fn visible_workspace_name(&self) -> String {
         let Some(workspace) = self.visible.clone() else {
             return String::new();
